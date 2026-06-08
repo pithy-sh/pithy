@@ -24,11 +24,13 @@ is binding. Short sentences. Deliberate periods. No fluff. No emoji. No
 - **Repo:** `pithy-sh/pithy`
 - **Board:** Projects v2, org `pithy-sh`, title **Pithy** (currently project number `1`).
 - **Lifecycle field:** a single-select field named **Stage** with options
-  `Inbox`, `Refining`, `Ready`. (The reserved `Status` field is locked to
-  Todo/In Progress/Done — we do not use it; **Stage** is ours.)
+  `Inbox`, `Refining`, `Ready`, `Building`, `In review`, `Done`. `/refine` drives only the
+  first three (`Inbox → Refining → Ready`); `/ship` owns the rest. (The reserved `Status`
+  field is locked to Todo/In Progress/Done — we do not use it; **Stage** is ours.)
 
 Never hardcode IDs. Resolve them at runtime (project number/id, Stage field id, and
-option ids change if the board is recreated). See **Resolve IDs** below.
+option ids — option ids change whenever the field's options are edited or recreated). See
+**Resolve IDs** below.
 
 ## Stages
 
@@ -185,7 +187,7 @@ shows no **Pithy** project, recreate it — idempotently:
 gh project create --owner pithy-sh --title "Pithy"
 gh project field-create <projectNumber> --owner pithy-sh \
   --name "Stage" --data-type SINGLE_SELECT \
-  --single-select-options "Inbox,Refining,Ready"
+  --single-select-options "Inbox,Refining,Ready,Building,In review,Done"
 ```
 
 The default `Status` field cannot be deleted and its name is reserved — that's why the
