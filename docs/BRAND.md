@@ -8,14 +8,14 @@
 
 Pithy is a Cloudflare-native, open-source backend kit. The name is the position: concise, opinionated, no bloat. The visual identity follows from that promise.
 
-| Attribute | Direction |
-|---|---|
-| Aesthetic | Editorial minimal — Penguin Classics meets Linear |
-| Voice | Confident, sharp, low ego, short sentences |
-| Mark | A single saffron period |
-| Type | Geist Sans + Geist Mono |
-| Colors | Ink, parchment, saffron |
-| Modes | Light and dark, auto-switching via `prefers-color-scheme` |
+| Attribute | Direction                                                 |
+| --------- | --------------------------------------------------------- |
+| Aesthetic | Editorial minimal — Penguin Classics meets Linear         |
+| Voice     | Confident, sharp, low ego, short sentences                |
+| Mark      | A single saffron period                                   |
+| Type      | Geist Sans + Geist Mono                                   |
+| Colors    | Ink, parchment, saffron                                   |
+| Modes     | Light and dark, auto-switching via `prefers-color-scheme` |
 
 ---
 
@@ -27,18 +27,41 @@ The wordmark is `pithy.` set in **Geist Sans Medium (weight 500)**, lowercase, w
 
 The wordmark is the primary brand signature. Use it whenever space allows.
 
-### 2.2 Standalone mark
+### 2.2 Mark hierarchy
 
-The standalone mark is the period alone — a saffron circle. Use it where space is constrained or where the wordmark would be illegible:
+Beyond the full wordmark (Section 2.1), Pithy uses two derivative marks for contexts where the wordmark won't fit or won't read. All three marks share a single brand element — a saffron square — appearing at different scales of disclosure.
 
-- Favicons
-- App icons
-- Social profile avatars (round and square)
-- Small-format watermarks
-- Loading states / spinners (with motion)
-- Inline accent (e.g., between words in marketing copy)
+**The "p." mark — `pithy-social.svg`** is the wordmark abbreviated to its first letter and the brand period. Use it for square avatar contexts where there's enough room for two characters:
 
-The mark is always saffron. It never changes color.
+- GitHub organization avatar
+- npm scope avatar
+- X / Bluesky / Mastodon profile picture
+- Discord server icon
+- Any 32px-and-larger square where the brand needs identity without full width
+
+The canonical version uses ink (#111111) background with parchment "p" and saffron period. A parchment-background variant (`pithy-social-light.svg`) exists for explicit light-only contexts.
+
+**The brand mark — `pithy-favicon.svg`** is the period alone: a saffron square. It's the same shape and color as the period that renders in the wordmark, just isolated. Use it anywhere "p." would be illegible or where the brand needs to assert itself as the simplest possible symbol:
+
+- Browser favicon (16px and up — the canvas is the mark; no container)
+- Inline accent between words in marketing copy
+- Watermark in screenshots, hero illustrations, video corners
+- Loading states or spinners (with motion)
+- "Built with Pithy" badges where surrounding text already provides context
+
+This single SVG is the canonical mark asset. The same file works at every size from 16px to 1024px; layout and CSS handle whatever padding the context requires.
+
+**Shape and color are non-negotiable.** The mark is a saffron (#D4A017) **square**. Never a circle. Never an outline. Never a gradient. Never any other color. The square shape matches the period as Geist Medium renders it — the brand mark and the typographic period are visually identical, which is the point.
+
+**Apple touch icon and other branded home-screen contexts.** iOS applies its own corner radius to `apple-touch-icon` automatically. Use `pithy-social.svg` rendered at 180×180 — the "p." version with its ink background — not the bare favicon. When someone pins your site to their home screen, they want to see the brand, not a colored block.
+
+**At-a-glance asset map:**
+
+| Mark        | File                                                 | Use                                                                                        |
+| ----------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Wordmark    | `pithy-wordmark.svg` (+ `-light` / `-dark` variants) | Anywhere there's horizontal space — headers, docs, marketing                               |
+| Social icon | `pithy-social.svg` (+ `-light` variant)              | Square avatar contexts, 32px and up                                                        |
+| Brand mark  | `pithy-favicon.svg`                                  | Favicon, inline accent, watermark, anywhere a single saffron square communicates the brand |
 
 ### 2.3 Clear space
 
@@ -59,11 +82,11 @@ For the standalone mark, the clear space is one full mark-diameter on all sides.
 
 ### 2.4 Minimum sizes
 
-| Context | Wordmark | Standalone mark |
-|---|---|---|
-| Screen | 80px wide | 16px square |
-| Print | 1 in / 25 mm wide | 0.25 in / 6 mm square |
-| Favicon | not used | 16px square minimum |
+| Context | Wordmark          | Standalone mark       |
+| ------- | ----------------- | --------------------- |
+| Screen  | 80px wide         | 16px square           |
+| Print   | 1 in / 25 mm wide | 0.25 in / 6 mm square |
+| Favicon | not used          | 16px square minimum   |
 
 Below minimum size, switch to the standalone mark. Never display the wordmark so small the dot of the `i` and the period become indistinguishable.
 
@@ -71,10 +94,10 @@ Below minimum size, switch to the standalone mark. Never display the wordmark so
 
 The wordmark adapts; the period does not.
 
-| Mode | Wordmark text | Period |
-|---|---|---|
-| Light | Ink `#111111` | Saffron `#D4A017` |
-| Dark | Parchment `#FAFAF6` | Saffron `#D4A017` |
+| Mode  | Wordmark text       | Period            |
+| ----- | ------------------- | ----------------- |
+| Light | Ink `#111111`       | Saffron `#D4A017` |
+| Dark  | Parchment `#FAFAF6` | Saffron `#D4A017` |
 
 For automatic mode-switching, use `pithy-wordmark.svg` (the adaptive file). For explicit single-mode placement, use `pithy-wordmark-light.svg` or `pithy-wordmark-dark.svg`.
 
@@ -97,43 +120,43 @@ For automatic mode-switching, use `pithy-wordmark.svg` (the adaptive file). For 
 
 The three colors that define the brand.
 
-| Token | Hex | RGB | Use |
-|---|---|---|---|
-| Ink | `#111111` | 17, 17, 17 | Primary text in light mode; surfaces in dark mode |
+| Token     | Hex       | RGB           | Use                                               |
+| --------- | --------- | ------------- | ------------------------------------------------- |
+| Ink       | `#111111` | 17, 17, 17    | Primary text in light mode; surfaces in dark mode |
 | Parchment | `#FAFAF6` | 250, 250, 246 | Surfaces in light mode; primary text in dark mode |
-| Saffron | `#D4A017` | 212, 160, 23 | Accent — period, interactive states, highlights |
+| Saffron   | `#D4A017` | 212, 160, 23  | Accent — period, interactive states, highlights   |
 
 ### 3.2 Extended palette — light mode
 
-| Token | Hex | Use |
-|---|---|---|
-| `bg` | `#FAFAF6` | Page background |
-| `surface` | `#FFFFFF` | Elevated surface (cards, modals) |
-| `surface-muted` | `#F2F1EB` | Recessed surface (code blocks, inputs) |
-| `fg` | `#111111` | Primary text |
-| `fg-muted` | `#5F5D57` | Secondary text |
-| `fg-subtle` | `#9A988F` | Tertiary text, hints |
-| `border` | `rgba(17,17,17,0.12)` | Default borders |
-| `border-strong` | `rgba(17,17,17,0.24)` | Emphasized borders |
-| `accent` | `#D4A017` | Saffron — links, period, interactive accent |
-| `accent-hover` | `#B88912` | Hovered accent state |
-| `accent-muted` | `#F5E7B8` | Saffron tinted background (badges, highlights) |
+| Token           | Hex                   | Use                                            |
+| --------------- | --------------------- | ---------------------------------------------- |
+| `bg`            | `#FAFAF6`             | Page background                                |
+| `surface`       | `#FFFFFF`             | Elevated surface (cards, modals)               |
+| `surface-muted` | `#F2F1EB`             | Recessed surface (code blocks, inputs)         |
+| `fg`            | `#111111`             | Primary text                                   |
+| `fg-muted`      | `#5F5D57`             | Secondary text                                 |
+| `fg-subtle`     | `#9A988F`             | Tertiary text, hints                           |
+| `border`        | `rgba(17,17,17,0.12)` | Default borders                                |
+| `border-strong` | `rgba(17,17,17,0.24)` | Emphasized borders                             |
+| `accent`        | `#D4A017`             | Saffron — links, period, interactive accent    |
+| `accent-hover`  | `#B88912`             | Hovered accent state                           |
+| `accent-muted`  | `#F5E7B8`             | Saffron tinted background (badges, highlights) |
 
 ### 3.3 Extended palette — dark mode
 
-| Token | Hex | Use |
-|---|---|---|
-| `bg` | `#14110D` | Page background |
-| `surface` | `#1F1B16` | Elevated surface (cards, modals) |
-| `surface-muted` | `#2A251E` | Recessed surface (code blocks, inputs) |
-| `fg` | `#FAFAF6` | Primary text |
-| `fg-muted` | `#A09C90` | Secondary text |
-| `fg-subtle` | `#6B675E` | Tertiary text, hints |
-| `border` | `rgba(250,250,246,0.10)` | Default borders |
-| `border-strong` | `rgba(250,250,246,0.22)` | Emphasized borders |
-| `accent` | `#D4A017` | Saffron — unchanged |
-| `accent-hover` | `#E0AC1E` | Hovered accent state (slightly brighter in dark) |
-| `accent-muted` | `#3D2E0A` | Saffron tinted background |
+| Token           | Hex                      | Use                                              |
+| --------------- | ------------------------ | ------------------------------------------------ |
+| `bg`            | `#14110D`                | Page background                                  |
+| `surface`       | `#1F1B16`                | Elevated surface (cards, modals)                 |
+| `surface-muted` | `#2A251E`                | Recessed surface (code blocks, inputs)           |
+| `fg`            | `#FAFAF6`                | Primary text                                     |
+| `fg-muted`      | `#A09C90`                | Secondary text                                   |
+| `fg-subtle`     | `#6B675E`                | Tertiary text, hints                             |
+| `border`        | `rgba(250,250,246,0.10)` | Default borders                                  |
+| `border-strong` | `rgba(250,250,246,0.22)` | Emphasized borders                               |
+| `accent`        | `#D4A017`                | Saffron — unchanged                              |
+| `accent-hover`  | `#E0AC1E`                | Hovered accent state (slightly brighter in dark) |
+| `accent-muted`  | `#3D2E0A`                | Saffron tinted background                        |
 
 ### 3.4 Auto-switching CSS variables
 
@@ -273,19 +296,19 @@ Geist Mono is the partner monospace, designed to sit alongside Geist Sans.
 
 Modest hierarchy. The brand reads as edited, not loud.
 
-| Token | Size | Line height | Weight | Use |
-|---|---|---|---|---|
-| `display` | 72px | 1.05 | 500 | Landing hero only |
-| `h1` | 48px | 1.1 | 500 | Page title |
-| `h2` | 32px | 1.15 | 500 | Section heading |
-| `h3` | 22px | 1.25 | 500 | Subsection |
-| `h4` | 18px | 1.3 | 500 | Inline heading |
-| `body-lg` | 18px | 1.6 | 400 | Lede paragraph |
-| `body` | 16px | 1.65 | 400 | Default text |
-| `body-sm` | 14px | 1.6 | 400 | Secondary text, captions |
-| `code-inline` | 0.92em (relative) | inherit | 400 (mono) | Inline code |
-| `code-block` | 14px | 1.55 | 400 (mono) | Code blocks |
-| `label` | 11px | 1.4 | 500 (mono) | Section labels, eyebrows; tracking 0.12em uppercase |
+| Token         | Size              | Line height | Weight     | Use                                                 |
+| ------------- | ----------------- | ----------- | ---------- | --------------------------------------------------- |
+| `display`     | 72px              | 1.05        | 500        | Landing hero only                                   |
+| `h1`          | 48px              | 1.1         | 500        | Page title                                          |
+| `h2`          | 32px              | 1.15        | 500        | Section heading                                     |
+| `h3`          | 22px              | 1.25        | 500        | Subsection                                          |
+| `h4`          | 18px              | 1.3         | 500        | Inline heading                                      |
+| `body-lg`     | 18px              | 1.6         | 400        | Lede paragraph                                      |
+| `body`        | 16px              | 1.65        | 400        | Default text                                        |
+| `body-sm`     | 14px              | 1.6         | 400        | Secondary text, captions                            |
+| `code-inline` | 0.92em (relative) | inherit     | 400 (mono) | Inline code                                         |
+| `code-block`  | 14px              | 1.55        | 400 (mono) | Code blocks                                         |
+| `label`       | 11px              | 1.4         | 500 (mono) | Section labels, eyebrows; tracking 0.12em uppercase |
 
 ### 4.4 Font loading
 
@@ -378,13 +401,14 @@ Keep them pithy. Verbatim style:
 Source-of-truth assets live in **`docs/assets/brand/`** (paths below are relative to that
 directory). The docs site and any deploy target import/serve from there.
 
-| File | Use |
-|---|---|
-| `pithy-wordmark.svg` | Adaptive wordmark — auto-swaps text color via `prefers-color-scheme` |
-| `pithy-wordmark-light.svg` | Wordmark for light backgrounds (ink text) |
-| `pithy-wordmark-dark.svg` | Wordmark for dark backgrounds (parchment text) |
-| `pithy-favicon.svg` | Adaptive favicon — rounded square background swaps; saffron period stays |
-| `pithy-mark.svg` | Standalone period mark on transparent background |
+| File                       | Use                                                                      |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `pithy-wordmark.svg`       | Adaptive wordmark — auto-swaps text color via `prefers-color-scheme`     |
+| `pithy-wordmark-light.svg` | Wordmark for light backgrounds (ink text)                                |
+| `pithy-wordmark-dark.svg`  | Wordmark for dark backgrounds (parchment text)                           |
+| `pithy-favicon.svg`        | Adaptive favicon — rounded square background swaps; saffron period stays |
+| `pithy-social.svg`         | Social / "p." avatar mark (adaptive) — ink bg, parchment p, saffron period |
+| `pithy-social-light.svg`   | Social / "p." avatar mark — light (parchment) background                 |
 
 ### Favicon HTML
 
@@ -436,14 +460,14 @@ Voice
 
 The canonical identity. Use these exactly; do not invent variants.
 
-| Channel | Handle / URL | Notes |
-|---|---|---|
-| Primary domain | **pithy.sh** | The home. All canonical links and the brand name resolve here. |
-| Redirect domains | pithysh.com, pithy-sh.com, pithy.run | All 301 → `pithy.sh`. Never used as canonical links. |
-| npm org | **`@pithy-sh`** | The bare `pithy` scope was taken, so packages publish under `@pithy-sh/*`. |
-| GitHub org | **github.com/pithy-sh** | Source + issues + releases. |
-| Bluesky | **@pithy.sh** | Matches the domain (Bluesky allows the dot). Preferred social handle. |
-| X (Twitter) | **@pithy_sh** | X disallows `.` and `-` in handles, so the dot becomes an underscore. |
+| Channel          | Handle / URL                         | Notes                                                                      |
+| ---------------- | ------------------------------------ | -------------------------------------------------------------------------- |
+| Primary domain   | **pithy.sh**                         | The home. All canonical links and the brand name resolve here.             |
+| Redirect domains | pithysh.com, pithy-sh.com, pithy.run | All 301 → `pithy.sh`. Never used as canonical links.                       |
+| npm org          | **`@pithy-sh`**                      | The bare `pithy` scope was taken, so packages publish under `@pithy-sh/*`. |
+| GitHub org       | **github.com/pithy-sh**              | Source + issues + releases.                                                |
+| Bluesky          | **@pithy.sh**                        | Matches the domain (Bluesky allows the dot). Preferred social handle.      |
+| X (Twitter)      | **@pithy_sh**                        | X disallows `.` and `-` in handles, so the dot becomes an underscore.      |
 
 **The dot rule across handles.** The brand is the period, so prefer the dotted form
 (`pithy.sh`, `@pithy.sh`) wherever a platform allows it. Where the dot is disallowed (npm,
