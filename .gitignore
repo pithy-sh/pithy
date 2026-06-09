@@ -1,2 +1,23 @@
-# Local-only notes and scratch (never committed)
+# deps & build
+node_modules/
+dist/
+.turbo/
+
+# cloudflare / wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# local-only notes and scratch (never committed)
 /.local/
+
+# editor / os
+.DS_Store
+*.log
+coverage/
