@@ -76,6 +76,8 @@ gh project item-edit --id <itemId> \
   references (`docs/superpowers/plans/…` — read for detail; do not write to that format).
 - Verify dependencies. If the issue says `Depends on #M`, confirm #M is `Done`. If not,
   stop and say so.
+- **Assign the issue.** If it's unassigned, assign it to whoever is running `/ship`:
+  `gh issue edit <N> --add-assignee @me`. Leave an existing assignee alone.
 - Create branch `feature/<N>-<short-kebab-slug>` from `main`. (Branch, not worktree — see
   **Isolation** below.)
 - Move Stage → `Building`.

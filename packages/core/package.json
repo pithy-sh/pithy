@@ -11,7 +11,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
     "zod": "^4.0.0"

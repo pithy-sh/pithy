@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # CI sets CI=true, so `bun install` freezes the lockfile (no --frozen-lockfile needed).
+      - name: Install
+        run: bun install
+
+      - name: Lint + format (Biome)
+        run: bunx biome ci .
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run build
+
+  # Verify the cross-runtime promise: the packages run on the Node versions we
+  # support (22 LTS floor + 24 current), not just under Bun. Tests run via the
+  # workspace's vitest bin (in Bun's store) under each Node.
+  test-node:
+    name: Test on Node ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install
+        run: bun install
+
+      # Run each package's own `test` script under Node (not Bun) via `node --run`.
+      # Turbo can't do this — it launches scripts through Bun; the runtime is the
+      # launcher's choice, so the Node job invokes the script with node directly.
+      - name: Test under Node ${{ matrix.node }}
+        run: |
+          ran=0
+          for pkg in packages/*/; do
+            [ -f "${pkg}vitest.config.ts" ] || continue
+            echo "::group::${pkg} (Node ${{ matrix.node }})"
+            ( cd "$pkg" && node --run test )
+            echo "::endgroup::"
+            ran=$((ran + 1))
+          done
+          if [ "$ran" -eq 0 ]; then echo "No packages with vitest.config.ts found"; exit 1; fi
