@@ -66,6 +66,12 @@ monorepo. Read the companion docs before any structural or surface decision:
 - **No barrel re-exports. No re-exporting third-party libraries.** Modern tooling resolves
   deep import paths fine. Direct imports only; re-export a dependency only with an
   amazing, documented reason.
+- **Group a package's `src/` by concern, not by artifact kind.** Folders map to seams /
+  responsibilities (`data/`, `http/`, `kv/`, `capability/`, `config/`), each holding the
+  related codecs/schemas/logic together — never a by-kind junk drawer (`schemas/`,
+  `models/`). A folder appears only when a real module lands; no empty scaffolding. Since
+  there's no barrel, the folder path **is** the public import path
+  (`@pithy-sh/core/src/data/codecs`), so name for the consumer.
 
 ## TypeScript
 
