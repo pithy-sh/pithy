@@ -158,10 +158,12 @@ monorepo. Read the companion docs before any structural or surface decision:
 
 - All routing uses **Hono**. Capabilities contribute sub-routers via the `Capability`
   contract; they do not new-up their own app.
-- Every route declares a **verification strategy**: `bearer`, `session` (cookie,
-  CSRF-protected), `turnstile`, `signed-webhook`, `control-plane` (M2M admin access for the
-  premium dashboard — customer-issued scoped credential, default-denied), or `public`. No
-  implicit auth.
+- Every route declares a **verification strategy** — its identity/authenticity gate:
+  `bearer`, `session` (cookie, CSRF-protected), `signed-webhook`, `control-plane` (M2M
+  admin access for the premium dashboard — customer-issued scoped credential,
+  default-denied), or `public`. No implicit auth. **Turnstile is a humanity check applied
+  as composable middleware, not an identity strategy** (it can stack on top of any of the
+  above, e.g. a `public` signup route that still requires a Turnstile token).
 - `core` defines the `AuthContext` seam and request `Variables`; only `@pithy-sh/auth`
   implements bearer/session validation. Other capabilities use `requireAuth()` / the seam.
 
