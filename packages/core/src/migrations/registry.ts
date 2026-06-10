@@ -7,7 +7,7 @@ const ORDER_DIGITS = 4;
 export const MAX_MIGRATION_ORDER = 10 ** ORDER_DIGITS - 1;
 
 /** Capability namespace: lowercase, starts with a letter, no separators (keeps keys injective). */
-const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*$/;
+export const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*$/;
 
 /** Local migration key: a zero-padded sequence + lowercase snake, e.g. "0001_init". */
 const LOCAL_KEY_PATTERN = /^\d{4}_[a-z0-9_]+$/;
