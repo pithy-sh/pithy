@@ -1,12 +1,21 @@
+import type { KVNamespace } from "@cloudflare/workers-types";
 import type { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import type { z } from "zod";
 import type { AuthContext } from "../http/authContext";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 
-/** Hono `Variables` every capability's routes are typed against. Extended in the createBackend plan. */
+/** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
 export interface PithyVars {
+  /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * Per-request D1 handle (a `Kysely<DatabaseSchema<…>>`). Capabilities cast it to their own table
+   * map. `unknown` keeps the contract from coupling to a specific schema; `null` until populated.
+   */
+  db: unknown;
+  /** Per-request KV namespaces, keyed by binding name; capabilities read the one they need. `null` until populated. */
+  kv: Record<string, KVNamespace> | null;
 }
 
 /** The Hono env. `Bindings` and `Variables` are placeholders here — typed per app in the createBackend plan. */
