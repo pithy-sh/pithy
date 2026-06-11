@@ -18,10 +18,20 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "clean": "turbo run clean",
-    "reset": "turbo run reset && rm -rf node_modules && bun install"
+    "reset": "turbo run reset && rm -rf node_modules && bun install",
+    "prepare": "husky",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "echo 'Release automation lands later. Not wired yet.' && exit 1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
     "turbo": "^2.1.0"
   }
 }
