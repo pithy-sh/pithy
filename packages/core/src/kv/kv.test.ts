@@ -1,6 +1,7 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { PithyError } from "../error/pithyError";
 import { TypedKv } from "./kv";
 
 // Config validation runs in the constructor, before any KV access, so a dummy
@@ -25,6 +26,16 @@ describe("TypedKv config validation", () => {
 
   test("rejects an empty prefix", () => {
     expect(construct({ prefix: "" })).toThrow(/prefix must be a non-empty/);
+  });
+
+  test("config violations throw a typed PithyError (core/internal)", () => {
+    try {
+      construct({ prefix: "" })();
+      throw new Error("expected construction to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PithyError);
+      expect((err as PithyError).payload.code).toBe("core/internal");
+    }
   });
 
   test("rejects an empty separator", () => {

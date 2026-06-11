@@ -1,5 +1,6 @@
 import type { KVNamespace, KVNamespacePutOptions } from "@cloudflare/workers-types";
 import type { z } from "zod";
+import { InternalError, NotFoundError } from "../error/pithyError";
 
 /** Cloudflare's hard limit on a KV entry's metadata, in bytes. */
 export const KV_METADATA_MAX_BYTES = 1024;
@@ -67,24 +68,30 @@ export interface TypedKvConfig<V extends z.ZodType, K extends z.ZodObject, M ext
  * `metadata` schema to validate against, or a non-positive default TTL.
  */
 export function assertValidConfig(config: TypedKvConfig<z.ZodType, z.ZodObject, z.ZodType>): void {
+  // A bad TypedKv config is a capability-author mistake caught at construction — an internal
+  // misconfiguration (500), never a client-facing fault. The message names the exact problem.
   if (config.prefix.length === 0) {
-    throw new Error("TypedKv config: prefix must be a non-empty capability namespace.");
+    throw new InternalError({ message: "TypedKv config: prefix must be a non-empty capability namespace." });
   }
   const separator = config.separator ?? ":";
   if (separator.length === 0) {
-    throw new Error("TypedKv config: separator must be a non-empty string.");
+    throw new InternalError({ message: "TypedKv config: separator must be a non-empty string." });
   }
   if (config.prefix.includes(separator)) {
-    throw new Error(`TypedKv config: prefix "${config.prefix}" must not contain the separator "${separator}".`);
+    throw new InternalError({
+      message: `TypedKv config: prefix "${config.prefix}" must not contain the separator "${separator}".`,
+    });
   }
   if (Object.keys(config.key.shape).length === 0) {
-    throw new Error("TypedKv config: key must declare at least one segment.");
+    throw new InternalError({ message: "TypedKv config: key must declare at least one segment." });
   }
   if (config.deriveMetadata !== undefined && config.metadata === undefined) {
-    throw new Error("TypedKv config: deriveMetadata requires a metadata schema to validate the derived value.");
+    throw new InternalError({
+      message: "TypedKv config: deriveMetadata requires a metadata schema to validate the derived value.",
+    });
   }
   if (config.ttlSeconds !== undefined && config.ttlSeconds <= 0) {
-    throw new Error("TypedKv config: ttlSeconds must be positive.");
+    throw new InternalError({ message: "TypedKv config: ttlSeconds must be positive." });
   }
 }
 
@@ -228,7 +235,8 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
   async patch(key: z.input<K>, changes: Partial<z.output<V>>, options: PutOptions<M> = {}): Promise<z.output<V>> {
     const existing = await this.getWithMetadata(key);
     if (existing === null) {
-      throw new Error(`Cannot patch ${this.name(key)}: no value to update.`);
+      // Patching a key that isn't there is a genuine not-found, not a server fault.
+      throw new NotFoundError({ message: `Cannot patch ${this.name(key)}: no value to update.` });
     }
     const merged = this.#valueSchema.parse({ ...(existing.value as object), ...(changes as object) }) as z.output<V>;
     const putOptions: PutOptions<M> = { ...options };
@@ -344,7 +352,9 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
     const parsed = schema.parse(candidate) as z.output<M>;
     const bytes = byteLength(JSON.stringify(parsed));
     if (bytes > KV_METADATA_MAX_BYTES) {
-      throw new Error(`KV metadata is ${bytes} bytes; the limit is ${KV_METADATA_MAX_BYTES}. Keep metadata small.`);
+      throw new InternalError({
+        message: `KV metadata is ${bytes} bytes; the limit is ${KV_METADATA_MAX_BYTES}. Keep metadata small.`,
+      });
     }
     return parsed;
   }
@@ -353,7 +363,12 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
   #segment(name: string, value: unknown): string {
     const segment = String(value);
     if (segment.includes(this.#separator)) {
-      throw new Error(`Key segment "${name}" contains the separator "${this.#separator}": ${segment}`);
+      // `segment` is a caller-supplied runtime value; it goes in `detail` (internal), not the
+      // public `message`, so the HTTP encoder can't echo a caller's input back in a 500 body.
+      throw new InternalError({
+        message: `Key segment "${name}" must not contain the separator "${this.#separator}".`,
+        detail: `Offending value for "${name}": ${segment}`,
+      });
     }
     return segment;
   }
@@ -368,14 +383,16 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
     if (present.length === 0) return trailing;
 
     if (present.length === this.#segmentNames.length) {
-      throw new Error("list prefix is a full key; use get() or getWithMetadata() for an exact key.");
+      throw new InternalError({
+        message: "list prefix is a full key; use get() or getWithMetadata() for an exact key.",
+      });
     }
 
     const leading = this.#segmentNames.slice(0, present.length);
     if (present.join(this.#separator) !== leading.join(this.#separator)) {
-      throw new Error(
-        `list prefix must be a leading run of key segments [${this.#segmentNames.join(", ")}]; got [${present.join(", ")}].`,
-      );
+      throw new InternalError({
+        message: `list prefix must be a leading run of key segments [${this.#segmentNames.join(", ")}]; got [${present.join(", ")}].`,
+      });
     }
     const segments = leading.map((name) => this.#segment(name, provided[name]));
     return `${[this.#prefix, ...segments].join(this.#separator)}${this.#separator}`;

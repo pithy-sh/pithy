@@ -1,5 +1,6 @@
 import type { Migration } from "kysely/migration";
 import { describe, expect, test } from "vitest";
+import { PithyError } from "../error/pithyError";
 import { createMigrationRegistry } from "./registry";
 
 const noop: Migration = { up: async () => {}, down: async () => {} };
@@ -37,6 +38,16 @@ describe("createMigrationRegistry", () => {
     expect(kyselyOrder(Object.keys(await a.getMigrations()))).toEqual(
       kyselyOrder(Object.keys(await b.getMigrations())),
     );
+  });
+
+  test("invariant violations throw a typed PithyError (core/internal), not a plain Error", () => {
+    try {
+      createMigrationRegistry([{ namespace: "BAD", order: 0, migrations: {} }]);
+      throw new Error("expected createMigrationRegistry to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PithyError);
+      expect((err as PithyError).payload.code).toBe("core/internal");
+    }
   });
 
   test("throws on duplicate order", () => {

@@ -1,4 +1,5 @@
 import type { Migration, MigrationProvider } from "kysely/migration";
+import { InternalError } from "../error/pithyError";
 
 /** Width of the zero-padded `order` prefix in a composed key — the stable anchor. */
 const ORDER_DIGITS = 4;
@@ -21,23 +22,27 @@ export interface NamespacedMigrations {
   migrations: Record<string, Migration>;
 }
 
+// These guard build-time registry invariants — a capability author wired its migrations wrong.
+// They surface at startup/build, not per request, so the offending value rides in the message.
 function assertValidNamespace(namespace: string): void {
   if (!NAMESPACE_PATTERN.test(namespace)) {
-    throw new Error(`migration namespace "${namespace}" must match ${NAMESPACE_PATTERN}`);
+    throw new InternalError({ message: `migration namespace "${namespace}" must match ${NAMESPACE_PATTERN}` });
   }
 }
 
 function assertValidOrder(order: number, namespace: string): void {
   if (!Number.isInteger(order) || order < 0 || order > MAX_MIGRATION_ORDER) {
-    throw new Error(
-      `migration order ${order} (namespace "${namespace}") must be an integer in 0..${MAX_MIGRATION_ORDER}`,
-    );
+    throw new InternalError({
+      message: `migration order ${order} (namespace "${namespace}") must be an integer in 0..${MAX_MIGRATION_ORDER}`,
+    });
   }
 }
 
 function assertValidLocalKey(localKey: string, namespace: string): void {
   if (!LOCAL_KEY_PATTERN.test(localKey)) {
-    throw new Error(`migration key "${localKey}" (namespace "${namespace}") must match ${LOCAL_KEY_PATTERN}`);
+    throw new InternalError({
+      message: `migration key "${localKey}" (namespace "${namespace}") must match ${LOCAL_KEY_PATTERN}`,
+    });
   }
 }
 
@@ -58,10 +63,10 @@ export function createMigrationRegistry(sets: NamespacedMigrations[]): Migration
     assertValidOrder(set.order, set.namespace);
     for (const localKey of Object.keys(set.migrations)) assertValidLocalKey(localKey, set.namespace);
     if (seenOrders.has(set.order)) {
-      throw new Error(`duplicate migration order ${set.order} (namespace "${set.namespace}")`);
+      throw new InternalError({ message: `duplicate migration order ${set.order} (namespace "${set.namespace}")` });
     }
     if (seenNamespaces.has(set.namespace)) {
-      throw new Error(`duplicate namespace "${set.namespace}"`);
+      throw new InternalError({ message: `duplicate namespace "${set.namespace}"` });
     }
     seenOrders.add(set.order);
     seenNamespaces.add(set.namespace);

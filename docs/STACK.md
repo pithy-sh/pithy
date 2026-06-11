@@ -284,23 +284,31 @@ Zod also unlocks rich validation that maps cleanly to Pithy's domain — checkin
 
 ## 3. Error class: PithyError
 
-Lives in `src/lib/errors.ts`. Two lines, then it's done:
+**One family, runtime and CLI (#16).** `PithyError` lives in
+`@pithy-sh/core/src/error`. It is a real `Error` that **carries** a Zod-validated
+`ErrorPayload` — a discriminated union keyed on a namespaced `code`
+(`auth/invalid_token`, `core/not_found`, …) with an HTTP `status`, a public `message`, an
+optional `action`, and an optional internal `detail`. Each surface is just an encoder over
+that one payload:
 
-```ts
-export class PithyError extends Error {
-  constructor(public readonly problem: string, public readonly action?: string) {
-    super(problem);
-    this.name = 'PithyError';
-  }
-}
-```
-
-The root handler catches `PithyError` and formats output per `CLI.md` Section 3.3 (problem on line 1, action on line 2, ANSI red on the first line, no stack trace). Anything that isn't a `PithyError` is treated as an unexpected crash and reported with a debug hint:
+- **HTTP:** `app.onError(pithyErrorHandler)` → `{ error: HttpError.encode(payload) }` at the
+  declared status. The codec's encode side strips `detail`, so internal context never reaches
+  a client.
+- **CLI:** `renderTerminal(payload)` → `message` on line 1 (problem), `action` on line 2 — the
+  shape `CLI.md` §3.3 specifies (ANSI red first line, no stack trace; the CLI adds the color via
+  `style.ts`). Anything that is **not** a `PithyError` is an unexpected crash, reported with a
+  debug hint:
 
 ```
 Something unexpected happened.
 Run with `--verbose` to see the full error, or open an issue at https://github.com/pithy-sh/cli/issues.
 ```
+
+Thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`, `InternalError`, …) are
+sugar that default a member's `code`/`status`. The CLI keeps its `(problem, action)`
+ergonomics by constructing a payload — `new InternalError({ message, action })` — rather than a
+second class. **Runtime code throws `PithyError`, never plain `new Error`**; every new
+capability adds its own namespaced codes (`domain/reason`, aligned with migration namespaces).
 
 ---
 

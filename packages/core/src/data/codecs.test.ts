@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { PithyError } from "../error/pithyError";
 import {
   IanaTimezone,
   isValidIanaTimezone,
@@ -62,6 +63,16 @@ describe("SQLiteDate", () => {
 
   test("throws on invalid date string", () => {
     expect(() => SQLiteDate.parse("not-a-date")).toThrow();
+  });
+
+  test("the invalid-date throw is a typed PithyError (core/internal)", () => {
+    try {
+      SQLiteDate.parse("not-a-date");
+      throw new Error("expected SQLiteDate.parse to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PithyError);
+      expect((err as PithyError).payload.code).toBe("core/internal");
+    }
   });
 
   test("encodes Date -> ms-epoch number", () => {

@@ -1,0 +1,134 @@
+import { z } from "zod";
+
+/**
+ * The error object model. One Zod schema is the whole definition of every failure Pithy
+ * can emit: the discriminated union `ErrorPayload` is the closed taxonomy, keyed on a
+ * machine-readable `code`. The `PithyError` class (./pithyError) is only the throw/catch
+ * vehicle that carries one of these payloads; the surfaces (HTTP, terminal) are encoders
+ * over this schema. `.describe()` on every field feeds the generated error catalog.
+ */
+
+/** A single field-level validation failure, mirrored from a Zod issue for the wire. */
+export const ValidationIssue = z
+  .object({
+    path: z
+      .array(z.union([z.string(), z.number()]))
+      .describe("Path to the offending field, e.g. ['user', 0, 'email']."),
+    message: z.string().describe("Human-readable reason this field failed."),
+    code: z.string().describe("Zod issue code, e.g. 'invalid_type', 'too_small'."),
+  })
+  .describe("A single field-level validation failure, mirrored from a ZodIssue.");
+export type ValidationIssue = z.infer<typeof ValidationIssue>;
+
+/** Fields safe to expose to clients. Present on every member, public and wire alike. */
+const publicFields = {
+  message: z.string().describe("Public, safe-to-expose summary. Sent to clients and shown in the terminal."),
+  action: z.string().optional().describe("Remediation hint. Becomes the CLI action line."),
+};
+
+/** The internal-only field. On `ErrorPayload`, never on the public/wire shape. */
+const detailField = {
+  detail: z
+    .string()
+    .optional()
+    .describe("Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it."),
+};
+
+// One public member per code. The `code` literal is the discriminator; `status` is pinned
+// to the one HTTP status that code maps to, so a mismatched pair fails validation.
+const InvalidInputPublic = z
+  .object({
+    code: z.literal("validation/invalid_input").describe("Input failed validation at a boundary."),
+    status: z.literal(400).describe("Bad Request."),
+    issues: z.array(ValidationIssue).describe("Field-level validation failures."),
+    ...publicFields,
+  })
+  .describe("Input failed validation at a boundary (400).");
+
+const InvalidTokenPublic = z
+  .object({
+    code: z.literal("auth/invalid_token").describe("The bearer/session credential is missing, expired, or invalid."),
+    status: z.literal(401).describe("Unauthorized."),
+    ...publicFields,
+  })
+  .describe("The caller's credential is missing, expired, or invalid (401).");
+
+const ForbiddenPublic = z
+  .object({
+    code: z.literal("auth/forbidden").describe("The caller is authenticated but not allowed to do this."),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("The caller is authenticated but lacks permission (403).");
+
+const NotFoundPublic = z
+  .object({
+    code: z.literal("core/not_found").describe("The requested resource does not exist."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("The requested resource does not exist (404).");
+
+const ConflictPublic = z
+  .object({
+    code: z.literal("core/conflict").describe("The request conflicts with current state (e.g. a duplicate)."),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("The request conflicts with current state (409).");
+
+const RateLimitPublic = z
+  .object({
+    code: z.literal("rate_limit/exceeded").describe("The caller has sent too many requests."),
+    status: z.literal(429).describe("Too Many Requests."),
+    ...publicFields,
+  })
+  .describe("The caller has exceeded a rate limit (429).");
+
+const InternalPublic = z
+  .object({
+    code: z.literal("core/internal").describe("An unexpected server-side failure."),
+    status: z.literal(500).describe("Internal Server Error."),
+    ...publicFields,
+  })
+  .describe("An unexpected server-side failure (500).");
+
+/**
+ * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
+ * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
+ * internal context leaking outward.
+ */
+export const PublicErrorPayload = z
+  .discriminatedUnion("code", [
+    InvalidInputPublic,
+    InvalidTokenPublic,
+    ForbiddenPublic,
+    NotFoundPublic,
+    ConflictPublic,
+    RateLimitPublic,
+    InternalPublic,
+  ])
+  .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
+export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
+
+// The full members: each public member plus the internal `detail`. Built as explicit consts
+// (not mapped) so the `code`-literal discriminated-union types survive for `Extract` narrowing.
+const InvalidInput = InvalidInputPublic.extend(detailField).describe(InvalidInputPublic.description ?? "");
+const InvalidToken = InvalidTokenPublic.extend(detailField).describe(InvalidTokenPublic.description ?? "");
+const Forbidden = ForbiddenPublic.extend(detailField).describe(ForbiddenPublic.description ?? "");
+const NotFound = NotFoundPublic.extend(detailField).describe(NotFoundPublic.description ?? "");
+const Conflict = ConflictPublic.extend(detailField).describe(ConflictPublic.description ?? "");
+const RateLimit = RateLimitPublic.extend(detailField).describe(RateLimitPublic.description ?? "");
+const Internal = InternalPublic.extend(detailField).describe(InternalPublic.description ?? "");
+
+/**
+ * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
+ * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
+ */
+export const ErrorPayload = z
+  .discriminatedUnion("code", [InvalidInput, InvalidToken, Forbidden, NotFound, Conflict, RateLimit, Internal])
+  .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
+export type ErrorPayload = z.infer<typeof ErrorPayload>;
+
+/** The closed set of machine-readable error codes. */
+export type ErrorCode = ErrorPayload["code"];

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { InternalError } from "../error/pithyError";
 
 /**
  * SQLite/D1 codecs: bidirectional JS ↔ SQLite conversion through Zod.
@@ -26,7 +27,11 @@ function toDate(input: number | string | Date): Date {
   if (input instanceof Date) return input;
   if (typeof input === "string") {
     const parsed = new Date(input);
-    if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid date string: ${input}`);
+    // A corrupt stored/ingested date is an internal data fault (500). The offending value goes
+    // in `detail` (logs/audit only), never the public message.
+    if (Number.isNaN(parsed.getTime())) {
+      throw new InternalError({ message: "Invalid date value.", detail: `Invalid date string: ${input}` });
+    }
     return parsed;
   }
   // A number is always ms-epoch — what `encode` writes. Callers ingesting

@@ -167,6 +167,24 @@ monorepo. Read the companion docs before any structural or surface decision:
 - `core` defines the `AuthContext` seam and request `Variables`; only `@pithy-sh/auth`
   implements bearer/session validation. Other capabilities use `requireAuth()` / the seam.
 
+## Errors (one PithyError family)
+
+- **Runtime code throws `PithyError`, never plain `new Error`.** `PithyError`
+  (`@pithy-sh/core/src/error`) is a real `Error` that **carries** a Zod-validated
+  `ErrorPayload` — a discriminated union keyed on a namespaced `code` (`auth/invalid_token`,
+  `core/not_found`, …) with an HTTP `status`, a public `message`, an optional `action`, and an
+  optional internal `detail`. The class is the throw/catch vehicle; Zod owns the payload shape.
+  Use the thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`,
+  `InternalError`, …) or construct a payload directly. Map a `ZodError` with `fromZodError`.
+- **One payload, two surfaces — each is just an encoder.** HTTP:
+  `app.onError(pithyErrorHandler)`. CLI: `renderTerminal(payload)` (problem line + action line).
+  **The HTTP codec's encode side strips `detail` — it is the single security boundary; internal
+  context never reaches a client.** Keep client-safe text in `message`, throw-site context in
+  `detail`.
+- **`code` is `domain/reason`**, namespaced per capability and aligned with migration
+  namespaces / table prefixes (`auth_*`). Each capability **adds its own namespaced codes** to
+  the union when it lands; codec/internal throws with no meaningful public code use `core/internal`.
+
 ## Email, secrets, environments, Workflows
 
 - **Email** is never sent ad-hoc: enqueue a row in the `email_jobs` D1 table and let a
