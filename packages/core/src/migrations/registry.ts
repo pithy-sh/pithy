@@ -14,9 +14,15 @@ export const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*$/;
 const LOCAL_KEY_PATTERN = /^\d{4}_[a-z0-9_]+$/;
 
 export interface NamespacedMigrations {
+  /**
+   * Target database name — the same name used in a capability's `databases:` map (e.g. "app",
+   * "analytics"). D1 is multi-database; each database migrates independently, so every set names
+   * the database it belongs to. A capability with tables in two databases contributes one set per.
+   */
+  database: string;
   /** Capability namespace, e.g. "core", "auth", "app". Must match `^[a-z][a-z0-9]*$`. */
   namespace: string;
-  /** Global sort order (core low, app high). Unique across the set; 0..MAX_MIGRATION_ORDER. */
+  /** Sort order within its database (core low, app high). Unique per database; 0..MAX_MIGRATION_ORDER. */
   order: number;
   /** Stable, per-namespace keys, each `^\d{4}_[a-z0-9_]+$` (e.g. "0001_init"). */
   migrations: Record<string, Migration>;
@@ -46,15 +52,8 @@ function assertValidLocalKey(localKey: string, namespace: string): void {
   }
 }
 
-/**
- * Merge namespaced migration sets into one `MigrationProvider` with stable, globally-sortable
- * keys `NNNN_<namespace>_<localKey>` (NNNN = zero-padded `order`). Kysely orders migrations by
- * name (`localeCompare`); the enforced namespace/key formats keep that sort equal to a plain
- * lexicographic one and dependency-correct (core before app), and make the key scheme injective.
- * Keys never change across releases — new migrations append within a namespace — so Kysely's
- * recorded names stay valid and an upgrade ships migrations without renumbering.
- */
-export function createMigrationRegistry(sets: NamespacedMigrations[]): MigrationProvider {
+/** Merge one database's sets into a provider, enforcing the per-database invariants. */
+function composeDatabase(database: string, sets: NamespacedMigrations[]): MigrationProvider {
   const seenOrders = new Set<number>();
   const seenNamespaces = new Set<string>();
 
@@ -63,10 +62,12 @@ export function createMigrationRegistry(sets: NamespacedMigrations[]): Migration
     assertValidOrder(set.order, set.namespace);
     for (const localKey of Object.keys(set.migrations)) assertValidLocalKey(localKey, set.namespace);
     if (seenOrders.has(set.order)) {
-      throw new InternalError({ message: `duplicate migration order ${set.order} (namespace "${set.namespace}")` });
+      throw new InternalError({
+        message: `duplicate migration order ${set.order} in database "${database}" (namespace "${set.namespace}")`,
+      });
     }
     if (seenNamespaces.has(set.namespace)) {
-      throw new InternalError({ message: `duplicate namespace "${set.namespace}"` });
+      throw new InternalError({ message: `duplicate namespace "${set.namespace}" in database "${database}"` });
     }
     seenOrders.add(set.order);
     seenNamespaces.add(set.namespace);
@@ -84,4 +85,34 @@ export function createMigrationRegistry(sets: NamespacedMigrations[]): Migration
   return {
     getMigrations: async (): Promise<Record<string, Migration>> => composed,
   };
+}
+
+/**
+ * Merge namespaced migration sets into one ordered `MigrationProvider` **per database** — matching
+ * multi-database D1, where each `c.var.db.<database>` is its own binding and schema. The result is
+ * keyed by database name (the future `pithy migrate` maps each to its binding and runs its provider);
+ * an empty input yields `{}`.
+ *
+ * Within each database the keys are `NNNN_<namespace>_<localKey>` (NNNN = zero-padded `order`).
+ * Kysely orders migrations by name (`localeCompare`); the enforced namespace/key formats keep that
+ * sort equal to a plain lexicographic one and dependency-correct (core before app), and make the key
+ * scheme injective. Keys never change across releases — new migrations append within a namespace — so
+ * Kysely's recorded names stay valid and an upgrade ships migrations without renumbering.
+ *
+ * `order` and `namespace` uniqueness scope **per database**: the same value may recur across
+ * different databases; a duplicate within one database throws.
+ */
+export function createMigrationRegistry(sets: NamespacedMigrations[]): Record<string, MigrationProvider> {
+  const byDatabase = new Map<string, NamespacedMigrations[]>();
+  for (const set of sets) {
+    const group = byDatabase.get(set.database);
+    if (group) group.push(set);
+    else byDatabase.set(set.database, [set]);
+  }
+
+  const registry: Record<string, MigrationProvider> = {};
+  for (const [database, dbSets] of byDatabase) {
+    registry[database] = composeDatabase(database, dbSets);
+  }
+  return registry;
 }
