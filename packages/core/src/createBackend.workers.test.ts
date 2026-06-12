@@ -114,7 +114,9 @@ describe("createBackend", () => {
     expect(res.headers.get("x-tag")).toBe("on");
   });
 
-  test("defaults the request context: auth, db, and kv are null", async () => {
+  test("defaults the request context: auth is null, db and kv are empty registries", async () => {
+    // No capability registers databases or stores here, so db and kv are empty registries {}.
+    // Typed db/kv population is covered in createBackend.data.workers.test.ts.
     const whoami = defineCapability({
       name: "whoami",
       requiredBindings: [],
@@ -124,6 +126,6 @@ describe("createBackend", () => {
     });
     const app = createBackend({ capabilities: [whoami] });
     const res = await app.request("/whoami", {}, env);
-    expect(await res.json()).toEqual({ auth: null, db: null, kv: null });
+    expect(await res.json()).toEqual({ auth: null, db: {}, kv: {} });
   });
 });
