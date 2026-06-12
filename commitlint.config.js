@@ -22,7 +22,7 @@ const packageScopes = workspaceDirs.flatMap((dir) => {
     .map((name) => name.replace(/^@pithy-sh\//, ""));
 });
 
-const fixedScopes = ["ci", "repo", "deps", "release", "brand"];
+const fixedScopes = ["ci", "repo", "deps", "release", "brand", "templates"];
 
 const scopes = [...new Set([...packageScopes, ...fixedScopes])];
 
