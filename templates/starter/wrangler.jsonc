@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pithy-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The top level is the dev environment — what `wrangler dev` runs locally.
+  // `pithy add <capability>` appends the bindings a capability needs, per environment.
+  "d1_databases": [],
+  "kv_namespaces": [],
+
+  // Staging serves test users; production serves paid users. Deployed names get the
+  // environment suffix automatically (pithy-app-staging, pithy-app-production).
+  "env": {
+    "staging": {
+      "d1_databases": [],
+      "kv_namespaces": []
+    },
+    "production": {
+      "d1_databases": [],
+      "kv_namespaces": []
+    }
+  }
+}
