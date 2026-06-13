@@ -119,9 +119,13 @@ monorepo. Read the companion docs before any structural or surface decision:
 - **ID strategy:** default `id: number` auto-incrementing PK; **UUID/text id for
   security-sensitive or externally-exposed entities** (e.g. `User`) to prevent
   enumeration; **Better Auth tables case-by-case**.
-- **Table prefixing (TBD scheme):** every table this toolset provides is **prefixed** to
-  avoid clashing with the adopter's own tables (leaning per-capability, e.g. `auth_users`,
-  aligned with migration namespaces). Final scheme TBD before the first table ships.
+- **Table prefixing — `pithy_<capability>_<table>`:** every table this toolset provides is
+  prefixed `pithy_<capability>_<table>` (e.g. `pithy_auth_users`, `pithy_email_jobs`,
+  `pithy_secrets_rotations`) to never clash with the adopter's own tables (principle 1). The
+  `<capability>` segment matches the migration namespace and error-code domain (`auth`,
+  `email`, `secrets`). The `pithy_` prefix only appears in SQL/migrations — `CamelCasePlugin`
+  means TS query code never types it. A meta-test should enforce that every provided table
+  carries the prefix.
 - **Migrations use the Kysely migration model** (TS `up`/`down`, tested rollbacks) —
   **not** raw `.sql` files, and **not** wrangler's D1 migrations. Each package ships
   namespaced, stable-keyed migrations (`auth_0001_…`) merged into one ordered registry
