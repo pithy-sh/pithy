@@ -17,6 +17,9 @@ dist/
 # local-only notes and scratch (never committed)
 /.local/
 
+# CLI test scaffolds (removed after each run; crash residue stays out)
+.smoke-*/
+
 # editor / os
 .DS_Store
 *.log

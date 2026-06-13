@@ -1,5 +1,6 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Kysely } from "kysely";
+import type { Migration } from "kysely/migration";
 import type { z } from "zod";
 import type { Capability } from "../capability/capability";
 import { type BindingGroup, bindingGroupsFrom, composeBindingGroups } from "../capability/compose";
@@ -16,6 +17,15 @@ export interface DatabaseSpec<Tables extends SchemaMap = SchemaMap> {
   binding: string;
   /** This capability's slice of the database's schema (table name → Zod table schema). */
   tables: Tables;
+  /**
+   * This capability's migrations for this database, by stable local key (e.g. "0001_init") —
+   * co-located with the tables they create, so the database association is declared once. The
+   * migration namespace is the capability's name; `pithy migrate` composes every capability's
+   * sets through `createMigrationRegistry` and runs them per database.
+   */
+  migrations?: Record<string, Migration>;
+  /** Sort order within this database relative to other capabilities (core low, app high). Required with `migrations`. */
+  migrationOrder?: number;
 }
 
 /** A capability's databases: database name → {@link DatabaseSpec}. */

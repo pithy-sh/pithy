@@ -1,0 +1,38 @@
+{
+  "name": "@pithy-sh/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "pithy": "./src/bin.ts"
+  },
+  "exports": {
+    "./src/*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.5.0",
+    "@pithy-sh/core": "workspace:*",
+    "citty": "^0.2.2",
+    "comment-json": "^5.0.0",
+    "kysely": "^0.29.0",
+    "miniflare": "^4.20260611.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260610.1",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.1.0"
+  }
+}

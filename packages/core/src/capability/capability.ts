@@ -1,5 +1,4 @@
 import type { Hono } from "hono";
-import type { MigrationProvider } from "kysely/migration";
 import type { z } from "zod";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { AuthContext } from "../http/authContext";
@@ -53,10 +52,6 @@ export interface Capability<
   name: string;
   /** Validated env/config/secrets for this capability. */
   config?: z.ZodType;
-  /** Namespaced Kysely migration provider (see migrations/registry). */
-  migrations?: MigrationProvider;
-  /** Sort order for this capability's migrations relative to others (core low, app high). */
-  migrationOrder?: number;
   /** Mounts a Hono sub-router. */
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */
