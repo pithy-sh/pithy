@@ -35,6 +35,15 @@ describe("scaffoldProject", () => {
     await readFile(join(target, ".dev.vars.example"), "utf8");
   });
 
+  test("the scaffold carries dev, staging, and production config paths", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "envs" });
+    const wrangler = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    // Phase 0 ships config paths for all three environments; staging serves test
+    // users, production serves paid users (remote execution lands in Phase 1+).
+    expect(wrangler).toContain('"staging"');
+    expect(wrangler).toContain('"production"');
+  });
+
   test("scaffolds into an existing empty directory", async () => {
     await scaffoldProject({ targetDir: dir, appName: "empty-ok" });
     const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));

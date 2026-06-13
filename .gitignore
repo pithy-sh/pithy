@@ -19,6 +19,7 @@ dist/
 
 # CLI test scaffolds (removed after each run; crash residue stays out)
 .smoke-*/
+.e2e-*/
 
 # editor / os
 .DS_Store

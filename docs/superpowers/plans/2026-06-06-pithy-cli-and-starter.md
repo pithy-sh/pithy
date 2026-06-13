@@ -2,6 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **✅ Closed out (#22, Phase 0 plan 4 of 4).** Shipped and verified end to end: an empty
+> directory → `pithy init` → a Worker that boots under Miniflare, serves `GET /health` →
+> `200`, and runs its empty migration registry clean. Proven by `packages/cli/src/e2e.test.ts`,
+> which runs in CI. The quickstart lives in `README.md`.
+>
+> **Corrections applied during implementation** (the plan below is the original intent;
+> these are where reality diverged):
+> - **Per-database migration registry.** The plan modeled one `buildRegistryFromCapabilities`
+>   returning a single `MigrationProvider`. Migrations are per-database, so the shipped code
+>   returns `Record<string, MigrationProvider>` (one provider per named database) in
+>   `packages/cli/src/migrations/registry.ts`, run independently in
+>   `packages/cli/src/migrations/run.ts`. Migration sets are keyed by `database`, not just
+>   `namespace`/`order`.
+> - **`migrate` dev path is wired, not stubbed.** The plan left `migrate()` throwing for both
+>   dev and remote. The shipped `migrateProject()` runs the registry locally over each
+>   binding's D1 through Miniflare (`d1Persist` under `.wrangler/state`, shared with
+>   `wrangler dev`). Only remote (`staging`/`production`) stays a Phase 1 follow-up.
+> - **`packages/*` paths.** Files live at `packages/core/…` and `packages/cli/…`, not
+>   `packages/@pithy-sh/core/…` / `…/cli/…`. The package *names* keep the `@pithy-sh/` scope;
+>   the directories do not.
+> - **File names.** Migration logic is `migrations/registry.ts` + `migrations/run.ts`, not a
+>   single `migrate.ts`. Commands are thin Citty wrappers in `commands/{init,add,migrate}.ts`.
+
 **Goal:** Ship the `pithy` CLI (`init`, `add`, `migrate`) and the starter template so that, from an empty directory, a user can scaffold a deployable Worker that boots, runs the (empty) migration registry, and serves `GET /health` — the Phase 0 definition of done.
 
 **Architecture:** A `@pithy-sh/cli` package whose commands are thin Citty `defineCommand`s over pure, unit-tested logic functions (`scaffoldProject`, `addCapability`). Every command is **agent-drivable**: full flags, no required prompt, and `--json` output, with `@clack/prompts` for the optional interactive path. Output follows `docs/CLI.md`/`docs/BRAND.md` voice (`Done.`, saffron period via the `style.ts` helper). The migration runner (`runMigrations`) lives in `@pithy-sh/core` (tested against real D1); `pithy migrate` is a thin wrapper.
