@@ -16,13 +16,31 @@ function supportsTruecolor(): boolean {
   return colorterm === "truecolor" || colorterm === "24bit";
 }
 
+/**
+ * Color is on only for an interactive terminal — never when the output is piped,
+ * redirected, or captured. `NO_COLOR` forces it off, `FORCE_COLOR` forces it on
+ * (the standard env overrides). We decide here rather than trusting
+ * `pc.isColorSupported`: picocolors treats any `CI` env as color-capable, which
+ * would bleed ANSI into our `--json` and `Done.` output the moment a CI runner
+ * (or a piped consumer) reads it. Our output is parsed; a TTY is the real signal.
+ */
+function colorEnabled(): boolean {
+  if (process.env.NO_COLOR) return false;
+  if (process.env.FORCE_COLOR) return true;
+  return Boolean(process.stdout.isTTY);
+}
+
+// Decided once at import, the way picocolors itself latches its detection.
+const enabled = colorEnabled();
+
 /** The brand mark in terminal form. Truecolor → 256-color 178 → no color. */
 export function saffron(text: string): string {
-  if (process.env.NO_COLOR || !pc.isColorSupported) return text;
+  if (!enabled) return text;
   return (supportsTruecolor() ? SAFFRON_TRUECOLOR : SAFFRON_256) + text + RESET;
 }
 
-// The terminal-themed tiers, re-exported so all color still imports from the
-// one seam. This is the documented exception to the no-re-export rule; further
-// tiers (dim, yellow) join as commands need them.
-export const { red } = pc;
+// The terminal-themed tiers, re-exported so all color still imports from the one
+// seam. Built from our own `enabled` flag (not picocolors' detection) so `red`
+// honors the same TTY-gated rule as `saffron`. This is the documented exception
+// to the no-re-export rule; further tiers (dim, yellow) join as commands need them.
+export const { red } = pc.createColors(enabled);
