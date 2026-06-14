@@ -18,6 +18,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "clean": "turbo run clean",
+    "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
     "prepare": "husky",
     "changeset": "changeset",

@@ -3,6 +3,9 @@ node_modules/
 dist/
 .turbo/
 
+# feature worktrees (scripts/worktree.ts)
+.worktrees/
+
 # cloudflare / wrangler
 .wrangler/
 .dev.vars

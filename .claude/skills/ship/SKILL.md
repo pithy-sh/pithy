@@ -21,6 +21,12 @@ Gate 2 commit to `main` with `Closes #<N>` (auto-closes the issue on push) and m
 → `Done`. The branch + PR path described in steps 1, 5, and 6 below is the **collaboration
 mode** — flip this note and switch to it the moment anyone else joins.
 
+**`--worktree` overrides this.** `/ship #N --worktree` runs the full isolated path
+regardless of solo mode: a dedicated git worktree on a `feature/<N>-<slug>` branch, then
+push → PR → worktree teardown. The PR stays open; merging is your call (step 7). Use it to
+run several features at once — one terminal per worktree, feedback isolated per session.
+See **Isolation** and steps 1/6.
+
 ## Voice
 
 `docs/BRAND.md` is binding for every commit, PR body, changeset, and board update. Short
@@ -78,8 +84,13 @@ gh project item-edit --id <itemId> \
   stop and say so.
 - **Assign the issue.** If it's unassigned, assign it to whoever is running `/ship`:
   `gh issue edit <N> --add-assignee @me`. Leave an existing assignee alone.
-- Create branch `feature/<N>-<short-kebab-slug>` from `main`. (Branch, not worktree — see
-  **Isolation** below.)
+- **Set up isolation.**
+  - Default (solo): work on `main` — no branch (see **Current mode**). Collaboration mode:
+    create branch `feature/<N>-<short-kebab-slug>` from `main`.
+  - `--worktree`: run `bun run worktree setup <N> <short-kebab-slug>`. It creates the
+    `feature/<N>-<slug>` branch and a `.worktrees/<N>-<slug>` worktree, installs deps, and
+    links `.dev.vars` if one exists (idempotent — no-ops if it already exists). Do **all**
+    subsequent work — edits, gates, commit — rooted in that worktree path.
 - Move Stage → `Building`.
 
 ### 2. Implement
@@ -143,29 +154,43 @@ Present the `/code-review` and `/security-review` results (and any remediation).
 
   #<N>
   ```
-- Push the branch. Open the PR:
-  ```bash
-  gh pr create --base main --head feature/<N>-<slug> \
-    --title "<conventional title>" --body "Closes #<N>
+- **Ship the change.**
+  - **Solo, no `--worktree`:** commit to `main`; the push auto-closes the issue via
+    `Closes #<N>`. Move Stage → `Done`. Skip the PR steps below.
+  - **`--worktree` (or collaboration mode):** commit on `feature/<N>-<slug>`, then:
+    ```bash
+    git push -u origin feature/<N>-<slug>
+    gh pr create --base main --head feature/<N>-<slug> \
+      --title "<conventional title>" --body "Closes #<N>
 
-  <one-paragraph summary>"
-  ```
-  `Closes #<N>` auto-closes the issue on merge.
-- Move Stage → `In review`. Give the user the PR link.
+    <one-paragraph summary>"
+    ```
+    `Closes #<N>` auto-closes the issue on merge. **Do not auto-merge** — leave the PR open;
+    merging is the user's call (step 7). Move Stage → `In review` and give the user the PR link.
+- **`--worktree` teardown.** Once the PR is open, run
+  `bun run worktree teardown <N> <short-kebab-slug>` — the branch lives on the remote; the
+  worktree is done. **Skip teardown if gates failed or the user aborted** — leave the tree
+  in place to fix, and re-running `setup` later re-attaches to the same branch.
 
 ### 7. Done
 
 When the PR merges, move Stage → `Done`. Merging is the user's call — handle the
 transition on a later `/ship` run, or when asked. Do not auto-merge unless told to.
 
-## Isolation: branch now, worktree later
+## Isolation: `--worktree`
 
-`/ship` uses a plain feature branch today. The full worktree + ephemeral-CF + per-feature
-port lifecycle described in `CLAUDE.md` is **the product Pithy is building** (`pithy
-feature`, the port allocator, generated `.dev.vars`) — it does not exist yet. Once that
-capability ships, `/ship` adopts it. Until then, `--worktree` may create a native git
-worktree for isolation; if so, remove it the safe way — `rm <worktree>/.git && git
-worktree prune`, never `rm -rf` or `git worktree remove` (inotify storms on Linux).
+`scripts/worktree.ts` (`bun run worktree setup|teardown <N> <slug>`) owns the git-worktree
+lifecycle. `setup` cuts `feature/<N>-<slug>` and a `.worktrees/<N>-<slug>` worktree off
+`origin/main`, installs deps, and links `.dev.vars` when one exists; it no-ops if the
+worktree already exists, and re-attaches to the branch if it survived a prior teardown.
+`teardown` removes the worktree the Linux-safe way — `rm <worktree>/.git && git worktree
+prune`, **never** `rm -rf` or `git worktree remove` (inotify storms) — and deletes the local
+branch only if it merged. Both are idempotent.
+
+Run several features at once: one terminal per `/ship #N --worktree`, each its own branch,
+worktree, and session, so feedback never overlaps. The richer lifecycle in `CLAUDE.md`
+(ephemeral CF resources, the port allocator, generated `.dev.vars`) is the product Pithy is
+building — `pithy feature` (#25) will wrap this same script and add those layers.
 
 ## Non-interactively (agents / CI)
 
@@ -182,6 +207,8 @@ passing gate — if `typecheck`/`biome`/`vitest` fail, stop and report.
 - Never claim a gate passed without running it and seeing the output
   (`superpowers:verification-before-completion`).
 - While solo (see **Current mode**), commit to `main` directly — that's the user's call.
-  In collaboration mode, commit only on the feature branch, never to `main`. Never
-  `--no-verify`.
+  In collaboration mode and with `--worktree`, commit only on the feature branch, never to
+  `main`. Never `--no-verify`.
+- With `--worktree`, never remove a worktree by hand (`rm -rf` / `git worktree remove`) —
+  use `bun run worktree teardown` (inotify-safe).
 - One issue per `/ship`. Keep the change scoped to the issue.
