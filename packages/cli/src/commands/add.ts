@@ -1,24 +1,54 @@
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { addCapability } from "../capabilities/add";
-import { availableManifests, loadManifest } from "../capabilities/manifests";
+import type { ConfigValue } from "../capabilities/add";
+import { buildCatalogListing } from "../capabilities/catalog";
+import { type ConfigPrompt, coerceConfigValue, collectSetFlags, runAdd } from "../capabilities/flow";
+import { availableManifests } from "../capabilities/manifests";
+import type { DatabaseRun } from "../migrations/run";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
-/** `pithy add --list`: the available capabilities, or the Phase 0 "none yet" note. */
-function listCapabilities(json: boolean): void {
-  const manifests = availableManifests();
+/** `pithy add --list`: the built-in catalog, with installed capabilities marked. */
+async function listCapabilities(projectDir: string, json: boolean): Promise<void> {
+  const installed = new Set((await availableManifests(projectDir)).map((manifest) => manifest.name));
+  const listing = buildCatalogListing(installed);
   if (json) {
-    const capabilities = manifests.map((m) => ({ name: m.name, package: m.package, whenToEnable: m.whenToEnable }));
-    process.stdout.write(`${formatJsonLine({ command: "add", capabilities })}\n`);
+    process.stdout.write(`${formatJsonLine({ command: "add", capabilities: listing })}\n`);
     return;
   }
-  if (manifests.length === 0) {
-    process.stdout.write("No capabilities yet. They land in Phase 1.\n");
-    return;
-  }
-  const rows = manifests.map((m) => ({ name: m.name, description: m.whenToEnable ?? "" }));
+  const rows = listing.map((entry) => ({
+    name: entry.name,
+    description: entry.installed ? `${entry.whenToEnable} (installed)` : entry.whenToEnable,
+  }));
   process.stdout.write(`${formatList(rows)}\n`);
 }
+
+/** One line per database migrated, brand-voiced (docs/CLI.md §3). */
+function describeRun(run: DatabaseRun): string {
+  return run.results.length === 0
+    ? `${run.database}: nothing to apply.`
+    : `${run.database}: ${run.results.length} applied.`;
+}
+
+/** Fill un-set options interactively — a human-attached run prompts from the manifest. */
+const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
+  const { isCancel, text } = await import("@clack/prompts");
+  const values: Record<string, ConfigValue> = { ...provided };
+  for (const option of manifest.configOptions) {
+    if (option.key in values) continue;
+    const fallback = String(option.default);
+    const answer = await text({
+      message: `${option.key} — ${option.describe}`,
+      defaultValue: fallback,
+      placeholder: fallback,
+    });
+    if (isCancel(answer)) {
+      process.stderr.write("Cancelled.\n");
+      process.exit(1);
+    }
+    values[option.key] = coerceConfigValue(option, answer, manifest.name);
+  }
+  return values;
+};
 
 export default defineCommand({
   meta: { name: "add", description: "Add a capability" },
@@ -26,12 +56,16 @@ export default defineCommand({
     // Optional so `pithy add --list` runs without a capability.
     capability: { type: "positional", required: false, description: "Capability name, e.g. auth" },
     list: { type: "boolean", default: false, description: "List the capabilities you can add" },
+    set: { type: "string", description: "Override a config option: --set key=value (repeatable)" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
-  run: ({ args }) =>
+  // `ctx` over `{ args }`: repeated `--set` only survives in rawArgs (citty keeps
+  // the last value of a repeated string flag), so collectSetFlags reads it there.
+  run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
       if (args.list) {
-        listCapabilities(args.json);
+        await listCapabilities(projectDir, args.json);
         return;
       }
       if (!args.capability) {
@@ -40,11 +74,22 @@ export default defineCommand({
           action: "Run pithy add --list to see what's available.",
         });
       }
-      const manifest = await loadManifest(args.capability);
-      await addCapability({ projectDir: process.cwd(), manifest });
-      const line = args.json
-        ? formatJsonLine({ command: "add", capability: manifest.name, package: manifest.package })
-        : formatDone();
-      process.stdout.write(`${line}\n`);
+
+      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const result = await runAdd({
+        projectDir,
+        capability: args.capability,
+        setFlags: collectSetFlags(rawArgs),
+        prompt: interactive ? promptConfigValues : undefined,
+      });
+
+      if (args.json) {
+        process.stdout.write(`${formatJsonLine({ command: "add", ...result })}\n`);
+        return;
+      }
+      for (const run of result.databases) {
+        process.stdout.write(`${describeRun(run)}\n`);
+      }
+      process.stdout.write(`${formatDone()}\n`);
     }),
 });

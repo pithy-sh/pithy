@@ -3,6 +3,24 @@ import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
 
 /**
+ * One configurable option a capability exposes. `pithy add` renders each as
+ * `cap({ key: default })` in `pithy.config.ts`, with `describe` as the comment
+ * above it — the self-documenting config surface (docs/CLI.md §Config). The
+ * `default` is a JSON scalar; the mount-point model rides on options like this
+ * (e.g. `basePath`), so handlers stay in the package and the user owns the wiring.
+ */
+export const ConfigOption = z
+  .object({
+    key: z.string().min(1).describe('Option name passed to the capability factory (e.g. "basePath").'),
+    default: z
+      .union([z.string(), z.number(), z.boolean()])
+      .describe("Default value rendered into pithy.config.ts when no override is given."),
+    describe: z.string().min(1).describe("Rationale rendered as the comment above this option in pithy.config.ts."),
+  })
+  .describe("A configurable option a capability exposes (key, default, rationale).");
+export type ConfigOption = z.infer<typeof ConfigOption>;
+
+/**
  * Declarative, CLI-facing description of a capability. Lives at `pithy.manifest.json` in
  * each capability package; read by `pithy add`/`upgrade` to wire bindings into
  * `wrangler.jsonc` and scaffold config — without executing the package. Plain data, so
@@ -32,6 +50,10 @@ export const CapabilityManifest = z
         "Namespace prefix for this capability's migrations — must match the registry's format (e.g. \"auth\").",
       ),
     scaffold: z.array(z.string()).default([]).describe("Human-readable scaffold steps the CLI performs or explains."),
+    configOptions: z
+      .array(ConfigOption)
+      .default([])
+      .describe("Config options the capability exposes; `pithy add` renders each as `cap({ key: default })`."),
     whenToEnable: z
       .string()
       .optional()

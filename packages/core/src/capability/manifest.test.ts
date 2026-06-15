@@ -99,4 +99,53 @@ describe("CapabilityManifest", () => {
       }),
     ).toThrow();
   });
+
+  test("defaults configOptions to an empty array when omitted", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+    });
+    expect(parsed.configOptions).toEqual([]);
+  });
+
+  test("parses configOptions with string, number, and boolean defaults", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [
+        { key: "basePath", default: "/auth", describe: "Where the auth routes mount." },
+        { key: "sessionDays", default: 30, describe: "Refresh-token lifetime in days." },
+        { key: "cookies", default: true, describe: "Enable cookie sessions." },
+      ],
+    });
+    expect(parsed.configOptions).toEqual([
+      { key: "basePath", default: "/auth", describe: "Where the auth routes mount." },
+      { key: "sessionDays", default: 30, describe: "Refresh-token lifetime in days." },
+      { key: "cookies", default: true, describe: "Enable cookie sessions." },
+    ]);
+  });
+
+  test("rejects a configOption with an empty key", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "", default: "/auth", describe: "Mount path." }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects a configOption with no describe", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "basePath", default: "/auth" }],
+      }),
+    ).toThrow();
+  });
 });

@@ -33,7 +33,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | Command | Purpose |
 |---|---|
 | `pithy init` | Scaffold a new Pithy project in the current directory |
-| `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — mutates `wrangler.jsonc`, installs the package, scaffolds route handlers, runs migrations |
+| `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into `pithy.config.ts` and `wrangler.jsonc`, scaffolds its config options (you pick the mount path; handlers stay in the package), and runs its migrations |
 | `pithy remove <capability>` | Inverse of `add` — uninstalls cleanly |
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry `dev`/`deploy` discover (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
