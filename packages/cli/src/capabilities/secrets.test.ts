@@ -1,9 +1,11 @@
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { runSecretsList, runSecretWrite } from "./secrets";
+import type { ProjectConfig } from "../project/config";
+import { resolveSecretRegistry, runSecretsList, runSecretWrite } from "./secrets";
 
 class StubDispatcher implements SecretDispatcher {
   readonly calls: SecretWriteRequest[] = [];
@@ -78,6 +80,17 @@ describe("runSecretWrite", () => {
     await runSecretWrite(registry, dispatcher, { mode: "delete", name: "auth-signing-key", env: "production" });
     expect(dispatcher.calls[0]).toMatchObject({ env: "production", mode: "delete", name: "auth-signing-key" });
     expect(dispatcher.calls[0]?.value).toBeUndefined();
+  });
+});
+
+describe("resolveSecretRegistry", () => {
+  test("finds the secrets capability's registry in a loaded project", () => {
+    const config: ProjectConfig = { capabilities: [secrets({ registry })] };
+    expect(resolveSecretRegistry(config)).toBe(registry);
+  });
+
+  test("throws when the secrets capability isn't enabled", () => {
+    expect(() => resolveSecretRegistry({ capabilities: [] })).toThrow(NotFoundError);
   });
 });
 

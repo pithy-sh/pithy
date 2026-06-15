@@ -1,9 +1,27 @@
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { type AuditResult, auditSecrets, passesPromoteGate } from "@pithy-sh/secrets/src/cli/audit";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { allCapabilities, type ProjectConfig } from "../project/config";
+
+/**
+ * Discover the project's secret registry by finding the secrets capability in a loaded
+ * `pithy.config.ts` (#25's config model). The capability carries its own registry, so there is no
+ * separate loading convention — the CLI reads what the worker reads.
+ */
+export function resolveSecretRegistry(config: ProjectConfig): SecretRegistry {
+  const capability = allCapabilities(config).find(isSecretsCapability);
+  if (!capability) {
+    throw new NotFoundError({
+      message: "The secrets capability isn't enabled in this project.",
+      action: "Add secrets({ registry }) to your pithy.config.ts capabilities.",
+    });
+  }
+  return capability.secretRegistry;
+}
 
 /**
  * The brains of `pithy secrets` — pure wiring over the `@pithy-sh/secrets` cores, with the registry

@@ -12,5 +12,6 @@ export const main = defineCommand({
     init: () => import("./commands/init").then((m) => m.default),
     add: () => import("./commands/add").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
+    secrets: () => import("./commands/secrets").then((m) => m.default),
   },
 });
