@@ -53,6 +53,10 @@ describe("ErrorPayload (the closed taxonomy)", () => {
       ["cloudflare/not_configured", 500],
       ["cloudflare/request_failed", 502],
       ["cloudflare/invalid_response", 502],
+      ["secrets/not_found", 404],
+      ["secrets/already_exists", 409],
+      ["secrets/invalid_value", 400],
+      ["secrets/crypto_failed", 500],
     ];
     for (const [code, status] of taxonomy) {
       const base: Record<string, unknown> = { code, status, message: "m" };

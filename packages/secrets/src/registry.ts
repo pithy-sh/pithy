@@ -3,18 +3,19 @@ import { z } from "zod";
 
 /**
  * The secret registry is the dispatcher. Each entry declares where a secret lives
- * (`backend`), whether its value is shared across environments (`scope`), how it is
- * fetched (`kind`), and how it is interpreted (`valueType`). The `secretsStore` read
- * seam and the `pithy secrets` CLI both route off these axes — never off hard-coded
- * names. The entry itself is a TypeScript type (not a Zod object) because a `json`
- * entry carries a Zod schema; the discriminant axes below are exported Zod enums so
- * they document themselves and can be validated at the boundary.
+ * (`backend`), whether its value is shared across environments (`scope`), whether a future
+ * value-rotator may manage it (`rotatable`), and how it is interpreted (`valueType`). The
+ * `secretsStore` read seam and the `pithy secrets` CLI both route off these axes — never off
+ * hard-coded names. The entry itself is a TypeScript type (not a Zod object) because a `json`
+ * entry carries a Zod schema; the enum axes below are exported Zod enums so they document
+ * themselves and can be validated at the boundary.
  *
- * **One uniform serde.** Every secret is stored the same way — a version→value map
- * (`{ "1": <value> }`) inside one encrypted envelope — regardless of `kind`. `kind`
- * never changes storage; it governs only the fetch shape and rotation eligibility (see
- * `SecretKind`). Storing consistently today is how a future value rotator becomes
- * append-a-version rather than reshape-everything.
+ * **One uniform serde.** Every secret is stored the same way — a `{ currentVersion, versions }`
+ * value envelope inside one AES-256-GCM envelope — and read through one uniform API
+ * (`get` / `getVersions`). `rotatable` never changes storage or the fetch shape; it is
+ * forward-looking metadata: may a value-rotator (a deferred feature) manage this secret, and so
+ * accumulate multiple still-valid versions. Storing consistently today is how adding that rotator
+ * becomes append-a-version rather than reshape-everything.
  */
 
 export const SecretBackend = z
@@ -31,13 +32,6 @@ export const SecretScope = z
   );
 export type SecretScope = z.output<typeof SecretScope>;
 
-export const SecretKind = z
-  .enum(["simple", "rotatable"])
-  .describe(
-    "Fetch shape: `simple` returns the current value bare; `rotatable` returns `{ current, valid }` over the value-version map, so a kid-tagged secret (e.g. a signing key) can verify against every still-valid version.",
-  );
-export type SecretKind = z.output<typeof SecretKind>;
-
 export const SecretValueType = z
   .enum(["text", "json"])
   .describe(
@@ -51,8 +45,12 @@ interface SecretRegistryEntryBase {
   backend: SecretBackend;
   /** Whether the value is shared across environments or differs per environment. */
   scope: SecretScope;
-  /** Fetch shape — `simple` (bare value) or `rotatable` (`{ current, valid }`). */
-  kind: SecretKind;
+  /**
+   * Whether a future value-rotator may manage this secret (and so it may carry multiple
+   * still-valid versions). Forward-looking metadata only — storage and the read API are the
+   * same either way. Value rotation itself is deferred.
+   */
+  rotatable: boolean;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -65,12 +63,12 @@ type JsonEntry = { valueType: "json"; schema: z.ZodType };
 /** A single registry entry — the cross-product of the base fields and the value-type discriminant. */
 export type SecretRegistryEntry = SecretRegistryEntryBase & (TextEntry | JsonEntry);
 
-/** A registry: secret name → entry. The source of truth for backend, scope, kind, and value type. */
+/** A registry: secret name → entry. The source of truth for backend, scope, rotatability, and value type. */
 export type SecretRegistry = Record<string, SecretRegistryEntry>;
 
 /**
- * The in-memory value type for an entry: a `string` for `text`, the inferred schema
- * type for `json`. Lets `secretsStore.get` return a precisely-typed value per name.
+ * The in-memory value type for an entry: a `string` for `text`, the inferred schema type for
+ * `json`. `get(name)` returns this; `getVersions(name)` returns a map of it per version.
  */
 export type SecretValue<E extends SecretRegistryEntry> = E extends { valueType: "json"; schema: infer S }
   ? S extends z.ZodType
@@ -82,11 +80,11 @@ export type SecretValue<E extends SecretRegistryEntry> = E extends { valueType: 
 export type SecretName<R extends SecretRegistry> = keyof R & string;
 
 /**
- * Author a registry. Validates each entry's discriminant axes and that every `json`
- * entry carries a Zod schema, so a malformed registry fails at define time (attributed
- * to the offending name) rather than deep in a read or a write. A misconfiguration is an
- * author error, so it throws `InternalError` — mirroring `createMigrationRegistry`. The
- * `const` type param preserves the precise entry literals for `SecretValue`/`SecretName`.
+ * Author a registry. Validates each entry's enum axes, that `rotatable` is a boolean, and that
+ * every `json` entry carries a Zod schema, so a malformed registry fails at define time
+ * (attributed to the offending name) rather than deep in a read or a write. A misconfiguration is
+ * an author error, so it throws `InternalError` — mirroring `createMigrationRegistry`. The `const`
+ * type param preserves the precise entry literals for `SecretValue`/`SecretName`.
  */
 export function defineSecretRegistry<const R extends SecretRegistry>(registry: R): R {
   for (const [name, entry] of Object.entries(registry)) {
@@ -94,7 +92,6 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
     const axes: [string, z.ZodType, unknown][] = [
       ["backend", SecretBackend, entry.backend],
       ["scope", SecretScope, entry.scope],
-      ["kind", SecretKind, entry.kind],
       ["valueType", SecretValueType, entry.valueType],
     ];
     for (const [field, schema, value] of axes) {
@@ -103,6 +100,9 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
           message: `secret registry: entry "${name}" has an invalid ${field} (${String(value)}).`,
         });
       }
+    }
+    if (typeof entry.rotatable !== "boolean") {
+      throw new InternalError({ message: `secret registry: entry "${name}" must declare rotatable as a boolean.` });
     }
     if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
       throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });

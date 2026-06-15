@@ -123,6 +123,44 @@ const CloudflareInvalidResponsePublic = z
   })
   .describe("A Cloudflare REST API response did not match its expected shape (502).");
 
+// --- @pithy-sh/secrets: encrypted secret store + CLI codes ---
+
+const SecretNotFoundPublic = z
+  .object({
+    code: z.literal("secrets/not_found").describe("A requested secret is not present in the store."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested secret does not exist in the store (404).");
+
+const SecretAlreadyExistsPublic = z
+  .object({
+    code: z
+      .literal("secrets/already_exists")
+      .describe("A secret with this name already exists; `create` refuses to overwrite it."),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("A secret with this name already exists (409).");
+
+const SecretInvalidValuePublic = z
+  .object({
+    code: z.literal("secrets/invalid_value").describe("A secret value failed validation against its registry schema."),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("A secret value failed validation against its registry schema (400).");
+
+const SecretCryptoFailedPublic = z
+  .object({
+    code: z
+      .literal("secrets/crypto_failed")
+      .describe("Encrypting or decrypting a secret failed (a missing key version, or unreadable ciphertext)."),
+    status: z.literal(500).describe("Internal Server Error — a crypto or key-configuration fault."),
+    ...publicFields,
+  })
+  .describe("Encrypting or decrypting a secret failed (500).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -140,6 +178,10 @@ export const PublicErrorPayload = z
     CloudflareNotConfiguredPublic,
     CloudflareRequestFailedPublic,
     CloudflareInvalidResponsePublic,
+    SecretNotFoundPublic,
+    SecretAlreadyExistsPublic,
+    SecretInvalidValuePublic,
+    SecretCryptoFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -162,6 +204,16 @@ const CloudflareRequestFailed = CloudflareRequestFailedPublic.extend(detailField
 const CloudflareInvalidResponse = CloudflareInvalidResponsePublic.extend(detailField).describe(
   CloudflareInvalidResponsePublic.description ?? "",
 );
+const SecretNotFound = SecretNotFoundPublic.extend(detailField).describe(SecretNotFoundPublic.description ?? "");
+const SecretAlreadyExists = SecretAlreadyExistsPublic.extend(detailField).describe(
+  SecretAlreadyExistsPublic.description ?? "",
+);
+const SecretInvalidValue = SecretInvalidValuePublic.extend(detailField).describe(
+  SecretInvalidValuePublic.description ?? "",
+);
+const SecretCryptoFailed = SecretCryptoFailedPublic.extend(detailField).describe(
+  SecretCryptoFailedPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -179,6 +231,10 @@ export const ErrorPayload = z
     CloudflareNotConfigured,
     CloudflareRequestFailed,
     CloudflareInvalidResponse,
+    SecretNotFound,
+    SecretAlreadyExists,
+    SecretInvalidValue,
+    SecretCryptoFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

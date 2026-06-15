@@ -1,6 +1,5 @@
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { SecretRotation } from "./data/secretRotations";
-import { SystemSecret } from "./data/systemSecrets";
+import { secretsTables } from "./data/tables";
 import { secrets_0001_init } from "./migrations/0001_init";
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */
@@ -26,10 +25,7 @@ export function secrets() {
     databases: {
       secrets: {
         binding: "SECRETS",
-        tables: {
-          pithySecretsSystemSecrets: SystemSecret,
-          pithySecretsRotations: SecretRotation,
-        },
+        tables: secretsTables,
         migrationOrder: SECRETS_MIGRATION_ORDER,
         migrations: {
           "0001_init": secrets_0001_init,
