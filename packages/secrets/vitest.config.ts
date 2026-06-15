@@ -13,7 +13,9 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["src/**/*.workers.test.ts", "node_modules/**"],
+          // `*.workers.test.ts` run in the workers pool; `*.integration.test.ts` need a LIVE
+          // Cloudflare environment and run only via `bun run test:integration`.
+          exclude: ["src/**/*.workers.test.ts", "src/**/*.integration.test.ts", "node_modules/**"],
         },
       },
       "./vitest.workers.config.ts",
@@ -21,7 +23,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/**/*.workers.test.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/*.workers.test.ts", "src/**/*.integration.test.ts"],
     },
   },
 });

@@ -10,7 +10,9 @@ declare global {
 
 // Eagerly import every source module except tests, so any newly exported schema is covered
 // automatically — there is no manual list to keep in sync. Mirrors core's meta-test.
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
+// `manager/worker.ts` imports `cloudflare:workers` (Workers-runtime only), so it can't be eagerly
+// imported in the node meta-test — exclude it. It exports no schemas anyway.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./manager/worker.ts"], { eager: true });
 
 /**
  * Record any object/enum/union missing a `.describe()` — on the schema itself or on any of its

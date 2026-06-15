@@ -16,6 +16,11 @@ export interface CatalogEntry {
 
 export const CATALOG: readonly CatalogEntry[] = [
   { name: "auth", package: "@pithy-sh/auth", whenToEnable: "Authentication and session management." },
+  {
+    name: "secrets",
+    package: "@pithy-sh/secrets",
+    whenToEnable: "Encrypted secret storage with a worker-only master key and automatic at-rest key rotation.",
+  },
   { name: "storage", package: "@pithy-sh/storage", whenToEnable: "R2-backed object storage." },
   { name: "leaderboard", package: "@pithy-sh/leaderboard", whenToEnable: "Multi-tenant ranking." },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },

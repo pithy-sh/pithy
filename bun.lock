@@ -23,7 +23,9 @@
       },
       "dependencies": {
         "@clack/prompts": "^1.5.0",
+        "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/secrets": "workspace:*",
         "citty": "^0.2.2",
         "comment-json": "^5.0.0",
         "kysely": "^0.29.0",
@@ -37,6 +39,7 @@
         "@vitest/coverage-v8": "^4.1.0",
         "typescript": "^6.0.0",
         "vitest": "^4.1.0",
+        "zod": "^4.0.0",
       },
     },
     "packages/cloudflare": {
@@ -84,6 +87,7 @@
       "name": "@pithy-sh/secrets",
       "version": "0.0.0",
       "dependencies": {
+        "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "kysely": "^0.29.0",
         "zod": "^4.0.0",

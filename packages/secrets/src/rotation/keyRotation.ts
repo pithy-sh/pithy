@@ -99,6 +99,16 @@ export async function reencryptBatch(
   return result;
 }
 
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Whether an at-rest rotation is due: the configured interval has elapsed since `lastRotatedAt`.
+ * The cron fires on a fixed schedule and calls this so it only rotates when due, not every tick.
+ */
+export function isRotationDue(lastRotatedAt: string, intervalDays: number, now: Date = new Date()): boolean {
+  return now.getTime() >= new Date(lastRotatedAt).getTime() + intervalDays * MS_PER_DAY;
+}
+
 /** Count rows still on a non-current key version — the signal for when pruning is safe. */
 export async function countOnOldKeys(db: SecretsDb, config: EncryptionConfig): Promise<number> {
   const row = await db

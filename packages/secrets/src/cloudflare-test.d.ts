@@ -7,5 +7,7 @@
 declare namespace Cloudflare {
   interface Env {
     SECRETS: D1Database;
+    /** The master-key config as a string (the `.dev.vars` shape), set in `vitest.workers.config.ts`. */
+    SECRETS_ENCRYPTION_KEYS: string;
   }
 }
