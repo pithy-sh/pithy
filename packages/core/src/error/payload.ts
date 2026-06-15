@@ -93,6 +93,36 @@ const InternalPublic = z
   })
   .describe("An unexpected server-side failure (500).");
 
+// --- @pithy-sh/cloudflare: out-of-Worker CF REST client codes ---
+
+const CloudflareNotConfiguredPublic = z
+  .object({
+    code: z
+      .literal("cloudflare/not_configured")
+      .describe("The CF REST client is missing required configuration (token, account, or a resource id)."),
+    status: z.literal(500).describe("Internal Server Error — a configuration fault, not a client request."),
+    ...publicFields,
+  })
+  .describe("The Cloudflare REST client is not fully configured (500).");
+
+const CloudflareRequestFailedPublic = z
+  .object({
+    code: z.literal("cloudflare/request_failed").describe("A call to the Cloudflare REST API failed."),
+    status: z.literal(502).describe("Bad Gateway — the upstream Cloudflare API returned an error."),
+    ...publicFields,
+  })
+  .describe("A Cloudflare REST API call failed (502).");
+
+const CloudflareInvalidResponsePublic = z
+  .object({
+    code: z
+      .literal("cloudflare/invalid_response")
+      .describe("A Cloudflare REST API response failed validation against its expected shape."),
+    status: z.literal(502).describe("Bad Gateway — the upstream Cloudflare API returned an unexpected shape."),
+    ...publicFields,
+  })
+  .describe("A Cloudflare REST API response did not match its expected shape (502).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -107,6 +137,9 @@ export const PublicErrorPayload = z
     ConflictPublic,
     RateLimitPublic,
     InternalPublic,
+    CloudflareNotConfiguredPublic,
+    CloudflareRequestFailedPublic,
+    CloudflareInvalidResponsePublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -120,13 +153,33 @@ const NotFound = NotFoundPublic.extend(detailField).describe(NotFoundPublic.desc
 const Conflict = ConflictPublic.extend(detailField).describe(ConflictPublic.description ?? "");
 const RateLimit = RateLimitPublic.extend(detailField).describe(RateLimitPublic.description ?? "");
 const Internal = InternalPublic.extend(detailField).describe(InternalPublic.description ?? "");
+const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(detailField).describe(
+  CloudflareNotConfiguredPublic.description ?? "",
+);
+const CloudflareRequestFailed = CloudflareRequestFailedPublic.extend(detailField).describe(
+  CloudflareRequestFailedPublic.description ?? "",
+);
+const CloudflareInvalidResponse = CloudflareInvalidResponsePublic.extend(detailField).describe(
+  CloudflareInvalidResponsePublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
  * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
  */
 export const ErrorPayload = z
-  .discriminatedUnion("code", [InvalidInput, InvalidToken, Forbidden, NotFound, Conflict, RateLimit, Internal])
+  .discriminatedUnion("code", [
+    InvalidInput,
+    InvalidToken,
+    Forbidden,
+    NotFound,
+    Conflict,
+    RateLimit,
+    Internal,
+    CloudflareNotConfigured,
+    CloudflareRequestFailed,
+    CloudflareInvalidResponse,
+  ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;
 
