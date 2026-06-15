@@ -65,25 +65,25 @@ describe("pithy init", () => {
 });
 
 describe("pithy add", () => {
-  test("an unknown capability fails with the Phase 0 action line, exit 1", async () => {
-    const error = (await run("bun", [bin, "add", "auth"], { cwd: dir }).catch((e: unknown) => e)) as {
-      code: number;
-      stderr: string;
-    };
-    expect(error.code).toBe(1);
-    expect(error.stderr).toContain('No capability named "auth".');
-    expect(error.stderr).toContain("Phase 1");
-  });
-
-  test("--list reports that no capabilities ship yet, exit 0", async () => {
+  // The full `add <cap>` flow installs from the registry — not exercised here
+  // (the project never hits the network in tests; see e2e.test.ts). These cover
+  // the install-free surfaces: discovery and argument validation.
+  test("--list shows the built-in catalog, exit 0", async () => {
     const { stdout } = await run("bun", [bin, "add", "--list"], { cwd: dir });
-    expect(stdout).toContain("No capabilities yet.");
-    expect(stdout).toContain("Phase 1");
+    expect(stdout).toContain("auth");
+    expect(stdout).toContain("storage");
+    expect(stdout).not.toContain("(installed)"); // nothing installed in an empty dir
   });
 
-  test("--list --json emits an empty capability array, exit 0", async () => {
+  test("--list --json emits the catalog with installed flags, exit 0", async () => {
     const { stdout } = await run("bun", [bin, "add", "--list", "--json"], { cwd: dir });
-    expect(JSON.parse(stdout.trim())).toEqual({ command: "add", capabilities: [] });
+    const result = JSON.parse(stdout.trim()) as {
+      command: string;
+      capabilities: { name: string; installed: boolean }[];
+    };
+    expect(result.command).toBe("add");
+    expect(result.capabilities.map((c) => c.name)).toContain("auth");
+    expect(result.capabilities.every((c) => c.installed === false)).toBe(true);
   });
 
   test("no capability and no --list points at --list, exit 1", async () => {

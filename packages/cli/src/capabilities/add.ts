@@ -4,11 +4,16 @@ import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest"
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { parse, stringify } from "comment-json";
 
+/** A config option's value: the JSON scalars a manifest default can be. */
+export type ConfigValue = string | number | boolean;
+
 export interface AddCapabilityOptions {
   /** The project root — where pithy.config.ts and wrangler.jsonc live. */
   projectDir: string;
   /** The capability's validated manifest (pithy.manifest.json shape). */
   manifest: CapabilityManifest;
+  /** Per-option overrides; an unset option renders its manifest default. */
+  configValues?: Record<string, ConfigValue>;
 }
 
 /** The managed-region marker `pithy init` plants inside `capabilities: [...]`. */
@@ -32,7 +37,37 @@ export async function addCapability(options: AddCapabilityOptions): Promise<void
   await updateWrangler(options);
 }
 
-async function updateConfig({ projectDir, manifest }: AddCapabilityOptions): Promise<void> {
+/** Escape a capability name for use inside a `RegExp` (names are simple, but be safe). */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Render a capability's registration. With no config options it's a one-liner
+ * (`auth(),`); with options it's a block — one commented `key: default` per
+ * option — so `pithy.config.ts` documents itself (docs/CLI.md §Config). The mount
+ * path and every other knob live here, in the user's surface; the handler stays
+ * in the package.
+ */
+function renderRegistration(
+  manifest: CapabilityManifest,
+  configValues: Record<string, ConfigValue>,
+  indent: string,
+): string {
+  if (manifest.configOptions.length === 0) return `${indent}${manifest.name}(),`;
+
+  const inner = `${indent}  `;
+  const lines = [`${indent}${manifest.name}({`];
+  for (const option of manifest.configOptions) {
+    const value = option.key in configValues ? configValues[option.key] : option.default;
+    lines.push(`${inner}// ${option.describe}`);
+    lines.push(`${inner}${option.key}: ${JSON.stringify(value)},`);
+  }
+  lines.push(`${indent}}),`);
+  return lines.join("\n");
+}
+
+async function updateConfig({ projectDir, manifest, configValues }: AddCapabilityOptions): Promise<void> {
   const path = join(projectDir, "pithy.config.ts");
   let source = await readFile(path, "utf8");
 
@@ -44,21 +79,20 @@ async function updateConfig({ projectDir, manifest }: AddCapabilityOptions): Pro
     });
   }
 
-  // Match whole lines, not substrings: `auth(),` is a substring of `myauth(),`,
-  // so a substring check would wrongly treat `auth` as already registered.
   const lines = source.split("\n");
-  const hasLine = (text: string): boolean => lines.some((line) => line.trim() === text);
-
   const importLine = `import { ${manifest.name} } from "${manifest.package}/src/index";`;
-  if (!hasLine(importLine)) {
+  if (!lines.some((line) => line.trim() === importLine)) {
     source = `${importLine}\n${source}`;
   }
 
-  const registration = `${manifest.name}(),`;
-  if (!hasLine(registration)) {
+  // Idempotency anchors on the registration *call*, not an exact line: a block
+  // form spans several lines, and `auth(` must not match an existing `myauth(`.
+  const registered = new RegExp(`^${escapeRegExp(manifest.name)}\\(`);
+  if (!lines.some((line) => registered.test(line.trim()))) {
     const indent = markerLine.slice(0, markerLine.length - markerLine.trimStart().length);
+    const registration = renderRegistration(manifest, configValues ?? {}, indent);
     // A replacement function keeps `$` in the registration literal.
-    source = source.replace(markerLine, () => `${indent}${registration}\n${markerLine}`);
+    source = source.replace(markerLine, () => `${registration}\n${markerLine}`);
   }
 
   await writeFile(path, source);

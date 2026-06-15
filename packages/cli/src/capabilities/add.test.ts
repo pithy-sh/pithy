@@ -84,4 +84,50 @@ describe("addCapability", () => {
     expect(config).toContain('import { auth } from "@pithy-sh/auth/src/index";');
     expect(config).toMatch(/^\s*auth\(\),$/m); // a real auth() line, not just the myauth() substring
   });
+
+  describe("config options", () => {
+    const withOptions = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [
+        { key: "basePath", default: "/auth", describe: "Where the auth routes mount." },
+        { key: "sessionDays", default: 30, describe: "Refresh-token lifetime in days." },
+      ],
+    });
+
+    test("renders each option as key: default with its describe as a comment", async () => {
+      await addCapability({ projectDir: dir, manifest: withOptions });
+
+      const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+      expect(config).toContain("auth({");
+      expect(config).toContain("// Where the auth routes mount.");
+      expect(config).toContain('basePath: "/auth",');
+      expect(config).toContain("// Refresh-token lifetime in days.");
+      expect(config).toContain("sessionDays: 30,");
+      expect(config).toContain("}),");
+    });
+
+    test("an override replaces the rendered default", async () => {
+      await addCapability({
+        projectDir: dir,
+        manifest: withOptions,
+        configValues: { basePath: "/authentication" },
+      });
+
+      const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+      expect(config).toContain('basePath: "/authentication",');
+      expect(config).not.toContain('basePath: "/auth",');
+      // Un-overridden options keep their default.
+      expect(config).toContain("sessionDays: 30,");
+    });
+
+    test("running it twice with options changes nothing", async () => {
+      await addCapability({ projectDir: dir, manifest: withOptions });
+      const once = await readFile(join(dir, "pithy.config.ts"), "utf8");
+
+      await addCapability({ projectDir: dir, manifest: withOptions });
+      expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(once);
+    });
+  });
 });
