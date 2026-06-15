@@ -80,6 +80,26 @@
         "wrangler": "^4.99.0",
       },
     },
+    "packages/secrets": {
+      "name": "@pithy-sh/secrets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^6.0.0",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
     "tooling/tsconfig": {
       "name": "@pithy-sh/tsconfig",
       "version": "0.0.0",
@@ -409,6 +429,8 @@
     "@pithy-sh/cloudflare": ["@pithy-sh/cloudflare@workspace:packages/cloudflare"],
 
     "@pithy-sh/core": ["@pithy-sh/core@workspace:packages/core"],
+
+    "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 
     "@pithy-sh/tsconfig": ["@pithy-sh/tsconfig@workspace:tooling/tsconfig"],
 
