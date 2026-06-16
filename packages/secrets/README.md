@@ -28,9 +28,23 @@ Every `d1` secret is stored the same way — a `{ currentVersion, versions }` en
 - the **write Workflow** — the CLI's dispatch target for create/update/remove;
 - the **at-rest key-rotation Workflow + cron** — generates a fresh master key, re-encrypts every row, prunes the old key once none remain, and records the rotation. Runs once per environment, never in a feature branch.
 
+## Provisioned resources
+
+`pithy secrets provision` creates these per environment (and `pithy secrets deprovision` removes them). The D1 database shares the worker's name; the master-key entries are env-prefixed because both environments share one Secrets Store, though in-worker the key always binds as the fixed name `SECRETS_ENCRYPTION_KEYS`. The Secrets Store itself is not created here — its id comes from `SECRETS_STORE_ID`.
+
+| Resource | staging | production |
+|---|---|---|
+| Manager Worker | `pithy-secrets-staging` | `pithy-secrets-production` |
+| D1 database | `pithy-secrets-staging` | `pithy-secrets-production` |
+| Secrets Store entry (master key) | `STAGING_SECRETS_ENCRYPTION_KEYS` | `PRODUCTION_SECRETS_ENCRYPTION_KEYS` |
+| Write Workflow | `pithy-secrets-write-staging` | `pithy-secrets-write-production` |
+| Rotation Workflow | `pithy-secrets-rotate-staging` | `pithy-secrets-rotate-production` |
+
 ## The CLI
 
 ```
+pithy secrets provision       # stand up each env's D1, master key, and manager (idempotent)
+pithy secrets deprovision     # remove the managers + databases (--keys also deletes the master keys)
 pithy secrets create <name>   # create — fails if it already exists
 pithy secrets update <name>   # update — fails if it doesn't exist
 pithy secrets rm <name>       # remove

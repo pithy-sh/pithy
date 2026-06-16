@@ -18,7 +18,7 @@ Every manager is configured with a scoped API token and the account it targets:
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 
 const cf = new CloudflareClients({
-  apiToken: process.env.CF_API_TOKEN!,
+  apiToken: process.env.CLOUDFLARE_API_TOKEN!,
   accountId: process.env.CLOUDFLARE_ACCOUNT_ID!,
 });
 ```

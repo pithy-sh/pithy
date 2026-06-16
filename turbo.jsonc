@@ -11,6 +11,15 @@
     "test": {
       "dependsOn": ["^build"]
     },
+    "test:integration": {
+      // Live Cloudflare — never cached; only packages that define the script run it.
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "vars:local": {
+      // Symlinks each package's .dev.vars to the root file — a filesystem side effect, never cached.
+      "cache": false
+    },
     "lint": {},
     "clean": {
       "cache": false

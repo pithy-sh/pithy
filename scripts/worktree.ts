@@ -84,20 +84,30 @@ function setup(issue: string, slug: string): void {
     git(["worktree", "add", wtPath, "-b", branch, "origin/main"]);
   }
 
-  // Install so typecheck/biome/vitest run inside the tree.
-  execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
-
-  // Share the root's secrets when there are any. None today — this is the seam
-  // that lights up once a project has a `.dev.vars`.
-  const rootDevVars = join(root, ".dev.vars");
-  const wtDevVars = join(wtPath, ".dev.vars");
-  if (existsSync(rootDevVars) && !existsSync(wtDevVars)) {
-    symlinkSync(rootDevVars, wtDevVars);
-    console.log("Linked .dev.vars from the main checkout.");
-  }
+  configure(wtPath, root);
 
   console.log(`Worktree ready. ${wtPath}`);
   console.log(`Branch ${branch}.`);
+}
+
+/**
+ * Configure a freshly-created worktree so the gates and integration tests run inside it: install
+ * deps, then share the main checkout's `.dev.vars` — link the worktree's to the root file, and
+ * symlink each package's to the worktree root (the `vars:local` turbo task) so wrangler and the
+ * `*.integration.test.ts` files resolve the shared secrets. Idempotent; the `.dev.vars` steps
+ * no-op when the main checkout has none.
+ */
+function configure(wtPath: string, root: string): void {
+  // Install so typecheck/biome/vitest run inside the tree.
+  execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
+
+  const rootDevVars = join(root, ".dev.vars");
+  if (!existsSync(rootDevVars)) return;
+
+  const wtDevVars = join(wtPath, ".dev.vars");
+  if (!existsSync(wtDevVars)) symlinkSync(rootDevVars, wtDevVars);
+  execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
+  console.log("Linked .dev.vars (root + per-package via vars:local).");
 }
 
 function teardown(issue: string, slug: string): void {

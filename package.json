@@ -14,10 +14,12 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:integration": "turbo run test:integration",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",
     "format": "biome format --write .",
     "clean": "turbo run clean",
+    "vars:local": "turbo run vars:local",
     "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
     "prepare": "husky",

@@ -1,11 +1,10 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { resolveEncryptionConfig, type SecretsStoreEnv } from "../env/bindings";
-import type { WriteSecretParams } from "../management/writeSecret";
 import { isRotationDue } from "../rotation/keyRotation";
 import { runRotationWorkflow } from "./rotationWorkflow";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
-import { runWriteWorkflow } from "./writeWorkflow";
+import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult } from "./writeWorkflow";
 
 /**
  * The prebuilt per-environment secrets manager worker. `pithy add secrets` deploys one per managed
@@ -28,7 +27,7 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
   /** The at-rest rotation Workflow binding, triggered by the cron. */
   AT_REST_ROTATION: { create(): Promise<unknown> };
   /** CF creds + Secrets Store id for the at-rest config write-back — the only live-CF write. */
-  CF_API_TOKEN: string;
+  CLOUDFLARE_API_TOKEN: string;
   CLOUDFLARE_ACCOUNT_ID: string;
   SECRETS_STORE_ID: string;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
@@ -36,9 +35,9 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
 }
 
 /** The management write Workflow — the CLI dispatches create/update/remove here. */
-export class SecretsWriteWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, WriteSecretParams> {
-  override async run(event: WorkflowEvent<WriteSecretParams>, step: WorkflowStep): Promise<void> {
-    await step.do("write-secret", () => runWriteWorkflow(this.env, event.payload));
+export class SecretsWriteWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, WriteWorkflowPayload> {
+  override async run(event: WorkflowEvent<WriteWorkflowPayload>, step: WorkflowStep): Promise<WriteWorkflowResult> {
+    return await step.do("write-secret", () => runWriteWorkflow(this.env, event.payload));
   }
 }
 
@@ -47,7 +46,7 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
   override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
     const manager = new CloudflareSecretsStoreManager({
       accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: this.env.CF_API_TOKEN,
+      apiToken: this.env.CLOUDFLARE_API_TOKEN,
       storeId: this.env.SECRETS_STORE_ID,
     });
     await runRotationWorkflow(this.env, new SecretsStoreConfigWriter(manager), step);

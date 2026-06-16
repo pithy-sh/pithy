@@ -1,6 +1,7 @@
 import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
 import { CloudflareD1Manager } from "../d1/d1Manager";
+import { CloudflareD1Provisioner } from "../d1/d1Provisioner";
 import { CloudflareCustomHostnamesManager } from "../hostnames/customHostnamesManager";
 import { CloudflareKVManager } from "../kv/kvManager";
 import { CloudflareImageManager } from "../media/imageManager";
@@ -52,6 +53,8 @@ export class CloudflareClients {
   private turnstileManager?: CloudflareTurnstileManager;
 
   private workersProvisioner?: WorkersProvisioner;
+
+  private d1ProvisionerManager?: CloudflareD1Provisioner;
 
   constructor(config: CloudflareManagerConfig) {
     this.config = config;
@@ -136,6 +139,12 @@ export class CloudflareClients {
   provisioner(): WorkersProvisioner {
     this.workersProvisioner ??= new WorkersProvisioner(this.config);
     return this.workersProvisioner;
+  }
+
+  /** The account-scoped D1 control plane — create and delete databases. */
+  d1Provisioner(): CloudflareD1Provisioner {
+    this.d1ProvisionerManager ??= new CloudflareD1Provisioner(this.config);
+    return this.d1ProvisionerManager;
   }
 }
 

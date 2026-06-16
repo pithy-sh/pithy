@@ -1,13 +1,19 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
+import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
+import {
+  buildManagerDeploy,
+  CloudflareSecretsDeprovisioner,
+  CloudflareSecretsProvisioner,
+} from "../capabilities/secretsProvisioner";
 import { loadProject } from "../project/config";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
@@ -16,40 +22,34 @@ function workflowNameForEnv(env: ManagedEnvironment): string {
   return `pithy-secrets-write-${env}`;
 }
 
-/** Parse `.dev.vars` from the project for the CF creds the dispatcher needs. */
-async function loadDevVars(projectDir: string): Promise<Record<string, string>> {
-  let content: string;
-  try {
-    content = await readFile(join(projectDir, ".dev.vars"), "utf8");
-  } catch {
-    return {};
-  }
-  const vars: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    vars[trimmed.slice(0, eq).trim()] = trimmed
-      .slice(eq + 1)
-      .trim()
-      .replace(/^["']|["']$/g, "");
-  }
-  return vars;
+/** Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`). */
+function buildDispatcher(projectDir: string): SecretDispatcher {
+  const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+  return new WorkflowSecretDispatcher(new CloudflareWorkflowsClient({ accountId, apiToken }), workflowNameForEnv);
 }
 
-/** Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`). */
-async function buildDispatcher(projectDir: string): Promise<SecretDispatcher> {
-  const vars = await loadDevVars(projectDir);
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CF_API_TOKEN ?? process.env.CF_API_TOKEN ?? "";
+/** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
+function loadCloudflareCreds(
+  projectDir: string,
+  options: { requireStore?: boolean } = {},
+): { accountId: string; apiToken: string; storeId: string } {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CF_API_TOKEN in .dev.vars.",
+      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
     });
   }
-  return new WorkflowSecretDispatcher(new CloudflareWorkflowsClient({ accountId, apiToken }), workflowNameForEnv);
+  if (options.requireStore && !storeId) {
+    throw new ValidationError({
+      message: "The CF Secrets Store id is missing.",
+      action: "Set SECRETS_STORE_ID in .dev.vars (create a Secrets Store in the Cloudflare dashboard).",
+    });
+  }
+  return { accountId, apiToken, storeId };
 }
 
 /**
@@ -94,7 +94,7 @@ async function write(
   const registry = resolveSecretRegistry(await loadProject(projectDir));
   const env = resolveEnv(registry, args.name, args.env);
   const value = mode === "delete" ? undefined : await readValue(args.name);
-  const dispatcher = await buildDispatcher(projectDir);
+  const dispatcher = buildDispatcher(projectDir);
 
   const targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env });
 
@@ -152,7 +152,58 @@ const ls = defineCommand({
     }),
 });
 
+const provision = defineCommand({
+  meta: { name: "provision", description: "Provision the per-environment secrets infrastructure" },
+  args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
+      const cf = new CloudflareClients({ accountId, apiToken });
+      const provisioner = new CloudflareSecretsProvisioner({
+        cf,
+        storeId,
+        deploy: buildManagerDeploy({ cf, accountId, apiToken }),
+      });
+
+      const result = await provisionSecrets(provisioner);
+
+      if (args.json) {
+        process.stdout.write(`${formatJsonLine({ command: "secrets provision", environments: result.perEnv })}\n`);
+        return;
+      }
+      for (const env of result.perEnv) {
+        process.stdout.write(`${env.env}: database, key, and manager ready.\n`);
+      }
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
+const deprovision = defineCommand({
+  meta: { name: "deprovision", description: "Remove the secrets manager workers and databases" },
+  args: {
+    keys: { type: "boolean", default: false, description: "Also delete the master keys (irreversible)" },
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
+      const cf = new CloudflareClients({ accountId, apiToken });
+      const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId });
+
+      await deprovisionSecrets(deprovisioner, { deleteKeys: args.keys });
+
+      if (args.json) {
+        process.stdout.write(`${formatJsonLine({ command: "secrets deprovision", keysDeleted: args.keys })}\n`);
+        return;
+      }
+      process.stdout.write(`Secrets infrastructure removed${args.keys ? ", including master keys" : ""}.\n`);
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rm, ls },
+  subCommands: { create, update, rm, ls, provision, deprovision },
 });

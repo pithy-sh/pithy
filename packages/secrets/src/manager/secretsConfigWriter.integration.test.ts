@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { describe, expect, test } from "vitest";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
@@ -13,28 +13,8 @@ import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function loadDevVars(): Record<string, string> {
-  try {
-    const content = readFileSync(path.join(__dirname, "../../../../.dev.vars"), "utf-8");
-    const vars: Record<string, string> = {};
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      vars[trimmed.slice(0, eq).trim()] = trimmed
-        .slice(eq + 1)
-        .trim()
-        .replace(/^["']|["']$/g, "");
-    }
-    return vars;
-  } catch {
-    return {};
-  }
-}
-
-const vars = loadDevVars();
-const hasCreds = Boolean(vars.CF_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
+const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
+const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 
 /** A throwaway entry name so the test never touches the real `SECRETS_ENCRYPTION_KEYS`. */
 const TEST_SECRET = "PITHY_SECRETS_INTEGRATION_TEST";
@@ -43,7 +23,7 @@ describe.skipIf(!hasCreds)("SecretsStoreConfigWriter — LIVE CF Secrets Store",
   test("writes a config entry, overwrites it, then removes it", async () => {
     const manager = new CloudflareSecretsStoreManager({
       accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "",
-      apiToken: vars.CF_API_TOKEN ?? "",
+      apiToken: vars.CLOUDFLARE_API_TOKEN ?? "",
       storeId: vars.SECRETS_STORE_ID ?? "",
     });
     const writer = new SecretsStoreConfigWriter(manager, TEST_SECRET);

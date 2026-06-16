@@ -52,6 +52,42 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
     expect(await store.getValue("api-token")).toEqual({ currentVersion: "1", versions: { "1": "v" } });
   });
 
+  test("audit confirms the round trip without returning the value", async () => {
+    const result = await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "api-token",
+      value: "round-trips",
+      valueType: "text",
+      rotatable: false,
+      audit: true,
+    });
+    // Only a boolean escapes — never the value.
+    expect(result).toEqual({ audited: true });
+  });
+
+  test("a write without audit returns no audit result", async () => {
+    const result = await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "api-token",
+      value: "v",
+      valueType: "text",
+      rotatable: false,
+    });
+    expect(result.audited).toBeUndefined();
+  });
+
+  test("audit on a delete is skipped (nothing to read back)", async () => {
+    await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "x",
+      value: "v",
+      valueType: "text",
+      rotatable: false,
+    });
+    const result = await runWriteWorkflow(managerEnv(), { mode: "delete", name: "x", audit: true });
+    expect(result.audited).toBeUndefined();
+  });
+
   test("the create/update intent guard runs in the worker", async () => {
     await runWriteWorkflow(managerEnv(), {
       mode: "create",
