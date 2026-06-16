@@ -29,12 +29,7 @@ import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsPr
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
-const hasCreds = Boolean(
-  vars.CLOUDFLARE_API_TOKEN &&
-    vars.CLOUDFLARE_ACCOUNT_ID &&
-    vars.SECRETS_STORE_ID &&
-    vars.SECRETS_MANAGER_CLOUDFLARE_API_TOKEN,
-);
+const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 const optedIn = process.env.PITHY_LIVE_DEPLOY === "1";
 
 const writeWorkflow = (env: ManagedEnvironment) => `pithy-secrets-write-${env}`;
@@ -50,7 +45,6 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
     const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
     const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
     const storeId = vars.SECRETS_STORE_ID ?? "";
-    const managerApiToken = vars.SECRETS_MANAGER_CLOUDFLARE_API_TOKEN ?? "";
     const cf = new CloudflareClients({ accountId, apiToken });
     const workflows = new CloudflareWorkflowsClient({ accountId, apiToken });
     const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId });
@@ -72,8 +66,9 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       // 1. Provision every environment's manager.
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
+        accountId,
         storeId,
-        deploy: buildManagerDeploy({ cf, accountId, apiToken, managerApiToken }),
+        deploy: buildManagerDeploy({ accountId, apiToken }),
       });
       const result = await provisionSecrets(provisioner);
       expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments());

@@ -10,6 +10,7 @@ import { CloudflareQueueManager } from "../queue/queueManager";
 import type { R2Credentials } from "../r2/r2Credentials";
 import { CloudflareR2Manager } from "../r2/r2Manager";
 import { CloudflareSecretsStoreManager } from "../secrets/secretsStoreManager";
+import { CloudflareAccountTokensManager } from "../tokens/accountTokensManager";
 import { CloudflareTurnstileManager } from "../turnstile/turnstileManager";
 import { CloudflareBuildsManager } from "../workers/buildsManager";
 import { CloudflareWorkersManager } from "../workers/workersManager";
@@ -51,6 +52,8 @@ export class CloudflareClients {
   private buildsManager?: CloudflareBuildsManager;
 
   private turnstileManager?: CloudflareTurnstileManager;
+
+  private accountTokensManager?: CloudflareAccountTokensManager;
 
   private workersProvisioner?: WorkersProvisioner;
 
@@ -145,6 +148,12 @@ export class CloudflareClients {
   d1Provisioner(): CloudflareD1Provisioner {
     this.d1ProvisionerManager ??= new CloudflareD1Provisioner(this.config);
     return this.d1ProvisionerManager;
+  }
+
+  /** The account-scoped API-token control plane — mint, find, and delete account-owned tokens. */
+  accountTokens(): CloudflareAccountTokensManager {
+    this.accountTokensManager ??= new CloudflareAccountTokensManager(this.config);
+    return this.accountTokensManager;
   }
 }
 

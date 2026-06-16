@@ -43,16 +43,13 @@ Every `d1` secret is stored the same way — a `{ currentVersion, versions }` en
 
 ## Credentials (`.dev.vars`)
 
-Provisioning reads two **distinct** Cloudflare API tokens from `.dev.vars` (or `process.env` in CI):
+Provisioning reads **one** Cloudflare API token from `.dev.vars` (or `process.env` in CI):
 
 | Variable | Used for | Scope it needs |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | The broad bootstrap token — authenticates the deploy and the provisioning REST calls (create D1, write the store, deploy the manager Worker). | Workers Scripts, D1, Secrets Store, Workflows — the usual provisioning surface. |
-| `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN` | The least-privilege token **written into the Secrets Store** as the manager's runtime credential. The manager's only live-CF use is the rotation config write-back. | **Secrets Store Read + Write only.** Nothing else — the rotation's D1 work runs through the `SECRETS` binding, not this token. |
+| `CLOUDFLARE_API_TOKEN` | The broad bootstrap token — authenticates the deploy and the provisioning REST calls (create D1, write the store, deploy the manager Worker), **and mints the manager's own runtime token**. | Workers Scripts, D1, Secrets Store, Workflows — plus **Account API Tokens Write**, the permission that lets it mint the manager token. |
 
-The broad token never reaches the worker; the narrow token never deploys. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
-
-Until `pithy` mints the manager token itself, the operator creates `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN` once (a CF API token with Secrets Store Read + Write). When minting lands, the token is generated and written straight into the store — the operator never sees it, and this `.dev.vars` entry goes away.
+`pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
 
 ## The CLI
 

@@ -106,6 +106,15 @@ export function isNotFoundError(error: unknown): boolean {
 }
 
 /**
+ * Whether a thrown SDK error is an HTTP 403 — the token reached the API but lacks the permission for
+ * the operation. The signal a caller uses to turn a raw "Unauthorized" into an actionable
+ * "grant this permission group" message instead of a generic request failure.
+ */
+export function isAuthorizationError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 403;
+}
+
+/**
  * Decode a Cloudflare response against `schema`, throwing `cloudflare/invalid_response` on a shape
  * mismatch. The decode counterpart to `cloudflareRequest`'s error wrapping — one seam so every
  * manager validates the wire the same way instead of hand-rolling `safeParse` + throw.

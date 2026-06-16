@@ -21,6 +21,14 @@ export function masterKeySecretName(env: ManagedEnvironment): string {
 export const MANAGER_CF_API_TOKEN_SECRET_NAME = "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN";
 
 /**
+ * The Cloudflare account-token **name** under which provisioning mints the manager's runtime
+ * credential. Distinct from {@link MANAGER_CF_API_TOKEN_SECRET_NAME}, the Secrets Store entry name
+ * that holds the token's value: this is the token's identity in the account's API-token list, the
+ * key idempotent re-mint and teardown match on. One global token, so one fixed name (no env prefix).
+ */
+export const MANAGER_CF_API_TOKEN_NAME = "pithy-secrets-manager";
+
+/**
  * Mint a fresh master key and build the initial encryption config to store as the env's
  * `SECRETS_ENCRYPTION_KEYS` at provision time: version 1, one key, current. A real
  * `ensureMasterKey` JSON-stringifies this and writes it to CF Secrets Store — but only when no key
@@ -48,6 +56,14 @@ export interface SecretsProvisioner {
    * (nothing half-created) rather than partway through a deploy.
    */
   preflight(): Promise<void>;
+  /**
+   * Ensure the manager's least-privilege CF API token (Secrets Store Read + Write) and write it into
+   * the Secrets Store as the manager's runtime credential — once, before any per-env work, since the
+   * token is `global`. Runs first so a bootstrap token that **cannot** mint account tokens fails the
+   * whole provision fast and clean, before any resource is created. Idempotent: reuse the stored token
+   * if present, otherwise roll the existing manager token's value in place (or mint one if none exists).
+   */
+  ensureManagerToken(): Promise<void>;
   /** Create (or reuse) the per-env secrets D1; returns its id. Idempotent. */
   ensureDatabase(env: ManagedEnvironment): Promise<{ databaseId: string }>;
   /**
@@ -68,12 +84,15 @@ export interface ProvisionResult {
 }
 
 /**
- * Provision every managed environment in order: create the D1, mint the master key, migrate, deploy
- * the manager. The order matters — the database and key must exist before migrations run, and the
- * manager is deployed last, once its resources are in place. Idempotent end to end (each step is).
+ * Provision every managed environment in order: mint the global manager token, then per env create
+ * the D1, mint the master key, migrate, deploy the manager. The order matters — the manager token is
+ * minted first (one global credential, and a bootstrap token that cannot mint fails fast before
+ * anything is created), the database and key exist before migrations run, and the manager is deployed
+ * last, once its resources are in place. Idempotent end to end (each step is).
  */
 export async function provisionSecrets(provisioner: SecretsProvisioner): Promise<ProvisionResult> {
   await provisioner.preflight();
+  await provisioner.ensureManagerToken();
   const perEnv: ProvisionResult["perEnv"] = [];
   for (const env of managedEnvironments()) {
     const { databaseId } = await provisioner.ensureDatabase(env);
@@ -102,10 +121,11 @@ export interface SecretsDeprovisioner {
   /** Delete the env's secrets D1. Idempotent (a missing database is a no-op). */
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
   /**
-   * Delete the manager's CF API token entry (`GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`) from the Secrets
-   * Store. It is `global` — one entry shared by both managers — so it is deleted once, after every
-   * manager is gone. Safe and ungated: the token is a re-mintable access credential, not a key, so
-   * removing it orphans no secrets. Idempotent (a missing entry is a no-op).
+   * Remove the manager's CF API token entirely: delete the minted account token from Cloudflare
+   * **and** its `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN` entry from the Secrets Store. It is `global` —
+   * one token shared by both managers — so it is removed once, after every manager is gone. Safe and
+   * ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
+   * secrets. Idempotent (a missing token or entry is a no-op).
    */
   deleteManagerToken(): Promise<void>;
 }
