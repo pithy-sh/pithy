@@ -26,7 +26,6 @@ describe("loadCloudflareEnv", () => {
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "from-env-token");
     vi.stubEnv("SECRETS_STORE_ID", "from-env-store");
     vi.stubEnv("R2_CREDENTIALS", ""); // unset for this case — empty is skipped, not overlaid
-    vi.stubEnv("SECRETS_MANAGER_CLOUDFLARE_API_TOKEN", ""); // unset for this case — empty is skipped
 
     // A directory with no .dev.vars — the read fails and the env overlay supplies the creds.
     const vars = loadCloudflareEnv("/nonexistent-pithy-dir");

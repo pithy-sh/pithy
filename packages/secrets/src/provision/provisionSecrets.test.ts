@@ -17,6 +17,9 @@ class StubProvisioner implements SecretsProvisioner {
   async preflight() {
     this.calls.push("preflight");
   }
+  async ensureManagerToken() {
+    this.calls.push("token");
+  }
   async ensureDatabase(env: ManagedEnvironment) {
     this.calls.push(`db:${env}`);
     return { databaseId: `d1-${env}` };
@@ -34,13 +37,14 @@ class StubProvisioner implements SecretsProvisioner {
 }
 
 describe("provisionSecrets", () => {
-  test("provisions both environments in order: db → key → migrate → deploy", async () => {
+  test("mints the manager token first, then provisions both environments in order: db → key → migrate → deploy", async () => {
     const provisioner = new StubProvisioner();
 
     const result = await provisionSecrets(provisioner);
 
     expect(provisioner.calls).toEqual([
       "preflight",
+      "token",
       "db:staging",
       "key:staging",
       "migrate:staging:d1-staging",
@@ -65,6 +69,17 @@ describe("provisionSecrets", () => {
 
     await expect(provisionSecrets(provisioner)).rejects.toThrow("no workers.dev subdomain");
     expect(provisioner.calls).toEqual(["preflight"]);
+  });
+
+  test("a manager-token mint failure aborts before any resource is created", async () => {
+    const provisioner = new StubProvisioner();
+    provisioner.ensureManagerToken = async () => {
+      provisioner.calls.push("token");
+      throw new Error("cannot mint account tokens");
+    };
+
+    await expect(provisionSecrets(provisioner)).rejects.toThrow("cannot mint account tokens");
+    expect(provisioner.calls).toEqual(["preflight", "token"]);
   });
 });
 
