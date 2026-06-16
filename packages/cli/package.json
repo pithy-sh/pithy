@@ -16,12 +16,16 @@
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
     "@clack/prompts": "^1.5.0",
+    "@pithy-sh/cloudflare": "workspace:*",
     "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
     "kysely": "^0.29.0",
@@ -34,6 +38,8 @@
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
     "typescript": "^6.0.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "wrangler": "^4.99.0",
+    "zod": "^4.0.0"
   }
 }

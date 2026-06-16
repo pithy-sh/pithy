@@ -10,7 +10,7 @@ import { CloudflareNotConfiguredError, cloudflareRequest } from "./errors";
  * account, no env coupling.
  */
 export interface CloudflareManagerConfig {
-  /** A scoped, least-privilege CF API token (from `CF_API_TOKEN`, minted per environment). */
+  /** A scoped, least-privilege CF API token (from `CLOUDFLARE_API_TOKEN`, minted per environment). */
   apiToken: string;
   /** The Cloudflare account id all operations target (`CLOUDFLARE_ACCOUNT_ID`). */
   accountId: string;

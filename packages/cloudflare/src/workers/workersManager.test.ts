@@ -6,6 +6,7 @@ const mockScriptsList = vi.fn();
 const mockScriptsUpdate = vi.fn();
 const mockScriptsDelete = vi.fn();
 const mockSubdomainCreate = vi.fn();
+const mockSubdomainGet = vi.fn();
 const mockSettingsEdit = vi.fn();
 const mockVersionsList = vi.fn();
 const mockVersionsGet = vi.fn();
@@ -45,6 +46,7 @@ vi.mock("cloudflare", () => ({
         secrets: { update: mockSecretsUpdate, delete: mockSecretsDelete, list: mockSecretsList },
       },
       routes: { create: mockRoutesCreate, list: mockRoutesList, delete: mockRoutesDelete },
+      subdomains: { get: mockSubdomainGet },
       beta: { workers: { list: mockBetaWorkersList } },
     };
     queues = {
@@ -71,6 +73,19 @@ describe("CloudflareWorkersManager", () => {
     expect(() => new CloudflareWorkersManager({ accountId: "a", apiToken: "" })).toThrowError(
       expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),
     );
+  });
+
+  describe("accountSubdomain", () => {
+    it("returns the registered subdomain", async () => {
+      mockSubdomainGet.mockResolvedValue({ subdomain: "acme" });
+      expect(await manager.accountSubdomain()).toBe("acme");
+      expect(mockSubdomainGet).toHaveBeenCalledWith({ account_id: "acct-1" });
+    });
+
+    it("returns null when the account has no subdomain (the API errors)", async () => {
+      mockSubdomainGet.mockRejectedValue(new Error("10007 no subdomain"));
+      expect(await manager.accountSubdomain()).toBeNull();
+    });
   });
 
   describe("listWorkers", () => {

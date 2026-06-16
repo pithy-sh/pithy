@@ -5,6 +5,6 @@
 #   2. Set the bootstrap Cloudflare API token below. pithy uses it to call the
 #      Cloudflare REST API and to mint scoped, account-owned tokens from there.
 # CLOUDFLARE_ACCOUNT_ID=your-account-id
-# CF_API_TOKEN=your-bootstrap-token
+# CLOUDFLARE_API_TOKEN=your-bootstrap-token
 #
 # Capability secrets are added here by `pithy add <capability>`.

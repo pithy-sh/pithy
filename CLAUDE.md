@@ -147,7 +147,7 @@ monorepo. Read the companion docs before any structural or surface decision:
   Never hand-roll `fetch` to the CF API outside this client.
 - **CF token bootstrap & automation:** the human does two one-time things — `wrangler login`
   (OAuth, for dev/deploy) and a single bootstrap CF API token in `.dev.vars`
-  (`CF_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). From there `pithy` **mints scoped,
+  (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, wrangler's own env-var names). From there `pithy` **mints scoped,
   least-privilege tokens** for each use case via the CF API — **always preferring
   account-owned (org-level) tokens over user-bound ones**. Minted tokens are stored/rotated
   via `@pithy-sh/secrets`, per environment; never committed.

@@ -12,7 +12,8 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["node_modules/**"],
+          // `*.integration.test.ts` need a LIVE Cloudflare environment; run via `bun run test:integration`.
+          exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
         },
       },
     ],

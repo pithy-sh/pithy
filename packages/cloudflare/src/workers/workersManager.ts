@@ -284,6 +284,20 @@ export class CloudflareWorkersManager extends CloudflareManager {
     });
   }
 
+  /**
+   * The account's `workers.dev` subdomain, or `null` if none is registered. Deploying a Worker that
+   * hosts Workflows requires the account to have one (a one-time account bootstrap), so provisioning
+   * checks this up front. The CF API returns a 404-style error when absent; that maps to `null`.
+   */
+  async accountSubdomain(): Promise<string | null> {
+    try {
+      const result = await this.getClient().workers.subdomains.get({ account_id: this.accountId });
+      return result.subdomain ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   getServiceType(): string {
     return "Cloudflare Workers";
   }
