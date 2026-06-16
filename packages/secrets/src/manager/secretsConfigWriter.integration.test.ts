@@ -29,13 +29,13 @@ describe.skipIf(!hasCreds)("SecretsStoreConfigWriter — LIVE CF Secrets Store",
     const writer = new SecretsStoreConfigWriter(manager, TEST_SECRET);
     try {
       await writer.write(
-        JSON.stringify({ currentVersion: 1, keys: { "1": "x" }, lastRotatedAt: "2026-01-01T00:00:00.000Z" }),
+        JSON.stringify({ currentVersion: "1", versions: { "1": "x" }, lastRotatedAt: "2026-01-01T00:00:00.000Z" }),
         "",
       );
       expect(await manager.exists(TEST_SECRET)).toBe(true);
       // Overwrite (the delete-then-create path), passing the prior value for atomic recovery.
       await writer.write(
-        JSON.stringify({ currentVersion: 2, keys: { "2": "y" }, lastRotatedAt: "2026-02-01T00:00:00.000Z" }),
+        JSON.stringify({ currentVersion: "2", versions: { "2": "y" }, lastRotatedAt: "2026-02-01T00:00:00.000Z" }),
         "prev",
       );
       expect(await manager.exists(TEST_SECRET)).toBe(true);

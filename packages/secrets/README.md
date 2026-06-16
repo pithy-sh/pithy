@@ -37,8 +37,22 @@ Every `d1` secret is stored the same way — a `{ currentVersion, versions }` en
 | Manager Worker | `pithy-secrets-staging` | `pithy-secrets-production` |
 | D1 database | `pithy-secrets-staging` | `pithy-secrets-production` |
 | Secrets Store entry (master key) | `STAGING_SECRETS_ENCRYPTION_KEYS` | `PRODUCTION_SECRETS_ENCRYPTION_KEYS` |
+| Secrets Store entry (manager CF token) | `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN` — one global entry, bound by both | ↩ |
 | Write Workflow | `pithy-secrets-write-staging` | `pithy-secrets-write-production` |
 | Rotation Workflow | `pithy-secrets-rotate-staging` | `pithy-secrets-rotate-production` |
+
+## Credentials (`.dev.vars`)
+
+Provisioning reads two **distinct** Cloudflare API tokens from `.dev.vars` (or `process.env` in CI):
+
+| Variable | Used for | Scope it needs |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | The broad bootstrap token — authenticates the deploy and the provisioning REST calls (create D1, write the store, deploy the manager Worker). | Workers Scripts, D1, Secrets Store, Workflows — the usual provisioning surface. |
+| `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN` | The least-privilege token **written into the Secrets Store** as the manager's runtime credential. The manager's only live-CF use is the rotation config write-back. | **Secrets Store Read + Write only.** Nothing else — the rotation's D1 work runs through the `SECRETS` binding, not this token. |
+
+The broad token never reaches the worker; the narrow token never deploys. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
+
+Until `pithy` mints the manager token itself, the operator creates `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN` once (a CF API token with Secrets Store Read + Write). When minting lands, the token is generated and written straight into the store — the operator never sees it, and this `.dev.vars` entry goes away.
 
 ## The CLI
 
@@ -57,6 +71,7 @@ The CLI is the **cross-environment actor**: a `global` write reaches both enviro
 
 - The master key lives in CF Secrets Store, bound only to that env's workers, and is read only inside a worker.
 - Each env's workers bind only their own env's store and key — a staging worker can't reach production ciphertext.
+- The manager's CF API token is a Secrets Store binding (never a plaintext env var) scoped to **Secrets Store Read + Write only** — least privilege for its sole job, the rotation write-back. The broad bootstrap token never reaches the worker.
 - JSON validation errors are redacted (`path:code`, never the value).
 
 Adoption is never gated behind Bun: this package is pure ESM on Node 22+.

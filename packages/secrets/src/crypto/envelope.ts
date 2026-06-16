@@ -11,18 +11,23 @@ import { SecretCryptoError } from "../error/errors";
  * `keyVersion` persisted per row (which key decrypts it). Both let the at-rest rotation job
  * re-encrypt under a new key with an overlap window. This is the *encryption-key* version — the
  * *value* version is a separate concern (see `versionedValue.ts`).
+ *
+ * The config carries the same uniform `{ currentVersion, versions }` envelope every secret uses
+ * (`versionedValue.ts`) — `versions` is the still-valid key set, `currentVersion` the active
+ * pointer — plus `lastRotatedAt` beside it as rotation metadata. Stringified-integer version keys,
+ * so the keys read is inherently a full-set read (every still-valid version, never current-only).
  */
 export const EncryptionConfig = z
   .object({
     currentVersion: z
-      .number()
-      .int()
-      .positive()
-      .describe("The key version used for new encryptions — the active master key."),
-    keys: z
+      .string()
+      .describe(
+        "The version key (a stringified integer) whose master key encrypts new writes — the active master key.",
+      ),
+    versions: z
       .record(z.string(), z.string())
       .describe(
-        "Version number (as a string) → base64-encoded AES-256 master key. Holds the current key plus any prior versions still needed to decrypt rows not yet re-encrypted.",
+        "Every still-valid master key: version key (stringified integer) → base64-encoded AES-256 key. Holds the current key plus any prior versions still needed to decrypt rows not yet re-encrypted.",
       ),
     lastRotatedAt: z.iso
       .datetime()
@@ -31,7 +36,7 @@ export const EncryptionConfig = z
       ),
   })
   .describe(
-    "The master-key configuration, read from the worker-only SECRETS_ENCRYPTION_KEYS binding (CF Secrets Store).",
+    "The master-key configuration, read from the worker-only SECRETS_ENCRYPTION_KEYS binding (CF Secrets Store). The uniform versioned-value shape (currentVersion + versions) plus rotation metadata.",
   );
 export type EncryptionConfig = z.output<typeof EncryptionConfig>;
 
@@ -60,7 +65,7 @@ async function importKey(
   version: number,
   usage: ("encrypt" | "decrypt")[],
 ): Promise<CryptoKey> {
-  const b64 = config.keys[String(version)];
+  const b64 = config.versions[String(version)];
   if (!b64) {
     throw new SecretCryptoError({
       detail: `encryption key version ${version} not present in SECRETS_ENCRYPTION_KEYS`,
@@ -71,7 +76,7 @@ async function importKey(
 
 /** Encrypt `plaintext` under the config's current key version. The IV is 12 fresh random bytes. */
 export async function encryptValue(config: EncryptionConfig, plaintext: string): Promise<EncryptedEnvelope> {
-  const keyVersion = config.currentVersion;
+  const keyVersion = Number(config.currentVersion);
   const key = await importKey(config, keyVersion, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));

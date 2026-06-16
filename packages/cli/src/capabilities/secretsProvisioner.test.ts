@@ -1,7 +1,14 @@
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  MANAGER_CF_API_TOKEN_SECRET_NAME,
+  masterKeySecretName,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test, vi } from "vitest";
-import { CloudflareSecretsDeprovisioner, CloudflareSecretsProvisioner } from "./secretsProvisioner";
+import {
+  CloudflareSecretsDeprovisioner,
+  CloudflareSecretsProvisioner,
+  writeManagerCfApiToken,
+} from "./secretsProvisioner";
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
@@ -108,6 +115,20 @@ describe("CloudflareSecretsProvisioner", () => {
   });
 });
 
+describe("writeManagerCfApiToken", () => {
+  test("writes the global token entry as a one-entry uniform envelope", async () => {
+    const { cf, putSecret } = fakeCf();
+
+    await writeManagerCfApiToken(cf, "store-1", "scoped-cf-token");
+
+    expect(putSecret).toHaveBeenCalledTimes(1);
+    const [name, value] = putSecret.mock.calls[0] ?? [];
+    expect(name).toBe(MANAGER_CF_API_TOKEN_SECRET_NAME);
+    // The stored value is the uniform envelope, not the bare token.
+    expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "scoped-cf-token" } });
+  });
+});
+
 describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManager removes the worker only when it is deployed", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
@@ -162,5 +183,23 @@ describe("CloudflareSecretsDeprovisioner", () => {
 
     await deprovisioner.deleteDatabase("production");
     expect(deleteDatabase).not.toHaveBeenCalled();
+  });
+
+  test("deleteManagerToken removes the shared token entry when present", async () => {
+    const { cf, exists, deleteSecret } = fakeCf();
+    exists.mockResolvedValue(true);
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+
+    await deprovisioner.deleteManagerToken();
+    expect(deleteSecret).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_SECRET_NAME);
+  });
+
+  test("deleteManagerToken is a no-op when the token is absent (idempotent)", async () => {
+    const { cf, exists, deleteSecret } = fakeCf();
+    exists.mockResolvedValue(false);
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+
+    await deprovisioner.deleteManagerToken();
+    expect(deleteSecret).not.toHaveBeenCalled();
   });
 });

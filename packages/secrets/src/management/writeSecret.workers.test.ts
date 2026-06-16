@@ -17,8 +17,8 @@ function keyB64(): string {
 }
 
 const config: EncryptionConfig = {
-  currentVersion: 1,
-  keys: { "1": keyB64() },
+  currentVersion: "1",
+  versions: { "1": keyB64() },
   lastRotatedAt: "2026-01-01T00:00:00.000Z",
 };
 

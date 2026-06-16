@@ -17,7 +17,11 @@ function keyB64(): string {
   return btoa(binary);
 }
 
-const v1: EncryptionConfig = { currentVersion: 1, keys: { "1": keyB64() }, lastRotatedAt: "2026-01-01T00:00:00.000Z" };
+const v1: EncryptionConfig = {
+  currentVersion: "1",
+  versions: { "1": keyB64() },
+  lastRotatedAt: "2026-01-01T00:00:00.000Z",
+};
 
 /** A synchronous step runner — runs each callback immediately (no durable replay in tests). */
 const syncStep: StepRunner = { do: (_name, fn) => fn() };
@@ -59,7 +63,7 @@ describe("runAtRestKeyRotation", () => {
     expect(result).toMatchObject({ newCurrentVersion: 2, rotated: 1, failed: 0, pruned: true });
     // Two write-backs: the merged config (keys 1 + 2), then the pruned config (key 2 only).
     expect(writer.writes).toHaveLength(2);
-    expect(Object.keys(JSON.parse(writer.writes[1]?.value ?? "{}").keys)).toEqual(["2"]);
+    expect(Object.keys(JSON.parse(writer.writes[1]?.value ?? "{}").versions)).toEqual(["2"]);
     // The row re-encrypted to v2 still decrypts to the same value under the merged config.
     const merged = JSON.parse(writer.writes[0]?.value ?? "{}") as EncryptionConfig;
     expect(await new SystemSecretsStore(db(), merged).getValue("a")).toEqual({

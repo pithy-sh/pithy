@@ -1,4 +1,9 @@
-import { currentValue, type VersionedValue } from "./crypto/versionedValue";
+import {
+  currentValue,
+  decodeVersionedValue,
+  initialVersionedValue,
+  type VersionedValue,
+} from "./crypto/versionedValue";
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import type { SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
@@ -67,10 +72,25 @@ function resolveVersioned(entry: SecretRegistryEntry, name: string, value: Versi
   return { current: parseValue(entry, name, currentValue(value)), currentVersion: value.currentVersion, versions };
 }
 
-/** Resolve a bare value (a `cf-secrets-store` secret, which has no versions) as a single version. */
-function resolveBare(entry: SecretRegistryEntry, name: string, raw: string): Resolved {
-  const value = parseValue(entry, name, raw);
-  return { current: value, currentVersion: "1", versions: { "1": value } };
+/**
+ * Decode a `cf-secrets-store` value into the uniform envelope. The canonical (provisioned) value is a
+ * JSON-encoded {@link VersionedValue}, so a deployed secret round-trips as `{ currentVersion, versions }`.
+ * Local dev `.dev.vars` supplies a bare string instead (wrangler's own `CLOUDFLARE_API_TOKEN`
+ * convention), so a raw value that is not a valid envelope is wrapped as a one-version envelope — the
+ * same accessor path serves both. A single-version secret is always a one-entry envelope.
+ */
+function decodeCfStoreValue(raw: string): VersionedValue {
+  try {
+    return decodeVersionedValue(raw);
+  } catch {
+    // Not a serialized envelope — a bare `.dev.vars` string. Wrap it as a single version.
+    return initialVersionedValue(raw);
+  }
+}
+
+/** Resolve a `cf-secrets-store` secret as the uniform value envelope, parsing every version. */
+function resolveCfStore(entry: SecretRegistryEntry, name: string, raw: string): Resolved {
+  return resolveVersioned(entry, name, decodeCfStoreValue(raw));
 }
 
 /**
@@ -163,7 +183,7 @@ export async function secretsStore<R extends SecretRegistry>(
     const entry = registry[name];
     if (!entry) continue;
     const raw = await resolveBinding(bindings[name], name);
-    resolved[name] = resolveBare(entry, name, raw);
+    resolved[name] = resolveCfStore(entry, name, raw);
   }
 
   return new SecretsAccessor(registry, resolved);

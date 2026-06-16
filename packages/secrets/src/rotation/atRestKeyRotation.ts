@@ -101,7 +101,7 @@ export async function runAtRestKeyRotation(
     }
 
     await step.do("mark-success", () => deps.tracker.markSuccess(rotationId));
-    return { rotated, failed, newCurrentVersion: newConfig.currentVersion, pruned };
+    return { rotated, failed, newCurrentVersion: Number(newConfig.currentVersion), pruned };
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, message));

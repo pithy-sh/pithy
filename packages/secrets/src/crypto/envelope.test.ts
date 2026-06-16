@@ -9,10 +9,10 @@ function randomKeyB64(): string {
   return btoa(binary);
 }
 
-function config(currentVersion = 1, keys?: Record<string, string>): EncryptionConfig {
+function config(currentVersion = 1, versions?: Record<string, string>): EncryptionConfig {
   return {
-    currentVersion,
-    keys: keys ?? { [String(currentVersion)]: randomKeyB64() },
+    currentVersion: String(currentVersion),
+    versions: versions ?? { [String(currentVersion)]: randomKeyB64() },
     lastRotatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
@@ -59,6 +59,8 @@ describe("encryptValue / decryptValue", () => {
   });
 
   test("rejects a malformed config", () => {
-    expect(() => EncryptionConfig.parse({ currentVersion: 0, keys: {}, lastRotatedAt: "nope" })).toThrow();
+    expect(() =>
+      EncryptionConfig.parse({ currentVersion: "1", versions: { "1": "k" }, lastRotatedAt: "nope" }),
+    ).toThrow();
   });
 });

@@ -15,7 +15,11 @@ function randomKeyB64(): string {
 }
 
 const k1 = randomKeyB64();
-const config: EncryptionConfig = { currentVersion: 1, keys: { "1": k1 }, lastRotatedAt: "2026-01-01T00:00:00.000Z" };
+const config: EncryptionConfig = {
+  currentVersion: "1",
+  versions: { "1": k1 },
+  lastRotatedAt: "2026-01-01T00:00:00.000Z",
+};
 
 function newStore(cfg: EncryptionConfig = config): SystemSecretsStore {
   return new SystemSecretsStore(createDatabase(env.SECRETS, secretsTables), cfg);
@@ -94,8 +98,8 @@ describe("SystemSecretsStore", () => {
 
     // The at-rest job rotates: v2 becomes current, v1 stays available to decrypt old rows.
     const rotated: EncryptionConfig = {
-      currentVersion: 2,
-      keys: { "1": k1, "2": randomKeyB64() },
+      currentVersion: "2",
+      versions: { "1": k1, "2": randomKeyB64() },
       lastRotatedAt: "2026-02-01T00:00:00.000Z",
     };
     expect(await newStore(rotated).getValue("k")).toEqual({
