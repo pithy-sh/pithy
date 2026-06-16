@@ -72,11 +72,11 @@ describe("initialMasterKeyConfig", () => {
   test("mints a valid one-version config with a 32-byte key", async () => {
     const config = await initialMasterKeyConfig(new Date("2026-01-01T00:00:00.000Z"));
     expect(EncryptionConfig.parse(config)).toMatchObject({
-      currentVersion: 1,
+      currentVersion: "1",
       lastRotatedAt: "2026-01-01T00:00:00.000Z",
     });
-    expect(Object.keys(config.keys)).toEqual(["1"]);
-    expect(atob(config.keys["1"] ?? "").length).toBe(32);
+    expect(Object.keys(config.versions)).toEqual(["1"]);
+    expect(atob(config.versions["1"] ?? "").length).toBe(32);
   });
 });
 
@@ -99,13 +99,16 @@ describe("deprovisionSecrets", () => {
       deleteDatabase: vi.fn(async (env: ManagedEnvironment) => {
         calls.push(`db:${env}`);
       }),
+      deleteManagerToken: vi.fn(async () => {
+        calls.push("token");
+      }),
     };
   }
 
-  test("keeps master keys by default — manager then database, per env", async () => {
+  test("keeps master keys by default — manager then database per env, then the shared token", async () => {
     const calls: string[] = [];
     await deprovisionSecrets(recordingDeprovisioner(calls));
-    expect(calls).toEqual(["manager:staging", "db:staging", "manager:production", "db:production"]);
+    expect(calls).toEqual(["manager:staging", "db:staging", "manager:production", "db:production", "token"]);
   });
 
   test("deletes master keys only when asked", async () => {
@@ -119,6 +122,7 @@ describe("deprovisionSecrets", () => {
       "manager:production",
       "key:production",
       "db:production",
+      "token",
     ]);
   });
 });

@@ -50,15 +50,18 @@ export function resolveManagerConfig(
 
   resolved.name = name;
   resolved.d1_databases = resolved.d1_databases.map((db) => ({ ...db, database_name: name, database_id: databaseId }));
+  // Both secrets live in the same store, so every entry gets `storeId`. Only the master key is
+  // env-scoped — its entry name is env-prefixed. The CF API token is `global` (one fixed entry name,
+  // bound the same way by both managers), so its `secret_name` passes through from the template.
   resolved.secrets_store_secrets = resolved.secrets_store_secrets.map((entry) => ({
     ...entry,
     store_id: storeId,
-    secret_name: masterKeySecretName(env),
+    secret_name: entry.binding === "SECRETS_ENCRYPTION_KEYS" ? masterKeySecretName(env) : entry.secret_name,
   }));
   // The write Workflow's name is the CLI's dispatch target (pithy-secrets-write-<env>); suffix every
   // Workflow so staging and production are addressable, and never collide, in one account.
   resolved.workflows = resolved.workflows.map((wf) => ({ ...wf, name: `${wf.name}-${env}` }));
-  resolved.vars = { ...resolved.vars, CLOUDFLARE_ACCOUNT_ID: accountId, SECRETS_STORE_ID: storeId };
+  resolved.vars = { ...resolved.vars, CLOUDFLARE_ACCOUNT_ID: accountId, SECRETS_STORE_ID: storeId, ENVIRONMENT: env };
 
   return resolved;
 }

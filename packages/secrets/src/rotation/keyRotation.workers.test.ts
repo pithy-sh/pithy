@@ -16,10 +16,10 @@ function keyB64(): string {
 }
 
 const k1 = keyB64();
-const v1: EncryptionConfig = { currentVersion: 1, keys: { "1": k1 }, lastRotatedAt: "2026-01-01T00:00:00.000Z" };
+const v1: EncryptionConfig = { currentVersion: "1", versions: { "1": k1 }, lastRotatedAt: "2026-01-01T00:00:00.000Z" };
 const v2: EncryptionConfig = {
-  currentVersion: 2,
-  keys: { "1": k1, "2": keyB64() },
+  currentVersion: "2",
+  versions: { "1": k1, "2": keyB64() },
   lastRotatedAt: "2026-02-01T00:00:00.000Z",
 };
 

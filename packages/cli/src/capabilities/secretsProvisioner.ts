@@ -5,9 +5,11 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import {
   initialMasterKeyConfig,
+  MANAGER_CF_API_TOKEN_SECRET_NAME,
   masterKeySecretName,
   type SecretsDeprovisioner,
   type SecretsProvisioner,
@@ -110,21 +112,41 @@ function managerDir(): string {
 }
 
 /**
+ * Write the scoped CF API token into the Secrets Store as the entry the manager binds at runtime.
+ * The value is the uniform versioned-value envelope (a one-entry envelope on first write), so the
+ * manager's `secretsStore` read decodes it exactly like every other secret. The token is `global` —
+ * one fixed entry written once, bound the same way by every manager — so this is idempotent and
+ * re-runnable: `putSecret` upserts, and a re-deploy rewrites the same entry with the same value.
+ */
+export async function writeManagerCfApiToken(cf: CloudflareClients, storeId: string, apiToken: string): Promise<void> {
+  await cf
+    .secrets(storeId)
+    .putSecret(MANAGER_CF_API_TOKEN_SECRET_NAME, encodeVersionedValue(initialVersionedValue(apiToken)));
+}
+
+/**
  * Build the live deploy step. It resolves the manager's `wrangler.jsonc` template into a per-env
  * standalone config (filling the placeholder ids), writes it beside the worker so wrangler's relative
- * `main` resolves, runs `wrangler deploy --config <resolved>`, then sets the deploy-only
- * `CLOUDFLARE_API_TOKEN` secret (kept out of the config — it is sensitive). The temp config is removed after.
+ * `main` resolves, writes the manager's runtime token into the Secrets Store **before** deploy so the
+ * `CLOUDFLARE_API_TOKEN` binding resolves, then runs `wrangler deploy --config <resolved>`. The temp
+ * config is removed after.
  *
- * Auth flows through env vars, not `wrangler login`: `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`
- * come from the `.dev.vars` bootstrap token (CLAUDE.md §CF token bootstrap), so `.dev.vars` stays the
- * single credential source.
+ * **Two distinct tokens, by design.** `apiToken` is the broad bootstrap token (`.dev.vars`
+ * `CLOUDFLARE_API_TOKEN`) that authenticates the deploy itself — it can create Workers, D1, and so on.
+ * `managerApiToken` is the **least-privilege** token written into the Secrets Store as the manager's
+ * runtime credential (`.dev.vars` `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN`), scoped to Secrets Store
+ * Read + Write only. The broad token never reaches the worker; the narrow token never deploys. Auth
+ * flows through env vars, not `wrangler login` (CLAUDE.md §CF token bootstrap), so `.dev.vars` stays
+ * the single credential source. (Future: `pithy` mints `managerApiToken` itself, so it goes straight
+ * into the store and the operator never sees it.)
  */
 export function buildManagerDeploy(options: {
   cf: CloudflareClients;
   accountId: string;
   apiToken: string;
+  managerApiToken: string;
 }): DeployManager {
-  const { cf, accountId, apiToken } = options;
+  const { cf, accountId, apiToken, managerApiToken } = options;
   return async (env, resolved) => {
     const dir = managerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
@@ -132,13 +154,13 @@ export function buildManagerDeploy(options: {
     const configPath = join(dir, `.wrangler.${env}.json`);
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     try {
+      // Write the manager's least-privilege runtime token before deploy so its CLOUDFLARE_API_TOKEN
+      // Secrets Store binding resolves. The broad bootstrap token only authenticates the deploy below.
+      await writeManagerCfApiToken(cf, resolved.storeId, managerApiToken);
       await runWrangler(["deploy", "--config", configPath], {
         cwd: dir,
         env: { CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId },
       });
-      // The manager reads CLOUDFLARE_API_TOKEN at runtime (the rotation Workflow writes back to the
-      // store). It is sensitive, so it is a deployment secret, never a config var.
-      await cf.workers().addSecret(managerWorkerName(env), "CLOUDFLARE_API_TOKEN", apiToken);
     } finally {
       await unlink(configPath).catch(() => {});
     }
@@ -188,6 +210,14 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     const db = await this.#cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
     if (db) {
       await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
+    }
+  }
+
+  /** Delete the shared manager CF API token entry if present — the inverse of `writeManagerCfApiToken`. */
+  async deleteManagerToken(): Promise<void> {
+    const store = this.#cf.secrets(this.#storeId);
+    if (await store.exists(MANAGER_CF_API_TOKEN_SECRET_NAME)) {
+      await store.deleteSecret(MANAGER_CF_API_TOKEN_SECRET_NAME);
     }
   }
 }

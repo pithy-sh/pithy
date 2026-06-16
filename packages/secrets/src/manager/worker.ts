@@ -1,9 +1,12 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
-import { resolveEncryptionConfig, type SecretsStoreEnv } from "../env/bindings";
+import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { isRotationDue } from "../rotation/keyRotation";
+import type { ManagedEnvironment } from "../scope";
+import { secretsStore } from "../secretsStore";
+import { managerRegistry } from "./managerRegistry";
 import { runRotationWorkflow } from "./rotationWorkflow";
-import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
+import { rotationConfigWriter } from "./secretsConfigWriter";
 import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult } from "./writeWorkflow";
 
 /**
@@ -26,10 +29,21 @@ const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 export interface SecretsManagerEnv extends SecretsStoreEnv {
   /** The at-rest rotation Workflow binding, triggered by the cron. */
   AT_REST_ROTATION: { create(): Promise<unknown> };
-  /** CF creds + Secrets Store id for the at-rest config write-back — the only live-CF write. */
-  CLOUDFLARE_API_TOKEN: string;
+  /**
+   * The scoped CF API token for the at-rest config write-back — the only live-CF write. A
+   * `cf-secrets-store` binding read via `secretsStore(env, managerRegistry).get("CLOUDFLARE_API_TOKEN")`,
+   * a string from `.dev.vars` in local dev. Never a plaintext env var.
+   */
+  CLOUDFLARE_API_TOKEN: SecretBinding | string;
   CLOUDFLARE_ACCOUNT_ID: string;
   SECRETS_STORE_ID: string;
+  /**
+   * This manager's environment. The rotation write-back uses it to target the env-prefixed master-key
+   * store entry — the same entry the `SECRETS_ENCRYPTION_KEYS` binding reads — so a rotation persists
+   * to the entry the worker actually binds. Filled at provision from `managedEnvironments()`; still
+   * `ManagedEnvironment.parse`d at the read site, since a wrangler var is external config.
+   */
+  ENVIRONMENT: ManagedEnvironment;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
 }
@@ -44,12 +58,18 @@ export class SecretsWriteWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, 
 /** The at-rest key-rotation Workflow — re-encrypts the store under a fresh master key. */
 export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, unknown> {
   override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
+    // Build the manager's secret accessor once; read the CF API token at the point of need. Every
+    // place a secret is consumed is a visible `secrets.get(...)` call site (grep-able), never hidden
+    // behind a wrapper.
+    const secrets = await secretsStore(this.env, managerRegistry);
     const manager = new CloudflareSecretsStoreManager({
       accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: this.env.CLOUDFLARE_API_TOKEN,
+      apiToken: secrets.get("CLOUDFLARE_API_TOKEN"),
       storeId: this.env.SECRETS_STORE_ID,
     });
-    await runRotationWorkflow(this.env, new SecretsStoreConfigWriter(manager), step);
+    // The writer targets the env-prefixed master-key entry this worker actually binds (see
+    // rotationConfigWriter) — not the unprefixed default — so the rotation persists where it's read.
+    await runRotationWorkflow(this.env, rotationConfigWriter(manager, this.env.ENVIRONMENT), step);
   }
 }
 

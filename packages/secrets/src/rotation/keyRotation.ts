@@ -25,10 +25,10 @@ export async function generateKeyB64(): Promise<string> {
  * re-encrypted stay decryptable through the overlap window.
  */
 export async function mergeNextKey(config: EncryptionConfig, now: Date = new Date()): Promise<EncryptionConfig> {
-  const nextVersion = config.currentVersion + 1;
+  const nextVersion = String(Number(config.currentVersion) + 1);
   return {
     currentVersion: nextVersion,
-    keys: { ...config.keys, [String(nextVersion)]: await generateKeyB64() },
+    versions: { ...config.versions, [nextVersion]: await generateKeyB64() },
     lastRotatedAt: now.toISOString(),
   };
 }
@@ -38,12 +38,12 @@ export async function mergeNextKey(config: EncryptionConfig, now: Date = new Dat
  * single key already). Pruning is only safe once no row references an old version.
  */
 export function pruneOldKeys(config: EncryptionConfig): EncryptionConfig | null {
-  if (Object.keys(config.keys).length <= 1) return null;
-  const currentKey = config.keys[String(config.currentVersion)];
+  if (Object.keys(config.versions).length <= 1) return null;
+  const currentKey = config.versions[config.currentVersion];
   if (currentKey === undefined) return null;
   return {
     currentVersion: config.currentVersion,
-    keys: { [String(config.currentVersion)]: currentKey },
+    versions: { [config.currentVersion]: currentKey },
     lastRotatedAt: config.lastRotatedAt,
   };
 }
@@ -71,7 +71,7 @@ export async function reencryptBatch(
   const rows = await db
     .selectFrom("pithySecretsSystemSecrets")
     .select(["id", "encryptedValue", "iv", "keyVersion"])
-    .where("keyVersion", "!=", config.currentVersion)
+    .where("keyVersion", "!=", Number(config.currentVersion))
     .limit(batchSize)
     .execute();
   if (rows.length === 0) return result;
@@ -114,7 +114,7 @@ export async function countOnOldKeys(db: SecretsDb, config: EncryptionConfig): P
   const row = await db
     .selectFrom("pithySecretsSystemSecrets")
     .select((eb) => eb.fn.countAll<number>().as("count"))
-    .where("keyVersion", "!=", config.currentVersion)
+    .where("keyVersion", "!=", Number(config.currentVersion))
     .executeTakeFirstOrThrow();
   return Number(row.count);
 }

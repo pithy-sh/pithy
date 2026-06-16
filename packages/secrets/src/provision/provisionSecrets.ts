@@ -12,13 +12,22 @@ export function masterKeySecretName(env: ManagedEnvironment): string {
 }
 
 /**
+ * The CF Secrets Store entry name holding the scoped CF API token, bound into each manager as
+ * `CLOUDFLARE_API_TOKEN`. The token is `global` — one value, written once canonically and bound the
+ * same way by both managers — so the entry name is fixed (no env prefix). Provisioning owns this
+ * store-entry-name → binding-var mapping out of band; the manager registry stays keyed by the
+ * binding var (see `manager/managerRegistry`).
+ */
+export const MANAGER_CF_API_TOKEN_SECRET_NAME = "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN";
+
+/**
  * Mint a fresh master key and build the initial encryption config to store as the env's
  * `SECRETS_ENCRYPTION_KEYS` at provision time: version 1, one key, current. A real
  * `ensureMasterKey` JSON-stringifies this and writes it to CF Secrets Store — but only when no key
  * exists yet, since replacing it would orphan every stored secret.
  */
 export async function initialMasterKeyConfig(now: Date = new Date()): Promise<EncryptionConfig> {
-  return { currentVersion: 1, keys: { "1": await generateKeyB64() }, lastRotatedAt: now.toISOString() };
+  return { currentVersion: "1", versions: { "1": await generateKeyB64() }, lastRotatedAt: now.toISOString() };
 }
 
 /**
@@ -92,6 +101,13 @@ export interface SecretsDeprovisioner {
   deleteMasterKey(env: ManagedEnvironment): Promise<void>;
   /** Delete the env's secrets D1. Idempotent (a missing database is a no-op). */
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
+  /**
+   * Delete the manager's CF API token entry (`GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`) from the Secrets
+   * Store. It is `global` — one entry shared by both managers — so it is deleted once, after every
+   * manager is gone. Safe and ungated: the token is a re-mintable access credential, not a key, so
+   * removing it orphans no secrets. Idempotent (a missing entry is a no-op).
+   */
+  deleteManagerToken(): Promise<void>;
 }
 
 /** Teardown options. By default the master keys are **kept** — deleting them is irreversible. */
@@ -104,7 +120,8 @@ export interface DeprovisionOptions {
  * Tear down every managed environment, reversing {@link provisionSecrets}: delete the manager worker
  * first (it binds the other resources), then — only when `deleteKeys` is set — the master key, then
  * the D1. The master key is preserved unless explicitly requested: losing it orphans every secret,
- * and a re-provision can reuse the existing key. Idempotent end to end.
+ * and a re-provision can reuse the existing key. The shared manager CF API token is deleted once at
+ * the end, after every manager that binds it is gone. Idempotent end to end.
  */
 export async function deprovisionSecrets(
   deprovisioner: SecretsDeprovisioner,
@@ -115,4 +132,5 @@ export async function deprovisionSecrets(
     if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
     await deprovisioner.deleteDatabase(env);
   }
+  await deprovisioner.deleteManagerToken();
 }

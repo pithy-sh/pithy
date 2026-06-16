@@ -4,11 +4,18 @@ import { join } from "node:path";
 /**
  * The Cloudflare credential keys pithy reads out-of-Worker (CLI, provisioning, live tests). These are
  * wrangler's own env-var names plus the Secrets Store id; a bootstrap token mints scoped tokens from here.
+ *
+ * `SECRETS_MANAGER_CLOUDFLARE_API_TOKEN` is distinct from the broad bootstrap `CLOUDFLARE_API_TOKEN`:
+ * it is the **least-privilege** token written into the Secrets Store as the secrets manager's runtime
+ * credential, scoped to **Secrets Store Read + Write only** (the manager's sole live-CF use is the
+ * rotation config write-back; its D1 work runs through the `SECRETS` binding). Until `pithy` mints this
+ * token itself, the operator supplies it here.
  */
 export const CLOUDFLARE_ENV_KEYS = [
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
   "SECRETS_STORE_ID",
+  "SECRETS_MANAGER_CLOUDFLARE_API_TOKEN",
   "R2_CREDENTIALS",
 ] as const;
 

@@ -3,7 +3,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { EncryptionConfig } from "./crypto/envelope";
-import { appendVersion, initialVersionedValue } from "./crypto/versionedValue";
+import { appendVersion, encodeVersionedValue, initialVersionedValue } from "./crypto/versionedValue";
 import { secretsTables } from "./data/tables";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretNotFoundError } from "./error/errors";
@@ -20,8 +20,8 @@ function keyB64(): string {
 }
 
 const config: EncryptionConfig = {
-  currentVersion: 1,
-  keys: { "1": keyB64() },
+  currentVersion: "1",
+  versions: { "1": keyB64() },
   lastRotatedAt: "2026-01-01T00:00:00.000Z",
 };
 
@@ -98,6 +98,47 @@ describe("secretsStore — d1 backend", () => {
 
     expect(secrets.get("auth-signing-key")).toBe("from-d1");
     expect(secrets.get("NPM_TOKEN")).toBe("from-binding");
+  });
+
+  test("a cf-secrets-store value written as the uniform envelope round-trips as a one-entry envelope", async () => {
+    const registry = defineSecretRegistry({
+      CLOUDFLARE_API_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },
+    });
+
+    const binding = encodeVersionedValue(initialVersionedValue("cf-token-value"));
+    const secrets = await secretsStore(envWith({ CLOUDFLARE_API_TOKEN: binding }), registry);
+
+    expect(secrets.get("CLOUDFLARE_API_TOKEN")).toBe("cf-token-value");
+    expect(secrets.getVersions("CLOUDFLARE_API_TOKEN")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "cf-token-value" },
+    });
+  });
+
+  test("a cf-secrets-store multi-version envelope exposes the current pointer and every version", async () => {
+    const registry = defineSecretRegistry({
+      SIGNING: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },
+    });
+
+    const binding = encodeVersionedValue(appendVersion(initialVersionedValue("v1"), "v2"));
+    const secrets = await secretsStore(envWith({ SIGNING: binding }), registry);
+
+    expect(secrets.get("SIGNING")).toBe("v2");
+    expect(secrets.getVersions("SIGNING")).toEqual({ currentVersion: "2", versions: { "1": "v1", "2": "v2" } });
+  });
+
+  test("a bare cf-secrets-store value (local dev .dev.vars) resolves as a one-entry envelope", async () => {
+    const registry = defineSecretRegistry({
+      CLOUDFLARE_API_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(envWith({ CLOUDFLARE_API_TOKEN: "bare-dev-token" }), registry);
+
+    expect(secrets.get("CLOUDFLARE_API_TOKEN")).toBe("bare-dev-token");
+    expect(secrets.getVersions("CLOUDFLARE_API_TOKEN")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "bare-dev-token" },
+    });
   });
 
   test("a declared d1 secret that was never written fails loudly", async () => {

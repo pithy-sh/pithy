@@ -9,34 +9,34 @@ describe("key rotation envelope ops", () => {
 
   test("mergeNextKey adds the next version, keeps prior keys, and makes it current", async () => {
     const config: EncryptionConfig = {
-      currentVersion: 1,
-      keys: { "1": "k1" },
+      currentVersion: "1",
+      versions: { "1": "k1" },
       lastRotatedAt: "2026-01-01T00:00:00.000Z",
     };
     const merged = await mergeNextKey(config, new Date("2026-02-01T00:00:00.000Z"));
-    expect(merged.currentVersion).toBe(2);
-    expect(Object.keys(merged.keys).sort()).toEqual(["1", "2"]);
-    expect(merged.keys["1"]).toBe("k1");
+    expect(merged.currentVersion).toBe("2");
+    expect(Object.keys(merged.versions).sort()).toEqual(["1", "2"]);
+    expect(merged.versions["1"]).toBe("k1");
     expect(merged.lastRotatedAt).toBe("2026-02-01T00:00:00.000Z");
   });
 
   test("pruneOldKeys keeps only the current version", () => {
     const config: EncryptionConfig = {
-      currentVersion: 2,
-      keys: { "1": "k1", "2": "k2" },
+      currentVersion: "2",
+      versions: { "1": "k1", "2": "k2" },
       lastRotatedAt: "2026-02-01T00:00:00.000Z",
     };
     expect(pruneOldKeys(config)).toEqual({
-      currentVersion: 2,
-      keys: { "2": "k2" },
+      currentVersion: "2",
+      versions: { "2": "k2" },
       lastRotatedAt: "2026-02-01T00:00:00.000Z",
     });
   });
 
   test("pruneOldKeys returns null when there is nothing to prune", () => {
     const config: EncryptionConfig = {
-      currentVersion: 1,
-      keys: { "1": "k1" },
+      currentVersion: "1",
+      versions: { "1": "k1" },
       lastRotatedAt: "2026-01-01T00:00:00.000Z",
     };
     expect(pruneOldKeys(config)).toBeNull();

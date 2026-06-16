@@ -9,7 +9,11 @@ function devEncryptionKeys(): string {
   const key = crypto.getRandomValues(new Uint8Array(32));
   let binary = "";
   for (const byte of key) binary += String.fromCharCode(byte);
-  return JSON.stringify({ currentVersion: 1, keys: { "1": btoa(binary) }, lastRotatedAt: "2026-01-01T00:00:00.000Z" });
+  return JSON.stringify({
+    currentVersion: "1",
+    versions: { "1": btoa(binary) },
+    lastRotatedAt: "2026-01-01T00:00:00.000Z",
+  });
 }
 
 // Workers-runtime project: tests run inside workerd via Miniflare with a real D1 `SECRETS` binding

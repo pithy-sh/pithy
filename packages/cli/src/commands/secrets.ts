@@ -31,12 +31,13 @@ function buildDispatcher(projectDir: string): SecretDispatcher {
 /** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
 function loadCloudflareCreds(
   projectDir: string,
-  options: { requireStore?: boolean } = {},
-): { accountId: string; apiToken: string; storeId: string } {
+  options: { requireStore?: boolean; requireManagerToken?: boolean } = {},
+): { accountId: string; apiToken: string; storeId: string; managerApiToken: string } {
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
+  const managerApiToken = vars.SECRETS_MANAGER_CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
@@ -49,7 +50,14 @@ function loadCloudflareCreds(
       action: "Set SECRETS_STORE_ID in .dev.vars (create a Secrets Store in the Cloudflare dashboard).",
     });
   }
-  return { accountId, apiToken, storeId };
+  if (options.requireManagerToken && !managerApiToken) {
+    throw new ValidationError({
+      message: "The secrets manager's scoped Cloudflare API token is missing.",
+      action:
+        "Set SECRETS_MANAGER_CLOUDFLARE_API_TOKEN in .dev.vars — a token scoped to Secrets Store Read + Write only.",
+    });
+  }
+  return { accountId, apiToken, storeId, managerApiToken };
 }
 
 /**
@@ -158,12 +166,15 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
+      const { accountId, apiToken, storeId, managerApiToken } = loadCloudflareCreds(projectDir, {
+        requireStore: true,
+        requireManagerToken: true,
+      });
       const cf = new CloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
         storeId,
-        deploy: buildManagerDeploy({ cf, accountId, apiToken }),
+        deploy: buildManagerDeploy({ cf, accountId, apiToken, managerApiToken }),
       });
 
       const result = await provisionSecrets(provisioner);

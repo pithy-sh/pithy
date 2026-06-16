@@ -17,6 +17,11 @@ function template(): ManagerWranglerTemplate {
     d1_databases: [{ binding: "SECRETS", database_name: "pithy-secrets", database_id: "<filled-at-provision>" }],
     secrets_store_secrets: [
       { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "<filled-at-provision>", secret_name: "SECRETS_ENCRYPTION_KEYS" },
+      {
+        binding: "CLOUDFLARE_API_TOKEN",
+        store_id: "<filled-at-provision>",
+        secret_name: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",
+      },
     ],
     workflows: [
       { binding: "SECRETS_WRITE", name: "pithy-secrets-write", class_name: "SecretsWriteWorkflow" },
@@ -27,6 +32,7 @@ function template(): ManagerWranglerTemplate {
       ROTATION_INTERVAL_DAYS: "30",
       CLOUDFLARE_ACCOUNT_ID: "<filled-at-provision>",
       SECRETS_STORE_ID: "<filled>",
+      ENVIRONMENT: "<filled-at-provision>",
     },
   };
 }
@@ -58,6 +64,12 @@ describe("resolveManagerConfig", () => {
       store_id: "store-abc",
       secret_name: "STAGING_SECRETS_ENCRYPTION_KEYS",
     });
+    // The CF API token is global: store id filled, but the fixed entry name passes through (no env prefix).
+    expect(resolved.secrets_store_secrets[1]).toEqual({
+      binding: "CLOUDFLARE_API_TOKEN",
+      store_id: "store-abc",
+      secret_name: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",
+    });
     // The write Workflow name is the CLI's dispatch target; both Workflows are env-suffixed.
     expect(resolved.workflows.map((w) => w.name)).toEqual([
       "pithy-secrets-write-staging",
@@ -65,6 +77,8 @@ describe("resolveManagerConfig", () => {
     ]);
     expect(resolved.vars.CLOUDFLARE_ACCOUNT_ID).toBe("acct-9");
     expect(resolved.vars.SECRETS_STORE_ID).toBe("store-abc");
+    // The environment is filled so the worker can target the env-prefixed master-key entry on write-back.
+    expect(resolved.vars.ENVIRONMENT).toBe("staging");
     // Static fields are untouched.
     expect(resolved.compatibility_date).toBe("2025-01-01");
     expect(resolved.triggers.crons).toEqual(["0 3 * * *"]);
