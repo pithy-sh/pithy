@@ -5,7 +5,12 @@ import { join } from "node:path";
  * The Cloudflare credential keys pithy reads out-of-Worker (CLI, provisioning, live tests). These are
  * wrangler's own env-var names plus the Secrets Store id; a bootstrap token mints scoped tokens from here.
  */
-export const CLOUDFLARE_ENV_KEYS = ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "SECRETS_STORE_ID"] as const;
+export const CLOUDFLARE_ENV_KEYS = [
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "SECRETS_STORE_ID",
+  "R2_CREDENTIALS",
+] as const;
 
 /**
  * Parse a `.dev.vars` file body into a map: `KEY=value` lines, `#` comments and blanks skipped, and

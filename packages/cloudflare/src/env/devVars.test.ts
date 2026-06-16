@@ -25,6 +25,7 @@ describe("loadCloudflareEnv", () => {
     vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "from-env-acct");
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "from-env-token");
     vi.stubEnv("SECRETS_STORE_ID", "from-env-store");
+    vi.stubEnv("R2_CREDENTIALS", ""); // unset for this case — empty is skipped, not overlaid
 
     // A directory with no .dev.vars — the read fails and the env overlay supplies the creds.
     const vars = loadCloudflareEnv("/nonexistent-pithy-dir");
@@ -33,5 +34,14 @@ describe("loadCloudflareEnv", () => {
       CLOUDFLARE_API_TOKEN: "from-env-token",
       SECRETS_STORE_ID: "from-env-store",
     });
+  });
+
+  test("overlays R2_CREDENTIALS from process.env so CI can pass R2 keys without a .dev.vars file", () => {
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "from-env-acct");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "from-env-token");
+    vi.stubEnv("R2_CREDENTIALS", '{"accessKeyId":"ak","secretAccessKey":"sk"}');
+
+    const vars = loadCloudflareEnv("/nonexistent-pithy-dir");
+    expect(vars.R2_CREDENTIALS).toBe('{"accessKeyId":"ak","secretAccessKey":"sk"}');
   });
 });

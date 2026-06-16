@@ -119,6 +119,13 @@ bun run test:integration  # against the account in those creds; CI overlays proc
 
 Point them at a **dedicated test account** — they create and delete real resources.
 
+Most managers need only `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`. A few need more, and skip cleanly without it:
+
+- **R2** signs presigned URLs with S3 keys, not the CF token. Put them in `.dev.vars` as `R2_CREDENTIALS={"accessKeyId":"…","secretAccessKey":"…"}`; the R2 suite skips when absent.
+- **Secrets Store** reuses the store in `SECRETS_STORE_ID`.
+- **Images** and **Stream** consume paid quota — an account with them merely *enabled* (limit 0) rejects every upload/reservation. Those suites are additionally gated behind `PITHY_IMAGES_PAID=1` / `PITHY_STREAM_PAID=1`; set them only on an account with quota.
+- **Builds** needs a git repo connected via OAuth (not automatable headlessly) — tracked as a separate follow-up issue, not covered here.
+
 ### The pattern
 
 `src/test-utils/harness.ts` carries the shared scaffolding so each test does not re-derive it:

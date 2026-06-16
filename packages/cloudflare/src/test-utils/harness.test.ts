@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "./harness";
+import { loadIntegrationCreds, parseR2Creds, uniqueName, withThrowawayResource } from "./harness";
 
 describe("uniqueName", () => {
   it("uses the default prefix", () => {
@@ -79,13 +79,31 @@ describe("withThrowawayResource", () => {
   });
 });
 
+describe("parseR2Creds", () => {
+  it("parses a well-formed R2_CREDENTIALS blob", () => {
+    expect(parseR2Creds('{"accessKeyId":"ak","secretAccessKey":"sk"}')).toEqual({
+      accessKeyId: "ak",
+      secretAccessKey: "sk",
+    });
+  });
+
+  it("returns null for undefined, malformed JSON, or a blob missing a key", () => {
+    expect(parseR2Creds(undefined)).toBeNull();
+    expect(parseR2Creds("not json")).toBeNull();
+    expect(parseR2Creds('{"accessKeyId":"ak"}')).toBeNull();
+    expect(parseR2Creds('{"accessKeyId":"","secretAccessKey":"sk"}')).toBeNull();
+  });
+});
+
 describe("loadIntegrationCreds", () => {
-  it("returns the four credential fields with a consistent hasCreds flag", () => {
+  it("returns the credential fields with consistent hasCreds and r2 shapes", () => {
     const creds = loadIntegrationCreds();
     expect(typeof creds.accountId).toBe("string");
     expect(typeof creds.apiToken).toBe("string");
     expect(typeof creds.secretsStoreId).toBe("string");
     // hasCreds is true exactly when both the account id and the token are present.
     expect(creds.hasCreds).toBe(Boolean(creds.accountId && creds.apiToken));
+    // r2 is either null or a fully-populated key pair — never half-parsed.
+    expect(creds.r2 === null || (Boolean(creds.r2.accessKeyId) && Boolean(creds.r2.secretAccessKey))).toBe(true);
   });
 });
