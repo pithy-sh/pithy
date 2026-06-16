@@ -9,6 +9,9 @@ const mockKeysList = vi.fn();
 const mockNamespacesGet = vi.fn();
 const mockMetadataGet = vi.fn();
 
+/** The SDK resolves the values endpoint to a `Response`; mock that shape so the mock matches the wire. */
+const textResponse = (body: string) => ({ text: async () => body });
+
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
     kv = {
@@ -51,15 +54,14 @@ describe("CloudflareKVManager", () => {
   });
 
   describe("get", () => {
-    it("returns a text value", async () => {
-      mockValuesGet.mockResolvedValue("hello");
-      expect(await manager.get("k1")).toBe("hello");
+    it("decodes the SDK Response body via .text() — not the raw Response object", async () => {
+      const response = textResponse("hello");
+      mockValuesGet.mockResolvedValue(response);
+      const value = await manager.get("k1");
+      expect(value).toBe("hello");
+      // The value endpoint resolves to a Response; returning it raw is the live bug this pins against.
+      expect(value).not.toBe(response);
       expect(mockValuesGet).toHaveBeenCalledWith("ns-123", "k1", { account_id: "acct-1" });
-    });
-
-    it("returns null for a missing key", async () => {
-      mockValuesGet.mockResolvedValue(null);
-      expect(await manager.get("k1")).toBeNull();
     });
 
     it("returns null when the SDK throws a 404 for an absent key (not request_failed)", async () => {
@@ -79,17 +81,17 @@ describe("CloudflareKVManager", () => {
 
   describe("getJson", () => {
     it("parses JSON values", async () => {
-      mockValuesGet.mockResolvedValue('{"a":1}');
+      mockValuesGet.mockResolvedValue(textResponse('{"a":1}'));
       expect(await manager.getJson("k1")).toEqual({ a: 1 });
     });
 
-    it("returns null when the key is absent", async () => {
-      mockValuesGet.mockResolvedValue(null);
+    it("returns null when the key is absent (404)", async () => {
+      mockValuesGet.mockRejectedValue(Object.assign(new Error("Not Found"), { status: 404 }));
       expect(await manager.getJson("k1")).toBeNull();
     });
 
     it("throws cloudflare/invalid_response on malformed JSON", async () => {
-      mockValuesGet.mockResolvedValue("not json");
+      mockValuesGet.mockResolvedValue(textResponse("not json"));
       await expect(manager.getJson("k1")).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/invalid_response" }) }),
       );
@@ -134,16 +136,23 @@ describe("CloudflareKVManager", () => {
 
   describe("getWithMetadata", () => {
     it("returns value and metadata together", async () => {
-      mockValuesGet.mockResolvedValue("val");
+      mockValuesGet.mockResolvedValue(textResponse("val"));
       mockMetadataGet.mockResolvedValue({ created: "2025-01-01" });
       expect(await manager.getWithMetadata("k1")).toEqual({ value: "val", metadata: { created: "2025-01-01" } });
     });
 
-    it("returns null metadata when the metadata fetch fails", async () => {
-      mockValuesGet.mockResolvedValue("val");
-      mockMetadataGet.mockRejectedValue(new Error("no metadata"));
-      const result = await manager.getWithMetadata("k1");
-      expect(result.metadata).toBeNull();
+    it("returns null metadata when the key has no metadata (404), keeping the value", async () => {
+      mockValuesGet.mockResolvedValue(textResponse("val"));
+      mockMetadataGet.mockRejectedValue(Object.assign(new Error("Not Found"), { status: 404 }));
+      expect(await manager.getWithMetadata("k1")).toEqual({ value: "val", metadata: null });
+    });
+
+    it("rethrows a non-404 metadata failure as request_failed — never masks it as 'no metadata'", async () => {
+      mockValuesGet.mockResolvedValue(textResponse("val"));
+      mockMetadataGet.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
+      await expect(manager.getWithMetadata("k1")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      );
     });
 
     it("returns null value when the key is absent (404), not request_failed", async () => {

@@ -105,3 +105,53 @@ Every runtime failure is a `PithyError` (`@pithy-sh/core`), never a plain `Error
 ## Testing
 
 These are out-of-Worker REST clients, so tests mock the `cloudflare` SDK (`vi.mock("cloudflare")`) and run in the node environment — no Miniflare. Every codec round-trips in a test.
+
+## Live integration tests
+
+Mocks prove our call *shapes*. They cannot prove the request, the response decoding, and the error handling are functionally correct against real Cloudflare — that only surfaces live. So every manager that makes real CF calls also has a `*.integration.test.ts` that creates a throwaway resource, exercises the manager against it, and tears it down. These are excluded from the default suite and run via `bun run test:integration` (the `vitest.integration.config.ts` project), gated on credentials so they skip cleanly without them.
+
+Run them locally by linking the root `.dev.vars` into the package, then running the suite:
+
+```sh
+bun run vars:local        # symlink ../../.dev.vars -> .dev.vars (git-ignored)
+bun run test:integration  # against the account in those creds; CI overlays process.env instead
+```
+
+Point them at a **dedicated test account** — they create and delete real resources.
+
+### The pattern
+
+`src/test-utils/harness.ts` carries the shared scaffolding so each test does not re-derive it:
+
+- `loadIntegrationCreds()` — reads `CLOUDFLARE_*` from `.dev.vars` (or `process.env`) and returns `hasCreds`. Gate the suite with `describe.skipIf(!creds.hasCreds)`.
+- `uniqueName(prefix?)` — a collision-proof, lowercase `a-z0-9-` name for the throwaway resource.
+- `withThrowawayResource(create, exercise, teardown)` — runs `exercise`, then **guarantees `teardown` in a `finally`** so a failed assertion never orphans a real resource. `create` runs outside the `try`, so a creation failure never tears down something that was never created.
+
+Each test asserts the three things mocks cannot: a happy-path request succeeds, the response decodes to the expected shape, and at least one error/absent path behaves correctly (surfaced as our typed result or a `PithyError`).
+
+`src/kv/kvManager.integration.test.ts` is the reference — copy it. The KV namespace itself is created and deleted with the raw SDK (the manager addresses an existing namespace by id), so namespace lifecycle is the harness's `create`/`teardown`:
+
+```ts
+const creds = loadIntegrationCreds();
+
+describe.skipIf(!creds.hasCreds)("CloudflareKVManager — LIVE", () => {
+  const client = new Cloudflare({ apiToken: creds.apiToken });
+
+  test("round-trips a key, then reads an absent key as null", async () => {
+    await withThrowawayResource(
+      () => client.kv.namespaces.create({ account_id: creds.accountId, title: uniqueName("pithy-int-kv") }),
+      async (namespace) => {
+        const kv = new CloudflareKVManager({ accountId: creds.accountId, apiToken: creds.apiToken, namespaceId: namespace.id });
+        expect(await kv.validateServiceAccess()).toBe(true);     // happy path
+        await kv.set("greeting", "hello");
+        expect(await kv.get("greeting")).toBe("hello");          // decoded shape
+        await kv.delete("greeting");
+        expect(await kv.get("greeting")).toBeNull();             // absent path: 404 -> null
+      },
+      (namespace) => client.kv.namespaces.delete(namespace.id, { account_id: creds.accountId }).then(() => undefined),
+    );
+  });
+});
+```
+
+This reference landed first to lock the template; the remaining managers each copy it as their own reviewed slice under [#39](https://github.com/pithy-sh/pithy/issues/39).

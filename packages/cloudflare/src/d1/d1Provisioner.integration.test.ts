@@ -1,35 +1,29 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { loadCloudflareEnv } from "../env/devVars";
+import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
 import { CloudflareD1Provisioner } from "./d1Provisioner";
 
 /**
  * LIVE integration test — creates and deletes a real D1 database to exercise the control-plane
- * client against the account. Reads creds from the package's `.dev.vars` (symlinked to the root);
- * skipped when absent. Run via `bun run test:integration`. Cleans up the database it creates.
+ * client against the account. Uses the shared harness (creds, naming, guaranteed teardown); see
+ * `README.md` § "Live integration tests" and `kvManager.integration.test.ts` for the template.
+ * Skipped when creds are absent. Run via `bun run test:integration`.
  */
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const creds = loadIntegrationCreds();
 
-const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
-const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID);
-
-describe.skipIf(!hasCreds)("CloudflareD1Provisioner — LIVE", () => {
+describe.skipIf(!creds.hasCreds)("CloudflareD1Provisioner — LIVE", () => {
   test("validates access, creates a database, then deletes it", async () => {
-    const provisioner = new CloudflareD1Provisioner({
-      accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "",
-      apiToken: vars.CLOUDFLARE_API_TOKEN ?? "",
-    });
+    const provisioner = new CloudflareD1Provisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
 
     expect(await provisioner.validateServiceAccess()).toBe(true);
 
-    const name = `pithy-int-test-${Date.now()}`;
-    const db = await provisioner.createDatabase(name);
-    try {
-      expect(db.uuid).toBeTruthy();
-      expect(db.name).toBe(name);
-    } finally {
-      await provisioner.deleteDatabase(db.uuid);
-    }
+    const name = uniqueName("pithy-int-d1");
+    await withThrowawayResource(
+      () => provisioner.createDatabase(name),
+      async (db) => {
+        expect(db.uuid).toBeTruthy();
+        expect(db.name).toBe(name);
+      },
+      (db) => provisioner.deleteDatabase(db.uuid),
+    );
   });
 });

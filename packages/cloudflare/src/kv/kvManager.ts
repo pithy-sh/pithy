@@ -72,10 +72,11 @@ export class CloudflareKVManager extends CloudflareManager {
   async get(key: string): Promise<string | null> {
     return cloudflareRequest(`KV get for key '${key}'`, async () => {
       try {
+        // The SDK resolves the values endpoint to a `Response`, not the value — read the body as text.
         const response = await this.getClient().kv.namespaces.values.get(this.namespaceId, key, {
           account_id: this.accountId,
         });
-        return (response as unknown as string | null) ?? null;
+        return await response.text();
       } catch (error) {
         // The REST API (and SDK) signal a missing key with a 404 throw, not a null resolve.
         if (isNotFoundError(error)) return null;
@@ -132,19 +133,21 @@ export class CloudflareKVManager extends CloudflareManager {
   /** Read a key's value and metadata together. Both are null when absent. */
   async getWithMetadata<M = unknown>(key: string): Promise<KVValueWithMetadata<M>> {
     return cloudflareRequest(`KV getWithMetadata for key '${key}'`, async () => {
-      const client = this.getClient();
-      const [rawValue, metadata] = await Promise.all([
-        // A missing key 404s on both the value and metadata reads; treat that as absent, not an error.
-        client.kv.namespaces.values
-          .get(this.namespaceId, key, { account_id: this.accountId })
+      const [value, metadata] = await Promise.all([
+        // Reuse get()'s Response-unwrap + 404→null decode rather than re-deriving it here, and fetch
+        // the metadata in parallel. A missing key (or a key with no metadata) 404s on the metadata
+        // read; treat only that as absent. A real failure (auth, 5xx, network) is rethrown — never
+        // masked as "no metadata", which would let a caller mistake a fetch failure for an empty tag.
+        this.get(key),
+        this.getClient()
+          .kv.namespaces.metadata.get(this.namespaceId, key, { account_id: this.accountId })
           .catch((error: unknown) => {
             if (isNotFoundError(error)) return null;
             throw error;
           }),
-        client.kv.namespaces.metadata.get(this.namespaceId, key, { account_id: this.accountId }).catch(() => null),
       ]);
       return {
-        value: (rawValue as unknown as string | null) ?? null,
+        value,
         metadata: (metadata as M | null) ?? null,
       };
     });
