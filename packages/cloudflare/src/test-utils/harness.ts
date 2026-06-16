@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCloudflareEnv } from "../env/devVars";
+import { R2Credentials } from "../r2/r2Credentials";
 
 /**
  * Shared scaffolding for the package's `*.integration.test.ts` live suites. Every live test does the
@@ -12,14 +13,6 @@ import { loadCloudflareEnv } from "../env/devVars";
 /** The package root, where `.dev.vars` is symlinked by `bun run vars:local` (CI overlays `process.env`). */
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** R2's S3-compatible keys — separate from the CF API token, since presigned-URL signing needs them. */
-export interface R2Creds {
-  /** The R2 access key id. */
-  accessKeyId: string;
-  /** The R2 secret access key. */
-  secretAccessKey: string;
-}
-
 /** Cloudflare credentials for a live run, plus whether enough of them are present to run at all. */
 export interface IntegrationCreds {
   /** The target account id (`CLOUDFLARE_ACCOUNT_ID`). Empty string when unset. */
@@ -28,24 +21,21 @@ export interface IntegrationCreds {
   apiToken: string;
   /** The Secrets Store id (`SECRETS_STORE_ID`), for the secrets-store live test. Empty string when unset. */
   secretsStoreId: string;
-  /** R2 S3 keys (from `R2_CREDENTIALS` JSON), for the R2 presigned-URL test. Null when unset/unparseable. */
-  r2: R2Creds | null;
+  /** R2 S3 keys (from `R2_CREDENTIALS` JSON), for the R2 presigned-URL test. Null when unset. */
+  r2: R2Credentials | null;
   /** True only when both an account id and a token are present — the gate for `describe.skipIf`. */
   hasCreds: boolean;
 }
 
-/** Parse the `R2_CREDENTIALS` JSON blob into typed keys, or null when absent/malformed/empty. */
-export function parseR2Creds(raw: string | undefined): R2Creds | null {
+/**
+ * Parse the `R2_CREDENTIALS` JSON blob through the canonical {@link R2Credentials} schema — the same
+ * object the R2 storage feature manages as a JSON payload, so the harness and the feature validate it
+ * identically. Returns null when unset (the R2 suite then skips); a set-but-malformed/invalid blob
+ * fails `.parse()` and throws, surfacing the misconfiguration loudly rather than silently skipping.
+ */
+export function parseR2Creds(raw: string | undefined): R2Credentials | null {
   if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<R2Creds>;
-    if (parsed.accessKeyId && parsed.secretAccessKey) {
-      return { accessKeyId: parsed.accessKeyId, secretAccessKey: parsed.secretAccessKey };
-    }
-  } catch {
-    // Malformed JSON — treat as absent; the R2 suite skips on a null `r2`.
-  }
-  return null;
+  return R2Credentials.parse(JSON.parse(raw));
 }
 
 /**

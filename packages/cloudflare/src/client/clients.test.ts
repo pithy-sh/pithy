@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareKVManager } from "../kv/kvManager";
-import { CloudflareR2Manager } from "../media/r2Manager";
+import { CloudflareR2Manager } from "../r2/r2Manager";
 import { CloudflareClients } from "./clients";
 
 // The aggregator only constructs managers; it makes no SDK calls itself. A bare SDK stub is enough.

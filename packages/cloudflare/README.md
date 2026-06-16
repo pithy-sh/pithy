@@ -70,11 +70,18 @@ const result = await turnstile.verify(token, secret);
 if (!result.success) throw new Error("humanity check failed");
 ```
 
-### Media — Images, Stream, R2
+### Media — Images, Stream
 
 ```ts
 const images = cf.images();
 const stream = cf.stream();
+```
+
+### R2
+
+R2 is its own capability (`src/r2/`). It speaks the S3 protocol, so it signs presigned URLs with an S3 access-key/secret pair — distinct from the CF API token, and validated through the `R2Credentials` Zod schema.
+
+```ts
 const r2 = cf.r2({ accessKeyId, secretAccessKey, bucketName: "assets" });
 const url = await r2.createUploadUrl("path/to/object");
 ```

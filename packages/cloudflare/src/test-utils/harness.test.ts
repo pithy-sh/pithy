@@ -80,18 +80,22 @@ describe("withThrowawayResource", () => {
 });
 
 describe("parseR2Creds", () => {
-  it("parses a well-formed R2_CREDENTIALS blob", () => {
+  it("parses a well-formed R2_CREDENTIALS blob through the canonical schema", () => {
     expect(parseR2Creds('{"accessKeyId":"ak","secretAccessKey":"sk"}')).toEqual({
       accessKeyId: "ak",
       secretAccessKey: "sk",
     });
   });
 
-  it("returns null for undefined, malformed JSON, or a blob missing a key", () => {
+  it("returns null when unset (the R2 suite then skips)", () => {
     expect(parseR2Creds(undefined)).toBeNull();
-    expect(parseR2Creds("not json")).toBeNull();
-    expect(parseR2Creds('{"accessKeyId":"ak"}')).toBeNull();
-    expect(parseR2Creds('{"accessKeyId":"","secretAccessKey":"sk"}')).toBeNull();
+    expect(parseR2Creds("")).toBeNull();
+  });
+
+  it("throws on a set-but-malformed or incomplete blob — a misconfiguration surfaced loudly", () => {
+    expect(() => parseR2Creds("not json")).toThrow();
+    expect(() => parseR2Creds('{"accessKeyId":"ak"}')).toThrow(); // missing secretAccessKey
+    expect(() => parseR2Creds('{"accessKeyId":"","secretAccessKey":"sk"}')).toThrow(); // empty key fails min(1)
   });
 });
 
