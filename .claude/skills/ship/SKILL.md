@@ -41,10 +41,16 @@ should appear in the changelog.
 - **Stage** single-select field (id `PVTSSF_lADOEV7hPs4BZ_c6zhU6JbM`):
   `Inbox · Refining · Ready · Building · In review · Done`. `/ship` drives the back half:
   `Ready → Building → In review → Done`.
+- **Status** single-select field (id `PVTSSF_lADOEV7hPs4BZ_c6zhU6JTk`):
+  `Todo · In Progress · Done` — GitHub's default field, the coarse view most integrations
+  read. **Keep it in sync with Stage**, never let it drift: Stage `Inbox/Refining/Ready` →
+  Status `Todo`; Stage `Building/In review` → Status `In Progress`; Stage `Done` → Status
+  `Done`. Every Stage move `/ship` makes carries its Status move with it.
 
 **Resolve option IDs at runtime — always.** Single-select option IDs are **not stable**:
-editing the field's options reassigns every ID and clears existing item values. Never
-hardcode an option ID. Project id and field id above are stable; option ids are not.
+editing a field's options reassigns every ID and clears existing item values. Never
+hardcode an option ID — for either field. Project id and field ids above are stable; option
+ids are not.
 
 ## Resolving the board (the reliable way)
 
@@ -52,9 +58,10 @@ hardcode an option ID. Project id and field id above are stable; option ids are 
 Use these instead:
 
 ```bash
-# Stage option ids (re-resolve every run)
+# Stage + Status option ids (re-resolve every run)
 gh project field-list 1 --owner pithy-sh --format json
-#   → .fields[] where .name=="Stage" → .options[] {id,name}
+#   → .fields[] where .name=="Stage"  → .options[] {id,name}
+#   → .fields[] where .name=="Status" → .options[] {id,name}
 
 # The board item id for issue N (lag-free, authoritative)
 gh api graphql -f query='
@@ -63,13 +70,20 @@ query { repository(owner:"pithy-sh", name:"pithy") {
 #   → the node whose project.number == 1 → .id  (the ITEM id, not the issue number)
 ```
 
-**Set an item's Stage:**
+**Set an item's Stage (and Status alongside it):**
 
 ```bash
+# Stage (field id PVTSSF_lADOEV7hPs4BZ_c6zhU6JbM)
 gh project item-edit --id <itemId> \
   --project-id PVT_kwDOEV7hPs4BZ_c6 \
   --field-id PVTSSF_lADOEV7hPs4BZ_c6zhU6JbM \
-  --single-select-option-id <optionId>
+  --single-select-option-id <stageOptionId>
+
+# Status (field id PVTSSF_lADOEV7hPs4BZ_c6zhU6JTk) — the matching coarse value
+gh project item-edit --id <itemId> \
+  --project-id PVT_kwDOEV7hPs4BZ_c6 \
+  --field-id PVTSSF_lADOEV7hPs4BZ_c6zhU6JTk \
+  --single-select-option-id <statusOptionId>
 ```
 
 ## Flow (checkpointed — 🛑 stops for the user)
@@ -91,7 +105,7 @@ gh project item-edit --id <itemId> \
     `feature/<N>-<slug>` branch and a `.worktrees/<N>-<slug>` worktree, installs deps, and
     links `.dev.vars` if one exists (idempotent — no-ops if it already exists). Do **all**
     subsequent work — edits, gates, commit — rooted in that worktree path.
-- Move Stage → `Building`.
+- Move Stage → `Building` **and** Status → `In Progress` (same item, both fields).
 
 ### 2. Implement
 
@@ -156,7 +170,7 @@ Present the `/code-review` and `/security-review` results (and any remediation).
   ```
 - **Ship the change.**
   - **Solo, no `--worktree`:** commit to `main`; the push auto-closes the issue via
-    `Closes #<N>`. Move Stage → `Done`. Skip the PR steps below.
+    `Closes #<N>`. Move Stage → `Done` **and** Status → `Done`. Skip the PR steps below.
   - **`--worktree` (or collaboration mode):** commit on `feature/<N>-<slug>`, then:
     ```bash
     git push -u origin feature/<N>-<slug>
@@ -166,7 +180,8 @@ Present the `/code-review` and `/security-review` results (and any remediation).
     <one-paragraph summary>"
     ```
     `Closes #<N>` auto-closes the issue on merge. **Do not auto-merge** — leave the PR open;
-    merging is the user's call (step 7). Move Stage → `In review` and give the user the PR link.
+    merging is the user's call (step 7). Move Stage → `In review` (Status stays `In
+    Progress`) and give the user the PR link.
 - **`--worktree` teardown.** Once the PR is open, run
   `bun run worktree teardown <N> <short-kebab-slug>` — the branch lives on the remote; the
   worktree is done. **Skip teardown if gates failed or the user aborted** — leave the tree
@@ -174,8 +189,9 @@ Present the `/code-review` and `/security-review` results (and any remediation).
 
 ### 7. Done
 
-When the PR merges, move Stage → `Done`. Merging is the user's call — handle the
-transition on a later `/ship` run, or when asked. Do not auto-merge unless told to.
+When the PR merges, move Stage → `Done` **and** Status → `Done`. Merging is the user's call
+— handle the transition on a later `/ship` run, or when asked. Do not auto-merge unless told
+to.
 
 ## Isolation: `--worktree`
 
