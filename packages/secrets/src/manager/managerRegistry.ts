@@ -2,7 +2,7 @@ import { defineSecretRegistry } from "../registry";
 
 /**
  * The secrets-manager worker's own secret registry. The manager reads it the seam's standard way —
- * `secretsStore(env, managerRegistry)`, then `.get("CLOUDFLARE_API_TOKEN")` at the point of need, so
+ * `sharedSecretsStore(env, managerRegistry)`, then `.get("CLOUDFLARE_API_TOKEN")` at the point of need, so
  * every secret use is a visible, grep-able call site. The token is read as a `cf-secrets-store`
  * binding, never a plaintext env string.
  *

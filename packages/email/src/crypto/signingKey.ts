@@ -1,6 +1,7 @@
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { secretsStore, type VersionedSecret } from "@pithy-sh/secrets/src/secretsStore";
+import type { VersionedSecret } from "@pithy-sh/secrets/src/secretsStore";
+import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 
 /**
  * The link-signing key lives in `@pithy-sh/secrets` as a rotatable, global secret. Email resolves it
@@ -22,6 +23,6 @@ export const emailSigningRegistry = defineSecretRegistry({
 export async function resolveSigningKeys(
   env: SecretsStoreEnv,
 ): Promise<VersionedSecret<(typeof emailSigningRegistry)[typeof EMAIL_LINK_SIGNING_KEY]>> {
-  const secrets = await secretsStore(env, emailSigningRegistry);
+  const secrets = await sharedSecretsStore(env, emailSigningRegistry);
   return secrets.getVersions(EMAIL_LINK_SIGNING_KEY);
 }

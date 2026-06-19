@@ -81,6 +81,11 @@ export function createBackend<
     }
   }
 
+  // Startup hooks: each capability may wire across the full composed set (e.g. @pithy-sh/secrets
+  // aggregates every capability's secretRegistry into one combined registry). Runs once at assembly,
+  // after dependsOn validation so a hook can rely on its peers being present.
+  for (const cap of all) cap.compose?.({ capabilities: all });
+
   const databases = composeDatabases(all);
   const namespaces = composeKv(all);
 

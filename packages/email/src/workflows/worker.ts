@@ -1,7 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
-import { resolveSigningKeys } from "../crypto/signingKey";
+import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import { runSend, type SendDeps } from "../send/runSend";
@@ -49,6 +50,11 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
 }
 
 const MINUTE_MS = 60_000;
+
+// This is a standalone worker, not assembled by `createBackend`, so the secrets capability's `compose`
+// hook never runs here. Configure the shared per-invocation accessor directly from email's own slice so
+// `resolveSigningKeys` reads the signing key through the one cached path.
+configureSharedSecrets({ registry: emailSigningRegistry });
 
 /** Parse the brand theme from the single `EMAIL_THEME` JSON var, validated against the schema; default if unset. */
 function buildTheme(env: EmailWorkerEnv): EmailTheme {

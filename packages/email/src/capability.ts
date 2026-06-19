@@ -1,6 +1,7 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
+import { emailSigningRegistry } from "./crypto/signingKey";
 import { emailSuppressionTables, emailTables } from "./data/tables";
 import { registerCallbacks } from "./http/callbacks";
 import { email_0001_init } from "./migrations/0001_init";
@@ -74,6 +75,11 @@ export function email(config: EmailConfigInput): EmailCapability {
   const theme = resolveTheme(resolved.theme, resolved.customTheme);
   const capability = defineCapability({
     name: "email",
+    // The link-signing key is read through @pithy-sh/secrets, so the secrets capability must be
+    // composed; createBackend fails fast if it isn't (rather than 500-ing each link-signing request).
+    dependsOn: ["secrets"],
+    // The slice of secrets email reads — aggregated into the shared per-invocation accessor at startup.
+    secretRegistry: emailSigningRegistry,
     requiredBindings: [
       { type: "d1", name: "DB" },
       { type: "d1", name: "EMAIL_SUPPRESSIONS" },

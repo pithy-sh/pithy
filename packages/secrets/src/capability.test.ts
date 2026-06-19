@@ -1,6 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { afterEach, describe, expect, test } from "vitest";
 import { isSecretsCapability, secrets } from "./capability";
 import { defineSecretRegistry } from "./registry";
+import { resetSharedSecrets, sharedSecretsStore } from "./sharedSecretsStore";
 
 const registry = defineSecretRegistry({
   "auth-signing-key": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
@@ -46,5 +48,35 @@ describe("secrets capability", () => {
 
   test("honors an explicit rotation interval", () => {
     expect(secrets({ registry, rotationIntervalDays: 7 }).rotationIntervalDays).toBe(7);
+  });
+
+  test("defaults the shared-secrets cache TTL to 60 seconds and honors an override", () => {
+    expect(cap().secretsCacheTtlSeconds).toBe(60);
+    expect(secrets({ registry, secretsCacheTtlSeconds: 10 }).secretsCacheTtlSeconds).toBe(10);
+  });
+});
+
+describe("secrets capability compose hook", () => {
+  afterEach(() => resetSharedSecrets());
+
+  test("aggregates every capability's registry into the shared accessor", async () => {
+    const capability = secrets({ registry });
+    // The email capability declares its own slice; compose must merge it into the shared registry.
+    const emailSlice = defineSecretRegistry({
+      "email-link-signing-key": { backend: "d1", scope: "global", rotatable: true, valueType: "text" },
+    });
+    const emailCap = defineCapability({ name: "email", requiredBindings: [], secretRegistry: emailSlice });
+    capability.compose?.({ capabilities: [capability, emailCap] });
+
+    // The shared accessor is now configured with the merged registry: a name no capability declared
+    // fails the membership guard, proving compose aggregated and configured it.
+    const undeclared = defineSecretRegistry({
+      nope: { backend: "d1", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const env = {} as Parameters<typeof sharedSecretsStore>[0];
+    await expect(sharedSecretsStore(env, undeclared)).rejects.toThrowError(/not in the aggregated registry/);
+    // Both the project secret and the email slice are members (membership guard passes; resolution then
+    // proceeds against the empty env, which is irrelevant to this assertion).
+    await expect(sharedSecretsStore(env, emailSlice)).rejects.not.toThrowError(/not in the aggregated registry/);
   });
 });

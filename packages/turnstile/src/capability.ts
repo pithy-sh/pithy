@@ -1,5 +1,6 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { TurnstileConfig, type TurnstileConfigInput } from "./config/config";
+import { turnstileSecretsRegistry } from "./secret/registry";
 
 /** The turnstile capability, with its resolved config attached for inspection (e.g. by `@pithy-sh/auth`). */
 export interface TurnstileCapability extends Capability {
@@ -25,6 +26,8 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
     // The widget secret is read through @pithy-sh/secrets, so the secrets capability must be composed;
     // createBackend fails fast if it isn't (rather than 500-ing each gated request).
     dependsOn: ["secrets"],
+    // The slice of secrets turnstile reads — aggregated into the shared per-invocation accessor at startup.
+    secretRegistry: turnstileSecretsRegistry,
     requiredBindings: [],
   });
   return Object.assign(capability, { turnstileConfig: resolved });

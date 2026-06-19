@@ -1,5 +1,5 @@
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
-import { secretsStore } from "@pithy-sh/secrets/src/secretsStore";
+import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { DEFAULT_TOKEN_FIELD, type TurnstileMode } from "../config/config";
@@ -142,7 +142,7 @@ export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
   return async (c, next) => {
     let secret: string;
     try {
-      const store = await secretsStore(c.env as unknown as SecretsStoreEnv, turnstileSecretsRegistry);
+      const store = await sharedSecretsStore(c.env as unknown as SecretsStoreEnv, turnstileSecretsRegistry);
       secret = selectTurnstileSecret(store.get(TURNSTILE_SECRET_NAME), options.mode);
     } catch (cause) {
       // selectTurnstileSecret already throws turnstile/config; the reader throws secrets/* — rewrap those

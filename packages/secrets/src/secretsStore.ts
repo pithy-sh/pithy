@@ -125,6 +125,22 @@ export class SecretsAccessor<R extends SecretRegistry> {
     };
   }
 
+  /**
+   * A typed view over a subset of this accessor, restricted to `registry`'s names and sharing the
+   * already-resolved values — no re-fetch. Used by the shared per-invocation accessor: the combined
+   * registry is resolved once, then each capability gets a precisely-typed accessor over only its own
+   * slice. A name in `registry` that this accessor never resolved is simply absent, so a later
+   * `get`/`getVersions` fails loudly as `secrets/not_found` rather than returning a silent `undefined`.
+   */
+  subset<R2 extends SecretRegistry>(registry: R2): SecretsAccessor<R2> {
+    const resolved: Record<string, Resolved> = {};
+    for (const name of Object.keys(registry)) {
+      const value = this.#resolved[name];
+      if (value) resolved[name] = value;
+    }
+    return new SecretsAccessor(registry, resolved);
+  }
+
   #require(name: string): Resolved {
     if (!(name in this.#registry)) {
       throw new SecretNotFoundError({ detail: `secret '${name}' is not declared in this registry` });

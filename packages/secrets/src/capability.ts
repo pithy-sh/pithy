@@ -2,6 +2,11 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { secretsTables } from "./data/tables";
 import { secrets_0001_init } from "./migrations/0001_init";
 import type { SecretRegistry } from "./registry";
+import {
+  aggregateSecretRegistries,
+  configureSharedSecrets,
+  DEFAULT_SECRETS_CACHE_TTL_SECONDS,
+} from "./sharedSecretsStore";
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */
 const SECRETS_MIGRATION_ORDER = 100;
@@ -19,6 +24,13 @@ export interface SecretsConfig {
   registry: SecretRegistry;
   /** At-rest key-rotation cadence in days. Defaults to 30. Surfaced as the `rotationIntervalDays` option. */
   rotationIntervalDays?: number;
+  /**
+   * Lifetime in seconds of the shared per-invocation secrets cache. Within one worker invocation
+   * every capability's secrets are resolved once and reused for this long; after it elapses the next
+   * access re-fetches the full combined set. Defaults to 60. Lower it to pick up a rotated secret
+   * sooner; raise it to cut Secrets Store round-trips further.
+   */
+  secretsCacheTtlSeconds?: number;
 }
 
 /**
@@ -29,6 +41,7 @@ export interface SecretsConfig {
 export interface SecretsCapability extends Capability {
   secretRegistry: SecretRegistry;
   rotationIntervalDays: number;
+  secretsCacheTtlSeconds: number;
 }
 
 /**
@@ -39,8 +52,10 @@ export interface SecretsCapability extends Capability {
  * project's {@link SecretRegistry}.
  */
 export function secrets(config: SecretsConfig): SecretsCapability {
+  const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
   const capability = defineCapability({
     name: "secrets",
+    secretRegistry: config.registry,
     requiredBindings: [
       { type: "d1", name: "SECRETS" },
       { type: "secret", name: "SECRETS_ENCRYPTION_KEYS" },
@@ -53,10 +68,17 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         migrations: { "0001_init": secrets_0001_init },
       },
     },
+    // At worker startup, merge every capability's secret-registry slice into one combined registry and
+    // back the shared per-invocation accessor from it — so all secrets resolve in one batch, shared
+    // across capabilities, with this capability's configured TTL.
+    compose: ({ capabilities }) => {
+      configureSharedSecrets({ registry: aggregateSecretRegistries(capabilities), ttlSeconds });
+    },
   });
   return Object.assign(capability, {
     secretRegistry: config.registry,
     rotationIntervalDays: config.rotationIntervalDays ?? DEFAULT_ROTATION_INTERVAL_DAYS,
+    secretsCacheTtlSeconds: ttlSeconds,
   });
 }
 
