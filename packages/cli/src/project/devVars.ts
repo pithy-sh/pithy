@@ -1,13 +1,19 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeFileAtomic } from "./atomic";
+
+function detectEol(content: string): "\r\n" | "\n" {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
 
 /**
  * Upsert `KEY=value` lines into a `.dev.vars` file body, preserving every other line — comments, blanks,
  * and unrelated keys — and updating a key in place where it already exists. New keys are appended. Pure;
- * the caller owns the file IO.
+ * the caller owns the file IO. Existing line endings (CRLF or LF) are preserved; empty content defaults to LF.
  */
 export function upsertDevVarsContent(content: string, vars: Record<string, string>): string {
+  const eol = detectEol(content);
   const updates = new Map(Object.entries(vars));
-  const lines = content.length === 0 ? [] : content.replace(/\n$/, "").split("\n");
+  const lines = content.length === 0 ? [] : content.replace(/\r?\n$/, "").split(/\r?\n/);
   const written = new Set<string>();
   const out: string[] = [];
   for (const line of lines) {
@@ -31,30 +37,31 @@ export function upsertDevVarsContent(content: string, vars: Record<string, strin
   for (const [key, value] of updates) {
     if (!written.has(key)) out.push(`${key}=${value}`);
   }
-  return out.length === 0 ? "" : `${out.join("\n")}\n`;
+  return out.length === 0 ? "" : `${out.join(eol)}${eol}`;
 }
 
 /** Remove the given `KEY=` lines from a `.dev.vars` file body, leaving everything else untouched. */
 export function removeDevVarsContent(content: string, keys: string[]): string {
+  const eol = detectEol(content);
   const drop = new Set(keys);
-  const lines = content.length === 0 ? [] : content.replace(/\n$/, "").split("\n");
+  const lines = content.length === 0 ? [] : content.replace(/\r?\n$/, "").split(/\r?\n/);
   const out = lines.filter((line) => {
     const eq = line.indexOf("=");
     if (eq === -1 || line.trimStart().startsWith("#")) return true;
     return !drop.has(line.slice(0, eq).trim());
   });
-  return out.length === 0 ? "" : `${out.join("\n")}\n`;
+  return out.length === 0 ? "" : `${out.join(eol)}${eol}`;
 }
 
-/** Read a dev-vars file (empty if absent), upsert the keys, and write it back. */
+/** Read a dev-vars file (empty if absent), upsert the keys, and write it back atomically. */
 export async function upsertDevVars(path: string, vars: Record<string, string>): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => "");
-  await writeFile(path, upsertDevVarsContent(content, vars));
+  await writeFileAtomic(path, upsertDevVarsContent(content, vars));
 }
 
-/** Read a dev-vars file (no-op if absent), remove the keys, and write it back. */
+/** Read a dev-vars file (no-op if absent), remove the keys, and write it back atomically. */
 export async function removeDevVars(path: string, keys: string[]): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => null);
   if (content === null) return;
-  await writeFile(path, removeDevVarsContent(content, keys));
+  await writeFileAtomic(path, removeDevVarsContent(content, keys));
 }

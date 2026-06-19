@@ -39,3 +39,24 @@ describe("removeDevVarsContent", () => {
     expect(removeDevVarsContent("A=1\n", ["A"])).toBe("");
   });
 });
+
+describe("CRLF fidelity", () => {
+  test("upsert preserves CRLF line endings", () => {
+    const before = "# creds\r\nA=1\r\n";
+    expect(upsertDevVarsContent(before, { A: "2" })).toBe("# creds\r\nA=2\r\n");
+  });
+
+  test("upsert appends a new key with CRLF when file uses CRLF", () => {
+    const before = "A=1\r\n";
+    expect(upsertDevVarsContent(before, { B: "2" })).toBe("A=1\r\nB=2\r\n");
+  });
+
+  test("remove preserves CRLF line endings", () => {
+    const before = "A=1\r\nB=2\r\n";
+    expect(removeDevVarsContent(before, ["A"])).toBe("B=2\r\n");
+  });
+
+  test("empty file defaults to LF on upsert", () => {
+    expect(upsertDevVarsContent("", { A: "1" })).toBe("A=1\n");
+  });
+});
