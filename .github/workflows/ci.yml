@@ -1,10 +1,30 @@
 name: CI
 
+# Skip CI for changes that can't affect build/typecheck/test/lint. `paths-ignore` skips a run only when
+# EVERY changed file matches, so a mixed code+docs change still runs. If `CI` is ever made a required
+# status check (needs branch protection — a public/Pro feature), a docs-only PR would skip the job and
+# report no status; add an always-pass guard job then. Not a concern while the repo is unprotected.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - ".claude/**"
+      - ".vscode/**"
+      - ".husky/**"
+      - ".gitignore"
+      - ".editorconfig"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - ".claude/**"
+      - ".vscode/**"
+      - ".husky/**"
+      - ".gitignore"
+      - ".editorconfig"
+      - "LICENSE"
 
 permissions:
   contents: read
