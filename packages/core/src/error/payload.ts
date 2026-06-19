@@ -161,6 +161,70 @@ const SecretCryptoFailedPublic = z
   })
   .describe("Encrypting or decrypting a secret failed (500).");
 
+// --- @pithy-sh/email: job-table email platform codes ---
+
+const EmailTemplateNotFoundPublic = z
+  .object({
+    code: z.literal("email/template_not_found").describe("The requested email template id is not registered."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("The requested email template does not exist (404).");
+
+const EmailInvalidPayloadPublic = z
+  .object({
+    code: z
+      .literal("email/invalid_payload")
+      .describe("A template's input variables failed validation against its payload schema."),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("Email template payload failed validation against its schema (400).");
+
+const EmailInvalidTokenPublic = z
+  .object({
+    code: z
+      .literal("email/invalid_token")
+      .describe(
+        "A callback token (click/open/unsubscribe) is malformed, expired, forged, or signed by an unknown key.",
+      ),
+    status: z.literal(400).describe("Bad Request — the signed token did not verify."),
+    ...publicFields,
+  })
+  .describe("An email callback token failed verification (400).");
+
+const EmailSuppressedPublic = z
+  .object({
+    code: z
+      .literal("email/suppressed")
+      .describe("The recipient address is on the suppression list and cannot be sent to."),
+    status: z.literal(409).describe("Conflict — the address is suppressed."),
+    ...publicFields,
+  })
+  .describe("The recipient is suppressed and was not sent to (409).");
+
+const EmailRateLimitedPublic = z
+  .object({
+    code: z
+      .literal("email/rate_limited")
+      .describe("The Email Service rejected the send for a rate or daily-quota limit; the send is retryable."),
+    status: z.literal(429).describe("Too Many Requests."),
+    ...publicFields,
+  })
+  .describe("The Email Service rate or daily limit was hit (429).");
+
+const EmailSendFailedPublic = z
+  .object({
+    code: z
+      .literal("email/send_failed")
+      .describe(
+        "A send through the Email Service binding failed for a non-retryable reason (validation, sender, content).",
+      ),
+    status: z.literal(502).describe("Bad Gateway — the upstream Email Service returned a terminal error."),
+    ...publicFields,
+  })
+  .describe("A send through the Email Service failed terminally (502).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -182,6 +246,12 @@ export const PublicErrorPayload = z
     SecretAlreadyExistsPublic,
     SecretInvalidValuePublic,
     SecretCryptoFailedPublic,
+    EmailTemplateNotFoundPublic,
+    EmailInvalidPayloadPublic,
+    EmailInvalidTokenPublic,
+    EmailSuppressedPublic,
+    EmailRateLimitedPublic,
+    EmailSendFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -214,6 +284,18 @@ const SecretInvalidValue = SecretInvalidValuePublic.extend(detailField).describe
 const SecretCryptoFailed = SecretCryptoFailedPublic.extend(detailField).describe(
   SecretCryptoFailedPublic.description ?? "",
 );
+const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(detailField).describe(
+  EmailTemplateNotFoundPublic.description ?? "",
+);
+const EmailInvalidPayload = EmailInvalidPayloadPublic.extend(detailField).describe(
+  EmailInvalidPayloadPublic.description ?? "",
+);
+const EmailInvalidToken = EmailInvalidTokenPublic.extend(detailField).describe(
+  EmailInvalidTokenPublic.description ?? "",
+);
+const EmailSuppressed = EmailSuppressedPublic.extend(detailField).describe(EmailSuppressedPublic.description ?? "");
+const EmailRateLimited = EmailRateLimitedPublic.extend(detailField).describe(EmailRateLimitedPublic.description ?? "");
+const EmailSendFailed = EmailSendFailedPublic.extend(detailField).describe(EmailSendFailedPublic.description ?? "");
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -235,6 +317,12 @@ export const ErrorPayload = z
     SecretAlreadyExists,
     SecretInvalidValue,
     SecretCryptoFailed,
+    EmailTemplateNotFound,
+    EmailInvalidPayload,
+    EmailInvalidToken,
+    EmailSuppressed,
+    EmailRateLimited,
+    EmailSendFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

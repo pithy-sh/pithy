@@ -36,6 +36,19 @@ export interface WorkflowSpec {
 }
 
 /**
+ * An inbound-email handler. A Worker has a single `email()` entry, so the Pithy entrypoint
+ * (`createEntrypoint`) fans every incoming message out to each capability that declares one —
+ * used for bounce/complaint processing (`@pithy-sh/email`) and any other inbound-mail concern.
+ * `env` is the Worker's per-invocation bindings; the handler must consume, forward, or reject the
+ * message (an untouched message is dropped by the runtime).
+ */
+export type CapabilityEmailHandler = (
+  message: ForwardableEmailMessage,
+  env: Record<string, unknown>,
+  ctx: ExecutionContext,
+) => void | Promise<void>;
+
+/**
  * The single composition contract. `core`, each capability, and the app all implement it,
  * contributing any subset of {config, migrations, routes, middleware, workflows, databases,
  * kvNamespaces, bindings}. Capabilities depend on core seams (e.g. AuthContext), never on each
@@ -58,6 +71,11 @@ export interface Capability<
   middleware?: PithyMiddleware[];
   /** Durable jobs this capability registers. */
   workflows?: WorkflowSpec[];
+  /**
+   * Inbound-email handler. The entrypoint (`createEntrypoint`) fans every incoming message to each
+   * capability that declares one (e.g. `@pithy-sh/email`'s bounce/complaint handler).
+   */
+  email?: CapabilityEmailHandler;
   /**
    * Named D1 databases this capability contributes tables to (database name → {@link DatabaseSpec}).
    * `createBackend` merges every capability's slices per database (via `composeDatabases`) and serves

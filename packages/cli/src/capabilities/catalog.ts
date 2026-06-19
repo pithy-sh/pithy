@@ -21,6 +21,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     package: "@pithy-sh/secrets",
     whenToEnable: "Encrypted secret storage with a worker-only master key and automatic at-rest key rotation.",
   },
+  {
+    name: "email",
+    package: "@pithy-sh/email",
+    whenToEnable:
+      "Transactional and lifecycle email — magic link, OTP, welcome, alerts — sent as durable, tracked jobs.",
+  },
   { name: "storage", package: "@pithy-sh/storage", whenToEnable: "R2-backed object storage." },
   { name: "leaderboard", package: "@pithy-sh/leaderboard", whenToEnable: "Multi-tenant ranking." },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },

@@ -2,6 +2,8 @@ import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareD1Provisioner } from "../d1/d1Provisioner";
+import { CloudflareEmailRoutingManager } from "../email/emailRoutingManager";
+import { CloudflareEmailSendManager } from "../email/emailSendManager";
 import { CloudflareCustomHostnamesManager } from "../hostnames/customHostnamesManager";
 import { CloudflareKVManager } from "../kv/kvManager";
 import { CloudflareImageManager } from "../media/imageManager";
@@ -43,6 +45,8 @@ export class CloudflareClients {
 
   private aiManager?: CloudflareAIManager;
 
+  private emailSendManager?: CloudflareEmailSendManager;
+  private emailRoutingManager?: CloudflareEmailRoutingManager;
   private imageManager?: CloudflareImageManager;
 
   private streamManager?: CloudflareStreamManager;
@@ -106,6 +110,18 @@ export class CloudflareClients {
   ai(): CloudflareAIManager {
     this.aiManager ??= new CloudflareAIManager(this.config);
     return this.aiManager;
+  }
+
+  /** The account-scoped Email Sending (REST) manager — out-of-Worker sends; in a Worker use the binding. */
+  email(): CloudflareEmailSendManager {
+    this.emailSendManager ??= new CloudflareEmailSendManager(this.config);
+    return this.emailSendManager;
+  }
+
+  /** The Email Routing (inbound rules) manager — methods take a zone id. */
+  emailRouting(): CloudflareEmailRoutingManager {
+    this.emailRoutingManager ??= new CloudflareEmailRoutingManager(this.config);
+    return this.emailRoutingManager;
   }
 
   /** The account-scoped Images manager. */

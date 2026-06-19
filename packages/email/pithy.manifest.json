@@ -1,0 +1,45 @@
+{
+  "name": "email",
+  "package": "@pithy-sh/email",
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "d1", "name": "EMAIL_SUPPRESSIONS" },
+    { "type": "workflow", "name": "EMAIL_SENDER" }
+  ],
+  "peerCapabilities": ["secrets"],
+  "migrationNamespace": "email",
+  "whenToEnable": "Transactional and lifecycle email — magic link, OTP, welcome, security alerts, invites, plus newsletters and campaigns. Every send is a durable job: scheduled, retried, and tracked. Auth needs it for magic-link and OTP delivery.",
+  "scaffold": [
+    "Onboard the sending domain onto Cloudflare Email Service (SPF/DKIM/DMARC are configured automatically for a Cloudflare-hosted zone). The from address must use that domain. See the package README.",
+    "Create the link-signing key: `pithy secrets create email-link-signing-key`.",
+    "Run `pithy email provision` — it creates the shared suppression database, migrates it, and deploys the per-environment email worker (send + scheduler Workflows, every-minute cron, send binding).",
+    "To capture bounces in your own worker, enable Email Routing on a subdomain (never the apex — that would move your receiving MX) and pass `--routing-zone <id> --inbound-address <addr> --app-worker <name>` to `pithy email provision`; it creates the one routing rule that delivers bounce/complaint mail to the production app worker's inbound email() handler. Cloudflare also auto-suppresses hard bounces account-wide regardless."
+  ],
+  "configOptions": [
+    {
+      "key": "fromAddress",
+      "default": "noreply@example.com",
+      "describe": "The address every email is sent from. Must use a domain onboarded onto Cloudflare Email Service."
+    },
+    {
+      "key": "fromName",
+      "default": "Pithy",
+      "describe": "The sender display name recipients see. A recognizable name improves deliverability."
+    },
+    {
+      "key": "baseUrl",
+      "default": "https://api.example.com",
+      "describe": "The public base URL of your app worker. Tracking and unsubscribe links are built against it, so it must be reachable from a recipient's inbox."
+    },
+    {
+      "key": "theme",
+      "default": "saffron",
+      "describe": "An off-the-shelf theme to bootstrap from: `saffron` (Pithy default), `midnight` (blue), `forest` (green), or `rose` (warm). Fine-tune it with a `customTheme` object in pithy.config.ts (accent, logo URLs, palette colors); body width is per-template, not a theme setting."
+    },
+    {
+      "key": "schedulerEnabled",
+      "default": true,
+      "describe": "Whether the every-minute scheduler Workflow runs. It finds due scheduled and per-timezone sends and fans them out. Disable only if you send exclusively immediate email."
+    }
+  ]
+}
