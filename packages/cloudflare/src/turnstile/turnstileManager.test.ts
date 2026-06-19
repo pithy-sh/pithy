@@ -181,7 +181,7 @@ describe("CloudflareTurnstileManager", () => {
   });
 
   describe("addTurnstile", () => {
-    it("creates a widget in invisible mode", async () => {
+    it("creates a widget in invisible mode by default", async () => {
       const widget = { sitekey: "key-new", name: "my-site", mode: "invisible" };
       mockCreate.mockResolvedValue(widget);
 
@@ -190,6 +190,19 @@ describe("CloudflareTurnstileManager", () => {
       expect(result).toEqual(widget);
       expect(mockCreate).toHaveBeenCalledWith(
         { account_id: "acct-1", domains: ["example.com"], mode: "invisible", name: "my-site" },
+        opts,
+      );
+    });
+
+    it("creates a managed (visible) widget when asked", async () => {
+      const widget = { sitekey: "key-vis", name: "my-login", mode: "managed" };
+      mockCreate.mockResolvedValue(widget);
+
+      const result = await manager.addTurnstile("my-login", ["example.com"], "managed");
+
+      expect(result).toEqual(widget);
+      expect(mockCreate).toHaveBeenCalledWith(
+        { account_id: "acct-1", domains: ["example.com"], mode: "managed", name: "my-login" },
         opts,
       );
     });

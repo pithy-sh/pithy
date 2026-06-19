@@ -1,13 +1,10 @@
 {
-  "name": "@pithy-sh/cli",
+  "name": "@pithy-sh/turnstile",
   "version": "0.0.0",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
-  },
-  "bin": {
-    "pithy": "./src/bin.ts"
   },
   "exports": {
     "./src/*": "./src/*.ts"
@@ -16,32 +13,24 @@
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
     "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@clack/prompts": "^1.5.0",
-    "@pithy-sh/cloudflare": "workspace:*",
     "@pithy-sh/core": "workspace:*",
-    "@pithy-sh/email": "workspace:*",
     "@pithy-sh/secrets": "workspace:*",
-    "@pithy-sh/turnstile": "workspace:*",
-    "citty": "^0.2.2",
-    "comment-json": "^5.0.0",
-    "kysely": "^0.29.0",
-    "miniflare": "^4.20260611.0",
-    "picocolors": "^1.1.1"
+    "hono": "^4.12.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.14",
     "@cloudflare/workers-types": "^4.20260610.1",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
-    "typescript": "7.0.1-rc",
+    "typescript": "^6.0.0",
     "vitest": "^4.1.0",
-    "wrangler": "^4.99.0",
-    "zod": "^4.0.0"
+    "wrangler": "^4.99.0"
   }
 }

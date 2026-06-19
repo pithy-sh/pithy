@@ -4,6 +4,7 @@ import type { Capability, MergedDatabases, MergedKvNamespaces, PithyHonoEnv, Pit
 import { validateBindings } from "./capability/validateBindings";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { pithyErrorHandler } from "./error/http";
+import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 
 /** Inputs to {@link createBackend}: the capabilities to assemble, plus the app's own capability. */
@@ -65,6 +66,20 @@ export function createBackend<
 >(options: CreateBackendOptions<Caps, App>): Hono<BackendEnv<readonly [...Caps, App]>> {
   // The app is just another capability, composed last so its routes mount after the libraries'.
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
+
+  // Fail fast on a missing peer capability: a capability that reads another's seam (e.g. turnstile
+  // reading secrets) must be composed with it, or its requests would only fail one-by-one at runtime.
+  const present = new Set(all.map((cap) => cap.name));
+  for (const cap of all) {
+    for (const dep of cap.dependsOn ?? []) {
+      if (!present.has(dep)) {
+        throw new ValidationError({
+          message: `Capability "${cap.name}" requires the "${dep}" capability, which is not composed.`,
+          action: `Add ${dep}() to createBackend's capabilities (run \`pithy add ${dep}\`).`,
+        });
+      }
+    }
+  }
 
   const databases = composeDatabases(all);
   const namespaces = composeKv(all);

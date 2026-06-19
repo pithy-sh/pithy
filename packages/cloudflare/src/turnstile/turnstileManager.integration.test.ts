@@ -28,7 +28,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
     expect(bad["error-codes"].length).toBeGreaterThan(0);
   });
 
-  test("creates a widget, finds it, updates domains, rotates the secret, then deletes it", async () => {
+  test("creates a widget, finds it, verifies against its real secret, updates/rotates, then deletes it", async () => {
     const name = uniqueName("pithy-int-turnstile");
 
     await withThrowawayResource(
@@ -41,6 +41,12 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
         const found = await manager.getTurnstile(name);
         expect(found?.sitekey).toBe(widget.sitekey);
 
+        // Verify against the REAL widget's secret: a non-solved token can't pass a real widget, so
+        // siteverify returns a well-formed denial — proof the freshly-minted secret is recognized.
+        const denied = await manager.verify("not-a-solved-token", widget.secret);
+        expect(denied.success).toBe(false);
+        expect(denied["error-codes"].length).toBeGreaterThan(0);
+
         // Update domains, then rotate the secret — the rotated secret differs from the original.
         const updated = await manager.updateTurnstileDomains(widget.sitekey, ["example.com", "pithy.sh"], name);
         expect(updated.domains).toContain("pithy.sh");
@@ -52,6 +58,21 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
     );
 
     // Error/absent path: the widget is gone after teardown.
+    expect(await manager.getTurnstile(name)).toBeNull();
+  });
+
+  test("creates a managed (visible) widget in the requested mode, then deletes it", async () => {
+    const name = uniqueName("pithy-int-turnstile-managed");
+
+    await withThrowawayResource(
+      () => manager.addTurnstile(name, ["example.com"], "managed"),
+      async (widget) => {
+        expect(widget.sitekey).toBeTruthy();
+        expect(widget.mode).toBe("managed");
+      },
+      (widget) => manager.deleteTurnstile(widget.sitekey),
+    );
+
     expect(await manager.getTurnstile(name)).toBeNull();
   });
 });

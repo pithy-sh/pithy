@@ -63,6 +63,17 @@ describe("createBackend", () => {
     expect(await res.text()).toMatch(/Missing required bindings: kv:DOES_NOT_EXIST/);
   });
 
+  test("fails fast at assembly when a capability's peer (dependsOn) is not composed", () => {
+    const needsSecrets = defineCapability({ name: "turnstile", dependsOn: ["secrets"], requiredBindings: [] });
+    expect(() => createBackend({ capabilities: [needsSecrets] })).toThrowError(/requires the "secrets" capability/);
+  });
+
+  test("a satisfied peer dependency assembles cleanly", () => {
+    const secrets = defineCapability({ name: "secrets", requiredBindings: [] });
+    const needsSecrets = defineCapability({ name: "turnstile", dependsOn: ["secrets"], requiredBindings: [] });
+    expect(() => createBackend({ capabilities: [secrets, needsSecrets] })).not.toThrow();
+  });
+
   test("validates the app capability's bindings too", async () => {
     const app = defineCapability({
       name: "app",

@@ -57,6 +57,9 @@ describe("ErrorPayload (the closed taxonomy)", () => {
       ["secrets/already_exists", 409],
       ["secrets/invalid_value", 400],
       ["secrets/crypto_failed", 500],
+      ["turnstile/missing_token", 400],
+      ["turnstile/failed", 403],
+      ["turnstile/config", 500],
     ];
     for (const [code, status] of taxonomy) {
       const base: Record<string, unknown> = { code, status, message: "m" };

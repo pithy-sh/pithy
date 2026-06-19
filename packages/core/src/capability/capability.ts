@@ -63,6 +63,13 @@ export interface Capability<
   Namespaces extends KvNamespaceSpecMap = KvNamespaceSpecMap,
 > {
   name: string;
+  /**
+   * Other capabilities this one needs composed alongside it (by `name`) — the runtime mirror of the
+   * manifest's `peerCapabilities`. `createBackend` fails fast at assembly if a listed peer is absent,
+   * so a capability that reads another's seam (e.g. turnstile reading secrets) surfaces a missing
+   * dependency at startup rather than as a per-request error.
+   */
+  dependsOn?: readonly string[];
   /** Validated env/config/secrets for this capability. */
   config?: z.ZodType;
   /** Mounts a Hono sub-router. */

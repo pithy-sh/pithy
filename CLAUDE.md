@@ -198,6 +198,21 @@ monorepo. Read the companion docs before any structural or surface decision:
 - **Secrets** go through `@pithy-sh/secrets` (CF Secrets Store + D1, resting-state key
   rotation with overlap windows). Never plaintext secrets in repo or config. Signing
   keys rotate on a schedule.
+- **Every secret is declared in a registry and read through the one `secretsStore` reader —
+  no exceptions but the master key.** A module that needs a secret declares a
+  `defineSecretRegistry({ <name>: { backend, scope, rotatable, valueType } })` and reads it with
+  `secretsStore(env, registry).get(name)` (or `.getVersions` for a verifier that must span a
+  rotation). **Never** read a secret off a raw `env.X` binding, and **never** reach a runtime
+  secret through `CloudflareSecretsStoreManager` or a direct D1 query — those are write/provisioning
+  paths only. The registry entry's **`backend`** (`d1` | `cf-secrets-store`) is the *single* place a
+  secret's storage location is decided: moving a secret between stores is a one-line registry edit,
+  and every read site stays byte-identical and grep-able (find every secret use by grepping
+  `secretsStore(`). The secret **name** is the join key — the same name resolves the same value
+  through any registry that declares it, so a module needs only a minimal registry of what it reads
+  (the project-wide registry on the `secrets` capability is for the `pithy secrets` CLI). The **only**
+  secret exempt from the reader is the master key (`SECRETS_ENCRYPTION_KEYS`) that decrypts the D1
+  store — it is the bootstrap and is read directly by `resolveEncryptionConfig`. A meta-test should
+  fail any package that reads a secret-shaped binding outside the reader.
 - **Environments** are first-class: **dev (local) / staging (test users) / production
   (paid users)**. Config and bindings resolve per environment; the CLI scaffolds per-env
   `wrangler.jsonc` and the base URLs client apps use to reach a given environment.

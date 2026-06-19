@@ -1,5 +1,23 @@
 import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { parse, stringify } from "comment-json";
+
+/** The slice of `wrangler.jsonc` the per-environment var helpers read and write. */
+export interface WranglerEnvVars {
+  env?: Record<string, { vars?: Record<string, string> } | undefined>;
+}
+
+/** Read and parse the project's `wrangler.jsonc`, comments preserved (comment-json). Caller casts the shape. */
+export async function readWranglerConfig(projectDir: string): Promise<unknown> {
+  return parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8"));
+}
+
+/** Write `wrangler.jsonc` back comment-preserving, with the repo's 2-space + trailing-newline formatting. */
+export async function writeWranglerConfig(projectDir: string, config: unknown): Promise<void> {
+  await writeFile(join(projectDir, "wrangler.jsonc"), `${stringify(config, null, 2)}\n`);
+}
 
 export interface WranglerOptions {
   /**

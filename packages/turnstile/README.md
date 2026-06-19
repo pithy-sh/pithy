@@ -1,0 +1,104 @@
+# @pithy-sh/turnstile
+
+A Cloudflare Turnstile humanity check for Pithy. One piece of stackable middleware. No tables of its own. It answers one question — *is this a human?* — and stacks on top of any route's real verification strategy.
+
+## What it is, and what it is not
+
+Turnstile is **not** a verification strategy. A route's strategy answers *who is this?* (`bearer`, `session`, `signed-webhook`, `control-plane`, `public`). A humanity check answers *is this a human?* — a different question, so it can never be a route's identity gate. It is composable middleware that stacks on top: a `public` signup route that still requires a Turnstile token, a magic-link route that gates the credential entry, a lead form that runs the check silently.
+
+This package ships the middleware and the config. It ships **no front-end component** — your app renders the widget with the public sitekey and posts the response token; the middleware verifies it.
+
+## The middleware
+
+```ts
+import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
+
+// Stack it on any route, on top of that route's real strategy.
+app.use("/signup", turnstile());                       // public route, now bot-gated
+app.use("/auth/magic-link", turnstile({ action: "login" }));
+app.use("/lead", turnstile({ mode: "invisible" }));    // pick a widget when you run both
+```
+
+On each request it:
+
+1. Resolves the widget secret through `@pithy-sh/secrets` — the secret `turnstile-secret-keys`, read via the one `secretsStore` reader like every Pithy secret (CLAUDE.md §secrets). The reader, not this package, decides where it lives (its registry entry says); the read is identical everywhere. The resolved value is `{ "visible": { "key": "…" }, "invisible": { "key": "…" } }`; with one widget it picks the only entry, with both `mode` selects. The app must have the `secrets` capability; in local dev the secret resolves from `.dev.vars`.
+2. Reads the response token — the `cf-turnstile-response` body field by default (form or JSON), or a header (`turnstile({ header: "x-turnstile-token" })`).
+3. Verifies it against Cloudflare's `/siteverify`, sending the caller IP (`CF-Connecting-IP`). When `action` is set, it asserts the returned action matches and denies on mismatch (binding the token to the route it was solved for).
+4. On success, lets the request continue to its real verification strategy. On failure, throws a `PithyError`.
+
+It **fails closed.** A missing token, a failed verdict, an action mismatch, an unreachable siteverify, a malformed response — all deny. A bot gate never silently opens.
+
+> Body note: in body-token mode the gate reads the request body (via Hono's `c.req`, which caches it, so your handler can read it again normally). If a downstream handler reads the **raw** stream (`c.req.raw.body`) instead, use header-token mode (`turnstile({ header })`) so the gate never touches the body.
+
+### Errors
+
+Every failure throws a `PithyError` subclass — importantly, **a request that fails the humanity check throws `TurnstileFailedError`** (`turnstile/failed`, 403), and that same error is thrown when the check *can't complete* (unreachable or malformed siteverify), because the gate fails closed. The three classes live in `@pithy-sh/turnstile/src/error/errors`:
+
+| Class | Code | Status | When |
+|-------|------|--------|------|
+| `TurnstileMissingTokenError` | `turnstile/missing_token` | 400 | No token in the request where one was required. |
+| `TurnstileFailedError` | `turnstile/failed` | 403 | The token did not pass siteverify, **or** the check could not complete (fail closed). |
+| `TurnstileConfigError` | `turnstile/config` | 500 | The secret is missing, malformed, or has no entry for the route's widget (a `secretsStore` read error is rewrapped to this). |
+
+Register `pithyErrorHandler` on your Hono app (`app.onError(pithyErrorHandler)`) to map these to their HTTP responses; the `detail` is stripped from the wire body.
+
+## Two widgets per domain, max
+
+An app may need both a **visible** widget (a login page should show the challenge — Cloudflare *managed* mode) and an **invisible** one (a lead form runs it silently). The logical maximum is one of each per domain; declare only what you use. The public **sitekey** for each lands in per-environment config so your front-end can render the widget.
+
+```ts
+// pithy.config.ts
+turnstile({
+  widgets: {
+    visible: { sitekeys: { dev: "1x00000000000000000000AA", staging: "…", production: "…" } },
+  },
+  protect: { login: "visible" },   // login (magic-link, OTP) → visible widget. Social/OAuth is never gated.
+});
+```
+
+`@pithy-sh/auth` reads `protect` to stack `turnstile()` on its magic-link and OTP routes. **Social/OAuth login is never gated** — the provider runs its own bot defense and the redirect flow carries no token. This package never imports auth.
+
+## Provisioning
+
+`pithy add turnstile` installs the package and wires its config; the secrets capability must be present (`pithy add secrets` → `pithy secrets provision`) since the widget secret is stored and read through `@pithy-sh/secrets`. `pithy turnstile provision` then wires everything per environment:
+
+- **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into `.dev.vars`, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable.
+- **Only production provisions a real widget**, bound to the production domain in the configured mode. Its secret is written to the **production secrets store**; the public sitekeys are written to the worker vars.
+
+Because the secret is read through `secretsStore`, there is **no separate binding to materialize at deploy** — a production worker resolves it the same way it resolves every secret. (The staging/production writes go through the deployed secrets manager, so `pithy secrets provision` must have run for those environments.)
+
+## `.dev.vars`
+
+`pithy turnstile provision` writes the dev value for you. To set it by hand, the secret is `turnstile-secret-keys`, injected as a `.dev.vars` string in the same shape it is stored — a JSON object keyed by widget mode, so one or both widgets share it:
+
+```sh
+# .dev.vars — local dev gate (one widget)
+turnstile-secret-keys={"visible":{"key":"1x0000000000000000000000000000000AA"}}   # CF test secret: always passes
+# Swap the key for 2x0000000000000000000000000000000AA to exercise the deny path.
+TURNSTILE_SITEKEY_VISIBLE=1x00000000000000000000AA          # public sitekey your front-end renders with
+```
+
+With both widgets, add a second entry to the same object (and pass `turnstile({ mode })` on each route):
+
+```sh
+# .dev.vars — local dev gate (visible + invisible widgets)
+turnstile-secret-keys={"visible":{"key":"1x0000000000000000000000000000000AA"},"invisible":{"key":"1x0000000000000000000000000000000AA"}}
+TURNSTILE_SITEKEY_VISIBLE=1x00000000000000000000AA
+TURNSTILE_SITEKEY_INVISIBLE=1x00000000000000000000BB
+```
+
+Dev also needs the `secrets` capability in scope — the reader's dev path resolves the secret from the `.dev.vars` string above. Running `pithy turnstile provision` / `deprovision` additionally needs the Cloudflare bootstrap credentials (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the same ones `email` and `secrets` use.
+
+The package's own test suite reads none of these — the Workers-runtime tests inject the dummy secret directly.
+
+## Testing against Turnstile
+
+Cloudflare's dummy **secret** keys make siteverify deterministic with no widget:
+
+| Secret | Verdict |
+|--------|---------|
+| `1x0000000000000000000000000000000AA` | always passes |
+| `2x0000000000000000000000000000000AA` | always blocks |
+| `3x0000000000000000000000000000000AA` | token already spent |
+
+The package's Workers-runtime tests bind these and call the real siteverify endpoint, so the gate is exercised end to end without a real widget. `TURNSTILE_TEST_KEYS` (`@pithy-sh/turnstile/src/provision/testKeys`) exports the full set.
