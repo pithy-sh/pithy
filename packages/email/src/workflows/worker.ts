@@ -38,7 +38,7 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
   /** The resolved brand theme as a JSON string (the full `EmailTheme`), set at provision from the app config. */
   EMAIL_THEME?: string;
   BASE_URL: string;
-  ENVIRONMENT?: string;
+  // ENVIRONMENT is inherited from SecretsStoreEnv (a `ManagedEnvironment`); never redeclare it as a plain string.
   LINK_TTL_DAYS?: string;
   MAX_ATTEMPTS?: string;
   SCHEDULER_ENABLED?: string;

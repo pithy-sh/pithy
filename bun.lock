@@ -27,6 +27,7 @@
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/email": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
+        "@pithy-sh/turnstile": "workspace:*",
         "citty": "^0.2.2",
         "comment-json": "^5.0.0",
         "kysely": "^0.29.0",
@@ -126,6 +127,26 @@
         "@vitest/coverage-v8": "^4.1.0",
         "kysely-d1": "^0.4.0",
         "typescript": "7.0.1-rc",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
+    "packages/turnstile": {
+      "name": "@pithy-sh/turnstile",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/secrets": "workspace:*",
+        "hono": "^4.12.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^6.0.0",
         "vitest": "^4.1.0",
         "wrangler": "^4.99.0",
       },
@@ -465,6 +486,8 @@
     "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 
     "@pithy-sh/tsconfig": ["@pithy-sh/tsconfig@workspace:tooling/tsconfig"],
+
+    "@pithy-sh/turnstile": ["@pithy-sh/turnstile@workspace:packages/turnstile"],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 
@@ -1143,6 +1166,10 @@
     "@manypkg/get-packages/@changesets/types": ["@changesets/types@4.1.0", "", {}, "sha512-LDQvVDv5Kb50ny2s25Fhm3d9QSZimsoUGBsUioj6MC3qbMUCuC8GPIvk/M6IvXx3lYhAs0lwWUQLb+VIEUCECw=="],
 
     "@manypkg/get-packages/fs-extra": ["fs-extra@8.1.0", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^4.0.0", "universalify": "^0.1.0" } }, "sha512-yhlQgA6mnOJUKOsRUFsgJdQCvkKhcz8tlZG5HBQfReYZy46OwLcY+Zia0mtdHsOo9y/hP+CxMN0TU9QxoOtG4g=="],
+
+    "@pithy-sh/email/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+
+    "@pithy-sh/turnstile/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "@poppinss/dumper/supports-color": ["supports-color@10.2.2", "", {}, "sha512-SS+jx45GF1QjgEXQx4NJZV9ImqmO2NPz5FNsIHrsDjh2YsHnawpan7SNQ1o8NuhrbHZy9AZhIoCUiCeaW/C80g=="],
 

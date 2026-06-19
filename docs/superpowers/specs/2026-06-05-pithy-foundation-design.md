@@ -127,10 +127,14 @@ only on the seam + `requireAuth()`.
 type VerificationStrategy =
   | 'bearer'         // mobile/web user token
   | 'session'        // web cookie session (CSRF-protected)
-  | 'turnstile'      // bot-protected public route
   | 'signed-webhook' // store/integration callback — signature-verified, no user
   | 'control-plane'  // M2M: the premium dashboard calling the customer's admin endpoints (§10.23)
   | 'public';
+
+// Turnstile is NOT a verification strategy. A humanity check answers "is this a human?", never
+// "who is this?", so it can never be a route's identity gate. It stacks as composable middleware on
+// top of any strategy above — e.g. a `public` signup route that still requires a Turnstile token.
+// See @pithy-sh/turnstile.
 ```
 
 **Signing keys rotate at rest** via `@pithy-sh/secrets` (§10.2): access-token signing keys

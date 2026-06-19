@@ -105,3 +105,43 @@ describe("secretsStore — cf-secrets-store backend", () => {
     expect(serialized).not.toContain("REDACT_ME");
   });
 });
+
+describe("secretsStore — d1 backend, local dev .dev.vars fallback", () => {
+  // In local dev a `d1` secret is injected as a `.dev.vars` string, in the same shape it is stored, so
+  // the reader resolves it without a SECRETS D1 or master key — the deployed path is exercised by the
+  // workers suite (secretsStore.workers.test.ts) against a real D1.
+  test("resolves a d1 text secret from its injected .dev.vars string", async () => {
+    const registry = defineSecretRegistry({
+      "turnstile-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    });
+    const store = await secretsStore(envWith({ "turnstile-secret": "1x000" }), registry);
+    expect(store.get("turnstile-secret")).toBe("1x000");
+  });
+
+  test("parses + validates a d1 json secret from its injected string, same shape as stored", async () => {
+    const registry = defineSecretRegistry({
+      EMAILER: { backend: "d1", scope: "environment", rotatable: false, valueType: "json", schema: Emailer },
+    });
+    const store = await secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "abcdefgh" }) }), registry);
+    expect(store.get("EMAILER")).toEqual({ apiKey: "abcdefgh" });
+  });
+
+  test("an invalid d1 json string throws without echoing the secret material", async () => {
+    const registry = defineSecretRegistry({
+      EMAILER: { backend: "d1", scope: "environment", rotatable: false, valueType: "json", schema: Emailer },
+    });
+    await expect(
+      secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "short" }) }), registry),
+    ).rejects.toBeInstanceOf(SecretInvalidValueError);
+  });
+
+  test("a DEPLOYED d1 secret is never shadowed by a same-named plaintext binding", async () => {
+    // ENVIRONMENT is a managed env → deployed → the d1 secret must come from the encrypted store, never
+    // the plaintext string. With no real SECRETS D1/master key here, resolution fails — proving the
+    // string was ignored (had it been used, it would resolve to "plaintext" instead of throwing).
+    const registry = defineSecretRegistry({
+      FOO: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    });
+    await expect(secretsStore(envWith({ ENVIRONMENT: "production", FOO: "plaintext" }), registry)).rejects.toThrow();
+  });
+});

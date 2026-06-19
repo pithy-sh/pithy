@@ -1,14 +1,13 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
-import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
-import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
+import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
   buildManagerDeploy,
   CloudflareSecretsDeprovisioner,
@@ -17,15 +16,10 @@ import {
 import { loadProject } from "../project/config";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
-/** The write-Workflow name for an environment — matches the manager's `wrangler.jsonc` + provisioning. */
-function workflowNameForEnv(env: ManagedEnvironment): string {
-  return `pithy-secrets-write-${env}`;
-}
-
 /** Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`). */
 function buildDispatcher(projectDir: string): SecretDispatcher {
   const { accountId, apiToken } = loadCloudflareCreds(projectDir);
-  return new WorkflowSecretDispatcher(new CloudflareWorkflowsClient({ accountId, apiToken }), workflowNameForEnv);
+  return buildSecretDispatcher(accountId, apiToken);
 }
 
 /** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */

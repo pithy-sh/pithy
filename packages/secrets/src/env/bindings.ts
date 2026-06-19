@@ -1,6 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { EncryptionConfig } from "../crypto/envelope";
 import { SecretCryptoError, SecretNotFoundError } from "../error/errors";
+import type { ManagedEnvironment } from "../scope";
 
 /**
  * A Cloudflare Secrets Store binding: `.get()` resolves the secret's plaintext inside the
@@ -17,6 +18,12 @@ export interface SecretsStoreEnv {
   SECRETS: D1Database;
   /** The master-key config — a CF Secrets Store binding in deployed envs, a string in local dev. */
   SECRETS_ENCRYPTION_KEYS: SecretBinding | string;
+  /**
+   * The deployment environment, stamped into each deployed worker's vars at provision. Its presence as a
+   * `ManagedEnvironment` is what tells the reader it is deployed: deployed reads route strictly by registry
+   * backend, while local dev (this var absent) resolves every secret from its injected `.dev.vars` string.
+   */
+  ENVIRONMENT?: ManagedEnvironment;
 }
 
 /**

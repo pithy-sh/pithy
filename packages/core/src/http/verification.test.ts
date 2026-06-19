@@ -11,6 +11,15 @@ describe("VerificationStrategy", () => {
   test("rejects an unknown strategy", () => {
     expect(() => VerificationStrategy.parse("magic")).toThrow();
   });
+
+  // Turnstile is a humanity check applied as composable middleware, never a route's identity
+  // strategy (CLAUDE.md §HTTP). It must never re-enter this union — a bot check answers "is this a
+  // human?", never "who is this?". This meta-test guards the removal so the contradiction can't return.
+  test("does not include turnstile — it is middleware, not an identity strategy", () => {
+    expect(() => VerificationStrategy.parse("turnstile")).toThrow();
+    const literals = VerificationStrategy.options.map((option) => option.value);
+    expect(literals).not.toContain("turnstile");
+  });
 });
 
 describe("VerificationStrategy descriptions", () => {

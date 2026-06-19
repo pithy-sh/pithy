@@ -225,6 +225,38 @@ const EmailSendFailedPublic = z
   })
   .describe("A send through the Email Service failed terminally (502).");
 
+// --- @pithy-sh/turnstile: humanity-check middleware codes ---
+
+const TurnstileMissingTokenPublic = z
+  .object({
+    code: z
+      .literal("turnstile/missing_token")
+      .describe("The request carried no Turnstile response token where one was required."),
+    status: z.literal(400).describe("Bad Request — the humanity-check token is absent."),
+    ...publicFields,
+  })
+  .describe("A required Turnstile token was missing from the request (400).");
+
+const TurnstileFailedPublic = z
+  .object({
+    code: z
+      .literal("turnstile/failed")
+      .describe("The Turnstile token did not pass siteverify, or the check could not complete (fail closed)."),
+    status: z.literal(403).describe("Forbidden — the humanity check did not pass; the request is denied."),
+    ...publicFields,
+  })
+  .describe("A Turnstile humanity check failed or could not complete (403).");
+
+const TurnstileConfigPublic = z
+  .object({
+    code: z
+      .literal("turnstile/config")
+      .describe("The Turnstile middleware is misconfigured — the secret-key binding is missing or empty."),
+    status: z.literal(500).describe("Internal Server Error — a configuration fault, not a client request."),
+    ...publicFields,
+  })
+  .describe("The Turnstile middleware is misconfigured (500).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -252,6 +284,9 @@ export const PublicErrorPayload = z
     EmailSuppressedPublic,
     EmailRateLimitedPublic,
     EmailSendFailedPublic,
+    TurnstileMissingTokenPublic,
+    TurnstileFailedPublic,
+    TurnstileConfigPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -296,6 +331,11 @@ const EmailInvalidToken = EmailInvalidTokenPublic.extend(detailField).describe(
 const EmailSuppressed = EmailSuppressedPublic.extend(detailField).describe(EmailSuppressedPublic.description ?? "");
 const EmailRateLimited = EmailRateLimitedPublic.extend(detailField).describe(EmailRateLimitedPublic.description ?? "");
 const EmailSendFailed = EmailSendFailedPublic.extend(detailField).describe(EmailSendFailedPublic.description ?? "");
+const TurnstileMissingToken = TurnstileMissingTokenPublic.extend(detailField).describe(
+  TurnstileMissingTokenPublic.description ?? "",
+);
+const TurnstileFailed = TurnstileFailedPublic.extend(detailField).describe(TurnstileFailedPublic.description ?? "");
+const TurnstileConfig = TurnstileConfigPublic.extend(detailField).describe(TurnstileConfigPublic.description ?? "");
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -323,6 +363,9 @@ export const ErrorPayload = z
     EmailSuppressed,
     EmailRateLimited,
     EmailSendFailed,
+    TurnstileMissingToken,
+    TurnstileFailed,
+    TurnstileConfig,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

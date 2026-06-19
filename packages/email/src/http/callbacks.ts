@@ -28,7 +28,7 @@ import { CALLBACK_BASE } from "../templates/engine";
  */
 
 /** The env the callbacks read: the app + shared suppression databases plus the secrets bindings for the signing key. */
-type CallbackEnv = SecretsStoreEnv & { DB: D1Database; EMAIL_SUPPRESSIONS: D1Database; ENVIRONMENT?: string };
+type CallbackEnv = SecretsStoreEnv & { DB: D1Database; EMAIL_SUPPRESSIONS: D1Database };
 
 /** The signing-key version set a handler verifies against. */
 export interface SigningKeys {

@@ -7,14 +7,17 @@ import {
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import type { SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
+import { ManagedEnvironment } from "./scope";
 import { SystemSecretsStore } from "./store/systemSecretsStore";
 
 /**
  * The read seam. `secretsStore(env, registry)` resolves every declared secret locally — no RPC —
  * routing by backend (`d1` decrypts the per-environment row; `cf-secrets-store` reads the bound
- * value) and exposing one uniform API. The call site is identical across environments: in local
- * dev the same names resolve from `.dev.vars` strings instead of bindings. The returned accessor's
- * methods are synchronous; every value is materialized and validated up front.
+ * value) and exposing one uniform API. The call site is identical across environments. Whether the
+ * worker is deployed is decided by **one explicit signal — the `ENVIRONMENT` var** (a `ManagedEnvironment`
+ * means deployed): in local dev **every** secret resolves from its injected `.dev.vars` string (same shape
+ * as stored), so dev needs no `SECRETS` D1 or master key; deployed reads route strictly by backend, so a
+ * stray plaintext binding can never shadow a `d1` secret. The accessor's methods are synchronous.
  *
  * `get(name)` returns the current value — what almost every consumer wants. `getVersions(name)`
  * returns the current pointer plus every still-valid version — for the rare verifier that must
@@ -73,13 +76,14 @@ function resolveVersioned(entry: SecretRegistryEntry, name: string, value: Versi
 }
 
 /**
- * Decode a `cf-secrets-store` value into the uniform envelope. The canonical (provisioned) value is a
- * JSON-encoded {@link VersionedValue}, so a deployed secret round-trips as `{ currentVersion, versions }`.
+ * Decode an injected (non-D1-row) value into the uniform envelope. The canonical (provisioned) value is
+ * a JSON-encoded {@link VersionedValue}, so a deployed secret round-trips as `{ currentVersion, versions }`.
  * Local dev `.dev.vars` supplies a bare string instead (wrangler's own `CLOUDFLARE_API_TOKEN`
  * convention), so a raw value that is not a valid envelope is wrapped as a one-version envelope — the
- * same accessor path serves both. A single-version secret is always a one-entry envelope.
+ * same accessor path serves both. A single-version secret is always a one-entry envelope. Used for
+ * `cf-secrets-store` bindings and for the local-dev `.dev.vars` form of a `d1` secret alike.
  */
-function decodeCfStoreValue(raw: string): VersionedValue {
+function decodeInjectedValue(raw: string): VersionedValue {
   try {
     return decodeVersionedValue(raw);
   } catch {
@@ -88,9 +92,9 @@ function decodeCfStoreValue(raw: string): VersionedValue {
   }
 }
 
-/** Resolve a `cf-secrets-store` secret as the uniform value envelope, parsing every version. */
-function resolveCfStore(entry: SecretRegistryEntry, name: string, raw: string): Resolved {
-  return resolveVersioned(entry, name, decodeCfStoreValue(raw));
+/** Resolve an injected (`cf-secrets-store` binding or local-dev `d1`) value as the uniform envelope. */
+function resolveInjected(entry: SecretRegistryEntry, name: string, raw: string): Resolved {
+  return resolveVersioned(entry, name, decodeInjectedValue(raw));
 }
 
 /**
@@ -151,16 +155,37 @@ export async function secretsStore<R extends SecretRegistry>(
   env: SecretsStoreEnv,
   registry: R,
 ): Promise<SecretsAccessor<R>> {
-  const names = Object.keys(registry);
+  const resolved: Record<string, Resolved> = {};
+  const bindings = env as unknown as Record<string, SecretBinding | string | undefined>;
+
+  // **One explicit signal decides dev vs deployed: `ENVIRONMENT`.** It is stamped into each deployed
+  // worker's vars at provision (`staging` | `production`); when it is not a `ManagedEnvironment` (absent,
+  // or local dev) the worker is in dev. This is the *only* thing that flips resolution — never the runtime
+  // shape of a value — so a stray plaintext binding can never make a deployed `d1` secret read unencrypted.
+  const deployedEnv = ManagedEnvironment.safeParse(bindings.ENVIRONMENT);
+
+  if (!deployedEnv.success) {
+    // **Local dev is uniform.** Whatever a secret's registry backend, in dev it is injected as a
+    // `.dev.vars` string in the same shape it is stored — so every secret resolves through this one seam,
+    // and dev needs no `SECRETS` D1, master key, or live Secrets Store.
+    for (const name of Object.keys(registry)) {
+      const entry = registry[name];
+      if (!entry) continue;
+      const raw = await resolveBinding(bindings[name], name);
+      resolved[name] = resolveInjected(entry, name, raw);
+    }
+    return new SecretsAccessor(registry, resolved);
+  }
+
+  // **Deployed: route strictly by registry backend.** `d1` secrets are ALWAYS decrypted from the
+  // per-environment store (no plaintext shadow); `cf-secrets-store` secrets are read from their bindings.
   const d1Names: string[] = [];
   const cfNames: string[] = [];
-  for (const name of names) {
+  for (const name of Object.keys(registry)) {
+    if (!registry[name]) continue;
     if (registry[name]?.backend === "cf-secrets-store") cfNames.push(name);
     else d1Names.push(name);
   }
-
-  const resolved: Record<string, Resolved> = {};
-  const bindings = env as unknown as Record<string, SecretBinding | string | undefined>;
 
   if (d1Names.length > 0) {
     const store = await SystemSecretsStore.fromEnv(env);
@@ -183,7 +208,7 @@ export async function secretsStore<R extends SecretRegistry>(
     const entry = registry[name];
     if (!entry) continue;
     const raw = await resolveBinding(bindings[name], name);
-    resolved[name] = resolveCfStore(entry, name, raw);
+    resolved[name] = resolveInjected(entry, name, raw);
   }
 
   return new SecretsAccessor(registry, resolved);

@@ -25,10 +25,12 @@ const config: EncryptionConfig = {
   lastRotatedAt: "2026-01-01T00:00:00.000Z",
 };
 
+// A deployed env: `ENVIRONMENT` is a managed env, so the reader routes by backend (d1 → the store).
 function envWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
   return {
     SECRETS: env.SECRETS,
     SECRETS_ENCRYPTION_KEYS: JSON.stringify(config),
+    ENVIRONMENT: "production",
     ...extra,
   } as unknown as SecretsStoreEnv;
 }

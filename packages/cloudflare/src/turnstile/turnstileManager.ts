@@ -12,6 +12,13 @@ const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverif
 const requestOptions: RequestOptions = { timeout: 10000, maxRetries: 3 };
 
 /**
+ * The two widget modes Pithy provisions. `managed` is Cloudflare's *visible* managed widget (CF decides
+ * whether to show interaction) — used where a challenge should be seen (a login page). `invisible` runs
+ * silently — used where a form should not interrupt (a lead capture). One of each per domain, max.
+ */
+export type TurnstileWidgetMode = "managed" | "invisible";
+
+/**
  * The server-side response from Turnstile's `/siteverify` endpoint. Pithy validates the raw JSON
  * through this object before trusting it — a humanity check is a security boundary (CLAUDE.md §HTTP:
  * Turnstile is composable middleware). `challenge_ts` is an ISO-8601 string on the wire, decoded to
@@ -91,13 +98,13 @@ export class CloudflareTurnstileManager extends CloudflareManager {
     });
   }
 
-  /** Create a widget in invisible mode for the given domains. */
-  async addTurnstile(name: string, domains: string[]): Promise<Widget> {
+  /**
+   * Create a widget for the given domains in the requested mode — `managed` (visible) or `invisible`
+   * (silent). Defaults to `invisible` so existing callers keep their behavior.
+   */
+  async addTurnstile(name: string, domains: string[], mode: TurnstileWidgetMode = "invisible"): Promise<Widget> {
     return cloudflareRequest(`Turnstile create widget '${name}'`, () =>
-      this.getClient().turnstile.widgets.create(
-        { account_id: this.accountId, domains, mode: "invisible", name },
-        requestOptions,
-      ),
+      this.getClient().turnstile.widgets.create({ account_id: this.accountId, domains, mode, name }, requestOptions),
     );
   }
 
