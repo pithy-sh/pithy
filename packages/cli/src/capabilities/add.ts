@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { parse, stringify } from "comment-json";
+import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
 export type ConfigValue = string | number | boolean;
@@ -119,14 +119,12 @@ function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest):
 }
 
 async function updateWrangler({ projectDir, manifest }: AddCapabilityOptions): Promise<void> {
-  const path = join(projectDir, "wrangler.jsonc");
-  // comment-json keeps the file's comments and formatting through the round-trip.
-  const config = parse(await readFile(path, "utf8")) as unknown as WranglerBindings;
+  const config = (await readWranglerConfig(projectDir)) as WranglerBindings;
 
   appendBindings(config, manifest);
   for (const stanza of Object.values(config.env ?? {})) {
     if (stanza) appendBindings(stanza, manifest);
   }
 
-  await writeFile(path, `${stringify(config, null, 2)}\n`);
+  await writeWranglerConfig(projectDir, config);
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
@@ -129,5 +129,20 @@ describe("addCapability", () => {
       await addCapability({ projectDir: dir, manifest: withOptions });
       expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(once);
     });
+  });
+});
+
+describe("no hand-rolled comment-json round-trips in capabilities/", () => {
+  test("no non-test file imports stringify from comment-json", async () => {
+    const capDir = new URL(".", import.meta.url).pathname;
+    const files = (await readdir(capDir)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
+    for (const file of files) {
+      const content = await readFile(join(capDir, file), "utf8");
+      // stringify from comment-json is only needed for the hand-rolled wrangler.jsonc round-trip.
+      // All wrangler.jsonc writes go through writeWranglerConfig; no capabilities/ file needs stringify.
+      expect(content, `${file} imports stringify from comment-json`).not.toMatch(
+        /import\s*\{[^}]*\bstringify\b[^}]*\}\s*from\s*["']comment-json["']/,
+      );
+    }
   });
 });
