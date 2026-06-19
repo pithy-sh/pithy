@@ -33,7 +33,7 @@
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
     "kysely-d1": "^0.4.0",
-    "typescript": "^6.0.0",
+    "typescript": "7.0.1-rc",
     "vitest": "^4.1.0"
   }
 }
