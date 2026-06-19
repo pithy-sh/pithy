@@ -74,6 +74,20 @@ describe("createBackend", () => {
     expect(() => createBackend({ capabilities: [secrets, needsSecrets] })).not.toThrow();
   });
 
+  test("fires each capability's compose hook once, with every composed capability (app included)", () => {
+    const seen: string[][] = [];
+    const a = defineCapability({
+      name: "a",
+      requiredBindings: [],
+      compose: ({ capabilities }) => seen.push(capabilities.map((c) => c.name)),
+    });
+    const b = defineCapability({ name: "b", requiredBindings: [] });
+    const app = defineCapability({ name: "app", requiredBindings: [] });
+    createBackend({ capabilities: [a, b], app });
+    // One invocation of a's hook, seeing all three capabilities in composition order.
+    expect(seen).toEqual([["a", "b", "app"]]);
+  });
+
   test("validates the app capability's bindings too", async () => {
     const app = defineCapability({
       name: "app",

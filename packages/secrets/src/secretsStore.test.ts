@@ -145,3 +145,34 @@ describe("secretsStore — d1 backend, local dev .dev.vars fallback", () => {
     await expect(secretsStore(envWith({ ENVIRONMENT: "production", FOO: "plaintext" }), registry)).rejects.toThrow();
   });
 });
+
+describe("SecretsAccessor.subset", () => {
+  const combined = defineSecretRegistry({
+    A: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    B: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+  });
+
+  test("returns a view restricted to the requested slice, sharing resolved values (no re-fetch)", async () => {
+    const store = await secretsStore(envWith({ A: "a-val", B: "b-val" }), combined);
+    const slice = defineSecretRegistry({
+      A: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const view = store.subset(slice);
+    // The view shares the parent's already-resolved value (no re-fetch); its names are the slice's,
+    // type-restricted to "A" — asking for "B" is a compile error, so the slice boundary needs no
+    // runtime assertion.
+    expect(view.get("A")).toBe("a-val");
+  });
+
+  test("a requested name the parent never resolved is absent, so reading it fails loudly", async () => {
+    const onlyA = defineSecretRegistry({
+      A: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const store = await secretsStore(envWith({ A: "a-val" }), onlyA);
+    const wantsMissing = defineSecretRegistry({
+      C: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const view = store.subset(wantsMissing);
+    expect(() => view.get("C")).toThrow(SecretNotFoundError);
+  });
+});

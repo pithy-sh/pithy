@@ -1,8 +1,13 @@
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { Hono } from "hono";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { TURNSTILE_SECRET_NAME } from "../secret/registry";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "../secret/registry";
 import { siteverify, type TurnstileOptions, turnstile } from "./middleware";
+
+// The middleware reads its secret through the shared per-invocation accessor, so configure it from
+// turnstile's slice before each case (and reset after) — each case then resolves fresh from its env.
+beforeEach(() => configureSharedSecrets({ registry: turnstileSecretsRegistry }));
 
 const SECRET = "1x0000000000000000000000000000000AA";
 /** The single binding holds a JSON object keyed by mode. A one-widget app has one entry. */
@@ -29,7 +34,10 @@ async function errCode(res: Response): Promise<string> {
   return ((await res.json()) as { error: { code: string } }).error.code;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetSharedSecrets();
+});
 
 describe("turnstile() middleware", () => {
   test("passes the request through when siteverify succeeds", async () => {

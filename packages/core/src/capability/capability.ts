@@ -36,6 +36,41 @@ export interface WorkflowSpec {
 }
 
 /**
+ * The structural seam for one capability's secret-registry slice — secret name → its declaration.
+ * Core carries it on the {@link Capability} contract so a capability can declare which secrets it
+ * reads (CLAUDE.md §secrets: every secret is declared in a registry), without core depending on
+ * `@pithy-sh/secrets`. The concrete entry shape, the `defineSecretRegistry` authoring helper, the
+ * `secretsStore` reader, and the startup aggregation all live in `@pithy-sh/secrets`; core only
+ * needs the common axes (read, never interpreted here) so the seam stays a precise supertype of
+ * that package's `SecretRegistry`.
+ */
+export interface SecretRegistryEntrySeam {
+  /** Storage backend (`d1` | `cf-secrets-store`). */
+  readonly backend: string;
+  /** Whether the value differs per environment or is identical everywhere. */
+  readonly scope: string;
+  /** Whether a future value-rotator may manage the secret. */
+  readonly rotatable: boolean;
+  /** How a decrypted value is interpreted (`text` | `json`). */
+  readonly valueType: string;
+}
+
+/** A capability's secret-registry slice: secret name → {@link SecretRegistryEntrySeam}. */
+export type SecretRegistrySeam = Record<string, SecretRegistryEntrySeam>;
+
+/**
+ * Context handed to a capability's {@link Capability.compose} hook at worker startup: every composed
+ * capability (libraries + app), so a capability can perform cross-capability wiring it could not do
+ * at construction time (when it sees only itself). `@pithy-sh/secrets` uses it to aggregate every
+ * capability's {@link Capability.secretRegistry} slice into one combined registry for the shared
+ * per-invocation secrets accessor.
+ */
+export interface CapabilityComposeContext {
+  /** Every capability composed into this backend, in composition order (libraries first, app last). */
+  capabilities: readonly Capability[];
+}
+
+/**
  * An inbound-email handler. A Worker has a single `email()` entry, so the Pithy entrypoint
  * (`createEntrypoint`) fans every incoming message out to each capability that declares one —
  * used for bounce/complaint processing (`@pithy-sh/email`) and any other inbound-mail concern.
@@ -72,6 +107,20 @@ export interface Capability<
   dependsOn?: readonly string[];
   /** Validated env/config/secrets for this capability. */
   config?: z.ZodType;
+  /**
+   * The secrets this capability reads, as a registry slice (CLAUDE.md §secrets). Additive and
+   * optional. `@pithy-sh/secrets` aggregates every capability's slice into one combined registry at
+   * worker startup (via {@link Capability.compose}), so the shared per-invocation accessor resolves
+   * every declared secret in one batch — and no capability needs to know another's secrets.
+   */
+  secretRegistry?: SecretRegistrySeam;
+  /**
+   * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
+   * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes
+   * mount. Lets a capability wire across capabilities at startup — `@pithy-sh/secrets` aggregates
+   * every {@link Capability.secretRegistry} slice here into one combined registry.
+   */
+  compose?: (context: CapabilityComposeContext) => void;
   /** Mounts a Hono sub-router. */
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */

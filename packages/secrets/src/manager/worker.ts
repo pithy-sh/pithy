@@ -3,7 +3,7 @@ import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { isRotationDue } from "../rotation/keyRotation";
 import type { ManagedEnvironment } from "../scope";
-import { secretsStore } from "../secretsStore";
+import { configureSharedSecrets, sharedSecretsStore } from "../sharedSecretsStore";
 import { managerRegistry } from "./managerRegistry";
 import { runRotationWorkflow } from "./rotationWorkflow";
 import { rotationConfigWriter } from "./secretsConfigWriter";
@@ -25,13 +25,18 @@ import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult }
 
 const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 
+// This is a standalone worker, not assembled by `createBackend`, so its `compose` hook never runs.
+// Configure the shared per-invocation accessor directly from the manager's own registry, so reads go
+// through the one cached path (a rotation run reads `CLOUDFLARE_API_TOKEN` once) like every other worker.
+configureSharedSecrets({ registry: managerRegistry });
+
 /** The manager worker's env: the secrets D1 + key binding, the rotation Workflow binding, CF creds for the write-back. */
 export interface SecretsManagerEnv extends SecretsStoreEnv {
   /** The at-rest rotation Workflow binding, triggered by the cron. */
   AT_REST_ROTATION: { create(): Promise<unknown> };
   /**
    * The scoped CF API token for the at-rest config write-back — the only live-CF write. A
-   * `cf-secrets-store` binding read via `secretsStore(env, managerRegistry).get("CLOUDFLARE_API_TOKEN")`,
+   * `cf-secrets-store` binding read via `sharedSecretsStore(env, managerRegistry).get("CLOUDFLARE_API_TOKEN")`,
    * a string from `.dev.vars` in local dev. Never a plaintext env var.
    */
   CLOUDFLARE_API_TOKEN: SecretBinding | string;
@@ -61,7 +66,7 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
     // Build the manager's secret accessor once; read the CF API token at the point of need. Every
     // place a secret is consumed is a visible `secrets.get(...)` call site (grep-able), never hidden
     // behind a wrapper.
-    const secrets = await secretsStore(this.env, managerRegistry);
+    const secrets = await sharedSecretsStore(this.env, managerRegistry);
     const manager = new CloudflareSecretsStoreManager({
       accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
       apiToken: secrets.get("CLOUDFLARE_API_TOKEN"),

@@ -1,8 +1,14 @@
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { Hono } from "hono";
-import { describe, expect, test } from "vitest";
-import { TURNSTILE_SECRET_NAME } from "../secret/registry";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "../secret/registry";
 import { turnstile } from "./middleware";
+
+// The middleware reads its secret through the shared per-invocation accessor, so configure it from
+// turnstile's slice before each case (and reset after) — each case then resolves fresh from its env.
+beforeEach(() => configureSharedSecrets({ registry: turnstileSecretsRegistry }));
+afterEach(() => resetSharedSecrets());
 
 /**
  * Cloudflare's documented dummy *secret* keys. siteverify returns a deterministic verdict for each,
