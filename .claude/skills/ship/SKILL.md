@@ -113,6 +113,12 @@ Present the `/code-review` and `/security-review` results (and any remediation).
 
   #<N>
   ```
+- **Sync with `main` before pushing.** Branches drift; never push/PR (or commit to `main` solo) on a stale base. Fetch and check the behind-count:
+  ```bash
+  git fetch origin
+  git rev-list --count HEAD..origin/main   # 0 = up to date; >0 = behind
+  ```
+  If it's `>0`, **rebase onto `origin/main`** (`git rebase origin/main`), resolve any conflicts, then **re-run the full gates** (typecheck/biome/test) — a clean branch can still break against new `main`. Solo-on-`main`: just `git pull --rebase origin main` before committing. Re-confirm at merge time too: if `main` lands something after the PR opens, use GitHub's **Update branch** (or rebase again) before merging — GitHub's `mergeable`/`mergeStateStatus` on the PR is the signal.
 - **Ship the change.**
   - **Solo, no `--worktree`:** commit to `main`; the push auto-closes the issue via `Closes #<N>`, and GitHub auto-sets Status → `Done`. Skip the PR steps below.
   - **`--worktree` (or collaboration mode):** commit on `feature/<N>-<slug>`, then:
@@ -148,3 +154,4 @@ Works headless: `/ship #N` with no person to gate proceeds through both gates au
 - While solo (see **Current mode**), commit to `main` directly — that's the user's call. In collaboration mode and with `--worktree`, commit only on the feature branch, never to `main`. Never `--no-verify`.
 - With `--worktree`, never remove a worktree by hand (`rm -rf` / `git worktree remove`) — use `bun run worktree teardown` (inotify-safe).
 - One issue per `/ship`. Keep the change scoped to the issue.
+- Never push/PR (or solo-commit to `main`) on a stale base. `git fetch origin` and check `git rev-list --count HEAD..origin/main`; if behind, rebase onto `origin/main` and re-run the gates before shipping (step 6). Re-check mergeability at merge time.
