@@ -13,5 +13,6 @@ export const main = defineCommand({
     add: () => import("./commands/add").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
     secrets: () => import("./commands/secrets").then((m) => m.default),
+    email: () => import("./commands/email").then((m) => m.default),
   },
 });

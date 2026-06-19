@@ -1,0 +1,64 @@
+{
+  // The prebuilt email worker. Like the secrets manager, this is a TEMPLATE, not a wrangler env-stanza
+  // file: staging and production are genuinely separate workers. `pithy add email` resolves this into
+  // one complete config per environment — filling the `<...>` placeholders — and deploys each with
+  // `wrangler deploy --config <resolved>`. The user authors none of it. It hosts the send and scheduler
+  // Workflows and the every-minute scheduler cron, and holds the `send_email` binding that actually sends.
+  "name": "pithy-email", // resolved per env → pithy-email-staging / pithy-email-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. The callback routes (click/open/unsubscribe) and the inbound bounce handler live in
+  // the app worker; this worker is reached only by Workflow dispatch and its cron.
+  "workers_dev": false,
+
+  // The app database — the email tables (pithy_email_jobs/events/suppressions) live here, alongside the
+  // app's own data. Plus the secrets database, read for the link-signing key.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
+    // The shared, durable suppression database — one per account, not per environment, so an
+    // unsubscribe or hard bounce applies everywhere. The same database id is bound in every environment.
+    {
+      "binding": "EMAIL_SUPPRESSIONS",
+      "database_name": "pithy-email-suppressions",
+      "database_id": "<filled-at-provision>"
+    },
+    { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
+  ],
+
+  // The Cloudflare Email Service send binding. `remote: true` lets `wrangler dev` send real email
+  // through the service during local development; in a deployed worker the flag is ignored.
+  "send_email": [{ "name": "EMAIL", "remote": true }],
+
+  // The master key for decrypting the link-signing secret, read through the secretsStore accessor.
+  "secrets_store_secrets": [
+    {
+      "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+    }
+  ],
+
+  // The two Workflows this worker hosts. EMAIL_SENDER is the dispatch target for both immediate sends
+  // (from the app worker) and the scheduler's fan-out batches; EMAIL_SCHEDULER is fired by the cron.
+  "workflows": [
+    { "binding": "EMAIL_SENDER", "name": "pithy-email-send", "class_name": "EmailSendWorkflow" },
+    { "binding": "EMAIL_SCHEDULER", "name": "pithy-email-schedule", "class_name": "EmailSchedulerWorkflow" }
+  ],
+
+  // The every-minute scheduler cron. Cheap: scheduled() fires the scheduler Workflow, which sends
+  // nothing when nothing is due.
+  "triggers": { "crons": ["* * * * *"] },
+
+  "vars": {
+    // The full brand theme as one JSON blob (the resolved EmailTheme), filled from the app's
+    // email() config at provision. The worker parses + validates it; absent falls back to the default.
+    "EMAIL_THEME": "<filled-at-provision>",
+    "BASE_URL": "<filled-at-provision>", // the app worker's public URL, for callback links
+    "ENVIRONMENT": "<filled-at-provision>", // stamped on each send (X-Pithy-Env) so the single inbound worker can route
+    "LINK_TTL_DAYS": "90",
+    "MAX_ATTEMPTS": "5",
+    "SCHEDULER_ENABLED": "true"
+  }
+}

@@ -1,0 +1,120 @@
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import type { D1Database } from "@cloudflare/workers-types";
+import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
+import { resolveSigningKeys } from "../crypto/signingKey";
+import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
+import type { SendWorkflowBinding } from "../send/enqueue";
+import { runSend, type SendDeps } from "../send/runSend";
+import type { EmailSender } from "../send/sender";
+import { defaultTheme, EmailTheme } from "../templates/theme";
+import { runScheduler, type SchedulerDeps } from "./scheduler";
+
+/**
+ * The prebuilt email worker. `pithy add email` deploys one per environment (`pithy-email-staging`,
+ * `pithy-email-production`); the user authors no code for it. It hosts:
+ *
+ *   - `EmailSendWorkflow` — sends a batch of jobs durably (dispatch target for immediate sends and
+ *     the scheduler's fan-out).
+ *   - `EmailSchedulerWorkflow` — finds due jobs and fans them out into send batches.
+ *   - `scheduled()` — the every-minute cron that fires the scheduler Workflow.
+ *
+ * The bodies (`runSendBatch`, `runScheduler`, `runSend`) are tested against Miniflare; these classes are
+ * the thin durable shells. This module imports `cloudflare:workers`, so it runs only in the Workers
+ * runtime (excluded from the node meta-test).
+ */
+
+/** The email worker's env: the app + secrets databases, the send binding, the Workflow bindings, theme/config vars. */
+export interface EmailWorkerEnv extends SecretsStoreEnv {
+  /** The app database the per-environment jobs/events tables live in. */
+  DB: D1Database;
+  /** The shared, durable suppression database. */
+  EMAIL_SUPPRESSIONS: D1Database;
+  /** The Cloudflare Email Service send binding. */
+  EMAIL: EmailSender;
+  /** The send Workflow (self) — the scheduler creates batches against it. */
+  EMAIL_SENDER: SendWorkflowBinding;
+  /** The scheduler Workflow (self) — fired by the cron. */
+  EMAIL_SCHEDULER: { create(): Promise<unknown> };
+  /** The resolved brand theme as a JSON string (the full `EmailTheme`), set at provision from the app config. */
+  EMAIL_THEME?: string;
+  BASE_URL: string;
+  ENVIRONMENT?: string;
+  LINK_TTL_DAYS?: string;
+  MAX_ATTEMPTS?: string;
+  SCHEDULER_ENABLED?: string;
+  SCHEDULER_BATCH_SIZE?: string;
+  SCHEDULER_MAX_JOBS?: string;
+  SCHEDULER_GRACE_MS?: string;
+  SCHEDULER_STUCK_MS?: string;
+}
+
+const MINUTE_MS = 60_000;
+
+/** Parse the brand theme from the single `EMAIL_THEME` JSON var, validated against the schema; default if unset. */
+function buildTheme(env: EmailWorkerEnv): EmailTheme {
+  if (!env.EMAIL_THEME) return defaultTheme;
+  return EmailTheme.parse(JSON.parse(env.EMAIL_THEME));
+}
+
+/** Assemble the send dependencies, resolving the current signing key from the secrets store. */
+async function buildSendDeps(env: EmailWorkerEnv): Promise<SendDeps> {
+  const keys = await resolveSigningKeys(env);
+  const key = keys.versions[keys.currentVersion];
+  return {
+    db: emailDatabase(env.DB),
+    suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+    sender: env.EMAIL,
+    theme: buildTheme(env),
+    baseUrl: env.BASE_URL,
+    signing: key ? { key, kid: keys.currentVersion } : undefined,
+    linkTtlDays: Number(env.LINK_TTL_DAYS ?? 90),
+    maxAttempts: Number(env.MAX_ATTEMPTS ?? 5),
+    environment: env.ENVIRONMENT,
+    now: new Date(),
+  };
+}
+
+/** Assemble the scheduler dependencies, dispatching each batch as a send Workflow. */
+function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
+  return {
+    db: emailDatabase(env.DB),
+    now: new Date(),
+    graceMs: Number(env.SCHEDULER_GRACE_MS ?? 2 * MINUTE_MS),
+    stuckMs: Number(env.SCHEDULER_STUCK_MS ?? 15 * MINUTE_MS),
+    batchSize: Number(env.SCHEDULER_BATCH_SIZE ?? 50),
+    maxJobs: Number(env.SCHEDULER_MAX_JOBS ?? 500),
+    dispatch: async (jobIds) => {
+      await env.EMAIL_SENDER.create({ params: { jobIds } });
+    },
+  };
+}
+
+/** Sends a batch of jobs durably. Started for immediate sends and by the scheduler's fan-out. */
+export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobIds: string[] }> {
+  override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<void> {
+    const deps = await buildSendDeps(this.env);
+    // One step per job: each is independently retried/backed-off by the Workflow runtime, and a
+    // single bad recipient never blocks the rest of the batch.
+    for (const jobId of event.payload.jobIds) {
+      await step.do(`send-${jobId}`, () => runSend(deps, jobId).then(() => {}));
+    }
+  }
+}
+
+/** Finds due jobs and fans them out into send batches. Fired by the every-minute cron. */
+export class EmailSchedulerWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, unknown> {
+  override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
+    await step.do("dispatch-due", async () => {
+      await runScheduler(buildSchedulerDeps(this.env));
+    });
+  }
+}
+
+export default {
+  /** Cron entry: fire the scheduler Workflow every minute, unless disabled. */
+  async scheduled(_controller: unknown, env: EmailWorkerEnv): Promise<void> {
+    if ((env.SCHEDULER_ENABLED ?? "true") !== "false") {
+      await env.EMAIL_SCHEDULER.create();
+    }
+  },
+};
