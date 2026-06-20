@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { noopEmit } from "./audit/recorder";
 import { BindingSpec } from "./capability/bindings";
 import type { Capability, MergedDatabases, MergedKvNamespaces, PithyHonoEnv, PithyVars } from "./capability/capability";
 import { validateBindings } from "./capability/validateBindings";
@@ -110,6 +111,7 @@ export function createBackend<
       validated = true;
     }
     if (c.get("auth") === undefined) c.set("auth", null);
+    if (c.get("emit") === undefined) c.set("emit", noopEmit);
     if (c.get("db") === undefined) c.set("db", buildDbRegistry(env, databases));
     if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces));
     await next();

@@ -11,6 +11,24 @@ describe("createBackend", () => {
     expect(await res.json()).toEqual({ status: "ok" });
   });
 
+  test("seeds c.var.emit with a no-op recorder that never throws when no audit capability is composed", async () => {
+    const probe = defineCapability({
+      name: "probe",
+      requiredBindings: [],
+      routes: (a) => {
+        a.get("/emit", async (c) => {
+          // With no audit capability composed, emit is the no-op: it resolves and records nothing.
+          await c.var.emit({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u1" });
+          return c.json({ emitted: true });
+        });
+      },
+    });
+    const app = createBackend({ capabilities: [probe] });
+    const res = await app.request("/emit", {}, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ emitted: true });
+  });
+
   test("mounts a capability's routes", async () => {
     const ping = defineCapability({
       name: "ping",

@@ -1,0 +1,14 @@
+{
+  "name": "audit",
+  "package": "@pithy-sh/audit",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "migrationNamespace": "audit",
+  "whenToEnable": "A queryable, tamper-resistant audit trail of security-relevant actions — logins, token refreshes, entitlement grants, admin config changes. Records who did what, when, and whether it succeeded, attributed to the right actor. Other capabilities emit through the core seam; auth needs it the moment it lands.",
+  "configOptions": [
+    {
+      "key": "database",
+      "default": "DB",
+      "describe": "The D1 binding the audit table and its migrations target. Defaults to `DB`, the shared app database. KV is not an option — an audit log is a query workload, not a key lookup."
+    }
+  ]
+}

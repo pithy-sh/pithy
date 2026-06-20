@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { z } from "zod";
+import type { AuditEmit } from "../audit/recorder";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { AuthContext } from "../http/authContext";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
@@ -9,6 +10,13 @@ import { BindingSpec, type BindingSpecInput } from "./bindings";
 export interface PithyVars {
   /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * The audit recorder seam. Any capability records a security-relevant action with `c.var.emit(...)`
+   * (CLAUDE.md §Security). `@pithy-sh/audit` replaces the default with a D1-backed recorder; with no
+   * audit capability composed it is the no-op `noopEmit`. Non-fatal by contract — never throws — so
+   * an audited action is never broken by an audit write.
+   */
+  emit: AuditEmit;
   /**
    * Per-request D1 database registry. Loosely `unknown` on this base seam so the contract stays
    * decoupled from any schema; `createBackend`'s return types it precisely as `DbRegistry`

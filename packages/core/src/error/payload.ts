@@ -257,6 +257,30 @@ const TurnstileConfigPublic = z
   })
   .describe("The Turnstile middleware is misconfigured (500).");
 
+// --- @pithy-sh/audit: audit-trail recorder codes ---
+
+const AuditInvalidEventPublic = z
+  .object({
+    code: z
+      .literal("audit/invalid_event")
+      .describe("An audit event failed validation against the AuditEvent schema (bad action, outcome, or actor)."),
+    status: z.literal(400).describe("Bad Request — the event did not match its schema."),
+    ...publicFields,
+  })
+  .describe("An audit event failed validation against its schema (400).");
+
+const AuditWriteFailedPublic = z
+  .object({
+    code: z
+      .literal("audit/write_failed")
+      .describe(
+        "Persisting an audit event to D1 failed after retries; the failure is logged, never thrown to a client.",
+      ),
+    status: z.literal(500).describe("Internal Server Error — the audit write could not be durably persisted."),
+    ...publicFields,
+  })
+  .describe("Persisting an audit event failed (500). Recorded non-fatally; never breaks the audited action.");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -287,6 +311,8 @@ export const PublicErrorPayload = z
     TurnstileMissingTokenPublic,
     TurnstileFailedPublic,
     TurnstileConfigPublic,
+    AuditInvalidEventPublic,
+    AuditWriteFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -336,6 +362,10 @@ const TurnstileMissingToken = TurnstileMissingTokenPublic.extend(detailField).de
 );
 const TurnstileFailed = TurnstileFailedPublic.extend(detailField).describe(TurnstileFailedPublic.description ?? "");
 const TurnstileConfig = TurnstileConfigPublic.extend(detailField).describe(TurnstileConfigPublic.description ?? "");
+const AuditInvalidEvent = AuditInvalidEventPublic.extend(detailField).describe(
+  AuditInvalidEventPublic.description ?? "",
+);
+const AuditWriteFailed = AuditWriteFailedPublic.extend(detailField).describe(AuditWriteFailedPublic.description ?? "");
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -366,6 +396,8 @@ export const ErrorPayload = z
     TurnstileMissingToken,
     TurnstileFailed,
     TurnstileConfig,
+    AuditInvalidEvent,
+    AuditWriteFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

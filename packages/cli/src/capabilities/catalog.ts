@@ -33,6 +33,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     whenToEnable:
       "Stop bots at login, signup, and form-submit points with a Cloudflare Turnstile humanity check — stacked on any route, with test keys wired automatically in dev and staging.",
   },
+  {
+    name: "audit",
+    package: "@pithy-sh/audit",
+    whenToEnable:
+      "A queryable audit trail of security-relevant actions — who did what, when, and whether it succeeded — recorded from Workers and the CLI, attributed to the right actor.",
+  },
   { name: "storage", package: "@pithy-sh/storage", whenToEnable: "R2-backed object storage." },
   { name: "leaderboard", package: "@pithy-sh/leaderboard", whenToEnable: "Multi-tenant ranking." },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },
