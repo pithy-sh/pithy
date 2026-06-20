@@ -1,0 +1,189 @@
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { betterAuth } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
+import { bearer } from "better-auth/plugins/bearer";
+import { emailOTP } from "better-auth/plugins/email-otp";
+import { jwt } from "better-auth/plugins/jwt";
+import { magicLink } from "better-auth/plugins/magic-link";
+import { emitAfterRequest } from "../audit/emit";
+import type { AuthDatabase } from "../data/tables";
+import { parseDeviceMeta, registerDevice } from "../device/registry";
+import type { AppleOAuthCredentials, GoogleOAuthCredentials } from "./secrets";
+
+/** Build the `socialProviders` block from whichever provider credentials were resolved. */
+function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | undefined {
+  const providers: Record<string, unknown> = {};
+  if (deps.google) {
+    providers.google = {
+      clientId: deps.google.clientId,
+      clientSecret: deps.google.clientSecret,
+      accessType: "offline",
+      prompt: "select_account consent",
+    };
+  }
+  if (deps.apple) {
+    providers.apple = {
+      clientId: deps.apple.clientId,
+      clientSecret: deps.apple.clientSecret,
+      ...(deps.apple.appBundleIdentifier ? { appBundleIdentifier: deps.apple.appBundleIdentifier } : {}),
+    };
+  }
+  return Object.keys(providers).length > 0 ? providers : undefined;
+}
+
+/**
+ * What the instance hands to Pithy's email seam to deliver. The route never sends inline — the hook
+ * enqueues an `@pithy-sh/email` job (`magicLink`/`otp` template) which a Workflow delivers.
+ */
+export type AuthEmailMessage =
+  | { to: string; template: "magicLink"; token: string; url: string }
+  | { to: string; template: "otp"; code: string };
+
+/** The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic. */
+export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
+
+/** Everything the Better-Auth instance needs, resolved per invocation from config + request env. */
+export interface AuthInstanceDeps {
+  /** The shared Kysely over the `pithy_auth_*` tables (carries `CamelCasePlugin`). */
+  db: AuthDatabase;
+  /** The Better-Auth signing/encryption secret, sourced from `@pithy-sh/secrets`. */
+  secret: string;
+  /** The public base URL of this environment's auth worker (no trailing slash). */
+  baseURL: string;
+  /** The mount path; must equal the Hono route the handler is mounted under. */
+  basePath: string;
+  /** Web origins and mobile deep-link schemes allowed as OAuth/redirect targets and for CSRF origin checks. */
+  trustedOrigins: string[];
+  /** Google OAuth credentials, when the provider is enabled. Resolved as one typed JSON secret. */
+  google?: GoogleOAuthCredentials | undefined;
+  /** Apple Sign-In credentials, when the provider is enabled. Resolved as one typed JSON secret. */
+  apple?: AppleOAuthCredentials | undefined;
+  /** Deliver a magic link or OTP. Enqueues an email job; never sends inline. */
+  sendEmail: SendAuthEmail;
+  /** Session lifetime in seconds. */
+  sessionExpiresIn: number;
+  /** How often (seconds) an active session's expiry slides forward. */
+  sessionUpdateAge: number;
+  /** Magic-link / OTP token lifetime in seconds. */
+  verificationExpiresIn: number;
+  /** OTP length (digits). */
+  otpLength: number;
+  /** When true, sign-in never provisions a new user (existing accounts only). */
+  disableSignUp: boolean;
+  /** Audit seam — emits `auth/*` events. A no-op when the audit capability is absent. */
+  emit: AuditEmit;
+}
+
+/** The concrete return type of `makeAuth` — the Better-Auth instance with Pithy's plugin set. */
+export type AuthInstance = ReturnType<typeof makeAuth>;
+
+/**
+ * Build the Better-Auth instance for one request.
+ *
+ * Passwordless only — `emailAndPassword` is never enabled. The Kysely adapter wraps our shared
+ * `CamelCasePlugin` instance, so Better Auth's camelCase model names + fields map to the snake_case
+ * `pithy_auth_*` columns the migration created. Dates are ISO-8601 text on SQLite; ids are WebCrypto
+ * UUIDs; rate limiting is durable (D1-backed) since memory limiting is per-isolate on Workers.
+ */
+export function makeAuth(deps: AuthInstanceDeps) {
+  return betterAuth({
+    appName: "Pithy",
+    baseURL: deps.baseURL,
+    basePath: deps.basePath,
+    secret: deps.secret,
+    telemetry: { enabled: false },
+    trustedOrigins: deps.trustedOrigins,
+    database: { db: deps.db, type: "sqlite", transaction: false },
+    advanced: {
+      // WebCrypto UUID ids for every model — anti-enumeration, Workers-safe.
+      database: { generateId: () => crypto.randomUUID() },
+    },
+    // Better Auth's errors bubble out of `handler` so the Hono boundary maps them to PithyError.
+    onAPIError: { throw: true },
+    databaseHooks: {
+      session: {
+        create: {
+          // Bind the session to its device (registering the device first, so the linkage is valid).
+          // Only fires when a request carried device headers — an internal rotation passes deviceId
+          // via override instead, so this hook leaves it untouched.
+          before: async (session, ctx) => {
+            const meta = ctx?.headers ? parseDeviceMeta(ctx.headers) : undefined;
+            if (!meta) return;
+            await registerDevice(deps.db, meta, {
+              userId: session.userId,
+              lastIp: session.ipAddress ?? null,
+              now: new Date(),
+            });
+            return { data: { ...session, deviceId: meta.id } };
+          },
+        },
+      },
+    },
+    hooks: {
+      // Emit audit events for every completed auth request: sign-in (+device) from the new session,
+      // plus the send/sign-out/token/OAuth events by path. Endpoint-scoped, so a rotation never emits.
+      after: createAuthMiddleware(async (ctx) => {
+        const newSession = ctx.context.newSession;
+        await emitAfterRequest(deps.emit, {
+          path: ctx.path ?? "",
+          headers: ctx.headers,
+          newSession: newSession
+            ? {
+                userId: newSession.user.id,
+                sessionId: newSession.session.id,
+                deviceId: (newSession.session as { deviceId?: string | null }).deviceId ?? null,
+              }
+            : null,
+          currentUserId: ctx.context.session?.user?.id ?? null,
+        });
+      }),
+    },
+    rateLimit: {
+      // Memory limiting is per-isolate (useless on Workers); back it with the durable D1 table.
+      enabled: true,
+      storage: "database",
+      modelName: "pithyAuthRateLimit",
+    },
+    user: { modelName: "pithyAuthUsers" },
+    session: {
+      modelName: "pithyAuthSessions",
+      expiresIn: deps.sessionExpiresIn,
+      updateAge: deps.sessionUpdateAge,
+      // The device this session is bound to. Set by the session-create hook, not by clients.
+      additionalFields: { deviceId: { type: "string", required: false, input: false } },
+    },
+    account: {
+      modelName: "pithyAuthAccounts",
+      accountLinking: {
+        enabled: true,
+        // Link a social sign-in to an existing magic-link user when the verified emails match.
+        trustedProviders: ["google", "apple"],
+      },
+    },
+    verification: { modelName: "pithyAuthVerifications" },
+    ...((): { socialProviders?: Record<string, unknown> } => {
+      const providers = socialProviders(deps);
+      return providers ? { socialProviders: providers } : {};
+    })(),
+    plugins: [
+      bearer(),
+      jwt({ schema: { jwks: { modelName: "pithyAuthJwks" } } }),
+      magicLink({
+        expiresIn: deps.verificationExpiresIn,
+        disableSignUp: deps.disableSignUp,
+        sendMagicLink: async ({ email, url, token }) => {
+          await deps.sendEmail({ to: email, template: "magicLink", token, url });
+        },
+      }),
+      emailOTP({
+        otpLength: deps.otpLength,
+        expiresIn: deps.verificationExpiresIn,
+        disableSignUp: deps.disableSignUp,
+        sendVerificationOTP: async ({ email, otp, type }) => {
+          if (type !== "sign-in") return;
+          await deps.sendEmail({ to: email, template: "otp", code: otp });
+        },
+      }),
+    ],
+  });
+}

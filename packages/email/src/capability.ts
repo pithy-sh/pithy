@@ -2,11 +2,24 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
 import { emailSigningRegistry } from "./crypto/signingKey";
-import { emailSuppressionTables, emailTables } from "./data/tables";
+import { emailDatabase, emailSuppressionTables, emailTables } from "./data/tables";
 import { registerCallbacks } from "./http/callbacks";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
+import { type EnqueueDeps, type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 import { CustomTheme, type EmailTheme, resolveTheme } from "./templates/theme";
+
+/** The send Workflow binding shape — declared by `EnqueueDeps` so the capability and adopters agree. */
+type SendWorkflowBinding = NonNullable<EnqueueDeps["sender"]>;
+
+/**
+ * The bindings the enqueue seam reads from the request env: the shared `DB` and the send Workflow.
+ * A consumer (e.g. `@pithy-sh/auth`) forwards its worker env; it never names these bindings itself.
+ */
+export interface EmailEnqueueEnv {
+  DB: D1Database;
+  EMAIL_SENDER?: SendWorkflowBinding;
+}
 
 /**
  * Sort order of the email migrations within the app database, relative to other capabilities
@@ -57,9 +70,16 @@ export interface ResolvedEmailConfig {
   theme: EmailTheme;
 }
 
-/** The email capability, with its resolved config attached for the app's enqueue calls. */
+/** The email capability, with its resolved config and a bound enqueue seam attached. */
 export interface EmailCapability extends Capability {
   emailConfig: ResolvedEmailConfig;
+  /**
+   * Enqueue an email job from a request env. The capability owns the `DB`/`EMAIL_SENDER` bindings, the
+   * from-identity, and the theme — a consumer passes only its worker env and the high-level input
+   * (`to`, `template`, `payload`). This is the seam other capabilities depend on; they never assemble
+   * `EnqueueDeps` or name the email bindings themselves.
+   */
+  enqueue: (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
 }
 
 /**
@@ -102,6 +122,19 @@ export function email(config: EmailConfigInput): EmailCapability {
     routes: registerCallbacks,
     email: createBounceHandler(),
   });
+  const enqueue = (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
+    enqueueEmail(
+      {
+        db: emailDatabase(env.DB),
+        fromAddress: resolved.fromAddress,
+        fromName: resolved.fromName,
+        theme,
+        sender: env.EMAIL_SENDER,
+        now: new Date(),
+        newId: () => crypto.randomUUID(),
+      },
+      input,
+    );
   return Object.assign(capability, {
     emailConfig: {
       fromAddress: resolved.fromAddress,
@@ -110,6 +143,7 @@ export function email(config: EmailConfigInput): EmailCapability {
       schedulerEnabled: resolved.schedulerEnabled,
       theme,
     },
+    enqueue,
   });
 }
 
