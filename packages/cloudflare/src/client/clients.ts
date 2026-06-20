@@ -14,6 +14,7 @@ import { CloudflareR2Manager } from "../r2/r2Manager";
 import { CloudflareSecretsStoreManager } from "../secrets/secretsStoreManager";
 import { CloudflareAccountTokensManager } from "../tokens/accountTokensManager";
 import { CloudflareTurnstileManager } from "../turnstile/turnstileManager";
+import { CloudflareUserManager } from "../user/userManager";
 import { CloudflareBuildsManager } from "../workers/buildsManager";
 import { CloudflareWorkersManager } from "../workers/workersManager";
 import { WorkersProvisioner } from "../workers/workersProvisioner";
@@ -58,6 +59,8 @@ export class CloudflareClients {
   private turnstileManager?: CloudflareTurnstileManager;
 
   private accountTokensManager?: CloudflareAccountTokensManager;
+
+  private userManager?: CloudflareUserManager;
 
   private workersProvisioner?: WorkersProvisioner;
 
@@ -170,6 +173,12 @@ export class CloudflareClients {
   accountTokens(): CloudflareAccountTokensManager {
     this.accountTokensManager ??= new CloudflareAccountTokensManager(this.config);
     return this.accountTokensManager;
+  }
+
+  /** The user/token identity reader — resolves the actor behind the calling API token (audit attribution). */
+  user(): CloudflareUserManager {
+    this.userManager ??= new CloudflareUserManager(this.config);
+    return this.userManager;
   }
 }
 

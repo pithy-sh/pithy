@@ -164,3 +164,12 @@ export function fromZodError(error: z.ZodError, args: ErrorArgs = {}): Validatio
   }));
   return new ValidationError({ message: args.message, action: args.action, detail: args.detail, issues });
 }
+
+/**
+ * The message of an unknown throw, for use as a `PithyError` `detail` — `error.message` for an
+ * `Error`, else its string form. One source of truth so every catch site that wants the cause text
+ * does it the same way (CLAUDE.md §Errors).
+ */
+export function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

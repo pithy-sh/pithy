@@ -15,6 +15,28 @@
         "turbo": "^2.1.0",
       },
     },
+    "packages/audit": {
+      "name": "@pithy-sh/audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/cloudflare": "workspace:*",
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "7.0.1-rc",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
     "packages/cli": {
       "name": "@pithy-sh/cli",
       "version": "0.0.0",
@@ -474,6 +496,8 @@
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.133.0", "", {}, "sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA=="],
+
+    "@pithy-sh/audit": ["@pithy-sh/audit@workspace:packages/audit"],
 
     "@pithy-sh/cli": ["@pithy-sh/cli@workspace:packages/cli"],
 
