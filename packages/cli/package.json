@@ -39,7 +39,7 @@
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
-    "typescript": "7.0.1-rc",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.99.0",
     "zod": "^4.0.0"
