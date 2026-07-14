@@ -51,7 +51,7 @@ function instanceWithMailbox() {
 }
 
 beforeEach(async () => {
-  for (const table of [...TABLES, "kysely_migration", "kysely_migration_lock"]) {
+  for (const table of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
   await migrate();

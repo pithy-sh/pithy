@@ -21,7 +21,7 @@ function meta(id: string, over: Partial<DeviceMeta> = {}): DeviceMeta {
 }
 
 beforeEach(async () => {
-  for (const table of [...TABLES, "kysely_migration", "kysely_migration_lock"]) {
+  for (const table of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([

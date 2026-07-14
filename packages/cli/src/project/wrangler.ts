@@ -48,10 +48,17 @@ export interface WranglerOptions {
  * raising them as the error `detail` if wrangler fails; with `passthrough`, wrangler's output streams
  * through directly. A non-zero exit (or a missing binary) becomes a `PithyError`.
  *
+ * On success it resolves with the captured `stdout`/`stderr` — empty strings in `passthrough` mode,
+ * where nothing is captured — so callers that need wrangler's output (e.g. `deploy` scraping the
+ * version id and url) can read it without giving up the quiet-on-success default.
+ *
  * Wrangler is a workspace devDependency, not a global, so it runs through `bun x wrangler` — bun
  * resolves the local install from the `cwd`. Tests override `bin` to spawn a stand-in directly.
  */
-export async function runWrangler(args: string[], options: WranglerOptions = {}): Promise<void> {
+export async function runWrangler(
+  args: string[],
+  options: WranglerOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
   const command = options.bin ?? "bun";
   const commandArgs = options.bin ? args : ["x", "wrangler", ...args];
   const label = options.bin ?? "wrangler";
@@ -83,7 +90,7 @@ export async function runWrangler(args: string[], options: WranglerOptions = {})
 
     child.on("close", (code) => {
       if (code === 0) {
-        resolve();
+        resolve({ stdout, stderr });
         return;
       }
       // Surface the captured output (the errors) even in quiet mode; in passthrough it already streamed.

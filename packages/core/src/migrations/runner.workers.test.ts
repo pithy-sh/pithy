@@ -3,7 +3,7 @@ import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
 import { createMigrationRegistry } from "./registry";
-import { rollbackMigration, runMigrations } from "./runner";
+import { pendingMigrations, rollbackMigration, runMigrations } from "./runner";
 
 /** The provider for a database name, asserting it was registered (narrows the indexed access). */
 function providerFor(registry: Record<string, MigrationProvider>, database: string): MigrationProvider {
@@ -44,9 +44,23 @@ async function tableNames(): Promise<string[]> {
   return rows.results.map((row) => row.name).sort();
 }
 
+async function migrationTableNames(): Promise<string[]> {
+  const rows = await env.DB.prepare(
+    "select name from sqlite_master where type = 'table' and name like '%migration%'",
+  ).all<{ name: string }>();
+  return rows.results.map((row) => row.name).sort();
+}
+
 beforeEach(async () => {
-  // Each test starts from a blank slate: no app tables, no Kysely migration state.
-  for (const table of ["widgets", "things", "kysely_migration", "kysely_migration_lock"]) {
+  // Each test starts from a blank slate: no app tables, no migration bookkeeping state.
+  for (const table of [
+    "widgets",
+    "things",
+    "kysely_migration",
+    "kysely_migration_lock",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
 });
@@ -88,6 +102,17 @@ describe("runMigrations", () => {
     expect(await tableNames()).toEqual(["things"]);
   });
 
+  test("records bookkeeping in pithy_ tables, never the default kysely_migration (adopter collision)", async () => {
+    const registry = createMigrationRegistry([
+      { database: "app", namespace: "core", order: 0, migrations: { "0001_things": createThings } },
+    ]);
+
+    await runMigrations(env.DB, providerFor(registry, "app"));
+
+    // The prefix keeps an adopter's own Kysely migrations on the same D1 from colliding (principle 1).
+    expect(await migrationTableNames()).toEqual(["pithy_migrations", "pithy_migrations_lock"]);
+  });
+
   test("an empty provider is a no-op success", async () => {
     const registry = createMigrationRegistry([{ database: "app", namespace: "core", order: 0, migrations: {} }]);
 
@@ -126,6 +151,27 @@ describe("runMigrations", () => {
 
     // D1 has no transactional DDL: the migration before the failure stays applied.
     expect(await tableNames()).toEqual(["things"]);
+  });
+});
+
+describe("pendingMigrations", () => {
+  test("counts un-run migrations without applying them, and reaches zero once run", async () => {
+    const registry = createMigrationRegistry([
+      {
+        database: "app",
+        namespace: "core",
+        order: 0,
+        migrations: { "0001_things": createThings, "0002_widgets": createWidgets },
+      },
+    ]);
+    const provider = providerFor(registry, "app");
+
+    expect(await pendingMigrations(env.DB, provider)).toBe(2);
+    // Counting is read-only: no tables were created.
+    expect(await tableNames()).toEqual([]);
+
+    await runMigrations(env.DB, provider);
+    expect(await pendingMigrations(env.DB, provider)).toBe(0);
   });
 });
 

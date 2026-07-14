@@ -18,6 +18,11 @@ import { InternalError } from "../error/pithyError";
  * the `Migrator` needs (table names). Migration `up`/`down` functions receive that instance, with
  * `CamelCasePlugin` installed like every Pithy database — write camelCase, store snake_case.
  *
+ * The bookkeeping ledger and lock are renamed off Kysely's `kysely_migration` defaults to
+ * `pithy_migrations` / `pithy_migrations_lock` — an adopter running their own Kysely migrations on
+ * the same D1 would otherwise collide on those default names (principle 1). The introspector's
+ * internal-table filter tracks the rename so `getTables` still hides them.
+ *
  * One runner at a time per database. D1 has no transactional DDL and its adapter's migration lock
  * is a no-op, so concurrent runs can interleave. That fits the deployment model — migrations run
  * from `pithy migrate` (CLI/CI), not inside request handlers — but it is an assumption, not a
@@ -30,7 +35,10 @@ interface SqliteMasterDatabase {
   sqlite_master: { name: string; type: string };
 }
 
-const KYSELY_TABLES = ["kysely_migration", "kysely_migration_lock"];
+/** Pithy's renamed bookkeeping tables — hidden by the introspector like Kysely's defaults are. */
+const MIGRATION_TABLE = "pithy_migrations";
+const MIGRATION_LOCK_TABLE = "pithy_migrations_lock";
+const INTERNAL_TABLES = [MIGRATION_TABLE, MIGRATION_LOCK_TABLE];
 
 /** Table names from `sqlite_master` only — no pragma joins, no column metadata. */
 class D1Introspector implements DatabaseIntrospector {
@@ -52,7 +60,7 @@ class D1Introspector implements DatabaseIntrospector {
       .select(["name", "type"])
       .orderBy("name");
     if (!options.withInternalKyselyTables) {
-      query = query.where("name", "not in", KYSELY_TABLES);
+      query = query.where("name", "not in", INTERNAL_TABLES);
     }
     const rows = await query.execute();
     return rows.map((row) => ({ name: row.name, isView: row.type === "view", isForeign: false, columns: [] }));
@@ -70,13 +78,28 @@ function migrator(database: D1Database, provider: MigrationProvider): Migrator {
     dialect: new D1MigrationDialect({ database }),
     plugins: [new CamelCasePlugin()],
   });
-  return new Migrator({ db, provider });
+  return new Migrator({
+    db,
+    provider,
+    migrationTableName: MIGRATION_TABLE,
+    migrationLockTableName: MIGRATION_LOCK_TABLE,
+  });
 }
 
 /** Run every pending migration to latest. An empty provider resolves to `[]`. */
 export async function runMigrations(database: D1Database, provider: MigrationProvider): Promise<MigrationResult[]> {
   const { error, results } = await migrator(database, provider).migrateToLatest();
   return settle("run", error, results);
+}
+
+/**
+ * Count the migrations that have not run yet — read-only, applying nothing. The seam behind
+ * `pithy deploy`'s warn-only check: deploy never migrates, but it can tell you the target env's
+ * schema is behind.
+ */
+export async function pendingMigrations(database: D1Database, provider: MigrationProvider): Promise<number> {
+  const migrations = await migrator(database, provider).getMigrations();
+  return migrations.filter((migration) => migration.executedAt === undefined).length;
 }
 
 /** Step the latest applied migration back — one step, the `pithy migrate --rollback` seam. */

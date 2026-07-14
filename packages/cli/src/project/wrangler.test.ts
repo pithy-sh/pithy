@@ -6,8 +6,13 @@ import { runWrangler } from "./wrangler";
 const NODE = "node";
 
 describe("runWrangler", () => {
-  test("resolves on a zero exit", async () => {
-    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE })).resolves.toBeUndefined();
+  test("resolves with captured stdout/stderr on a zero exit", async () => {
+    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE })).resolves.toEqual({ stdout: "", stderr: "" });
+  });
+
+  test("captures stdout so callers can scrape it (deploy reads the version id + url)", async () => {
+    const { stdout } = await runWrangler(["-e", "process.stdout.write('Current Version ID: v1')"], { bin: NODE });
+    expect(stdout).toContain("Version ID: v1");
   });
 
   test("rejects on a non-zero exit, surfacing the captured output in detail (quiet mode)", async () => {
@@ -27,8 +32,11 @@ describe("runWrangler", () => {
     expect(error.payload.action).toContain("installed");
   });
 
-  test("passthrough mode resolves on success", async () => {
-    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE, passthrough: true })).resolves.toBeUndefined();
+  test("passthrough mode resolves on success (nothing captured — output already streamed)", async () => {
+    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE, passthrough: true })).resolves.toEqual({
+      stdout: "",
+      stderr: "",
+    });
   });
 
   test("passes extra env to the child — how wrangler gets CLOUDFLARE_API_TOKEN from .dev.vars", async () => {
@@ -38,6 +46,6 @@ describe("runWrangler", () => {
         bin: NODE,
         env: { PITHY_WRANGLER_TEST: "ok" },
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ stdout: "", stderr: "" });
   });
 });

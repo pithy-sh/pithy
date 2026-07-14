@@ -15,7 +15,7 @@ export const AUDIT_MIGRATION_ORDER = 250;
 /**
  * The registry name the audit table joins. The store of record is D1, shared with the primary app
  * database (`app`, the `DB` binding) by default — so the audit migration tracks alongside the app's
- * in one `kysely_migration` table rather than fighting it on a second provider over the same binding.
+ * in one `pithy_migrations` table rather than fighting it on a second provider over the same binding.
  * The physical binding is config-selectable; this registry key is the coordination point capabilities
  * use to share one database (CLAUDE.md §Data layer; isolating audit into its own D1 is a later issue).
  */

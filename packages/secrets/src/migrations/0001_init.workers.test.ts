@@ -31,8 +31,8 @@ beforeEach(async () => {
   for (const table of [
     "pithy_secrets_rotations",
     "pithy_secrets_system_secrets",
-    "kysely_migration",
-    "kysely_migration_lock",
+    "pithy_migrations",
+    "pithy_migrations_lock",
   ]) {
     await env.SECRETS.prepare(`drop table if exists ${table}`).run();
   }

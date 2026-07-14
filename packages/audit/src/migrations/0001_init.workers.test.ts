@@ -35,7 +35,7 @@ async function auditIndexes(): Promise<string[]> {
 }
 
 beforeEach(async () => {
-  for (const table of ["pithy_audit_events", "kysely_migration", "kysely_migration_lock"]) {
+  for (const table of ["pithy_audit_events", "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
 });

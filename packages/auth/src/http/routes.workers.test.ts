@@ -107,7 +107,7 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
 const DEVICE_HEADERS = { "x-pithy-device-id": "dev-1", "x-pithy-platform": "ios", "cf-connecting-ip": "203.0.113.5" };
 
 beforeEach(async () => {
-  for (const t of [...TABLES, "kysely_migration", "kysely_migration_lock"]) {
+  for (const t of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${t}`).run();
   }
   const provider = createMigrationRegistry([

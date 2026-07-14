@@ -36,10 +36,10 @@ async function tablesLike(d1: D1Database): Promise<string[]> {
 }
 
 beforeEach(async () => {
-  for (const table of ["pithy_email_jobs", "pithy_email_events", "kysely_migration", "kysely_migration_lock"]) {
+  for (const table of ["pithy_email_jobs", "pithy_email_events", "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
-  for (const table of ["pithy_email_suppressions", "kysely_migration", "kysely_migration_lock"]) {
+  for (const table of ["pithy_email_suppressions", "pithy_migrations", "pithy_migrations_lock"]) {
     await env.EMAIL_SUPPRESSIONS.prepare(`drop table if exists ${table}`).run();
   }
 });
