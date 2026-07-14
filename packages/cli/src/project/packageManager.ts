@@ -39,9 +39,10 @@ export async function detectPackageManager(projectDir: string): Promise<PackageM
   return "npm";
 }
 
-/** The install argv for a package manager: npm `install`, the rest `add`. */
-export function installArgs(pm: PackageManager, pkg: string): string[] {
-  return [pm === "npm" ? "install" : "add", pkg];
+/** The install argv for a package manager: npm `install`, the rest `add`, for one or many packages. */
+export function installArgs(pm: PackageManager, pkgs: string | string[]): string[] {
+  const list = Array.isArray(pkgs) ? pkgs : [pkgs];
+  return [pm === "npm" ? "install" : "add", ...list];
 }
 
 /** Spawn a package manager. Injectable so the flow is testable without a real install. */
@@ -76,5 +77,23 @@ export interface InstallPackageOptions {
 export async function installPackage(options: InstallPackageOptions): Promise<{ packageManager: PackageManager }> {
   const packageManager = await detectPackageManager(options.projectDir);
   await (options.run ?? spawnInstall)(packageManager, installArgs(packageManager, options.pkg), options.projectDir);
+  return { packageManager };
+}
+
+/**
+ * Add several packages at once with the project's detected package manager — one install invocation.
+ * Used by `--eject` to promote a forked capability's runtime dependencies (`better-auth`, `zod`, …)
+ * into the project so the local copy builds without the `@pithy-sh/*` package. A no-op when the list
+ * is empty. Returns which manager ran.
+ */
+export async function promoteDependencies(
+  projectDir: string,
+  packages: string[],
+  runner?: InstallRunner,
+): Promise<{ packageManager: PackageManager }> {
+  const packageManager = await detectPackageManager(projectDir);
+  if (packages.length > 0) {
+    await (runner ?? spawnInstall)(packageManager, installArgs(packageManager, packages), projectDir);
+  }
   return { packageManager };
 }

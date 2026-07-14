@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
@@ -86,4 +86,20 @@ test("add runs the capability's dev migrations and reports what moved", async ()
   expect(run?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
     ["0100_widgets_0001_init", "Up", "Success"],
   ]);
+});
+
+test("add --eject copies the source, repoints the import, and still migrates via the local copy", async () => {
+  const result = await runAdd({ projectDir: dir, capability: "widgets", install: installWidgets, eject: true });
+
+  // The source landed in the repo, structure preserved.
+  expect(result.eject?.path).toBe("capabilities/widgets");
+  expect(await readFile(join(dir, "capabilities/widgets/index.ts"), "utf8")).toContain("defineCapability");
+
+  // The config now imports the local copy, not the package.
+  const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+  expect(config).toContain('from "./capabilities/widgets"');
+  expect(config).not.toContain("@pithy-sh/widgets/src/index");
+
+  // Migrate still ran — loading the ejected config and running the capability's migration.
+  expect(result.databases[0]?.results.map((r) => r.status)).toEqual(["Success"]);
 });

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { detectPackageManager, installArgs, installPackage } from "./packageManager";
+import { detectPackageManager, installArgs, installPackage, promoteDependencies } from "./packageManager";
 
 let dir: string;
 beforeEach(async () => {
@@ -40,6 +40,32 @@ describe("installArgs", () => {
     expect(installArgs("pnpm", "@pithy-sh/auth")).toEqual(["add", "@pithy-sh/auth"]);
     expect(installArgs("yarn", "@pithy-sh/auth")).toEqual(["add", "@pithy-sh/auth"]);
     expect(installArgs("bun", "@pithy-sh/auth")).toEqual(["add", "@pithy-sh/auth"]);
+  });
+
+  test("takes many packages in one install invocation", () => {
+    expect(installArgs("npm", ["hono@^4", "zod@^4"])).toEqual(["install", "hono@^4", "zod@^4"]);
+  });
+});
+
+describe("promoteDependencies", () => {
+  test("adds every package in one command with the detected PM", async () => {
+    await writeFile(join(dir, "yarn.lock"), "");
+    const calls: { command: string; args: string[]; cwd: string }[] = [];
+
+    const result = await promoteDependencies(dir, ["better-auth@^1.6.19", "zod@^4.0.0"], async (command, args, cwd) => {
+      calls.push({ command, args, cwd });
+    });
+
+    expect(result.packageManager).toBe("yarn");
+    expect(calls).toEqual([{ command: "yarn", args: ["add", "better-auth@^1.6.19", "zod@^4.0.0"], cwd: dir }]);
+  });
+
+  test("is a no-op when there is nothing to promote", async () => {
+    let ran = false;
+    await promoteDependencies(dir, [], async () => {
+      ran = true;
+    });
+    expect(ran).toBe(false);
   });
 });
 

@@ -33,7 +33,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | Command | Purpose |
 |---|---|
 | `pithy init` | Scaffold a new Pithy project in the current directory |
-| `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into `pithy.config.ts` and `wrangler.jsonc`, scaffolds its config options (you pick the mount path; handlers stay in the package), and runs its migrations |
+| `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into `pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability>` | Inverse of `add` — uninstalls cleanly |
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry `dev`/`deploy` discover (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
@@ -42,7 +42,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy feature` | Worktree lifecycle: `create`/`destroy` a `feature/<issue>-<name>` branch + its ephemeral CF resources |
 | `pithy env` | Switch or report the active deployment environment (`dev`/`staging`/`production`) |
 | `pithy deploy` | Deploy to Cloudflare Workers |
-| `pithy upgrade` | Reconcile scaffolded code with current capability manifests |
+| `pithy upgrade` | Reconcile package-served capabilities with current manifests — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
 | `pithy doctor` | Diagnose environment, bindings, and config |
 | `pithy --help` / `pithy -h` | Show help for any command |

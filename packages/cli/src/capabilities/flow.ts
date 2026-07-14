@@ -4,6 +4,7 @@ import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadProject } from "../project/config";
 import { installPackage } from "../project/packageManager";
 import { addCapability, type ConfigValue } from "./add";
+import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { loadManifest } from "./manifests";
 
 /** Coerce a raw string (a `--set` value or a prompt answer) to its option's type. */
@@ -94,6 +95,9 @@ export type InstallStep = (input: { projectDir: string; pkg: string }) => Promis
 /** Run the project's dev migrations. Injectable for tests. */
 export type MigrateStep = (projectDir: string) => Promise<DatabaseRun[]>;
 
+/** Eject a capability's source into the repo. Injectable for tests. */
+export type EjectStep = (options: EjectCapabilityOptions) => Promise<EjectResult>;
+
 const defaultInstall: InstallStep = (input) => installPackage(input);
 
 const defaultMigrate: MigrateStep = async (projectDir) => {
@@ -114,6 +118,12 @@ export interface RunAddOptions {
   install?: InstallStep;
   /** Override the migrate step (tests inject a stub). */
   migrate?: MigrateStep;
+  /** Copy the capability's source into the repo and repoint the wiring at it (`--eject`). */
+  eject?: boolean;
+  /** With `eject`, overwrite an existing local copy (`--force`). */
+  force?: boolean;
+  /** Override the eject step (tests inject a stub). */
+  ejectStep?: EjectStep;
 }
 
 export interface AddResult {
@@ -121,6 +131,8 @@ export interface AddResult {
   package: string;
   packageManager: string;
   databases: DatabaseRun[];
+  /** Present when `--eject` ran: what was copied and which deps were promoted. */
+  eject?: EjectResult;
 }
 
 /**
@@ -143,7 +155,16 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
   }
 
   await addCapability({ projectDir, manifest, configValues });
+
+  // Eject before migrating: eject repoints the config import to the local copy and promotes the
+  // capability's deps, so the migrate step loads the ejected config with everything it imports present.
+  let eject: EjectResult | undefined;
+  if (options.eject) {
+    const runEject = options.ejectStep ?? ejectCapability;
+    eject = await runEject({ projectDir, capability: manifest.name, package: manifest.package, force: options.force });
+  }
+
   const databases = await migrate(projectDir);
 
-  return { capability: manifest.name, package: manifest.package, packageManager, databases };
+  return { capability: manifest.name, package: manifest.package, packageManager, databases, eject };
 }

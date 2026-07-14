@@ -57,6 +57,16 @@ export default defineCommand({
     capability: { type: "positional", required: false, description: "Capability name, e.g. auth" },
     list: { type: "boolean", default: false, description: "List the capabilities you can add" },
     set: { type: "string", description: "Override a config option: --set key=value (repeatable)" },
+    eject: {
+      type: "boolean",
+      default: false,
+      description: "Copy the capability's source into your repo and own it (no upgrades)",
+    },
+    force: {
+      type: "boolean",
+      default: false,
+      description: "With --eject, overwrite an existing local copy (discards edits)",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   // `ctx` over `{ args }`: repeated `--set` only survives in rawArgs (citty keeps
@@ -81,6 +91,8 @@ export default defineCommand({
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
         prompt: interactive ? promptConfigValues : undefined,
+        eject: args.eject,
+        force: args.force,
       });
 
       if (args.json) {
@@ -89,6 +101,16 @@ export default defineCommand({
       }
       for (const run of result.databases) {
         process.stdout.write(`${describeRun(run)}\n`);
+      }
+      if (result.eject) {
+        process.stdout.write(
+          `Ejected ${result.capability} into ${result.eject.path}/. It's yours now — ${result.package} no longer upgrades it.\n`,
+        );
+        if (result.eject.promotedDependencies.length > 0) {
+          process.stdout.write(
+            `Promoted ${result.eject.promotedDependencies.length} dependencies. ${result.package} is safe to remove.\n`,
+          );
+        }
       }
       process.stdout.write(`${formatDone()}\n`);
     }),
