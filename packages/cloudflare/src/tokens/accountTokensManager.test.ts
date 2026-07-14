@@ -68,6 +68,20 @@ describe("CloudflareAccountTokensManager", () => {
     ]);
   });
 
+  it("listTokens returns every token summary, dropping unparseable entries", async () => {
+    mockTokenList.mockReturnValue(
+      paginator([
+        { id: "t1", name: "pithy-remote-migrate-staging", status: "active" },
+        { id: "t2", name: "pithy-secrets-production", status: "active" },
+        { name: "no id, dropped" },
+      ]),
+    );
+    expect(await manager.listTokens()).toEqual([
+      { id: "t1", name: "pithy-remote-migrate-staging", status: "active" },
+      { id: "t2", name: "pithy-secrets-production", status: "active" },
+    ]);
+  });
+
   it("resolvePermissionGroups maps names to id references", async () => {
     expect(await manager.resolvePermissionGroups(["Secrets Store Read", "Secrets Store Write"])).toEqual([
       { id: "pg-read" },

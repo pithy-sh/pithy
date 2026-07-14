@@ -100,6 +100,9 @@ export function email(config: EmailConfigInput): EmailCapability {
     dependsOn: ["secrets"],
     // The slice of secrets email reads — aggregated into the shared per-invocation accessor at startup.
     secretRegistry: emailSigningRegistry,
+    // Email provisioning wires inbound bounce routing (Email Routing rules), so the CI credential that
+    // provisions email needs that scope — contributed into the one `ci-system` token.
+    ciPermissions: ["email:routing"],
     requiredBindings: [
       { type: "d1", name: "DB" },
       { type: "d1", name: "EMAIL_SUPPRESSIONS" },

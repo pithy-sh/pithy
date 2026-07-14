@@ -1,13 +1,22 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 
-/** The shape `pithy.config.ts` default-exports: `createBackend`'s options. */
+/** Adopter token configuration: per-profile overrides of the predefined defaults (permissions/resources/store). */
+export interface TokenConfig {
+  /** Profile name → the fields to override on that profile's predefined default. */
+  overrides?: Record<string, ProfileOverride>;
+}
+
+/** The shape `pithy.config.ts` default-exports: `createBackend`'s options, plus optional token config. */
 export interface ProjectConfig {
   capabilities: Capability[];
   app?: Capability;
+  /** Overrides for the predefined CF token profiles (`pithy token`). Optional. */
+  tokens?: TokenConfig;
 }
 
 function isProjectConfig(value: unknown): value is ProjectConfig {

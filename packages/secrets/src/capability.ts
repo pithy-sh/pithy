@@ -1,12 +1,26 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { secretsTables } from "./data/tables";
 import { secrets_0001_init } from "./migrations/0001_init";
+import { MANAGER_CF_API_TOKEN_SECRET_NAME } from "./provision/provisionSecrets";
 import type { SecretRegistry } from "./registry";
 import {
   aggregateSecretRegistries,
   configureSharedSecrets,
   DEFAULT_SECRETS_CACHE_TTL_SECONDS,
 } from "./sharedSecretsStore";
+
+/**
+ * The secrets manager's own token profile — the standard default for its least-privilege runtime
+ * credential. Declared here, next to the capability, and consumed as the single source of that scope
+ * (the CLI provisioner mints the manager token from it). Its value lands in the CF Secrets Store entry
+ * the manager binds (`GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`); Secrets Store read + write, nothing else.
+ */
+export const secretsTokenProfile = {
+  permissions: ["secrets:read", "secrets:write"],
+  secret: MANAGER_CF_API_TOKEN_SECRET_NAME,
+  defaultStore: "secrets-store",
+  description: "The secrets manager's runtime credential — reads and writes CF Secrets Store from its Worker.",
+} as const;
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */
 const SECRETS_MIGRATION_ORDER = 100;
@@ -56,6 +70,7 @@ export function secrets(config: SecretsConfig): SecretsCapability {
   const capability = defineCapability({
     name: "secrets",
     secretRegistry: config.registry,
+    tokenProfiles: { secrets: secretsTokenProfile },
     requiredBindings: [
       { type: "d1", name: "SECRETS" },
       { type: "secret", name: "SECRETS_ENCRYPTION_KEYS" },

@@ -169,6 +169,8 @@ async function remoteDriver(
 ): Promise<MigrationDriver> {
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  // The active CF token: the bootstrap token locally, or the least-privilege `ci-system` token in CI
+  // (an operator mints it with `pithy token mint ci-system` and sets it as CI's CLOUDFLARE_API_TOKEN).
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({

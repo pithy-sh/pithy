@@ -67,6 +67,30 @@ export interface SecretRegistryEntrySeam {
 export type SecretRegistrySeam = Record<string, SecretRegistryEntrySeam>;
 
 /**
+ * The structural seam for one capability's token-profile slice — profile name → the scoped CF API
+ * token that capability's code needs. Declared next to the code that uses it (alongside
+ * {@link Capability.secretRegistry}), so a capability owns its token's least-privilege scope and where
+ * the minted value lands. Core carries only the structural axes (never interpreted here); the concrete
+ * `TokenProfile`, the permission catalog, `defineTokenProfile`, and the mint engine live in
+ * `@pithy-sh/cloudflare`/the CLI. `pithy token` aggregates every capability's slice into one registry.
+ */
+export interface TokenProfileSeam {
+  /** The CF permissions the token grants, as short catalog keys (`d1:read`, `secrets:write`). */
+  readonly permissions: readonly string[];
+  /** The resource scope: `"account"` (the whole account, the default) or an explicit CF resource map. */
+  readonly resources?: "account" | Record<string, string>;
+  /** The secret-registry name the minted value is stored under — its backend decides the destination. */
+  readonly secret?: string;
+  /** A built-in destination override (`dev-vars` | `ephemeral` | `secrets-store`) for a tooling profile. */
+  readonly defaultStore?: string;
+  /** Why the profile exists / what consumes it — surfaced in `pithy token` help and docs. */
+  readonly description?: string;
+}
+
+/** A capability's token-profile slice: profile name → {@link TokenProfileSeam}. */
+export type TokenProfileSeamMap = Record<string, TokenProfileSeam>;
+
+/**
  * Context handed to a capability's {@link Capability.compose} hook at worker startup: every composed
  * capability (libraries + app), so a capability can perform cross-capability wiring it could not do
  * at construction time (when it sees only itself). `@pithy-sh/secrets` uses it to aggregate every
@@ -122,6 +146,20 @@ export interface Capability<
    * every declared secret in one batch — and no capability needs to know another's secrets.
    */
   secretRegistry?: SecretRegistrySeam;
+  /**
+   * The scoped CF API tokens this capability's code needs, as a token-profile slice (profile name →
+   * {@link TokenProfileSeam}). Additive and optional, and declared next to {@link Capability.secretRegistry}
+   * — the value of a minted token lands in the secret the profile names. `pithy token` aggregates every
+   * capability's slice with the built-in tooling profiles into one registry.
+   */
+  tokenProfiles?: TokenProfileSeamMap;
+  /**
+   * Extra CF permissions this capability needs the **CI system token** to hold, as short catalog keys
+   * (e.g. `email:routing` for email provisioning, `kv:write` for a module that seeds KV in CI). They
+   * union into the one `ci-system` token `pithy token mint ci-system` produces — so a new capability
+   * extends what CI can do without the adopter hand-editing token scopes. Additive and optional.
+   */
+  ciPermissions?: readonly string[];
   /**
    * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
    * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes

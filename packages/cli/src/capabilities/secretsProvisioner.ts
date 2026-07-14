@@ -2,10 +2,13 @@ import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { accountResource, type TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
+import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
+import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { permissionsForKeys } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import {
@@ -54,13 +57,13 @@ export interface CloudflareSecretsProvisionerOptions {
 
 /**
  * The least-privilege permissions the manager's minted token carries: Secrets Store Read + Write,
- * scoped to this account. The manager's only live-CF use is the rotation config write-back; its D1
- * work runs through the `SECRETS` binding, not this token — so nothing wider is granted.
+ * scoped to this account. Derived from the predefined `secrets` token profile — the one source of the
+ * standard defaults each package needs (`pithy token`) — so the manager's scope and the profile never
+ * drift. The manager's only live-CF use is the rotation config write-back; its D1 work runs through
+ * the `SECRETS` binding, not this token — so nothing wider is granted.
  */
 export function managerTokenPermissions(accountId: string): TokenPermission[] {
-  return [
-    { permissionGroupNames: ["Secrets Store Read", "Secrets Store Write"], resources: accountResource(accountId) },
-  ];
+  return permissionsForKeys([...secretsTokenProfile.permissions] as PermissionKey[], accountId);
 }
 
 /**

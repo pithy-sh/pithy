@@ -16,10 +16,15 @@ async function argNames(name: string): Promise<string[]> {
 }
 
 describe("main", () => {
-  test("registers init, add, migrate, and deploy", () => {
+  test("registers init, add, migrate, deploy, and token", () => {
     expect(Object.keys(main.subCommands as object)).toEqual(
-      expect.arrayContaining(["init", "add", "migrate", "deploy"]),
+      expect.arrayContaining(["init", "add", "migrate", "deploy", "token"]),
     );
+  });
+
+  test("token exposes mint, list, rotate, and revoke subcommands", async () => {
+    const token = await subcommand("token");
+    expect(Object.keys(token.subCommands ?? {})).toEqual(expect.arrayContaining(["mint", "list", "rotate", "revoke"]));
   });
 
   test("every command supports --json — agent-drivable, spec §10.20", async () => {

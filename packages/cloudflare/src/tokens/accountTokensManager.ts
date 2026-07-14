@@ -188,6 +188,18 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
     return names.map((name) => ({ id: index.get(name)![0]! }));
   }
 
+  /** Every account-owned token's metadata (SDK auto-paginates). No secret values — list is metadata only. */
+  async listTokens(): Promise<AccountTokenSummary[]> {
+    return cloudflareRequest("list account tokens", async () => {
+      const out: AccountTokenSummary[] = [];
+      for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
+        const parsed = AccountTokenSummary.safeParse(token);
+        if (parsed.success) out.push(parsed.data);
+      }
+      return out;
+    });
+  }
+
   /** Find an account token by exact name, or `null` — for idempotent re-mint (SDK auto-paginates). */
   async findTokenByName(name: string): Promise<AccountTokenSummary | null> {
     return cloudflareRequest(`find account token ${name}`, async () => {

@@ -83,6 +83,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
