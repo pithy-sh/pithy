@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ensureEmptyTarget, scaffoldProject } from "./scaffold";
 
@@ -42,6 +43,15 @@ describe("scaffoldProject", () => {
     // users, production serves paid users (remote execution lands in Phase 1+).
     expect(wrangler).toContain('"staging"');
     expect(wrangler).toContain('"production"');
+  });
+
+  test("enables Workers Logs by default — Mode 2 structured logs are queryable with no adopter setup", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "obs" });
+    const wrangler = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as {
+      observability?: { enabled?: boolean; head_sampling_rate?: number };
+    };
+    expect(wrangler.observability?.enabled).toBe(true);
+    expect(wrangler.observability?.head_sampling_rate).toBe(1);
   });
 
   test("scaffolds into an existing empty directory", async () => {

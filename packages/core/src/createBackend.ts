@@ -7,6 +7,8 @@ import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/datab
 import { pithyErrorHandler } from "./error/http";
 import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
+import type { Logger } from "./logger/logger";
+import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 
 /** Inputs to {@link createBackend}: the capabilities to assemble, plus the app's own capability. */
 export interface CreateBackendOptions<Caps extends readonly Capability[], App extends Capability> {
@@ -17,6 +19,18 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    * databases, KV namespaces, middleware, routes, and bindings compose with the rest; routes last.
    */
   app?: App;
+  /**
+   * The base logger bound to `c.var.log`, set **once** here at assembly (the per-request `env`
+   * constraint is honored: correlation fields are bound per request, not at module load). Defaults to
+   * the CF-native Mode 2 worker logger (`info`, structured records to Workers Logs). Pass a configured
+   * one to change the level or attach a tail/Logpush transport.
+   */
+  logger?: Logger;
+  /**
+   * The environment name (`dev` | `staging` | `production`) stamped on every request's correlation
+   * fields. Defaults to `unknown`; the CLI-generated backend passes the resolved env.
+   */
+  env?: string;
 }
 
 /** The Hono env `createBackend` returns — `db`/`kv` typed precisely from the merged capabilities. */
@@ -43,6 +57,19 @@ function dedupeBindings(specs: BindingSpec[]): BindingSpec[] {
     else if (!spec.optional) existing.optional = false;
   }
   return [...byKey.values()];
+}
+
+/**
+ * The deployed Worker version id, read from the `CF_VERSION_METADATA` version-metadata binding when the
+ * adopter has wired one; `undefined` off-platform or when the binding is absent. Correlates every log
+ * record to the exact deploy that produced it.
+ */
+function versionOf(env: Record<string, unknown>): string | undefined {
+  const meta = env.CF_VERSION_METADATA;
+  if (typeof meta === "object" && meta !== null && typeof (meta as { id?: unknown }).id === "string") {
+    return (meta as { id: string }).id;
+  }
+  return undefined;
 }
 
 /**
@@ -103,6 +130,11 @@ export function createBackend<
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
 
+  // Set once at assembly (the per-request `env` constraint holds: correlation binds per request below,
+  // not here). Defaults to the CF-native Mode 2 logger — structured records to Workers Logs, zero-config.
+  const baseLogger = options.logger ?? createWorkerLogger();
+  const envName = options.env ?? "unknown";
+
   let validated = false;
   app.use("*", async (c, next) => {
     const env = c.env as Record<string, unknown>;
@@ -112,9 +144,27 @@ export function createBackend<
     }
     if (c.get("auth") === undefined) c.set("auth", null);
     if (c.get("emit") === undefined) c.set("emit", noopEmit);
+    if (c.get("log") === undefined) {
+      c.set(
+        "log",
+        bindRequestContext(baseLogger, {
+          // The CF ray id correlates a request across Cloudflare's logs; fall back to a uuid off-platform.
+          request: c.req.header("cf-ray") ?? crypto.randomUUID(),
+          method: c.req.method,
+          path: c.req.path,
+          env: envName,
+          version: versionOf(env),
+        }),
+      );
+    }
     if (c.get("db") === undefined) c.set("db", buildDbRegistry(env, databases));
-    if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces));
+    if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces, c.var.log));
+
+    // Auto access-log: one record per request carrying the response `status` and `elapsed`, resolved
+    // from context with no caller effort — the completion of the request-correlation seam.
+    const start = Date.now();
     await next();
+    c.var.log.info("request", { status: c.res.status, elapsed: Date.now() - start });
   });
 
   app.get("/health", (c) => c.json({ status: "ok" }));

@@ -40,7 +40,7 @@ export function saffron(text: string): string {
 }
 
 // The terminal-themed tiers, re-exported so all color still imports from the one
-// seam. Built from our own `enabled` flag (not picocolors' detection) so `red`
-// honors the same TTY-gated rule as `saffron`. This is the documented exception
-// to the no-re-export rule; further tiers (dim, yellow) join as commands need them.
-export const { red } = pc.createColors(enabled);
+// seam. Built from our own `enabled` flag (not picocolors' detection) so they
+// honor the same TTY-gated rule as `saffron`. This is the documented exception
+// to the no-re-export rule; further tiers join as commands need them.
+export const { red, yellow, cyan, dim } = pc.createColors(enabled);

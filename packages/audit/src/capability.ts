@@ -67,7 +67,9 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that
     // never audits never triggers the lazy Kysely build. Runs after createBackend's default-setter
-    // (which seeds `db` and the no-op `emit`), so `c.var.db` is ready by the time emit is called.
+    // (which seeds `db`, `log`, and the no-op `emit`), so `c.var.db` and `c.var.log` are ready by the
+    // time emit is called. A non-fatal write failure routes through the logger seam — replacing the
+    // former `console.error` stopgap — as a namespaced `audit/*` record on the `audit` sub-logger.
     middleware: [
       (app) => {
         app.use("*", async (c, next) => {
@@ -75,6 +77,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
             recordAuditEvent(
               (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
               event,
+              { onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }) },
             ),
           );
           await next();

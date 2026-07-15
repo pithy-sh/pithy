@@ -1,6 +1,8 @@
 import type { KVNamespace, KVNamespacePutOptions } from "@cloudflare/workers-types";
 import type { z } from "zod";
-import { InternalError, NotFoundError } from "../error/pithyError";
+import { InternalError, messageOf, NotFoundError } from "../error/pithyError";
+import type { Logger } from "../logger/logger";
+import { noopLogger } from "../logger/logger";
 
 /** Cloudflare's hard limit on a KV entry's metadata, in bytes. */
 export const KV_METADATA_MAX_BYTES = 1024;
@@ -95,6 +97,16 @@ export function assertValidConfig(config: TypedKvConfig<z.ZodType, z.ZodObject, 
   }
 }
 
+/** Construction options for a {@link TypedKv} store beyond its config. */
+export interface TypedKvOptions {
+  /**
+   * The logger a store routes its observable best-effort failures through — notably the `list`
+   * self-heal metadata write-back, which must not fail the surrounding list but should be seen.
+   * `createBackend` passes the per-request `c.var.log`; defaults to the no-op logger.
+   */
+  logger?: Logger;
+}
+
 /** Per-call options for {@link TypedKv.put}. */
 export interface PutOptions<M extends z.ZodType> {
   /** TTL, in seconds, for this value. Overrides the store default. KV's floor is 60. */
@@ -160,8 +172,9 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
   readonly #separator: string;
   readonly #defaultTtlSeconds: number | undefined;
   readonly #segmentNames: string[];
+  readonly #logger: Logger;
 
-  constructor(namespace: KVNamespace, config: TypedKvConfig<V, K, M>) {
+  constructor(namespace: KVNamespace, config: TypedKvConfig<V, K, M>, options?: TypedKvOptions) {
     assertValidConfig(config);
     this.#namespace = namespace;
     this.#prefix = config.prefix;
@@ -173,6 +186,7 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
     this.#defaultTtlSeconds = config.ttlSeconds;
     // Declared field order is key order.
     this.#segmentNames = Object.keys(config.key.shape);
+    this.#logger = options?.logger ?? noopLogger;
   }
 
   /** Build the full physical KV key (name) from validated segments. */
@@ -336,8 +350,11 @@ export class TypedKv<V extends z.ZodType, K extends z.ZodObject, M extends z.Zod
       const putOptions: KVNamespacePutOptions = { metadata };
       if (expiration !== undefined) putOptions.expiration = expiration;
       await this.#namespace.put(name, raw, putOptions);
-    } catch {
-      // best-effort heal; in-memory metadata is still returned
+    } catch (error) {
+      // Best-effort heal — the list still returns the in-memory metadata. But a persistent write
+      // failure means every list re-heals the same entry, so it is observable, not ignorable: route
+      // it through the logger. A near-expiry `expiration` (KV requires ≥60s ahead) is the usual cause.
+      this.#logger.warn("kv metadata heal write-back failed", { key: name, detail: messageOf(error) });
     }
     return metadata;
   }

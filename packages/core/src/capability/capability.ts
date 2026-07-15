@@ -4,6 +4,7 @@ import type { AuditEmit } from "../audit/recorder";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { AuthContext } from "../http/authContext";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
+import type { Logger } from "../logger/logger";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
@@ -17,6 +18,14 @@ export interface PithyVars {
    * an audited action is never broken by an audit write.
    */
   emit: AuditEmit;
+  /**
+   * The logger seam (`c.var.log`). `createBackend` binds a per-request logger carrying request
+   * correlation (`request`/`method`/`path`/`env`/`version`); capabilities log through it instead of
+   * `console`, and derive a namespaced sub-logger with `c.var.log.child("<capability>")`. Zero-config:
+   * a real logger is always present, so nothing null-checks it. Never wire it to a client surface — it
+   * carries `PithyError` `detail`, the inverse of the HTTP codec.
+   */
+  log: Logger;
   /**
    * Per-request D1 database registry. Loosely `unknown` on this base seam so the contract stays
    * decoupled from any schema; `createBackend`'s return types it precisely as `DbRegistry`

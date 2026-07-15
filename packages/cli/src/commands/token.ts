@@ -11,6 +11,7 @@ import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { allCapabilities, loadProject, type ProjectConfig } from "../project/config";
+import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
@@ -145,6 +146,9 @@ async function buildAudit(
     return undefined; // audit not installed in this project — nothing to record through.
   }
   const database = cf.d1(appDatabaseId) as unknown as D1Database;
+  // Surface a non-fatal audit-write failure through the CLI process logger — the seam replacing the
+  // recorder's former `console.error` default. Without this, a dropped CLI audit write is invisible.
+  const log = createCliLogger();
   return async (event) => {
     const actor = await resolve(apiToken, cf.user());
     await emit(
@@ -158,6 +162,7 @@ async function buildAudit(
         metadata: { profile: event.profile, env: event.env, store: event.store ?? null },
       },
       actor,
+      { onError: (error) => log.child("audit").error("audit event dropped", { error }) },
     );
   };
 }

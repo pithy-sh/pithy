@@ -5,6 +5,15 @@
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Workers Logs, on by default. Every `c.var.log` record is a structured, per-line entry you can
+  // query in the dashboard — no setup. `head_sampling_rate` keeps 100% of records; lower it (0-1) to
+  // sample under heavy traffic. To fan records to a tail-consumer or Logpush, add `tail_consumers`
+  // here and attach a transport to the logger (see docs/LOGGING.md).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
   // The top level is the dev environment — what `wrangler dev` runs locally.
   // `pithy add <capability>` appends the bindings a capability needs, per environment.
   "d1_databases": [],

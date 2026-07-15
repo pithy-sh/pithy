@@ -21,23 +21,16 @@ import { AuditInvalidEventError, AuditWriteFailedError } from "./error/errors";
  * transport hiccup never double-writes.
  */
 
-/** Options for the recorder. All optional; the defaults log failures and retry transient D1 faults. */
+/** Options for the recorder. All optional; the defaults route failures to a sink and retry transient D1 faults. */
 export interface AuditRecorderOptions {
   /**
-   * Called with the namespaced failure when an event can't be validated or persisted. Defaults to
-   * {@link logAuditError} (a `console.error`). The audit write is non-fatal, so this is the only
-   * signal a drop happened — wire it to your log sink in production.
+   * Called with the namespaced failure when an event can't be validated or persisted. The audit write
+   * is non-fatal, so this is the only signal a drop happened. The audit capability wires it to the core
+   * logger seam (`c.var.log.error(...)`); when omitted the failure is dropped silently — pass a sink.
    */
   onError?: (error: PithyError) => void;
   /** Retry tuning for the insert. Defaults to retrying `timeout` and `database-busy`. */
   retry?: D1RetryOptions;
-}
-
-/** The default failure sink: log the public message and internal detail. Never re-throws. */
-export function logAuditError(error: PithyError): void {
-  // The audit record itself failed — surface it. `detail` is internal context (a cause/SQL error),
-  // never sent to a client; here it only reaches the server log.
-  console.error(`[pithy/audit] ${error.payload.code}: ${error.payload.message}`, error.payload.detail ?? "");
 }
 
 /** Map any caught failure to its namespaced audit `PithyError`. A bad event is `invalid_event`; anything else is `write_failed`. */
@@ -59,7 +52,7 @@ export async function recordAuditEvent(
   input: AuditEventInput,
   options?: AuditRecorderOptions,
 ): Promise<void> {
-  const onError = options?.onError ?? logAuditError;
+  const onError = options?.onError ?? (() => {});
   try {
     const event = AuditEvent.parse(input);
     const occurredAt = event.occurredAt ?? new Date();

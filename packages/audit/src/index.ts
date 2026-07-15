@@ -17,4 +17,4 @@ export {
 export { AuditEventRow } from "./data/auditEvent";
 export { type AuditDatabase, auditDatabase } from "./data/tables";
 export { type AuditQuery, queryAuditEvents } from "./query";
-export { type AuditRecorderOptions, createAuditEmit, logAuditError, recordAuditEvent } from "./recorder";
+export { type AuditRecorderOptions, createAuditEmit, recordAuditEvent } from "./recorder";

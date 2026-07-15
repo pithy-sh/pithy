@@ -1,6 +1,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
+import { createLogger } from "../logger/logger";
+import type { LogRecord } from "../logger/record";
 import { KV_METADATA_MAX_BYTES, kvMetadata, TypedKv } from "./kv";
 
 // A capability value with a two-segment key: assets:<assetType>:<uuid>.
@@ -195,6 +197,44 @@ describe("TypedKv — derived / protected metadata", () => {
 
     // And it was written back, so a later read sees it too.
     expect((await env.SESSIONS.getWithMetadata(name, "text")).metadata).toEqual({ status: "ready" });
+  });
+
+  test("a failed self-heal write-back is non-fatal and routes through the logger", async () => {
+    const name = `assets:photo:${UUID_A}`;
+    // A namespace that reads real but fails the write-back — forces the self-heal put to throw.
+    // Methods bind to the real namespace (native KV rejects a rebound `this`); only `put` is overridden.
+    const failingPut = {
+      get: (...args: Parameters<typeof env.SESSIONS.get>) => env.SESSIONS.get(...args),
+      getWithMetadata: (...args: Parameters<typeof env.SESSIONS.getWithMetadata>) =>
+        env.SESSIONS.getWithMetadata(...args),
+      list: (...args: Parameters<typeof env.SESSIONS.list>) => env.SESSIONS.list(...args),
+      delete: (...args: Parameters<typeof env.SESSIONS.delete>) => env.SESSIONS.delete(...args),
+      put: () => Promise.reject(new Error("KV PUT 429")),
+    } as unknown as typeof env.SESSIONS;
+
+    const records: LogRecord[] = [];
+    const kv = new TypedKv(
+      failingPut,
+      {
+        prefix: "assets",
+        key: AssetKey,
+        value: Asset,
+        metadata: AssetMeta,
+        deriveMetadata: (v) => ({ status: v.bytes > 0 ? ("ready" as const) : ("pending" as const) }),
+      },
+      { logger: createLogger({ level: "debug", sink: (r) => records.push(r) }) },
+    );
+
+    await env.SESSIONS.put(name, JSON.stringify({ url: "x", bytes: 5 }));
+
+    // The list still returns healed metadata despite the write-back failure.
+    const { keys } = await kv.list({ prefix: { assetType: "photo" } });
+    expect(keys.find((k) => k.name === name)?.metadata).toEqual({ status: "ready" });
+
+    // And the failure was observed, not swallowed — one warn record naming the key.
+    const warned = records.find((r) => r.level === "warn" && r.msg.includes("heal write-back"));
+    expect(warned?.fields).toMatchObject({ key: name });
+    expect(warned?.fields?.detail).toContain("KV PUT 429");
   });
 
   test("list leaves metadata null when not configured for derivation", async () => {

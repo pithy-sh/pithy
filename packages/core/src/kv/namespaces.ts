@@ -2,6 +2,8 @@ import type { KVNamespace } from "@cloudflare/workers-types";
 import type { z } from "zod";
 import type { Capability } from "../capability/capability";
 import { type BindingGroup, bindingGroupsFrom, composeBindingGroups } from "../capability/compose";
+import type { Logger } from "../logger/logger";
+import { noopLogger } from "../logger/logger";
 import { TypedKv, type TypedKvConfig } from "./kv";
 
 /**
@@ -69,9 +71,15 @@ type LiveKvRegistry = Record<string, Record<string, LiveStore>>;
  * Build the per-request KV registry from the merged namespaces and the request's env. Each store is
  * constructed lazily on first access — a request that never touches `c.var.kv.cms.fragments` never
  * builds it (mirroring Leed's lazy `KVProvider` getters) — and the namespace's binding is read from
- * the per-request env at access time.
+ * the per-request env at access time. `logger` is the request logger (`c.var.log`) each store routes
+ * its observable best-effort failures through — notably the `list` self-heal write-back; it defaults to
+ * the no-op logger so a store built outside a request still constructs.
  */
-export function buildKvRegistry(env: Record<string, unknown>, namespaces: MergedKvNamespaces): LiveKvRegistry {
+export function buildKvRegistry(
+  env: Record<string, unknown>,
+  namespaces: MergedKvNamespaces,
+  logger: Logger = noopLogger,
+): LiveKvRegistry {
   const registry: LiveKvRegistry = {};
   for (const [namespace, group] of Object.entries(namespaces)) {
     const stores: Record<string, LiveStore> = {};
@@ -80,7 +88,7 @@ export function buildKvRegistry(env: Record<string, unknown>, namespaces: Merged
       Object.defineProperty(stores, name, {
         enumerable: true,
         get(): LiveStore {
-          if (!instance) instance = new TypedKv(env[group.binding] as KVNamespace, spec);
+          if (!instance) instance = new TypedKv(env[group.binding] as KVNamespace, spec, { logger });
           return instance;
         },
       });

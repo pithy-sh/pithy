@@ -2,6 +2,8 @@ import { env } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
+import { createLogger } from "./logger/logger";
+import type { LogRecord } from "./logger/record";
 
 describe("createBackend", () => {
   test('serves GET /health with 200 { status: "ok" }', async () => {
@@ -155,6 +157,60 @@ describe("createBackend", () => {
     const app = createBackend({ capabilities: [tag] });
     const res = await app.request("/tagged", {}, env);
     expect(res.headers.get("x-tag")).toBe("on");
+  });
+
+  test("resolves c.var.log from context, auto-carrying request-correlation fields", async () => {
+    const records: LogRecord[] = [];
+    const logger = createLogger({ level: "debug", sink: (r) => records.push(r) });
+    const probe = defineCapability({
+      name: "probe",
+      requiredBindings: [],
+      routes: (a) => {
+        a.get("/log", (c) => {
+          c.var.log.info("handled", { detail: "x" });
+          return c.json({ ok: true });
+        });
+      },
+    });
+    const app = createBackend({ capabilities: [probe], logger, env: "staging" });
+    await app.request("/log", { method: "GET" }, env);
+
+    const handled = records.find((r) => r.msg === "handled");
+    expect(handled?.fields).toMatchObject({
+      method: "GET",
+      path: "/log",
+      env: "staging",
+      detail: "x",
+    });
+    expect(typeof handled?.fields?.request).toBe("string");
+  });
+
+  test("correlation carries the deployed version from the CF_VERSION_METADATA binding", async () => {
+    const records: LogRecord[] = [];
+    const logger = createLogger({ level: "debug", sink: (r) => records.push(r) });
+    const probe = defineCapability({
+      name: "probe",
+      requiredBindings: [],
+      routes: (a) => a.get("/v", (c) => c.json({ ok: c.var.log.info("hit") === undefined })),
+    });
+    const app = createBackend({ capabilities: [probe], logger });
+    // The version-metadata binding is per-request env; inject it alongside the test bindings.
+    await app.request("/v", {}, { ...env, CF_VERSION_METADATA: { id: "v-abc123", tag: "" } });
+
+    const hit = records.find((r) => r.msg === "hit");
+    expect(hit?.fields?.version).toBe("v-abc123");
+  });
+
+  test("emits one access-log record per request carrying status and elapsed", async () => {
+    const records: LogRecord[] = [];
+    const logger = createLogger({ level: "info", sink: (r) => records.push(r) });
+    const app = createBackend({ capabilities: [], logger });
+    await app.request("/health", {}, env);
+
+    const access = records.filter((r) => r.msg === "request");
+    expect(access).toHaveLength(1);
+    expect(access[0]?.fields).toMatchObject({ status: 200 });
+    expect(typeof access[0]?.fields?.elapsed).toBe("number");
   });
 
   test("defaults the request context: auth is null, db and kv are empty registries", async () => {
