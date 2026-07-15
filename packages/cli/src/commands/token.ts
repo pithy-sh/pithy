@@ -54,10 +54,32 @@ export async function resolveAppDatabaseId(projectDir: string, env: string): Pro
   }
 }
 
-/** Parse repeatable `--permission` flags into validated keys, or `undefined` when none were given. */
+/**
+ * Collect every `--permission` from the raw argv. citty keeps only the last occurrence of a repeated
+ * string flag, so a multi-permission run would otherwise silently drop all but the last — the same
+ * reason `--set` is read from rawArgs. Handles both `--permission key` and `--permission=key`.
+ */
+export function collectPermissionFlags(rawArgs: string[]): string[] {
+  const found: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === "--permission") {
+      const value = rawArgs[i + 1];
+      if (value !== undefined) {
+        found.push(value);
+        i++;
+      }
+    } else if (arg?.startsWith("--permission=")) {
+      found.push(arg.slice("--permission=".length));
+    }
+  }
+  return found;
+}
+
+/** Validate collected `--permission` keys, or `undefined` when none were given. */
 export function parsePermissions(value: string | string[] | undefined): PermissionKey[] | undefined {
-  if (value === undefined) return undefined;
-  const keys = Array.isArray(value) ? value : [value];
+  const keys = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  if (keys.length === 0) return undefined;
   for (const key of keys) {
     if (!isPermissionKey(key)) {
       throw new ValidationError({
@@ -179,12 +201,12 @@ const overrideArgs = {
 const mint = defineCommand({
   meta: { name: "mint", description: "Mint a scoped account token for a profile (rolls to the current scope)" },
   args: { ...profileArg, ...envArg, ...overrideArgs, ...jsonArg },
-  run: ({ args }) =>
+  run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
       const engine = await buildEngine(process.cwd(), args.env);
       const result = await mintProfileToken(engine, args.profile, args.env, {
         store: parseStore(args.store),
-        permissions: parsePermissions(args.permission),
+        permissions: parsePermissions(collectPermissionFlags(rawArgs)),
       });
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "token mint", ...publicToken(result) })}\n`);
@@ -225,12 +247,12 @@ const rotate = defineCommand({
     "keep-previous": { type: "boolean", default: false, description: "Keep the old token as a grace window" },
     ...jsonArg,
   },
-  run: ({ args }) =>
+  run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
       const engine = await buildEngine(process.cwd(), args.env);
       const result = await rotateProfileToken(engine, args.profile, args.env, {
         store: parseStore(args.store),
-        permissions: parsePermissions(args.permission),
+        permissions: parsePermissions(collectPermissionFlags(rawArgs)),
         keepPrevious: args["keep-previous"],
       });
       if (args.json) {

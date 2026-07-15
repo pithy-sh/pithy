@@ -3,9 +3,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { parsePermissions, parseStore, publicToken, resolveAppDatabaseId } from "./token";
+import { collectPermissionFlags, parsePermissions, parseStore, publicToken, resolveAppDatabaseId } from "./token";
+
+describe("collectPermissionFlags", () => {
+  test("collects every repeated --permission from raw argv (citty keeps only the last)", () => {
+    expect(
+      collectPermissionFlags(["mint", "ci-system", "--permission", "workers:write", "--permission", "d1:read"]),
+    ).toEqual(["workers:write", "d1:read"]);
+  });
+
+  test("handles --permission=key and returns [] when none are given", () => {
+    expect(collectPermissionFlags(["mint", "ci-system", "--permission=d1:read"])).toEqual(["d1:read"]);
+    expect(collectPermissionFlags(["mint", "ci-system", "--env", "staging"])).toEqual([]);
+  });
+});
 
 describe("parsePermissions", () => {
+  test("treats an empty collected list as no override", () => {
+    expect(parsePermissions([])).toBeUndefined();
+  });
+
   test("accepts a single key or a repeated list", () => {
     expect(parsePermissions("d1:read")).toEqual(["d1:read"]);
     expect(parsePermissions(["d1:read", "workers:write"])).toEqual(["d1:read", "workers:write"]);

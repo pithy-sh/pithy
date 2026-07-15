@@ -84,9 +84,10 @@ export default defineCommand({
         process.stdout.write(`Uninstalled @pithy-sh/${args.capability}.\n`);
       }
       if (result.tablesRemain) {
-        const flag = env === "dev" ? "--drop" : `--drop --env ${env}`;
+        // The down code is gone now, so there's no post-removal pithy command to reverse them — name
+        // the tables to drop by hand, and point at --drop for next time.
         process.stdout.write(
-          `${args.capability}'s D1 tables remain — your data is safe, and a later pithy add ${args.capability} reuses them. To drop them, remove with: pithy remove ${args.capability} ${flag}\n`,
+          `${args.capability}'s D1 tables were left in place — your data is safe, and a later pithy add ${args.capability} reuses them. To drop them, remove the pithy_${args.capability}_* tables by hand (pass --drop to reverse them during removal).\n`,
         );
       }
       process.stdout.write(`${formatDone()}\n`);
