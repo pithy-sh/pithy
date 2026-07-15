@@ -13,6 +13,8 @@ export const AuthAuditActions = {
   signout: "auth/signout",
   /** A session was exchanged for a fresh access token, rotating the refresh credential. */
   tokenRefresh: "auth/token_refresh",
+  /** A consumed (already-rotated) refresh token was replayed — reuse detected, the family revoked. Outcome `denied`. */
+  tokenReuseDetected: "auth/token_reuse_detected",
   /** A magic link was requested and enqueued for delivery. */
   magicLinkSent: "auth/magic_link_sent",
   /** An email OTP was requested and enqueued for delivery. */

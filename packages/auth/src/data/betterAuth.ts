@@ -72,6 +72,12 @@ export const Session = z
       .describe(
         "The id of the `pithy_auth_devices` row this session is bound to (per-device sessions), or null for a device-less web login.",
       ),
+    familyId: z
+      .string()
+      .nullable()
+      .describe(
+        "The refresh-token family this session belongs to, carried across rotations so a replayed refresh token can revoke the whole chain. Server-set; null for a session created before rotation or one never rotated.",
+      ),
   })
   .describe("A session in `pithy_auth_sessions` — a signed-in credential, optionally bound to a device.");
 export type Session = z.output<typeof Session>;

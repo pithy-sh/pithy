@@ -149,8 +149,12 @@ export function makeAuth(deps: AuthInstanceDeps) {
       modelName: "pithyAuthSessions",
       expiresIn: deps.sessionExpiresIn,
       updateAge: deps.sessionUpdateAge,
-      // The device this session is bound to. Set by the session-create hook, not by clients.
-      additionalFields: { deviceId: { type: "string", required: false, input: false } },
+      // Server-set session fields clients never supply: the bound device, and the refresh-token family
+      // (carried across rotations via createSession override, like deviceId — see `token/rotation.ts`).
+      additionalFields: {
+        deviceId: { type: "string", required: false, input: false },
+        familyId: { type: "string", required: false, input: false },
+      },
     },
     account: {
       modelName: "pithyAuthAccounts",

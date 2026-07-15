@@ -23,7 +23,7 @@ describe("auth capability", () => {
   // table must be namespaced under the capability so it can't clash with an adopter's.
   test("every provided table is namespaced under pithyAuth (the pithy_auth_ prefix)", () => {
     const tables = Object.keys(build().databases?.app?.tables ?? {});
-    expect(tables.length).toBe(7);
+    expect(tables.length).toBe(8);
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 

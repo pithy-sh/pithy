@@ -3,10 +3,11 @@ import { UnauthorizedError, ValidationError } from "@pithy-sh/core/src/error/pit
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import { isAPIError } from "better-auth/api";
 import type { Context, Hono } from "hono";
-import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh } from "../audit/emit";
+import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
+import { consumeSession, findConsumedToken, recordConsumedToken, revokeFamily } from "../token/rotation";
 import { allowedOrigins, requireSameOrigin } from "./csrf";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
@@ -72,36 +73,88 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   }
 }
 
+/** The raw bearer token presented on the Authorization header, or undefined when none/malformed. */
+function bearerToken(headers: Headers): string | undefined {
+  const match = headers.get("authorization")?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
 /**
  * Rotate the refresh credential. Validates the presented session, mints a fresh one (preserving the
- * device binding), revokes the old one, and returns a new access token + refresh token. This is the
- * "refresh credential rotates on use" primitive Better Auth does not provide natively.
+ * device binding and refresh-token family), atomically revokes the old one, and returns a new access
+ * token + refresh token. This is the "refresh credential rotates on use" primitive Better Auth does not
+ * provide natively.
+ *
+ * Two hardenings over a naive rotate (#59):
+ *  - **Reuse detection.** A presented token that no longer resolves to a live session but was previously
+ *    consumed is a replayed refresh token — the compromise signal for rotated refresh tokens
+ *    (RFC 6819 §5.2.2.3). The whole family is revoked and the attempt denied. (Covers the bearer refresh
+ *    flow — the mobile refresh credential; a cookie session presented after rotation already fails closed.)
+ *  - **Race safety.** The old session is consumed by a conditional delete that exactly one concurrent
+ *    rotation wins; the loser rolls back its freshly-minted successor. One presented token, one successor.
  */
 async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
   const headers = c.req.raw.headers;
+  const database = db(c, wiring);
+  const ctx = await instance.$context;
   const current = await instance.api.getSession({ headers });
+
   if (!current) {
+    // The presented token resolves to no live session. If it was consumed by an earlier rotation, this
+    // is a replay — revoke the whole family and deny. Otherwise it is simply invalid or expired.
+    const presented = bearerToken(headers);
+    const consumed = presented ? await findConsumedToken(database, presented) : null;
+    if (consumed) {
+      await revokeFamily(database, consumed.familyId, (token) => ctx.internalAdapter.deleteSession(token));
+      await emitTokenReuseDetected(c.var.emit, { ...consumed, ...correlation(headers) });
+      throw new UnauthorizedError({
+        message: "This credential has been revoked.",
+        action: "Sign in again to obtain a new session.",
+      });
+    }
     throw new UnauthorizedError({
       message: "Authentication required.",
       action: "Present a valid session or bearer token to rotate.",
     });
   }
-  const ctx = await instance.$context;
+
   const ip = headers.get("cf-connecting-ip") ?? undefined;
   const userAgent = headers.get("user-agent") ?? undefined;
-  const deviceId = (current.session as { deviceId?: string | null }).deviceId ?? undefined;
+  const session = current.session as { token: string; deviceId?: string | null; familyId?: string | null };
+  const deviceId = session.deviceId ?? undefined;
+  // Carry the family forward across the rotation; a session that never had one starts a family now.
+  const familyId = session.familyId ?? crypto.randomUUID();
 
+  // Mint the successor session and its access token BEFORE consuming the old one, so a transient signing
+  // failure leaves the presented refresh token still valid (the successor simply expires unused) rather
+  // than stranding the caller with no working credential.
   const next = await ctx.internalAdapter.createSession(current.user.id, undefined, {
     ipAddress: ip,
     userAgent,
+    familyId,
     ...(deviceId ? { deviceId } : {}),
   });
-  // Mint the access token for the new session BEFORE revoking the old one, so a transient signing
-  // failure leaves the presented refresh token still valid (the new session simply expires unused)
-  // rather than stranding the caller with no working credential.
   const access = await instance.api.getToken({ headers: new Headers({ authorization: `Bearer ${next.token}` }) });
-  await ctx.internalAdapter.deleteSession(current.session.token);
+
+  // Atomically consume the presented session. Of N concurrent rotations, exactly one wins the delete;
+  // the losers roll back the successor they minted, so one presented token never yields two successors.
+  const consumed = await consumeSession(database, session.token);
+  if (!consumed.won) {
+    await ctx.internalAdapter.deleteSession(next.token);
+    throw new UnauthorizedError({
+      message: "Authentication required.",
+      action: "Retry with your current session or bearer token.",
+    });
+  }
+
+  // Record the consumed token so a later replay is caught as reuse (the family is already carried forward).
+  await recordConsumedToken(database, {
+    token: session.token,
+    familyId,
+    userId: current.user.id,
+    rotatedAt: new Date(),
+  });
   await emitTokenRefresh(c.var.emit, { userId: current.user.id, sessionId: next.id, ip, userAgent });
 
   return c.json({ accessToken: access.token, refreshToken: next.token, expiresAt: next.expiresAt });

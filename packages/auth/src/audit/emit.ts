@@ -98,6 +98,27 @@ export async function emitTokenRefresh(
   });
 }
 
+/**
+ * Emit a `token_reuse_detected` event — a replayed refresh token was caught and its family revoked.
+ * Recorded as `denied` and attributed to the compromised account (the family's owner), so the security
+ * trail names whose family was revoked, not the anonymous replayer.
+ */
+export async function emitTokenReuseDetected(
+  emit: AuditEmit,
+  context: { userId: string; familyId: string; ip?: string; userAgent?: string },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: AuthAuditActions.tokenReuseDetected,
+    outcome: "denied",
+    severity: "critical",
+    actorType: "user",
+    actorId: context.userId,
+    ip: context.ip,
+    userAgent: context.userAgent,
+    metadata: { familyId: context.familyId },
+  });
+}
+
 /** Emit a `device_revoked` event. */
 export async function emitDeviceRevoked(
   emit: AuditEmit,

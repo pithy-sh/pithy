@@ -4,7 +4,8 @@ import type { Migration } from "kysely/migration";
 /**
  * Create the auth tables in the app database, all prefixed `pithy_auth_` so they never clash with an
  * adopter's own tables. Six are Better-Auth-managed (`users`, `sessions`, `accounts`,
- * `verifications`, `jwks`, `rate_limit`); `devices` is Pithy's own device registry.
+ * `verifications`, `jwks`, `rate_limit`); `devices` (the device registry) and `rotated_tokens` (the
+ * refresh-token reuse-detection ledger) are Pithy's own.
  *
  * Identifiers are declared in **camelCase**: the runner installs `CamelCasePlugin`, which snake-cases
  * every identifier in the emitted DDL (CLAUDE.md §Data layer) — and the same plugin lets Better
@@ -40,6 +41,9 @@ export const auth_0001_init: Migration = {
       .addColumn("userAgent", "text")
       .addColumn("userId", "text", (c) => c.notNull())
       .addColumn("deviceId", "text")
+      // The refresh-token family this session belongs to, carried across rotations so a replayed
+      // refresh token can revoke the whole chain. Server-set; null until the session is first rotated.
+      .addColumn("familyId", "text")
       .execute();
 
     await db.schema
@@ -105,6 +109,17 @@ export const auth_0001_init: Migration = {
       .addPrimaryKeyConstraint("pithyAuthDevicesPk", ["userId", "id"])
       .execute();
 
+    // The reuse-detection ledger: one row per refresh token consumed by a rotation. Presenting a
+    // recorded token again (after it no longer resolves to a live session) is a replayed refresh
+    // credential; its `familyId` drives family revocation (RFC 6819 §5.2.2.3). Ms-epoch `rotatedAt`.
+    await db.schema
+      .createTable("pithyAuthRotatedTokens")
+      .addColumn("token", "text", (c) => c.primaryKey())
+      .addColumn("familyId", "text", (c) => c.notNull())
+      .addColumn("userId", "text", (c) => c.notNull())
+      .addColumn("rotatedAt", "integer", (c) => c.notNull())
+      .execute();
+
     await db.schema.createIndex("pithyAuthSessionsUserIdIdx").on("pithyAuthSessions").column("userId").execute();
     await db.schema.createIndex("pithyAuthSessionsDeviceIdIdx").on("pithyAuthSessions").column("deviceId").execute();
     await db.schema.createIndex("pithyAuthAccountsUserIdIdx").on("pithyAuthAccounts").column("userId").execute();
@@ -113,14 +128,21 @@ export const auth_0001_init: Migration = {
       .on("pithyAuthVerifications")
       .column("identifier")
       .execute();
+    await db.schema
+      .createIndex("pithyAuthRotatedTokensFamilyIdIdx")
+      .on("pithyAuthRotatedTokens")
+      .column("familyId")
+      .execute();
   },
 
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyAuthRotatedTokensFamilyIdIdx").execute();
     await db.schema.dropIndex("pithyAuthVerificationsIdentifierIdx").execute();
     await db.schema.dropIndex("pithyAuthAccountsUserIdIdx").execute();
     await db.schema.dropIndex("pithyAuthSessionsDeviceIdIdx").execute();
     await db.schema.dropIndex("pithyAuthSessionsUserIdIdx").execute();
 
+    await db.schema.dropTable("pithyAuthRotatedTokens").execute();
     await db.schema.dropTable("pithyAuthDevices").execute();
     await db.schema.dropTable("pithyAuthRateLimit").execute();
     await db.schema.dropTable("pithyAuthJwks").execute();
