@@ -27,8 +27,10 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    */
   logger?: Logger;
   /**
-   * The environment name (`dev` | `staging` | `production`) stamped on every request's correlation
-   * fields. Defaults to `unknown`; the CLI-generated backend passes the resolved env.
+   * Fallback environment name (`dev` | `staging` | `production`) for the log correlation `env` field.
+   * The primary signal is the per-request `ENVIRONMENT` var (the convention `@pithy-sh/secrets` and
+   * `@pithy-sh/email` already stamp into each deployed Worker); this is only used where that var is
+   * absent — e.g. a non-provisioned local run. Falls through to `unknown` when neither is present.
    */
   env?: string;
 }
@@ -70,6 +72,15 @@ function versionOf(env: Record<string, unknown>): string | undefined {
     return (meta as { id: string }).id;
   }
   return undefined;
+}
+
+/**
+ * The environment name for log correlation, resolved from context: the per-request `ENVIRONMENT` var
+ * (the signal `@pithy-sh/secrets`/`@pithy-sh/email` stamp into each deployed Worker), else the explicit
+ * `createBackend({ env })` fallback, else `unknown`. No caller effort where `ENVIRONMENT` is present.
+ */
+function envNameOf(env: Record<string, unknown>, fallback: string | undefined): string {
+  return typeof env.ENVIRONMENT === "string" && env.ENVIRONMENT.length > 0 ? env.ENVIRONMENT : (fallback ?? "unknown");
 }
 
 /**
@@ -133,7 +144,6 @@ export function createBackend<
   // Set once at assembly (the per-request `env` constraint holds: correlation binds per request below,
   // not here). Defaults to the CF-native Mode 2 logger — structured records to Workers Logs, zero-config.
   const baseLogger = options.logger ?? createWorkerLogger();
-  const envName = options.env ?? "unknown";
 
   let validated = false;
   app.use("*", async (c, next) => {
@@ -152,7 +162,7 @@ export function createBackend<
           request: c.req.header("cf-ray") ?? crypto.randomUUID(),
           method: c.req.method,
           path: c.req.path,
-          env: envName,
+          env: envNameOf(env, options.env),
           version: versionOf(env),
         }),
       );

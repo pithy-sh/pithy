@@ -43,7 +43,9 @@ Each log emits as one per-line structured record Cloudflare Workers Logs indexes
 
 So structured logs are queryable in the dashboard with zero setup. Lower `head_sampling_rate` (0–1) to sample under heavy traffic.
 
-Every Worker-side record auto-carries request-correlation fields, resolved from context with no caller effort: `request` (the CF ray id), `method`, `path`, `env`, and `version` (the deployed Worker version, when the `CF_VERSION_METADATA` binding is present). `createBackend` also emits one access-log record per request carrying `status` and `elapsed`.
+Every Worker-side record auto-carries request-correlation fields, resolved from context with no caller effort: `request` (the CF ray id), `method`, `path`, `env` (the `ENVIRONMENT` var — the same signal Pithy stamps into each deployed Worker), and `version` (the deployed Worker version, when the `CF_VERSION_METADATA` binding is present). `createBackend` also emits one access-log record per request carrying `status` and `elapsed`.
+
+The scaffolded `wrangler.jsonc` sets `ENVIRONMENT` per environment (`dev` / `staging` / `production`), so the `env` field is accurate out of the box. Where the var is absent, `createBackend({ env })` supplies a fallback, and failing that the field reads `unknown`.
 
 ## The security rule
 
@@ -68,9 +70,8 @@ Pass the configured logger to `createBackend({ logger })`. To route records off-
 ```ts
 createBackend({
   capabilities: [...],
-  env: "production",
   logger: createWorkerLogger({ level: "info", transport }),
 })
 ```
 
-Local dev defaults `debug`; a deployed Worker defaults `info`.
+The `env` correlation field resolves from the `ENVIRONMENT` var automatically; `createBackend({ env })` is only a fallback for an unprovisioned run. Local dev defaults `debug`; a deployed Worker defaults `info`.

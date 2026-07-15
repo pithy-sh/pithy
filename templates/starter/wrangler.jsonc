@@ -16,6 +16,11 @@
 
   // The top level is the dev environment — what `wrangler dev` runs locally.
   // `pithy add <capability>` appends the bindings a capability needs, per environment.
+  // `ENVIRONMENT` names this environment — the one signal that decides dev vs deployed,
+  // and the value log records carry as their `env` correlation field.
+  "vars": {
+    "ENVIRONMENT": "dev"
+  },
   "d1_databases": [],
   "kv_namespaces": [],
 
@@ -23,10 +28,16 @@
   // environment suffix automatically (pithy-app-staging, pithy-app-production).
   "env": {
     "staging": {
+      "vars": {
+        "ENVIRONMENT": "staging"
+      },
       "d1_databases": [],
       "kv_namespaces": []
     },
     "production": {
+      "vars": {
+        "ENVIRONMENT": "production"
+      },
       "d1_databases": [],
       "kv_namespaces": []
     }

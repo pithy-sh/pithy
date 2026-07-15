@@ -185,6 +185,21 @@ describe("createBackend", () => {
     expect(typeof handled?.fields?.request).toBe("string");
   });
 
+  test("correlation resolves env from the per-request ENVIRONMENT var (over the assembly fallback)", async () => {
+    const records: LogRecord[] = [];
+    const logger = createLogger({ level: "debug", sink: (r) => records.push(r) });
+    const probe = defineCapability({
+      name: "probe",
+      requiredBindings: [],
+      routes: (a) => a.get("/e", (c) => c.json({ ok: c.var.log.info("hit") === undefined })),
+    });
+    // options.env is only a fallback; the ENVIRONMENT var on the request env wins.
+    const app = createBackend({ capabilities: [probe], logger, env: "unknown" });
+    await app.request("/e", {}, { ...env, ENVIRONMENT: "production" });
+
+    expect(records.find((r) => r.msg === "hit")?.fields?.env).toBe("production");
+  });
+
   test("correlation carries the deployed version from the CF_VERSION_METADATA binding", async () => {
     const records: LogRecord[] = [];
     const logger = createLogger({ level: "debug", sink: (r) => records.push(r) });
