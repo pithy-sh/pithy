@@ -1,3 +1,4 @@
+import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { RotatedToken } from "../data/rotatedToken";
 import type { AuthDatabase } from "../data/tables";
 
@@ -46,17 +47,21 @@ export async function recordConsumedToken(
     .execute();
 }
 
-/** The family/owner a consumed token belonged to, or null when the token was never consumed. */
+/**
+ * The family/owner a consumed token belonged to and when it was consumed, or null when the token was
+ * never consumed. `rotatedAt` lets the caller tell a benign concurrent/retried rotation (a fresh
+ * consume) from a genuinely replayed refresh token (an old one).
+ */
 export async function findConsumedToken(
   db: AuthDatabase,
   token: string,
-): Promise<{ familyId: string; userId: string } | null> {
+): Promise<{ familyId: string; userId: string; rotatedAt: Date } | null> {
   const row = await db
     .selectFrom("pithyAuthRotatedTokens")
-    .select(["familyId", "userId"])
+    .select(["familyId", "userId", "rotatedAt"])
     .where("token", "=", token)
     .executeTakeFirst();
-  return row ? { familyId: row.familyId, userId: row.userId } : null;
+  return row ? { familyId: row.familyId, userId: row.userId, rotatedAt: SQLiteDate.parse(row.rotatedAt) } : null;
 }
 
 /** The tokens of every live session in a family — the set a family revocation must sign out. */
@@ -80,4 +85,17 @@ export async function revokeFamily(
     await deleteSession(token);
   }
   return tokens.length;
+}
+
+/**
+ * Prune ledger entries consumed before `cutoff`, bounding the table's growth. A token consumed longer
+ * ago than a full session lifetime can no longer match any live session, so its reuse-detection value
+ * has lapsed. The `rotatedAt` index keeps this an index range delete. Returns the number of rows removed.
+ */
+export async function pruneConsumedTokens(db: AuthDatabase, cutoff: Date): Promise<number> {
+  const result = await db
+    .deleteFrom("pithyAuthRotatedTokens")
+    .where("rotatedAt", "<", SQLiteDate.encode(cutoff))
+    .executeTakeFirst();
+  return Number(result.numDeletedRows ?? 0n);
 }

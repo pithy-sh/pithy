@@ -7,7 +7,13 @@ import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitToken
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
-import { consumeSession, findConsumedToken, recordConsumedToken, revokeFamily } from "../token/rotation";
+import {
+  consumeSession,
+  findConsumedToken,
+  pruneConsumedTokens,
+  recordConsumedToken,
+  revokeFamily,
+} from "../token/rotation";
 import { allowedOrigins, requireSameOrigin } from "./csrf";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
@@ -80,6 +86,14 @@ function bearerToken(headers: Headers): string | undefined {
 }
 
 /**
+ * Grace window after a token is consumed during which a replay is treated as a benign concurrent or
+ * retried rotation — denied, but WITHOUT revoking the family — rather than compromise. It absorbs a
+ * client that fires or retries the same rotation twice (a network race) so a legitimate double-submit
+ * never signs the user out everywhere. A replay past the window is a genuine reuse and revokes.
+ */
+const ROTATION_REUSE_GRACE_MS = 30_000;
+
+/**
  * Rotate the refresh credential. Validates the presented session, mints a fresh one (preserving the
  * device binding and refresh-token family), atomically revokes the old one, and returns a new access
  * token + refresh token. This is the "refresh credential rotates on use" primitive Better Auth does not
@@ -101,16 +115,29 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const current = await instance.api.getSession({ headers });
 
   if (!current) {
-    // The presented token resolves to no live session. If it was consumed by an earlier rotation, this
-    // is a replay — revoke the whole family and deny. Otherwise it is simply invalid or expired.
+    // The presented token resolves to no live session. If it was consumed by an earlier rotation, it is
+    // a replay: compromise past the grace window (revoke the family), or a benign concurrent/retried
+    // rotation within it (deny only). Otherwise the token is simply invalid or expired.
     const presented = bearerToken(headers);
     const consumed = presented ? await findConsumedToken(database, presented) : null;
     if (consumed) {
-      await revokeFamily(database, consumed.familyId, (token) => ctx.internalAdapter.deleteSession(token));
-      await emitTokenReuseDetected(c.var.emit, { ...consumed, ...correlation(headers) });
+      if (Date.now() - consumed.rotatedAt.getTime() >= ROTATION_REUSE_GRACE_MS) {
+        await revokeFamily(database, consumed.familyId, (token) => ctx.internalAdapter.deleteSession(token));
+        await emitTokenReuseDetected(c.var.emit, {
+          userId: consumed.userId,
+          familyId: consumed.familyId,
+          ...correlation(headers),
+        });
+        throw new UnauthorizedError({
+          message: "This credential has been revoked.",
+          action: "Sign in again to obtain a new session.",
+        });
+      }
+      // Within the grace window: a superseded token from a race/retry. Deny, but leave the family — the
+      // successor the winning rotation issued must keep working.
       throw new UnauthorizedError({
-        message: "This credential has been revoked.",
-        action: "Sign in again to obtain a new session.",
+        message: "Authentication required.",
+        action: "Retry with your current session or bearer token.",
       });
     }
     throw new UnauthorizedError({
@@ -156,6 +183,14 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
     rotatedAt: new Date(),
   });
   await emitTokenRefresh(c.var.emit, { userId: current.user.id, sessionId: next.id, ip, userAgent });
+
+  // Bound the ledger: a token consumed longer ago than a full session lifetime can no longer match any
+  // live session. Best-effort — a cleanup failure must never fail the rotation it rode in on.
+  try {
+    await pruneConsumedTokens(database, new Date(Date.now() - wiring.config.sessionExpiresIn * 1000));
+  } catch {
+    // Retention pruning is non-critical maintenance.
+  }
 
   return c.json({ accessToken: access.token, refreshToken: next.token, expiresAt: next.expiresAt });
 }

@@ -222,21 +222,57 @@ describe("auth HTTP routes", () => {
     expect((await familyOf(secondToken))?.family_id).toBe(family1);
   });
 
-  test("replaying a rotated token is reuse: the family is revoked, denied 401, and a critical audit event fires", async () => {
+  test("replaying a rotated token within the grace window is denied but does NOT revoke the family", async () => {
     const { token, userId } = await signIn(DEVICE_HEADERS);
     const { emit, events } = capturingEmit();
     const app = buildApp(buildWiring(), emit);
 
-    // Rotate once: token → refreshToken (the successor), old token consumed and recorded.
     const rotated = await app.request(
       "/auth/token/rotate",
       { method: "POST", headers: { authorization: `Bearer ${token}` } },
       appEnv(),
     );
-    expect(rotated.status).toBe(200);
     const successor = (await rotated.json<{ refreshToken: string }>()).refreshToken;
 
-    // Replay the now-consumed original token: reuse detected.
+    // Immediate replay of the just-consumed token: a benign race/retry, denied without revocation.
+    const replay = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+    expect(replay.status).toBe(401);
+
+    // The successor the first rotation issued keeps working, and no reuse event fired.
+    const successorCheck = await app.request(
+      "/auth/devices",
+      { headers: { authorization: `Bearer ${successor}` } },
+      appEnv(),
+    );
+    expect(successorCheck.status).toBe(200);
+    const live = await env.DB.prepare("select count(*) as n from pithy_auth_sessions where user_id = ?")
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(live?.n).toBe(1);
+    expect(events.find((e) => e.action === "auth/token_reuse_detected")).toBeUndefined();
+  });
+
+  test("replaying a rotated token past the grace window is reuse: the family is revoked, 401, critical audit", async () => {
+    const { token, userId } = await signIn(DEVICE_HEADERS);
+    const { emit, events } = capturingEmit();
+    const app = buildApp(buildWiring(), emit);
+
+    const rotated = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+    const successor = (await rotated.json<{ refreshToken: string }>()).refreshToken;
+
+    // Age the ledger entry past the grace window so the replay reads as a genuine, delayed reuse.
+    await env.DB.prepare("update pithy_auth_rotated_tokens set rotated_at = ? where token = ?")
+      .bind(1_000, token)
+      .run();
+
     const replay = await app.request(
       "/auth/token/rotate",
       { method: "POST", headers: { authorization: `Bearer ${token}` } },
@@ -257,13 +293,12 @@ describe("auth HTTP routes", () => {
       .first<{ n: number }>();
     expect(live?.n).toBe(0);
 
-    // A `denied`, critical reuse event was emitted, attributed to the compromised account.
     const reuse = events.find((e) => e.action === "auth/token_reuse_detected");
     expect(reuse).toMatchObject({ outcome: "denied", severity: "critical", actorType: "user", actorId: userId });
     expect((reuse?.metadata as { familyId?: string } | undefined)?.familyId).toBeTruthy();
   });
 
-  test("two concurrent rotations of one token yield exactly one successor — never two", async () => {
+  test("two concurrent rotations of one token yield exactly one live successor — never two, never zero", async () => {
     const { token, userId } = await signIn(DEVICE_HEADERS);
     const app = buildApp(buildWiring());
 
@@ -273,14 +308,13 @@ describe("auth HTTP routes", () => {
     ]);
 
     // Exactly one presented token yields exactly one successful rotation; the other is denied.
-    const statuses = [a.status, b.status].sort();
-    expect(statuses).toEqual([200, 401]);
+    expect([a.status, b.status].sort()).toEqual([200, 401]);
 
-    // And the user is never left with two live successor sessions (the core race invariant).
+    // The grace window keeps a benign race from revoking the family, so exactly one successor survives.
     const live = await env.DB.prepare("select count(*) as n from pithy_auth_sessions where user_id = ?")
       .bind(userId)
       .first<{ n: number }>();
-    expect(live?.n).toBeLessThanOrEqual(1);
+    expect(live?.n).toBe(1);
   });
 
   test("devices/revoke signs out the device's sessions and drops the device", async () => {

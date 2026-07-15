@@ -133,9 +133,16 @@ export const auth_0001_init: Migration = {
       .on("pithyAuthRotatedTokens")
       .column("familyId")
       .execute();
+    // Supports the retention prune (`delete where rotated_at < cutoff`) as an index range delete.
+    await db.schema
+      .createIndex("pithyAuthRotatedTokensRotatedAtIdx")
+      .on("pithyAuthRotatedTokens")
+      .column("rotatedAt")
+      .execute();
   },
 
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyAuthRotatedTokensRotatedAtIdx").execute();
     await db.schema.dropIndex("pithyAuthRotatedTokensFamilyIdIdx").execute();
     await db.schema.dropIndex("pithyAuthVerificationsIdentifierIdx").execute();
     await db.schema.dropIndex("pithyAuthAccountsUserIdIdx").execute();

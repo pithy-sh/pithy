@@ -4,7 +4,14 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
-import { consumeSession, familySessionTokens, findConsumedToken, recordConsumedToken, revokeFamily } from "./rotation";
+import {
+  consumeSession,
+  familySessionTokens,
+  findConsumedToken,
+  pruneConsumedTokens,
+  recordConsumedToken,
+  revokeFamily,
+} from "./rotation";
 
 const TABLES = [
   "pithy_auth_accounts",
@@ -79,11 +86,12 @@ describe("consumeSession (the atomic race gate)", () => {
 });
 
 describe("the reuse-detection ledger", () => {
-  test("a recorded token is found by family and owner; an unrecorded one is null", async () => {
+  test("a recorded token is found by family, owner, and consume time; an unrecorded one is null", async () => {
     const db = authDatabase(env.DB);
-    await recordConsumedToken(db, { token: "tok-1", familyId: "fam-1", userId: "user-1", rotatedAt: new Date() });
+    const rotatedAt = new Date(1_750_000_000_000);
+    await recordConsumedToken(db, { token: "tok-1", familyId: "fam-1", userId: "user-1", rotatedAt });
 
-    expect(await findConsumedToken(db, "tok-1")).toEqual({ familyId: "fam-1", userId: "user-1" });
+    expect(await findConsumedToken(db, "tok-1")).toEqual({ familyId: "fam-1", userId: "user-1", rotatedAt });
     expect(await findConsumedToken(db, "tok-unknown")).toBeNull();
   });
 
@@ -91,7 +99,18 @@ describe("the reuse-detection ledger", () => {
     const db = authDatabase(env.DB);
     await recordConsumedToken(db, { token: "tok-1", familyId: "fam-1", userId: "user-1", rotatedAt: new Date() });
     await recordConsumedToken(db, { token: "tok-1", familyId: "fam-2", userId: "user-2", rotatedAt: new Date() });
-    expect(await findConsumedToken(db, "tok-1")).toEqual({ familyId: "fam-1", userId: "user-1" });
+    expect(await findConsumedToken(db, "tok-1")).toMatchObject({ familyId: "fam-1", userId: "user-1" });
+  });
+
+  test("prune removes entries consumed before the cutoff and keeps newer ones", async () => {
+    const db = authDatabase(env.DB);
+    await recordConsumedToken(db, { token: "old", familyId: "f", userId: "u", rotatedAt: new Date(1_000) });
+    await recordConsumedToken(db, { token: "fresh", familyId: "f", userId: "u", rotatedAt: new Date(9_000) });
+
+    const removed = await pruneConsumedTokens(db, new Date(5_000));
+    expect(removed).toBe(1);
+    expect(await findConsumedToken(db, "old")).toBeNull();
+    expect(await findConsumedToken(db, "fresh")).not.toBeNull();
   });
 });
 

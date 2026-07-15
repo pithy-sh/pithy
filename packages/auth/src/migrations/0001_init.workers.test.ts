@@ -71,6 +71,7 @@ describe("auth_0001_init", () => {
     expect(await authIndexes()).toEqual([
       "pithy_auth_accounts_user_id_idx",
       "pithy_auth_rotated_tokens_family_id_idx",
+      "pithy_auth_rotated_tokens_rotated_at_idx",
       "pithy_auth_sessions_device_id_idx",
       "pithy_auth_sessions_user_id_idx",
       "pithy_auth_verifications_identifier_idx",
