@@ -7,7 +7,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Migration } from "kysely/migration";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { countPendingMigrations, migrateProject } from "./run";
+import { countPendingMigrations, dropCapabilityTables, migrateProject } from "./run";
 
 describe("migrateProject", () => {
   let dir: string;
@@ -66,6 +66,22 @@ describe("migrateProject", () => {
     expect(rolledBack[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["1000_app_0001_things", "Down", "Success"],
     ]);
+  });
+
+  describe("dropCapabilityTables", () => {
+    test("reverses just the capability's migrations against local D1, and is idempotent", async () => {
+      const capabilities = [appCapability()];
+      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+
+      const runs = await dropCapabilityTables({ capability: appCapability(), projectDir: dir, env: "dev" });
+      expect(runs[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
+        ["1000_app_0001_things", "Down", "Success"],
+      ]);
+
+      // The table and its ledger row are gone — a second drop finds nothing to do.
+      const again = await dropCapabilityTables({ capability: appCapability(), projectDir: dir, env: "dev" });
+      expect(again[0]?.results).toEqual([]);
+    });
   });
 
   describe("countPendingMigrations", () => {

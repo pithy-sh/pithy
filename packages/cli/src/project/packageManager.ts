@@ -45,6 +45,11 @@ export function installArgs(pm: PackageManager, pkgs: string | string[]): string
   return [pm === "npm" ? "install" : "add", ...list];
 }
 
+/** The uninstall argv for a package manager: npm `uninstall`, the rest `remove`. */
+export function uninstallArgs(pm: PackageManager, pkg: string): string[] {
+  return [pm === "npm" ? "uninstall" : "remove", pkg];
+}
+
 /** Spawn a package manager. Injectable so the flow is testable without a real install. */
 export type InstallRunner = (command: string, args: string[], cwd: string) => Promise<void>;
 
@@ -77,6 +82,25 @@ export interface InstallPackageOptions {
 export async function installPackage(options: InstallPackageOptions): Promise<{ packageManager: PackageManager }> {
   const packageManager = await detectPackageManager(options.projectDir);
   await (options.run ?? spawnInstall)(packageManager, installArgs(packageManager, options.pkg), options.projectDir);
+  return { packageManager };
+}
+
+export interface UninstallPackageOptions {
+  /** The project root — where the lockfile lives and the uninstall runs. */
+  projectDir: string;
+  /** The package to uninstall, e.g. `@pithy-sh/auth`. */
+  pkg: string;
+  /** Override the spawner (tests inject a stub); defaults to the real uninstall. */
+  run?: InstallRunner;
+}
+
+/**
+ * Uninstall a package with the project's detected package manager — the inverse of {@link installPackage},
+ * behind `pithy remove`. Returns which manager ran. The adopter's PM is always used.
+ */
+export async function uninstallPackage(options: UninstallPackageOptions): Promise<{ packageManager: PackageManager }> {
+  const packageManager = await detectPackageManager(options.projectDir);
+  await (options.run ?? spawnInstall)(packageManager, uninstallArgs(packageManager, options.pkg), options.projectDir);
   return { packageManager };
 }
 

@@ -1,6 +1,6 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { DatabaseIntrospector, DatabaseMetadataOptions, SchemaMetadata, TableMetadata } from "kysely";
-import { CamelCasePlugin, Kysely } from "kysely";
+import { CamelCasePlugin, Kysely, sql } from "kysely";
 import { type MigrationProvider, type MigrationResult, Migrator } from "kysely/migration";
 import { D1Dialect } from "kysely-d1";
 import { InternalError } from "../error/pithyError";
@@ -106,6 +106,61 @@ export async function pendingMigrations(database: D1Database, provider: Migratio
 export async function rollbackMigration(database: D1Database, provider: MigrationProvider): Promise<MigrationResult[]> {
   const { error, results } = await migrator(database, provider).migrateDown();
   return settle("rollback", error, results);
+}
+
+/**
+ * The applied migration names recorded in the ledger — empty when the ledger table doesn't exist yet.
+ * Existence is checked against `sqlite_master` (a plain select D1 permits) rather than by catching the
+ * read's error, so a genuine read failure surfaces instead of being silently treated as "none applied".
+ */
+async function appliedMigrationNames(db: Kysely<unknown>): Promise<Set<string>> {
+  const present = await sql<{
+    name: string;
+  }>`select name from sqlite_master where type = 'table' and name = ${MIGRATION_TABLE}`.execute(db);
+  if (present.rows.length === 0) return new Set();
+  const { rows } = await sql<{ name: string }>`select name from ${sql.table(MIGRATION_TABLE)}`.execute(db);
+  return new Set(rows.map((row) => row.name));
+}
+
+/**
+ * Surgically drop **one capability's** migrations: run each of the provider's `down` functions in
+ * reverse order and delete only those ledger rows, leaving every other capability's tables and
+ * bookkeeping untouched. The seam behind `pithy remove --drop`. Kysely's stepwise `Migrator` refuses a
+ * provider that doesn't span the whole ledger (it reads a foreign row as corrupt state), so a
+ * per-capability drop can't go through it — this reverses the capability's own migrations directly.
+ * Only migrations recorded in the ledger are reversed; an absent ledger drops nothing.
+ */
+export async function dropMigrations(database: D1Database, provider: MigrationProvider): Promise<MigrationResult[]> {
+  const db = new Kysely<unknown>({ dialect: new D1MigrationDialect({ database }), plugins: [new CamelCasePlugin()] });
+  const migrations = await provider.getMigrations();
+  const applied = await appliedMigrationNames(db);
+
+  const results: MigrationResult[] = [];
+  // Reverse application order: drop the newest of the capability's migrations first.
+  for (const name of Object.keys(migrations).sort().reverse()) {
+    if (!applied.has(name)) continue;
+    // No `down` — the migration can't be reversed, so leave both its table and its ledger row in place
+    // (deleting the row would desync the ledger from the schema). Every Pithy migration ships a `down`.
+    const down = migrations[name]?.down;
+    if (!down) continue;
+    try {
+      await down(db);
+      await sql`delete from ${sql.table(MIGRATION_TABLE)} where name = ${name}`.execute(db);
+      results.push({ migrationName: name, direction: "Down", status: "Success" });
+    } catch (error) {
+      const dropped = results.map((result) => `"${result.migrationName}"`);
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new InternalError(
+        {
+          message: `Couldn't drop "${name}".`,
+          detail: dropped.length ? `${cause}. Dropped before the failure: ${dropped.join(", ")}.` : cause,
+          action: "Fix the migration's down, or drop its table by hand. Run pithy remove --drop again.",
+        },
+        { cause: error },
+      );
+    }
+  }
+  return results;
 }
 
 /** Brand-voice problem and action lines per direction (docs/CLI.md §3.3). */

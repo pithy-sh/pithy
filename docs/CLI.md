@@ -34,7 +34,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 |---|---|
 | `pithy init` | Scaffold a new Pithy project in the current directory |
 | `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into `pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
-| `pithy remove <capability>` | Inverse of `add` — uninstalls cleanly |
+| `pithy remove <capability>` | The manual, interactive inverse of `add` (and `add --eject`): unwires config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry `dev`/`deploy` discover (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate` | Run the migration registry against an `--env` (`--rollback` to downgrade) |
@@ -55,6 +55,8 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 - Boolean flags default to `false`; pass to enable
 - Values pass with `=` or space: `--env=production` or `--env production`
 - `--help` and `--version` are global and work on any command
+
+Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
 
 ---
 

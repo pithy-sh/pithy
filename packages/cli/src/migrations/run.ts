@@ -6,7 +6,12 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { pendingMigrations, rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import {
+  dropMigrations,
+  pendingMigrations,
+  rollbackMigration,
+  runMigrations,
+} from "@pithy-sh/core/src/migrations/runner";
 import { parse } from "comment-json";
 import type { MigrationProvider, MigrationResult } from "kysely/migration";
 import { Miniflare } from "miniflare";
@@ -232,6 +237,49 @@ export async function migrateProject(options: MigrateProjectOptions): Promise<Da
       const d1 = driver.database(binding);
       const results = options.rollback ? await rollbackMigration(d1, provider) : await runMigrations(d1, provider);
       runs.push({ database, binding, results });
+    }
+    return runs;
+  } finally {
+    await driver.dispose();
+  }
+}
+
+/** Options for {@link dropCapabilityTables}: the capability to drop, the project, and the target env. */
+export interface DropCapabilityOptions {
+  /** The capability being removed, whose migrations to reverse. */
+  capability: Capability;
+  /** The project root — where wrangler.jsonc and .wrangler/ state live. */
+  projectDir: string;
+  /** Target environment. `dev` runs locally via Miniflare; staging/production over the D1 REST API. */
+  env: string;
+  /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
+  remoteD1?: RemoteD1Factory;
+}
+
+/**
+ * Drop a single capability's tables for an environment — the seam behind `pithy remove --drop`. It
+ * runs the **same plan and driver** as {@link migrateProject} but over just the removed capability, so
+ * only that capability's migrations are reversed (via {@link dropMigrations}); every other capability's
+ * tables and ledger rows are untouched. Runs before the capability is unwired/uninstalled, while its
+ * `down` code is still present.
+ */
+export async function dropCapabilityTables(options: DropCapabilityOptions): Promise<DatabaseRun[]> {
+  const plan = buildPlan([options.capability]);
+  if (plan.length === 0) return [];
+
+  const driver = await driverFor(
+    {
+      capabilities: [options.capability],
+      projectDir: options.projectDir,
+      env: options.env,
+      remoteD1: options.remoteD1,
+    },
+    plan,
+  );
+  try {
+    const runs: DatabaseRun[] = [];
+    for (const { database, provider, binding } of plan) {
+      runs.push({ database, binding, results: await dropMigrations(driver.database(binding), provider) });
     }
     return runs;
   } finally {

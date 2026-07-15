@@ -16,10 +16,14 @@ async function argNames(name: string): Promise<string[]> {
 }
 
 describe("main", () => {
-  test("registers init, add, migrate, deploy, and token", () => {
+  test("registers init, add, remove, migrate, deploy, and token", () => {
     expect(Object.keys(main.subCommands as object)).toEqual(
-      expect.arrayContaining(["init", "add", "migrate", "deploy", "token"]),
+      expect.arrayContaining(["init", "add", "remove", "migrate", "deploy", "token"]),
     );
+  });
+
+  test("remove takes --drop and --env", async () => {
+    expect(await argNames("remove")).toEqual(expect.arrayContaining(["capability", "drop", "env"]));
   });
 
   test("token exposes mint, list, rotate, and revoke subcommands", async () => {

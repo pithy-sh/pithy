@@ -3,7 +3,7 @@ import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
 import { createMigrationRegistry } from "./registry";
-import { pendingMigrations, rollbackMigration, runMigrations } from "./runner";
+import { dropMigrations, pendingMigrations, rollbackMigration, runMigrations } from "./runner";
 
 /** The provider for a database name, asserting it was registered (narrows the indexed access). */
 function providerFor(registry: Record<string, MigrationProvider>, database: string): MigrationProvider {
@@ -172,6 +172,68 @@ describe("pendingMigrations", () => {
 
     await runMigrations(env.DB, provider);
     expect(await pendingMigrations(env.DB, provider)).toBe(0);
+  });
+});
+
+describe("dropMigrations", () => {
+  /** The applied migration names in the shared ledger, for asserting surgical cleanup. */
+  async function ledgerNames(): Promise<string[]> {
+    const rows = await env.DB.prepare("select name from pithy_migrations order by name").all<{ name: string }>();
+    return rows.results.map((row) => row.name);
+  }
+
+  test("drops one capability's migrations, leaving another capability's tables and ledger intact", async () => {
+    // Two capabilities share the `app` database; the full registry runs like `pithy migrate` does.
+    const combined = createMigrationRegistry([
+      { database: "app", namespace: "a", order: 100, migrations: { "0001_things": createThings } },
+      { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
+    ]);
+    await runMigrations(env.DB, providerFor(combined, "app"));
+    expect(await tableNames()).toEqual(["things", "widgets"]);
+
+    // Remove capability "b": a single-capability provider drops only its migrations.
+    const bOnly = createMigrationRegistry([
+      { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
+    ]);
+    const results = await dropMigrations(env.DB, providerFor(bOnly, "app"));
+
+    expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
+      ["0200_b_0001_widgets", "Down", "Success"],
+    ]);
+    // "b"'s table is gone; "a"'s table and its ledger row survive.
+    expect(await tableNames()).toEqual(["things"]);
+    expect(await ledgerNames()).toEqual(["0100_a_0001_things"]);
+  });
+
+  test("dropping a capability whose migrations were never applied is a no-op", async () => {
+    const bOnly = createMigrationRegistry([
+      { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
+    ]);
+    expect(await dropMigrations(env.DB, providerFor(bOnly, "app"))).toEqual([]);
+    expect(await tableNames()).toEqual([]);
+  });
+
+  test("a migration with no down is left in place — table and ledger row both kept, not desynced", async () => {
+    // An up-only migration (against convention): applied, but not reversible.
+    const upOnly: Migration = {
+      up: async (db) => {
+        await db.schema
+          .createTable("widgets")
+          .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+          .execute();
+      },
+    };
+    const registry = createMigrationRegistry([
+      { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": upOnly } },
+    ]);
+    await runMigrations(env.DB, providerFor(registry, "app"));
+
+    const results = await dropMigrations(env.DB, providerFor(registry, "app"));
+
+    expect(results).toEqual([]); // nothing dropped — no down to run
+    expect(await tableNames()).toEqual(["widgets"]); // table stays
+    const rows = await env.DB.prepare("select name from pithy_migrations").all<{ name: string }>();
+    expect(rows.results.map((r) => r.name)).toEqual(["0200_b_0001_widgets"]); // ledger row stays too
   });
 });
 

@@ -2,7 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { detectPackageManager, installArgs, installPackage, promoteDependencies } from "./packageManager";
+import {
+  detectPackageManager,
+  installArgs,
+  installPackage,
+  promoteDependencies,
+  uninstallArgs,
+  uninstallPackage,
+} from "./packageManager";
 
 let dir: string;
 beforeEach(async () => {
@@ -44,6 +51,33 @@ describe("installArgs", () => {
 
   test("takes many packages in one install invocation", () => {
     expect(installArgs("npm", ["hono@^4", "zod@^4"])).toEqual(["install", "hono@^4", "zod@^4"]);
+  });
+});
+
+describe("uninstallArgs", () => {
+  test("npm uninstalls, the others remove", () => {
+    expect(uninstallArgs("npm", "@pithy-sh/auth")).toEqual(["uninstall", "@pithy-sh/auth"]);
+    expect(uninstallArgs("pnpm", "@pithy-sh/auth")).toEqual(["remove", "@pithy-sh/auth"]);
+    expect(uninstallArgs("yarn", "@pithy-sh/auth")).toEqual(["remove", "@pithy-sh/auth"]);
+    expect(uninstallArgs("bun", "@pithy-sh/auth")).toEqual(["remove", "@pithy-sh/auth"]);
+  });
+});
+
+describe("uninstallPackage", () => {
+  test("detects the PM and runs its remove command in the project dir", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    const calls: { command: string; args: string[]; cwd: string }[] = [];
+
+    const result = await uninstallPackage({
+      projectDir: dir,
+      pkg: "@pithy-sh/auth",
+      run: async (command, args, cwd) => {
+        calls.push({ command, args, cwd });
+      },
+    });
+
+    expect(result.packageManager).toBe("bun");
+    expect(calls).toEqual([{ command: "bun", args: ["remove", "@pithy-sh/auth"], cwd: dir }]);
   });
 });
 

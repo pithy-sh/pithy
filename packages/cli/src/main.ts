@@ -11,6 +11,7 @@ export const main = defineCommand({
   subCommands: {
     init: () => import("./commands/init").then((m) => m.default),
     add: () => import("./commands/add").then((m) => m.default),
+    remove: () => import("./commands/remove").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
     deploy: () => import("./commands/deploy").then((m) => m.default),
     token: () => import("./commands/token").then((m) => m.default),
