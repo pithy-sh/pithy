@@ -55,4 +55,19 @@ describe("media()", () => {
   test("without an extension there is no 0003_extend migration", () => {
     expect(migrationKeys(media())).not.toContain("0003_extend");
   });
+
+  test("rejects a kvMetadata field that is not a record field", () => {
+    // A base field is fine.
+    expect(() => media({ recordStore: "kv", kvMetadata: ["status"] })).not.toThrow();
+    // An extension field is fine once declared.
+    expect(() =>
+      media({
+        recordStore: "kv",
+        extend: z.object({ userId: z.string().describe("o") }).describe("e"),
+        kvMetadata: ["userId"],
+      }),
+    ).not.toThrow();
+    // A typo / unknown field fails fast at construction.
+    expect(() => media({ recordStore: "kv", kvMetadata: ["usreId"] })).toThrow(/unknown kvMetadata field/i);
+  });
 });

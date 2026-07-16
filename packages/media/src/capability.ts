@@ -9,6 +9,7 @@ import { registerMediaRoutes } from "./http/routes";
 import { media_0001_hashes } from "./migrations/0001_hashes";
 import { media_0002_assets } from "./migrations/0002_assets";
 import { mediaExtendMigration } from "./migrations/extend";
+import { assertValidKvMetadata } from "./record/kvStore";
 import { mediaSecretsRegistry } from "./secret/registry";
 
 /**
@@ -53,6 +54,8 @@ export function media(options: MediaOptions = {}): MediaCapability {
   const { extend, basePath, ...configInput } = options;
   const resolved = MediaConfig.parse(configInput);
   const schema = extendMediaAsset(extend);
+  // Fail fast on a typo'd or unknown `kvMetadata` field rather than silently ignoring it.
+  assertValidKvMetadata(resolved.kvMetadata, schema);
   const isKv = resolved.recordStore === "kv";
 
   // The hash table is always created (dedup is D1-only); the record table and its extension columns are

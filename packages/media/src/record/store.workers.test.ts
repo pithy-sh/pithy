@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { extendMediaAsset } from "../data/extend";
+import { MediaAsset } from "../data/mediaAsset";
 import { mediaDatabase } from "../data/tables";
 import { media_0002_assets } from "../migrations/0002_assets";
 import { d1RecordStore } from "./d1Store";
@@ -151,4 +152,18 @@ test("KV: kvMetadata fields (including an adopter field) ride on the list-time m
   // The store's `list` still returns the full record.
   const page = await store.list();
   expect(page.items[0]?.userId).toBe("u-1");
+});
+
+test("KV: an extension metadata field survives a patch under the worker's passthrough schema", async () => {
+  await resetKv();
+  // The enrichment worker builds its store from a passthrough schema whose `shape` lacks the extension
+  // field. Metadata is derived by name from the value, so `userId` must still ride along after a patch.
+  const passthrough = MediaAsset.catchall(z.unknown());
+  const store = kvRecordStore(env.MEDIA, passthrough, ["userId"]);
+  await store.create(makeRecord({ id: "a", type: "image", userId: "u-1" }));
+  // Simulate an enrichment write-back (patch a derived field).
+  await store.patch("a", { altText: "a cat", hasTranscription: false });
+
+  const entry = (await env.MEDIA.list()).keys.find((k) => k.name === "media:a");
+  expect(entry?.metadata).toMatchObject({ userId: "u-1", type: "image" });
 });

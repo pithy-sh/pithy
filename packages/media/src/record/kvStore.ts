@@ -1,4 +1,5 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { kvMetadata, TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { z } from "zod";
 import { MediaNotFoundError } from "../error/errors";
@@ -28,12 +29,14 @@ const REQUIRED_METADATA_FIELDS = ["type", "createdAt"];
  * metadata at 1024 bytes, so keep them small. Duplicate detection is not here — it always uses D1.
  */
 export function kvRecordStore(namespace: KVNamespace, schema: z.ZodObject, metadataFields: string[] = []): RecordStore {
-  // Keep only real record fields; always include the fields `list` needs (type, createdAt).
-  const shape = schema.shape as Record<string, unknown>;
-  const fields = [...new Set([...REQUIRED_METADATA_FIELDS, ...metadataFields])].filter((field) => field in shape);
-  const mask: Record<string, true> = {};
-  for (const field of fields) mask[field] = true;
-  const metadataSchema = kvMetadata(schema.pick(mask));
+  // Always include the fields `list` needs (type, createdAt). Field names are validated against the
+  // effective schema at capability construction (see `assertValidKvMetadata`), so no shape filter here —
+  // the metadata is derived from the value by name, which lets an adopter's extension field ride along
+  // even in the enrichment worker, whose passthrough schema does not carry the extension in its shape.
+  const fields = [...new Set([...REQUIRED_METADATA_FIELDS, ...metadataFields])];
+  // A size-bounded, permissive metadata object: the projected fields (including extension fields the
+  // schema's `shape` may not list) validate as a small denormalized bag for list controls.
+  const metadataSchema = kvMetadata(z.record(z.string(), z.unknown()));
 
   const kv = new TypedKv(namespace, {
     prefix: "media",
@@ -42,7 +45,11 @@ export function kvRecordStore(namespace: KVNamespace, schema: z.ZodObject, metad
     metadata: metadataSchema,
     deriveMetadata: (value) => {
       const record = value as Record<string, unknown>;
-      return Object.fromEntries(fields.map((field) => [field, record[field]]));
+      const meta: Record<string, unknown> = {};
+      for (const field of fields) {
+        if (record[field] !== undefined) meta[field] = record[field];
+      }
+      return meta;
     },
   });
 
@@ -75,20 +82,21 @@ export function kvRecordStore(namespace: KVNamespace, schema: z.ZodObject, metad
       const limit = options.limit ?? DEFAULT_LIMIT;
 
       // List every key with its metadata — cheap, no per-value reads. Filter and sort from metadata.
-      const entries: Array<{ id: string; type: unknown; createdAt: Date | undefined }> = [];
+      // `createdAt` round-trips through KV as a JSON (ISO) value, so normalize it to an epoch for sorting.
+      const entries: Array<{ id: string; type: unknown; createdAt: number }> = [];
       let listCursor: string | undefined;
       do {
         const page = await kv.list({ cursor: listCursor, limit: 1000 });
         for (const entry of page.keys) {
-          const meta = entry.metadata as { type?: unknown; createdAt?: Date } | null;
-          entries.push({ id: entry.key.id, type: meta?.type, createdAt: meta?.createdAt });
+          const meta = entry.metadata as { type?: unknown; createdAt?: unknown } | null;
+          entries.push({ id: entry.key.id, type: meta?.type, createdAt: toEpoch(meta?.createdAt) });
         }
         listCursor = page.cursor;
       } while (listCursor);
 
       const filtered = options.type ? entries.filter((entry) => entry.type === options.type) : entries;
       // Newest first — the same order D1 returns.
-      filtered.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
+      filtered.sort((a, b) => b.createdAt - a.createdAt);
 
       const offset = decodeCursor(options.cursor);
       const pageEntries = filtered.slice(offset, offset + limit);
@@ -109,4 +117,28 @@ function decodeCursor(cursor: string | undefined): number {
   if (!cursor) return 0;
   const parsed = Number.parseInt(cursor, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/** Normalize a metadata `createdAt` (ISO string, epoch number, or Date) to an epoch; 0 when absent/invalid. */
+function toEpoch(value: unknown): number {
+  if (value == null) return 0;
+  const time = new Date(value as string | number | Date).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+/**
+ * Validate the adopter's `kvMetadata` field names against the effective record schema, so a typo or an
+ * unknown field fails fast at capability construction with a clear message — never silently ignored.
+ * Called by `media()`; `type`/`createdAt` are always included by the store and need not be listed.
+ */
+export function assertValidKvMetadata(fields: readonly string[], schema: z.ZodObject): void {
+  const valid = new Set(Object.keys(schema.shape));
+  const unknownFields = fields.filter((field) => !valid.has(field));
+  if (unknownFields.length > 0) {
+    throw new InternalError({
+      message: `Unknown kvMetadata field(s): ${unknownFields.join(", ")}.`,
+      action: "Every kvMetadata entry must be a record field (a base field or one added via media({ extend })).",
+      detail: `Valid record fields: ${[...valid].join(", ")}`,
+    });
+  }
 }
