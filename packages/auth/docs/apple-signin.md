@@ -68,6 +68,16 @@ Apple requires the domain be verified and uses https. It does not accept plain h
 
 Apple sends the callback as a **POST** (`form_post`), not a redirect GET. Better Auth handles that. You do not need to change anything for it.
 
+### Every environment — and why feature-branch previews won't work
+
+Each environment needs its **own** return URL registered on the Services ID, on that environment's exact `baseURL` host — and Apple additionally requires that host's domain be **verified**, over https. Apple only returns to a URL you have registered.
+
+Apple is the strictest here for feature branches. A branch deployed to a Cloudflare preview URL — an ephemeral `*.workers.dev` or preview alias, not your registered `staging.<your-domain>` — is neither registered nor domain-verified, so web Apple sign-in there simply cannot complete. Registering and verifying a throwaway preview domain per branch is impractical, so do not expect to test the web Apple flow from a preview URL.
+
+To exercise Apple on a branch, use the **native iOS flow** (which sends an id token straight to the Worker and needs no return URL), or run against your registered `staging`/`production` environment.
+
+Magic link and email OTP have no return URL — they work on any URL, preview or not. Only the OAuth providers need a registered callback.
+
 ## 6. Mobile
 
 Native iOS uses Apple's own Sign in with Apple flow, not the web redirect. The app gets an identity token from Apple and sends it to the Worker. The `appBundleIdentifier` is the audience that id token is validated against — which is why it is part of the credential.

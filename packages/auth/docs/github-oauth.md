@@ -34,6 +34,16 @@ With the default `basePath` of `/auth`, the path is `/auth/callback/github`. Reg
 
 Use your actual local port for dev — `8787` is wrangler's default, not a guarantee. A GitHub OAuth app allows one callback URL, so register a separate app per environment.
 
+### Every environment — and why feature-branch previews won't work
+
+Each environment needs its **own** OAuth app, whose single **Authorization callback URL** is that environment's exact `baseURL` host. GitHub only accepts the one callback URL you registered on the app; anything else is rejected with *"The redirect_uri MUST match the registered callback URL for this application."*
+
+This bites feature-branch previews. A branch deployed to a Cloudflare preview URL — an ephemeral `*.workers.dev` or preview alias, not your registered `staging.<your-domain>` — is not the callback URL on any of your apps, so GitHub sign-in there fails. You cannot exercise GitHub sign-in from a preview URL until an app is pointed at that exact URL.
+
+To test GitHub on a branch, either register a throwaway OAuth app whose callback URL is that deployment's `<its-url>/auth/callback/github` (and point its credentials + `baseURL` at that deployment), or run the flow against your registered `staging` environment instead. Because a GitHub app allows only one callback URL, a per-branch app is the only way to test GitHub on an ephemeral URL.
+
+Magic link and email OTP have no callback URL — they work on any URL, preview or not. Only the OAuth providers need a registered callback.
+
 ## 3. Scope
 
 Pithy requests `user:email`. That is what lets the sign-in read your primary email and its verified status from GitHub's emails API. You do not configure scopes anywhere — Pithy sets this for you when GitHub is enabled.

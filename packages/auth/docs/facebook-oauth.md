@@ -28,6 +28,16 @@ With the default `basePath` of `/auth`, the path is `/auth/callback/facebook`. U
 
 Use your actual local port for dev — `8787` is wrangler's default, not a guarantee. Facebook requires HTTPS for non-localhost redirect URIs.
 
+### Every environment — and why feature-branch previews won't work
+
+Each environment needs its **own** redirect URI in the app's **Valid OAuth Redirect URIs**, on that environment's exact `baseURL` host. Facebook only accepts a URL you have listed; anything else is blocked with *"URL blocked: This redirect failed because it's not in the app's allowed redirect URIs."*
+
+This bites feature-branch previews. A branch deployed to a Cloudflare preview URL — an ephemeral `*.workers.dev` or preview alias, not your registered `staging.<your-domain>` — is a host Facebook has never seen, so Facebook sign-in there fails. You cannot exercise Facebook sign-in from a preview URL until that exact URL is listed.
+
+To test Facebook on a branch, either add that deployment's own `<its-url>/auth/callback/facebook` to the Valid OAuth Redirect URIs **and** point that deployment's `baseURL` at the same host, or run the flow against your registered `staging` environment instead.
+
+Magic link and email OTP have no redirect URI — they work on any URL, preview or not. Only the OAuth providers need a registered callback.
+
 ## 3. Scope
 
 Pithy requests the `email` scope. You do not configure scopes anywhere — Pithy sets it for you when Facebook is enabled.

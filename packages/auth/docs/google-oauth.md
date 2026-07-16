@@ -46,6 +46,16 @@ Use your actual local port for dev — `8787` is wrangler's default, not a guara
 
 Two rules. The path is `basePath` + `/callback/google` — if you set a custom `basePath`, the path changes to match it. The host must equal each environment's `baseURL` exactly. A mismatch is the most common cause of `redirect_uri_mismatch`.
 
+### Every environment — and why feature-branch previews won't work
+
+Each environment your app runs in needs its **own** redirect URI registered here, on that environment's exact `baseURL` host. Google only accepts a URL you have registered; anything else is a `redirect_uri_mismatch`.
+
+This is the gotcha with feature-branch previews. A branch deployed to a Cloudflare preview URL — an ephemeral `*.workers.dev` or preview alias, not your registered `staging.<your-domain>` — is a host Google has never seen, so Google sign-in there fails. You cannot exercise Google sign-in from a preview URL until that exact URL is registered.
+
+To test Google on a branch, either register that deployment's own `<its-url>/auth/callback/google` as an extra authorized redirect URI **and** point that deployment's `baseURL` at the same host, or run the flow against `dev` (localhost) or your registered `staging` environment instead.
+
+Magic link and email OTP have no redirect URI — they work on any URL, preview or not. Only the OAuth providers need a registered callback.
+
 ## 5. Mobile
 
 You do **not** register a custom-scheme or deep-link URI in Google Console. Google only ever redirects to the Worker's `/auth/callback/google`. The Worker, not Google, is what hands control back to the app.
