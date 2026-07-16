@@ -1,0 +1,61 @@
+{
+  // The prebuilt media enrichment worker. Like the email worker, this is a TEMPLATE, not a wrangler
+  // env-stanza file: staging and production are separate workers. `pithy media provision` resolves this
+  // into one complete config per environment — filling the `<...>` placeholders — and deploys each with
+  // `wrangler deploy --config <resolved>`. The adopter authors none of it. It hosts the four enrichment
+  // Workflows; the app worker holds their bindings and starts an instance on finalize.
+  "name": "pithy-media", // resolved per env → pithy-media-staging / pithy-media-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. The media routes live in the app worker; this worker is reached only by Workflow
+  // dispatch.
+  "workers_dev": false,
+
+  // The app database (D1 record store) and the secrets database, read for the storage credentials.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
+    { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
+  ],
+
+  // The KV namespace (KV record store) and the R2 bucket the enrichment reads bytes from.
+  "kv_namespaces": [{ "binding": "MEDIA", "id": "<filled-at-provision>" }],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "<filled-at-provision>" }],
+
+  // The Workers AI binding — image-to-text, whisper transcription, and toMarkdown all run through it.
+  "ai": { "binding": "AI" },
+
+  // The master key for decrypting the storage credentials, read through the secretsStore accessor.
+  "secrets_store_secrets": [
+    {
+      "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+    }
+  ],
+
+  // The four enrichment Workflows this worker hosts. Each `class_name` matches an exported
+  // WorkflowEntrypoint subclass; each `binding` is what the app worker dispatches to on finalize.
+  "workflows": [
+    { "binding": "MEDIA_IMAGE_TO_TEXT", "name": "pithy-media-image-to-text", "class_name": "MediaImageToTextWorkflow" },
+    {
+      "binding": "MEDIA_AUDIO_TRANSCRIBE",
+      "name": "pithy-media-audio-transcribe",
+      "class_name": "MediaAudioTranscribeWorkflow"
+    },
+    {
+      "binding": "MEDIA_VIDEO_TRANSCRIBE",
+      "name": "pithy-media-video-transcribe",
+      "class_name": "MediaVideoTranscribeWorkflow"
+    },
+    { "binding": "MEDIA_DOC_EXTRACT", "name": "pithy-media-doc-extract", "class_name": "MediaDocExtractWorkflow" }
+  ],
+
+  "vars": {
+    // The resolved MediaConfig as one JSON blob, filled at provision from the app's media() config. The
+    // worker parses and validates it; absent falls back to the defaults.
+    "MEDIA_CONFIG": "<filled-at-provision>",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

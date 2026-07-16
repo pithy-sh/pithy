@@ -281,6 +281,46 @@ const AuditWriteFailedPublic = z
   })
   .describe("Persisting an audit event failed (500). Recorded non-fatally; never breaks the audited action.");
 
+// --- @pithy-sh/media: configurable media storage + AI enrichment codes ---
+
+const MediaNotFoundPublic = z
+  .object({
+    code: z.literal("media/not_found").describe("A requested media record does not exist or was soft-deleted."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested media record does not exist (404).");
+
+const MediaUnsupportedPublic = z
+  .object({
+    code: z
+      .literal("media/unsupported")
+      .describe("The media type, extension, or backend is not supported for the requested operation."),
+    status: z.literal(400).describe("Bad Request — the operation does not apply to this media."),
+    ...publicFields,
+  })
+  .describe("The media type or format is unsupported for this operation (400).");
+
+const MediaStorageFailedPublic = z
+  .object({
+    code: z
+      .literal("media/storage_failed")
+      .describe("A storage operation failed — minting a direct-upload URL, or reading/deleting a stored object."),
+    status: z.literal(502).describe("Bad Gateway — the upstream storage backend returned an error."),
+    ...publicFields,
+  })
+  .describe("A media storage operation failed (502).");
+
+const MediaEnrichmentFailedPublic = z
+  .object({
+    code: z
+      .literal("media/enrichment_failed")
+      .describe("An AI enrichment step (image-to-text, transcription, or extraction) failed."),
+    status: z.literal(500).describe("Internal Server Error — an enrichment step could not complete."),
+    ...publicFields,
+  })
+  .describe("A media AI-enrichment step failed (500).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -313,6 +353,10 @@ export const PublicErrorPayload = z
     TurnstileConfigPublic,
     AuditInvalidEventPublic,
     AuditWriteFailedPublic,
+    MediaNotFoundPublic,
+    MediaUnsupportedPublic,
+    MediaStorageFailedPublic,
+    MediaEnrichmentFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -366,6 +410,14 @@ const AuditInvalidEvent = AuditInvalidEventPublic.extend(detailField).describe(
   AuditInvalidEventPublic.description ?? "",
 );
 const AuditWriteFailed = AuditWriteFailedPublic.extend(detailField).describe(AuditWriteFailedPublic.description ?? "");
+const MediaNotFound = MediaNotFoundPublic.extend(detailField).describe(MediaNotFoundPublic.description ?? "");
+const MediaUnsupported = MediaUnsupportedPublic.extend(detailField).describe(MediaUnsupportedPublic.description ?? "");
+const MediaStorageFailed = MediaStorageFailedPublic.extend(detailField).describe(
+  MediaStorageFailedPublic.description ?? "",
+);
+const MediaEnrichmentFailed = MediaEnrichmentFailedPublic.extend(detailField).describe(
+  MediaEnrichmentFailedPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -398,6 +450,10 @@ export const ErrorPayload = z
     TurnstileConfig,
     AuditInvalidEvent,
     AuditWriteFailed,
+    MediaNotFound,
+    MediaUnsupported,
+    MediaStorageFailed,
+    MediaEnrichmentFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

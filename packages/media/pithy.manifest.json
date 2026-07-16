@@ -1,0 +1,24 @@
+{
+  "name": "media",
+  "package": "@pithy-sh/media",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "r2", "name": "MEDIA_BUCKET" }],
+  "peerCapabilities": ["secrets"],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "media",
+  "whenToEnable": "Store, track, and enrich media — images (R2 or Cloudflare Images), video (R2 or Cloudflare Stream), audio and documents (R2). Uploads use direct-upload URLs, so bytes never proxy through your Worker. Opt in per type to AI alt text, transcription, and text extraction. Records live in D1 by default (derived text is queryable) or KV. Storage credentials are read through @pithy-sh/secrets, so the secrets capability is required; the routes need an identity, so add auth too.",
+  "scaffold": [
+    "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the scoped CF API token and R2 credentials are stored and read through @pithy-sh/secrets.",
+    "Run `pithy media provision` — it mints a scoped, least-privilege CF API token (Images + Stream) and R2 S3 credentials, creates the R2 bucket (and the `MEDIA` KV namespace when `recordStore: 'kv'`), writes them as the `media-storage-credentials` secret, and deploys the per-environment media enrichment worker hosting the four Workflows.",
+    "Add the `MEDIA_BUCKET` R2 binding to each wrangler.jsonc env (and the `MEDIA` KV binding when `recordStore: 'kv'`). Add the enrichment Workflow bindings your app dispatches to on finalize: `MEDIA_IMAGE_TO_TEXT`, `MEDIA_AUDIO_TRANSCRIBE`, `MEDIA_VIDEO_TRANSCRIBE`, `MEDIA_DOC_EXTRACT`.",
+    "Enable AI enrichment per type in `media({ ... })` in pithy.config.ts — `images.imageToText`, `video.transcribe`, `audio.transcribe`, `documents.extractText`. Each is independently opt-in and a no-op (no cost) when off. Override any model with the type's `model` field.",
+    "The media routes require an authenticated caller. Add the auth capability (`pithy add auth`) so `c.var.auth` is populated; without it every media route is denied.",
+    "Extend a media record with your own fields — an owning `userId`, a tenant id, tags — by passing an `extend` Zod object to `media({ extend })`. The extra fields become real D1 columns (a generated migration) or a validated KV value, from that one schema."
+  ],
+  "configOptions": [
+    {
+      "key": "recordStore",
+      "default": "d1",
+      "describe": "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Edit the per-type `images`/`video`/`audio`/`documents` blocks by hand to pick backends and toggle AI enrichment."
+    }
+  ]
+}
