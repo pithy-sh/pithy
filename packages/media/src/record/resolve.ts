@@ -3,6 +3,7 @@ import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
 import { mediaDatabase } from "../data/tables";
 import { d1RecordStore } from "./d1Store";
+import { d1HashStore, type HashStore } from "./hashStore";
 import { kvRecordStore } from "./kvStore";
 import type { RecordStore } from "./store";
 
@@ -20,6 +21,11 @@ export interface RecordStoreEnv {
  * schema so extension fields validate and round-trip.
  */
 export function resolveRecordStore(env: RecordStoreEnv, config: MediaConfig, schema: z.ZodObject): RecordStore {
-  if (config.recordStore === "kv") return kvRecordStore(env.MEDIA, schema);
+  if (config.recordStore === "kv") return kvRecordStore(env.MEDIA, schema, config.kvMetadata);
   return d1RecordStore(mediaDatabase(env.DB, schema), schema);
+}
+
+/** Resolve the dedup hash store — always the D1 `DB` binding, whatever the record store. */
+export function resolveHashStore(env: RecordStoreEnv, now: () => Date = () => new Date()): HashStore {
+  return d1HashStore(env.DB, now);
 }

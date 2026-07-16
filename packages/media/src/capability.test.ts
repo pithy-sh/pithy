@@ -7,6 +7,11 @@ function bindingNames(cap: ReturnType<typeof media>): string[] {
   return cap.requiredBindings.map((b) => b.name);
 }
 
+/** The migration local keys the capability contributes to the app database. */
+function migrationKeys(cap: ReturnType<typeof media>): string[] {
+  return Object.keys(cap.databases?.app?.migrations ?? {});
+}
+
 describe("media()", () => {
   test("is a media capability contributing config, migrations, routes, and bindings (D1 default)", () => {
     const cap = media();
@@ -15,13 +20,12 @@ describe("media()", () => {
     expect(cap.dependsOn).toContain("secrets");
     expect(cap.secretRegistry).toBeDefined();
     expect(cap.routes).toBeTypeOf("function");
-    // The D1 default contributes the app database with the base migration.
+    // The D1 default contributes the app database with the hashes and record migrations.
     expect(cap.databases?.app?.binding).toBe("DB");
     expect(cap.databases?.app?.migrationOrder).toBe(MEDIA_MIGRATION_ORDER);
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(migrationKeys(cap)).toEqual(["0001_hashes", "0002_assets"]);
     expect(bindingNames(cap)).toContain("DB");
     expect(bindingNames(cap)).toContain("MEDIA_BUCKET");
-    // The enrichment Workflow bindings are declared (optional).
     expect(bindingNames(cap)).toEqual(
       expect.arrayContaining([
         "MEDIA_IMAGE_TO_TEXT",
@@ -32,22 +36,23 @@ describe("media()", () => {
     );
   });
 
-  test("the KV record store contributes no database and requires the MEDIA binding", () => {
+  test("KV record store still requires DB (dedup hashes are always D1) and adds the MEDIA binding", () => {
     const cap = media({ recordStore: "kv" });
-    expect(cap.databases).toBeUndefined();
+    // The app database exists in KV mode too — for the hash table.
+    expect(cap.databases?.app?.binding).toBe("DB");
+    // Only the hash migration; no record table in KV mode.
+    expect(migrationKeys(cap)).toEqual(["0001_hashes"]);
+    expect(bindingNames(cap)).toContain("DB");
     expect(bindingNames(cap)).toContain("MEDIA");
-    expect(bindingNames(cap)).not.toContain("DB");
   });
 
-  test("an extension adds a generated 0002_extend migration and widens the effective schema", () => {
+  test("an extension adds a generated 0003_extend migration and widens the effective schema", () => {
     const cap = media({ extend: z.object({ userId: z.string().describe("owner") }).describe("ext") });
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_extend"]);
-    // The effective schema accepts the extension field.
+    expect(migrationKeys(cap)).toEqual(["0001_hashes", "0002_assets", "0003_extend"]);
     expect(cap.schema.shape).toHaveProperty("userId");
   });
 
-  test("without an extension there is no 0002_extend migration", () => {
-    const cap = media();
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).not.toContain("0002_extend");
+  test("without an extension there is no 0003_extend migration", () => {
+    expect(migrationKeys(media())).not.toContain("0003_extend");
   });
 });

@@ -1,31 +1,23 @@
 import { describe, expect, test } from "vitest";
-import type { MediaRecord, PhashEntry, RecordStore } from "../record/store";
+import type { HashMatch, HashPhashEntry, HashStore } from "../record/hashStore";
 import { classifyDistance, findDuplicates, hammingDistance, SIMILAR_THRESHOLD } from "./duplicates";
 
 /**
- * An in-memory {@link RecordStore} for the dedup scan. Only `findBySha256` and `listImagePhashes` need
- * real behavior — the scan touches nothing else — so the rest throw to catch an unexpected call.
+ * An in-memory {@link HashStore} for the dedup scan. Only `findBySha256` and `listImagePhashes` need real
+ * behavior — the scan touches nothing else — so the writes throw to catch an unexpected call.
  */
-function fakeStore(seed: { records?: MediaRecord[]; phashes?: PhashEntry[] } = {}): RecordStore {
-  const records = seed.records ?? [];
+function fakeHashes(seed: { matches?: HashMatch[]; phashes?: HashPhashEntry[] } = {}): HashStore {
+  const matches = seed.matches ?? [];
   const phashes = seed.phashes ?? [];
   const unused = (name: string) => (): never => {
     throw new Error(`unexpected call: ${name}`);
   };
   return {
-    findBySha256: async (sha256) => records.filter((record) => record.sha256 === sha256),
+    findBySha256: async () => matches,
     listImagePhashes: async () => phashes,
-    create: unused("create"),
-    get: unused("get"),
-    patch: unused("patch"),
-    delete: unused("delete"),
-    list: unused("list"),
+    upsert: unused("upsert"),
+    deleteByMedia: unused("deleteByMedia"),
   };
-}
-
-/** Build a minimal `MediaRecord` — only the fields the dedup scan reads matter here. */
-function record(fields: { id: string; sha256: string; type: MediaRecord["type"] }): MediaRecord {
-  return { id: fields.id, sha256: fields.sha256, type: fields.type } as MediaRecord;
 }
 
 describe("classifyDistance", () => {
@@ -58,66 +50,49 @@ describe("hammingDistance", () => {
 
 describe("findDuplicates", () => {
   test("an exact SHA-256 match returns an identical candidate at distance 0", async () => {
-    const store = fakeStore({
-      records: [record({ id: "doc-1", sha256: "deadbeef", type: "document" })],
-    });
-    const found = await findDuplicates(store, { sha256: "deadbeef", type: "document" });
+    const hashes = fakeHashes({ matches: [{ mediaId: "doc-1", mediaType: "document" }] });
+    const found = await findDuplicates(hashes, { sha256: "deadbeef", type: "document" });
     expect(found).toEqual([{ id: "doc-1", mediaType: "document", distance: 0, kind: "identical" }]);
   });
 
   test("an image phash within threshold returns a similar candidate", async () => {
-    const store = fakeStore({
-      phashes: [{ id: "img-near", phash: "ffff0001" }],
-    });
-    const found = await findDuplicates(store, {
-      sha256: "nomatch",
-      phash: "ffff0000",
-      type: "image",
-    });
+    const hashes = fakeHashes({ phashes: [{ mediaId: "img-near", phash: "ffff0001" }] });
+    const found = await findDuplicates(hashes, { sha256: "nomatch", phash: "ffff0000", type: "image" });
     expect(found).toEqual([{ id: "img-near", mediaType: "image", distance: 1, kind: "similar" }]);
   });
 
   test("an exact match is not double-counted as a near match", async () => {
-    const store = fakeStore({
-      records: [record({ id: "img-1", sha256: "abc123", type: "image" })],
-      phashes: [{ id: "img-1", phash: "ffff0000" }],
+    const hashes = fakeHashes({
+      matches: [{ mediaId: "img-1", mediaType: "image" }],
+      phashes: [{ mediaId: "img-1", phash: "ffff0000" }],
     });
-    const found = await findDuplicates(store, {
-      sha256: "abc123",
-      phash: "ffff0000",
-      type: "image",
-    });
+    const found = await findDuplicates(hashes, { sha256: "abc123", phash: "ffff0000", type: "image" });
     expect(found).toEqual([{ id: "img-1", mediaType: "image", distance: 0, kind: "identical" }]);
   });
 
   test("a non-image type never runs the phash scan", async () => {
     let scanned = false;
-    const store = fakeStore({ phashes: [{ id: "img-x", phash: "ffff0000" }] });
-    const wrapped: RecordStore = {
-      ...store,
+    const hashes: HashStore = {
+      ...fakeHashes(),
       listImagePhashes: async () => {
         scanned = true;
         return [];
       },
     };
-    const found = await findDuplicates(wrapped, {
-      sha256: "nomatch",
-      phash: "ffff0000",
-      type: "video",
-    });
+    const found = await findDuplicates(hashes, { sha256: "nomatch", phash: "ffff0000", type: "video" });
     expect(scanned).toBe(false);
     expect(found).toEqual([]);
   });
 
   test("results are sorted closest first and capped to the limit", async () => {
-    const store = fakeStore({
-      records: [record({ id: "exact", sha256: "same", type: "image" })],
+    const hashes = fakeHashes({
+      matches: [{ mediaId: "exact", mediaType: "image" }],
       phashes: [
-        { id: "far", phash: "fffffff0" },
-        { id: "close", phash: "ffff0001" },
+        { mediaId: "far", phash: "fffffff0" },
+        { mediaId: "close", phash: "ffff0001" },
       ],
     });
-    const found = await findDuplicates(store, {
+    const found = await findDuplicates(hashes, {
       sha256: "same",
       phash: "ffff0000",
       type: "image",
@@ -129,14 +104,8 @@ describe("findDuplicates", () => {
   });
 
   test("phashes of a different length are skipped", async () => {
-    const store = fakeStore({
-      phashes: [{ id: "wrong-len", phash: "ffff" }],
-    });
-    const found = await findDuplicates(store, {
-      sha256: "nomatch",
-      phash: "ffff0000",
-      type: "image",
-    });
+    const hashes = fakeHashes({ phashes: [{ mediaId: "wrong-len", phash: "ffff" }] });
+    const found = await findDuplicates(hashes, { sha256: "nomatch", phash: "ffff0000", type: "image" });
     expect(found).toEqual([]);
   });
 });

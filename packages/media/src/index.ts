@@ -6,10 +6,24 @@
  */
 
 export { isMediaCapability, MEDIA_MIGRATION_ORDER, type MediaCapability, type MediaOptions, media } from "./capability";
-export { MediaConfig, type MediaConfigInput } from "./config/config";
-export { MediaStatus, MediaType, StorageBackend } from "./data/enums";
+export { MediaConfig, type MediaConfigInput, type MediaDelivery } from "./config/config";
+export {
+  EXTRACTABLE_EXTENSIONS,
+  isExtractableDocument,
+  MediaStatus,
+  MediaType,
+  StorageBackend,
+} from "./data/enums";
 export { extendMediaAsset } from "./data/extend";
 export { MediaAsset } from "./data/mediaAsset";
+export {
+  buildImageUrl,
+  buildStreamDashUrl,
+  buildStreamHlsUrl,
+  buildStreamIframeUrl,
+  buildStreamThumbnailUrl,
+  mediaUrl,
+} from "./deliver/url";
 export {
   classifyDistance,
   type DuplicateCandidate,
@@ -18,4 +32,5 @@ export {
   SIMILAR_THRESHOLD,
 } from "./hash/duplicates";
 export { computeSha256 } from "./hash/sha256";
+export type { HashStore } from "./record/hashStore";
 export type { MediaRecord, RecordStore } from "./record/store";

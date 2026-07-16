@@ -26,19 +26,12 @@ export interface RecordPage {
   cursor?: string;
 }
 
-/** A minimal `{ id, phash }` pair for near-duplicate image scanning without loading whole records. */
-export interface PhashEntry {
-  /** The record id. */
-  id: string;
-  /** The record's perceptual hash. */
-  phash: string;
-}
-
 /**
  * The record-store seam: one interface, two backends. `recordStore: 'd1'` (default) persists to the
  * `pithy_media_assets` table with queryable derived text; `recordStore: 'kv'` persists to a KV namespace
- * (key lookup only — its query methods scan, documented as such). Both validate every read and write
- * against the effective schema, so an adopter's extension fields survive with no backend-specific work.
+ * (key lookup; `list` scans, documented as such). Both validate every read and write against the effective
+ * schema, so an adopter's extension fields survive with no backend-specific work. Duplicate detection is
+ * NOT here — it always runs against the D1 {@link HashStore}, independent of the record store.
  */
 export interface RecordStore {
   /** Persist a new record. Returns the stored, re-validated record. */
@@ -51,8 +44,4 @@ export interface RecordStore {
   delete(id: string): Promise<void>;
   /** List records, newest first, optionally filtered by type. */
   list(options?: ListRecordsOptions): Promise<RecordPage>;
-  /** All records whose `sha256` exactly matches — the exact-duplicate lookup. */
-  findBySha256(sha256: string): Promise<MediaRecord[]>;
-  /** Every image record carrying a perceptual hash — the bounded set the near-duplicate scan compares. */
-  listImagePhashes(): Promise<PhashEntry[]>;
 }

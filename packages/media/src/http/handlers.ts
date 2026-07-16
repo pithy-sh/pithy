@@ -4,6 +4,7 @@ import type { MediaConfig } from "../config/config";
 import { BASE_COLUMN_NAMES } from "../data/extend";
 import { MediaNotFoundError } from "../error/errors";
 import { findDuplicates } from "../hash/duplicates";
+import type { HashStore } from "../record/hashStore";
 import type { MediaRecord, RecordStore } from "../record/store";
 import { backendForType } from "../storage/backend";
 import type { MediaStorage } from "../storage/storage";
@@ -23,6 +24,8 @@ export type EnrichmentDispatcher = (record: MediaRecord) => Promise<void>;
 export interface HandlerDeps {
   /** The record store (D1 or KV), already bound to the effective schema. */
   store: RecordStore;
+  /** The D1 dedup hash store — written on finalize, queried by duplicate search, cleared on delete. */
+  hashes: HashStore;
   /** The storage seam (mint, delete, read). */
   storage: MediaStorage;
   /** The effective record schema (base + adopter extension) — validates the assembled record. */
@@ -144,6 +147,12 @@ export async function finalizeMedia(deps: HandlerDeps, id: string, body: unknown
   if (input.sha256 != null) changes.sha256 = input.sha256;
   if (input.phash != null) changes.phash = input.phash;
   const updated = await deps.store.patch(id, changes);
+  // Write the dedup hash to D1 (always) now the upload is confirmed, so duplicate search can find it.
+  const sha256 = typeof updated.sha256 === "string" ? updated.sha256 : null;
+  if (sha256) {
+    const phash = typeof updated.phash === "string" ? updated.phash : null;
+    await deps.hashes.upsert({ mediaId: id, mediaType: updated.type, sha256, phash });
+  }
   await deps.dispatchEnrichment(updated);
   return updated;
 }
@@ -169,19 +178,29 @@ export async function deleteMedia(deps: HandlerDeps, id: string): Promise<{ id: 
   await deps.storage
     .deleteObject({ storageBackend: record.storageBackend, storageKey: record.storageKey })
     .catch(() => {});
+  await deps.hashes.deleteByMedia(id);
   await deps.store.delete(id);
   return { id, deleted: true };
 }
 
-/** Find exact (sha256) and near (phash) duplicates of a file. */
+/**
+ * Find exact (sha256) and near (phash) duplicates of a file. Detection runs against the D1 hash store;
+ * each candidate is then hydrated from the record store so the caller gets the full record (a hash whose
+ * record was deleted out from under it is skipped).
+ */
 export async function searchDuplicates(deps: HandlerDeps, body: unknown) {
   const input = parseInput(DuplicatesInput, body);
-  const matches = await findDuplicates(deps.store, {
+  const candidates = await findDuplicates(deps.hashes, {
     type: input.type,
     sha256: input.sha256,
     phash: input.phash,
     threshold: input.threshold,
     limit: input.limit,
   });
+  const matches = [];
+  for (const candidate of candidates) {
+    const record = await deps.store.get(candidate.id);
+    if (record) matches.push({ id: candidate.id, distance: candidate.distance, kind: candidate.kind, record });
+  }
   return { matches };
 }

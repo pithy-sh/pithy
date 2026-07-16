@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { extendMediaAsset } from "../data/extend";
 import { mediaDatabase } from "../data/tables";
-import { media_0001_init } from "../migrations/0001_init";
+import { media_0002_assets } from "../migrations/0002_assets";
 import { d1RecordStore } from "./d1Store";
 import { kvRecordStore } from "./kvStore";
 import type { MediaRecord, RecordStore } from "./store";
@@ -40,7 +40,7 @@ function makeRecord(overrides: Partial<MediaRecord> = {}): MediaRecord {
 /** Reset D1: drop and recreate the media table via the migration's `up`. */
 async function resetD1(): Promise<void> {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_media_assets");
-  await media_0001_init.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0001_init.up>[0]);
+  await media_0002_assets.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0002_assets.up>[0]);
 }
 
 /** Reset KV: delete every key. */
@@ -108,16 +108,6 @@ function storeContract(name: string, make: () => RecordStore, reset: () => Promi
       expect(images.items.map((r) => r.id)).toEqual(["a"]);
     });
 
-    test("findBySha256 returns exact matches; listImagePhashes returns image phash entries", async () => {
-      const store = make();
-      await store.create(makeRecord({ id: "a", sha256: "f".repeat(64), phash: "0f0f0f0f0f0f0f0f" }));
-      await store.create(makeRecord({ id: "b", sha256: "e".repeat(64) }));
-      const found = await store.findBySha256("f".repeat(64));
-      expect(found.map((r) => r.id)).toEqual(["a"]);
-      const phashes = await store.listImagePhashes();
-      expect(phashes).toEqual([{ id: "a", phash: "0f0f0f0f0f0f0f0f" }]);
-    });
-
     test("an adopter extension field round-trips", async () => {
       // Build a store bound to an extended schema — the store validates and persists the extra field.
       const extended = extendMediaAsset(z.object({ userId: z.string().describe("owner") }).describe("ext"));
@@ -144,4 +134,21 @@ test("D1: an omitted optional extension field round-trips as null (no 500 on rea
   const read = await store.get("m1"); // must not throw on the NULL
   expect(read?.name).toBe("photo");
   expect(read?.tag ?? null).toBeNull();
+});
+
+test("KV: kvMetadata fields (including an adopter field) ride on the list-time metadata", async () => {
+  await resetKv();
+  const extended = extendMediaAsset(z.object({ userId: z.string().describe("owner") }).describe("ext"));
+  // Ask for `status` and the adopter's `userId` as metadata (type + createdAt are always included).
+  const store = kvRecordStore(env.MEDIA, extended, ["status", "userId"]);
+  await store.create(makeRecord({ id: "a", type: "image", userId: "u-1" }));
+
+  // The metadata is on the raw KV `list` — visible without reading the value.
+  const listed = await env.MEDIA.list();
+  const entry = listed.keys.find((k) => k.name === "media:a");
+  expect(entry?.metadata).toMatchObject({ type: "image", status: "pending", userId: "u-1" });
+
+  // The store's `list` still returns the full record.
+  const page = await store.list();
+  expect(page.items[0]?.userId).toBe("u-1");
 });

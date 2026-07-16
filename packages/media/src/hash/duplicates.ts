@@ -1,6 +1,6 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { MediaType } from "../data/enums";
-import type { RecordStore } from "../record/store";
+import type { HashStore } from "../record/hashStore";
 
 /**
  * Duplicate detection — one exact key, one fuzzy key.
@@ -80,7 +80,8 @@ export interface FindDuplicatesParams {
 }
 
 /**
- * Find the records that duplicate a new object. Runs two passes against the {@link RecordStore}:
+ * Find the records that duplicate a new object. Runs two passes against the D1 {@link HashStore} — dedup
+ * is always D1, whatever the record store (KV cannot serve these queries):
  *
  * 1. **Exact.** Every record with the same SHA-256 is a byte-identical duplicate (`kind: "identical"`,
  *    `distance: 0`), for any media type.
@@ -91,20 +92,18 @@ export interface FindDuplicatesParams {
  * The two sets are combined — exact matches never double-counted as near — sorted closest first (exact
  * matches lead at distance `0`), and capped to `limit`. Inputs are not mutated.
  */
-export async function findDuplicates(store: RecordStore, params: FindDuplicatesParams): Promise<DuplicateCandidate[]> {
+export async function findDuplicates(hashes: HashStore, params: FindDuplicatesParams): Promise<DuplicateCandidate[]> {
   const threshold = params.threshold ?? SIMILAR_THRESHOLD;
   const limit = params.limit ?? 10;
 
   // Pass 1 — exact byte matches by SHA-256. The id → type map also lets pass 2 skip records already exact.
-  const exactRecords = await store.findBySha256(params.sha256);
-  const exactTypes = new Map<string, MediaType>();
-  for (const record of exactRecords) {
-    exactTypes.set(record.id, record.type as MediaType);
-  }
+  const exactMatches = await hashes.findBySha256(params.sha256);
+  const exactIds = new Set<string>();
+  for (const match of exactMatches) exactIds.add(match.mediaId);
 
-  const exact: DuplicateCandidate[] = exactRecords.map((record) => ({
-    id: record.id,
-    mediaType: record.type as MediaType,
+  const exact: DuplicateCandidate[] = exactMatches.map((match) => ({
+    id: match.mediaId,
+    mediaType: match.mediaType,
     distance: 0,
     kind: "identical",
   }));
@@ -113,12 +112,12 @@ export async function findDuplicates(store: RecordStore, params: FindDuplicatesP
   const near: DuplicateCandidate[] = [];
   if (params.type === "image" && params.phash) {
     const phash = params.phash;
-    for (const entry of await store.listImagePhashes()) {
-      if (exactTypes.has(entry.id)) continue;
+    for (const entry of await hashes.listImagePhashes()) {
+      if (exactIds.has(entry.mediaId)) continue;
       if (entry.phash.length !== phash.length) continue;
       const distance = hammingDistance(phash, entry.phash);
       if (classifyDistance(distance, threshold) === "different") continue;
-      near.push({ id: entry.id, mediaType: "image", distance, kind: "similar" });
+      near.push({ id: entry.mediaId, mediaType: "image", distance, kind: "similar" });
     }
   }
 

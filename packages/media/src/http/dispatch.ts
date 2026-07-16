@@ -1,4 +1,5 @@
 import type { MediaConfig } from "../config/config";
+import { isExtractableDocument } from "../data/enums";
 import type { EnrichmentDispatcher } from "./handlers";
 
 /**
@@ -42,7 +43,10 @@ export function makeEnrichmentDispatcher(env: EnrichmentBindings, config: MediaC
         if (config.video.transcribe) await env.MEDIA_VIDEO_TRANSCRIBE?.create({ params: { id } });
         return;
       case "document":
-        if (config.documents.extractText) await env.MEDIA_DOC_EXTRACT?.create({ params: { id } });
+        // Only pdf/doc/docx are extractable — never enqueue a Workflow for an unsupported extension.
+        if (config.documents.extractText && isExtractableDocument(record.filename)) {
+          await env.MEDIA_DOC_EXTRACT?.create({ params: { id } });
+        }
         return;
     }
   };

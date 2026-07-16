@@ -24,8 +24,6 @@ function fakeStore(seed: MediaRecord): RecordStore & { record: MediaRecord } {
     create: async (r) => r,
     delete: async () => {},
     list: async () => ({ items: [] }),
-    findBySha256: async () => [],
-    listImagePhashes: async () => [],
   };
 }
 

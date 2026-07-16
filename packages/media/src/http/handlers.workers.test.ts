@@ -4,8 +4,10 @@ import { z } from "zod";
 import { MediaConfig } from "../config/config";
 import { extendMediaAsset } from "../data/extend";
 import { mediaDatabase } from "../data/tables";
-import { media_0001_init } from "../migrations/0001_init";
+import { media_0001_hashes } from "../migrations/0001_hashes";
+import { media_0002_assets } from "../migrations/0002_assets";
 import { d1RecordStore } from "../record/d1Store";
+import { d1HashStore } from "../record/hashStore";
 import type { MediaStorage } from "../storage/storage";
 import {
   createMedia,
@@ -33,6 +35,7 @@ function fakeStorage(): MediaStorage & { deleted: string[] } {
       deleted.push(location.storageKey);
     },
     readR2Object: async () => new Uint8Array(),
+    presignedDownloadUrl: async (location) => `https://download.example/${location.storageKey}`,
   };
 }
 
@@ -41,6 +44,7 @@ function makeDeps(overrides: Partial<HandlerDeps> = {}): HandlerDeps & { dispatc
   let counter = 0;
   const deps: HandlerDeps = {
     store: d1RecordStore(mediaDatabase(env.DB, schema), schema),
+    hashes: d1HashStore(env.DB, () => new Date(1_700_000_000_000)),
     storage: fakeStorage(),
     schema,
     config: MediaConfig.parse({ images: { imageToText: true } }),
@@ -56,7 +60,9 @@ function makeDeps(overrides: Partial<HandlerDeps> = {}): HandlerDeps & { dispatc
 
 beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_media_assets");
-  await media_0001_init.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0001_init.up>[0]);
+  await env.DB.exec("DROP TABLE IF EXISTS pithy_media_hashes");
+  await media_0001_hashes.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0001_hashes.up>[0]);
+  await media_0002_assets.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0002_assets.up>[0]);
 });
 
 const imageBody = {
@@ -175,11 +181,23 @@ describe("createMedia — security & validation", () => {
 });
 
 describe("searchDuplicates", () => {
-  test("finds an exact sha256 match", async () => {
+  test("finds an exact sha256 match after the record is finalized", async () => {
     const deps = makeDeps();
-    await createMedia(deps, imageBody);
+    const { id } = await createMedia(deps, imageBody);
+    // No hash yet — dedup is written on finalize, so a pre-finalize search finds nothing.
+    expect((await searchDuplicates(deps, { type: "image", sha256: "a".repeat(64) })).matches).toHaveLength(0);
+    await finalizeMedia(deps, id, {});
     const { matches } = await searchDuplicates(deps, { type: "image", sha256: "a".repeat(64) });
     expect(matches).toHaveLength(1);
-    expect(matches[0]).toMatchObject({ kind: "identical", distance: 0 });
+    expect(matches[0]).toMatchObject({ id, kind: "identical", distance: 0 });
+    expect(matches[0]?.record.id).toBe(id);
+  });
+
+  test("delete removes the record's dedup hash", async () => {
+    const deps = makeDeps();
+    const { id } = await createMedia(deps, imageBody);
+    await finalizeMedia(deps, id, {});
+    await deleteMedia(deps, id);
+    expect((await searchDuplicates(deps, { type: "image", sha256: "a".repeat(64) })).matches).toHaveLength(0);
   });
 });

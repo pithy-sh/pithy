@@ -112,4 +112,15 @@ describe("mediaStorage.deleteObject / readR2Object", () => {
     expect(Array.from(await storage.readR2Object("hit"))).toEqual([1, 2, 3]);
     await expect(storage.readR2Object("miss")).rejects.toMatchObject({ payload: { code: "media/storage_failed" } });
   });
+
+  test("presignedDownloadUrl signs an R2 key and rejects a non-R2 backend", async () => {
+    const { image, video, r2 } = fakes();
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    expect(await storage.presignedDownloadUrl({ storageBackend: "r2", storageKey: "media/audio/x" })).toBe(
+      "https://r2/download/media/audio/x",
+    );
+    await expect(
+      storage.presignedDownloadUrl({ storageBackend: "cf-images", storageKey: "img-1" }),
+    ).rejects.toMatchObject({ payload: { code: "media/unsupported" } });
+  });
 });

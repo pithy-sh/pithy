@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { MEDIA_ASSETS_TABLE, type MediaDatabase } from "../data/tables";
 import { MediaNotFoundError } from "../error/errors";
-import type { ListRecordsOptions, MediaRecord, PhashEntry, RecordStore } from "./store";
+import type { ListRecordsOptions, MediaRecord, RecordStore } from "./store";
 
 /** Default page size for {@link RecordStore.list}. */
 const DEFAULT_LIMIT = 50;
@@ -75,25 +75,6 @@ export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordSto
       const items = rows.slice(0, limit).map(decode);
       const cursor = rows.length > limit ? encodeCursor(offset + limit) : undefined;
       return { items, cursor };
-    },
-
-    async findBySha256(sha256) {
-      const rows = await table.selectAll().where("sha256", "=", sha256).execute();
-      return rows.map(decode);
-    },
-
-    async listImagePhashes() {
-      const rows = await db
-        .selectFrom(MEDIA_ASSETS_TABLE)
-        .select(["id", "phash"])
-        .where("type", "=", "image")
-        .where("phash", "is not", null)
-        .execute();
-      const entries: PhashEntry[] = [];
-      for (const row of rows) {
-        if (typeof row.phash === "string" && row.phash.length > 0) entries.push({ id: row.id, phash: row.phash });
-      }
-      return entries;
     },
   };
 }

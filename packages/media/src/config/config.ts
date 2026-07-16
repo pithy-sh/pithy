@@ -94,6 +94,35 @@ export const MediaDocumentConfig = z
 export type MediaDocumentConfig = z.output<typeof MediaDocumentConfig>;
 
 /**
+ * Public delivery configuration — the non-secret account values needed to build consumer URLs for stored
+ * media (see `deliver/url.ts`). These are public identifiers (they appear in delivery URLs), so they live
+ * in config, not in `@pithy-sh/secrets`.
+ */
+export const MediaDelivery = z
+  .object({
+    imagesAccountHash: z
+      .string()
+      .optional()
+      .describe(
+        "The Cloudflare Images account hash, used to build `imagedelivery.net` URLs and to read image bytes for enrichment.",
+      ),
+    streamCustomerCode: z
+      .string()
+      .optional()
+      .describe(
+        "The Cloudflare Stream customer subdomain code, used to build `customer-<code>.cloudflarestream.com` playback URLs.",
+      ),
+    r2PublicBaseUrl: z
+      .string()
+      .optional()
+      .describe(
+        "A public base URL for R2 objects when the bucket is served publicly; otherwise consumers use a presigned download URL.",
+      ),
+  })
+  .describe("Public delivery configuration for building consumer media URLs.");
+export type MediaDelivery = z.output<typeof MediaDelivery>;
+
+/**
  * The full media configuration. `recordStore` chooses where records live (D1 by default; a KV opt-in for
  * KV-only projects, with its query limitations documented). Each media type block picks a backend and
  * toggles its enrichment.
@@ -104,7 +133,14 @@ export const MediaConfig = z
       .enum(["d1", "kv"])
       .default("d1")
       .describe(
-        "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content).",
+        "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Duplicate detection always uses D1 (see the README).",
+      ),
+    delivery: MediaDelivery.prefault({}).describe("Public delivery configuration for building consumer media URLs."),
+    kvMetadata: z
+      .array(z.string())
+      .default(["type", "status", "hasTranscription", "hasExtractedText"])
+      .describe(
+        "For `recordStore: 'kv'` only: which record fields to also store as KV metadata. Metadata rides free on a KV `list` (no per-value read), so `list` filters, sorts, and renders from it — put the fields your list views need here (e.g. an owning `userId` for owner-scoped lists). KV caps metadata at 1024 bytes serialized, so keep it to small scalar fields. `type` and `createdAt` are always included (list filters by type and sorts by recency). Ignored in D1 mode.",
       ),
     images: MediaImageConfig.prefault({}).describe("Image storage and enrichment settings."),
     video: MediaVideoConfig.prefault({}).describe("Video storage and enrichment settings."),

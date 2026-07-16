@@ -29,3 +29,22 @@ export const StorageBackend = z
   .enum(["r2", "cf-images", "cf-stream"])
   .describe("The Cloudflare product a media object's bytes live in: `r2`, `cf-images`, or `cf-stream`.");
 export type StorageBackend = z.output<typeof StorageBackend>;
+
+/**
+ * The document extensions Workers AI `toMarkdown` can extract text from. Extraction is only dispatched
+ * for these — a `.txt`, `.png`, or unknown extension is never enqueued (no wasted Workflow, no cost).
+ * Matches the CMS's supported set.
+ */
+export const EXTRACTABLE_EXTENSIONS = ["pdf", "doc", "docx"] as const;
+
+/** The file extension of a filename, lowercased, or the empty string. */
+export function fileExtension(filename: string): string {
+  if (typeof filename !== "string") return "";
+  const dot = filename.lastIndexOf(".");
+  return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
+}
+
+/** Whether a document's filename is one text extraction supports (pdf/doc/docx). */
+export function isExtractableDocument(filename: string): boolean {
+  return (EXTRACTABLE_EXTENSIONS as readonly string[]).includes(fileExtension(filename));
+}

@@ -57,7 +57,37 @@ Audio is transcribed in one call. Video is transcribed from its Cloudflare Strea
 
 One `pithy_media_assets` table (or one KV value per record) holds every media type, discriminated by `type`. Base fields are guaranteed; per-type derived fields are filled by enrichment.
 
-Duplicate detection is built in: `sha256` (exact, all types) and a perceptual hash (`phash`, near-duplicate images). Both are computed client-side and supplied on upload — the bytes never reach your Worker. `POST /media/duplicates` returns exact and near matches.
+## Duplicate detection always uses D1
+
+`sha256` (exact, all types) and a perceptual hash (`phash`, near-duplicate images) are computed client-side and supplied on upload — the bytes never reach your Worker. `POST /media/duplicates` returns exact and near matches, written on finalize.
+
+Dedup is a query workload — an exact `sha256` lookup and a bounded near-`phash` scan — that KV cannot serve. So the hashes always live in a dedicated D1 table, `pithy_media_hashes`, independent of where records live. **This means the `DB` binding is required even when `recordStore: 'kv'`** — a KV-only project still gets a small D1 database for the hash table. It is the only way `phash` near-duplicate detection can work.
+
+## Document text extraction
+
+Extraction runs only for the file types Workers AI `toMarkdown` supports — **pdf, doc, docx**. A `.txt`, image, or unknown extension is never enqueued (no wasted Workflow, no cost). Enable it with `documents.extractText`.
+
+## Consumer URLs
+
+Turn a stored record into a URL your clients load. The URL differs by backend, so the package exposes builders (`@pithy-sh/media/src/deliver/url`) plus a `mediaUrl(record, delivery)` dispatcher. Set the public identifiers in the `delivery` config:
+
+```ts
+media({
+  delivery: {
+    imagesAccountHash: "<your Cloudflare Images account hash>",   // imagedelivery.net URLs
+    streamCustomerCode: "<your Cloudflare Stream customer code>", // customer-<code>.cloudflarestream.com
+    r2PublicBaseUrl: "https://cdn.example.com",                   // optional, if the bucket is public
+  },
+})
+```
+
+- **Cloudflare Images** → `buildImageUrl(imageId, hash, variant)` (variants like `public`, `thumbnail`).
+- **Cloudflare Stream** → `buildStreamHlsUrl` / `buildStreamDashUrl` / `buildStreamThumbnailUrl` / `buildStreamIframeUrl`.
+- **R2** → a public base-URL join when `r2PublicBaseUrl` is set, otherwise `storage.presignedDownloadUrl(record)` for a private, time-limited GET.
+
+## Resumable uploads
+
+Video uploads to Cloudflare Stream are resumable — the direct-upload URL is a TUS endpoint, so a TUS client picks up where a dropped connection left off. Cloudflare Images has no resumable protocol (it is a single one-time direct-upload POST); R2 presigned PUTs are likewise a single request. So resumability applies to large video, which is where it matters.
 
 ## Extending a record
 
@@ -91,7 +121,18 @@ Ownership scoping — filtering to the caller's own media — is an adopter conc
 
 ## KV record store
 
-`recordStore: 'kv'` is an opt-in for KV-only projects. It works, with one caveat: KV is a key-value store, not a query engine. `get`, `patch`, and `delete` are direct key lookups, but `list`, `findBySha256`, and `listImagePhashes` scan the namespace. That is fine for modest media sets. Text search over transcriptions and extracted text effectively requires D1 — which is why D1 is the default.
+`recordStore: 'kv'` keeps records in KV. `get`, `patch`, and `delete` are direct key lookups. `list` is made scalable by **KV metadata**: the fields you name in `kvMetadata` are stored as each entry's metadata, which rides free on a KV `list` — so `list` filters by type, sorts by recency, and paginates from metadata alone, then reads only the returned page's values (bounded by the page size, not the corpus).
+
+```ts
+media({
+  recordStore: "kv",
+  // Fields your list views need, rendered from metadata with no per-value read.
+  // `type` and `createdAt` are always included; keep the set small (KV caps metadata at 1024 bytes).
+  kvMetadata: ["status", "hasTranscription", "hasExtractedText", "userId"],
+})
+```
+
+Put an owning `userId` (or a tenant id, tags) here to render owner-scoped list views cheaply. Two caveats remain: text search over transcriptions and extracted text effectively requires D1, and **duplicate detection always uses D1** (see above) — so a KV project still needs the `DB` binding. That is why D1 is the default record store.
 
 ## Errors
 

@@ -2,7 +2,7 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
-import { type RecordStoreEnv, resolveRecordStore } from "../record/resolve";
+import { type RecordStoreEnv, resolveHashStore, resolveRecordStore } from "../record/resolve";
 import { resolveStorage, type StorageEnv } from "../storage/resolve";
 import { type EnrichmentBindings, makeEnrichmentDispatcher } from "./dispatch";
 import { requireAuth } from "./guard";
@@ -52,9 +52,11 @@ function defaultResolveDeps(
   return async (c) => {
     const env = c.env as unknown as MediaEnv;
     const store = resolveRecordStore(env, config, schema);
+    const hashes = resolveHashStore(env);
     const storage = await resolveStorage(env, config);
     return {
       store,
+      hashes,
       storage,
       schema,
       config,

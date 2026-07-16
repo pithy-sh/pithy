@@ -21,12 +21,6 @@ export const MediaStorageCredentials = z
     r2AccessKeyId: z.string().describe("The R2 S3-compatible access key id used to presign R2 uploads."),
     r2SecretAccessKey: z.string().describe("The R2 S3-compatible secret access key used to presign R2 uploads."),
     r2BucketName: z.string().describe("The R2 bucket media objects are stored in."),
-    imagesAccountHash: z
-      .string()
-      .optional()
-      .describe(
-        "The Cloudflare Images account hash, used to read an image's bytes back for image-to-text enrichment (Images backend only).",
-      ),
   })
   .describe("The credentials the media capability reads to mint direct-upload URLs and address R2.");
 export type MediaStorageCredentials = z.output<typeof MediaStorageCredentials>;

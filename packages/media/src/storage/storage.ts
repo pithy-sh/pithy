@@ -1,7 +1,7 @@
 import type { R2Bucket } from "@cloudflare/workers-types";
 import type { MediaConfig } from "../config/config";
 import type { MediaType, StorageBackend } from "../data/enums";
-import { MediaStorageError } from "../error/errors";
+import { MediaStorageError, MediaUnsupportedError } from "../error/errors";
 import { backendForType, mediaR2Key } from "./backend";
 import type { ImageMinter, R2Minter, VideoMinter } from "./minter";
 
@@ -59,6 +59,12 @@ export interface MediaStorage {
   deleteObject(location: StorageLocation): Promise<void>;
   /** Read a stored R2 object's bytes (enrichment reads audio/documents through the binding). */
   readR2Object(key: string): Promise<Uint8Array>;
+  /**
+   * A presigned, time-limited GET URL for a private R2-backed record — the consumer URL for audio and
+   * documents (and R2-stored images/video). Throws `media/unsupported` for a Cloudflare Images or Stream
+   * record, which have their own delivery URLs (see `deliver/url.ts`).
+   */
+  presignedDownloadUrl(location: StorageLocation): Promise<string>;
 }
 
 /** Build the storage seam over the injected minters, bucket binding, and config. */
@@ -99,6 +105,19 @@ export function mediaStorage(deps: StorageDeps): MediaStorage {
         throw new MediaStorageError({ detail: `R2 object not found: ${key}` });
       }
       return new Uint8Array(await object.arrayBuffer());
+    },
+
+    async presignedDownloadUrl(location) {
+      if (location.storageBackend !== "r2") {
+        throw new MediaUnsupportedError({
+          detail: `presignedDownloadUrl is R2-only; ${location.storageBackend} has its own delivery URL`,
+        });
+      }
+      try {
+        return await deps.r2.mintDownload(location.storageKey);
+      } catch (error) {
+        throw new MediaStorageError({ detail: `presign download failed for ${location.storageKey}` }, { cause: error });
+      }
     },
   };
 }

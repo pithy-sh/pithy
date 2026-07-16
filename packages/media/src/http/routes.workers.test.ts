@@ -15,9 +15,10 @@ const storage: MediaStorage = {
   mintUpload: async (p) => ({ uploadUrl: `https://up/${p.id}`, storageBackend: "cf-images", storageKey: `k-${p.id}` }),
   deleteObject: async () => {},
   readR2Object: async () => new Uint8Array(),
+  presignedDownloadUrl: async (l) => `https://dl/${l.storageKey}`,
 };
 
-/** An in-memory store so the authorized path returns real data without D1. */
+/** An in-memory record store so the authorized path returns real data without D1. */
 function memStore() {
   const map = new Map<string, Record<string, unknown>>();
   return {
@@ -35,10 +36,16 @@ function memStore() {
       map.delete(id);
     },
     list: async () => ({ items: [...map.values()] }),
-    findBySha256: async () => [],
-    listImagePhashes: async () => [],
   };
 }
+
+/** A no-op hash store — the route tests don't exercise dedup. */
+const hashes = {
+  upsert: async () => {},
+  deleteByMedia: async () => {},
+  findBySha256: async () => [],
+  listImagePhashes: async () => [],
+};
 
 /** Build a Hono app with the media routes, an auth middleware gated by an `x-user` header, and the error codec. */
 function makeApp() {
@@ -53,6 +60,7 @@ function makeApp() {
   });
   const deps = {
     store: memStore(),
+    hashes,
     storage,
     schema,
     config: MediaConfig.parse({}),

@@ -10,7 +10,7 @@ import { MediaAsset } from "../data/mediaAsset";
 import { MediaEnrichmentError } from "../error/errors";
 import { resolveRecordStore } from "../record/resolve";
 import type { MediaRecord } from "../record/store";
-import { MEDIA_STORAGE_SECRET, type MediaStorageCredentials, mediaSecretsRegistry } from "../secret/registry";
+import { MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "../secret/registry";
 import {
   type EnrichDeps,
   runAudioTranscription,
@@ -54,7 +54,7 @@ const LooseAsset = MediaAsset.catchall(z.unknown());
 /** Read a stored object's raw bytes: R2 through the binding, Cloudflare Images through its delivery URL. */
 async function readObjectBytes(
   env: MediaWorkerEnv,
-  credentials: MediaStorageCredentials,
+  imagesAccountHash: string | undefined,
   record: MediaRecord,
 ): Promise<Uint8Array> {
   if (record.storageBackend === "r2") {
@@ -63,10 +63,12 @@ async function readObjectBytes(
     return new Uint8Array(await object.arrayBuffer());
   }
   if (record.storageBackend === "cf-images") {
-    if (!credentials.imagesAccountHash) {
-      throw new MediaEnrichmentError({ detail: "imagesAccountHash is required to read image bytes for enrichment" });
+    if (!imagesAccountHash) {
+      throw new MediaEnrichmentError({
+        detail: "delivery.imagesAccountHash is required to read image bytes for enrichment",
+      });
     }
-    const url = `https://imagedelivery.net/${credentials.imagesAccountHash}/${record.storageKey}/public`;
+    const url = `https://imagedelivery.net/${imagesAccountHash}/${record.storageKey}/public`;
     const response = await fetch(url);
     if (!response.ok) throw new MediaEnrichmentError({ detail: `image fetch failed (${response.status})` });
     return new Uint8Array(await response.arrayBuffer());
@@ -80,6 +82,7 @@ async function buildDeps(env: MediaWorkerEnv, transcribeModel: string): Promise<
   const store = resolveRecordStore(env, config, LooseAsset);
   const secrets = await sharedSecretsStore(env, mediaSecretsRegistry);
   const credentials = secrets.get(MEDIA_STORAGE_SECRET);
+  const imagesAccountHash = config.delivery.imagesAccountHash;
   const streamManager = new CloudflareStreamManager({
     apiToken: credentials.apiToken,
     accountId: credentials.accountId,
@@ -88,10 +91,10 @@ async function buildDeps(env: MediaWorkerEnv, transcribeModel: string): Promise<
     store,
     ai: env.AI,
     models: { imageToText: config.images.model, transcribe: transcribeModel },
-    readBytes: (record) => readObjectBytes(env, credentials, record),
+    readBytes: (record) => readObjectBytes(env, imagesAccountHash, record),
     readDocument: async (record) => ({
       name: record.filename,
-      blob: new Blob([await readObjectBytes(env, credentials, record)]),
+      blob: new Blob([await readObjectBytes(env, imagesAccountHash, record)]),
     }),
     fetchVideoAudio: async (record) => {
       const details = (await streamManager.getVideoDetails(record.storageKey)) as { playback?: { hls?: string } };
