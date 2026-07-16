@@ -39,6 +39,8 @@ const SECRET_ENV: Record<string, string> = {
   "auth-session-secret": SECRET,
   "auth-google-credentials": JSON.stringify({ clientId: "g", clientSecret: "g" }),
   "auth-apple-credentials": JSON.stringify({ clientId: "a", clientSecret: "a" }),
+  "auth-facebook-credentials": JSON.stringify({ clientId: "f", clientSecret: "f" }),
+  "auth-github-credentials": JSON.stringify({ clientId: "h", clientSecret: "h" }),
   "turnstile-secret-keys": JSON.stringify({ visible: { key: "1x0000000000000000000000000000000AA" } }),
 };
 
@@ -383,5 +385,33 @@ describe("auth HTTP routes", () => {
       .bind("x@test.com")
       .first<{ template: string }>();
     expect(job?.template).toBe("otp");
+  });
+
+  test("with facebook and github enabled, the instance builds — resolve gating reads their credentials", async () => {
+    // Exercises resolve.ts's enabled branch and resolveFacebook/GithubCredentials: with the providers on,
+    // building the Better Auth instance resolves their secrets (present in SECRET_ENV). A broken resolver
+    // or gating would throw here and 500; a served Better Auth route proves the instance built.
+    const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
+    const wiring: AuthWiring = {
+      config: AuthConfig.parse({
+        baseURL: "http://localhost",
+        basePath: "/auth",
+        trustedOrigins: ["http://localhost"],
+        facebook: { enabled: true },
+        github: { enabled: true },
+      }),
+      enqueueEmail: emailCap.enqueue,
+      turnstile: undefined,
+    };
+    const res = await buildApp(wiring).request(
+      "/auth/email-otp/send-verification-otp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "social@test.com", type: "sign-in" }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
   });
 });

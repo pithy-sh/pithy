@@ -7,7 +7,13 @@ import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeSendAuthEmail } from "../email/send";
 import { type AuthInstance, makeAuth } from "../instance/auth";
-import { resolveAppleCredentials, resolveGoogleCredentials, resolveSessionSecret } from "../instance/secrets";
+import {
+  resolveAppleCredentials,
+  resolveFacebookCredentials,
+  resolveGithubCredentials,
+  resolveGoogleCredentials,
+  resolveSessionSecret,
+} from "../instance/secrets";
 
 /**
  * Build the Better-Auth instance for one request, memoized on the request context so the
@@ -49,11 +55,17 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     });
   }
   const env = c.env as unknown as AuthEnv;
-  // Secret resolutions hit the same per-invocation cache; run them concurrently.
-  const [secret, google, apple] = await Promise.all([
+  // Secret resolutions hit the same per-invocation cache; run them concurrently. A disabled provider
+  // skips its own `.get()` here (resolves to `undefined`) — but every declared auth secret, provider
+  // credentials included, is still materialized once by the shared store's batch resolution (the
+  // session-secret read below triggers it). So a provider's secret must be provisioned per environment
+  // whether or not it is enabled — the pre-existing contract for `google`/`apple` too.
+  const [secret, google, apple, facebook, github] = await Promise.all([
     resolveSessionSecret(env),
     cfg.google.enabled ? resolveGoogleCredentials(env) : Promise.resolve(undefined),
     cfg.apple.enabled ? resolveAppleCredentials(env) : Promise.resolve(undefined),
+    cfg.facebook.enabled ? resolveFacebookCredentials(env) : Promise.resolve(undefined),
+    cfg.github.enabled ? resolveGithubCredentials(env) : Promise.resolve(undefined),
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
   return makeAuth({
@@ -64,6 +76,8 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     trustedOrigins: cfg.trustedOrigins,
     google,
     apple,
+    facebook,
+    github,
     sendEmail: makeSendAuthEmail((input) => enqueueEmail(env, input), expiresMinutes),
     sessionExpiresIn: cfg.sessionExpiresIn,
     sessionUpdateAge: cfg.sessionUpdateAge,

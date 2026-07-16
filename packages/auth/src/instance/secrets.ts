@@ -17,10 +17,16 @@ import { z } from "zod";
  * - `auth-apple-credentials` — the Apple Sign-In Services id, client secret, and (optional) app bundle
  *   id, as a typed JSON value. Apple's client secret is an ES256 JWT minted from the `.p8` key that
  *   expires (max 6 months), so this one is rotatable.
+ * - `auth-facebook-credentials` — the Facebook Login app id and client secret, as a typed JSON value.
+ *   Read only when the provider is enabled; rotated in the Meta app dashboard, not on our schedule.
+ * - `auth-github-credentials` — the GitHub OAuth app client id and secret, as a typed JSON value.
+ *   Read only when the provider is enabled; rotated in GitHub Developer settings, not on our schedule.
  */
 export const AUTH_SESSION_SECRET = "auth-session-secret";
 export const AUTH_GOOGLE_CREDENTIALS = "auth-google-credentials";
 export const AUTH_APPLE_CREDENTIALS = "auth-apple-credentials";
+export const AUTH_FACEBOOK_CREDENTIALS = "auth-facebook-credentials";
+export const AUTH_GITHUB_CREDENTIALS = "auth-github-credentials";
 
 /** The Google OAuth credential pair, stored as one typed JSON secret. */
 export const GoogleOAuthCredentials = z
@@ -58,6 +64,36 @@ export const AppleOAuthCredentials = z
   );
 export type AppleOAuthCredentials = z.infer<typeof AppleOAuthCredentials>;
 
+/** The Facebook Login credential pair, stored as one typed JSON secret. */
+export const FacebookOAuthCredentials = z
+  .object({
+    clientId: z
+      .string()
+      .describe(
+        "The Facebook Login app id for this environment. Not secret on its own, but stored with the secret so the pair is atomic.",
+      ),
+    clientSecret: z
+      .string()
+      .describe("The Facebook Login app secret for this environment. Never committed, never an env literal."),
+  })
+  .describe("A Facebook Login credential pair (`clientId` + `clientSecret`) for one environment.");
+export type FacebookOAuthCredentials = z.infer<typeof FacebookOAuthCredentials>;
+
+/** The GitHub OAuth credential pair, stored as one typed JSON secret. */
+export const GithubOAuthCredentials = z
+  .object({
+    clientId: z
+      .string()
+      .describe(
+        "The GitHub OAuth app client id for this environment. Not secret on its own, but stored with the secret so the pair is atomic.",
+      ),
+    clientSecret: z
+      .string()
+      .describe("The GitHub OAuth app client secret for this environment. Never committed, never an env literal."),
+  })
+  .describe("A GitHub OAuth credential pair (`clientId` + `clientSecret`) for one environment.");
+export type GithubOAuthCredentials = z.infer<typeof GithubOAuthCredentials>;
+
 export const authSecretsRegistry = defineSecretRegistry({
   [AUTH_SESSION_SECRET]: { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
   [AUTH_GOOGLE_CREDENTIALS]: {
@@ -73,6 +109,20 @@ export const authSecretsRegistry = defineSecretRegistry({
     rotatable: true,
     valueType: "json",
     schema: AppleOAuthCredentials,
+  },
+  [AUTH_FACEBOOK_CREDENTIALS]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: FacebookOAuthCredentials,
+  },
+  [AUTH_GITHUB_CREDENTIALS]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: GithubOAuthCredentials,
   },
 });
 
@@ -92,4 +142,16 @@ export async function resolveGoogleCredentials(env: SecretsStoreEnv): Promise<Go
 export async function resolveAppleCredentials(env: SecretsStoreEnv): Promise<AppleOAuthCredentials> {
   const secrets = await sharedSecretsStore(env, authSecretsRegistry);
   return secrets.get(AUTH_APPLE_CREDENTIALS);
+}
+
+/** Resolve the Facebook Login credential pair for this invocation (only call when Facebook is enabled). */
+export async function resolveFacebookCredentials(env: SecretsStoreEnv): Promise<FacebookOAuthCredentials> {
+  const secrets = await sharedSecretsStore(env, authSecretsRegistry);
+  return secrets.get(AUTH_FACEBOOK_CREDENTIALS);
+}
+
+/** Resolve the GitHub OAuth credential pair for this invocation (only call when GitHub is enabled). */
+export async function resolveGithubCredentials(env: SecretsStoreEnv): Promise<GithubOAuthCredentials> {
+  const secrets = await sharedSecretsStore(env, authSecretsRegistry);
+  return secrets.get(AUTH_GITHUB_CREDENTIALS);
 }

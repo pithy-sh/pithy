@@ -145,3 +145,66 @@ describe("Better Auth ⇄ CamelCasePlugin on snake_case D1 tables", () => {
     expect(jwks.keys.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+/**
+ * Social-provider + account-linking wiring, asserted through the options Better Auth receives verbatim
+ * (`instance.options`). Constructing the instance needs `env.DB` but touches no network — no OAuth
+ * round-trip — so this pins exactly what Pithy hands Better Auth, per provider.
+ */
+describe("social providers and account linking, via instance.options", () => {
+  function instanceWith(providers: Partial<AuthInstanceDeps>) {
+    const deps: AuthInstanceDeps = {
+      db: authDatabase(env.DB),
+      secret: "test-secret-please-rotate-0000000000",
+      baseURL: "http://localhost:8787",
+      basePath: "/api/auth",
+      trustedOrigins: ["http://localhost:8787"],
+      sendEmail: async () => {},
+      sessionExpiresIn: 60 * 60 * 24 * 7,
+      sessionUpdateAge: 60 * 60 * 24,
+      verificationExpiresIn: 300,
+      otpLength: 6,
+      disableSignUp: false,
+      emit: async () => {},
+      ...providers,
+    };
+    return makeAuth(deps);
+  }
+
+  test("no provider credentials → socialProviders is omitted entirely", () => {
+    expect(instanceWith({}).options.socialProviders).toBeUndefined();
+  });
+
+  test("enabled providers appear in the options Better Auth receives, with the right scopes", () => {
+    const options = instanceWith({
+      google: { clientId: "g", clientSecret: "gs" },
+      apple: { clientId: "a", clientSecret: "as" },
+      facebook: { clientId: "f", clientSecret: "fs" },
+      github: { clientId: "h", clientSecret: "hs" },
+    }).options;
+    const social = options.socialProviders as Record<
+      string,
+      { scope?: string[]; mapProfileToUser?: () => { emailVerified?: boolean } }
+    >;
+    expect(Object.keys(social).sort()).toEqual(["apple", "facebook", "github", "google"]);
+    expect(social.facebook?.scope).toEqual(["email"]);
+    // Facebook's email is asserted verified (it stays out of trustedProviders — see the linking test).
+    expect(social.facebook?.mapProfileToUser?.()).toEqual({ emailVerified: true });
+    expect(social.github?.scope).toEqual(["user:email"]);
+  });
+
+  test("trustedProviders stays Google and Apple only — Facebook and GitHub are never trusted", () => {
+    const linking = instanceWith({
+      facebook: { clientId: "f", clientSecret: "fs" },
+      github: { clientId: "h", clientSecret: "hs" },
+    }).options.account?.accountLinking;
+    expect(linking?.enabled).toBe(true);
+    expect(linking?.trustedProviders).toEqual(["google", "apple"]);
+    expect(linking?.trustedProviders).not.toContain("facebook");
+    expect(linking?.trustedProviders).not.toContain("github");
+  });
+
+  test("the seeding guard is wired as a user create.before hook", () => {
+    expect(typeof instanceWith({}).options.databaseHooks?.user?.create?.before).toBe("function");
+  });
+});
