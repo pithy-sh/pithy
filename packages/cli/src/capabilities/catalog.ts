@@ -40,6 +40,12 @@ export const CATALOG: readonly CatalogEntry[] = [
       "A queryable audit trail of security-relevant actions — who did what, when, and whether it succeeded — recorded from Workers and the CLI, attributed to the right actor.",
   },
   { name: "storage", package: "@pithy-sh/storage", whenToEnable: "R2-backed object storage." },
+  {
+    name: "media",
+    package: "@pithy-sh/media",
+    whenToEnable:
+      "Store, track, and enrich media — images, video, audio, and documents — with direct-upload URLs and opt-in AI alt text, transcription, and text extraction. Config picks the backend; the package does the rest.",
+  },
   { name: "leaderboard", package: "@pithy-sh/leaderboard", whenToEnable: "Multi-tenant ranking." },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },
   { name: "jobs", package: "@pithy-sh/jobs", whenToEnable: "Scheduled and queued background work." },
