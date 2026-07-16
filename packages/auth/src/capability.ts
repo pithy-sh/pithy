@@ -59,6 +59,12 @@ export const AuthConfig = z
     apple: ProviderToggle.default({ enabled: false }).describe(
       "Apple Sign-In. Enable it, then store credentials as the `auth-apple-credentials` secret. See docs/apple-signin.md.",
     ),
+    facebook: ProviderToggle.default({ enabled: false }).describe(
+      "Facebook Login. Enable it, then store credentials as the `auth-facebook-credentials` secret. See docs/facebook-oauth.md.",
+    ),
+    github: ProviderToggle.default({ enabled: false }).describe(
+      "GitHub OAuth. Enable it, then store credentials as the `auth-github-credentials` secret. See docs/github-oauth.md.",
+    ),
     sessionExpiresIn: z
       .number()
       .int()

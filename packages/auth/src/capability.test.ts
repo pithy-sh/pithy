@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, test } from "vitest";
-import { type AuthCapability, auth, isAuthCapability } from "./capability";
+import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 
-function build(): AuthCapability {
-  return auth({ baseURL: "https://api.example.com" });
+function build(overrides: Partial<AuthConfigInput> = {}): AuthCapability {
+  return auth({ baseURL: "https://api.example.com", ...overrides });
 }
 
 describe("auth capability", () => {
@@ -54,6 +54,17 @@ describe("auth capability", () => {
   test("defaults the providers off and the mount to /auth", () => {
     const cap = build();
     expect(cap.authConfig.basePath).toBe("/auth");
+    expect(cap.authConfig.google.enabled).toBe(false);
+    expect(cap.authConfig.apple.enabled).toBe(false);
+    expect(cap.authConfig.facebook.enabled).toBe(false);
+    expect(cap.authConfig.github.enabled).toBe(false);
+  });
+
+  test("each provider toggle flips to enabled when set", () => {
+    const cap = build({ facebook: { enabled: true }, github: { enabled: true } });
+    expect(cap.authConfig.facebook.enabled).toBe(true);
+    expect(cap.authConfig.github.enabled).toBe(true);
+    // The unset providers stay off — each toggle is independent.
     expect(cap.authConfig.google.enabled).toBe(false);
     expect(cap.authConfig.apple.enabled).toBe(false);
   });

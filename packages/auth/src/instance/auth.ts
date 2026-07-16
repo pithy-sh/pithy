@@ -1,6 +1,6 @@
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { betterAuth } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { bearer } from "better-auth/plugins/bearer";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { jwt } from "better-auth/plugins/jwt";
@@ -8,10 +8,19 @@ import { magicLink } from "better-auth/plugins/magic-link";
 import { emitAfterRequest } from "../audit/emit";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
-import type { AppleOAuthCredentials, GoogleOAuthCredentials } from "./secrets";
+import type {
+  AppleOAuthCredentials,
+  FacebookOAuthCredentials,
+  GithubOAuthCredentials,
+  GoogleOAuthCredentials,
+} from "./secrets";
 
-/** Build the `socialProviders` block from whichever provider credentials were resolved. */
-function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | undefined {
+/**
+ * Build the `socialProviders` block from whichever provider credentials were resolved. Exported so the
+ * per-provider branch matrix is unit-testable without constructing a Better Auth instance — it reads
+ * only the resolved credentials on `deps`, never the database.
+ */
+export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | undefined {
   const providers: Record<string, unknown> = {};
   if (deps.google) {
     providers.google = {
@@ -28,7 +37,46 @@ function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | unde
       ...(deps.apple.appBundleIdentifier ? { appBundleIdentifier: deps.apple.appBundleIdentifier } : {}),
     };
   }
+  if (deps.facebook) {
+    // Assert Facebook's email as verified. Facebook confirms a user's email before it will return it,
+    // and Better Auth validates the access token against this app before trusting the `/me` profile —
+    // so the email is genuinely the authenticated user's, verified by Facebook (the same trust Google
+    // and Apple get). Better Auth otherwise defaults Facebook's `emailVerified` to `false` (its OAuth
+    // response carries no `email_verified` claim, and the Graph API exposes no such field), which would
+    // wrongly route every Facebook sign-in through verify-to-link. `mapProfileToUser` overrides only
+    // Facebook's own email; Facebook stays out of `trustedProviders`.
+    providers.facebook = {
+      clientId: deps.facebook.clientId,
+      clientSecret: deps.facebook.clientSecret,
+      scope: ["email"],
+      mapProfileToUser: () => ({ emailVerified: true }),
+    };
+  }
+  if (deps.github) {
+    // `user:email` (Better Auth's default GitHub scope, requested explicitly here) lets the provider
+    // read the primary email's verified flag from the GitHub emails API — the signal account-linking
+    // gates on. GitHub is not a trusted provider, so an unverified GitHub email never auto-links.
+    providers.github = {
+      clientId: deps.github.clientId,
+      clientSecret: deps.github.clientSecret,
+      scope: ["user:email"],
+    };
+  }
   return Object.keys(providers).length > 0 ? providers : undefined;
+}
+
+/**
+ * The seeding guard: a new account may be created only for an email a provider has **verified**.
+ *
+ * Passwordless sign-up (magic link / OTP) always creates `emailVerified: true`; a social sign-up
+ * carries the provider's own flag. Refusing an unverified-email create closes the rival-account
+ * seeding vector — otherwise an untrusted provider (e.g. a GitHub account holding an *unverified*
+ * email at someone else's address) could mint a row that a later magic-link login by the true owner
+ * would inherit. Returns `true` when the create must be refused. Account *linking* into an existing
+ * user is handled separately by Better Auth's `trustedProviders` gate; this only guards creation.
+ */
+export function isUnverifiedSignup(user: { emailVerified?: boolean | null }): boolean {
+  return user.emailVerified !== true;
 }
 
 /**
@@ -58,6 +106,10 @@ export interface AuthInstanceDeps {
   google?: GoogleOAuthCredentials | undefined;
   /** Apple Sign-In credentials, when the provider is enabled. Resolved as one typed JSON secret. */
   apple?: AppleOAuthCredentials | undefined;
+  /** Facebook Login credentials, when the provider is enabled. Resolved as one typed JSON secret. */
+  facebook?: FacebookOAuthCredentials | undefined;
+  /** GitHub OAuth credentials, when the provider is enabled. Resolved as one typed JSON secret. */
+  github?: GithubOAuthCredentials | undefined;
   /** Deliver a magic link or OTP. Enqueues an email job; never sends inline. */
   sendEmail: SendAuthEmail;
   /** Session lifetime in seconds. */
@@ -101,6 +153,23 @@ export function makeAuth(deps: AuthInstanceDeps) {
     // Better Auth's errors bubble out of `handler` so the Hono boundary maps them to PithyError.
     onAPIError: { throw: true },
     databaseHooks: {
+      user: {
+        create: {
+          // Seeding guard: refuse to create a user whose email a provider has not verified. Every
+          // passwordless sign-up creates emailVerified=true and every trusted/verified social sign-up
+          // carries a verified flag, so only an untrusted+unverified social sign-up is blocked — the
+          // vector where a provider could seed a rival row at an address the caller doesn't own.
+          before: async (user) => {
+            if (isUnverifiedSignup(user)) {
+              throw new APIError("FORBIDDEN", {
+                code: "EMAIL_NOT_VERIFIED",
+                message:
+                  "This email isn't verified by the provider. Sign in with a magic link to verify it, then connect the provider.",
+              });
+            }
+          },
+        },
+      },
       session: {
         create: {
           // Bind the session to its device (registering the device first, so the linkage is valid).
