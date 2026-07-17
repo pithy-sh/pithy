@@ -1,0 +1,31 @@
+{
+  "name": "leaderboard",
+  "package": "@pithy-sh/leaderboard",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "leaderboard",
+  "whenToEnable": "Rank your players. Submit a score, read the standings, read your own rank — daily, weekly, calendar-month, calendar-year, or all-time, because a board's window is a CRON expression rather than a fixed list. Boards are config, not database rows. Everything lives in your own D1: closed windows stay for as many windows as you ask for, in plain SQL you can join against your own tables — no platform SDK offers either. One board serves iOS, Android, and web, which is why writes are server-authoritative by default: submissions need the board's submit scope, so a player's device cannot post a score it invented. Entries bind to an authenticated user, so add auth too — without it every route is denied. Read docs/costs.md before you pick a `rank` mode: live rank is correct and free under ~10k players and grows quadratically after that.",
+  "scaffold": [
+    "Add a `leaderboard({ boards: [...] })` block to pithy.config.ts and define at least one board.",
+    "Give each board a `key`, a `direction` (`desc` = highest wins, `asc` = lowest wins), and optionally a `window` CRON (`0 0 * * *` daily, `0 0 1 * *` calendar month). Omit `window` for an all-time board.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_leaderboard_entries and pithy_leaderboard_boards.",
+    "Add `@pithy-sh/auth` if it is not already installed. Leaderboard entries bind to an authenticated user; without auth every route is denied.",
+    "Mint a token carrying the `leaderboard:submit` scope for your trusted server, and submit scores with it. Never put that scope on a player's token.",
+    "Deploy the rank worker (a cron-triggered Workflow) if `rank` is `{ materialize }` or any board sets `retain`/`retainDays`. It can be its own worker or folded into your app worker — it just needs a cron trigger. A live board set that keeps everything (the default) needs no worker.",
+    "Read packages/leaderboard/docs/costs.md before going to production. The `rank` mode you pick at 1k players decides whether 1M costs $1,030 or $75,825."
+  ],
+  "configOptions": [
+    {
+      "key": "rank",
+      "default": "live",
+      "describe": "How rank is computed: `live` (default — counted per request, always correct, $0 under ~10k players, quadratic past that) or `{ materialize: '<cron>' }` (a stored rank column refreshed on a schedule, the documented path past ~100k players). A player's own score stays live in both modes, which hides most of the staleness. Edit the `boards` array by hand to define boards."
+    },
+    {
+      "key": "serverAuthoritative",
+      "default": "true",
+      "describe": "Require the `leaderboard:submit` scope to post a score. On by default, inverting the vendor norm — every platform that offers server-authoritative writes ships it off. Turn it off only if you accept that a player's device can post any score it likes."
+    }
+  ]
+}

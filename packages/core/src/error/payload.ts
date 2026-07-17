@@ -321,6 +321,72 @@ const MediaEnrichmentFailedPublic = z
   })
   .describe("A media AI-enrichment step failed (500).");
 
+// --- @pithy-sh/leaderboard: optional ranking capability codes ---
+
+const LeaderboardBoardNotFoundPublic = z
+  .object({
+    code: z
+      .literal("leaderboard/board_not_found")
+      .describe("No board with that key is configured. Board keys come from `pithy.config.ts`, not from the database."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested board key is not configured (404).");
+
+const LeaderboardEntryNotFoundPublic = z
+  .object({
+    code: z
+      .literal("leaderboard/entry_not_found")
+      .describe("The player has no entry on this board in this window — they have never submitted, or it was removed."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A player has no entry on this board and window (404).");
+
+const LeaderboardScoreRejectedPublic = z
+  .object({
+    code: z
+      .literal("leaderboard/score_rejected")
+      .describe("The submitted score failed the board's server-side `min`/`max` validation — the anti-cheat baseline."),
+    status: z.literal(400).describe("Bad Request — the score is outside the board's configured bounds."),
+    ...publicFields,
+  })
+  .describe("A submitted score failed the board's bounds validation (400).");
+
+const LeaderboardSubmitForbiddenPublic = z
+  .object({
+    code: z
+      .literal("leaderboard/submit_forbidden")
+      .describe(
+        "The caller lacks the board's submit scope. Server-authoritative writes are the default, so a player's own token cannot post a score.",
+      ),
+    status: z.literal(403).describe("Forbidden — the session is authenticated but not trusted to write scores."),
+    ...publicFields,
+  })
+  .describe("The caller may not submit scores to this board (403).");
+
+const LeaderboardBoardImmutablePublic = z
+  .object({
+    code: z
+      .literal("leaderboard/board_immutable")
+      .describe(
+        "A board's `direction`, `aggregation`, or `window` changed after entries existed. Those fields are immutable across every vendor surveyed, and changing one would silently reinterpret stored scores.",
+      ),
+    status: z.literal(409).describe("Conflict — the config contradicts the recorded board definition."),
+    ...publicFields,
+  })
+  .describe("A board's immutable definition changed after it started recording entries (409).");
+
+const LeaderboardInvalidSchedulePublic = z
+  .object({
+    code: z
+      .literal("leaderboard/invalid_schedule")
+      .describe("A board's `window` CRON expression is malformed or never fires, so no window key could be derived."),
+    status: z.literal(500).describe("Internal Server Error — the adopter's config is invalid, not the request."),
+    ...publicFields,
+  })
+  .describe("A board's window CRON schedule is invalid (500).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -357,6 +423,12 @@ export const PublicErrorPayload = z
     MediaUnsupportedPublic,
     MediaStorageFailedPublic,
     MediaEnrichmentFailedPublic,
+    LeaderboardBoardNotFoundPublic,
+    LeaderboardEntryNotFoundPublic,
+    LeaderboardScoreRejectedPublic,
+    LeaderboardSubmitForbiddenPublic,
+    LeaderboardBoardImmutablePublic,
+    LeaderboardInvalidSchedulePublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -418,6 +490,24 @@ const MediaStorageFailed = MediaStorageFailedPublic.extend(detailField).describe
 const MediaEnrichmentFailed = MediaEnrichmentFailedPublic.extend(detailField).describe(
   MediaEnrichmentFailedPublic.description ?? "",
 );
+const LeaderboardBoardNotFound = LeaderboardBoardNotFoundPublic.extend(detailField).describe(
+  LeaderboardBoardNotFoundPublic.description ?? "",
+);
+const LeaderboardEntryNotFound = LeaderboardEntryNotFoundPublic.extend(detailField).describe(
+  LeaderboardEntryNotFoundPublic.description ?? "",
+);
+const LeaderboardScoreRejected = LeaderboardScoreRejectedPublic.extend(detailField).describe(
+  LeaderboardScoreRejectedPublic.description ?? "",
+);
+const LeaderboardSubmitForbidden = LeaderboardSubmitForbiddenPublic.extend(detailField).describe(
+  LeaderboardSubmitForbiddenPublic.description ?? "",
+);
+const LeaderboardBoardImmutable = LeaderboardBoardImmutablePublic.extend(detailField).describe(
+  LeaderboardBoardImmutablePublic.description ?? "",
+);
+const LeaderboardInvalidSchedule = LeaderboardInvalidSchedulePublic.extend(detailField).describe(
+  LeaderboardInvalidSchedulePublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -454,6 +544,12 @@ export const ErrorPayload = z
     MediaUnsupported,
     MediaStorageFailed,
     MediaEnrichmentFailed,
+    LeaderboardBoardNotFound,
+    LeaderboardEntryNotFound,
+    LeaderboardScoreRejected,
+    LeaderboardSubmitForbidden,
+    LeaderboardBoardImmutable,
+    LeaderboardInvalidSchedule,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

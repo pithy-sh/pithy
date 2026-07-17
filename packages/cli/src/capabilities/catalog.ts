@@ -46,7 +46,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     whenToEnable:
       "Store, track, and enrich media — images, video, audio, and documents — with direct-upload URLs and opt-in AI alt text, transcription, and text extraction. Config picks the backend; the package does the rest.",
   },
-  { name: "leaderboard", package: "@pithy-sh/leaderboard", whenToEnable: "Multi-tenant ranking." },
+  {
+    name: "leaderboard",
+    package: "@pithy-sh/leaderboard",
+    whenToEnable:
+      "Rank your players — daily, weekly, calendar-month, calendar-year, or all-time, because a board's window is a CRON expression rather than a fixed list. Boards are config. Closed windows stay in your own D1 for as long as you ask, in plain SQL you can join against your own tables. Writes are server-authoritative by default.",
+  },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },
   { name: "jobs", package: "@pithy-sh/jobs", whenToEnable: "Scheduled and queued background work." },
 ];

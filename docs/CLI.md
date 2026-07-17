@@ -450,7 +450,7 @@ For multi-row output (e.g., `pithy add --list`), use clean aligned columns with 
 ```
 auth          Authentication and session management
 storage       R2-backed object storage with signed URLs
-leaderboard   Multi-tenant ranking with Durable Objects
+leaderboard   Ranking across daily, monthly, and all-time windows
 vector        Vectorize wrapper with metadata helpers
 jobs          Scheduled and queued background work
 ```

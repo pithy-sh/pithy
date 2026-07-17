@@ -1,0 +1,50 @@
+{
+  // The leaderboard rank-refresh worker. This is a TEMPLATE, not a wrangler env-stanza file: `pithy add
+  // leaderboard` resolves it per environment — filling the `<...>` placeholders and the cron from the
+  // adopter's `rank: { materialize }` setting — and deploys each with its own config
+  // (`wrangler deploy --config <resolved>`). The adopter authors none of it.
+  //
+  // It does NOT have to be its own worker. What the refresh actually needs is three things: the
+  // `RankRefreshWorkflow` class, a `scheduled()` handler that starts an instance, and a cron trigger.
+  // This template deploys them as a small dedicated worker by default — simplest, and isolated from the
+  // request path — but the same three pieces can be folded into the adopter's app worker instead. A cron
+  // trigger is the one hard requirement; a separate worker is not.
+  //
+  // Why a Workflow rather than a plain scheduled pass: a Worker invocation is wall-clock bounded, which
+  // once capped the refresh at ~64k entries per run. A Workflow step has unlimited wall-clock and burns
+  // no CPU while awaiting D1, so a board of any size ranks across bounded, individually-durable steps
+  // that checkpoint a keyset cursor. See `worker.entry.ts`.
+  "name": "pithy-leaderboard-rank", // resolved per env → pithy-leaderboard-rank-staging / -production
+  "main": "./worker.entry.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. This worker has no HTTP routes — it is reached only by its cron. `workers_dev: false`
+  // keeps it off workers.dev so nothing accidentally exposes a ranking rewrite to the internet.
+  "workers_dev": false,
+
+  // The app database. The same `DB` the routes write to — the rank column lives on the entries table, so
+  // there is no second store to keep in step.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "<filled-at-provision>", "database_id": "<filled-at-provision>" }
+  ],
+
+  // The refresh Workflow this worker hosts and its own scheduled() handler starts.
+  "workflows": [{ "binding": "RANK_REFRESH", "name": "pithy-leaderboard-rank", "class_name": "RankRefreshWorkflow" }],
+
+  // The refresh cron. Resolved to the adopter's `rank: { materialize: <cron> }` schedule when set;
+  // otherwise hourly, which is only ever the retention sweep (one bounded DELETE per board that
+  // configures a limit — most keep everything, the default, and delete nothing).
+  "triggers": { "crons": ["<filled-at-provision>"] },
+
+  "vars": {
+    // The resolved leaderboard config, as JSON. The Workflow parses it back through `LeaderboardConfig`
+    // on each run — the board set is config, and this worker needs the same board set the routes have.
+    "LEADERBOARD_CONFIG": "<filled-at-provision>",
+    // Optional. How long a held refresh lock stays valid before a crashed instance's lock is reclaimed,
+    // in ms. Defaults to one hour — raise it only if a deployment refreshes boards that take longer than
+    // that (well past the ~1M-player shard boundary). See `rank/lock.ts`.
+    // "LEADERBOARD_LOCK_STALE_MS": "3600000",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}
