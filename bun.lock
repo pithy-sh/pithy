@@ -203,6 +203,37 @@
         "wrangler": "^4.99.0",
       },
     },
+    "packages/multiplayer": {
+      "name": "@pithy-sh/multiplayer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/leaderboard": "workspace:*",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@pithy-sh/wallet": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+      "peerDependencies": {
+        "@pithy-sh/leaderboard": "workspace:*",
+        "@pithy-sh/wallet": "workspace:*",
+      },
+      "optionalPeers": [
+        "@pithy-sh/leaderboard",
+        "@pithy-sh/wallet",
+      ],
+    },
     "packages/secrets": {
       "name": "@pithy-sh/secrets",
       "version": "0.0.0",
@@ -239,6 +270,27 @@
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
+    "packages/wallet": {
+      "name": "@pithy-sh/wallet",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
         "typescript": "^7.0.2",
         "vitest": "^4.1.0",
         "wrangler": "^4.99.0",
@@ -608,11 +660,15 @@
 
     "@pithy-sh/media": ["@pithy-sh/media@workspace:packages/media"],
 
+    "@pithy-sh/multiplayer": ["@pithy-sh/multiplayer@workspace:packages/multiplayer"],
+
     "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 
     "@pithy-sh/tsconfig": ["@pithy-sh/tsconfig@workspace:tooling/tsconfig"],
 
     "@pithy-sh/turnstile": ["@pithy-sh/turnstile@workspace:packages/turnstile"],
+
+    "@pithy-sh/wallet": ["@pithy-sh/wallet@workspace:packages/wallet"],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 
