@@ -66,19 +66,48 @@ export function removableBindings(target: HasBindings, others: readonly HasBindi
   return target.requiredBindings.filter((binding) => !kept.has(`${binding.type}:${binding.name}`));
 }
 
-/** A wrangler stanza's binding arrays — the only keys `remove` touches (the mirror of `add`). */
+/** A wrangler stanza's binding arrays — the keys `remove` touches (the mirror of `add`). */
 interface WranglerBindings {
   d1_databases?: { binding: string }[];
   kv_namespaces?: { binding: string }[];
+  durable_objects?: { bindings: { name: string; class_name: string }[] };
+  migrations?: { tag: string; new_sqlite_classes?: string[] }[];
   env?: Record<string, WranglerBindings | undefined>;
 }
 
-/** Drop a set of bindings from one stanza in place. */
+/** Drop a set of bindings from one stanza in place (the per-environment keys). */
 function stripBindings(stanza: WranglerBindings, bindings: BindingSpec[]): void {
   const d1 = new Set(bindings.filter((b) => b.type === "d1").map((b) => b.name));
   const kv = new Set(bindings.filter((b) => b.type === "kv").map((b) => b.name));
+  const durableObjects = new Set(bindings.filter((b) => b.type === "durable_object").map((b) => b.name));
   if (stanza.d1_databases) stanza.d1_databases = stanza.d1_databases.filter((entry) => !d1.has(entry.binding));
   if (stanza.kv_namespaces) stanza.kv_namespaces = stanza.kv_namespaces.filter((entry) => !kv.has(entry.binding));
+  if (stanza.durable_objects) {
+    stanza.durable_objects.bindings = stanza.durable_objects.bindings.filter(
+      (entry) => !durableObjects.has(entry.name),
+    );
+  }
+}
+
+/**
+ * Strip removed Durable Object classes from the **top-level** `migrations` tags — the mirror of
+ * `appendDurableObjectMigrations`, including the DO binding and its migration tag (the acceptance
+ * criterion that remove is the clean inverse). A tag left with no classes is dropped, and an empty
+ * `migrations` array is removed entirely, so a project with no DOs looks exactly as it did before add.
+ */
+function stripDurableObjectMigrations(config: WranglerBindings, bindings: BindingSpec[]): void {
+  const classes = new Set(
+    bindings.filter((b) => b.type === "durable_object" && b.className).map((b) => b.className as string),
+  );
+  if (classes.size === 0 || !config.migrations) return;
+
+  for (const migration of config.migrations) {
+    if (migration.new_sqlite_classes) {
+      migration.new_sqlite_classes = migration.new_sqlite_classes.filter((className) => !classes.has(className));
+    }
+  }
+  config.migrations = config.migrations.filter((migration) => (migration.new_sqlite_classes?.length ?? 0) > 0);
+  if (config.migrations.length === 0) config.migrations = undefined;
 }
 
 /** Rewrite `pithy.config.ts` with the capability's import + registration removed. */
@@ -106,6 +135,8 @@ export async function removeFromWrangler(
   for (const stanza of Object.values(config.env ?? {})) {
     if (stanza) stripBindings(stanza, bindings);
   }
+  // DO class migrations are top-level only — strip them once, not per env.
+  stripDurableObjectMigrations(config, bindings);
   await writeWranglerConfig(projectDir, config);
   return bindings.map((binding) => binding.name);
 }

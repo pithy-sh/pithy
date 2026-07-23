@@ -71,6 +71,46 @@ describe("addCapability", () => {
     await expect(addCapability({ projectDir: dir, manifest })).rejects.toThrow(PithyError);
   });
 
+  test("a durable_object capability wires the DO binding per env and the class migration tag top-level", async () => {
+    const doManifest = CapabilityManifest.parse({
+      name: "multiplayer",
+      package: "@pithy-sh/multiplayer",
+      requiredBindings: [
+        { type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" },
+        { type: "d1", name: "DB" },
+      ],
+    });
+    await addCapability({ projectDir: dir, manifest: doManifest });
+
+    interface DoWrangler {
+      d1_databases: { binding: string }[];
+      durable_objects?: { bindings: { name: string; class_name: string }[] };
+      migrations?: { tag: string; new_sqlite_classes?: string[]; new_classes?: string[] }[];
+      env: Record<
+        string,
+        { durable_objects?: { bindings: { name: string; class_name: string }[] }; migrations?: unknown }
+      >;
+    }
+    const wrangler = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as DoWrangler;
+
+    // The DO binding is emitted into every environment (each gets its own namespace).
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+      expect(stanza?.durable_objects?.bindings).toEqual([{ name: "SESSIONS", class_name: "MultiplayerSession" }]);
+    }
+    // The D1 binding still rides the normal path.
+    expect(wrangler.d1_databases).toEqual([{ binding: "DB" }]);
+
+    // The class migration tag is top-level ONLY, and uses new_sqlite_classes (not new_classes).
+    expect(wrangler.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["MultiplayerSession"] }]);
+    expect(wrangler.env.staging?.migrations).toBeUndefined();
+    expect(wrangler.env.production?.migrations).toBeUndefined();
+
+    // Idempotent: a second add changes nothing.
+    const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    await addCapability({ projectDir: dir, manifest: doManifest });
+    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(once);
+  });
+
   test("a capability whose name is a substring of an existing registration is still added", async () => {
     // Register `myauth` first; its `myauth(),` line must not satisfy the
     // idempotency check for `auth` (whose `auth(),` is a substring of it).

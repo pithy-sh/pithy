@@ -52,6 +52,18 @@ export const CATALOG: readonly CatalogEntry[] = [
     whenToEnable:
       "Rank your players — daily, weekly, calendar-month, calendar-year, or all-time, because a board's window is a CRON expression rather than a fixed list. Boards are config. Closed windows stay in your own D1 for as long as you ask, in plain SQL you can join against your own tables. Writes are server-authoritative by default.",
   },
+  {
+    name: "multiplayer",
+    package: "@pithy-sh/multiplayer",
+    whenToEnable:
+      "Authoritative, turn-based multiplayer sessions on Cloudflare — the server holds the game state no client can be trusted with, resolves it, and writes a durable result to your own D1. Games are pluggable: three example games ship — `battle` (simultaneous), `connect-n` (tic-tac-toe/Connect Four), `craps` (a wagering table) — each built on a reusable pattern helper you can layer your own game on, and you can register your own. Supports N players. Includes a wagering stack: provably-fair dice, persistent tables (buy in/cash out between rounds), and wallet-settled bets — pair with @pithy-sh/wallet. Pithy's first Durable Object: the CLI wires the DO binding and its class migration tag for you. Not rooms, chat, or real-time netcode — use Cloudflare's PartyServer for those. Sessions bind to an authenticated user, so add auth too.",
+  },
+  {
+    name: "wallet",
+    package: "@pithy-sh/wallet",
+    whenToEnable:
+      "Give every player a balance — a per-user ledger for chips, gold, gems, credits, or tokens, in your own D1. Every movement is atomic, idempotent (a payout delivered twice pays once), and overdraft-safe by a database CHECK constraint. Holds reserve a stake the moment a bet is placed, then release or capture it — which is what makes wagering safe, so it pairs with @pithy-sh/multiplayer. Currency-agnostic; whether the units map to money, and any regulation that implies, is yours. Reads scope to the caller; moving another player's balance needs the admin scope, so add auth too.",
+  },
   { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },
   { name: "jobs", package: "@pithy-sh/jobs", whenToEnable: "Scheduled and queued background work." },
 ];

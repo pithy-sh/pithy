@@ -19,12 +19,34 @@ export interface AddCapabilityOptions {
 /** The managed-region marker `pithy init` plants inside `capabilities: [...]`. */
 const MARKER = "// pithy:capabilities";
 
-/** A wrangler stanza's binding arrays — the only keys `pithy add` touches. */
+/** A single Durable Object namespace binding, as wrangler writes it. */
+interface DurableObjectBinding {
+  name: string;
+  class_name: string;
+}
+
+/** A Durable Object class migration — a versioned tag registering (or dropping) DO classes. */
+interface DurableObjectMigration {
+  tag: string;
+  new_sqlite_classes?: string[];
+}
+
+/**
+ * A wrangler stanza's binding arrays — the keys `pithy add` touches. `durable_objects.bindings` is
+ * per-environment (each environment gets its own DO namespace); DO class `migrations` are **top-level
+ * only** (they register the class against the script, not per-environment), so they live on the root
+ * config, not in `env.*` — see {@link appendDurableObjectMigrations}.
+ */
 interface WranglerBindings {
   d1_databases?: { binding: string }[];
   kv_namespaces?: { binding: string }[];
+  durable_objects?: { bindings: DurableObjectBinding[] };
+  migrations?: DurableObjectMigration[];
   env?: Record<string, WranglerBindings | undefined>;
 }
+
+/** The single DO class-migration tag Pithy scaffolds under. New DO classes merge into it at add time. */
+const DO_MIGRATION_TAG = "v1";
 
 /**
  * Wire a capability into a project — the pure logic behind `pithy add`. Inserts
@@ -113,8 +135,43 @@ function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest):
         stanza.kv_namespaces.push({ binding: binding.name });
       }
     }
+    if (binding.type === "durable_object" && binding.className) {
+      stanza.durable_objects ??= { bindings: [] };
+      stanza.durable_objects.bindings ??= [];
+      if (!stanza.durable_objects.bindings.some((entry) => entry.name === binding.name)) {
+        stanza.durable_objects.bindings.push({ name: binding.name, class_name: binding.className });
+      }
+    }
     // Other binding kinds (email, secret, workflow, …) are wired by their
     // capabilities' scaffold steps when those capabilities ship (Phase 1+).
+  }
+}
+
+/**
+ * Register a capability's Durable Object classes in the **top-level** `migrations` array — the class
+ * migration tag, distinct from D1 (Kysely) migrations and from the per-environment DO bindings.
+ *
+ * We choose `new_sqlite_classes`, not `new_classes`, deliberately: a Pithy session object stores its state
+ * in SQLite-backed DO storage, and `new_classes` would provision a key-value backend that silently cannot
+ * run SQL — the well-known DO footgun. All classes merge into one tag (`v1`) at add time. **Note:** adding
+ * a DO class to a worker that has *already deployed* `v1` needs a *new* tag; this scaffolds the first-add
+ * case, which is the only one Pithy has today (multiplayer is its first and only DO).
+ */
+function appendDurableObjectMigrations(config: WranglerBindings, manifest: CapabilityManifest): void {
+  const classes = manifest.requiredBindings
+    .filter((binding) => binding.type === "durable_object" && binding.className)
+    .map((binding) => binding.className as string);
+  if (classes.length === 0) return;
+
+  config.migrations ??= [];
+  let tag = config.migrations.find((migration) => migration.tag === DO_MIGRATION_TAG);
+  if (!tag) {
+    tag = { tag: DO_MIGRATION_TAG, new_sqlite_classes: [] };
+    config.migrations.push(tag);
+  }
+  tag.new_sqlite_classes ??= [];
+  for (const className of classes) {
+    if (!tag.new_sqlite_classes.includes(className)) tag.new_sqlite_classes.push(className);
   }
 }
 
@@ -125,6 +182,8 @@ async function updateWrangler({ projectDir, manifest }: AddCapabilityOptions): P
   for (const stanza of Object.values(config.env ?? {})) {
     if (stanza) appendBindings(stanza, manifest);
   }
+  // DO class migrations are top-level only — they register the class against the script, not per-env.
+  appendDurableObjectMigrations(config, manifest);
 
   await writeWranglerConfig(projectDir, config);
 }

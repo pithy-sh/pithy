@@ -1,12 +1,14 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { DatabaseRun } from "../migrations/run";
-import { type RemoveSteps, removableBindings, removeCapability, unwireConfig } from "./remove";
+import { type RemoveSteps, removableBindings, removeCapability, removeFromWrangler, unwireConfig } from "./remove";
 
 /** A minimal manifest for the pure helpers. */
 function manifest(over: Partial<CapabilityManifest> & { name: string }): CapabilityManifest {
@@ -118,6 +120,49 @@ describe("removableBindings", () => {
   test("removes every binding when no other capability needs them", () => {
     const auth = manifest({ name: "auth", requiredBindings: [{ type: "d1", name: "DB", optional: false }] });
     expect(removableBindings(auth, []).map((b) => b.name)).toEqual(["DB"]);
+  });
+});
+
+describe("removeFromWrangler — durable objects", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-remove-do-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("strips the DO binding from every env and the class from the top-level migration tag", async () => {
+    // A project that `pithy add multiplayer` has already wired.
+    const wrangler = {
+      d1_databases: [{ binding: "DB" }],
+      durable_objects: { bindings: [{ name: "SESSIONS", class_name: "MultiplayerSession" }] },
+      migrations: [{ tag: "v1", new_sqlite_classes: ["MultiplayerSession"] }],
+      env: {
+        staging: { durable_objects: { bindings: [{ name: "SESSIONS", class_name: "MultiplayerSession" }] } },
+      },
+    };
+    await writeFile(join(dir, "wrangler.jsonc"), `${JSON.stringify(wrangler, null, 2)}\n`);
+
+    const target = {
+      requiredBindings: [
+        BindingSpec.parse({ type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" }),
+        BindingSpec.parse({ type: "d1", name: "DB" }),
+      ],
+    };
+    // `DB` is shared with another capability and must survive.
+    const others = [{ requiredBindings: [BindingSpec.parse({ type: "d1", name: "DB" })] }];
+
+    const removed = await removeFromWrangler(dir, target, others);
+    expect(removed).toEqual(["SESSIONS"]);
+
+    const result = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as typeof wrangler;
+    expect(result.durable_objects.bindings).toEqual([]);
+    expect(result.env.staging.durable_objects.bindings).toEqual([]);
+    // The migration tag is emptied of the class and dropped entirely — the clean inverse of add.
+    expect(result.migrations).toBeUndefined();
+    // The shared D1 binding stays.
+    expect(result.d1_databases).toEqual([{ binding: "DB" }]);
   });
 });
 
