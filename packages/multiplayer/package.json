@@ -1,0 +1,52 @@
+{
+  "name": "@pithy-sh/multiplayer",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./src/*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "costs": "bun scripts/costModel.ts",
+    "vars:local": "ln -sf ../../.dev.vars .dev.vars",
+    "clean": "rm -rf dist .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "peerDependencies": {
+    "@pithy-sh/leaderboard": "workspace:*",
+    "@pithy-sh/wallet": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@pithy-sh/leaderboard": {
+      "optional": true
+    },
+    "@pithy-sh/wallet": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@pithy-sh/core": "workspace:*",
+    "hono": "^4.12.0",
+    "kysely": "^0.29.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.14",
+    "@cloudflare/workers-types": "^4.20260610.1",
+    "@pithy-sh/leaderboard": "workspace:*",
+    "@pithy-sh/wallet": "workspace:*",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "kysely-d1": "^0.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.99.0"
+  }
+}
