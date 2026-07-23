@@ -13,6 +13,11 @@ export const BindingType = z
     z.literal("secret").describe("Secret from the Secrets Store, encrypted at rest."),
     z.literal("workflow").describe("Cloudflare Workflow — durable, multi-step execution."),
     z.literal("service").describe("Service binding — direct RPC to another Worker."),
+    z
+      .literal("durable_object")
+      .describe(
+        "Durable Object — a single-threaded, stateful actor with its own storage. Backed by an exported DO class; the CLI wires the namespace binding and the class migration tag.",
+      ),
   ])
   .describe("Kind of Cloudflare resource a binding refers to.");
 export type BindingType = z.infer<typeof BindingType>;
@@ -26,8 +31,28 @@ export const BindingSpec = z
     type: BindingType.describe("Resource kind this binding provides."),
     name: z.string().min(1).describe('Binding name expected in the Worker env (e.g. "DB", "SESSIONS").'),
     optional: z.boolean().default(false).describe("If true, createBackend won't fail when this binding is absent."),
+    className: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'The exported Durable Object class this namespace is backed by (e.g. "MultiplayerSession"). Meaningful only for a `durable_object` binding — it is the `class_name` the CLI writes into `durable_objects.bindings` and the DO class migration tag. Ignored for every other kind.',
+      ),
   })
-  .describe("Declares a Cloudflare binding a capability requires in the Worker env.");
+  .describe("Declares a Cloudflare binding a capability requires in the Worker env.")
+  .check((ctx) => {
+    // A durable_object binding is inert without the class that backs it — the CLI would emit a
+    // `durable_objects.bindings` entry with no `class_name`, which wrangler rejects. Fail here, at
+    // define/manifest-parse time, attributed to the capability, rather than deep in the writer.
+    if (ctx.value.type === "durable_object" && ctx.value.className === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["className"],
+        message: `Durable Object binding "${ctx.value.name}" needs a className — the exported DO class it is backed by.`,
+      });
+    }
+  });
 export type BindingSpec = z.infer<typeof BindingSpec>;
 
 /** Authoring shape for a capability's `requiredBindings`: `optional` may be omitted. */

@@ -387,6 +387,140 @@ const LeaderboardInvalidSchedulePublic = z
   })
   .describe("A board's window CRON schedule is invalid (500).");
 
+// --- @pithy-sh/multiplayer: authoritative session capability codes ---
+
+const MultiplayerGameNotFoundPublic = z
+  .object({
+    code: z
+      .literal("multiplayer/game_not_found")
+      .describe("No game with that key is configured. Game keys come from `pithy.config.ts`, not from the database."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested game key is not configured (404).");
+
+const MultiplayerSessionNotFoundPublic = z
+  .object({
+    code: z
+      .literal("multiplayer/session_not_found")
+      .describe("No session with that id exists, or it has been evicted. Session ids address a Durable Object."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested session does not exist (404).");
+
+const MultiplayerNotAMemberPublic = z
+  .object({
+    code: z
+      .literal("multiplayer/not_a_member")
+      .describe(
+        "The authenticated player is not a member of this session. Membership binds to the AuthContext user id, never to a client-supplied id.",
+      ),
+    status: z.literal(403).describe("Forbidden — authenticated, but not a participant in this session."),
+    ...publicFields,
+  })
+  .describe("The caller is not a member of this session (403).");
+
+const MultiplayerSessionFullPublic = z
+  .object({
+    code: z
+      .literal("multiplayer/session_full")
+      .describe("The session already has its full roster; no further players may join."),
+    status: z.literal(409).describe("Conflict — the session's seats are taken."),
+    ...publicFields,
+  })
+  .describe("The session roster is full (409).");
+
+const MultiplayerInvalidTransitionPublic = z
+  .object({
+    code: z
+      .literal("multiplayer/invalid_transition")
+      .describe(
+        "The requested action is not legal in the session's current phase — committing outside the commit phase, committing twice, or acting on a terminal (resolved/abandoned) session.",
+      ),
+    status: z.literal(409).describe("Conflict — the action contradicts the session's current state."),
+    ...publicFields,
+  })
+  .describe("An action is illegal in the session's current phase (409).");
+
+const MultiplayerInvalidMovePublic = z
+  .object({
+    code: z
+      .literal("multiplayer/invalid_move")
+      .describe(
+        "A committed move failed the game's server-side validation — wrong shape, an unknown move, or a count outside the game's rules. The server never trusts or persists it.",
+      ),
+    status: z.literal(400).describe("Bad Request — the move is malformed or against the game's rules."),
+    ...publicFields,
+  })
+  .describe("A committed move failed the game's server-side validation (400).");
+
+// --- @pithy-sh/wallet: balance-ledger capability codes ---
+
+const WalletCurrencyNotFoundPublic = z
+  .object({
+    code: z
+      .literal("wallet/currency_not_found")
+      .describe(
+        "No currency with that code is configured. Currency codes come from `pithy.config.ts`, not the database.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested currency code is not configured (404).");
+
+const WalletAccountNotFoundPublic = z
+  .object({
+    code: z
+      .literal("wallet/account_not_found")
+      .describe("The player has no account in this currency yet — no funds have ever moved through it."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A player has no account in this currency (404).");
+
+const WalletHoldNotFoundPublic = z
+  .object({
+    code: z.literal("wallet/hold_not_found").describe("No hold with that reference exists."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A referenced hold does not exist (404).");
+
+const WalletInsufficientFundsPublic = z
+  .object({
+    code: z
+      .literal("wallet/insufficient_funds")
+      .describe(
+        "The account's available balance cannot cover the debit or hold. The overdraft guard rejected it — no funds moved.",
+      ),
+    status: z.literal(409).describe("Conflict — the balance cannot cover the request."),
+    ...publicFields,
+  })
+  .describe("An account cannot cover a debit or hold (409).");
+
+const WalletHoldNotOpenPublic = z
+  .object({
+    code: z
+      .literal("wallet/hold_not_open")
+      .describe("The hold has already been released or captured, so it cannot be resolved again."),
+    status: z.literal(409).describe("Conflict — the hold is already in a terminal state."),
+    ...publicFields,
+  })
+  .describe("A hold that is already resolved cannot be resolved again (409).");
+
+const WalletInvalidAmountPublic = z
+  .object({
+    code: z
+      .literal("wallet/invalid_amount")
+      .describe(
+        "An amount was not a positive integer in the currency's minor unit. Amounts are never zero, negative, or fractional.",
+      ),
+    status: z.literal(400).describe("Bad Request — the amount is not a positive integer."),
+    ...publicFields,
+  })
+  .describe("An amount is not a positive integer (400).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -429,6 +563,18 @@ export const PublicErrorPayload = z
     LeaderboardSubmitForbiddenPublic,
     LeaderboardBoardImmutablePublic,
     LeaderboardInvalidSchedulePublic,
+    MultiplayerGameNotFoundPublic,
+    MultiplayerSessionNotFoundPublic,
+    MultiplayerNotAMemberPublic,
+    MultiplayerSessionFullPublic,
+    MultiplayerInvalidTransitionPublic,
+    MultiplayerInvalidMovePublic,
+    WalletCurrencyNotFoundPublic,
+    WalletAccountNotFoundPublic,
+    WalletHoldNotFoundPublic,
+    WalletInsufficientFundsPublic,
+    WalletHoldNotOpenPublic,
+    WalletInvalidAmountPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -508,6 +654,42 @@ const LeaderboardBoardImmutable = LeaderboardBoardImmutablePublic.extend(detailF
 const LeaderboardInvalidSchedule = LeaderboardInvalidSchedulePublic.extend(detailField).describe(
   LeaderboardInvalidSchedulePublic.description ?? "",
 );
+const MultiplayerGameNotFound = MultiplayerGameNotFoundPublic.extend(detailField).describe(
+  MultiplayerGameNotFoundPublic.description ?? "",
+);
+const MultiplayerSessionNotFound = MultiplayerSessionNotFoundPublic.extend(detailField).describe(
+  MultiplayerSessionNotFoundPublic.description ?? "",
+);
+const MultiplayerNotAMember = MultiplayerNotAMemberPublic.extend(detailField).describe(
+  MultiplayerNotAMemberPublic.description ?? "",
+);
+const MultiplayerSessionFull = MultiplayerSessionFullPublic.extend(detailField).describe(
+  MultiplayerSessionFullPublic.description ?? "",
+);
+const MultiplayerInvalidTransition = MultiplayerInvalidTransitionPublic.extend(detailField).describe(
+  MultiplayerInvalidTransitionPublic.description ?? "",
+);
+const MultiplayerInvalidMove = MultiplayerInvalidMovePublic.extend(detailField).describe(
+  MultiplayerInvalidMovePublic.description ?? "",
+);
+const WalletCurrencyNotFound = WalletCurrencyNotFoundPublic.extend(detailField).describe(
+  WalletCurrencyNotFoundPublic.description ?? "",
+);
+const WalletAccountNotFound = WalletAccountNotFoundPublic.extend(detailField).describe(
+  WalletAccountNotFoundPublic.description ?? "",
+);
+const WalletHoldNotFound = WalletHoldNotFoundPublic.extend(detailField).describe(
+  WalletHoldNotFoundPublic.description ?? "",
+);
+const WalletInsufficientFunds = WalletInsufficientFundsPublic.extend(detailField).describe(
+  WalletInsufficientFundsPublic.description ?? "",
+);
+const WalletHoldNotOpen = WalletHoldNotOpenPublic.extend(detailField).describe(
+  WalletHoldNotOpenPublic.description ?? "",
+);
+const WalletInvalidAmount = WalletInvalidAmountPublic.extend(detailField).describe(
+  WalletInvalidAmountPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -550,6 +732,18 @@ export const ErrorPayload = z
     LeaderboardSubmitForbidden,
     LeaderboardBoardImmutable,
     LeaderboardInvalidSchedule,
+    MultiplayerGameNotFound,
+    MultiplayerSessionNotFound,
+    MultiplayerNotAMember,
+    MultiplayerSessionFull,
+    MultiplayerInvalidTransition,
+    MultiplayerInvalidMove,
+    WalletCurrencyNotFound,
+    WalletAccountNotFound,
+    WalletHoldNotFound,
+    WalletInsufficientFunds,
+    WalletHoldNotOpen,
+    WalletInvalidAmount,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;
