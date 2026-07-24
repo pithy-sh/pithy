@@ -44,3 +44,20 @@ describe("allCapabilities", () => {
     expect(allCapabilities({ capabilities: [auth] })).toEqual([auth]);
   });
 });
+
+describe("ProjectConfig.seed", () => {
+  test("loads a config with seed.includeExamples set", async () => {
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      "export default { capabilities: [], seed: { includeExamples: true } };\n",
+    );
+    const config = await loadProject(dir);
+    expect(config.seed?.includeExamples).toBe(true);
+  });
+
+  test("a config that omits seed defaults to no example seeds", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), "export default { capabilities: [] };\n");
+    const config = await loadProject(dir);
+    expect(config.seed?.includeExamples ?? false).toBe(false);
+  });
+});

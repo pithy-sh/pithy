@@ -12,6 +12,7 @@ import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import { authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
+import { authExampleSeed } from "./seeds/example";
 
 /** A social provider toggle. Credentials live in the secrets store, never config. */
 const ProviderToggle = z
@@ -160,6 +161,7 @@ export function auth(config: AuthConfigInput): AuthCapability {
     // then the session-resolution middleware fills the AuthContext.
     middleware: [rateLimitMiddleware, createSessionMiddleware(wiring)],
     routes: createAuthRoutes(wiring),
+    seeds: [authExampleSeed],
   });
 
   return Object.assign(capability, { authConfig: resolved });

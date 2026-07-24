@@ -5,6 +5,7 @@ import { WalletConfig, type WalletConfigInput } from "./config/config";
 import { walletTables } from "./data/tables";
 import { registerWalletRoutes } from "./http/routes";
 import { wallet_0001_ledger } from "./migrations/0001_ledger";
+import { walletExampleSeed } from "./seeds/example";
 
 /**
  * Where wallet's migrations sort in the app database. Unique per database; the registry composes keys like
@@ -60,6 +61,7 @@ export function wallet(options: WalletOptions = { currencies: [] }): WalletCapab
       },
     },
     routes: registerWalletRoutes({ config: resolved, basePath }),
+    seeds: [walletExampleSeed],
   });
 
   return Object.assign(capability, { walletConfig: resolved });

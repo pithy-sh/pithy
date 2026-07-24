@@ -38,7 +38,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry `dev`/`deploy` discover (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate` | Run the migration registry against an `--env` (`--rollback` to downgrade) |
-| `pithy seed` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI |
+| `pithy seed` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 7 and `docs/SEED.md` |
 | `pithy feature` | Worktree lifecycle: `create`/`destroy` a `feature/<issue>-<name>` branch + its ephemeral CF resources |
 | `pithy env` | Switch or report the active deployment environment (`dev`/`staging`/`production`) |
 | `pithy deploy` | Deploy to Cloudflare Workers |
@@ -807,7 +807,88 @@ All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): label
 
 ---
 
-## 7. Cross-platform notes
+## 7. Data seeding (`pithy seed`)
+
+`pithy seed` loads test data into an environment from the same Zod schemas and codecs that define your tables and KV stores — no separate fixture format, no hand-written SQL. Fixtures are authored with `defineSeed` (the peer of `defineCapability`) and composed library-before-app, exactly like migrations. The full authoring model — `defineSeed`, media `once`/`always`, the standard asset-metadata convention, the env-safety layers — is documented in `docs/SEED.md`; this section covers the command itself.
+
+### 7.1 Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--env <name>` | `dev` | The environment to seed. `dev` runs locally against Miniflare; anything else runs against the live D1/KV/R2/Images/Stream for that env |
+| `--json` | `false` | Machine-readable output — the full write plan or run report as one JSON line. Implies non-interactive: `pithy seed` never prompts when `--json` is set |
+| `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
+| `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `production`; `dev` never needs it |
+| `--confirm-production <phrase>` | — | The non-interactive unlock for `production` — see 7.3 |
+
+### 7.2 Output
+
+A normal run reports one line per seed set, then `Done.`:
+
+```
+$ pithy seed --env dev
+leaderboard_0001_demo_board: 12 rows.
+auth_0001_test_users: 3 rows, 1 entry.
+Done.
+```
+
+A set with nothing to write for the current shape still gets a line, so a quiet run is never mistaken for a skipped one:
+
+```
+media_0001_avatar: nothing to seed.
+```
+
+A set present in the registry but not allowed for the target environment is reported, never silently dropped:
+
+```
+Skipped leaderboard_0002_prod_smoke: not allowed in dev.
+Done.
+```
+
+`--dry-run` prints the same per-set shape and closes with a plain reminder instead of `Done.`:
+
+```
+$ pithy seed --env staging --dry-run
+leaderboard_0001_demo_board: 12 rows.
+Dry run. Nothing written.
+```
+
+`--json` emits the full plan or report as a single line — the same shape either way, with `dryRun` telling you which:
+
+```
+$ pithy seed --env dev --dry-run --json
+{"command":"seed","env":"dev","dryRun":true,"sets":[{"name":"0001_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[]}
+```
+
+### 7.3 The production exception
+
+Every other flag in Pithy follows the same rule everywhere: `--json` means non-interactive, full stop. `pithy seed --env production` is the one place a flag additionally gates *content*, not just interactivity — because seeding production is rare and should stay rare.
+
+- `dev` never asks for anything.
+- `staging` (and any other non-`dev`, non-`production` environment) needs `--yes`.
+- `production` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, CI, no TTY), there is no prompt — pass it directly:
+
+  ```
+  pithy seed --env production --yes --confirm-production "yes, i really want to seed production"
+  ```
+
+  Get the phrase wrong, or omit it non-interactively, and the run is refused before anything opens:
+
+  ```
+  $ pithy seed --env production --yes --json
+  The production confirmation phrase did not match.
+  Pass --confirm-production "yes, i really want to seed production" to seed production.
+  ```
+
+Underneath both gates is a third, structural one that no flag can bypass: a seed set is only ever composed for `production` if it lists `production` in its own `environments` array. See `docs/SEED.md` for the full layered model.
+
+### 7.4 Idempotency
+
+Every `pithy seed` run is safe to repeat. D1 rows insert with `INSERT OR IGNORE`; KV entries `put` by key; a `once` media asset uploads on its first run only and skips on every run after. Re-running `pithy seed` against an environment that already has the fixtures loaded writes nothing new and changes nothing existing.
+
+---
+
+## 8. Cross-platform notes
 
 - **Path handling:** Use `node:path` for all path joins; never concatenate strings. Windows paths must work.
 - **Line endings:** Write `\n` on POSIX, `\r\n` on Windows. Detect via `os.EOL`.
@@ -817,7 +898,7 @@ All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): label
 
 ---
 
-## 8. Future expansions
+## 9. Future expansions
 
 This document covers v1, which ships the full alias system, update notifications with installer detection, the Homebrew tap, the `doctor` command, and the `dev` orchestrator. Areas to formalize in v1.1+:
 

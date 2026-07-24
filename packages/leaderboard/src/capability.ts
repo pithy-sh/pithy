@@ -5,6 +5,7 @@ import { LeaderboardConfig, type LeaderboardConfigInput, materializeSchedule } f
 import { leaderboardTables } from "./data/tables";
 import { registerLeaderboardRoutes } from "./http/routes";
 import { leaderboard_0001_entries } from "./migrations/0001_entries";
+import { leaderboardExampleSeed } from "./seeds/example";
 
 /**
  * Where leaderboard's migrations sort in the app database. Unique per database; the registry composes
@@ -61,6 +62,7 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
       },
     },
     routes: registerLeaderboardRoutes({ config: resolved, basePath }),
+    seeds: [leaderboardExampleSeed],
   });
 
   return Object.assign(capability, { leaderboardConfig: resolved });

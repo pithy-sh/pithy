@@ -5,6 +5,7 @@ import type { DatabaseSpecMap } from "../data/databases";
 import type { AuthContext } from "../http/authContext";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
+import type { SeedSet } from "../seed/seed";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
@@ -200,6 +201,13 @@ export interface Capability<
    * store as a live `TypedKv` on `c.var.kv.<namespace>.<store>`. The peer of `databases`.
    */
   kvNamespaces?: Namespaces;
+  /**
+   * Seed sets this capability contributes to `pithy seed` (the peer of {@link Capability.databases}).
+   * Additive and optional. `composeSeeds` merges every capability's sets library-before-app by
+   * `order` and filters them by the target environment; the CLI writes them idempotently and
+   * non-destructively. App-shape fixtures are re-encoded and Zod-validated at write time.
+   */
+  seeds?: readonly SeedSet[];
   /** Bindings this capability needs in the env (normalized — `optional` is always set). */
   requiredBindings: BindingSpec[];
 }

@@ -6,6 +6,7 @@ import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from ".
 import { multiplayerTables } from "./data/tables";
 import { registerMultiplayerRoutes } from "./http/routes";
 import { multiplayer_0001_results } from "./migrations/0001_results";
+import { multiplayerExampleSeed } from "./seeds/example";
 
 /**
  * Where multiplayer's migrations sort in the app database. Unique per database; the registry composes
@@ -70,6 +71,7 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
       },
     },
     routes: registerMultiplayerRoutes({ games, basePath }),
+    seeds: [multiplayerExampleSeed],
   });
 
   return Object.assign(capability, { multiplayerConfig: resolved });

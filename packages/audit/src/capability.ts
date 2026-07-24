@@ -4,6 +4,7 @@ import type { AuditDatabase } from "./data/tables";
 import { auditTables } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
 import { recordAuditEvent } from "./recorder";
+import { auditExampleSeed } from "./seeds/example";
 
 /**
  * Sort order of the audit migration within the audit database, relative to other capabilities
@@ -64,6 +65,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         migrations: { "0001_init": audit_0001_init },
       },
     },
+    seeds: [auditExampleSeed],
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that
     // never audits never triggers the lazy Kysely build. Runs after createBackend's default-setter

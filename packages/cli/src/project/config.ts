@@ -11,12 +11,31 @@ export interface TokenConfig {
   overrides?: Record<string, ProfileOverride>;
 }
 
+/** Adopter `pithy seed` configuration. */
+export interface SeedProjectConfig {
+  /**
+   * Compose in `example`-flagged seed sets (tiny demo fixtures a capability ships for a quick look).
+   * Default off — an adopter opts in per project, and an example set never targets production
+   * regardless of this setting (its own `environments` allowlist excludes it).
+   */
+  includeExamples?: boolean;
+  /**
+   * Environment names this project treats as production, beyond the built-in `production`/`prod`.
+   * Any env named here (case-insensitive) requires the hard type-to-confirm phrase, not just `--yes` —
+   * so a project whose production environment is named `live`, `prod-eu`, `main`, etc. gets the same
+   * strongest gate as the canonical names. List every production-class environment you run.
+   */
+  productionEnvironments?: readonly string[];
+}
+
 /** The shape `pithy.config.ts` default-exports: `createBackend`'s options, plus optional token config. */
 export interface ProjectConfig {
   capabilities: Capability[];
   app?: Capability;
   /** Overrides for the predefined CF token profiles (`pithy token`). Optional. */
   tokens?: TokenConfig;
+  /** `pithy seed` settings. Optional; defaults to no example seeds. */
+  seed?: SeedProjectConfig;
 }
 
 function isProjectConfig(value: unknown): value is ProjectConfig {
