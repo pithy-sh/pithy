@@ -9,6 +9,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import {
   dropMigrations,
   pendingMigrations,
+  resetMigrations,
   rollbackMigration,
   runMigrations,
 } from "@pithy-sh/core/src/migrations/runner";
@@ -160,18 +161,12 @@ async function localDriver(projectDir: string, plan: PlanEntry[]): Promise<Migra
 }
 
 /**
- * The remote driver: the same migration registry, executed over the D1 REST API through
- * `@pithy-sh/cloudflare`. Each database's remote id comes from the target env's `wrangler.jsonc`
- * block; CF creds come from the environment (`.dev.vars` then `process.env`) — the bootstrap token
- * now, a scoped minted token once #32 lands. The REST-backed D1 is the *only* thing that differs
- * from local; the registry, ordering, and per-database runs are shared.
+ * Build the default REST-backed D1 factory: read CF creds from the environment (`.dev.vars` then
+ * `process.env`) — the bootstrap token now, a scoped minted token once #32 lands — and back each
+ * binding with a `@pithy-sh/cloudflare` D1 client (a shared client memoizes managers by database id).
+ * Only ever called for the real REST path; an injected `override` replaces it wholesale.
  */
-async function remoteDriver(
-  projectDir: string,
-  env: string,
-  plan: PlanEntry[],
-  override?: RemoteD1Factory,
-): Promise<MigrationDriver> {
+function defaultRemoteD1(projectDir: string, env: string): RemoteD1Factory {
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   // The active CF token: the bootstrap token locally, or the least-privilege `ci-system` token in CI
@@ -183,7 +178,24 @@ async function remoteDriver(
       action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to migrate --env ${env}.`,
     });
   }
+  const clients = new CloudflareClients({ accountId, apiToken });
+  return ({ databaseId }) => clients.d1(databaseId) as unknown as D1Database;
+}
 
+/**
+ * The remote driver: the same migration registry, executed over the D1 REST API through
+ * `@pithy-sh/cloudflare`. Each database's remote id comes from the target env's `wrangler.jsonc`
+ * block. The REST-backed D1 is the *only* thing that differs from local; the registry, ordering, and
+ * per-database runs are shared. An injected `override` — a test's in-memory D1 — replaces the REST
+ * client wholesale, so credentials are demanded only for the real path (mirrors the seed driver, which
+ * is likewise credential-lazy): substituting the network client must never require ambient CF creds.
+ */
+async function remoteDriver(
+  projectDir: string,
+  env: string,
+  plan: PlanEntry[],
+  override?: RemoteD1Factory,
+): Promise<MigrationDriver> {
   const config = await readWranglerConfig(projectDir);
   const stanza = config.env?.[env];
   if (!stanza) {
@@ -193,9 +205,8 @@ async function remoteDriver(
     });
   }
 
-  // Build the REST-backed D1 lazily per binding; a shared client memoizes managers by database id.
-  const clients = new CloudflareClients({ accountId, apiToken });
-  const resolveD1: RemoteD1Factory = override ?? (({ databaseId }) => clients.d1(databaseId) as unknown as D1Database);
+  // Build the REST-backed D1 per binding; the default reaches for creds, an override bypasses them.
+  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(projectDir, env);
 
   const ids = idsFor(stanza.d1_databases, true);
   const cache = new Map<string, D1Database>();
@@ -242,6 +253,61 @@ export async function migrateProject(options: MigrateProjectOptions): Promise<Da
   } finally {
     await driver.dispose();
   }
+}
+
+/** Options for {@link resetProject} and {@link previewReset} — {@link MigrateProjectOptions} minus `rollback` (a reset always rolls back everything, then reapplies everything). */
+export type ResetProjectOptions = Omit<MigrateProjectOptions, "rollback">;
+
+/** One database's place in a {@link resetProject} run: which database, its binding, and how many migrations it carries. */
+export interface ResetPreviewEntry {
+  /** The database being reset (matches a capability's `databases` key). */
+  database: string;
+  /** The D1 binding the database resolves to. */
+  binding: string;
+  /** The number of migrations the registry carries for this database — how many roll back, then reapply. */
+  migrations: number;
+}
+
+/**
+ * Fully reset every migrated database's schema — the seam behind `pithy seed --redo`'s destructive
+ * rebuild. Runs the **same plan and driver** as {@link migrateProject} (local Miniflare for `dev`, the
+ * D1 REST API otherwise) but calls `resetMigrations` per database instead of running or rolling back:
+ * every applied migration's `down` runs (all of them, not just the latest), then every migration's `up`
+ * reapplies from empty. **This destroys every row in every table the registry owns — hand-inserted data
+ * included — by design**, not just the rows a seed fixture wrote. Callers gate this behind the same
+ * escalating confirmation a destructive seed needs before calling it.
+ */
+export async function resetProject(options: ResetProjectOptions): Promise<DatabaseRun[]> {
+  const plan = buildPlan(options.capabilities);
+  if (plan.length === 0) return [];
+
+  const driver = await driverFor(options, plan);
+  try {
+    const runs: DatabaseRun[] = [];
+    for (const { database, provider, binding } of plan) {
+      const results = await resetMigrations(driver.database(binding), provider);
+      runs.push({ database, binding, results });
+    }
+    return runs;
+  } finally {
+    await driver.dispose();
+  }
+}
+
+/**
+ * Preview a {@link resetProject}: which databases are in scope and how many migrations each carries.
+ * Computed purely from the composed registry — no backend access, no credentials, nothing read or
+ * written — so it is safe to call for `pithy seed --redo --dry-run` (and to compute the same numbers a
+ * real reset will produce, for the run report).
+ */
+export async function previewReset(capabilities: Capability[]): Promise<ResetPreviewEntry[]> {
+  const plan = buildPlan(capabilities);
+  const preview: ResetPreviewEntry[] = [];
+  for (const { database, binding, provider } of plan) {
+    const migrations = await provider.getMigrations();
+    preview.push({ database, binding, migrations: Object.keys(migrations).length });
+  }
+  return preview;
 }
 
 /** Options for {@link dropCapabilityTables}: the capability to drop, the project, and the target env. */

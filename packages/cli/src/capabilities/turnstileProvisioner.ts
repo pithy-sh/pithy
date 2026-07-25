@@ -12,6 +12,7 @@ import {
   type TurnstileProvisioner,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { removeDevVars, upsertDevVars } from "../project/devVars";
 import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
 
@@ -34,6 +35,8 @@ export interface CloudflareTurnstileProvisionerOptions {
   projectDir: string;
   /** The secrets manager dispatcher — writes/deletes the secret in a deployed env's managed store. */
   dispatcher: SecretDispatcher;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /**
@@ -46,11 +49,13 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #cf: CloudflareClients;
   readonly #projectDir: string;
   readonly #dispatcher: SecretDispatcher;
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
     this.#projectDir = options.projectDir;
     this.#dispatcher = options.dispatcher;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
@@ -91,6 +96,14 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     const existing = await this.#cf.turnstile().getTurnstile(name);
     if (existing) return { sitekey: existing.sitekey, secret: null };
     const created = await this.#cf.turnstile().addTurnstile(name, [domain], cloudflareMode(mode));
+    await this.#audit({
+      action: "turnstile/widget_created",
+      outcome: "success",
+      severity: "info",
+      resourceType: "turnstile_widget",
+      resourceId: created.sitekey,
+      metadata: { name, mode, domain },
+    });
     return { sitekey: created.sitekey, secret: created.secret };
   }
 }
@@ -104,16 +117,28 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   readonly #cf: CloudflareClients;
   readonly #projectDir: string;
   readonly #dispatcher: SecretDispatcher;
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
     this.#projectDir = options.projectDir;
     this.#dispatcher = options.dispatcher;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   async deleteProductionWidget(mode: TurnstileMode): Promise<void> {
-    const existing = await this.#cf.turnstile().getTurnstile(productionWidgetName(mode));
-    if (existing) await this.#cf.turnstile().deleteTurnstile(existing.sitekey);
+    const name = productionWidgetName(mode);
+    const existing = await this.#cf.turnstile().getTurnstile(name);
+    if (!existing) return;
+    await this.#cf.turnstile().deleteTurnstile(existing.sitekey);
+    await this.#audit({
+      action: "turnstile/widget_deleted",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "turnstile_widget",
+      resourceId: existing.sitekey,
+      metadata: { name, mode },
+    });
   }
 
   async deleteManagedSecret(): Promise<void> {

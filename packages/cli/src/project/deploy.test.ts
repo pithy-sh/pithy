@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { deployProject, pendingWarning, summarizeDeploy } from "./deploy";
+import type { CliAuditEvent } from "../audit/cliAudit";
+import { deployProject, deploySeverity, pendingWarning, summarizeDeploy } from "./deploy";
 
 /** Representative `wrangler deploy` output — the lines deploy scrapes for the version id and url. */
 function wranglerOutput(name: string, version: string): string {
@@ -122,6 +123,54 @@ describe("deployProject", () => {
 
     expect(failure).toBeInstanceOf(PithyError);
     expect((failure as PithyError).payload.message).toMatch(/worker/i);
+  });
+
+  test("audits a successful deploy per worker, at warning severity for production", async () => {
+    await writeWorker(join(dir, "apps", "api"), "pithy-api");
+    const events: CliAuditEvent[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      env: "production",
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "deploy/worker_deployed",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "cf_worker",
+      resourceId: "pithy-api",
+      metadata: { worker: "pithy-api", env: "production" },
+    });
+  });
+
+  test("audits a failed deploy as a failure, and staging stays info severity", async () => {
+    await writeWorker(join(dir, "apps", "api"), "pithy-api");
+    const events: CliAuditEvent[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      env: "staging",
+      runDeploy: async () => {
+        throw new Error("upload failed");
+      },
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ outcome: "failure", severity: "info" });
+    expect(events[0]?.metadata?.error).toMatch(/upload failed/);
+  });
+});
+
+describe("deploySeverity", () => {
+  test("only production is warning; staging, dev, and the top-level worker are info", () => {
+    expect(deploySeverity("production")).toBe("warning");
+    expect(deploySeverity("staging")).toBe("info");
+    expect(deploySeverity(undefined)).toBe("info");
   });
 });
 

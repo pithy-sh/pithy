@@ -17,6 +17,7 @@ import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
 
 /** The suppression migration set, as provisioning runs it against the shared suppression D1. */
@@ -64,6 +65,8 @@ export interface CloudflareEmailProvisionerOptions {
    * the apex MX). Email Routing must already be enabled on the zone.
    */
   routing?: { zoneId: string; address: string; appWorkerName: string };
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /**
@@ -81,6 +84,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #theme: EmailTheme;
   readonly #resolveEnv: ResolveEmailEnv;
   readonly #routing?: { zoneId: string; address: string; appWorkerName: string };
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareEmailProvisionerOptions) {
     this.#cf = options.cf;
@@ -90,6 +94,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     this.#theme = options.theme;
     this.#resolveEnv = options.resolveEnv;
     this.#routing = options.routing;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting worker. */
@@ -105,7 +110,16 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   /** Reuse the shared suppression D1 if it exists, otherwise create it. */
   async ensureSuppressionDatabase(): Promise<{ databaseId: string }> {
     const existing = await this.#cf.d1Provisioner().findDatabaseByName(SUPPRESSION_DB_NAME);
-    const db = existing ?? (await this.#cf.d1Provisioner().createDatabase(SUPPRESSION_DB_NAME));
+    if (existing) return { databaseId: existing.uuid };
+    const db = await this.#cf.d1Provisioner().createDatabase(SUPPRESSION_DB_NAME);
+    await this.#audit({
+      action: "email/suppression_db_created",
+      outcome: "success",
+      severity: "info",
+      resourceType: "cf_d1",
+      resourceId: db.uuid,
+      metadata: { name: SUPPRESSION_DB_NAME },
+    });
     return { databaseId: db.uuid };
   }
 
@@ -137,6 +151,24 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         cwd: dir,
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
+      await this.#audit({
+        action: "email/worker_deployed",
+        outcome: "success",
+        severity: "info",
+        resourceType: "cf_worker",
+        resourceId: emailWorkerName(env),
+        metadata: { env },
+      });
+    } catch (error) {
+      await this.#audit({
+        action: "email/worker_deployed",
+        outcome: "failure",
+        severity: "info",
+        resourceType: "cf_worker",
+        resourceId: emailWorkerName(env),
+        metadata: { env },
+      });
+      throw error;
     } finally {
       await unlink(configPath).catch(() => {});
     }
@@ -151,6 +183,20 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       workerName: this.#routing.appWorkerName,
       ruleName: "pithy-email-bounce",
     });
+    if (created) {
+      await this.#audit({
+        action: "email/routing_rule_created",
+        outcome: "success",
+        severity: "info",
+        resourceType: "cf_email_routing_rule",
+        resourceId: this.#routing.address,
+        metadata: {
+          zoneId: this.#routing.zoneId,
+          address: this.#routing.address,
+          workerName: this.#routing.appWorkerName,
+        },
+      });
+    }
     return { created, skipped: false };
   }
 }
@@ -162,6 +208,8 @@ function emailWorkerDir(): string {
 
 export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /**
@@ -171,9 +219,11 @@ export interface CloudflareEmailDeprovisionerOptions {
  */
 export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   /** Delete the env's email worker if it is deployed. */
@@ -181,6 +231,14 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     const name = emailWorkerName(env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
+      await this.#audit({
+        action: "email/worker_removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "cf_worker",
+        resourceId: name,
+        metadata: { env },
+      });
     }
   }
 
@@ -189,6 +247,14 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     const db = await this.#cf.d1Provisioner().findDatabaseByName(SUPPRESSION_DB_NAME);
     if (db) {
       await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
+      await this.#audit({
+        action: "email/suppression_db_removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "cf_d1",
+        resourceId: db.uuid,
+        metadata: { name: SUPPRESSION_DB_NAME },
+      });
     }
   }
 }

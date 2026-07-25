@@ -7,7 +7,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Migration } from "kysely/migration";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { countPendingMigrations, dropCapabilityTables, migrateProject } from "./run";
+import { countPendingMigrations, dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
 
 describe("migrateProject", () => {
   let dir: string;
@@ -81,6 +81,68 @@ describe("migrateProject", () => {
       // The table and its ledger row are gone — a second drop finds nothing to do.
       const again = await dropCapabilityTables({ capability: appCapability(), projectDir: dir, env: "dev" });
       expect(again[0]?.results).toEqual([]);
+    });
+  });
+
+  describe("resetProject", () => {
+    test("rolls every migration back then forward, leaving the ledger consistent", async () => {
+      const capabilities = [appCapability()];
+      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+      expect(await countPendingMigrations({ capabilities, projectDir: dir, env: "dev" })).toBe(0);
+
+      const runs = await resetProject({ capabilities, projectDir: dir, env: "dev" });
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.database).toBe("app");
+      expect(runs[0]?.binding).toBe("DB");
+      expect(runs[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
+        ["1000_app_0001_things", "Down", "Success"],
+        ["1000_app_0001_things", "Up", "Success"],
+      ]);
+
+      // The ledger is consistent afterwards: nothing pending, and a following plain migrate is a no-op.
+      expect(await countPendingMigrations({ capabilities, projectDir: dir, env: "dev" })).toBe(0);
+      const again = await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+      expect(again[0]?.results).toEqual([]);
+    });
+
+    test("destroys existing rows — a full reset, not a per-row merge", async () => {
+      const capabilities = [appCapability()];
+      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+
+      const d1Persist = join(dir, ".wrangler", "state", "v3", "d1");
+      let mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
+      try {
+        await (await mf.getD1Database("DB")).prepare("INSERT INTO things (id) VALUES (1)").run();
+      } finally {
+        await mf.dispose();
+      }
+
+      await resetProject({ capabilities, projectDir: dir, env: "dev" });
+
+      mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
+      try {
+        const count = await (await mf.getD1Database("DB"))
+          .prepare("SELECT count(*) AS n FROM things")
+          .first<{ n: number }>();
+        expect(count?.n).toBe(0);
+      } finally {
+        await mf.dispose();
+      }
+    });
+
+    test("an empty registry is a no-op", async () => {
+      expect(await resetProject({ capabilities: [], projectDir: dir, env: "dev" })).toEqual([]);
+    });
+  });
+
+  describe("previewReset", () => {
+    test("counts the registry's migrations per database, with no backend access", async () => {
+      const preview = await previewReset([appCapability()]);
+      expect(preview).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
+    });
+
+    test("an empty registry previews nothing", async () => {
+      expect(await previewReset([])).toEqual([]);
     });
   });
 
@@ -178,6 +240,34 @@ describe("migrateProject", () => {
 
       expect(failure).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.message).toMatch(/credentials/i);
+    });
+
+    test("an injected remote D1 needs no ambient CF credentials", async () => {
+      // Substituting the network client is the whole point of the `remoteD1` seam, so it must not
+      // demand `CLOUDFLARE_*` — a regression guard for the CI-only failure where these were unset.
+      vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
+      vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
+      await writeStagingConfig("remote-staging-id");
+
+      const miniflare = new Miniflare({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { REMOTE: "remote-staging-id" },
+      });
+      try {
+        const remote = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
+        const runs = await migrateProject({
+          capabilities: [appCapability()],
+          projectDir: dir,
+          env: "staging",
+          remoteD1: () => remote,
+        });
+        expect(runs[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
+          ["1000_app_0001_things", "Up", "Success"],
+        ]);
+      } finally {
+        await miniflare.dispose();
+      }
     });
 
     test("a binding with no remote database_id fails with an actionable error", async () => {

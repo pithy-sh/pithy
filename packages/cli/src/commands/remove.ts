@@ -1,8 +1,33 @@
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { createRemoteCliAudit } from "../audit/cliAudit";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
 import { allCapabilities, loadProject } from "../project/config";
 import { formatDone, withErrorReporting } from "../terminal/output";
+
+/**
+ * The audit emitter for `pithy remove`. `--drop` destroys data (a warning-severity event by itself),
+ * and the plain removal changes what's wired into the project — both worth a trail. The `--drop` env is
+ * the natural audit target when given; otherwise `"dev"` (a plain removal has no live environment).
+ */
+async function buildAudit(projectDir: string, env: string) {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return async () => {};
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createRemoteCliAudit({
+    projectDir,
+    env,
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
 
 /**
  * `remove` is the deliberate exception to the agent-drivable / `--json` convention: it is destructive,
@@ -62,6 +87,7 @@ export default defineCommand({
         capability: args.capability,
         drop: args.drop ? { env, confirm: dropConfirm(args.capability, env) } : undefined,
         steps: defaultRemoveSteps(projectDir, async () => capabilities),
+        audit: await buildAudit(projectDir, args.drop ? env : "dev"),
       });
 
       if (!result.present) {

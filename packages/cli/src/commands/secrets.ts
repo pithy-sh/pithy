@@ -6,6 +6,7 @@ import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/prov
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -13,8 +14,30 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
-import { loadProject } from "../project/config";
+import { allCapabilities, loadProject } from "../project/config";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+
+/**
+ * The audit emitter for a secrets command. Every value-touching write is a warning-severity event
+ * (CLAUDE.md §Security), so this is built for every write and provisioning call — a no-op when
+ * Cloudflare credentials or the audit capability aren't there, never a blocker.
+ */
+async function buildAudit(projectDir: string, env: string) {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return async () => {};
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createCliAudit({
+    projectDir,
+    env,
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
 
 /** Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`). */
 function buildDispatcher(projectDir: string): SecretDispatcher {
@@ -89,8 +112,9 @@ async function write(
   const env = resolveEnv(registry, args.name, args.env);
   const value = mode === "delete" ? undefined : await readValue(args.name);
   const dispatcher = buildDispatcher(projectDir);
+  const audit = await buildAudit(projectDir, env);
 
-  const targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env });
+  const targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env }, audit);
 
   if (args.json) {
     process.stdout.write(`${formatJsonLine({ command: `secrets ${mode}`, name: args.name, environments: targets })}\n`);
@@ -154,11 +178,14 @@ const provision = defineCommand({
       const projectDir = process.cwd();
       const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
       const cf = new CloudflareClients({ accountId, apiToken });
+      // Provisioning spans every managed environment, not one — "dev" is the fallback the audit
+      // database resolves against when a command has no single target env (mirrors `pithy feature`).
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
         accountId,
         storeId,
         deploy: buildManagerDeploy({ accountId, apiToken }),
+        audit: await buildAudit(projectDir, "dev"),
       });
 
       const result = await provisionSecrets(provisioner);
@@ -185,7 +212,11 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
       const cf = new CloudflareClients({ accountId, apiToken });
-      const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId });
+      const deprovisioner = new CloudflareSecretsDeprovisioner({
+        cf,
+        storeId,
+        audit: await buildAudit(projectDir, "dev"),
+      });
 
       await deprovisionSecrets(deprovisioner, { deleteKeys: args.keys });
 

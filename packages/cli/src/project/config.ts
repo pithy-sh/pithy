@@ -1,9 +1,10 @@
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { discoverWorkers } from "./workers";
 
 /** Adopter token configuration: per-profile overrides of the predefined defaults (permissions/resources/store). */
 export interface TokenConfig {
@@ -30,6 +31,13 @@ export interface SeedProjectConfig {
 
 /** The shape `pithy.config.ts` default-exports: `createBackend`'s options, plus optional token config. */
 export interface ProjectConfig {
+  /**
+   * The project name — a short, hyphenated-lowercase identifier (e.g. `acme`). It is the branch-first
+   * prefix `pithy feature` names every Cloudflare resource under (`<project>-f<issue>-<slug>-<resource>`),
+   * so the CF dashboard groups a feature's resources and teardown finds them by prefix. Optional; when
+   * absent it falls back to the app Worker's `wrangler.jsonc` name, then the project directory name.
+   */
+  name?: string;
   capabilities: Capability[];
   app?: Capability;
   /** Overrides for the predefined CF token profiles (`pithy token`). Optional. */
@@ -71,4 +79,24 @@ export async function loadProject(projectDir: string): Promise<ProjectConfig> {
 /** Every capability in composition order: libraries first, the app last. */
 export function allCapabilities(config: ProjectConfig): Capability[] {
   return config.app ? [...config.capabilities, config.app] : [...config.capabilities];
+}
+
+/**
+ * The project name for the `pithy feature` resource-naming convention. Prefers the explicit
+ * `pithy.config.ts` `name`, then the app Worker's `wrangler.jsonc` name, then the project directory's
+ * own name — always normalized to hyphenated-lowercase so it is a valid CF resource-name prefix.
+ */
+export async function resolveProjectName(config: ProjectConfig, projectDir: string): Promise<string> {
+  if (config.name) return kebabName(config.name);
+  const [worker] = await discoverWorkers(projectDir);
+  if (worker) return kebabName(worker.name);
+  return kebabName(basename(projectDir));
+}
+
+/** Lowercase, collapse any run of non-`[a-z0-9]` to one `-`, and trim leading/trailing `-`. */
+function kebabName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }

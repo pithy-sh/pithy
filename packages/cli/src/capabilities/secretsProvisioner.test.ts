@@ -5,6 +5,7 @@ import {
   masterKeySecretName,
 } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test, vi } from "vitest";
+import type { CliAuditEvent } from "../audit/cliAudit";
 import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
@@ -154,6 +155,67 @@ describe("CloudflareSecretsProvisioner", () => {
     expect(rollToken).not.toHaveBeenCalled();
     expect(putSecret).not.toHaveBeenCalled();
   });
+
+  test("ensureManagerToken audits secrets/set without the token value when it mints one", async () => {
+    const { cf, exists, rollToken } = fakeCf();
+    exists.mockResolvedValue(false);
+    rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
+    const events: CliAuditEvent[] = [];
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(cf),
+      audit: async (event) => void events.push(event),
+    });
+
+    await provisioner.ensureManagerToken();
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "secrets/set",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("minted-token");
+  });
+
+  test("ensureManagerToken records nothing when the token is reused", async () => {
+    const { cf, exists } = fakeCf();
+    exists.mockResolvedValue(true);
+    const events: CliAuditEvent[] = [];
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(cf),
+      audit: async (event) => void events.push(event),
+    });
+
+    await provisioner.ensureManagerToken();
+    expect(events).toEqual([]);
+  });
+
+  test("ensureMasterKey audits secrets/set only when it actually mints a new key", async () => {
+    const { cf, exists } = fakeCf();
+    exists.mockResolvedValue(false);
+    const events: CliAuditEvent[] = [];
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(cf),
+      audit: async (event) => void events.push(event),
+    });
+
+    await provisioner.ensureMasterKey("production");
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "secrets/set",
+        severity: "warning",
+        metadata: { name: "PRODUCTION_SECRETS_ENCRYPTION_KEYS", kind: "master_key", env: "production" },
+      }),
+    ]);
+
+    events.length = 0;
+    exists.mockResolvedValue(true);
+    await provisioner.ensureMasterKey("production");
+    expect(events).toEqual([]);
+  });
 });
 
 describe("managerTokenPermissions", () => {
@@ -218,6 +280,32 @@ describe("CloudflareSecretsDeprovisioner", () => {
     expect(deleteSecret).not.toHaveBeenCalled();
   });
 
+  test("deleteMasterKey audits secrets/removed as a warning, only when a key was actually deleted", async () => {
+    const { cf, exists } = fakeCf();
+    exists.mockResolvedValue(true);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      cf,
+      storeId: "store-1",
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisioner.deleteMasterKey("production");
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "secrets/removed",
+        outcome: "success",
+        severity: "warning",
+        metadata: { name: "PRODUCTION_SECRETS_ENCRYPTION_KEYS", kind: "master_key", env: "production" },
+      }),
+    ]);
+
+    events.length = 0;
+    exists.mockResolvedValue(false);
+    await deprovisioner.deleteMasterKey("production");
+    expect(events).toEqual([]);
+  });
+
   test("deleteDatabase deletes the env's database by id when found", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue({ uuid: "db-7", name: "pithy-secrets-staging" });
@@ -255,5 +343,29 @@ describe("CloudflareSecretsDeprovisioner", () => {
     await deprovisioner.deleteManagerToken();
     expect(deleteTokensByName).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_NAME);
     expect(deleteSecret).not.toHaveBeenCalled();
+  });
+
+  test("deleteManagerToken audits secrets/removed only when the store entry existed", async () => {
+    const { cf, exists } = fakeCf();
+    exists.mockResolvedValue(true);
+    const events: CliAuditEvent[] = [];
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      cf,
+      storeId: "store-1",
+      audit: async (event) => void events.push(event),
+    });
+
+    await deprovisioner.deleteManagerToken();
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "secrets/removed",
+        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+      }),
+    ]);
+
+    events.length = 0;
+    exists.mockResolvedValue(false);
+    await deprovisioner.deleteManagerToken();
+    expect(events).toEqual([]);
   });
 });

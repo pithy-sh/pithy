@@ -6,11 +6,13 @@ import { CloudflareEmailRoutingManager } from "../email/emailRoutingManager";
 import { CloudflareEmailSendManager } from "../email/emailSendManager";
 import { CloudflareCustomHostnamesManager } from "../hostnames/customHostnamesManager";
 import { CloudflareKVManager } from "../kv/kvManager";
+import { CloudflareKVProvisioner } from "../kv/kvProvisioner";
 import { CloudflareImageManager } from "../media/imageManager";
 import { CloudflareStreamManager } from "../media/streamManager";
 import { CloudflareQueueManager } from "../queue/queueManager";
 import type { R2Credentials } from "../r2/r2Credentials";
 import { CloudflareR2Manager } from "../r2/r2Manager";
+import { CloudflareR2Provisioner } from "../r2/r2Provisioner";
 import { CloudflareSecretsStoreManager } from "../secrets/secretsStoreManager";
 import { CloudflareAccountTokensManager } from "../tokens/accountTokensManager";
 import { CloudflareTurnstileManager } from "../turnstile/turnstileManager";
@@ -65,6 +67,10 @@ export class CloudflareClients {
   private workersProvisioner?: WorkersProvisioner;
 
   private d1ProvisionerManager?: CloudflareD1Provisioner;
+
+  private kvProvisionerManager?: CloudflareKVProvisioner;
+
+  private r2ProvisionerManager?: CloudflareR2Provisioner;
 
   constructor(config: CloudflareManagerConfig) {
     this.config = config;
@@ -167,6 +173,18 @@ export class CloudflareClients {
   d1Provisioner(): CloudflareD1Provisioner {
     this.d1ProvisionerManager ??= new CloudflareD1Provisioner(this.config);
     return this.d1ProvisionerManager;
+  }
+
+  /** The account-scoped KV control plane — create, find, list, and delete namespaces. */
+  kvProvisioner(): CloudflareKVProvisioner {
+    this.kvProvisionerManager ??= new CloudflareKVProvisioner(this.config);
+    return this.kvProvisionerManager;
+  }
+
+  /** The account-scoped R2 control plane — create, find, list, and delete buckets. */
+  r2Provisioner(): CloudflareR2Provisioner {
+    this.r2ProvisionerManager ??= new CloudflareR2Provisioner(this.config);
+    return this.r2ProvisionerManager;
   }
 
   /** The account-scoped API-token control plane — mint, find, and delete account-owned tokens. */

@@ -5,6 +5,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 
 /** A fake CloudflareClients exposing only the turnstile methods the (de)provisioner touches. */
@@ -123,6 +124,39 @@ describe("CloudflareTurnstileProvisioner", () => {
       secret: null,
     });
   });
+
+  test("ensureProductionWidget audits a create, and records nothing when it reuses an existing widget", async () => {
+    const { cf, getTurnstile, addTurnstile } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const events: CliAuditEvent[] = [];
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      projectDir: await projectDir(),
+      dispatcher,
+      audit: async (event) => void events.push(event),
+    });
+
+    getTurnstile.mockResolvedValueOnce(null);
+    addTurnstile.mockResolvedValueOnce({ sitekey: "new-key", secret: "new-secret" });
+    await p.ensureProductionWidget("visible", "app.example.com");
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "turnstile/widget_created",
+        outcome: "success",
+        severity: "info",
+        resourceType: "turnstile_widget",
+        resourceId: "new-key",
+        metadata: { name: "pithy-turnstile-visible-production", mode: "visible", domain: "app.example.com" },
+      }),
+    ]);
+    // Never the widget's secret.
+    expect(JSON.stringify(events)).not.toContain("new-secret");
+
+    events.length = 0;
+    getTurnstile.mockResolvedValueOnce({ sitekey: "existing-key" });
+    await p.ensureProductionWidget("invisible", "app.example.com");
+    expect(events).toEqual([]);
+  });
 });
 
 describe("CloudflareTurnstileDeprovisioner", () => {
@@ -138,6 +172,35 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     getTurnstile.mockResolvedValueOnce(null);
     await d.deleteProductionWidget("invisible");
     expect(deleteTurnstile).toHaveBeenCalledTimes(1);
+  });
+
+  test("deleteProductionWidget audits a warning-severity delete, only when a widget was actually deleted", async () => {
+    const { cf, getTurnstile } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const events: CliAuditEvent[] = [];
+    const d = new CloudflareTurnstileDeprovisioner({
+      cf,
+      projectDir: await projectDir(),
+      dispatcher,
+      audit: async (event) => void events.push(event),
+    });
+
+    getTurnstile.mockResolvedValueOnce({ sitekey: "key-1" });
+    await d.deleteProductionWidget("visible");
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "turnstile/widget_deleted",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "turnstile_widget",
+        resourceId: "key-1",
+      }),
+    ]);
+
+    events.length = 0;
+    getTurnstile.mockResolvedValueOnce(null);
+    await d.deleteProductionWidget("invisible");
+    expect(events).toEqual([]);
   });
 
   test("deleteManagedSecret dispatches a delete to staging and production", async () => {

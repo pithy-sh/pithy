@@ -1,11 +1,38 @@
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
 import { type ConfigPrompt, coerceConfigValue, collectSetFlags, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import type { DatabaseRun } from "../migrations/run";
+import { allCapabilities, loadProject } from "../project/config";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+
+/**
+ * The audit emitter for `pithy add`. There is no environment concept here — a capability is wired into
+ * dev config, not deployed — so `"dev"` is the fallback env the audit database resolves against. A
+ * no-op when Cloudflare creds or the audit capability aren't there (which is always true the very
+ * first time `pithy add audit` itself runs — nothing can audit-log its own installation).
+ */
+async function buildAudit(projectDir: string) {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return async () => {};
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createRemoteCliAudit({
+    projectDir,
+    env: "dev",
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
 
 /** `pithy add --list`: the built-in catalog, with installed capabilities marked. */
 async function listCapabilities(projectDir: string, json: boolean): Promise<void> {
@@ -93,6 +120,7 @@ export default defineCommand({
         prompt: interactive ? promptConfigValues : undefined,
         eject: args.eject,
         force: args.force,
+        audit: await buildAudit(projectDir),
       });
 
       if (args.json) {

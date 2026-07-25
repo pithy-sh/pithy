@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { uninstallPackage } from "../project/packageManager";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
@@ -196,6 +197,8 @@ export interface RemoveCapabilityOptions {
    */
   drop?: { env: string; confirm?: () => Promise<boolean> };
   steps: RemoveSteps;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /** What `remove` did — surfaced to the user (this command has no `--json`). */
@@ -223,6 +226,7 @@ export interface RemoveResult {
  */
 export async function removeCapability(options: RemoveCapabilityOptions): Promise<RemoveResult> {
   const { projectDir, capability, steps } = options;
+  const audit = options.audit ?? (async () => {});
   const pkg = `@pithy-sh/${capability}`;
 
   const capabilities = await steps.loadCapabilities();
@@ -238,6 +242,14 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     .filter((c) => c.name !== capability && c.dependsOn?.includes(capability))
     .map((c) => c.name);
   if (dependents.length > 0) {
+    await audit({
+      action: "capability/removed",
+      outcome: "failure",
+      severity: "warning",
+      resourceType: "capability",
+      resourceId: capability,
+      metadata: { reason: "dependents", dependents },
+    });
     throw new ConflictError({
       message: `Can't remove ${capability} — ${dependents.join(", ")} depend${dependents.length === 1 ? "s" : ""} on it.`,
       action: `Remove ${dependents.join(", ")} first, then remove ${capability}.`,
@@ -249,9 +261,27 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   let dropped: DatabaseRun[] | undefined;
   if (options.drop && target) {
     if (options.drop.confirm && !(await options.drop.confirm())) {
+      // `denied`, not `failure`: a human deliberately blocked a destructive action. First-class in the trail.
+      await audit({
+        action: "capability/tables_dropped",
+        outcome: "denied",
+        severity: "warning",
+        resourceType: "capability",
+        resourceId: capability,
+        metadata: { env: options.drop.env },
+      });
       return { capability, present: true, ejected, removedBindings: [], tablesRemain: true, aborted: true };
     }
     dropped = await steps.dropTables(target, options.drop.env);
+    const migrationsReverted = dropped.reduce((sum, run) => sum + run.results.length, 0);
+    await audit({
+      action: "capability/tables_dropped",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "capability",
+      resourceId: capability,
+      metadata: { env: options.drop.env, migrationsReverted },
+    });
   }
 
   await removeFromConfig(projectDir, capability, pkg);
@@ -264,6 +294,15 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   } else if (installed) {
     ({ packageManager } = await steps.uninstall(pkg));
   }
+
+  await audit({
+    action: "capability/removed",
+    outcome: "success",
+    severity: "info",
+    resourceType: "capability",
+    resourceId: capability,
+    metadata: { ejected, packageManager: packageManager ?? null, removedBindings },
+  });
 
   return {
     capability,

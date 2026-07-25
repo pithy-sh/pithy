@@ -41,6 +41,18 @@ describe("CloudflareD1Provisioner", () => {
     expect(await manager.findDatabaseByName("nope")).toBeNull();
   });
 
+  it("listDatabases returns every database (skipping malformed rows)", async () => {
+    mockList.mockReturnValue([
+      { uuid: "db-a", name: "alpha" },
+      { uuid: "db-b", name: "beta" },
+    ]);
+    expect(await manager.listDatabases()).toEqual([
+      { uuid: "db-a", name: "alpha" },
+      { uuid: "db-b", name: "beta" },
+    ]);
+    expect(mockList).toHaveBeenCalledWith({ account_id: "acct-1" });
+  });
+
   it("deleteDatabase deletes by id within the account", async () => {
     mockDelete.mockResolvedValue({});
     await manager.deleteDatabase("db-uuid");

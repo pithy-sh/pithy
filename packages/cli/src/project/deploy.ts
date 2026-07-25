@@ -1,5 +1,6 @@
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { red } from "../terminal/style";
 import { discoverWorkers, type WorkerTarget } from "./workers";
 import { runWrangler } from "./wrangler";
@@ -14,6 +15,17 @@ export interface DeployProjectOptions {
   env?: string;
   /** Test seam: run one worker's deploy and return its captured stdout. Defaults to real wrangler. */
   runDeploy?: RunDeploy;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
+}
+
+/**
+ * Shipping code is production-affecting the moment `production` is the named target — everything else
+ * (`staging`, the top-level worker with no `--env`) is routine. Exported so the command layer and tests
+ * agree on the same rule.
+ */
+export function deploySeverity(env: string | undefined): "info" | "warning" {
+  return env === "production" ? "warning" : "info";
 }
 
 /** One worker's deploy outcome — the `--json` row and the human summary line both read from this. */
@@ -85,14 +97,35 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
 
   const run = options.runDeploy ?? defaultRunDeploy(options.projectDir);
   const args = options.env ? ["deploy", "--env", options.env] : ["deploy"];
+  const audit = options.audit ?? (async () => {});
+  const severity = deploySeverity(options.env);
 
   const deploys: WorkerDeploy[] = [];
   for (const worker of workers) {
     try {
       const stdout = await run(worker, args);
-      deploys.push({ name: worker.name, ok: true, ...parseDeployOutput(stdout) });
+      const deploy = { name: worker.name, ok: true as const, ...parseDeployOutput(stdout) };
+      deploys.push(deploy);
+      await audit({
+        action: "deploy/worker_deployed",
+        outcome: "success",
+        severity,
+        resourceType: "cf_worker",
+        resourceId: worker.name,
+        metadata: { worker: worker.name, env: options.env ?? null, versionId: deploy.versionId ?? null },
+      });
     } catch (error) {
-      deploys.push({ name: worker.name, ok: false, error: reasonOf(error) });
+      const reason = reasonOf(error);
+      deploys.push({ name: worker.name, ok: false, error: reason });
+      // A failed deploy is exactly what an audit trail is for — record it too, not just successes.
+      await audit({
+        action: "deploy/worker_deployed",
+        outcome: "failure",
+        severity,
+        resourceType: "cf_worker",
+        resourceId: worker.name,
+        metadata: { worker: worker.name, env: options.env ?? null, error: reason },
+      });
     }
   }
   return deploys;

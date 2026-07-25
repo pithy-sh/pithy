@@ -10,6 +10,8 @@ import type { MediaSeedItem, R2SeedItem } from "@pithy-sh/core/src/seed/seed";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
 import type { ZodType } from "zod";
+import type { CliAuditEmit } from "../audit/cliAudit";
+import { previewReset, type ResetPreviewEntry, resetProject } from "../migrations/run";
 import {
   type ImagesFactory,
   openSeedDriver,
@@ -23,7 +25,7 @@ import {
 import { type MediaFs, type MediaUploader, type SeedMediaResult, seedMediaItem } from "./media";
 import { buildDryRunPlan, type SeedPlanMediaAction, type SeedPlanSet } from "./plan";
 import { buildSeedPlan } from "./registry";
-import { assertSeedConfirmed, assertSetAllowedForEnv } from "./safety";
+import { assertResetConfirmed, assertSeedConfirmed, assertSetAllowedForEnv } from "./safety";
 
 /**
  * The orchestrator behind `pithy seed`: compose every capability's seed sets for one environment, pass
@@ -49,6 +51,24 @@ export interface SeedProjectOptions {
   includeExamples?: boolean;
   /** Plan only: compute the write plan and read media sidecars, but perform no write and no upload. */
   dryRun?: boolean;
+  /**
+   * The `--redo` flag: fully reset the schema (every migration's `down`, then every `up`) before
+   * seeding, instead of the ordinary non-destructive merge. **Destructive** — every row in every table
+   * the migration registry owns is gone, hand-inserted data included, not just what a fixture wrote.
+   * Because the schema comes back empty, the normal `INSERT OR IGNORE` / KV skip-if-exists writes just
+   * work afterward. Gated by the same escalating confirmation as a plain seed — never weaker.
+   */
+  redo?: boolean;
+  /**
+   * The `--confirm-reset` phrase — the non-interactive unlock for a `--redo` schema reset on any non-`dev`
+   * environment. Must equal `resetConfirmPhrase(env)` exactly. Stricter than `--yes` on purpose: a reset
+   * destroys every row, so the flag that authorizes an additive seed must not also authorize a drop.
+   */
+  confirmReset?: string;
+  /** Interactive confirm seam for the reset phrase (an `@clack/prompts` text prompt). */
+  promptReset?: () => Promise<string>;
+  /** Audit emitter, so a schema reset is always recorded. Defaults to recording nothing. */
+  audit?: CliAuditEmit;
   /** The `--yes` flag — required for any non-`dev` environment (safety layer 2). */
   yes?: boolean;
   /** Non-interactive mode (set by `--json` or CI): no prompt is shown; production needs the confirm flag. */
@@ -91,6 +111,11 @@ export interface SeedRunReport {
   sets: SeedPlanSet[];
   /** Namespaced keys of sets present but disallowed for `env` — surfaced, never silently dropped. */
   skippedByEnv: string[];
+  /**
+   * Present only when `--redo` was passed: the databases whose schema was (a real run) or would be (a
+   * dry run) fully reset — every migration rolled back, then reapplied — before seeding.
+   */
+  reset?: ResetPreviewEntry[];
 }
 
 /** The slice of `CloudflareKVManager` the seed adapter bridges — a read (existence check) and a write. */
@@ -277,6 +302,11 @@ function mediaEntry(result: SeedMediaResult): SeedPlanSet["media"][number] {
  * per set the D1 groups (validated on encode), KV groups (validated on put), R2 objects, and media
  * assets (uploaded once or always, with the minted UUID recorded). The env allowlist is re-asserted
  * per set at write time, so a set can never reach a disallowed environment.
+ *
+ * `redo` runs a full schema reset (every migration's `down`, then every `up` — {@link resetProject})
+ * ahead of the write loop, gated by the exact same confirmation as any other seed. It is not a
+ * per-fixture refresh: it destroys and recreates the whole schema the migration registry owns, so the
+ * ordinary non-destructive writes that follow simply land fresh — no row-identity logic needed.
  */
 export async function seedProject(options: SeedProjectOptions): Promise<SeedRunReport> {
   const { sets, skippedByEnv } = buildSeedPlan(options.capabilities, {
@@ -294,7 +324,15 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
       sets,
       (item) => states.get(item) ?? { action: item.mode === "always" ? "reupload" : "upload" },
     );
-    return { command: "seed", env: options.env, dryRun: true, sets: plan.sets, skippedByEnv };
+    const reset = options.redo ? await previewReset(options.capabilities) : undefined;
+    return {
+      command: "seed",
+      env: options.env,
+      dryRun: true,
+      sets: plan.sets,
+      skippedByEnv,
+      ...(reset ? { reset } : {}),
+    };
   }
 
   await assertSeedConfirmed({
@@ -305,6 +343,41 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     productionEnvironments: options.productionEnvironments,
     prompt: options.prompt,
   });
+
+  let reset: ResetPreviewEntry[] | undefined;
+  if (options.redo) {
+    // A reset destroys every row in every table the registry owns, so it carries its own, stricter gate:
+    // `--yes` authorizes an additive seed, never a drop (see `assertResetConfirmed`).
+    await assertResetConfirmed({
+      env: options.env,
+      json: options.json ?? false,
+      confirmReset: options.confirmReset,
+      prompt: options.promptReset,
+    });
+
+    // The numbers reported are the registry's static migration counts — identical before and after a
+    // successful reset, so one preview call serves both the report and (implicitly) the operation.
+    reset = await previewReset(options.capabilities);
+
+    const audit = options.audit ?? (async () => {});
+    // Recorded *before* the drop: if the reset dies partway, the intent and its authorizer are still on
+    // record. `critical` off dev — this is the most destructive thing the seeder can do.
+    await audit({
+      action: "seed/schema_reset",
+      outcome: "success",
+      severity: options.env === "dev" ? "warning" : "critical",
+      resourceType: "schema",
+      resourceId: options.env,
+      metadata: { databases: reset.map((entry) => entry.database) },
+    });
+
+    await resetProject({
+      capabilities: options.capabilities,
+      projectDir: options.projectDir,
+      env: options.env,
+      remoteD1: options.remoteD1,
+    });
+  }
 
   const driver = await openSeedDriver({
     projectDir: options.projectDir,
@@ -377,7 +450,14 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
       reportSets.push(setReport);
     }
 
-    return { command: "seed", env: options.env, dryRun: false, sets: reportSets, skippedByEnv };
+    return {
+      command: "seed",
+      env: options.env,
+      dryRun: false,
+      sets: reportSets,
+      skippedByEnv,
+      ...(reset ? { reset } : {}),
+    };
   } finally {
     await driver.dispose();
   }

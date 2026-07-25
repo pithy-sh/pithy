@@ -5,7 +5,15 @@ import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/sr
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { allCapabilities, type ProjectConfig } from "../project/config";
+
+/** The audit action for a value-touching secret command, by mode. Never carries the secret's value. */
+const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
+  create: "secrets/set",
+  update: "secrets/rotated",
+  delete: "secrets/removed",
+};
 
 /**
  * Discover the project's secret registry by finding the secrets capability in a loaded
@@ -42,11 +50,17 @@ export interface SecretWriteCommand {
  * Validate a value client-side (the authoritative A2 check) and dispatch the write to the manager
  * Workflow(s). The registry lookup gives the routing facts (backend, scope) and the schema; an
  * undeclared secret is rejected before anything is sent. Returns the environments written.
+ *
+ * Audited on success and on failure — `secrets/set` (create), `secrets/rotated` (update), or
+ * `secrets/removed` (delete) — recording only the secret's **name** and the environments it reached.
+ * The value itself, and anything derived from it, never appears in an audit event: that is the one
+ * hard rule of a secrets trail.
  */
 export async function runSecretWrite(
   registry: SecretRegistry,
   dispatcher: SecretDispatcher,
   command: SecretWriteCommand,
+  audit: CliAuditEmit = async () => {},
 ): Promise<ManagedEnvironment[]> {
   const entry = registry[command.name];
   if (!entry) {
@@ -64,16 +78,38 @@ export async function runSecretWrite(
     value = validateSecretValue(entry, command.name, command.value);
   }
 
-  return dispatchSecretWrite(dispatcher, {
-    mode: command.mode,
-    name: command.name,
-    backend: entry.backend,
-    scope: entry.scope,
-    rotatable: entry.rotatable,
-    valueType: entry.valueType,
-    value,
-    requested: command.env,
-  });
+  const action = SECRET_WRITE_ACTION[command.mode];
+  try {
+    const targets = await dispatchSecretWrite(dispatcher, {
+      mode: command.mode,
+      name: command.name,
+      backend: entry.backend,
+      scope: entry.scope,
+      rotatable: entry.rotatable,
+      valueType: entry.valueType,
+      value,
+      requested: command.env,
+    });
+    await audit({
+      action,
+      outcome: "success",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: command.name,
+      metadata: { name: command.name, environments: targets },
+    });
+    return targets;
+  } catch (error) {
+    await audit({
+      action,
+      outcome: "failure",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: command.name,
+      metadata: { name: command.name },
+    });
+    throw error;
+  }
 }
 
 /** The `ls` / `ls --check` view: the declared names, the audit against what's present, and the gate. */

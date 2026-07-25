@@ -9,11 +9,31 @@ import {
   provisionTurnstile,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { defineCommand } from "citty";
+import { createCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
 import { allCapabilities, loadProject } from "../project/config";
 import { readWranglerConfig, type WranglerEnvVars } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+
+/**
+ * The audit emitter for a turnstile command. Provisioning spans every managed environment at once, so
+ * there is no single target env to key the audit database on — `"dev"` is the fallback (mirrors
+ * `pithy feature`'s convention for env-spanning commands). A no-op when creds or the audit capability
+ * aren't there.
+ */
+async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createCliAudit({
+    projectDir,
+    env: "dev",
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
 
 /** Load the turnstile capability's resolved config from `pithy.config.ts`. */
 async function loadTurnstileConfig(projectDir: string): Promise<TurnstileConfig> {
@@ -97,7 +117,8 @@ const provision = defineCommand({
       const productionDomain = await resolveProductionDomain(projectDir);
       const cf = new CloudflareClients({ accountId, apiToken });
       const dispatcher = buildSecretDispatcher(accountId, apiToken);
-      const provisioner = new CloudflareTurnstileProvisioner({ cf, projectDir, dispatcher });
+      const audit = await buildAudit(projectDir, accountId, apiToken);
+      const provisioner = new CloudflareTurnstileProvisioner({ cf, projectDir, dispatcher, audit });
 
       const result = await provisionTurnstile(provisioner, { modes, productionDomain });
 
@@ -131,7 +152,8 @@ const deprovision = defineCommand({
       const { accountId, apiToken } = loadCloudflareCreds(projectDir);
       const cf = new CloudflareClients({ accountId, apiToken });
       const dispatcher = buildSecretDispatcher(accountId, apiToken);
-      const deprovisioner = new CloudflareTurnstileDeprovisioner({ cf, projectDir, dispatcher });
+      const audit = await buildAudit(projectDir, accountId, apiToken);
+      const deprovisioner = new CloudflareTurnstileDeprovisioner({ cf, projectDir, dispatcher, audit });
 
       const result = await deprovisionTurnstile(deprovisioner, modes);
 

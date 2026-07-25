@@ -263,12 +263,14 @@ monorepo. Read the companion docs before any structural or surface decision:
   `rm <worktree>/.git && git worktree prune` — **never** `rm -rf` or `git worktree remove`
   (recursive deletion triggers inotify storms that crash on Linux). Delete CF resources
   first, then prune. **Dev vars:** wrangler loads one `.dev.vars` per worker from
-  that worker's own dir (no merge; `.dev.vars.local` is not loaded). So `pithy`
-  **composes one consolidated root `.dev.vars`** per worktree (shared team secrets +
-  generated worktree-specific values; port CMS `generate-dev-vars`), and **each worker
-  symlinks its `.dev.vars` to that root file** via a package.json target (CMS pattern) —
-  single source of truth. Git-ignored; per-env runs use `.dev.vars.<environment>`.
-  Production secrets come from `@pithy-sh/secrets`, never `.dev.vars`.
+  that worker's own dir (no merge; `.dev.vars.local` is not loaded). `.dev.vars` is **one
+  shared secrets file for the whole repo** — the main checkout owns it, and each worktree's
+  and each worker's `.dev.vars` **symlinks to it** (CMS pattern) — so a secret edit
+  propagates everywhere at once with no copies to drift. Because it is shared,
+  **per-feature values never go in it** (one feature would clobber another's): those live
+  in the per-worktree git-ignored **`.dev.config.json`**, written by `pithy feature create`
+  and fixed for the life of the feature. Git-ignored; per-env runs use
+  `.dev.vars.<environment>`. Production secrets come from `@pithy-sh/secrets`, never `.dev.vars`.
 - **`pithy dev` is a multi-worker orchestrator** (port the CMS `scripts/dev.ts`): it runs
   every worker under one supervising process, labels/colorizes their output to terminal +
   `logs/dev.log`, tracks a git-ignored `.dev-state.json`, reaps orphaned `workerd`/`wrangler`
@@ -278,11 +280,15 @@ monorepo. Read the companion docs before any structural or surface decision:
   maps each `feature/<issue>-<name>` branch to its port block. `pithy feature create` locks,
   reads (sees all taken blocks), assigns the lowest free non-overlapping block, and writes
   its key; `feature destroy`/merge-cleanup deletes the key. Each worktree gets its own block
-  projected into a git-ignored `.dev.ports.json` (surfaced as `*_PORT`/`*_ORIGIN` in
-  `.dev.vars`) — distinct from `.dev-state.json` (the running session's pids). So multiple
+  projected into a git-ignored **`.dev.config.json`** — the feature's dev config, which pins
+  **one port per worker** at creation and holds it for the life of the feature — distinct
+  from `.dev-state.json` (the running session's pids). **Ports are assigned at creation, never
+  probed at startup:** probing on boot is a TOCTOU race where two `pithy dev` processes both
+  see one port free and both bind it; pre-assigning removes it by construction. So multiple
   worktrees run in unison without conflict and each feature's workers reach each other over
-  localhost — never wrangler's cross-`wrangler dev` service registry. `pithy dev` still
-  verifies a port is free on **both** `127.0.0.1` and `::1` and scans forward otherwise.
+  localhost at known, stable addresses — never wrangler's cross-`wrangler dev` service
+  registry. `pithy dev` still verifies a port is free on **both** `127.0.0.1` and `::1` and
+  reports a conflict rather than silently drifting off its pinned port.
 
 ## Packaging, build & releases
 

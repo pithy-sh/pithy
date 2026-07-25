@@ -10,8 +10,13 @@ dist/
 
 # pithy local dev state
 .dev-state.json
-.dev.ports.json
+.dev-ports.json
 logs/
+
+# pithy feature worktrees + per-feature state
+.worktrees/
+.dev.config.json
+.pithy-feature.json
 
 # env & secrets
 .env

@@ -1,7 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { DatabaseIntrospector, DatabaseMetadataOptions, SchemaMetadata, TableMetadata } from "kysely";
 import { CamelCasePlugin, Kysely, sql } from "kysely";
-import { type MigrationProvider, type MigrationResult, Migrator } from "kysely/migration";
+import { type MigrationProvider, type MigrationResult, Migrator, NO_MIGRATIONS } from "kysely/migration";
 import { D1Dialect } from "kysely-d1";
 import { InternalError } from "../error/pithyError";
 
@@ -109,6 +109,23 @@ export async function rollbackMigration(database: D1Database, provider: Migratio
 }
 
 /**
+ * Fully reset one database's schema: every applied migration's `down` runs, in one pass, in reverse
+ * chronological order — Kysely's `NO_MIGRATIONS` target, not just the latest — then every migration's
+ * `up` reapplies from empty. The seam behind `pithy seed --redo`'s destructive rebuild: because the
+ * schema comes back empty, the ordinary non-destructive seed writes (`INSERT OR IGNORE`, KV
+ * skip-if-exists) simply work afterward — there is no per-row identity problem to solve. An empty
+ * ledger rolls back nothing; an empty provider reapplies nothing.
+ */
+export async function resetMigrations(database: D1Database, provider: MigrationProvider): Promise<MigrationResult[]> {
+  const runner = migrator(database, provider);
+  const down = await runner.migrateTo(NO_MIGRATIONS);
+  const downResults = settle("resetDown", down.error, down.results);
+  const up = await runner.migrateToLatest();
+  const upResults = settle("resetUp", up.error, up.results);
+  return [...downResults, ...upResults];
+}
+
+/**
  * The applied migration names recorded in the ledger — empty when the ledger table doesn't exist yet.
  * Existence is checked against `sqlite_master` (a plain select D1 permits) rather than by catching the
  * read's error, so a genuine read failure surfaces instead of being silently treated as "none applied".
@@ -174,6 +191,16 @@ const VOICE = {
     failed: (key: string) => `Couldn't roll back "${key}".`,
     fallback: "Rollback failed.",
     action: "Fix the migration. Run pithy migrate --rollback again.",
+  },
+  resetDown: {
+    failed: (key: string) => `Couldn't roll back "${key}" during reset.`,
+    fallback: "Schema reset failed while rolling back.",
+    action: "Fix the migration. Run pithy seed --redo again.",
+  },
+  resetUp: {
+    failed: (key: string) => `Couldn't reapply "${key}" during reset.`,
+    fallback: "Schema reset failed while reapplying.",
+    action: "Fix the migration. Run pithy seed --redo again.",
   },
 } as const;
 

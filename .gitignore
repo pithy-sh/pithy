@@ -3,8 +3,11 @@ node_modules/
 dist/
 .turbo/
 
-# feature worktrees (scripts/worktree.ts)
+# feature worktrees + pithy feature state (scripts/worktree.ts, pithy feature)
 .worktrees/
+.dev-ports.json
+.dev.config.json
+.pithy-feature.json
 
 # cloudflare / wrangler
 .wrangler/

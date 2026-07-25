@@ -1,5 +1,6 @@
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadProject } from "../project/config";
 import { installPackage } from "../project/packageManager";
@@ -124,6 +125,8 @@ export interface RunAddOptions {
   force?: boolean;
   /** Override the eject step (tests inject a stub). */
   ejectStep?: EjectStep;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 export interface AddResult {
@@ -140,31 +143,63 @@ export interface AddResult {
  * manifest, wire config + bindings, scaffold its config options, and run its dev
  * migrations. Handler logic stays in the package (principle 3) — only the thin
  * registration lands in the user's repo. Idempotent: a second run changes nothing.
+ *
+ * Audited on success and on failure as `capability/added` — routine (`info`) severity, since adding a
+ * capability is reversible and never touches production data. The whole run is wrapped rather than
+ * pinpointing which step failed: install, manifest load, wiring, eject, and migrate are a single
+ * logical action from the audit trail's point of view.
  */
 export async function runAdd(options: RunAddOptions): Promise<AddResult> {
   const { projectDir, capability } = options;
   const install = options.install ?? defaultInstall;
   const migrate = options.migrate ?? defaultMigrate;
+  const audit = options.audit ?? (async () => {});
 
-  const { packageManager } = await install({ projectDir, pkg: `@pithy-sh/${capability}` });
+  try {
+    const { packageManager } = await install({ projectDir, pkg: `@pithy-sh/${capability}` });
 
-  const manifest = await loadManifest(capability, projectDir);
-  let configValues = coerceSetFlags(manifest, options.setFlags ?? []);
-  if (options.prompt && manifest.configOptions.length > 0) {
-    configValues = await options.prompt(manifest, configValues);
+    const manifest = await loadManifest(capability, projectDir);
+    let configValues = coerceSetFlags(manifest, options.setFlags ?? []);
+    if (options.prompt && manifest.configOptions.length > 0) {
+      configValues = await options.prompt(manifest, configValues);
+    }
+
+    await addCapability({ projectDir, manifest, configValues });
+
+    // Eject before migrating: eject repoints the config import to the local copy and promotes the
+    // capability's deps, so the migrate step loads the ejected config with everything it imports present.
+    let eject: EjectResult | undefined;
+    if (options.eject) {
+      const runEject = options.ejectStep ?? ejectCapability;
+      eject = await runEject({
+        projectDir,
+        capability: manifest.name,
+        package: manifest.package,
+        force: options.force,
+      });
+    }
+
+    const databases = await migrate(projectDir);
+
+    await audit({
+      action: "capability/added",
+      outcome: "success",
+      severity: "info",
+      resourceType: "capability",
+      resourceId: manifest.name,
+      metadata: { package: manifest.package, packageManager, ejected: Boolean(eject) },
+    });
+
+    return { capability: manifest.name, package: manifest.package, packageManager, databases, eject };
+  } catch (error) {
+    await audit({
+      action: "capability/added",
+      outcome: "failure",
+      severity: "info",
+      resourceType: "capability",
+      resourceId: capability,
+      metadata: { error: messageOf(error) },
+    });
+    throw error;
   }
-
-  await addCapability({ projectDir, manifest, configValues });
-
-  // Eject before migrating: eject repoints the config import to the local copy and promotes the
-  // capability's deps, so the migrate step loads the ejected config with everything it imports present.
-  let eject: EjectResult | undefined;
-  if (options.eject) {
-    const runEject = options.ejectStep ?? ejectCapability;
-    eject = await runEject({ projectDir, capability: manifest.name, package: manifest.package, force: options.force });
-  }
-
-  const databases = await migrate(projectDir);
-
-  return { capability: manifest.name, package: manifest.package, packageManager, databases, eject };
 }

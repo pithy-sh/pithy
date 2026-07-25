@@ -27,6 +27,7 @@ import {
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
+import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
 
 /** The secrets migration set, as provisioning runs it against each environment's D1. */
@@ -53,6 +54,8 @@ export interface CloudflareSecretsProvisionerOptions {
   storeId: string;
   /** Deploys the manager worker. Injected so the control-plane steps are testable without wrangler. */
   deploy: DeployManager;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /**
@@ -77,12 +80,14 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #accountId: string;
   readonly #storeId: string;
   readonly #deploy: DeployManager;
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
     this.#storeId = options.storeId;
     this.#deploy = options.deploy;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the managers. */
@@ -109,6 +114,15 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
       .accountTokens()
       .rollToken(MANAGER_CF_API_TOKEN_NAME, managerTokenPermissions(this.#accountId));
     await writeManagerCfApiToken(this.#cf, this.#storeId, minted.value);
+    // Never the minted value — just that the manager's own runtime credential was (re)written.
+    await this.#audit({
+      action: "secrets/set",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: MANAGER_CF_API_TOKEN_SECRET_NAME,
+      metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+    });
   }
 
   /** Reuse the env's secrets D1 if it exists, otherwise create it. */
@@ -125,6 +139,14 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     const store = this.#cf.secrets(this.#storeId);
     if (!(await store.exists(name))) {
       await store.putSecret(name, JSON.stringify(await initialMasterKeyConfig()));
+      await this.#audit({
+        action: "secrets/set",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: name,
+        metadata: { name, kind: "master_key", env },
+      });
     }
     return { storeId: this.#storeId };
   }
@@ -195,6 +217,8 @@ export interface CloudflareSecretsDeprovisionerOptions {
   cf: CloudflareClients;
   /** The CF Secrets Store id holding the per-env master keys. */
   storeId: string;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
 }
 
 /**
@@ -206,10 +230,12 @@ export interface CloudflareSecretsDeprovisionerOptions {
 export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #storeId: string;
+  readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSecretsDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#storeId = options.storeId;
+    this.#audit = options.audit ?? (async () => {});
   }
 
   /** Delete the env's manager worker if it is deployed. */
@@ -226,6 +252,15 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(name)) {
       await store.deleteSecret(name);
+      // Deleting a master key orphans every secret it encrypted — this is the destructive step.
+      await this.#audit({
+        action: "secrets/removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: name,
+        metadata: { name, kind: "master_key", env },
+      });
     }
   }
 
@@ -247,6 +282,14 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(MANAGER_CF_API_TOKEN_SECRET_NAME)) {
       await store.deleteSecret(MANAGER_CF_API_TOKEN_SECRET_NAME);
+      await this.#audit({
+        action: "secrets/removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "secret",
+        resourceId: MANAGER_CF_API_TOKEN_SECRET_NAME,
+        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+      });
     }
   }
 }

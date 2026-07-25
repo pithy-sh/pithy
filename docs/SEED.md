@@ -86,6 +86,10 @@ Once validated, the write itself is deliberately boring:
 
 This is why `pithy seed` is safe to run repeatedly, and safe to run as a step in an automated CI pipeline that provisions an ephemeral environment.
 
+It also means editing a fixture's values and re-running `pithy seed` does nothing — the row already exists, so it is left alone.
+
+`pithy seed --redo` is the escape hatch: not a per-row refresh, but a full schema reset (every migration's `down`, then every `up`, then a normal seed) that destroys and recreates every table the migration registry owns before writing the fixtures fresh. See `docs/CLI.md` Section 7.5 for its exact behavior and safety gate.
+
 ## Media: `once` and `always`, and UUID write-back
 
 Some fixtures need real bytes — an avatar, a demo thumbnail — uploaded to Cloudflare Images or Stream, not just a database row. A `MediaSeedItem` describes one of these:

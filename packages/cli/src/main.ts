@@ -14,6 +14,7 @@ export const main = defineCommand({
     remove: () => import("./commands/remove").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
     seed: () => import("./commands/seed").then((m) => m.default),
+    feature: () => import("./commands/feature").then((m) => m.default),
     deploy: () => import("./commands/deploy").then((m) => m.default),
     token: () => import("./commands/token").then((m) => m.default),
     secrets: () => import("./commands/secrets").then((m) => m.default),

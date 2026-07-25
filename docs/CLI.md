@@ -39,7 +39,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate` | Run the migration registry against an `--env` (`--rollback` to downgrade) |
 | `pithy seed` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 7 and `docs/SEED.md` |
-| `pithy feature` | Worktree lifecycle: `create`/`destroy` a `feature/<issue>-<name>` branch + its ephemeral CF resources |
+| `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
 | `pithy env` | Switch or report the active deployment environment (`dev`/`staging`/`production`) |
 | `pithy deploy` | Deploy to Cloudflare Workers |
 | `pithy upgrade` | Reconcile package-served capabilities with current manifests — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
@@ -785,21 +785,63 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 
 Port collisions are the one thing that stops two feature worktrees running simultaneously. The fix is a **central registry that every feature reads before it assigns** — so a new feature sees what's already taken and can't collide.
 
-- **The registry** is a single git-ignored **`.dev-ports.json`** at the **main repo root** (the parent of `.worktrees/`). A worktree resolves it from anywhere via `git rev-parse --git-common-dir`. It's a map keyed by feature branch:
+- **The registry** is a single git-ignored **`.dev-ports.json`** at the **main repo root** (the parent of `.worktrees/`). A worktree resolves it from anywhere via `git rev-parse --git-common-dir`. It's a map keyed by feature branch, each value the contiguous block that branch owns:
 
   ```json
   {
-    "feature/12-auth":  { "backend": 8800, "frontend": 8801 },
-    "feature/34-email": { "backend": 8820, "frontend": 8821 }
+    "feature/12-auth":  { "block": 0, "base": 8787, "size": 10 },
+    "feature/34-email": { "block": 1, "base": 8797, "size": 10 }
   }
   ```
 
 - **`pithy feature create`** takes a short file lock, reads the registry (seeing every block already in use), assigns the **lowest free, non-overlapping block**, writes its key, and unlocks. One atomic read-modify-write — no two features can pick the same block.
 - **`pithy feature destroy`** (and merge-to-`main` cleanup) deletes its key, returning the block to the pool. Add/remove is a single keyed mutation; no per-branch files to orphan.
-- **Each worktree** also gets a git-ignored **`.dev.ports.json`** holding just its own block (projected from the registry entry); `pithy dev` reads it as its start ports, and the `*_PORT`/`*_ORIGIN` values are surfaced into the composed `.dev.vars`. (Distinct from `.dev-state.json`, the running session's pid/child-pids from Section 6.2.)
+- **Each worktree** also gets a git-ignored **`.dev.config.json`** — the feature's own dev configuration, written at creation and **fixed for the life of the feature**. It records the reserved block and pins **one port per worker**:
+
+  ```json
+  {
+    "version": 1,
+    "branch": "feature/12-auth",
+    "ports": { "index": 0, "base": 8787, "size": 10 },
+    "workers": {
+      "api": { "port": 8787, "origin": "http://localhost:8787" },
+      "web": { "port": 8788, "origin": "http://localhost:8788" }
+    }
+  }
+  ```
+
+  `pithy dev` reads it as its start ports, and every worker's address is known ahead of time, so the workers auto-wire to each other. (Distinct from `.dev-state.json`, the running session's pid/child-pids from Section 6.2.) It is named for the feature's dev config, not for ports alone, so further per-feature dev settings land here without a rename.
+- **Ports are assigned at creation, never probed at startup.** Probing when a worker boots is a time-of-check/time-of-use race: two `pithy dev` processes in two worktrees can both observe the same port free and both try to bind it. Pre-assigning every worker its own port from a reserved block removes the race by construction — N features start simultaneously with nothing to negotiate.
+- **Per-feature values never go in `.dev.vars`.** That file is one shared secrets file for the whole repo — each worktree's, and each worker's, is a symlink to the main checkout's — so a per-feature value written there would clobber every other feature's. Shared secrets live in `.dev.vars`; per-feature ports live in `.dev.config.json`.
 - `pithy dev` still verifies each assigned port is actually free (IPv4 + IPv6) and scans forward if something external grabbed it. Because blocks are disjoint and stable, multiple worktrees run in unison and each feature's workers reach each other on their assigned localhost ports.
 
 > **Why one keyed registry, not a file per branch** (`.dev-ports.<branch>.json`)? A single file shows every allocation in one read, makes add/remove a one-key mutation, and leaves no stale per-branch files to garbage-collect. File-per-branch works but forces a glob-and-read-all to see what's taken.
+
+- **Adding a worker is additive.** Port assignment is *sticky*: a worker that already holds a port keeps it, and only genuinely new workers are assigned, each taking the lowest free port in the block. Discovery is alphabetical, so a purely positional assignment would renumber every later worker the moment someone added one that sorts earlier — moving addresses out from under a running session. A removed worker releases its port back to the block.
+- **The registry is self-healing.** `.dev-ports.json` is git-ignored, so it can vanish while the worktrees allocated from it live on. Before allocating, `pithy feature create` reclaims any block still pinned in an existing worktree's `.dev.config.json`, so a lost registry can never hand out a block a live feature is using.
+
+**`pithy feature sync`** — run from the worktree, no arguments, the branch says which feature it is. It makes the local environment ready whatever state it is in, and covers the two everyday cases with one command:
+
+- **You added a worker.** It takes the next free port from the feature's already-reserved block and leaves every existing worker exactly where it was.
+- **A colleague pushed the branch and you pulled it.** None of the local state is in git — `.dev.config.json`, the port reservation, and the `.dev.vars` links are all machine-local — so sync creates them on *your* machine, with your own free block, and migrates + seeds your local backend. (This is precisely why ports are never committed: your teammate's block may already be taken on your machine by one of your other worktrees.)
+
+Every step is idempotent, so running it when nothing is missing reports that nothing moved. `--skip-data` reconciles ports and `.dev.vars` without touching the backend.
+
+### 6.3.1 Naming and wiring a feature's live environment
+
+The same branch-first identity that names a feature's D1/KV/R2 resources also names its **Workers**, so a feature environment is fully self-wiring in CI:
+
+```
+<project>-f<issue>-<slug>-<worker>     acme-f69-media-cli-api      (Worker script)
+<project>-f<issue>-<slug>-<binding>-<kind>   acme-f69-media-cli-db-d1    (D1)
+```
+
+`pithy feature provision` writes into each Worker's `wrangler.jsonc env.<env>`:
+
+- **`name`** — the script name that Worker deploys under for the feature, so a preview deploy never overwrites production's.
+- **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli-api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.
+
+**Nothing is stored or committed to make this work.** Every name is derived from the branch, and an already-provisioned resource's id is recovered by looking that name up in Cloudflare — which is exactly what makes `provision` idempotent. On a second push, CI computes the same names, finds the existing D1/KV/R2, rewrites the same wiring, and deploys. There is no id file to merge, so there is nothing to conflict.
 
 ### 6.4 Voice
 
@@ -818,6 +860,8 @@ All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): label
 | `--env <name>` | `dev` | The environment to seed. `dev` runs locally against Miniflare; anything else runs against the live D1/KV/R2/Images/Stream for that env |
 | `--json` | `false` | Machine-readable output — the full write plan or run report as one JSON line. Implies non-interactive: `pithy seed` never prompts when `--json` is set |
 | `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
+| `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See 7.5 |
+| `--confirm-reset` | — | Unlock a non-`dev` `--redo`: the exact phrase `yes, i really want to reset <env>` |
 | `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `production`; `dev` never needs it |
 | `--confirm-production <phrase>` | — | The non-interactive unlock for `production` — see 7.3 |
 
@@ -885,6 +929,46 @@ Underneath both gates is a third, structural one that no flag can bypass: a seed
 ### 7.4 Idempotency
 
 Every `pithy seed` run is safe to repeat. D1 rows insert with `INSERT OR IGNORE`; KV entries `put` by key; a `once` media asset uploads on its first run only and skips on every run after. Re-running `pithy seed` against an environment that already has the fixtures loaded writes nothing new and changes nothing existing.
+
+This is also why editing a fixture's values and re-running `pithy seed` does nothing: the row already exists, so it is ignored, unchanged. See 7.5.
+
+### 7.5 Resetting data (`--redo`)
+
+`--redo` is for the moment you edited a fixture's values and want them to actually land. Idempotency (7.4) means a plain re-seed never refreshes existing rows, so `--redo` exists to force it — but it is **not** a per-row refresh. It is a full schema reset:
+
+1. Roll every migration back — every `down`, not just the latest, in reverse order.
+2. Reapply every migration's `up`, recreating the schema empty.
+3. Seed as normal.
+
+Because every table the migration registry owns comes back empty, step 3's ordinary non-destructive writes just work — there is nothing left to special-case. There is also nothing left of what was there before: **`--redo` destroys every row in every table the registry owns, not just the rows a fixture wrote.** Data you inserted by hand, in a seeded table, does not survive. This is the sharp edge — reach for `--redo` only when a clean rebuild is actually what you want.
+
+```
+$ pithy seed --env dev --redo
+Reset app (DB): 1 migration rolled back and reapplied.
+leaderboard_0001_demo_board: 12 rows.
+Done.
+```
+
+`--redo --dry-run` reports what would be reset and written, and touches nothing:
+
+```
+$ pithy seed --env staging --redo --dry-run
+Would reset app (DB): 1 migration.
+leaderboard_0001_demo_board: 12 rows.
+Dry run. Nothing written.
+```
+
+**`--redo` carries its own, stricter gate — it is not the seed gate.** `--yes` means "yes, this is not dev"; it was designed to authorize *writing* seed rows, which is additive and harmless. A reset drops every table first. Letting one flag authorize both would mean a script — or a hand — that knew only to pass `--yes` could destroy an environment's entire dataset. So:
+
+| Environment | Plain seed | `--redo` |
+|---|---|---|
+| `dev` | free | free — a local Miniflare store is what reset is for |
+| `staging`, a feature env, anything non-`dev` | `--yes` | **the exact phrase** `yes, i really want to reset <env>` |
+| `production`/`prod` (+ declared production names) | `--yes` + the seed confirm phrase | the reset phrase, and it is refused headlessly without it |
+
+The phrase **names its environment**, so a phrase authorizing a `staging` reset cannot be pasted into a command targeting another one. Pass it as `--confirm-reset "yes, i really want to reset staging"`; interactively, the prompt states plainly that all data will be lost before asking. Automation is preserved — CI passes the flag explicitly — a reset simply cannot happen by accident.
+
+A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `critical` severity naming the environment and the databases involved, written *before* the drop begins, so a reset that fails partway still leaves its intent and its authorizer on record. A `dev` reset records nothing — auditing covers actions that reach a **remote** system (from a developer's machine, from CI, or in production); a `dev` run only touches the local Miniflare store and changes nothing shared. Auditing is also a no-op when the project does not compose `@pithy-sh/audit`.
 
 ---
 

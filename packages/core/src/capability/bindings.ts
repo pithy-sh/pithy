@@ -38,6 +38,13 @@ export const BindingSpec = z
       .describe(
         'The exported Durable Object class this namespace is backed by (e.g. "MultiplayerSession"). Meaningful only for a `durable_object` binding — it is the `class_name` the CLI writes into `durable_objects.bindings` and the DO class migration tag. Ignored for every other kind.',
       ),
+    service: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'The Worker this binding calls, named as it appears in `apps/<name>/` (e.g. "api"). Meaningful only for a `service` binding — the CLI resolves it to that Worker\'s environment-scoped script name when writing `services` into wrangler.jsonc, so worker-to-worker RPC targets the right deployment per environment. Ignored for every other kind.',
+      ),
   })
   .describe("Declares a Cloudflare binding a capability requires in the Worker env.")
   .check((ctx) => {
@@ -50,6 +57,17 @@ export const BindingSpec = z
         input: ctx.value,
         path: ["className"],
         message: `Durable Object binding "${ctx.value.name}" needs a className — the exported DO class it is backed by.`,
+      });
+    }
+    // A service binding with no target is unresolvable: the CLI cannot know which Worker to point
+    // `services[].service` at, and wrangler rejects the entry. Fail at define time, attributed to the
+    // capability, rather than emitting a broken binding into an environment's wrangler.jsonc.
+    if (ctx.value.type === "service" && ctx.value.service === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["service"],
+        message: `Service binding "${ctx.value.name}" needs a service — the Worker it calls, as named in apps/.`,
       });
     }
   });

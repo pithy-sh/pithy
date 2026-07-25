@@ -91,6 +91,69 @@ function phraseMatches(input: string | undefined): boolean {
 }
 
 /**
+ * The exact phrase that unlocks a `--redo` schema reset for an environment. **Environment-specific on
+ * purpose** — a phrase naming `staging` cannot be pasted into a command targeting another environment,
+ * which a single fixed phrase would allow.
+ */
+export function resetConfirmPhrase(env: string): string {
+  return `yes, i really want to reset ${env.trim().toLowerCase()}`;
+}
+
+/** Inputs to the reset gate — the stronger confirmation `--redo` requires. */
+export interface ConfirmResetOptions {
+  /** The environment being reset. `dev` is free; everything else needs the phrase. */
+  env: string;
+  /** Non-interactive mode: no prompt is shown, so the phrase must arrive by flag. */
+  json: boolean;
+  /** The `--confirm-reset` flag value; authoritative wherever present. */
+  confirmReset?: string;
+  /** Interactive confirm seam: prompt the operator for the reset phrase. */
+  prompt?: () => Promise<string>;
+}
+
+/**
+ * Enforce the **reset** gate, which is deliberately stricter than the seed gate.
+ *
+ * `--yes` means "yes, this is not dev" — it was designed to authorize *writing seed rows*, which is
+ * additive and non-destructive. `--redo` drops every table first. Letting one flag authorize both would
+ * mean a script (or a hand) that knew only to pass `--yes` could destroy an environment's entire dataset.
+ * So a reset requires the exact, environment-named phrase for **any** non-`dev` environment — not only
+ * production. `dev` stays free, because a local Miniflare store is the thing reset is for.
+ *
+ * Automation is preserved: CI passes `--confirm-reset` explicitly, so a headless reset still works — it
+ * simply cannot happen by accident.
+ */
+export async function assertResetConfirmed(options: ConfirmResetOptions): Promise<void> {
+  if (options.env === "dev") return;
+
+  const expected = resetConfirmPhrase(options.env);
+  const matches = (input: string | undefined): boolean =>
+    input !== undefined && input.trim().toLowerCase() === expected;
+
+  // The flag is authoritative wherever present (CI or interactive).
+  if (options.confirmReset !== undefined) {
+    if (matches(options.confirmReset)) return;
+    throw new ValidationError({
+      message: `That is not the confirmation phrase for resetting ${options.env}.`,
+      action: `Pass --confirm-reset "${expected}" to drop and recreate the ${options.env} schema.`,
+    });
+  }
+
+  if (!options.json && options.prompt) {
+    if (matches(await options.prompt())) return;
+    throw new ValidationError({
+      message: `Reset of ${options.env} not confirmed.`,
+      action: `Type the exact phrase, or pass --confirm-reset "${expected}".`,
+    });
+  }
+
+  throw new ValidationError({
+    message: `Resetting ${options.env} destroys all of its data.`,
+    action: `Pass --confirm-reset "${expected}" to drop and recreate the ${options.env} schema.`,
+  });
+}
+
+/**
  * Enforce the escalating-confirmation gate before any write. Resolves when the run is authorized and
  * throws a `ValidationError` otherwise:
  *

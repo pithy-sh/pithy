@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
@@ -8,10 +5,9 @@ import { resolveTokenProfiles, TOKEN_STORES, type TokenStore } from "@pithy-sh/c
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
+import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { allCapabilities, loadProject, type ProjectConfig } from "../project/config";
-import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
@@ -23,6 +19,11 @@ import {
   type TokenEngine,
   type TokenResult,
 } from "../tokens/engine";
+
+// `resolveAppDatabaseId` used to be this file's own copy of the app-database lookup, before
+// `createCliAudit` centralized it. Re-exported under its original name — same behavior, same
+// signature — so `token.test.ts`'s direct tests of it keep passing unchanged.
+export { resolveAuditDatabaseId as resolveAppDatabaseId } from "../audit/cliAudit";
 
 /** The CF credentials the token engine needs, from `.dev.vars` then `process.env`. */
 function loadCreds(projectDir: string): { accountId: string; apiToken: string; storeId: string } {
@@ -36,23 +37,6 @@ function loadCreds(projectDir: string): { accountId: string; apiToken: string; s
     });
   }
   return { accountId, apiToken, storeId: vars.SECRETS_STORE_ID ?? "" };
-}
-
-/** The wrangler.jsonc slice token audit reads: the app `DB` id, per environment (dev is top-level). */
-interface WranglerAppConfig {
-  d1_databases?: { binding: string; database_id?: string }[];
-  env?: Record<string, { d1_databases?: { binding: string; database_id?: string }[] } | undefined>;
-}
-
-/** The app database id for an env from `wrangler.jsonc` (binding `DB`), or `undefined` — the audit target. */
-export async function resolveAppDatabaseId(projectDir: string, env: string): Promise<string | undefined> {
-  try {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerAppConfig;
-    const stanza = env === "dev" ? config : config.env?.[env];
-    return stanza?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -122,10 +106,11 @@ export function publicToken(result: TokenResult): {
 }
 
 /**
- * Build a best-effort audit sink — **only** when the project composes the audit capability, so the CLI
- * never hard-depends on `@pithy-sh/audit` (it stays optional). Audit's CLI recorder is loaded by
- * dynamic import, resolved from the project's own install; if audit isn't composed or can't load,
- * auditing is a no-op (the engine tolerates a missing sink). `emitFromCLI` is itself non-fatal.
+ * Build the token engine's audit sink from the shared `createCliAudit` helper — the one place every
+ * CLI command resolves whether/where to record. `createCliAudit` already handles every reason there
+ * might be nowhere to write (audit not composed, package not installed, no app database for the env)
+ * by returning an always-callable no-op, so `TokenAudit` here is just a thin adapter from its event
+ * shape to the generic `CliAuditEvent` — never the token value, only its id and where it went.
  */
 async function buildAudit(
   capabilities: readonly Capability[],
@@ -133,37 +118,17 @@ async function buildAudit(
   projectDir: string,
   env: string,
   apiToken: string,
-): Promise<TokenAudit | undefined> {
-  if (!capabilities.some((capability) => capability.name === "audit")) return undefined;
-  const appDatabaseId = await resolveAppDatabaseId(projectDir, env);
-  if (!appDatabaseId) return undefined;
-  let emit: typeof import("@pithy-sh/audit/src/cli/emitFromCLI").emitFromCLI;
-  let resolve: typeof import("@pithy-sh/audit/src/cli/resolveActor").resolveActor;
-  try {
-    ({ emitFromCLI: emit } = await import("@pithy-sh/audit/src/cli/emitFromCLI"));
-    ({ resolveActor: resolve } = await import("@pithy-sh/audit/src/cli/resolveActor"));
-  } catch {
-    return undefined; // audit not installed in this project — nothing to record through.
-  }
-  const database = cf.d1(appDatabaseId) as unknown as D1Database;
-  // Surface a non-fatal audit-write failure through the CLI process logger — the seam replacing the
-  // recorder's former `console.error` default. Without this, a dropped CLI audit write is invisible.
-  const log = createCliLogger();
+): Promise<TokenAudit> {
+  const emit = await createCliAudit({ projectDir, env, capabilities, clients: cf, apiToken });
   return async (event) => {
-    const actor = await resolve(apiToken, cf.user());
-    await emit(
-      database,
-      {
-        action: event.action,
-        outcome: event.outcome,
-        severity: "warning",
-        resourceType: "cf_api_token",
-        resourceId: event.tokenId ?? `${event.profile}:${event.env}`,
-        metadata: { profile: event.profile, env: event.env, store: event.store ?? null },
-      },
-      actor,
-      { onError: (error) => log.child("audit").error("audit event dropped", { error }) },
-    );
+    await emit({
+      action: event.action,
+      outcome: event.outcome,
+      severity: "warning",
+      resourceType: "cf_api_token",
+      resourceId: event.tokenId ?? `${event.profile}:${event.env}`,
+      metadata: { profile: event.profile, env: event.env, store: event.store ?? null },
+    });
   };
 }
 

@@ -1,0 +1,86 @@
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { CliAuditEmit } from "../audit/cliAudit";
+import type { FeatureIdentity } from "./naming";
+import { freePortBlock, resolvePortsRegistryPath } from "./ports";
+import { type DeprovisionedResource, deprovisionFeature, type FeatureProvisioners } from "./provision";
+import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
+
+/**
+ * `pithy feature destroy` — the teardown half, run from within the worktree. It reverses both remote and
+ * local, in order: delete the manifest's Cloudflare resources then reconcile by prefix-scan, free the
+ * feature's port block, and finally prune the worktree the Linux-safe way. Every step is idempotent, so a
+ * partial-failed provision or a half-torn-down feature still tears down to zero, exiting 0. It is exactly
+ * what the merge-to-main CI job runs headlessly.
+ */
+
+/** The structured outcome of `pithy feature destroy` — the `--json` payload and the human summary source. */
+export interface DestroyReport {
+  /** The command that produced the report. */
+  command: "feature.destroy";
+  /** Every Cloudflare resource deleted (manifest + reconcile). Empty when nothing remained or remote was skipped. */
+  deleted: DeprovisionedResource[];
+  /** Whether the remote teardown ran (false when no provisioners were available, e.g. no CF credentials). */
+  remote: boolean;
+  /** Whether the feature's port block was freed. */
+  portsFreed: boolean;
+  /** Whether a registered worktree was pruned. */
+  worktreePruned: boolean;
+  /** Whether the feature branch was deleted (only when merged). */
+  branchDeleted: boolean;
+}
+
+/** Options for {@link destroyFeature}. */
+export interface DestroyFeatureOptions {
+  /** The worktree root — where the manifest lives and the branch is checked out. */
+  projectDir: string;
+  /** The feature identity — project/issue/slug — for recomputing resource names and the branch name. */
+  identity: FeatureIdentity;
+  /** The composed capabilities, whose bindings the remote reconcile recomputes expected names from. */
+  capabilities: Capability[];
+  /** The provisioners to delete through, or undefined to skip remote teardown (e.g. no CF credentials). */
+  provisioners?: FeatureProvisioners;
+  /** Audit emitter, so every deletion leaves a record. Defaults to recording nothing. */
+  audit?: CliAuditEmit;
+  /** git runner seam. */
+  git?: GitRunner;
+  /** Override the resolved `.dev-ports.json` path (tests inject; a real run resolves it via git-common-dir). */
+  registryPath?: string;
+}
+
+/**
+ * Tear a feature down. Delete its Cloudflare resources (manifest ids, then prefix-scan reconcile) when
+ * provisioners are available, free its port block, and prune its worktree + branch — in that order.
+ * Idempotent end to end: already-gone resources, an unallocated port block, and an absent worktree are all
+ * clean no-ops, so re-running (or running on a never-provisioned feature) exits without error.
+ */
+export async function destroyFeature(options: DestroyFeatureOptions): Promise<DestroyReport> {
+  const git = options.git ?? defaultGit;
+
+  let deleted: DeprovisionedResource[] = [];
+  const remote = options.provisioners !== undefined;
+  if (options.provisioners) {
+    const report = await deprovisionFeature({
+      projectDir: options.projectDir,
+      identity: options.identity,
+      capabilities: options.capabilities,
+      provisioners: options.provisioners,
+      ...(options.audit !== undefined ? { audit: options.audit } : {}),
+    });
+    deleted = report.deleted;
+  }
+
+  const registryPath = options.registryPath ?? (await resolvePortsRegistryPath(options.projectDir));
+  const branch = `feature/${options.identity.issue}-${options.identity.slug}`;
+  await freePortBlock({ registryPath, branch });
+
+  const teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });
+
+  return {
+    command: "feature.destroy",
+    deleted,
+    remote,
+    portsFreed: true,
+    worktreePruned: teardown.pruned,
+    branchDeleted: teardown.branchDeleted,
+  };
+}

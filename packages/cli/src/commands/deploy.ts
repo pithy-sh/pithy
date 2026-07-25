@@ -1,4 +1,7 @@
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineCommand } from "citty";
+import { createCliAudit } from "../audit/cliAudit";
 import { countPendingMigrations } from "../migrations/run";
 import { allCapabilities, loadProject } from "../project/config";
 import { deployProject, pendingWarning, summarizeDeploy } from "../project/deploy";
@@ -18,6 +21,29 @@ async function pendingFor(projectDir: string, env: string): Promise<number | und
   }
 }
 
+/**
+ * The audit emitter for `pithy deploy`. Shipping code to an environment is exactly the kind of action
+ * an audit trail exists for, so every worker deploy — success or failure — is recorded when the project
+ * has audit wired. A bare `pithy deploy` (no `--env`) still targets the project's own app database, the
+ * same one `dev` reads (see `resolveAuditDatabaseId`), so the fallback lines up with the real target.
+ */
+async function buildAudit(projectDir: string, env: string) {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return async () => {};
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createCliAudit({
+    projectDir,
+    env,
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
+
 export default defineCommand({
   meta: { name: "deploy", description: "Deploy to Cloudflare Workers" },
   args: {
@@ -32,7 +58,8 @@ export default defineCommand({
       // ships the top-level worker, whose deployed schema is not the local dev D1 — so skip the check
       // (and its REST round trip) unless an `--env` names the environment being deployed.
       const pending = args.env ? await pendingFor(projectDir, args.env) : undefined;
-      const deploys = await deployProject({ projectDir, env: args.env });
+      const audit = await buildAudit(projectDir, args.env ?? "dev");
+      const deploys = await deployProject({ projectDir, env: args.env, audit });
       const failed = deploys.some((deploy) => !deploy.ok);
 
       if (args.json) {

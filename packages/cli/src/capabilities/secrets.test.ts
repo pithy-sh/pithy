@@ -4,6 +4,7 @@ import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import type { CliAuditEvent } from "../audit/cliAudit";
 import type { ProjectConfig } from "../project/config";
 import { resolveSecretRegistry, runSecretsList, runSecretWrite } from "./secrets";
 
@@ -80,6 +81,81 @@ describe("runSecretWrite", () => {
     await runSecretWrite(registry, dispatcher, { mode: "delete", name: "auth-signing-key", env: "production" });
     expect(dispatcher.calls[0]).toMatchObject({ env: "production", mode: "delete", name: "auth-signing-key" });
     expect(dispatcher.calls[0]?.value).toBeUndefined();
+  });
+
+  test("audits a create as secrets/set, recording the name but never the value", async () => {
+    const dispatcher = new StubDispatcher();
+    const events: CliAuditEvent[] = [];
+
+    await runSecretWrite(
+      registry,
+      dispatcher,
+      { mode: "create", name: "auth-signing-key", value: "top-secret-value", env: "staging" },
+      async (event) => void events.push(event),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "secrets/set",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: "auth-signing-key",
+      metadata: { name: "auth-signing-key", environments: ["staging"] },
+    });
+    expect(JSON.stringify(events[0])).not.toContain("top-secret-value");
+  });
+
+  test("audits an update as secrets/rotated and a delete as secrets/removed", async () => {
+    const dispatcher = new StubDispatcher();
+    const events: CliAuditEvent[] = [];
+    const audit = async (event: CliAuditEvent) => void events.push(event);
+
+    await runSecretWrite(
+      registry,
+      dispatcher,
+      { mode: "update", name: "npm-token", value: "v", env: "staging" },
+      audit,
+    );
+    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "npm-token", env: "production" }, audit);
+
+    expect(events.map((e) => e.action)).toEqual(["secrets/rotated", "secrets/removed"]);
+    expect(events.every((e) => e.outcome === "success")).toBe(true);
+  });
+
+  test("audits a failed dispatch, still recording only the name", async () => {
+    const failing: SecretDispatcher = {
+      dispatch: async () => {
+        throw new Error("workflow unreachable");
+      },
+    };
+    const events: CliAuditEvent[] = [];
+
+    await expect(
+      runSecretWrite(
+        registry,
+        failing,
+        { mode: "create", name: "auth-signing-key", value: "v", env: "staging" },
+        async (event) => void events.push(event),
+      ),
+    ).rejects.toThrow("workflow unreachable");
+
+    expect(events).toEqual([
+      expect.objectContaining({ action: "secrets/set", outcome: "failure", metadata: { name: "auth-signing-key" } }),
+    ]);
+  });
+
+  test("never dispatches or audits an undeclared secret", async () => {
+    const events: CliAuditEvent[] = [];
+    await expect(
+      runSecretWrite(
+        registry,
+        new StubDispatcher(),
+        { mode: "create", name: "nope", value: "v", env: "staging" },
+        async (event) => void events.push(event),
+      ),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(events).toEqual([]);
   });
 });
 

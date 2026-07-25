@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
 import { scaffoldProject } from "../project/scaffold";
 import { coerceSetFlags, collectSetFlags, runAdd } from "./flow";
@@ -148,5 +149,54 @@ describe("runAdd", () => {
     await runAdd({ projectDir: dir, capability: "auth", install, migrate: migrateStub });
     expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(config);
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(wrangler);
+  });
+
+  test("audits a successful add as capability/added, info severity", async () => {
+    const install = vi.fn(installManifest(optionManifest));
+    const events: CliAuditEvent[] = [];
+
+    await runAdd({
+      projectDir: dir,
+      capability: "auth",
+      install,
+      migrate: migrateStub,
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "capability/added",
+        outcome: "success",
+        severity: "info",
+        resourceType: "capability",
+        resourceId: "auth",
+        metadata: { package: "@pithy-sh/auth", packageManager: "bun", ejected: false },
+      }),
+    ]);
+  });
+
+  test("audits a failed add — an uninstalled capability — as a failure, and rethrows", async () => {
+    const install = vi.fn(async () => ({ packageManager: "npm" }));
+    const events: CliAuditEvent[] = [];
+
+    await expect(
+      runAdd({
+        projectDir: dir,
+        capability: "ghost",
+        install,
+        migrate: migrateStub,
+        audit: async (event) => void events.push(event),
+      }),
+    ).rejects.toThrow(/ghost/);
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "capability/added",
+        outcome: "failure",
+        severity: "info",
+        resourceType: "capability",
+        resourceId: "ghost",
+      }),
+    ]);
   });
 });

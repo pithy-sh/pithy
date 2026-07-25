@@ -11,6 +11,7 @@ import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManage
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
+import { createCliAudit } from "../audit/cliAudit";
 import {
   CloudflareEmailDeprovisioner,
   CloudflareEmailProvisioner,
@@ -18,6 +19,25 @@ import {
 } from "../capabilities/emailProvisioner";
 import { allCapabilities, loadProject } from "../project/config";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+
+/**
+ * The audit emitter for an email command. Provisioning spans every managed environment at once, so
+ * there is no single target env to key the audit database on — `"dev"` is the fallback (mirrors
+ * `pithy feature`'s convention for env-spanning commands). A no-op when creds or the audit capability
+ * aren't there.
+ */
+async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
+  const capabilities = await loadProject(projectDir)
+    .then(allCapabilities)
+    .catch(() => []);
+  return createCliAudit({
+    projectDir,
+    env: "dev",
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
 
 /** Load the email capability's resolved config (from identity + brand theme) from `pithy.config.ts`. */
 async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig> {
@@ -143,6 +163,7 @@ const provision = defineCommand({
         theme,
         resolveEnv: buildResolveEnv(projectDir, cf),
         routing,
+        audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
       const result = await provisionEmail(provisioner);
@@ -168,9 +189,13 @@ const deprovision = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const { accountId, apiToken } = loadCloudflareCreds(process.cwd());
+      const projectDir = process.cwd();
+      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
       const cf = new CloudflareClients({ accountId, apiToken });
-      const deprovisioner = new CloudflareEmailDeprovisioner({ cf });
+      const deprovisioner = new CloudflareEmailDeprovisioner({
+        cf,
+        audit: await buildAudit(projectDir, accountId, apiToken),
+      });
 
       await deprovisionEmail(deprovisioner, { deleteSuppression: args.suppression });
 

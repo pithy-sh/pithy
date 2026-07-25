@@ -7,6 +7,7 @@ import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest"
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
 import { type RemoveSteps, removableBindings, removeCapability, removeFromWrangler, unwireConfig } from "./remove";
 
@@ -358,5 +359,105 @@ describe("removeCapability", () => {
     await removeCapability({ projectDir: dir, capability: "turnstile", steps: s });
     const wrangler = await readFile(join(dir, "wrangler.jsonc"), "utf8");
     expect(wrangler).toContain("SESSIONS"); // auth still needs it
+  });
+
+  test("audits capability/removed at info severity, and records nothing for an absent capability", async () => {
+    await fixture();
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile")] });
+    const events: CliAuditEvent[] = [];
+
+    await removeCapability({
+      projectDir: dir,
+      capability: "turnstile",
+      steps: s,
+      audit: async (event) => void events.push(event),
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "capability/removed",
+        outcome: "success",
+        severity: "info",
+        resourceType: "capability",
+        resourceId: "turnstile",
+      }),
+    ]);
+
+    events.length = 0;
+    await removeCapability({
+      projectDir: dir,
+      capability: "ghost",
+      steps: { ...s, loadCapabilities: async () => [cap("turnstile")], packageInstalled: async () => false },
+      audit: async (event) => void events.push(event),
+    });
+    expect(events).toEqual([]);
+  });
+
+  test("audits --drop as capability/tables_dropped at warning severity", async () => {
+    await fixture();
+    const dropped: DatabaseRun[] = [
+      { database: "app", binding: "DB", results: [{ migrationName: "0100_a", direction: "Down", status: "Success" }] },
+    ];
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile", { databases: withMigration })], dropped });
+    const events: CliAuditEvent[] = [];
+
+    await removeCapability({
+      projectDir: dir,
+      capability: "turnstile",
+      drop: { env: "dev" },
+      steps: s,
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "capability/tables_dropped",
+        outcome: "success",
+        severity: "warning",
+        metadata: { env: "dev", migrationsReverted: 1 },
+      }),
+      expect.objectContaining({ action: "capability/removed", outcome: "success", severity: "info" }),
+    ]);
+  });
+
+  test("audits a declined --drop confirmation as denied, and nothing else", async () => {
+    await fixture();
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile", { databases: withMigration })] });
+    const events: CliAuditEvent[] = [];
+
+    await removeCapability({
+      projectDir: dir,
+      capability: "turnstile",
+      drop: { env: "staging", confirm: async () => false },
+      steps: s,
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        action: "capability/tables_dropped",
+        outcome: "denied",
+        severity: "warning",
+        metadata: { env: "staging" },
+      }),
+    ]);
+  });
+
+  test("audits a failure when a dependent blocks removal", async () => {
+    await fixture();
+    const { s } = steps({
+      loadCapabilities: async () => [cap("secrets"), cap("auth", { dependsOn: ["secrets"] })],
+    });
+    const events: CliAuditEvent[] = [];
+
+    await removeCapability({
+      projectDir: dir,
+      capability: "secrets",
+      steps: s,
+      audit: async (event) => void events.push(event),
+    }).catch(() => {});
+
+    expect(events).toEqual([
+      expect.objectContaining({ action: "capability/removed", outcome: "failure", severity: "warning" }),
+    ]);
   });
 });
