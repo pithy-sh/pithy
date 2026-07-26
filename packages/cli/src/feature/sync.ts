@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import {
   buildDevConfig,
@@ -54,8 +55,23 @@ export interface SyncFeatureOptions {
  * `.dev.vars` at the repo's shared file. Idempotent: with no worker changes it rewrites the same config and
  * reports nothing added or removed. The port block is reserved on first use and reused thereafter, so a
  * feature's ports are stable for its whole life.
+ *
+ * Refuses to run when `worktreePath` is the main checkout root. `pithy feature sync` derives its identity
+ * from the current branch and takes no path argument, so running it from the main checkout while on a
+ * feature branch is a plausible slip — and `wireFeatureDevVars` would otherwise `unlink` and replace every
+ * real `apps/*.dev.vars` in the main checkout with a symlink, permanently losing git-ignored content. This
+ * guard lives here (not only in `devVars.ts`) so it protects every caller, `createFeature` included.
  */
 export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise<SyncReport> {
+  if (options.worktreePath === options.mainRoot) {
+    throw new ValidationError({
+      message: "Refusing to sync the main checkout as if it were a feature worktree.",
+      action:
+        "Run pithy feature sync from inside the feature's worktree (.worktrees/<issue>-<slug>), not the main checkout.",
+      detail: `worktreePath (${options.worktreePath}) is the main repository root.`,
+    });
+  }
+
   // Rebuild any registry entry lost since the worktrees were created before reserving, so a fresh registry
   // can never hand out a block a live feature still holds.
   const registryPath = join(options.mainRoot, ".dev-ports.json");

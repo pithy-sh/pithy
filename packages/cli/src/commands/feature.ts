@@ -12,7 +12,7 @@ import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } fr
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
-import { allCapabilities, loadProject, resolveProjectName } from "../project/config";
+import { allCapabilities, loadProject, requireProjectName } from "../project/config";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -29,19 +29,36 @@ function buildProvisioners(projectDir: string): FeatureProvisioners | null {
 }
 
 /**
+ * Where a feature's audit trail is written. **Not the feature's own environment.**
+ *
+ * The feature env's database does not exist yet when `provision` starts — its id is written into
+ * `wrangler.jsonc` only once the resources are created — so keying the audit database on it would resolve
+ * nothing and silently drop every creation event. And `destroy` deletes that database, so a record written
+ * there dies with the thing it was recording. Both defeat the point of auditing a headless CI teardown.
+ *
+ * So the trail lands in the project's durable, top-level database: it outlives every feature, and it is
+ * where an operator looks to answer "who tore this down?". The environment actually acted on is carried on
+ * each event's metadata instead.
+ */
+const AUDIT_DESTINATION_ENV = "dev";
+
+/**
  * The audit emitter for a feature command, or a no-op when auditing is unavailable. Feature provisioning
  * and teardown change real infrastructure — and `destroy` runs headlessly in CI — so every create and
  * delete leaves a record of what happened under which token. Credentials are the same ones the command
  * already needs; without them there is nothing to record through and the emitter is inert.
+ *
+ * These are control-plane operations: they touch real Cloudflare whatever environment is named, so they use
+ * `createCliAudit` directly rather than the remote-gated variant, and are always recorded.
  */
-async function buildAudit(projectDir: string, env: string, capabilities: Capability[]): Promise<CliAuditEmit> {
+async function buildAudit(projectDir: string, capabilities: Capability[]): Promise<CliAuditEmit> {
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
   return createCliAudit({
     projectDir,
-    env,
+    env: AUDIT_DESTINATION_ENV,
     capabilities,
     clients: new CloudflareClients({ accountId, apiToken }),
     apiToken,
@@ -54,7 +71,10 @@ async function branchIdentity(
 ): Promise<{ identity: FeatureIdentity; capabilities: ReturnType<typeof allCapabilities> }> {
   const { issue, slug } = await deriveIdentityFromBranch(projectDir);
   const config = await loadProject(projectDir);
-  const project = await resolveProjectName(config, projectDir);
+  // Never guessed: this name is the first segment of every resource name, and the only key teardown has
+  // to find them again. A fallback that differs between a worktree and a clone would make destroy
+  // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
+  const project = requireProjectName(config);
   return { identity: { project, issue, slug }, capabilities: allCapabilities(config) };
 }
 
@@ -200,7 +220,7 @@ const provision = defineCommand({
         capabilities,
         identity,
         provisioners,
-        audit: await buildAudit(projectDir, env, capabilities),
+        audit: await buildAudit(projectDir, capabilities),
       });
 
       if (args.json) {
@@ -225,6 +245,12 @@ const provision = defineCommand({
 const destroy = defineCommand({
   meta: { name: "destroy", description: "Tear down the feature: delete CF resources, free ports, prune the worktree" },
   args: {
+    env: { type: "string", description: `Environment to tear down (default: "${DEFAULT_FEATURE_ENV}")` },
+    "local-only": {
+      type: "boolean",
+      default: false,
+      description: "Tear down only the worktree and ports, leaving Cloudflare resources in place",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -233,12 +259,26 @@ const destroy = defineCommand({
       const { identity, capabilities } = await branchIdentity(projectDir);
       const provisioners = buildProvisioners(projectDir);
 
+      // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
+      // D1/KV/R2 leaks while the run reports success, and teardown then deletes the branch the resource
+      // names are derived from — so a later attempt can no longer work out what to delete. A CI job whose
+      // credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+      if (!provisioners && !args["local-only"]) {
+        throw new ValidationError({
+          message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
+          action:
+            "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, " +
+            "or pass --local-only to remove just the worktree and its ports.",
+        });
+      }
+
       const report = await destroyFeature({
         projectDir,
         identity,
         capabilities,
-        ...(provisioners ? { provisioners } : {}),
-        audit: await buildAudit(projectDir, DEFAULT_FEATURE_ENV, capabilities),
+        env: args.env ?? DEFAULT_FEATURE_ENV,
+        ...(provisioners && !args["local-only"] ? { provisioners } : {}),
+        audit: await buildAudit(projectDir, capabilities),
       });
 
       if (args.json) {
@@ -248,7 +288,7 @@ const destroy = defineCommand({
       for (const resource of report.deleted) {
         process.stdout.write(`Deleted ${resource.name}.\n`);
       }
-      if (!report.remote) process.stdout.write("Remote teardown skipped — no Cloudflare credentials.\n");
+      if (!report.remote) process.stdout.write("Remote teardown skipped. Cloudflare resources were left in place.\n");
       if (report.worktreePruned) process.stdout.write("Worktree pruned.\n");
       process.stdout.write(`${formatDone()}\n`);
     }),

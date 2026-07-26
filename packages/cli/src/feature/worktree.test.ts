@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createWorktree, featureNames, mainRepoRoot, teardownWorktree } from "./worktree";
 
@@ -64,5 +65,24 @@ describe("worktree (real git)", () => {
 
     const second = await teardownWorktree({ issue: "77", slug: "demo" });
     expect(second.pruned).toBe(false);
+  });
+
+  test("recreating after teardown fails with an actionable PithyError, not a raw git error", async () => {
+    const created = await createWorktree({ issue: "77", slug: "demo" });
+    await teardownWorktree({ issue: "77", slug: "demo" });
+
+    // Teardown deliberately left the files behind (CLAUDE.md forbids recursive delete on Linux).
+    expect(existsSync(created.wtPath)).toBe(true);
+    expect(existsSync(join(created.wtPath, ".git"))).toBe(false);
+
+    const failure = await createWorktree({ issue: "77", slug: "demo" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PithyError);
+    const error = failure as PithyError;
+    expect(error.payload.message).toContain(created.wtPath);
+    expect(error.payload.action).toBeTruthy();
+    expect(error.payload.action).not.toMatch(/fatal:/);
+
+    // The leftover directory is untouched — no recursive delete happened on its behalf.
+    expect(existsSync(created.wtPath)).toBe(true);
   });
 });

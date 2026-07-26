@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { discoverWorkers } from "./workers";
 
 /** Adopter token configuration: per-profile overrides of the predefined defaults (permissions/resources/store). */
@@ -82,15 +82,38 @@ export function allCapabilities(config: ProjectConfig): Capability[] {
 }
 
 /**
- * The project name for the `pithy feature` resource-naming convention. Prefers the explicit
- * `pithy.config.ts` `name`, then the app Worker's `wrangler.jsonc` name, then the project directory's
- * own name — always normalized to hyphenated-lowercase so it is a valid CF resource-name prefix.
+ * The project name, leniently guessed. Prefers the explicit `pithy.config.ts` `name`, then the first
+ * discovered worker's `wrangler.jsonc` name, then the project directory's own name — always normalized
+ * to hyphenated-lowercase. The fallbacks are **not stable**: `discoverWorkers` sorts alphabetically, so
+ * adding an app that sorts earlier changes the guess, and the directory basename differs between a
+ * worktree checkout and a normal clone. Fine for a cosmetic default; never use this where the name
+ * feeds a naming convention another command must reproduce later — use {@link requireProjectName} there.
  */
 export async function resolveProjectName(config: ProjectConfig, projectDir: string): Promise<string> {
   if (config.name) return kebabName(config.name);
   const [worker] = await discoverWorkers(projectDir);
   if (worker) return kebabName(worker.name);
   return kebabName(basename(projectDir));
+}
+
+/**
+ * The project name for the `pithy feature` resource-naming convention — the FIRST SEGMENT of every
+ * Cloudflare resource name (`<project>-f<issue>-<slug>-<binding>-<kind>`) and the only key
+ * `pithy feature destroy` has to find and delete them again. Unlike {@link resolveProjectName}, this
+ * never guesses: it requires an explicit `pithy.config.ts` `name`, because any fallback that can differ
+ * between machines or checkouts (an alphabetically-first worker, a worktree's directory basename) would
+ * make teardown recompute names that match nothing, delete nothing, and exit 0 — a silent resource leak.
+ * Throws an actionable `ValidationError` when `name` is absent.
+ */
+export function requireProjectName(config: ProjectConfig): string {
+  if (!config.name) {
+    throw new ValidationError({
+      message: "pithy.config.ts has no `name`.",
+      action:
+        "Set `name` in pithy.config.ts. Every feature resource name — and pithy feature destroy's ability to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.",
+    });
+  }
+  return kebabName(config.name);
 }
 
 /** Lowercase, collapse any run of non-`[a-z0-9]` to one `-`, and trim leading/trailing `-`. */

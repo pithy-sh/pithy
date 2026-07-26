@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 
 const run = promisify(execFile);
 
@@ -71,6 +71,16 @@ async function isRegistered(git: GitRunner, wtPath: string): Promise<boolean> {
   return (await git(["worktree", "list", "--porcelain"])).split("\n").some((line) => line === `worktree ${wtPath}`);
 }
 
+/**
+ * Whether a non-empty, unregistered directory already sits at `wtPath` — the leftover files a prior
+ * {@link teardownWorktree} deliberately left behind. `git worktree add` refuses to write into such a
+ * directory, so this is checked first to fail with an actionable error instead of a raw git one.
+ */
+function hasLeftoverFiles(wtPath: string): boolean {
+  if (!existsSync(wtPath)) return false;
+  return readdirSync(wtPath).length > 0;
+}
+
 /** Whether a ref exists locally or on origin. */
 async function branchExists(git: GitRunner, branch: string, cwd?: string): Promise<boolean> {
   return (
@@ -93,9 +103,12 @@ export interface CreateWorktreeResult extends FeatureNames {
 }
 
 /**
- * Create the feature's branch and worktree, or no-op if the worktree already exists. Attaches to the
- * branch when it already exists (a re-run after teardown left the branch behind); otherwise cuts a fresh
- * one from the trunk. Idempotent.
+ * Create the feature's branch and worktree, or no-op if the worktree is already registered. Attaches to
+ * the branch when it already exists (a re-run after teardown left the branch behind); otherwise cuts a
+ * fresh one from the trunk. Idempotent **only** while the worktree stays registered — a re-run after
+ * {@link teardownWorktree} (which deliberately leaves the files on disk) fails with an actionable
+ * `ConflictError` instead of a raw git error, because those leftover files must not be recursively
+ * deleted on Linux (CLAUDE.md).
  */
 export async function createWorktree(options: {
   issue: string;
@@ -108,6 +121,16 @@ export async function createWorktree(options: {
 
   if (await isRegistered(git, names.wtPath)) {
     return { ...names, root, created: false };
+  }
+
+  if (hasLeftoverFiles(names.wtPath)) {
+    throw new ConflictError({
+      message: `${names.wtPath} already exists and is not empty.`,
+      action:
+        "A previous 'pithy feature destroy' left these files on disk by design. Once no file watcher or editor " +
+        `has it open, remove the directory yourself (rm -r ${names.wtPath}) and re-run 'pithy feature create'.`,
+      detail: `git worktree add would fail: ${names.wtPath} is an unregistered, non-empty directory.`,
+    });
   }
 
   if (await branchExists(git, names.branch)) {
@@ -131,7 +154,9 @@ export interface TeardownWorktreeResult extends FeatureNames {
  * the registration — never `rm -rf` or `git worktree remove`, whose recursive delete over a node_modules
  * tree triggers inotify storms that crash the box (CLAUDE.md). Files remain on disk by design (the dir is
  * git-ignored). The lowercase `-d` refuses an unmerged branch, so an open feature keeps its branch.
- * Idempotent: nothing registered / no branch is a clean no-op.
+ * Idempotent for repeated teardowns: nothing registered / no branch is a clean no-op. Recreating the same
+ * feature afterwards is **not** automatically idempotent — the leftover files on disk make
+ * {@link createWorktree} fail loudly until an operator clears them; see its docstring.
  */
 export async function teardownWorktree(options: {
   issue: string;

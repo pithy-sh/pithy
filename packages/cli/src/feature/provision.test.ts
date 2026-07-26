@@ -202,7 +202,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const { stores, provisioners } = fakeProvisioners();
     await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners });
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
     expect(report.deleted.map((x) => x.kind).sort()).toEqual(["d1", "kv", "r2"]);
     expect(stores.d1.size + stores.kv.size + stores.r2.size).toBe(0);
@@ -217,7 +217,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     // A resource that is not one of this feature's expected names must be left untouched.
     stores.kv.set("acme-f42-other-cache-kv", "foreign-id");
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
     expect(report.deleted).toEqual([{ kind: "kv", name: orphan, id: "orphan-id" }]);
     expect(stores.kv.has("acme-f42-other-cache-kv")).toBe(true);
@@ -231,7 +231,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const ours = featureResourceName(identity, "CACHE", "kv");
     stores.kv.set(ours, "our-id");
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
     expect(report.deleted).toEqual([{ kind: "kv", name: ours, id: "our-id" }]);
     expect(stores.kv.has(sibling)).toBe(true);
@@ -271,6 +271,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       projectDir: dir,
       identity,
       capabilities,
+      env: "feature",
       provisioners,
       audit: async (event) => void events.push(event),
     });
@@ -282,6 +283,35 @@ describe("provisionFeature / deprovisionFeature", () => {
     // The deleted resource's id and name are both recorded — the "what exactly went" of the trail.
     expect(events[0]?.resourceId).toBeTruthy();
     expect(events[0]?.metadata?.name).toBeTruthy();
+  });
+
+  test("writes binding ids into each Worker's own wrangler.jsonc — an apps/ layout has no root one", async () => {
+    const { provisioners } = fakeProvisioners();
+    // The apps/<name>/ layout this feature targets: each Worker owns its wrangler.jsonc, and there is NO
+    // root one. Writing only to the project root used to throw a raw ENOENT *after* creating the resources,
+    // and left the real Workers without the feature's bindings.
+    await rm(join(dir, "wrangler.jsonc"));
+    const apiDir = join(dir, "apps", "api");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(join(apiDir, "wrangler.jsonc"), '{\n  "name": "api"\n}\n');
+
+    await provisionFeature({
+      projectDir: dir,
+      env: "feature",
+      capabilities,
+      identity,
+      provisioners,
+      discoverWorkers: async () => [{ name: "api", dir: apiDir }],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+    const api = parse(await readFile(join(apiDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { name?: string; d1_databases?: { binding: string; database_id?: string }[] }>;
+    };
+    expect(api.env.feature?.name).toBe(featureWorkerName(identity, "api"));
+    expect(api.env.feature?.d1_databases?.[0]).toMatchObject({ binding: "DB" });
+    expect(api.env.feature?.d1_databases?.[0]?.database_id).toBeTruthy();
   });
 
   describe("a manifest is repository content, not a trusted record", () => {
@@ -300,7 +330,13 @@ describe("provisionFeature / deprovisionFeature", () => {
       stores.d1.set("acme-production", "prod-d1-uuid");
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name: "looks-legit", id: "prod-d1-uuid" }]);
 
-      const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+      const report = await deprovisionFeature({
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
 
       expect(report.deleted).toEqual([]);
       expect(stores.d1.get("acme-production")).toBe("prod-d1-uuid"); // production survived
@@ -312,7 +348,13 @@ describe("provisionFeature / deprovisionFeature", () => {
       stores.d1.set(name, "our-d1");
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name, id: "our-d1" }]);
 
-      const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+      const report = await deprovisionFeature({
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
 
       expect(report.deleted).toEqual([{ kind: "d1", name, id: "our-d1" }]);
       expect(stores.d1.size).toBe(0);
@@ -322,9 +364,9 @@ describe("provisionFeature / deprovisionFeature", () => {
       const { provisioners } = fakeProvisioners();
       await writeCraftedManifest([], { project: "acme", issue: "999", slug: "someone-else" });
 
-      await expect(deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners })).rejects.toThrow(
-        /different feature/i,
-      );
+      await expect(
+        deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners }),
+      ).rejects.toThrow(/different feature/i);
     });
 
     test("provision does not launder a foreign entry forward into the manifest it rewrites", async () => {
@@ -351,7 +393,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("destroy is idempotent: no manifest and nothing to reconcile exits cleanly with no deletions", async () => {
     const { provisioners } = fakeProvisioners();
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, provisioners });
+    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
     expect(report.deleted).toEqual([]);
   });
 });

@@ -360,23 +360,28 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     reset = await previewReset(options.capabilities);
 
     const audit = options.audit ?? (async () => {});
-    // Recorded *before* the drop: if the reset dies partway, the intent and its authorizer are still on
-    // record. `critical` off dev — this is the most destructive thing the seeder can do.
-    await audit({
-      action: "seed/schema_reset",
-      outcome: "success",
-      severity: options.env === "dev" ? "warning" : "critical",
-      resourceType: "schema",
+    // Recorded *after* the drop, truthfully: `outcome` reflects what actually happened, never intent.
+    // `critical` off dev — this is the most destructive thing the seeder can do.
+    const auditEvent = {
+      action: "seed/schema_reset" as const,
+      severity: options.env === "dev" ? ("warning" as const) : ("critical" as const),
+      resourceType: "schema" as const,
       resourceId: options.env,
       metadata: { databases: reset.map((entry) => entry.database) },
-    });
+    };
 
-    await resetProject({
-      capabilities: options.capabilities,
-      projectDir: options.projectDir,
-      env: options.env,
-      remoteD1: options.remoteD1,
-    });
+    try {
+      await resetProject({
+        capabilities: options.capabilities,
+        projectDir: options.projectDir,
+        env: options.env,
+        remoteD1: options.remoteD1,
+      });
+    } catch (error) {
+      await audit({ ...auditEvent, outcome: "failure" });
+      throw error;
+    }
+    await audit({ ...auditEvent, outcome: "success" });
   }
 
   const driver = await openSeedDriver({

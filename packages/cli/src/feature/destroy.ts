@@ -37,6 +37,8 @@ export interface DestroyFeatureOptions {
   identity: FeatureIdentity;
   /** The composed capabilities, whose bindings the remote reconcile recomputes expected names from. */
   capabilities: Capability[];
+  /** The environment being torn down. Recorded on each audit event. */
+  env: string;
   /** The provisioners to delete through, or undefined to skip remote teardown (e.g. no CF credentials). */
   provisioners?: FeatureProvisioners;
   /** Audit emitter, so every deletion leaves a record. Defaults to recording nothing. */
@@ -63,6 +65,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
       projectDir: options.projectDir,
       identity: options.identity,
       capabilities: options.capabilities,
+      env: options.env,
       provisioners: options.provisioners,
       ...(options.audit !== undefined ? { audit: options.audit } : {}),
     });

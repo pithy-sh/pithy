@@ -88,6 +88,7 @@ describe("createFeature → destroyFeature round-trip", () => {
       projectDir: createReport.worktree,
       identity: { project: "app", issue: "77", slug: "demo" },
       capabilities: [appCapability()],
+      env: "feature",
       provisioners: emptyProvisioners,
       git,
       registryPath,
@@ -143,6 +144,7 @@ describe("createFeature → destroyFeature round-trip", () => {
       projectDir: repo,
       identity: { project: "app", issue: "88", slug: "gone" },
       capabilities: [],
+      env: "feature",
       git,
       registryPath: join(repo, ".dev-ports.json"),
     });

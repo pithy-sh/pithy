@@ -225,22 +225,24 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
         outcome: "success",
         resourceType: AUDIT_RESOURCE_TYPE[kind],
         resourceId: id,
-        metadata: { name, binding, feature: options.identity.slug, issue: options.identity.issue },
+        metadata: { name, binding, env: options.env, feature: options.identity.slug, issue: options.identity.issue },
       });
     }
   }
 
-  // Land the ids where migrate/seed read them.
-  await applyProvisionedIds(options.projectDir, options.env, manifest.resources);
-
-  // Give every Worker its environment-scoped script name and point its service bindings at the feature's own
-  // deployments — so a multi-worker feature's RPC stays inside the feature env instead of reaching production.
+  // Write the ids, the environment-scoped script name, and the service targets into **each Worker's own**
+  // `wrangler.jsonc` — the file wrangler actually reads, and the file `migrate`/`seed` resolve binding ids
+  // from. Writing only to the project root assumed a single root Worker; under the `apps/<name>/` layout
+  // this feature targets there is often no root `wrangler.jsonc` at all, so that both failed outright and
+  // left the real Workers without the feature's bindings. `discoverWorkers` falls back to the root Worker
+  // for the single-Worker starter layout, so both shapes are covered by iterating what it finds.
   const workers = await (options.discoverWorkers ?? discoverWorkers)(options.projectDir);
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
     service: featureWorkerName(options.identity, service.target),
   }));
   for (const worker of workers) {
+    await applyProvisionedIds(worker.dir, options.env, manifest.resources);
     await applyWorkerEnv({
       workerDir: worker.dir,
       env: options.env,
@@ -289,6 +291,8 @@ export interface DeprovisionFeatureOptions {
   identity: FeatureIdentity;
   /** The composed capabilities, whose bindings define the exact set of names this feature could have created. */
   capabilities: Capability[];
+  /** The environment being torn down — recorded on each audit event, since the trail lands elsewhere. */
+  env: string;
   /** The provisioners to delete through. */
   provisioners: FeatureProvisioners;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -324,7 +328,7 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       severity: "warning",
       resourceType: AUDIT_RESOURCE_TYPE[kind],
       resourceId: id,
-      metadata: { name, feature: options.identity.slug, issue: options.identity.issue },
+      metadata: { name, env: options.env, feature: options.identity.slug, issue: options.identity.issue },
     });
   };
 

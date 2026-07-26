@@ -1,8 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { allocatePortBlock, BASE_PORT, freePortBlock, type PortsRegistry, reclaimPortBlocks } from "./ports";
+import {
+  allocatePortBlock,
+  BASE_PORT,
+  freePortBlock,
+  LOCK_STALE_MS,
+  type PortsRegistry,
+  reclaimPortBlocks,
+} from "./ports";
 
 describe("ports", () => {
   let dir: string;
@@ -79,6 +86,45 @@ describe("ports", () => {
   it("throws a PithyError when the registry file is not valid JSON", async () => {
     await writeFile(registryPath, "not json", "utf8");
     await expect(allocatePortBlock({ registryPath, branch: "feature/1-a" })).rejects.toThrow(/corrupt/i);
+  });
+
+  it("throws a PithyError when a registry entry is missing its block, instead of handing out block 0", async () => {
+    // Hand-edited/half-written entry: no `block` field at all.
+    await writeFile(registryPath, JSON.stringify({ "feature/1-a": { base: 8787, size: 10 } }), "utf8");
+    await expect(allocatePortBlock({ registryPath, branch: "feature/2-b" })).rejects.toThrow(/corrupt/i);
+  });
+
+  it("throws a PithyError when a registry entry's block is not a number, instead of yielding NaN ports", async () => {
+    await writeFile(registryPath, JSON.stringify({ "feature/1-a": { block: "zero", base: 8787, size: 10 } }), "utf8");
+    await expect(allocatePortBlock({ registryPath, branch: "feature/2-b" })).rejects.toThrow(/corrupt/i);
+  });
+
+  describe("lock staleness", () => {
+    const lockPath = (): string => `${registryPath}.lock`;
+
+    it("reclaims a stale lock and lets allocation proceed", async () => {
+      await writeFile(lockPath(), JSON.stringify({ pid: 999_999, acquiredAt: new Date().toISOString() }), "utf8");
+      const staleTime = new Date(Date.now() - LOCK_STALE_MS - 1_000);
+      await utimes(lockPath(), staleTime, staleTime);
+
+      const block = await allocatePortBlock({ registryPath, branch: "feature/1-a" });
+      expect(block).toEqual({ block: 0, base: BASE_PORT, size: 10 });
+    });
+
+    it("does NOT reclaim a fresh lock — allocation still fails", async () => {
+      // mtime defaults to "now", well inside the staleness window, so every retry must keep failing.
+      await writeFile(lockPath(), JSON.stringify({ pid: 999_999, acquiredAt: new Date().toISOString() }), "utf8");
+
+      await expect(allocatePortBlock({ registryPath, branch: "feature/1-a" })).rejects.toThrow(/lock/i);
+
+      // The fresh lock was never touched — proves this isn't an unconditional steal.
+      await expect(stat(lockPath())).resolves.toBeDefined();
+    });
+
+    it("removes the lock file after a successful operation", async () => {
+      await allocatePortBlock({ registryPath, branch: "feature/1-a" });
+      await expect(stat(lockPath())).rejects.toThrow();
+    });
   });
 
   describe("reclaimPortBlocks", () => {

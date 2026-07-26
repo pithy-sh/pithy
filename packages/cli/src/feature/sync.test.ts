@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
 import { devConfigPath, readDevConfig } from "./devConfig";
@@ -123,5 +124,25 @@ describe("syncFeatureDevConfig", () => {
     expect(JSON.parse(await readFile(join(mainRoot, ".dev-ports.json"), "utf8"))["feature/69-demo"]).toMatchObject({
       block: 0,
     });
+  });
+
+  test("refuses to sync the main checkout as if it were a feature worktree, leaving its .dev.vars untouched", async () => {
+    const apiDir = join(mainRoot, "apps", "api");
+    await mkdir(apiDir, { recursive: true });
+    const realDevVars = join(apiDir, ".dev.vars");
+    await writeFile(realDevVars, "REAL_SECRET=do-not-lose-me\n");
+
+    const failure = await syncFeatureDevConfig({
+      mainRoot,
+      worktreePath: mainRoot,
+      branch: "feature/69-demo",
+      discoverWorkers: async () => workerTargets(mainRoot, ["api"]),
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.action).toBeTruthy();
+
+    // The guard fired before wireFeatureDevVars ever ran — the real, git-ignored file survives untouched.
+    expect(await readFile(realDevVars, "utf8")).toBe("REAL_SECRET=do-not-lose-me\n");
   });
 });

@@ -382,7 +382,7 @@ describe("seedProject", () => {
       expect(report.reset).toBeTruthy();
     });
 
-    test("audits the reset before dropping anything, so a failed reset still leaves its intent on record", async () => {
+    test("audits a successful reset, once it actually happened", async () => {
       await writeWrangler(localWrangler);
       const events: CliAuditEvent[] = [];
       await seedProject({
@@ -397,6 +397,50 @@ describe("seedProject", () => {
       expect(events[0]).toMatchObject({
         action: "seed/schema_reset",
         outcome: "success",
+        resourceType: "schema",
+        resourceId: "dev",
+      });
+    });
+
+    test("a reset that dies partway is audited as a failure, never a success, and still throws", async () => {
+      await writeWrangler(localWrangler);
+      // A migration whose `up` always throws: `resetMigrations` rolls back cleanly (nothing applied yet
+      // against this fresh local D1), then blows up reapplying — reproducing a reset that dies partway.
+      const brokenUp: Migration = {
+        up: async () => {
+          throw new Error("boom: reapply failed");
+        },
+        down: async (db) => {
+          await db.schema.dropTable("things").execute();
+        },
+      };
+      const broken = defineCapability({
+        name: "app",
+        requiredBindings: [],
+        databases: {
+          app: {
+            binding: "DB",
+            tables: { things: Things },
+            migrations: { "0001_things": brokenUp },
+            migrationOrder: 1000,
+          },
+        },
+      });
+
+      const events: CliAuditEvent[] = [];
+      const failure = await seedProject({
+        capabilities: [broken],
+        projectDir: dir,
+        env: "dev",
+        redo: true,
+        audit: async (event) => void events.push(event),
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(PithyError);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        action: "seed/schema_reset",
+        outcome: "failure",
         resourceType: "schema",
         resourceId: "dev",
       });
