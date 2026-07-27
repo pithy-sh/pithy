@@ -180,6 +180,37 @@
         "wrangler": "^4.99.0",
       },
     },
+    "packages/matchmaking": {
+      "name": "@pithy-sh/matchmaking",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/auth": "workspace:*",
+        "@pithy-sh/rating": "workspace:*",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+      "peerDependencies": {
+        "@pithy-sh/auth": "workspace:*",
+        "@pithy-sh/rating": "workspace:*",
+      },
+      "optionalPeers": [
+        "@pithy-sh/auth",
+        "@pithy-sh/rating",
+      ],
+    },
     "packages/media": {
       "name": "@pithy-sh/media",
       "version": "0.0.0",
@@ -233,6 +264,27 @@
         "@pithy-sh/leaderboard",
         "@pithy-sh/wallet",
       ],
+    },
+    "packages/rating": {
+      "name": "@pithy-sh/rating",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
     },
     "packages/secrets": {
       "name": "@pithy-sh/secrets",
@@ -658,9 +710,13 @@
 
     "@pithy-sh/leaderboard": ["@pithy-sh/leaderboard@workspace:packages/leaderboard"],
 
+    "@pithy-sh/matchmaking": ["@pithy-sh/matchmaking@workspace:packages/matchmaking"],
+
     "@pithy-sh/media": ["@pithy-sh/media@workspace:packages/media"],
 
     "@pithy-sh/multiplayer": ["@pithy-sh/multiplayer@workspace:packages/multiplayer"],
+
+    "@pithy-sh/rating": ["@pithy-sh/rating@workspace:packages/rating"],
 
     "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 
