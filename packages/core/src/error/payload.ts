@@ -521,6 +521,166 @@ const WalletInvalidAmountPublic = z
   })
   .describe("An amount is not a positive integer (400).");
 
+// --- @pithy-sh/rating: skill-rating + experience tracker codes ---
+
+const RatingUnknownAlgorithmPublic = z
+  .object({
+    code: z
+      .literal("rating/unknown_algorithm")
+      .describe(
+        "A game wires a rating algorithm id that no one registered. Algorithm ids come from the built-ins (`elo`/`glicko`/`trueskill`) or `registerRatingAlgorithm`, not the database.",
+      ),
+    status: z.literal(400).describe("Bad Request — the adopter's config names an unregistered algorithm."),
+    ...publicFields,
+  })
+  .describe("A game references an unregistered rating algorithm (400).");
+
+const RatingUnsupportedPlayerCountPublic = z
+  .object({
+    code: z
+      .literal("rating/unsupported_player_count")
+      .describe(
+        "A game's roster or team format is outside the algorithm's support — e.g. a 1v1-only algorithm (`elo`/`glicko`) wired to an N-player game, or a team format on an algorithm that cannot rate teams.",
+      ),
+    status: z.literal(400).describe("Bad Request — the algorithm cannot rate this game's shape."),
+    ...publicFields,
+  })
+  .describe("An algorithm cannot rate a game's player count or team format (400).");
+
+const RatingInvalidParamsPublic = z
+  .object({
+    code: z
+      .literal("rating/invalid_params")
+      .describe("A game's `algoParams` block failed the chosen algorithm's own validation."),
+    status: z.literal(400).describe("Bad Request — the algorithm's tuning block is invalid."),
+    ...publicFields,
+  })
+  .describe("A game's algorithm parameters failed validation (400).");
+
+const RatingGameNotFoundPublic = z
+  .object({
+    code: z
+      .literal("rating/game_not_found")
+      .describe("No game with that key is configured. Game keys come from `pithy.config.ts`, not the database."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested rating game key is not configured (404).");
+
+const RatingPoolNotFoundPublic = z
+  .object({
+    code: z.literal("rating/pool_not_found").describe("No rating pool with that name is configured by any game."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested rating pool is not configured (404).");
+
+const RatingRecordForbiddenPublic = z
+  .object({
+    code: z
+      .literal("rating/record_forbidden")
+      .describe(
+        "Recording a game's outcome requires the server-authoritative record scope. The authenticated caller does not hold it.",
+      ),
+    status: z.literal(403).describe("Forbidden — the caller may not record outcomes."),
+    ...publicFields,
+  })
+  .describe("The caller lacks the scope to record a rated outcome (403).");
+
+// --- @pithy-sh/matchmaking: pairing + presence capability codes ---
+
+const MatchmakingRoomNotFoundPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/room_not_found")
+      .describe("No open room has that code — it never existed, expired, or was already used up."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A room code resolves to no open room (404).");
+
+const MatchmakingRoomFullPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/room_full")
+      .describe("The room's code has already been redeemed its maximum number of times."),
+    status: z.literal(409).describe("Conflict — the room code is spent."),
+    ...publicFields,
+  })
+  .describe("A room code has no redemptions left (409).");
+
+const MatchmakingInvalidCodePublic = z
+  .object({
+    code: z
+      .literal("matchmaking/invalid_code")
+      .describe("The supplied room code is malformed — wrong shape or length."),
+    status: z.literal(400).describe("Bad Request — the code is not a valid room code."),
+    ...publicFields,
+  })
+  .describe("A supplied room code is malformed (400).");
+
+const MatchmakingInviteNotFoundPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/invite_not_found")
+      .describe("No pending invite with that id exists, or it was already accepted, declined, or expired."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested invite does not exist (404).");
+
+const MatchmakingInviteForbiddenPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/invite_forbidden")
+      .describe("The authenticated user is neither the inviter nor the invitee of this invite."),
+    status: z.literal(403).describe("Forbidden — the invite is not yours to act on."),
+    ...publicFields,
+  })
+  .describe("The caller may not act on this invite (403).");
+
+const MatchmakingUserNotFoundPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/user_not_found")
+      .describe(
+        "The invited email or screen name resolves to no single user — no match, or an ambiguous display name. Invite by email for a unique identity.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("An invite target resolves to no single user (404).");
+
+const MatchmakingAlreadyFriendsPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/already_friends")
+      .describe("The two users are already connected, or a request between them is already pending."),
+    status: z.literal(409).describe("Conflict — the friendship or request already exists."),
+    ...publicFields,
+  })
+  .describe("A friend connection or request already exists (409).");
+
+const MatchmakingFriendRequestNotFoundPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/friend_request_not_found")
+      .describe("No pending friend request exists between these users for the caller to accept or decline."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No pending friend request exists (404).");
+
+const MatchmakingNotQueuedPublic = z
+  .object({
+    code: z
+      .literal("matchmaking/not_queued")
+      .describe("The player is not currently waiting in this game's matchmaking queue."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("The player is not in the queue (404).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -575,6 +735,21 @@ export const PublicErrorPayload = z
     WalletInsufficientFundsPublic,
     WalletHoldNotOpenPublic,
     WalletInvalidAmountPublic,
+    RatingUnknownAlgorithmPublic,
+    RatingUnsupportedPlayerCountPublic,
+    RatingInvalidParamsPublic,
+    RatingGameNotFoundPublic,
+    RatingPoolNotFoundPublic,
+    RatingRecordForbiddenPublic,
+    MatchmakingRoomNotFoundPublic,
+    MatchmakingRoomFullPublic,
+    MatchmakingInvalidCodePublic,
+    MatchmakingInviteNotFoundPublic,
+    MatchmakingInviteForbiddenPublic,
+    MatchmakingUserNotFoundPublic,
+    MatchmakingAlreadyFriendsPublic,
+    MatchmakingFriendRequestNotFoundPublic,
+    MatchmakingNotQueuedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -690,6 +865,51 @@ const WalletHoldNotOpen = WalletHoldNotOpenPublic.extend(detailField).describe(
 const WalletInvalidAmount = WalletInvalidAmountPublic.extend(detailField).describe(
   WalletInvalidAmountPublic.description ?? "",
 );
+const RatingUnknownAlgorithm = RatingUnknownAlgorithmPublic.extend(detailField).describe(
+  RatingUnknownAlgorithmPublic.description ?? "",
+);
+const RatingUnsupportedPlayerCount = RatingUnsupportedPlayerCountPublic.extend(detailField).describe(
+  RatingUnsupportedPlayerCountPublic.description ?? "",
+);
+const RatingInvalidParams = RatingInvalidParamsPublic.extend(detailField).describe(
+  RatingInvalidParamsPublic.description ?? "",
+);
+const RatingGameNotFound = RatingGameNotFoundPublic.extend(detailField).describe(
+  RatingGameNotFoundPublic.description ?? "",
+);
+const RatingPoolNotFound = RatingPoolNotFoundPublic.extend(detailField).describe(
+  RatingPoolNotFoundPublic.description ?? "",
+);
+const RatingRecordForbidden = RatingRecordForbiddenPublic.extend(detailField).describe(
+  RatingRecordForbiddenPublic.description ?? "",
+);
+const MatchmakingRoomNotFound = MatchmakingRoomNotFoundPublic.extend(detailField).describe(
+  MatchmakingRoomNotFoundPublic.description ?? "",
+);
+const MatchmakingRoomFull = MatchmakingRoomFullPublic.extend(detailField).describe(
+  MatchmakingRoomFullPublic.description ?? "",
+);
+const MatchmakingInvalidCode = MatchmakingInvalidCodePublic.extend(detailField).describe(
+  MatchmakingInvalidCodePublic.description ?? "",
+);
+const MatchmakingInviteNotFound = MatchmakingInviteNotFoundPublic.extend(detailField).describe(
+  MatchmakingInviteNotFoundPublic.description ?? "",
+);
+const MatchmakingInviteForbidden = MatchmakingInviteForbiddenPublic.extend(detailField).describe(
+  MatchmakingInviteForbiddenPublic.description ?? "",
+);
+const MatchmakingUserNotFound = MatchmakingUserNotFoundPublic.extend(detailField).describe(
+  MatchmakingUserNotFoundPublic.description ?? "",
+);
+const MatchmakingAlreadyFriends = MatchmakingAlreadyFriendsPublic.extend(detailField).describe(
+  MatchmakingAlreadyFriendsPublic.description ?? "",
+);
+const MatchmakingFriendRequestNotFound = MatchmakingFriendRequestNotFoundPublic.extend(detailField).describe(
+  MatchmakingFriendRequestNotFoundPublic.description ?? "",
+);
+const MatchmakingNotQueued = MatchmakingNotQueuedPublic.extend(detailField).describe(
+  MatchmakingNotQueuedPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -744,6 +964,21 @@ export const ErrorPayload = z
     WalletInsufficientFunds,
     WalletHoldNotOpen,
     WalletInvalidAmount,
+    RatingUnknownAlgorithm,
+    RatingUnsupportedPlayerCount,
+    RatingInvalidParams,
+    RatingGameNotFound,
+    RatingPoolNotFound,
+    RatingRecordForbidden,
+    MatchmakingRoomNotFound,
+    MatchmakingRoomFull,
+    MatchmakingInvalidCode,
+    MatchmakingInviteNotFound,
+    MatchmakingInviteForbidden,
+    MatchmakingUserNotFound,
+    MatchmakingAlreadyFriends,
+    MatchmakingFriendRequestNotFound,
+    MatchmakingNotQueued,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;
