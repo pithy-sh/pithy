@@ -1,4 +1,4 @@
-import type { RequestOptions } from "cloudflare/core";
+import type { Cloudflare } from "cloudflare";
 import type { DirectUploadCreateParams, DirectUploadCreateResponse } from "cloudflare/resources/stream/direct-upload";
 import type { StreamEditParams, Video } from "cloudflare/resources/stream/stream";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import { CloudflareManager } from "../client/manager";
  * Per-request CF SDK options for every Stream call: a 10s timeout and up to 3 retries — the same
  * generous envelope the Images manager uses, since video operations can be slow.
  */
-const requestOptions: RequestOptions = {
+const requestOptions: Cloudflare.RequestOptions = {
   timeout: 10000,
   maxRetries: 3,
 };
@@ -109,7 +109,7 @@ export class CloudflareStreamManager extends CloudflareManager {
     return cloudflareRequest(`Stream create download for '${videoId}'`, async () => {
       const response = await this.getClient().stream.downloads.create(
         videoId,
-        { account_id: this.accountId, body: {} },
+        { account_id: this.accountId },
         requestOptions,
       );
       return parseDownloadStatus(response);

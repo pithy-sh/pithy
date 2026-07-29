@@ -1,11 +1,6 @@
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageBulkPushResponse } from "cloudflare/resources/queues/messages";
-import {
-  CloudflareInvalidResponseError,
-  CloudflareNotConfiguredError,
-  cloudflareRequest,
-  reasonOf,
-} from "../client/errors";
+import { CloudflareNotConfiguredError, cloudflareRequest, reasonOf } from "../client/errors";
 import { CloudflareManager, type CloudflareManagerConfig } from "../client/manager";
 
 /** Config for the Queue manager: the shared client config plus the queue it targets by name. */
@@ -108,17 +103,12 @@ export class CloudflareQueueManager extends CloudflareManager {
   async sendBatch<T>(messages: T[]): Promise<MessageBulkPushResponse> {
     const queueId = await this.getQueueId();
     return cloudflareRequest(`send batch of ${messages.length} message(s)`, async () => {
-      const response = await this.getClient().queues.messages.bulkPush(queueId, {
+      // The SDK unwraps the API envelope and throws an `APIError` when `success` is false, so a
+      // resolved response is already a success — `cloudflareRequest` converts any throw for us.
+      return await this.getClient().queues.messages.bulkPush(queueId, {
         account_id: this.accountId,
         messages: messages.map((body) => ({ body: body as unknown })),
       });
-      if (response.success !== true) {
-        throw new CloudflareInvalidResponseError({
-          message: "The Cloudflare Queues bulk push reported failure.",
-          detail: `API errors: ${JSON.stringify(response.errors ?? [])}.`,
-        });
-      }
-      return response;
     });
   }
 

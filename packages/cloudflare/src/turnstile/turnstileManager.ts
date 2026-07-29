@@ -1,5 +1,5 @@
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
-import type { RequestOptions } from "cloudflare/core";
+import type { Cloudflare } from "cloudflare";
 import type { Widget, WidgetListResponse } from "cloudflare/resources/turnstile/widgets";
 import { z } from "zod";
 import { CloudflareInvalidResponseError, cloudflareRequest } from "../client/errors";
@@ -9,7 +9,7 @@ import { CloudflareManager } from "../client/manager";
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /** Per-call SDK timeout + retry budget for widget management operations. */
-const requestOptions: RequestOptions = { timeout: 10000, maxRetries: 3 };
+const requestOptions: Cloudflare.RequestOptions = { timeout: 10000, maxRetries: 3 };
 
 /**
  * The two widget modes Pithy provisions. `managed` is Cloudflare's *visible* managed widget (CF decides

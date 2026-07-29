@@ -27,9 +27,9 @@ const v1: EncryptionConfig = {
 const syncStep: StepRunner = { do: (_name, fn) => fn() };
 
 class StubWriter implements ConfigWriter {
-  readonly writes: Array<{ value: string; previous: string }> = [];
-  async write(value: string, previous: string): Promise<void> {
-    this.writes.push({ value, previous });
+  readonly writes: string[] = [];
+  async write(value: string): Promise<void> {
+    this.writes.push(value);
   }
 }
 
@@ -63,9 +63,9 @@ describe("runAtRestKeyRotation", () => {
     expect(result).toMatchObject({ newCurrentVersion: 2, rotated: 1, failed: 0, pruned: true });
     // Two write-backs: the merged config (keys 1 + 2), then the pruned config (key 2 only).
     expect(writer.writes).toHaveLength(2);
-    expect(Object.keys(JSON.parse(writer.writes[1]?.value ?? "{}").versions)).toEqual(["2"]);
+    expect(Object.keys(JSON.parse(writer.writes[1] ?? "{}").versions)).toEqual(["2"]);
     // The row re-encrypted to v2 still decrypts to the same value under the merged config.
-    const merged = JSON.parse(writer.writes[0]?.value ?? "{}") as EncryptionConfig;
+    const merged = JSON.parse(writer.writes[0] ?? "{}") as EncryptionConfig;
     expect(await new SystemSecretsStore(db(), merged).getValue("a")).toEqual({
       currentVersion: "1",
       versions: { "1": "va" },

@@ -1,4 +1,4 @@
-import type { RequestOptions } from "cloudflare/core";
+import type { Cloudflare } from "cloudflare";
 import type { Image, V1CreateParams, V1EditParams } from "cloudflare/resources/images/v1/v1";
 import type {
   DirectUploadCreateParams,
@@ -12,7 +12,7 @@ import { CloudflareManager } from "../client/manager";
  * Per-request CF SDK options for every Images call: a 10s timeout and up to 3 retries. Uploads and
  * list calls can be slow, so the timeout is generous and retries cover transient API blips.
  */
-const requestOptions: RequestOptions = {
+const requestOptions: Cloudflare.RequestOptions = {
   timeout: 10000,
   maxRetries: 3,
 };

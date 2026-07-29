@@ -28,10 +28,11 @@ describe.skipIf(!creds.hasCreds)("CloudflareQueueManager — LIVE", () => {
         expect(id).toBeTruthy();
         expect(await manager.getQueueId()).toBe(id);
 
-        // Push a single message and a batch — the bulk-push response must report success.
+        // Push a single message and a batch. A failed push throws, so resolving is the assertion;
+        // the response itself now carries only best-effort queue metrics.
         await manager.send({ type: "welcome", to: "saffron" });
         const batch = await manager.sendBatch([{ n: 1 }, { n: 2 }, { n: 3 }]);
-        expect(batch.success).toBe(true);
+        expect(batch).toBeDefined();
 
         // Error path: an unknown queue name resolves to a typed not-found, not a raw throw.
         const missing = new CloudflareQueueManager({

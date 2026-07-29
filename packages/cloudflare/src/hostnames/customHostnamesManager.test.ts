@@ -136,7 +136,7 @@ describe("CloudflareCustomHostnamesManager", () => {
       const result = await manager.getCustomHostname("app.example.com");
 
       expect(result).toEqual({ id: "ch-2", hostname: "app.example.com" });
-      expect(mockList).toHaveBeenCalledWith({ zone_id: "zone-9", hostname: "app.example.com" });
+      expect(mockList).toHaveBeenCalledWith({ zone_id: "zone-9", hostname: { exact: "app.example.com" } });
     });
 
     it("returns null when no hostname matches", async () => {

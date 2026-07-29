@@ -74,7 +74,7 @@ export async function runAtRestKeyRotation(
   try {
     const newConfig = await step.do("generate-key", () => mergeNextKey(deps.config, now));
     await step.do("write-config", async () => {
-      await deps.configWriter.write(JSON.stringify(newConfig), JSON.stringify(deps.config));
+      await deps.configWriter.write(JSON.stringify(newConfig));
     });
 
     let rotated = 0;
@@ -94,7 +94,7 @@ export async function runAtRestKeyRotation(
       const prunedConfig = pruneOldKeys(newConfig);
       if (prunedConfig) {
         await step.do("prune", async () => {
-          await deps.configWriter.write(JSON.stringify(prunedConfig), JSON.stringify(newConfig));
+          await deps.configWriter.write(JSON.stringify(prunedConfig));
         });
         pruned = true;
       }

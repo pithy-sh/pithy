@@ -67,11 +67,14 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Test
-        run: bun run test
-
+      # Build before test. Nothing in the test run consumes `dist/` (packages import each other's
+      # source), so this is purely about failing fast: a broken tsc emit surfaces in seconds
+      # rather than after the full suite.
       - name: Build
         run: bun run build
+
+      - name: Test
+        run: bun run test
 
   # Verify the cross-runtime promise: the packages run on the Node versions we
   # support (22 LTS floor + 24 current), not just under Bun. Tests run via the

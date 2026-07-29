@@ -7,9 +7,10 @@
  */
 export interface ConfigWriter {
   /**
-   * Persist the new `SECRETS_ENCRYPTION_KEYS` value. `previous` is passed for atomic recovery —
-   * losing the config would make every stored secret undecryptable, so a transient write failure
-   * must be able to restore the prior value.
+   * Persist the new `SECRETS_ENCRYPTION_KEYS` value. The write is an in-place update, so a failure
+   * leaves the prior config intact and readable — losing this config would make every stored secret
+   * undecryptable, and no window exists in which it is absent. A failed write throws; the caller
+   * (the rotation Workflow step) retries.
    */
-  write(value: string, previous: string): Promise<void>;
+  write(value: string): Promise<void>;
 }

@@ -14,14 +14,14 @@ describe("rotationConfigWriter", () => {
   // key set where the binding never reads it, leaving re-encrypted rows undecryptable.
   test("staging rotation writes back to STAGING_SECRETS_ENCRYPTION_KEYS", async () => {
     const { manager, putSecret } = fakeManager();
-    await rotationConfigWriter(manager, "staging").write("new-config", "prev-config");
-    expect(putSecret).toHaveBeenCalledWith("STAGING_SECRETS_ENCRYPTION_KEYS", "new-config", "prev-config");
+    await rotationConfigWriter(manager, "staging").write("new-config");
+    expect(putSecret).toHaveBeenCalledWith("STAGING_SECRETS_ENCRYPTION_KEYS", "new-config");
   });
 
   test("production rotation writes back to PRODUCTION_SECRETS_ENCRYPTION_KEYS", async () => {
     const { manager, putSecret } = fakeManager();
-    await rotationConfigWriter(manager, "production").write("c", "p");
-    expect(putSecret).toHaveBeenCalledWith("PRODUCTION_SECRETS_ENCRYPTION_KEYS", "c", "p");
+    await rotationConfigWriter(manager, "production").write("c");
+    expect(putSecret).toHaveBeenCalledWith("PRODUCTION_SECRETS_ENCRYPTION_KEYS", "c");
   });
 
   test("rejects an unknown environment — the wrangler ENVIRONMENT var is validated", () => {

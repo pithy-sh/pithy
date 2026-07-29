@@ -5,6 +5,7 @@ import { CfSecretEntry, CloudflareSecretsStoreManager } from "./secretsStoreMana
 const mockList = vi.fn();
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
+const mockEdit = vi.fn();
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
@@ -14,6 +15,7 @@ vi.mock("cloudflare", () => ({
           list: mockList,
           create: mockCreate,
           delete: mockDelete,
+          edit: mockEdit,
         },
       },
     };
@@ -127,18 +129,20 @@ describe("CloudflareSecretsStoreManager", () => {
       });
     });
 
-    it("deletes then creates when the secret already exists", async () => {
+    it("edits in place when the secret already exists — never deletes first", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
-      mockDelete.mockResolvedValue({ id: "id-existing" });
-      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+      mockEdit.mockResolvedValue({ id: "id-existing" });
 
       await manager.putSecret("FOO", "value-2");
 
-      expect(mockDelete).toHaveBeenCalledWith("store-abc", "id-existing", { account_id: "test-account-id" });
-      expect(mockCreate).toHaveBeenCalledWith("store-abc", {
+      expect(mockEdit).toHaveBeenCalledWith("id-existing", {
         account_id: "test-account-id",
-        body: [{ name: "FOO", value: "value-2", scopes: ["workers"] }],
+        store_id: "store-abc",
+        value: "value-2",
+        scopes: ["workers"],
       });
+      expect(mockDelete).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
     });
 
     it("wraps a create failure as cloudflare/request_failed", async () => {
@@ -152,65 +156,37 @@ describe("CloudflareSecretsStoreManager", () => {
       );
     });
 
-    it("restores previousValue when create fails after delete", async () => {
+    // The reason `putSecret` uses `edit` rather than delete-then-create: a failed update must leave
+    // the prior value bound. For the master encryption key, an absent secret is a platform outage —
+    // every stored secret becomes undecryptable — so "never delete first" is the load-bearing property.
+    it("leaves the existing secret intact when the edit fails", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-existing", "SECRETS_CONFIG")]));
-      mockDelete.mockResolvedValue({ id: "id-existing" });
-      const callOrder: string[] = [];
-      mockCreate.mockImplementation(async (_storeId: string, args: { body: { value: string }[] }) => {
-        const value = args.body[0]?.value ?? "";
-        callOrder.push(value);
-        if (value === "new-envelope") throw new Error("transient 5xx");
-        return [rawEntry("id-restored", "SECRETS_CONFIG")];
-      });
+      mockEdit.mockRejectedValue(new Error("transient 5xx"));
 
-      await expect(manager.putSecret("SECRETS_CONFIG", "new-envelope", "old-envelope")).rejects.toThrowError(
+      await expect(manager.putSecret("SECRETS_CONFIG", "new-envelope")).rejects.toThrowError(
         expect.objectContaining({
-          payload: expect.objectContaining({
-            code: "cloudflare/request_failed",
-            message: expect.stringMatching(/prior value restored/),
-          }),
+          payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "transient 5xx" }),
         }),
       );
 
-      expect(callOrder).toEqual(["new-envelope", "old-envelope"]);
+      expect(mockDelete).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    it("surfaces a combined error when recovery itself fails, leaking no plaintext", async () => {
+    it("does not leak the plaintext value into the error", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-existing", "SECRETS_CONFIG")]));
-      mockDelete.mockResolvedValue({ id: "id-existing" });
-      mockCreate.mockImplementation(async (_storeId: string, args: { body: { value: string }[] }) => {
-        if (args.body[0]?.value === "new-envelope") throw new Error("upstream-fail-A");
-        throw new Error("upstream-fail-B");
-      });
+      mockEdit.mockRejectedValue(new Error("upstream-fail"));
 
       let err: PithyError | undefined;
       try {
-        await manager.putSecret("SECRETS_CONFIG", "new-envelope", "old-envelope");
+        await manager.putSecret("SECRETS_CONFIG", "new-envelope");
       } catch (e) {
         err = e as PithyError;
       }
 
       expect(err).toBeInstanceOf(PithyError);
-      expect(err?.payload.code).toBe("cloudflare/request_failed");
-      expect(err?.payload.message).toContain("AND failed to restore prior value");
-      expect(err?.payload.detail).toContain("upstream-fail-A");
-      expect(err?.payload.detail).toContain("upstream-fail-B");
-      // Plaintext of neither envelope may leak into message or detail.
       expect(err?.payload.message).not.toContain("new-envelope");
-      expect(err?.payload.message).not.toContain("old-envelope");
       expect(err?.payload.detail).not.toContain("new-envelope");
-      expect(err?.payload.detail).not.toContain("old-envelope");
-    });
-
-    it("does not attempt recovery when previousValue is omitted", async () => {
-      mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
-      mockDelete.mockResolvedValue({ id: "id-existing" });
-      mockCreate.mockRejectedValue(new Error("Quota exceeded"));
-
-      await expect(manager.putSecret("FOO", "v2")).rejects.toThrowError(
-        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
-      );
-      expect(mockCreate).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -221,7 +197,7 @@ describe("CloudflareSecretsStoreManager", () => {
 
       await manager.deleteSecret("FOO");
 
-      expect(mockDelete).toHaveBeenCalledWith("store-abc", "id-1", { account_id: "test-account-id" });
+      expect(mockDelete).toHaveBeenCalledWith("id-1", { account_id: "test-account-id", store_id: "store-abc" });
     });
 
     it("throws core/not_found when the secret is not present", async () => {
