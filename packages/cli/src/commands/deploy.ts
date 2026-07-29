@@ -3,19 +3,22 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { countPendingMigrations } from "../migrations/run";
-import { allCapabilities, loadProject } from "../project/config";
 import { deployProject, pendingWarning, summarizeDeploy } from "../project/deploy";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
  * How many migrations are unapplied for the target env — best-effort, never blocking. Deploy and
  * migrate are orthogonal (deploy never migrates), so a config that can't load or a database it can't
  * reach yields `undefined` (no warning) rather than failing the deploy.
+ *
+ * Deploy ships every Worker, so the count does too — it fans out over `apps/*` exactly as `pithy migrate`
+ * would. The warning is about the project's schema being behind, and a table any Worker owns is one this
+ * deploy's code may read.
  */
 async function pendingFor(projectDir: string, env: string): Promise<number | undefined> {
   try {
-    const config = await loadProject(projectDir);
-    return await countPendingMigrations({ capabilities: allCapabilities(config), projectDir, env });
+    return await countPendingMigrations({ projectDir, env });
   } catch {
     return undefined;
   }
@@ -32,8 +35,9 @@ async function buildAudit(projectDir: string, env: string) {
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
-  const capabilities = await loadProject(projectDir)
-    .then(allCapabilities)
+  // `audit` composed by any Worker means the project has a trail; deploy spans them all.
+  const capabilities = await resolveWorkers({ projectDir })
+    .then(projectCapabilities)
     .catch(() => []);
   return createCliAudit({
     projectDir,
@@ -47,7 +51,7 @@ async function buildAudit(projectDir: string, env: string) {
 export default defineCommand({
   meta: { name: "deploy", description: "Deploy to Cloudflare Workers" },
   args: {
-    env: { type: "string", description: "Target environment (omit to deploy the top-level worker)" },
+    env: { type: "string", description: "Target environment (omit for each worker's top-level config)" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -55,8 +59,8 @@ export default defineCommand({
       const projectDir = process.cwd();
 
       // The migration warning only makes sense against a concrete remote target. A bare `pithy deploy`
-      // ships the top-level worker, whose deployed schema is not the local dev D1 — so skip the check
-      // (and its REST round trip) unless an `--env` names the environment being deployed.
+      // ships each worker's top-level config, whose deployed schema is not the local dev D1 — so skip the
+      // check (and its REST round trip) unless an `--env` names the environment being deployed.
       const pending = args.env ? await pendingFor(projectDir, args.env) : undefined;
       const audit = await buildAudit(projectDir, args.env ?? "dev");
       const deploys = await deployProject({ projectDir, env: args.env, audit });

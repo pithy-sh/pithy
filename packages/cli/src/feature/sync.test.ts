@@ -22,11 +22,11 @@ describe("syncFeatureDevConfig", () => {
     await rm(mainRoot, { recursive: true, force: true });
   });
 
-  /** Resolve a worker's directory, creating it as a real discovery would have found it. */
+  /** Resolve a worker's directory, creating it as a real discovery would have found it: apps/<name>. */
   async function workerTargets(root: string, names: string[]): Promise<WorkerTarget[]> {
     const targets: WorkerTarget[] = [];
     for (const name of names) {
-      const dir = name === "app" ? root : join(root, "apps", name);
+      const dir = join(root, "apps", name);
       await mkdir(dir, { recursive: true });
       targets.push({ name, dir });
     }
@@ -105,9 +105,62 @@ describe("syncFeatureDevConfig", () => {
     expect(other.dev.workers.api?.port).not.toBe(BASE_PORT);
   });
 
-  test("wires the worktree's .dev.vars to the repo's shared file", async () => {
+  test("reclaims a live worktree's block into a lost registry", async () => {
+    // .dev-ports.json is git-ignored, so it can vanish while the worktrees allocated from it live on. A
+    // live worktree — one that still has its gitlink — must get its pinned block back, or the next feature
+    // would be handed a block someone is already running on.
+    const first = await sync(["api"]);
+    await writeFile(join(worktreePath, ".git"), "gitdir: /somewhere/.git/worktrees/69-demo\n");
+    await rm(join(mainRoot, ".dev-ports.json"));
+
+    const otherWorktree = join(mainRoot, ".worktrees", "70-other");
+    await mkdir(otherWorktree, { recursive: true });
+    const other = await syncFeatureDevConfig({
+      mainRoot,
+      worktreePath: otherWorktree,
+      branch: "feature/70-other",
+      discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
+    });
+
+    const registry = JSON.parse(await readFile(join(mainRoot, ".dev-ports.json"), "utf8"));
+    expect(registry["feature/69-demo"]).toEqual(first.block);
+    expect(other.block.block).not.toBe(first.block.block);
+  });
+
+  test("never reclaims a destroyed feature's block back into the registry", async () => {
+    // `pithy feature destroy` frees the block and prunes the worktree by dropping its gitlink — it never
+    // recursively deletes the files (CLAUDE.md), so the config can linger. Treating that leftover as a live
+    // claim re-registered a feature that no longer exists, holding its ports forever and pushing every
+    // later feature to a higher base.
+    const destroyed = await sync(["api"]);
+    const registryPath = join(mainRoot, ".dev-ports.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8"));
+    delete registry["feature/69-demo"]; // what freePortBlock does.
+    await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+    // The worktree is gone — no gitlink — but its .dev.config.json is still on disk.
+    expect(await readDevConfig(devConfigPath(worktreePath))).not.toBeNull();
+
+    const otherWorktree = join(mainRoot, ".worktrees", "70-other");
+    await mkdir(otherWorktree, { recursive: true });
+    await writeFile(join(otherWorktree, ".git"), "gitdir: /somewhere/.git/worktrees/70-other\n");
+    const other = await syncFeatureDevConfig({
+      mainRoot,
+      worktreePath: otherWorktree,
+      branch: "feature/70-other",
+      discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
+    });
+
+    const after = JSON.parse(await readFile(registryPath, "utf8"));
+    expect(after["feature/69-demo"]).toBeUndefined(); // stays freed
+    // And the freed block is handed straight to the next feature.
+    expect(other.block).toEqual(destroyed.block);
+  });
+
+  test("wires the worktree's and every worker's .dev.vars to the repo's shared file", async () => {
     await sync(["app"]);
     expect(await readFile(join(worktreePath, ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
+    // wrangler loads .dev.vars from each worker's own dir and never merges, so each apps/<name> is linked.
+    expect(await readFile(join(worktreePath, "apps", "app", ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
   });
 
   test("a colleague who pulled the branch gets the whole local setup built for them", async () => {

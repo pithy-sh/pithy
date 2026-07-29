@@ -5,7 +5,6 @@ import { tokenOverrideResolver } from "./config";
 describe("tokenOverrideResolver", () => {
   test("returns a profile's configured override", () => {
     const config: ProjectConfig = {
-      capabilities: [],
       tokens: { overrides: { "ci-deploy": { permissions: ["workers:write"], store: "secrets-store" } } },
     };
     const resolve = tokenOverrideResolver(config);
@@ -13,7 +12,7 @@ describe("tokenOverrideResolver", () => {
   });
 
   test("returns undefined for a profile with no override, and when no token config exists", () => {
-    expect(tokenOverrideResolver({ capabilities: [], tokens: { overrides: {} } })("ci-deploy")).toBeUndefined();
-    expect(tokenOverrideResolver({ capabilities: [] })("remote-migrate")).toBeUndefined();
+    expect(tokenOverrideResolver({ tokens: { overrides: {} } })("ci-deploy")).toBeUndefined();
+    expect(tokenOverrideResolver({})("remote-migrate")).toBeUndefined();
   });
 });

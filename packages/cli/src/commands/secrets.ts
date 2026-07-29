@@ -14,8 +14,32 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
-import { allCapabilities, loadProject } from "../project/config";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+
+/**
+ * The secret registry for the whole project: every Worker's, merged by secret name.
+ *
+ * Capabilities are per Worker, so the registry is too. The secret **name** is the join key — the same name
+ * resolves the same value through any registry that declares it — so `pithy secrets` must see every declared
+ * name, not just the alphabetically-first Worker's. A Worker that does not compose `secrets` simply
+ * contributes nothing; when no Worker does, the capability's own actionable error is what surfaces.
+ */
+async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry> {
+  const workers = await resolveWorkers({ projectDir });
+  const registries: SecretRegistry[] = [];
+  let absent: unknown;
+  for (const worker of workers) {
+    try {
+      registries.push(resolveSecretRegistry(worker.config));
+    } catch (error) {
+      absent = error;
+    }
+  }
+  const first = registries[0];
+  if (!first) throw absent;
+  return registries.length === 1 ? first : (Object.assign({}, ...registries) as SecretRegistry);
+}
 
 /**
  * The audit emitter for a secrets command. Every value-touching write is a warning-severity event
@@ -27,8 +51,9 @@ async function buildAudit(projectDir: string, env: string) {
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
-  const capabilities = await loadProject(projectDir)
-    .then(allCapabilities)
+  // Auditing spans the project, not one Worker: `audit` composed anywhere means the trail exists.
+  const capabilities = await resolveWorkers({ projectDir })
+    .then(projectCapabilities)
     .catch(() => []);
   return createCliAudit({
     projectDir,
@@ -108,7 +133,7 @@ async function write(
   args: { name: string; env?: string; json: boolean },
 ): Promise<void> {
   const projectDir = process.cwd();
-  const registry = resolveSecretRegistry(await loadProject(projectDir));
+  const registry = await projectSecretRegistry(projectDir);
   const env = resolveEnv(registry, args.name, args.env);
   const value = mode === "delete" ? undefined : await readValue(args.name);
   const dispatcher = buildDispatcher(projectDir);
@@ -155,7 +180,7 @@ const ls = defineCommand({
   args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const registry = resolveSecretRegistry(await loadProject(process.cwd()));
+      const registry = await projectSecretRegistry(process.cwd());
       const rows = Object.entries(registry)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, entry]) => ({

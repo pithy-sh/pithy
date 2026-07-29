@@ -33,20 +33,39 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | Command | Purpose |
 |---|---|
 | `pithy init` | Scaffold a new Pithy project in the current directory |
-| `pithy add <capability>` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into `pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
-| `pithy remove <capability>` | The manual, interactive inverse of `add` (and `add --eject`): unwires config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
-| `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry `dev`/`deploy` discover (see Section 6) |
+| `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
+| `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
+| `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
-| `pithy migrate` | Run the migration registry against an `--env` (`--rollback` to downgrade) |
-| `pithy seed` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 7 and `docs/SEED.md` |
+| `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
+| `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 7 and `docs/SEED.md` |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
-| `pithy env` | Switch or report the active deployment environment (`dev`/`staging`/`production`) |
+| `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`production`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
 | `pithy deploy` | Deploy to Cloudflare Workers |
-| `pithy upgrade` | Reconcile package-served capabilities with current manifests — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
+| `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
-| `pithy doctor` | Diagnose environment, bindings, and config |
+| `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
 | `pithy --help` / `pithy -h` | Show help for any command |
 | `pithy --version` / `pithy -v` | Print the installed version |
+
+**Every Worker lives in `apps/<name>/`, and owns its own config.** There is no root Worker. A Worker's
+`apps/<name>/pithy.config.ts` declares `{ capabilities, app }` — what *that* Worker is made of — because
+everything capabilities drive is per-Worker: the composed route tree, the `requiredBindings` written into
+that Worker's `wrangler.jsonc`, and Durable Object class migrations, which register a class against a
+specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the stable
+prefix every feature resource name derives from), `tokens`, and `seed.productionEnvironments`.
+
+Two consequences worth stating outright:
+
+- **Commands that wire one Worker take `--worker <name>`** (`add`, `remove`). With a single-Worker project
+  the flag is optional; with several, the CLI prompts at a terminal and **fails with an actionable error
+  under `--json`** rather than guessing — wiring a capability into the wrong Worker would put its bindings
+  and DO class migrations on the wrong script. Commands that operate on the whole project (`migrate`, `seed`,
+  `upgrade`, `doctor`, `env`) **fan out over every Worker** and accept `--worker` to narrow.
+- **Workers share a resource by declaring the same binding name.** Feature resource names derive from
+  `(project, issue, slug, binding, kind)` with no Worker segment, so two Workers that both declare `DB` are
+  backed by one D1; a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`). Locally this is
+  why Miniflare state persists at the project root — per-Worker state would silently split a shared database.
 
 ### 1.2 Flag conventions
 
@@ -713,9 +732,24 @@ Project capabilities:
   @pithy-sh/auth         1.1.8 (1.2.0 available — run `pithy upgrade`)
   @pithy-sh/leaderboard  1.2.0 ✓
 
+Project health:
+  api:
+    config       parses against every capability schema ✓
+    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc
+                 env: staging, production
+    migrations   2 pending — run: pithy migrate --env dev
+  collab: healthy ✓
+
 OS:   macOS 14.5
 Node: 22.10.0
 ```
+
+The **`Project health`** block is `pithy upgrade`'s manifest-versus-wiring comparison in read-only mode —
+one engine, two commands: doctor reports drift, upgrade fixes it. It is reported **per Worker**, since each
+Worker under `apps/` carries its own `pithy.config.ts` and `wrangler.jsonc` and so drifts independently; a
+healthy Worker collapses to one line, and the whole block is omitted when every Worker is healthy. **Doctor
+exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
+required binding is missing before deploy does.
 
 When everything is up to date, the output is correspondingly terser:
 
@@ -770,9 +804,9 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 
 ### 6.1 What it does
 
-- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located `dev` manifest block: `dev.autostart` (does this worker need to run for the local env to function?), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), and an optional `dev.preferredPort`. It starts exactly the `autostart` workers. Add or remove a worker with `pithy worker add|remove` and the dev set follows automatically.
+- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.autostart` (does this worker need to run for the local env to function?), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. It starts exactly the `autostart` workers. Add or remove a worker with `pithy worker add|remove` and the dev set follows automatically.
 - **Supervises N workers.** Spawns each autostart worker, labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
-- **Resolves ports safely.** Each worker's start port comes from the worktree's port block (Section 6.3). A port is only used if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); otherwise the orchestrator scans forward.
+- **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Section 6.3), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
 
 ### 6.2 Session state and cleanup
@@ -813,7 +847,7 @@ Port collisions are the one thing that stops two feature worktrees running simul
   `pithy dev` reads it as its start ports, and every worker's address is known ahead of time, so the workers auto-wire to each other. (Distinct from `.dev-state.json`, the running session's pid/child-pids from Section 6.2.) It is named for the feature's dev config, not for ports alone, so further per-feature dev settings land here without a rename.
 - **Ports are assigned at creation, never probed at startup.** Probing when a worker boots is a time-of-check/time-of-use race: two `pithy dev` processes in two worktrees can both observe the same port free and both try to bind it. Pre-assigning every worker its own port from a reserved block removes the race by construction — N features start simultaneously with nothing to negotiate.
 - **Per-feature values never go in `.dev.vars`.** That file is one shared secrets file for the whole repo — each worktree's, and each worker's, is a symlink to the main checkout's — so a per-feature value written there would clobber every other feature's. Shared secrets live in `.dev.vars`; per-feature ports live in `.dev.config.json`.
-- `pithy dev` still verifies each assigned port is actually free (IPv4 + IPv6) and scans forward if something external grabbed it. Because blocks are disjoint and stable, multiple worktrees run in unison and each feature's workers reach each other on their assigned localhost ports.
+- `pithy dev` still verifies each assigned port is actually free (IPv4 + IPv6) before starting, and **reports a conflict rather than drifting** if something external grabbed one — a worker that quietly moves breaks every sibling that was told its address at creation. Because blocks are disjoint and stable, multiple worktrees run in unison and each feature's workers reach each other on their assigned localhost ports.
 
 > **Why one keyed registry, not a file per branch** (`.dev-ports.<branch>.json`)? A single file shows every allocation in one read, makes add/remove a one-key mutation, and leaves no stale per-branch files to garbage-collect. File-per-branch works but forces a glob-and-read-all to see what's taken.
 

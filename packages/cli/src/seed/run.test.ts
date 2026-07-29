@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
 import type { CloudflareKVManager } from "@pithy-sh/cloudflare/src/kv/kvManager";
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { d1SeedGroup, defineSeed, kvSeedGroup, type MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 import type { Migration } from "kysely/migration";
@@ -11,7 +11,7 @@ import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
-import { migrateProject } from "../migrations/run";
+import { migrateProject, type WorkerScope } from "../migrations/run";
 import type { MediaUploader } from "./media";
 import { seedProject } from "./run";
 import { resetConfirmPhrase } from "./safety";
@@ -77,15 +77,32 @@ function dataCapability(
 
 describe("seedProject", () => {
   let dir: string;
+  /** The one worker's directory — `apps/api`, under the project root. */
+  let workerDir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-seed-run-"));
+    workerDir = join(dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  /** The project's one worker, composing `capabilities`. */
+  function api(capabilities: Capability[]): WorkerScope {
+    return { name: "api", dir: workerDir, capabilities };
+  }
+
+  /** A second worker in `apps/<name>`, sharing the project root's local stores. */
+  async function worker(name: string, capabilities: Capability[], config?: unknown): Promise<WorkerScope> {
+    const target = join(dir, "apps", name);
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "wrangler.jsonc"), JSON.stringify(config ?? localWrangler));
+    return { name, dir: target, capabilities };
+  }
+
   async function writeWrangler(config: unknown): Promise<void> {
-    await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify(config));
+    await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify(config));
   }
 
   /** Open a fresh Miniflare over the same persisted state to read back what a seed wrote. */
@@ -114,11 +131,11 @@ describe("seedProject", () => {
   test("writes D1 rows and KV entries locally, idempotently", async () => {
     await writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+    await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
-    const report = await seedProject({ capabilities, projectDir: dir, env: "dev" });
+    const report = await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
     expect(report.dryRun).toBe(false);
-    expect(report.sets).toEqual([
+    expect(report.workers[0]?.sets).toEqual([
       {
         name: "1000_app_demo",
         d1: [{ database: "app", table: "things", rows: 2 }],
@@ -135,7 +152,7 @@ describe("seedProject", () => {
       expect(await store.kv.get("notes:a")).toBe(JSON.stringify({ body: "hello" }));
 
       // Re-running seeds nothing new: INSERT OR IGNORE keeps the row count at 2.
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
       const again = await store.d1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
       expect(again?.n).toBe(2);
     } finally {
@@ -146,12 +163,12 @@ describe("seedProject", () => {
   test("a dry run computes the plan and writes nothing", async () => {
     await writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+    await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
-    const report = await seedProject({ capabilities, projectDir: dir, env: "dev", dryRun: true });
+    const report = await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev", dryRun: true });
     expect(report.dryRun).toBe(true);
-    expect(report.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
-    expect(report.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1 }]);
+    expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
+    expect(report.workers[0]?.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1 }]);
 
     const store = await openLocal();
     try {
@@ -162,24 +179,165 @@ describe("seedProject", () => {
     }
   });
 
+  describe("fan-out over workers", () => {
+    /** A second worker's capability: its own seed set, writing to the KV namespace both workers bind. */
+    const roomsStore = {
+      prefix: "rooms",
+      key: z.object({ id: z.string().describe("The room's id segment.") }),
+      value: z.object({ title: z.string().describe("The room's title.") }),
+    };
+
+    function collabCapability() {
+      return defineCapability({
+        name: "collab",
+        requiredBindings: [],
+        kvNamespaces: { cache: { binding: "CACHE", stores: { rooms: roomsStore } } },
+        seeds: [
+          defineSeed({
+            name: "rooms",
+            order: 2000,
+            environments: ["dev"],
+            kv: [kvSeedGroup("cache", "rooms", roomsStore, [{ key: { id: "r1" }, value: { title: "Room" } }])],
+          }),
+        ],
+      });
+    }
+
+    test("runs each worker's own fixtures and reports per worker", async () => {
+      await writeWrangler(localWrangler);
+      const workers = [api([dataCapability()]), await worker("collab", [collabCapability()])];
+      await migrateProject({ projectDir: dir, workers, env: "dev" });
+
+      const report = await seedProject({ projectDir: dir, workers, env: "dev" });
+      expect(report.workers.map((entry) => entry.worker)).toEqual(["api", "collab"]);
+      expect(report.workers[0]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
+      expect(report.workers[1]?.sets).toEqual([
+        {
+          name: "2000_collab_rooms",
+          d1: [],
+          kv: [{ namespace: "cache", store: "rooms", entries: 1 }],
+          r2: [],
+          media: [],
+        },
+      ]);
+      expect(report.workers.every((entry) => entry.shared.length === 0)).toBe(true);
+
+      // Both workers bind CACHE, so both fixtures landed in the one project-root KV store.
+      const store = await openLocal();
+      try {
+        expect(await store.kv.get("notes:a")).toBe(JSON.stringify({ body: "hello" }));
+        expect(await store.kv.get("rooms:r1")).toBe(JSON.stringify({ title: "Room" }));
+      } finally {
+        await store.dispose();
+      }
+    });
+
+    test("a set two workers compose runs once, and the second worker says so", async () => {
+      await writeWrangler(localWrangler);
+      const workers = [api([dataCapability()]), await worker("collab", [dataCapability()])];
+      await migrateProject({ projectDir: dir, workers, env: "dev" });
+
+      const report = await seedProject({ projectDir: dir, workers, env: "dev" });
+      expect(report.workers[0]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
+      expect(report.workers[1]?.sets).toEqual([]);
+      expect(report.workers[1]?.shared).toEqual(["1000_app_demo"]);
+
+      const store = await openLocal();
+      try {
+        const count = await store.d1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
+        expect(count?.n).toBe(2); // written once, not once per worker
+      } finally {
+        await store.dispose();
+      }
+    });
+
+    test("a set two workers point at different databases runs in each of them", async () => {
+      // Same capability, same binding name, different resolved databases — a wiring `migrate` supports
+      // and migrates separately. Deduping on the set key alone would skip the second store and report
+      // it as "already seeded by another worker", leaving that database empty and saying otherwise.
+      await writeWrangler(localWrangler);
+      const collab = await worker("collab", [dataCapability()], {
+        d1_databases: [{ binding: "DB", database_id: "db-collab" }],
+        kv_namespaces: [{ binding: "CACHE", id: "cache-collab" }],
+      });
+      const workers = [api([dataCapability()]), collab];
+      await migrateProject({ projectDir: dir, workers, env: "dev" });
+
+      const report = await seedProject({ projectDir: dir, workers, env: "dev" });
+      expect(report.workers[1]?.shared).toEqual([]);
+      expect(report.workers[1]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
+
+      const mf = new Miniflare({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { API: "db-local", COLLAB: "db-collab" },
+        d1Persist: join(dir, ".wrangler", "state", "v3", "d1"),
+      });
+      try {
+        for (const binding of ["API", "COLLAB"]) {
+          const db = (await mf.getD1Database(binding)) as unknown as D1Database;
+          const count = await db.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
+          expect(count?.n, `${binding} rows`).toBe(2);
+        }
+      } finally {
+        await mf.dispose();
+      }
+    });
+
+    test("--worker narrows the fan-out to one worker", async () => {
+      await writeWrangler(localWrangler);
+      const workers = [api([dataCapability()]), await worker("collab", [collabCapability()])];
+      await migrateProject({ projectDir: dir, workers, env: "dev" });
+
+      const report = await seedProject({ projectDir: dir, workers, env: "dev", worker: "collab" });
+      expect(report.workers.map((entry) => entry.worker)).toEqual(["collab"]);
+
+      const store = await openLocal();
+      try {
+        expect(await store.kv.get("rooms:r1")).toBe(JSON.stringify({ title: "Room" }));
+        // The unnamed worker's fixtures never ran.
+        expect(await store.kv.get("notes:a")).toBeNull();
+      } finally {
+        await store.dispose();
+      }
+    });
+
+    test("a dry run plans per worker too, writing nothing", async () => {
+      await writeWrangler(localWrangler);
+      const workers = [api([dataCapability()]), await worker("collab", [collabCapability()])];
+
+      const report = await seedProject({ projectDir: dir, workers, env: "dev", dryRun: true });
+      expect(report).toMatchObject({
+        command: "seed",
+        env: "dev",
+        dryRun: true,
+        workers: [
+          { worker: "api", skippedByEnv: [], shared: [] },
+          { worker: "collab", skippedByEnv: [], shared: [] },
+        ],
+      });
+      expect(report.workers[1]?.sets.map((set) => set.name)).toEqual(["2000_collab_rooms"]);
+    });
+  });
+
   describe("env safety", () => {
     test("a set disallowed for the requested env is reported, never run", async () => {
       await writeWrangler(localWrangler);
       // The set lists only dev/staging; a production run composes it into skippedByEnv, not the plan.
       const report = await seedProject({
-        capabilities: [dataCapability()],
+        workers: [api([dataCapability()])],
         projectDir: dir,
         env: "production",
         yes: true,
         confirmProduction: "yes, i really want to seed production",
       });
-      expect(report.sets).toEqual([]);
-      expect(report.skippedByEnv).toEqual(["1000_app_demo"]);
+      expect(report.workers[0]?.sets).toEqual([]);
+      expect(report.workers[0]?.skippedByEnv).toEqual(["1000_app_demo"]);
     });
 
     test("staging refuses to run without --yes", async () => {
       await writeWrangler(localWrangler);
-      const failure = await seedProject({ capabilities: [dataCapability()], projectDir: dir, env: "staging" }).catch(
+      const failure = await seedProject({ workers: [api([dataCapability()])], projectDir: dir, env: "staging" }).catch(
         (error: unknown) => error,
       );
       expect(failure).toBeInstanceOf(PithyError);
@@ -191,7 +349,7 @@ describe("seedProject", () => {
       const capabilities = [dataCapability(["dev", "production"])];
 
       const noPhrase = await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "production",
         yes: true,
@@ -200,7 +358,7 @@ describe("seedProject", () => {
       expect(noPhrase).toBeInstanceOf(PithyError);
 
       const wrongPhrase = await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "production",
         yes: true,
@@ -213,13 +371,13 @@ describe("seedProject", () => {
     test("a dry run needs no confirmation for a non-dev env", async () => {
       await writeWrangler(localWrangler);
       const report = await seedProject({
-        capabilities: [dataCapability()],
+        workers: [api([dataCapability()])],
         projectDir: dir,
         env: "staging",
         dryRun: true,
       });
       expect(report.dryRun).toBe(true);
-      expect(report.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
+      expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
     });
   });
 
@@ -227,8 +385,8 @@ describe("seedProject", () => {
     test("a plain re-seed does not refresh a changed fixture value", async () => {
       await writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
       const edited = [
         dataCapability(
@@ -239,7 +397,7 @@ describe("seedProject", () => {
           ],
         ),
       ];
-      await seedProject({ capabilities: edited, projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(edited)], projectDir: dir, env: "dev" });
 
       const store = await openLocal();
       try {
@@ -255,8 +413,8 @@ describe("seedProject", () => {
     test("refreshes a changed fixture value: the new value lands, with no duplicate row", async () => {
       await writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
       const edited = [
         dataCapability(
@@ -267,7 +425,7 @@ describe("seedProject", () => {
           ],
         ),
       ];
-      const report = await seedProject({ capabilities: edited, projectDir: dir, env: "dev", redo: true });
+      const report = await seedProject({ workers: [api(edited)], projectDir: dir, env: "dev", redo: true });
       expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
 
       const store = await openLocal();
@@ -284,8 +442,8 @@ describe("seedProject", () => {
     test("drops and recreates the schema — a hand-inserted row is gone afterwards", async () => {
       await writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
       let store = await openLocal();
       try {
@@ -294,7 +452,7 @@ describe("seedProject", () => {
         await store.dispose();
       }
 
-      await seedProject({ capabilities, projectDir: dir, env: "dev", redo: true });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev", redo: true });
 
       store = await openLocal();
       try {
@@ -314,10 +472,16 @@ describe("seedProject", () => {
     test("--dry-run reports the reset and writes nothing", async () => {
       await writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
-      const report = await seedProject({ capabilities, projectDir: dir, env: "dev", redo: true, dryRun: true });
+      const report = await seedProject({
+        workers: [api(capabilities)],
+        projectDir: dir,
+        env: "dev",
+        redo: true,
+        dryRun: true,
+      });
       expect(report.dryRun).toBe(true);
       expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
 
@@ -333,7 +497,7 @@ describe("seedProject", () => {
     test("on a non-dev env without --yes throws a PithyError — the gate is never weaker", async () => {
       await writeWrangler(localWrangler);
       const failure = await seedProject({
-        capabilities: [dataCapability()],
+        workers: [api([dataCapability()])],
         projectDir: dir,
         env: "staging",
         redo: true,
@@ -345,7 +509,7 @@ describe("seedProject", () => {
     test("--yes alone cannot authorize a non-dev reset — that flag only ever authorizes an additive seed", async () => {
       await writeWrangler(localWrangler);
       const failure = await seedProject({
-        capabilities: [dataCapability()],
+        workers: [api([dataCapability()])],
         projectDir: dir,
         env: "staging",
         redo: true,
@@ -362,7 +526,7 @@ describe("seedProject", () => {
       await writeWrangler(localWrangler);
       const attempt = (confirmReset: string) =>
         seedProject({
-          capabilities: [dataCapability()],
+          workers: [api([dataCapability()])],
           projectDir: dir,
           env: "staging",
           redo: true,
@@ -378,7 +542,7 @@ describe("seedProject", () => {
 
     test("dev needs no reset phrase — a local store is what reset is for", async () => {
       await writeWrangler(localWrangler);
-      const report = await seedProject({ capabilities: [dataCapability()], projectDir: dir, env: "dev", redo: true });
+      const report = await seedProject({ workers: [api([dataCapability()])], projectDir: dir, env: "dev", redo: true });
       expect(report.reset).toBeTruthy();
     });
 
@@ -386,7 +550,7 @@ describe("seedProject", () => {
       await writeWrangler(localWrangler);
       const events: CliAuditEvent[] = [];
       await seedProject({
-        capabilities: [dataCapability()],
+        workers: [api([dataCapability()])],
         projectDir: dir,
         env: "dev",
         redo: true,
@@ -429,7 +593,7 @@ describe("seedProject", () => {
 
       const events: CliAuditEvent[] = [];
       const failure = await seedProject({
-        capabilities: [broken],
+        workers: [api([broken])],
         projectDir: dir,
         env: "dev",
         redo: true,
@@ -449,11 +613,11 @@ describe("seedProject", () => {
     test("a plain seed audits nothing — only a reset is destructive enough to record", async () => {
       await writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ capabilities, projectDir: dir, env: "dev" });
+      await migrateProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
 
       const events: CliAuditEvent[] = [];
       await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "dev",
         audit: async (event) => void events.push(event),
@@ -489,18 +653,23 @@ describe("seedProject", () => {
 
       try {
         // Create the table in the fake remote D1 through the same remote orchestration.
-        await migrateProject({ capabilities, projectDir: dir, env: "staging", remoteD1: () => remoteD1 });
+        await migrateProject({
+          workers: [api(capabilities)],
+          projectDir: dir,
+          env: "staging",
+          remoteD1: () => remoteD1,
+        });
 
         const report = await seedProject({
-          capabilities,
+          workers: [api(capabilities)],
           projectDir: dir,
           env: "staging",
           yes: true,
           remoteD1: () => remoteD1,
           remoteKv: () => remoteKv,
         });
-        expect(report.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
-        expect(report.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1 }]);
+        expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
+        expect(report.workers[0]?.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1 }]);
 
         const count = await remoteD1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
         expect(count?.n).toBe(2);
@@ -545,7 +714,7 @@ describe("seedProject", () => {
       const capabilities = [r2Capability()];
 
       // First run writes the object.
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
       let store = await openLocalR2();
       try {
         expect(await (await store.bucket.get("logo.png"))?.text()).toBe("NEWBYTES");
@@ -555,7 +724,7 @@ describe("seedProject", () => {
         await store.dispose();
       }
 
-      await seedProject({ capabilities, projectDir: dir, env: "dev" });
+      await seedProject({ workers: [api(capabilities)], projectDir: dir, env: "dev" });
       store = await openLocalR2();
       try {
         // The existing object is untouched — seeding is non-destructive, like INSERT OR IGNORE.
@@ -621,12 +790,14 @@ describe("seedProject", () => {
 
       const first = fakeUploader();
       const firstReport = await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "dev",
         mediaUploader: first.uploader,
       });
-      expect(firstReport.sets[0]?.media).toEqual([{ store: "images", mode: "once", action: "upload", id: "img-1" }]);
+      expect(firstReport.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "once", action: "upload", id: "img-1" },
+      ]);
       expect(first.calls).toEqual([{ store: "images", metadata: { userId: "u1", pithyEnv: "dev" } }]);
       // The minted UUID was written back to the sidecar.
       expect(JSON.parse(await readFile(ref, "utf8"))).toEqual({ id: "img-1" });
@@ -634,12 +805,14 @@ describe("seedProject", () => {
       // A second run reads the sidecar, skips the upload, and reuses the recorded id.
       const second = fakeUploader();
       const secondReport = await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "dev",
         mediaUploader: second.uploader,
       });
-      expect(secondReport.sets[0]?.media).toEqual([{ store: "images", mode: "once", action: "skip", id: "img-1" }]);
+      expect(secondReport.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "once", action: "skip", id: "img-1" },
+      ]);
       expect(second.calls).toEqual([]);
     });
 
@@ -651,11 +824,25 @@ describe("seedProject", () => {
       const capabilities = [mediaCapability("always", file, ref)];
 
       const { uploader, calls } = fakeUploader();
-      const first = await seedProject({ capabilities, projectDir: dir, env: "dev", mediaUploader: uploader });
-      expect(first.sets[0]?.media).toEqual([{ store: "images", mode: "always", action: "reupload", id: "img-1" }]);
+      const first = await seedProject({
+        workers: [api(capabilities)],
+        projectDir: dir,
+        env: "dev",
+        mediaUploader: uploader,
+      });
+      expect(first.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "always", action: "reupload", id: "img-1" },
+      ]);
 
-      const second = await seedProject({ capabilities, projectDir: dir, env: "dev", mediaUploader: uploader });
-      expect(second.sets[0]?.media).toEqual([{ store: "images", mode: "always", action: "reupload", id: "img-2" }]);
+      const second = await seedProject({
+        workers: [api(capabilities)],
+        projectDir: dir,
+        env: "dev",
+        mediaUploader: uploader,
+      });
+      expect(second.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "always", action: "reupload", id: "img-2" },
+      ]);
       expect(calls).toHaveLength(2);
       // No sidecar was written — an `always` asset re-uploads deliberately.
       await expect(readFile(ref, "utf8")).rejects.toThrow();
@@ -670,8 +857,15 @@ describe("seedProject", () => {
       const capabilities = [mediaCapability("once", "asset.bin", "asset.ref.json", { baseDir: moduleDir })];
 
       const { uploader, calls } = fakeUploader();
-      const report = await seedProject({ capabilities, projectDir: dir, env: "dev", mediaUploader: uploader });
-      expect(report.sets[0]?.media).toEqual([{ store: "images", mode: "once", action: "upload", id: "img-1" }]);
+      const report = await seedProject({
+        workers: [api(capabilities)],
+        projectDir: dir,
+        env: "dev",
+        mediaUploader: uploader,
+      });
+      expect(report.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "once", action: "upload", id: "img-1" },
+      ]);
       expect(calls).toHaveLength(1);
       // The sidecar was written next to the module (baseDir), never at the project root.
       expect(JSON.parse(await readFile(join(moduleDir, "asset.ref.json"), "utf8"))).toEqual({ id: "img-1" });
@@ -688,9 +882,12 @@ describe("seedProject", () => {
       ];
 
       const { uploader, calls } = fakeUploader();
-      const failure = await seedProject({ capabilities, projectDir: dir, env: "dev", mediaUploader: uploader }).catch(
-        (error: unknown) => error,
-      );
+      const failure = await seedProject({
+        workers: [api(capabilities)],
+        projectDir: dir,
+        env: "dev",
+        mediaUploader: uploader,
+      }).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.message).toMatch(/always/i);
       expect(calls).toEqual([]); // fail-fast: no upload happened
@@ -705,13 +902,13 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const report = await seedProject({
-        capabilities,
+        workers: [api(capabilities)],
         projectDir: dir,
         env: "dev",
         dryRun: true,
         mediaUploader: uploader,
       });
-      expect(report.sets[0]?.media).toEqual([{ store: "images", mode: "once", action: "upload" }]);
+      expect(report.workers[0]?.sets[0]?.media).toEqual([{ store: "images", mode: "once", action: "upload" }]);
       expect(calls).toEqual([]);
       await expect(readFile(ref, "utf8")).rejects.toThrow();
     });

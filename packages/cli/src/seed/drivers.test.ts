@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
@@ -12,8 +12,12 @@ import { openSeedDriver } from "./drivers";
 
 describe("openSeedDriver", () => {
   let dir: string;
+  /** The worker's own directory — where its wrangler.jsonc lives, under the project root. */
+  let workerDir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-seed-driver-"));
+    workerDir = join(dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -21,7 +25,7 @@ describe("openSeedDriver", () => {
   });
 
   async function writeWrangler(config: unknown): Promise<void> {
-    await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify(config));
+    await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify(config));
   }
 
   describe("dev resolves local Miniflare stores", () => {
@@ -32,7 +36,7 @@ describe("openSeedDriver", () => {
         r2_buckets: [{ binding: "ASSETS", bucket_name: "assets-local" }],
       });
 
-      const driver = await openSeedDriver({ projectDir: dir, env: "dev" });
+      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
       try {
         const row = await driver.d1("DB").prepare("SELECT 1 AS n").first<{ n: number }>();
         expect(row?.n).toBe(1);
@@ -56,9 +60,41 @@ describe("openSeedDriver", () => {
       }
     });
 
+    test("two workers declaring one binding share the project's store, not one store each", async () => {
+      // Bindings are per-worker; local persistence is per-project. A per-worker persistence directory
+      // would silently give two workers that both declare DB two different local databases.
+      const collabDir = join(dir, "apps", "collab");
+      await mkdir(collabDir, { recursive: true });
+      const wrangler = JSON.stringify({
+        d1_databases: [{ binding: "DB", database_id: "db-local" }],
+        kv_namespaces: [{ binding: "CACHE", id: "cache-local" }],
+      });
+      await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
+      await writeFile(join(collabDir, "wrangler.jsonc"), wrangler);
+
+      const first = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      try {
+        await first.d1("DB").prepare("CREATE TABLE shared (id integer primary key)").run();
+        const kv = first.kv("CACHE");
+        if (kv.kind === "local") await kv.namespace.put("k", "from-api");
+      } finally {
+        await first.dispose();
+      }
+
+      const second = await openSeedDriver({ workerDir: collabDir, persistRoot: dir, env: "dev" });
+      try {
+        const row = await second.d1("DB").prepare("SELECT count(*) AS n FROM shared").first<{ n: number }>();
+        expect(row?.n).toBe(0); // the other worker's table is here — one store, not two
+        const kv = second.kv("CACHE");
+        if (kv.kind === "local") expect(await kv.namespace.get("k")).toBe("from-api");
+      } finally {
+        await second.dispose();
+      }
+    });
+
     test("an undeclared binding fails with an actionable error", async () => {
       await writeWrangler({ d1_databases: [] });
-      const driver = await openSeedDriver({ projectDir: dir, env: "dev" });
+      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
       try {
         expect(() => driver.d1("DB")).toThrow(PithyError);
         expect(() => driver.d1("DB")).toThrow(/binding "DB"/);
@@ -71,7 +107,7 @@ describe("openSeedDriver", () => {
       vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
       await writeWrangler({});
-      const driver = await openSeedDriver({ projectDir: dir, env: "dev" });
+      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
       try {
         expect(() => driver.images()).toThrow(/credentials/i);
       } finally {
@@ -104,7 +140,8 @@ describe("openSeedDriver", () => {
       const r2Args: { binding: string; bucketName: string }[] = [];
 
       const driver = await openSeedDriver({
-        projectDir: dir,
+        workerDir,
+        persistRoot: dir,
         env: "staging",
         remoteD1: (args) => {
           d1Args.push(args);
@@ -140,7 +177,8 @@ describe("openSeedDriver", () => {
     test("a binding with no id for the env fails with an actionable error, without building a client", async () => {
       await writeWrangler({ env: { staging: { d1_databases: [{ binding: "DB" }] } } });
       const driver = await openSeedDriver({
-        projectDir: dir,
+        workerDir,
+        persistRoot: dir,
         env: "staging",
         remoteD1: () => {
           throw new Error("must not build a client when the id is missing");
@@ -155,7 +193,7 @@ describe("openSeedDriver", () => {
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
       await writeWrangler({ env: { staging: { d1_databases: [{ binding: "DB", database_id: "db-staging" }] } } });
 
-      const driver = await openSeedDriver({ projectDir: dir, env: "staging" });
+      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "staging" });
       expect(() => driver.d1("DB")).toThrow(/credentials/i);
     });
   });

@@ -37,3 +37,37 @@ describe("saffron", () => {
     expect(saffron(".")).toBe(".");
   });
 });
+
+describe("link", () => {
+  test("wraps the text in an OSC-8 hyperlink when color is on", async () => {
+    const { link } = await loadStyle({ FORCE_COLOR: "1" });
+    expect(link("https://example.com", "id-123")).toBe("\x1b]8;;https://example.com\x1b\\id-123\x1b]8;;\x1b\\");
+  });
+
+  test("NO_COLOR returns the plain text (no escape sequence)", async () => {
+    const { link } = await loadStyle({ NO_COLOR: "1", FORCE_COLOR: "1" });
+    expect(link("https://example.com", "id-123")).toBe("id-123");
+  });
+
+  test("no color support returns the plain text", async () => {
+    const { link } = await loadStyle({});
+    expect(link("https://example.com", "id-123")).toBe("id-123");
+  });
+});
+
+describe("supportsHyperlinks", () => {
+  test("true when FORCE_COLOR is set", async () => {
+    const { supportsHyperlinks } = await loadStyle({ FORCE_COLOR: "1" });
+    expect(supportsHyperlinks()).toBe(true);
+  });
+
+  test("false when NO_COLOR is set", async () => {
+    const { supportsHyperlinks } = await loadStyle({ NO_COLOR: "1", FORCE_COLOR: "1" });
+    expect(supportsHyperlinks()).toBe(false);
+  });
+
+  test("false with no color support", async () => {
+    const { supportsHyperlinks } = await loadStyle({});
+    expect(supportsHyperlinks()).toBe(false);
+  });
+});

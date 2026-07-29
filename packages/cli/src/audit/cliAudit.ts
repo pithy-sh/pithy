@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { parse } from "comment-json";
+import { discoverWorkers } from "../project/workers";
 import { createCliLogger } from "../terminal/logger";
 
 /**
@@ -53,18 +54,44 @@ interface WranglerAppConfig {
   env?: Record<string, { d1_databases?: { binding: string; database_id?: string }[] } | undefined>;
 }
 
-/**
- * The app database's id for an environment — where audit rows live. `dev` reads the top-level bindings;
- * every other environment reads its own `env.<name>` stanza. Undefined when the file or the id is absent.
- */
-export async function resolveAuditDatabaseId(projectDir: string, env: string): Promise<string | undefined> {
+/** One Worker's `DB` database id for an environment, or undefined when the file or the id is absent. */
+async function databaseIdIn(workerDir: string, env: string): Promise<string | undefined> {
   try {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerAppConfig;
+    const config = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerAppConfig;
     const stanza = env === "dev" ? config : config.env?.[env];
     return stanza?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The app database's id for an environment — where audit rows live. Every Worker lives in `apps/<name>/`
+ * with its own `wrangler.jsonc`, so the id comes from a Worker's file: `dev` reads its top-level bindings,
+ * every other environment its `env.<name>` stanza.
+ *
+ * **Which Worker?** `worker` names one when the caller has an explicit `--worker`. Otherwise this takes the
+ * first discovered Worker that declares a `DB` id for the environment — deliberately *not* an
+ * ambiguity error. Workers share a resource by declaring the same binding name, so every Worker with a `DB`
+ * binding points at the one app database; and auditing must never break the command it is recording, which
+ * an "ambiguous, pass --worker" throw would do the moment a project grew a second Worker. Undefined when no
+ * Worker resolves one, which leaves the emitter inert.
+ */
+export async function resolveAuditDatabaseId(
+  projectDir: string,
+  env: string,
+  worker?: string,
+): Promise<string | undefined> {
+  const workers = await discoverWorkers(projectDir).catch(() => []);
+  const targets =
+    worker === undefined
+      ? workers
+      : workers.filter((candidate) => candidate.name === worker || candidate.dir.endsWith(`/${worker}`));
+  for (const target of targets) {
+    const id = await databaseIdIn(target.dir, env);
+    if (id) return id;
+  }
+  return undefined;
 }
 
 /**
@@ -98,12 +125,14 @@ export async function createRemoteCliAudit(options: CreateCliAuditOptions): Prom
 
 /** Options for {@link createCliAudit}. */
 export interface CreateCliAuditOptions {
-  /** The project root — where `wrangler.jsonc` resolves the audit database from. */
+  /** The project root — the parent of `apps/`, whose Workers' `wrangler.jsonc` resolve the audit database. */
   projectDir: string;
   /** The environment being acted on, which selects the database audit rows are written to. */
   env: string;
-  /** The project's composed capabilities — auditing is wired only when `audit` is among them. */
+  /** The capabilities in play — auditing is wired only when `audit` is among them. */
   capabilities: readonly Capability[];
+  /** Restrict the audit-database lookup to this Worker (a command's `--worker`). Optional. */
+  worker?: string;
   /** The configured Cloudflare clients, used for the D1 write and to resolve the actor behind the token. */
   clients: CloudflareClients;
   /** The active CF API token — the actor's identity (a person locally, the CI token in automation). */
@@ -119,7 +148,7 @@ export interface CreateCliAuditOptions {
 export async function createCliAudit(options: CreateCliAuditOptions): Promise<CliAuditEmit> {
   if (!options.capabilities.some((capability) => capability.name === "audit")) return NO_OP;
 
-  const databaseId = await resolveAuditDatabaseId(options.projectDir, options.env);
+  const databaseId = await resolveAuditDatabaseId(options.projectDir, options.env, options.worker);
   if (!databaseId) return NO_OP;
 
   let emitFromCLI: typeof import("@pithy-sh/audit/src/cli/emitFromCLI").emitFromCLI;

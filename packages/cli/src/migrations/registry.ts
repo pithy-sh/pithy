@@ -4,12 +4,14 @@ import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/co
 import type { MigrationProvider } from "kysely/migration";
 
 /**
- * Compose every capability's per-database migration sets (`DatabaseSpec.migrations`,
- * namespaced by capability name) into one ordered provider per database. A database
- * nobody migrates gets no provider; migrations without a `migrationOrder` fail here,
- * attributed to their capability.
+ * Every capability's per-database migration set (`DatabaseSpec.migrations`, namespaced by capability
+ * name), in composition order — the raw material both {@link buildRegistryFromCapabilities} and the
+ * fan-out runner build on. The runner needs the sets rather than a finished provider because two
+ * Workers can be bound to one physical D1: their sets merge into a single ordered provider so that
+ * database migrates once, with every Worker's capabilities in it. Migrations without a
+ * `migrationOrder` fail here, attributed to their capability.
  */
-export function buildRegistryFromCapabilities(capabilities: Capability[]): Record<string, MigrationProvider> {
+export function collectMigrationSets(capabilities: Capability[]): NamespacedMigrations[] {
   const sets: NamespacedMigrations[] = [];
   for (const capability of capabilities) {
     for (const [database, spec] of Object.entries(capability.databases ?? {})) {
@@ -28,5 +30,15 @@ export function buildRegistryFromCapabilities(capabilities: Capability[]): Recor
       });
     }
   }
-  return createMigrationRegistry(sets);
+  return sets;
+}
+
+/**
+ * Compose every capability's per-database migration sets (`DatabaseSpec.migrations`,
+ * namespaced by capability name) into one ordered provider per database. A database
+ * nobody migrates gets no provider; migrations without a `migrationOrder` fail here,
+ * attributed to their capability.
+ */
+export function buildRegistryFromCapabilities(capabilities: Capability[]): Record<string, MigrationProvider> {
+  return createMigrationRegistry(collectMigrationSets(capabilities));
 }

@@ -34,8 +34,9 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   // 1. Scaffold non-interactively — the way an agent drives it (spec §10.20).
   await run("bun", [bin, "init", "--name", "smoke-app", "--dir", target, "--json"]);
 
-  // 2. The scaffold carries dev, staging, and production config paths.
-  const wrangler = parse(await readFile(join(target, "wrangler.jsonc"), "utf8")) as unknown as {
+  // 2. The scaffold's worker lives in apps/api and carries dev, staging, and production config paths.
+  const workerDir = join(target, "apps", "api");
+  const wrangler = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
     compatibility_date: string;
     compatibility_flags: string[];
     env: { staging: unknown; production: unknown };
@@ -47,7 +48,7 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   //    it under Miniflare, the same workerd runtime `wrangler dev` runs locally,
   //    using the scaffold's own compatibility settings.
   const bundle = join(target, ".worker.mjs");
-  await run("bun", ["build", join(target, "src", "index.ts"), "--outfile", bundle, "--target=node"]);
+  await run("bun", ["build", join(workerDir, "src", "index.ts"), "--outfile", bundle, "--target=node"]);
   const miniflare = new Miniflare({
     modules: true,
     script: await readFile(bundle, "utf8"),
@@ -62,7 +63,12 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
     await miniflare.dispose();
   }
 
-  // 4. The empty migration registry runs clean — no databases, no error.
+  // 4. The empty migration registry runs clean — no databases, no error — reported per worker.
   const { stdout } = await run("bun", [bin, "migrate", "--json"], { cwd: target });
-  expect(JSON.parse(stdout.trim())).toEqual({ command: "migrate", env: "dev", rollback: false, databases: [] });
+  expect(JSON.parse(stdout.trim())).toEqual({
+    command: "migrate",
+    env: "dev",
+    rollback: false,
+    workers: [{ worker: "smoke-app-api", databases: [] }],
+  });
 });

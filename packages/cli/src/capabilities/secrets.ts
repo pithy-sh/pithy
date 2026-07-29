@@ -6,7 +6,7 @@ import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { allCapabilities, type ProjectConfig } from "../project/config";
+import { allCapabilities, type WorkerConfig } from "../project/config";
 
 /** The audit action for a value-touching secret command, by mode. Never carries the secret's value. */
 const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
@@ -16,16 +16,18 @@ const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
 };
 
 /**
- * Discover the project's secret registry by finding the secrets capability in a loaded
- * `pithy.config.ts` (#25's config model). The capability carries its own registry, so there is no
- * separate loading convention — the CLI reads what the worker reads.
+ * Discover a Worker's secret registry by finding the secrets capability in its loaded
+ * `apps/<name>/pithy.config.ts` (#25's config model). The capability carries its own registry, so there
+ * is no separate loading convention — the CLI reads what the Worker reads. Capabilities are per-Worker,
+ * so the registry is too: a caller spanning several Workers resolves each and merges by secret name
+ * (the name is the join key).
  */
-export function resolveSecretRegistry(config: ProjectConfig): SecretRegistry {
+export function resolveSecretRegistry(config: WorkerConfig): SecretRegistry {
   const capability = allCapabilities(config).find(isSecretsCapability);
   if (!capability) {
     throw new NotFoundError({
-      message: "The secrets capability isn't enabled in this project.",
-      action: "Add secrets({ registry }) to your pithy.config.ts capabilities.",
+      message: "The secrets capability isn't enabled in this worker.",
+      action: "Add secrets({ registry }) to the worker's pithy.config.ts capabilities, or pass --worker.",
     });
   }
   return capability.secretRegistry;

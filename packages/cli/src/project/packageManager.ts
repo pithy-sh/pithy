@@ -50,6 +50,25 @@ export function uninstallArgs(pm: PackageManager, pkg: string): string[] {
   return [pm === "npm" ? "uninstall" : "remove", pkg];
 }
 
+/**
+ * Resolve a package binary through the project's package manager, so `pithy` never assumes a global
+ * install. Each manager has its own "run a workspace-local bin" invocation:
+ * `bun x <bin>`, `pnpm exec <bin>`, `yarn <bin>`, `npx <bin>`. The returned `{ command, args }` is
+ * ready to hand to `child_process.spawn`.
+ */
+export function execArgs(pm: PackageManager, bin: string, args: string[]): { command: string; args: string[] } {
+  switch (pm) {
+    case "bun":
+      return { command: "bun", args: ["x", bin, ...args] };
+    case "pnpm":
+      return { command: "pnpm", args: ["exec", bin, ...args] };
+    case "yarn":
+      return { command: "yarn", args: [bin, ...args] };
+    default:
+      return { command: "npx", args: [bin, ...args] };
+  }
+}
+
 /** Spawn a package manager. Injectable so the flow is testable without a real install. */
 export type InstallRunner = (command: string, args: string[], cwd: string) => Promise<void>;
 

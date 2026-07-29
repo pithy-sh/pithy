@@ -4,7 +4,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { migrateProject } from "../migrations/run";
-import { discoverWorkers, type WorkerTarget } from "../project/workers";
+import { resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { provisionableBindings, serviceBindings } from "./bindings";
 import {
@@ -21,8 +21,8 @@ import { applyProvisionedIds, applyWorkerEnv } from "./wranglerEnv";
 
 /**
  * `pithy feature provision` stands up a feature's live Cloudflare environment: one ephemeral resource per
- * provisionable binding the enabled capabilities declare, named under the branch-first prefix, then remote
- * migrate + seed. It is idempotent and resumable — every resource is matched by name before creating, so a
+ * provisionable binding name the feature's Workers declare between them, named under the branch-first
+ * prefix, then remote migrate + seed. It is idempotent and resumable — every resource is matched by name before creating, so a
  * network hiccup or mid-run error leaves a partial environment that re-running completes, skipping what
  * exists and creating only what is missing. `destroy` reverses it: delete the manifest's resources, then
  * reconcile by prefix-scan so a partial-failed provision still cleans up fully.
@@ -131,14 +131,14 @@ function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManif
 }
 
 /** A migrate/seed seam so provision's orchestration is testable without a live backend. */
-export type BackendRunner = (args: { env: string; projectDir: string; capabilities: Capability[] }) => Promise<void>;
+export type BackendRunner = (args: { env: string; projectDir: string }) => Promise<void>;
 
-const defaultMigrate: BackendRunner = async ({ env, projectDir, capabilities }) => {
-  await migrateProject({ env, projectDir, capabilities });
+const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
+  await migrateProject({ env, projectDir });
 };
 
-const defaultSeed: BackendRunner = async ({ env, projectDir, capabilities }) => {
-  await seedProject({ env, projectDir, capabilities, yes: true, json: true });
+const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
+  await seedProject({ env, projectDir, yes: true, json: true });
 };
 
 /** One provisioned resource in the report: what it is, and whether this run created it or reused it. */
@@ -171,7 +171,13 @@ export interface ProvisionFeatureOptions {
   projectDir: string;
   /** The target environment (the feature's own ephemeral env by default, or a named `--env`). */
   env: string;
-  /** The composed capabilities whose bindings drive the provisionable set. */
+  /**
+   * Every capability the feature spans — the union of each Worker's own `apps/<name>/pithy.config.ts`,
+   * deduped by name. It is a union rather than a per-Worker loop because a feature environment is one
+   * environment: `provisionableBindings` dedupes by **binding name**, and sharing is keyed on exactly that
+   * — two Workers that both declare `DB` get one database, and a Worker wanting its own declares a
+   * different binding.
+   */
   capabilities: Capability[];
   /** The feature identity — project/issue/slug — for the resource-naming convention. */
   identity: FeatureIdentity;
@@ -181,10 +187,60 @@ export interface ProvisionFeatureOptions {
   migrate?: BackendRunner;
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
-  /** Worker-discovery seam (default: `discoverWorkers`), so tests fix the worker set. */
-  discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
+  /**
+   * Worker-resolution seam (default: {@link resolveWorkers}), so tests fix the worker set. Each entry
+   * carries that Worker's **own** capabilities, which is what lets the write step give a Worker only
+   * the bindings it declares.
+   */
+  resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+}
+
+/**
+ * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
+ * `apps/<name>/pithy.config.ts`.
+ */
+const defaultResolveWorkers = async (projectDir: string): Promise<ProvisionWorker[]> =>
+  (await resolveWorkers({ projectDir })).map((worker) => ({
+    name: worker.name,
+    dir: worker.dir,
+    capabilities: worker.capabilities,
+  }));
+
+/** One Worker as provisioning needs it: where it lives, and what *it* composes. */
+export interface ProvisionWorker {
+  /** The Worker's deploy name — its `wrangler.jsonc` `name` — which the feature script name derives from. */
+  name: string;
+  /** The Worker's directory — the `wrangler.jsonc` this run writes into, and the `apps/<name>` a sibling's service binding names it by. */
+  dir: string;
+  /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
+  capabilities: Capability[];
+}
+
+/**
+ * Resolve a `service` binding's target to the script name that Worker actually deploys under.
+ *
+ * A service binding names its target as it appears in `apps/<name>/` (`BindingSpec.service`), but a Worker
+ * deploys under its `wrangler.jsonc` `name` — and the two diverge routinely (`pithy init acme` writes
+ * `apps/api/wrangler.jsonc` with `"name": "acme-api"`). Feature-scoping the directory name would point the
+ * binding at `<project>-f<issue>-<slug>-api` while the target deploys as `<project>-f<issue>-<slug>-acme-api`:
+ * RPC through that binding hits a script nobody deploys, and provision reports success. So both sides go
+ * through the resolved Worker set, which carries the deploy name, and the directory basename is only the key.
+ *
+ * A target that matches no Worker is refused rather than guessed: provision writes an `env.<env>` stanza only
+ * for the Workers it resolved, so nothing else can be feature-scoped correctly, and a silently dangling
+ * service name is the exact failure this resolution exists to remove.
+ */
+function resolveServiceTarget(workers: readonly ProvisionWorker[], target: string): string {
+  const found = workers.find((worker) => worker.name === target || worker.dir.endsWith(`/${target}`));
+  if (!found) {
+    throw new ValidationError({
+      message: `A service binding targets "${target}", which is not one of this project's workers.`,
+      action: `Name the target as its apps/<name> directory. Known: ${workers.map((worker) => worker.name).join(", ") || "none"}.`,
+    });
+  }
+  return found.name;
 }
 
 /**
@@ -197,6 +253,13 @@ export interface ProvisionFeatureOptions {
 export async function provisionFeature(options: ProvisionFeatureOptions): Promise<ProvisionReport> {
   const audit = options.audit ?? (async () => {});
   const bindings = provisionableBindings(options.capabilities);
+  // Resolve the Workers first. Their deploy names are what every service binding is retargeted at, so an
+  // unresolvable target must fail here — before a single Cloudflare resource is created for the feature.
+  const workers = await (options.resolveWorkers ?? defaultResolveWorkers)(options.projectDir);
+  const services = serviceBindings(options.capabilities).map((service) => ({
+    binding: service.binding,
+    service: featureWorkerName(options.identity, resolveServiceTarget(workers, service.target)),
+  }));
   const path = manifestPath(options.projectDir);
   const existing = await readManifest(path);
   assertManifestBelongs(options.identity, existing);
@@ -232,29 +295,34 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
 
   // Write the ids, the environment-scoped script name, and the service targets into **each Worker's own**
   // `wrangler.jsonc` — the file wrangler actually reads, and the file `migrate`/`seed` resolve binding ids
-  // from. Writing only to the project root assumed a single root Worker; under the `apps/<name>/` layout
-  // this feature targets there is often no root `wrangler.jsonc` at all, so that both failed outright and
-  // left the real Workers without the feature's bindings. `discoverWorkers` falls back to the root Worker
-  // for the single-Worker starter layout, so both shapes are covered by iterating what it finds.
-  const workers = await (options.discoverWorkers ?? discoverWorkers)(options.projectDir);
-  const services = serviceBindings(options.capabilities).map((service) => ({
-    binding: service.binding,
-    service: featureWorkerName(options.identity, service.target),
-  }));
+  // from. There is no root Worker: every Worker lives in `apps/<name>/` and owns its wrangler config.
+  //
+  // **A Worker receives only the bindings its own config declares.** The feature provisions one resource
+  // per binding name across the whole feature (that is how two Workers share a database — same binding
+  // name, same resource), but the *wiring* is per Worker: handing a Worker ids for resources it never
+  // declared would put bindings in its wrangler config that it has no business holding.
   for (const worker of workers) {
-    await applyProvisionedIds(worker.dir, options.env, manifest.resources);
+    const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
+    const owned = manifest.resources.filter((resource) => declared.has(resource.binding));
+    await applyProvisionedIds(worker.dir, options.env, owned);
     await applyWorkerEnv({
       workerDir: worker.dir,
       env: options.env,
       name: featureWorkerName(options.identity, worker.name),
-      services,
+      // Likewise: only the service bindings this Worker declares, retargeted at the feature's copy.
+      services: serviceBindings(worker.capabilities).map((service) => ({
+        binding: service.binding,
+        service: featureWorkerName(options.identity, resolveServiceTarget(workers, service.target)),
+      })),
     });
   }
 
   const migrate = options.migrate ?? defaultMigrate;
   const seed = options.seed ?? defaultSeed;
-  await migrate({ env: options.env, projectDir: options.projectDir, capabilities: options.capabilities });
-  await seed({ env: options.env, projectDir: options.projectDir, capabilities: options.capabilities });
+  // migrate and seed fan out over the Workers themselves, each against its own wrangler.jsonc — the file
+  // this run just wrote the feature's binding ids into.
+  await migrate({ env: options.env, projectDir: options.projectDir });
+  await seed({ env: options.env, projectDir: options.projectDir });
 
   return {
     command: "feature.provision",
@@ -289,7 +357,10 @@ export interface DeprovisionFeatureOptions {
   projectDir: string;
   /** The feature identity — project/issue/slug — for recomputing expected resource names. */
   identity: FeatureIdentity;
-  /** The composed capabilities, whose bindings define the exact set of names this feature could have created. */
+  /**
+   * Every capability the feature spans (the union of its Workers'), whose bindings define the exact set of
+   * names this feature could have created — the same union `provision` named them from.
+   */
   capabilities: Capability[];
   /** The environment being torn down — recorded on each audit event, since the trail lands elsewhere. */
   env: string;

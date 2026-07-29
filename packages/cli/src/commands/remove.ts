@@ -1,33 +1,9 @@
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { createRemoteCliAudit } from "../audit/cliAudit";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
-import { allCapabilities, loadProject } from "../project/config";
 import { formatDone, withErrorReporting } from "../terminal/output";
-
-/**
- * The audit emitter for `pithy remove`. `--drop` destroys data (a warning-severity event by itself),
- * and the plain removal changes what's wired into the project — both worth a trail. The `--drop` env is
- * the natural audit target when given; otherwise `"dev"` (a plain removal has no live environment).
- */
-async function buildAudit(projectDir: string, env: string) {
-  const vars = loadCloudflareEnv(projectDir);
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) return async () => {};
-  const capabilities = await loadProject(projectDir)
-    .then(allCapabilities)
-    .catch(() => []);
-  return createRemoteCliAudit({
-    projectDir,
-    env,
-    capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
-  });
-}
+import { buildAudit, targetWorker } from "./add";
 
 /**
  * `remove` is the deliberate exception to the agent-drivable / `--json` convention: it is destructive,
@@ -64,6 +40,7 @@ export default defineCommand({
   meta: { name: "remove", description: "Remove a capability — the manual, interactive inverse of add" },
   args: {
     capability: { type: "positional", required: true, description: "Capability name, e.g. auth" },
+    worker: { type: "string", description: "Which worker to unwire it from (apps/<name>)" },
     drop: {
       type: "boolean",
       default: false,
@@ -78,20 +55,34 @@ export default defineCommand({
       rejectJson(args.json);
 
       const projectDir = process.cwd();
-      const config = await loadProject(projectDir);
-      const capabilities = allCapabilities(config);
       const env = args.env;
 
-      const result = await removeCapability({
+      // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever a TTY is.
+      const target = await targetWorker({
         projectDir,
+        interactive: Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
+        ...(args.worker === undefined ? {} : { worker: args.worker }),
+      });
+      const capabilities = target.capabilities;
+
+      const result = await removeCapability({
+        workerDir: target.dir,
         capability: args.capability,
         drop: args.drop ? { env, confirm: dropConfirm(args.capability, env) } : undefined,
-        steps: defaultRemoveSteps(projectDir, async () => capabilities),
-        audit: await buildAudit(projectDir, args.drop ? env : "dev"),
+        steps: defaultRemoveSteps({ projectDir, workerDir: target.dir, loadCapabilities: async () => capabilities }),
+        // `--drop`'s env is the natural audit target when given; otherwise "dev", which is inert — a
+        // plain unwiring has no live environment, and the audit database is resolved from the project
+        // root, narrowed to the Worker being unwired.
+        audit: await buildAudit({
+          projectDir,
+          worker: target.name,
+          env: args.drop ? env : "dev",
+          capabilities,
+        }),
       });
 
       if (!result.present) {
-        process.stdout.write(`${args.capability} is not present. Nothing to remove.\n`);
+        process.stdout.write(`${args.capability} is not present in ${target.name}. Nothing to remove.\n`);
         return;
       }
       if (result.aborted) {
@@ -99,21 +90,34 @@ export default defineCommand({
         return;
       }
 
-      process.stdout.write(`Removed ${args.capability}.\n`);
+      process.stdout.write(`Removed ${args.capability} from ${target.name}.\n`);
       if (result.dropped) {
         const total = result.dropped.reduce((sum, run) => sum + run.results.length, 0);
         process.stdout.write(`Dropped ${total} migration${total === 1 ? "" : "s"} from ${env}.\n`);
       }
       if (result.ejected) {
-        process.stdout.write(`Deleted capabilities/${args.capability}/.\n`);
+        process.stdout.write(`Deleted ${relative(projectDir, join(target.dir, "capabilities", args.capability))}/.\n`);
       } else if (result.packageManager) {
         process.stdout.write(`Uninstalled @pithy-sh/${args.capability}.\n`);
+      } else if (result.keptFor.length > 0) {
+        // The wiring is gone from this Worker, but the package is one shared install — say so plainly,
+        // and name who still holds it, so the leftover dependency is never a surprise.
+        const holders = result.keptFor.join(", ");
+        const verb = result.keptFor.length === 1 ? "still wires it" : "still wire it";
+        process.stdout.write(`Kept @pithy-sh/${args.capability} installed — ${holders} ${verb}.\n`);
       }
       if (result.tablesRemain) {
         // The down code is gone now, so there's no post-removal pithy command to reverse them — name
         // the tables to drop by hand, and point at --drop for next time.
+        //
+        // Unless a sibling Worker still wires the capability: Workers sharing a binding name share one
+        // database, so those tables are live for the sibling. Telling someone to drop them by hand would
+        // be telling them to delete data another Worker is serving.
+        const shared = result.keptFor.length > 0;
         process.stdout.write(
-          `${args.capability}'s D1 tables were left in place — your data is safe, and a later pithy add ${args.capability} reuses them. To drop them, remove the pithy_${args.capability}_* tables by hand (pass --drop to reverse them during removal).\n`,
+          shared
+            ? `${args.capability}'s D1 tables were left in place — ${result.keptFor.join(", ")} still ${result.keptFor.length === 1 ? "wires" : "wire"} it and ${result.keptFor.length === 1 ? "is" : "are"} using them. Don't drop them by hand.\n`
+            : `${args.capability}'s D1 tables were left in place — your data is safe, and a later pithy add ${args.capability} reuses them. To drop them, remove the pithy_${args.capability}_* tables by hand (pass --drop to reverse them during removal).\n`,
         );
       }
       process.stdout.write(`${formatDone()}\n`);

@@ -8,15 +8,19 @@ import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 export type ConfigValue = string | number | boolean;
 
 export interface AddCapabilityOptions {
-  /** The project root — where pithy.config.ts and wrangler.jsonc live. */
-  projectDir: string;
+  /**
+   * The **Worker's** directory (`apps/<name>`) — where that Worker's `pithy.config.ts` and
+   * `wrangler.jsonc` live. Capabilities are per-Worker: the composed route tree, the bindings, and the
+   * Durable Object class migrations all attach to one script, so wiring never touches the project root.
+   */
+  workerDir: string;
   /** The capability's validated manifest (pithy.manifest.json shape). */
   manifest: CapabilityManifest;
   /** Per-option overrides; an unset option renders its manifest default. */
   configValues?: Record<string, ConfigValue>;
 }
 
-/** The managed-region marker `pithy init` plants inside `capabilities: [...]`. */
+/** The managed-region marker each Worker's `pithy.config.ts` plants inside `capabilities: [...]`. */
 const MARKER = "// pithy:capabilities";
 
 /** A single Durable Object namespace binding, as wrangler writes it. */
@@ -49,10 +53,10 @@ interface WranglerBindings {
 const DO_MIGRATION_TAG = "v1";
 
 /**
- * Wire a capability into a project — the pure logic behind `pithy add`. Inserts
- * the import and registration into pithy.config.ts's managed region and appends
- * the manifest's required bindings to every wrangler.jsonc environment,
- * comment-preserving. Idempotent: a second run changes nothing.
+ * Wire a capability into **one Worker** — the pure logic behind `pithy add`. Inserts the import and
+ * registration into that Worker's `pithy.config.ts` managed region and appends the manifest's required
+ * bindings to every environment of that Worker's `wrangler.jsonc`, comment-preserving. Idempotent: a
+ * second run changes nothing. A sibling Worker is never touched.
  */
 export async function addCapability(options: AddCapabilityOptions): Promise<void> {
   await updateConfig(options);
@@ -89,14 +93,14 @@ function renderRegistration(
   return lines.join("\n");
 }
 
-async function updateConfig({ projectDir, manifest, configValues }: AddCapabilityOptions): Promise<void> {
-  const path = join(projectDir, "pithy.config.ts");
+async function updateConfig({ workerDir, manifest, configValues }: AddCapabilityOptions): Promise<void> {
+  const path = join(workerDir, "pithy.config.ts");
   let source = await readFile(path, "utf8");
 
   const markerLine = source.split("\n").find((line) => line.trimStart().startsWith(MARKER));
   if (markerLine === undefined) {
     throw new InternalError({
-      message: `pithy.config.ts has no "${MARKER}" marker.`,
+      message: `${path} has no "${MARKER}" marker.`,
       action: "Restore the managed-region marker inside capabilities: []. Run pithy add again.",
     });
   }
@@ -175,8 +179,8 @@ function appendDurableObjectMigrations(config: WranglerBindings, manifest: Capab
   }
 }
 
-async function updateWrangler({ projectDir, manifest }: AddCapabilityOptions): Promise<void> {
-  const config = (await readWranglerConfig(projectDir)) as WranglerBindings;
+async function updateWrangler({ workerDir, manifest }: AddCapabilityOptions): Promise<void> {
+  const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
 
   appendBindings(config, manifest);
   for (const stanza of Object.values(config.env ?? {})) {
@@ -185,5 +189,5 @@ async function updateWrangler({ projectDir, manifest }: AddCapabilityOptions): P
   // DO class migrations are top-level only — they register the class against the script, not per-env.
   appendDurableObjectMigrations(config, manifest);
 
-  await writeWranglerConfig(projectDir, config);
+  await writeWranglerConfig(workerDir, config);
 }

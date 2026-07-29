@@ -25,14 +25,16 @@ describe("deployProject", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  async function writeWorker(at: string, name: string): Promise<void> {
+  /** Create `apps/<dir>/wrangler.jsonc` — the only shape a Worker has; there is no root Worker. */
+  async function writeWorker(dirName: string, name: string): Promise<void> {
+    const at = join(dir, "apps", dirName);
     await mkdir(at, { recursive: true });
     await writeFile(join(at, "wrangler.jsonc"), JSON.stringify({ name }));
   }
 
   test("deploys each worker, passes --env, and parses the per-worker summary", async () => {
-    await writeWorker(join(dir, "apps", "api"), "pithy-api");
-    await writeWorker(join(dir, "apps", "web"), "pithy-web");
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
     const calls: { name: string; args: string[] }[] = [];
 
     const results = await deployProject({
@@ -54,8 +56,8 @@ describe("deployProject", () => {
     ]);
   });
 
-  test("omits --env when no environment is given (deploys the top-level worker)", async () => {
-    await writeWorker(dir, "pithy-app");
+  test("omits --env when no environment is given (each worker's top-level config)", async () => {
+    await writeWorker("app", "pithy-app");
     const calls: string[][] = [];
 
     await deployProject({
@@ -70,8 +72,8 @@ describe("deployProject", () => {
   });
 
   test("records a failed worker, keeps deploying the rest, and reports the failure", async () => {
-    await writeWorker(join(dir, "apps", "api"), "pithy-api");
-    await writeWorker(join(dir, "apps", "web"), "pithy-web");
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
 
     const results = await deployProject({
       projectDir: dir,
@@ -89,7 +91,7 @@ describe("deployProject", () => {
   });
 
   test("surfaces wrangler's captured stderr (PithyError detail), not just the generic message", async () => {
-    await writeWorker(dir, "pithy-app");
+    await writeWorker("app", "pithy-app");
 
     const results = await deployProject({
       projectDir: dir,
@@ -106,7 +108,7 @@ describe("deployProject", () => {
   });
 
   test("a worker whose output has no version id or url still succeeds with those fields absent", async () => {
-    await writeWorker(dir, "pithy-app");
+    await writeWorker("app", "pithy-app");
 
     const results = await deployProject({
       projectDir: dir,
@@ -126,7 +128,7 @@ describe("deployProject", () => {
   });
 
   test("audits a successful deploy per worker, at warning severity for production", async () => {
-    await writeWorker(join(dir, "apps", "api"), "pithy-api");
+    await writeWorker("api", "pithy-api");
     const events: CliAuditEvent[] = [];
 
     await deployProject({
@@ -148,7 +150,7 @@ describe("deployProject", () => {
   });
 
   test("audits a failed deploy as a failure, and staging stays info severity", async () => {
-    await writeWorker(join(dir, "apps", "api"), "pithy-api");
+    await writeWorker("api", "pithy-api");
     const events: CliAuditEvent[] = [];
 
     await deployProject({

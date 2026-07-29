@@ -44,3 +44,60 @@ export function saffron(text: string): string {
 // honor the same TTY-gated rule as `saffron`. This is the documented exception
 // to the no-re-export rule; further tiers join as commands need them.
 export const { red, yellow, cyan, dim } = pc.createColors(enabled);
+
+// A stable, TTY-gated palette for per-worker labels in `pithy dev`. Built from the one seam so no
+// raw ANSI leaks. Cyan/red/yellow/dim are reserved for meaning elsewhere, so the palette leans on the
+// remaining hues and their bright variants; it cycles when a project has more workers than colors.
+const palette = pc.createColors(enabled);
+const WORKER_PALETTE: readonly ((text: string) => string)[] = [
+  palette.green,
+  palette.magenta,
+  palette.blue,
+  palette.cyan,
+  palette.greenBright,
+  palette.magentaBright,
+  palette.blueBright,
+  palette.cyanBright,
+];
+
+/**
+ * A stable color for one worker's log label, chosen by its discovery index and cycling the palette.
+ * `pithy dev` colorizes each worker's `[name]` prefix so interleaved output stays readable.
+ */
+export function workerColor(index: number): (text: string) => string {
+  return WORKER_PALETTE[((index % WORKER_PALETTE.length) + WORKER_PALETTE.length) % WORKER_PALETTE.length] as (
+    text: string,
+  ) => string;
+}
+
+/**
+ * Wrap `text` in an OSC-8 terminal hyperlink pointing at `url` — the id-as-link
+ * rendering `pithy env` uses so a resource id opens its Cloudflare dashboard page.
+ * Gated on the same latched `enabled` flag as every other symbol here: off when the
+ * output is piped/redirected or `NO_COLOR` is set (where escape sequences would be
+ * noise), so the caller falls back to printing the plain URL. `FORCE_COLOR` forces
+ * it on. When off, the plain `text` is returned unchanged.
+ */
+export function link(url: string, text: string): string {
+  if (!enabled) return safe(text);
+  return `\x1b]8;;${safe(url)}\x1b\\${safe(text)}\x1b]8;;\x1b\\`;
+}
+
+/**
+ * Strip C0/C1 control characters. Both halves of a hyperlink are values read out of a project's
+ * `wrangler.jsonc` — a resource id and a URL built from it — so an embedded `ESC` could close this
+ * sequence early and open its own, making the rendered link point somewhere other than what it displays.
+ * Stripping them also stops a malformed id from corrupting the surrounding output.
+ */
+function safe(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point.
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
+/**
+ * Whether OSC-8 hyperlinks render — the same TTY-gated `enabled` flag `link` uses.
+ * Callers branch on it to choose the clickable id or the plain-URL fallback.
+ */
+export function supportsHyperlinks(): boolean {
+  return enabled;
+}

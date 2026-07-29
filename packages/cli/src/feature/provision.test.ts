@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
@@ -58,6 +59,14 @@ function appCapability() {
   return defineCapability({ name: "app", requiredBindings });
 }
 
+/** Migrate/seed are exercised by their own suites; provisioning tests stub them out. */
+/**
+ * The seams a test that is not about worker wiring stubs out: the backend runners, plus an empty
+ * worker set. These cases assert resource creation, the manifest, and audit — the real resolver would
+ * read `apps/` and each Worker's `pithy.config.ts`, which these bare fixtures deliberately do not have.
+ */
+const noBackend = { migrate: async () => {}, seed: async () => {}, resolveWorkers: async () => [] };
+
 describe("provisionFeature / deprovisionFeature", () => {
   let dir: string;
   const identity: FeatureIdentity = { project: "acme", issue: "69", slug: "demo" };
@@ -65,7 +74,9 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-feature-"));
-    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "app"\n}\n');
+    // The per-Worker layout: one Worker in apps/app, owning its own wrangler.jsonc. No root Worker.
+    await mkdir(join(dir, "apps", "app"), { recursive: true });
+    await writeFile(join(dir, "apps", "app", "wrangler.jsonc"), '{\n  "name": "app"\n}\n');
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -91,6 +102,8 @@ describe("provisionFeature / deprovisionFeature", () => {
       capabilities,
       identity,
       provisioners,
+      // This case asserts the ids land in the fixture Worker's own wrangler.jsonc, so resolve it for real.
+      resolveWorkers: async () => [{ name: "app", dir: join(dir, "apps", "app"), capabilities }],
       migrate: r.migrate,
       seed: r.seed,
     });
@@ -110,7 +123,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const manifest = await readManifest(manifestPath(dir));
     expect(manifest?.resources).toHaveLength(3);
 
-    const wrangler = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const wrangler = parse(await readFile(join(dir, "apps", "app", "wrangler.jsonc"), "utf8")) as unknown as {
       env: Record<
         string,
         Record<string, { binding: string; database_id?: string; id?: string; bucket_name?: string }[]>
@@ -125,7 +138,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("re-running is idempotent: every resource is reused, nothing new is created", async () => {
     const { provisioners, typed } = fakeProvisioners();
-    const opts = { projectDir: dir, env: "feature", capabilities, identity, provisioners };
+    const opts = { projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend };
 
     await provisionFeature(opts);
     const before = typed.d1.creates + typed.kv.creates + typed.r2.creates;
@@ -142,7 +155,14 @@ describe("provisionFeature / deprovisionFeature", () => {
     // Simulate a crash after D1 was created (and even recorded) but before KV/R2.
     stores.d1.set(featureResourceName(identity, "DB", "d1"), "pre-existing-d1");
 
-    const report = await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners });
+    const report = await provisionFeature({
+      projectDir: dir,
+      env: "feature",
+      capabilities,
+      identity,
+      provisioners,
+      ...noBackend,
+    });
 
     expect(report.resources.map((x) => [x.binding, x.created])).toEqual([
       ["DB", false], // reused
@@ -152,6 +172,56 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(typed.d1.creates).toBe(0);
     expect(typed.kv.creates).toBe(1);
     expect(typed.r2.creates).toBe(1);
+  });
+
+  test("a Worker is wired only the bindings its own config declares", async () => {
+    const { provisioners } = fakeProvisioners();
+    const apiDir = join(dir, "apps", "api");
+    const collabDir = join(dir, "apps", "collab");
+    for (const workerDir of [apiDir, collabDir]) {
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), '{\n  "name": "w"\n}\n');
+    }
+
+    // Both declare DB (so they share one database); only collab declares ROOMS.
+    const shared = defineCapability({ name: "shared", requiredBindings: [{ type: "d1", name: "DB" }] });
+    const collabOnly = defineCapability({
+      name: "collabOnly",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "kv", name: "ROOMS" },
+      ] as BindingSpecInput[],
+    });
+
+    await provisionFeature({
+      projectDir: dir,
+      env: "feature",
+      capabilities: [shared, collabOnly],
+      identity,
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "api", dir: apiDir, capabilities: [shared] },
+        { name: "collab", dir: collabDir, capabilities: [collabOnly] },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+    const stanza = async (workerDir: string) => {
+      const config = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+        env: Record<string, { d1_databases?: { binding: string }[]; kv_namespaces?: { binding: string }[] }>;
+      };
+      return config.env.feature;
+    };
+    const api = await stanza(apiDir);
+    const collab = await stanza(collabDir);
+
+    // The shared binding reaches both Workers; the binding only collab declares reaches only collab.
+    expect(api?.d1_databases?.map((entry) => entry.binding)).toEqual(["DB"]);
+    expect(collab?.d1_databases?.map((entry) => entry.binding)).toEqual(["DB"]);
+    expect(collab?.kv_namespaces?.map((entry) => entry.binding)).toEqual(["ROOMS"]);
+    // api never declared ROOMS, so its config must not carry it.
+    expect(api?.kv_namespaces ?? []).toEqual([]);
   });
 
   test("names each Worker for the env and retargets service bindings at the feature's own deployments", async () => {
@@ -175,9 +245,9 @@ describe("provisionFeature / deprovisionFeature", () => {
       capabilities: [withService],
       identity,
       provisioners,
-      discoverWorkers: async () => [
-        { name: "api", dir: apiDir },
-        { name: "web", dir: webDir },
+      resolveWorkers: async () => [
+        { name: "api", dir: apiDir, capabilities: [withService] },
+        { name: "web", dir: webDir, capabilities: [withService] },
       ],
       migrate: async () => {},
       seed: async () => {},
@@ -198,9 +268,78 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(web.env.feature?.services).toEqual([{ binding: "API", service: apiName }]);
   });
 
+  test("a service binding targets the sibling's real script name, even when it differs from its directory", async () => {
+    const { provisioners } = fakeProvisioners();
+    // The normal state after `pithy init acme`: apps/api deploys as "acme-api", not "api".
+    const apiDir = join(dir, "apps", "api");
+    const webDir = join(dir, "apps", "web");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(join(apiDir, "wrangler.jsonc"), '{\n  "name": "acme-api"\n}\n');
+    await mkdir(webDir, { recursive: true });
+    await writeFile(join(webDir, "wrangler.jsonc"), '{\n  "name": "acme-web"\n}\n');
+
+    // A service binding names its target by its apps/<name> directory (BindingSpec.service).
+    const withService = defineCapability({
+      name: "app",
+      requiredBindings: [{ type: "service", name: "API", service: "api" }] satisfies BindingSpecInput[],
+    });
+
+    const report = await provisionFeature({
+      projectDir: dir,
+      env: "feature",
+      capabilities: [withService],
+      identity,
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "acme-api", dir: apiDir, capabilities: [withService] },
+        { name: "acme-web", dir: webDir, capabilities: [withService] },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+    // api deploys as `<feature>-acme-api`; the binding must name exactly that. Feature-scoping the directory
+    // name instead wrote `<feature>-api` — a script nobody deploys, so every RPC through env.API failed
+    // while provision reported success.
+    const deployed = featureWorkerName(identity, "acme-api");
+    expect(report.services).toEqual([{ binding: "API", service: deployed }]);
+
+    const web = parse(await readFile(join(webDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { services?: { binding: string; service: string }[] }>;
+    };
+    expect(web.env.feature?.services).toEqual([{ binding: "API", service: deployed }]);
+  });
+
+  test("a service binding naming no worker is refused before a single resource is created", async () => {
+    const { provisioners, typed } = fakeProvisioners();
+    const ghost = defineCapability({
+      name: "app",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "service", name: "API", service: "ghost" },
+      ] satisfies BindingSpecInput[],
+    });
+
+    const failure = await provisionFeature({
+      projectDir: dir,
+      env: "feature",
+      capabilities: [ghost],
+      identity,
+      provisioners,
+      resolveWorkers: async () => [{ name: "app", dir: join(dir, "apps", "app"), capabilities: [ghost] }],
+      migrate: async () => {},
+      seed: async () => {},
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.action).toMatch(/apps/);
+    // Nothing was spent on a feature that could never have worked.
+    expect(typed.d1.creates).toBe(0);
+  });
+
   test("destroy deletes every manifest resource and removes the manifest file", async () => {
     const { stores, provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners });
+    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
 
     const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
@@ -250,6 +389,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       identity,
       provisioners,
       audit: async (event) => void events.push(event),
+      resolveWorkers: async () => [],
       migrate: async () => {},
       seed: async () => {},
     });
@@ -264,7 +404,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("audits every deletion as a warning — teardown destroys real infrastructure, often with no human watching", async () => {
     const { provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners });
+    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
 
     const events: CliAuditEvent[] = [];
     await deprovisionFeature({
@@ -287,10 +427,8 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("writes binding ids into each Worker's own wrangler.jsonc — an apps/ layout has no root one", async () => {
     const { provisioners } = fakeProvisioners();
-    // The apps/<name>/ layout this feature targets: each Worker owns its wrangler.jsonc, and there is NO
-    // root one. Writing only to the project root used to throw a raw ENOENT *after* creating the resources,
-    // and left the real Workers without the feature's bindings.
-    await rm(join(dir, "wrangler.jsonc"));
+    // Each Worker owns its wrangler.jsonc, and there is NO root one. Writing only to the project root used
+    // to throw a raw ENOENT *after* creating the resources, leaving the real Workers without the bindings.
     const apiDir = join(dir, "apps", "api");
     await mkdir(apiDir, { recursive: true });
     await writeFile(join(apiDir, "wrangler.jsonc"), '{\n  "name": "api"\n}\n');
@@ -301,7 +439,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       capabilities,
       identity,
       provisioners,
-      discoverWorkers: async () => [{ name: "api", dir: apiDir }],
+      resolveWorkers: async () => [{ name: "api", dir: apiDir, capabilities }],
       migrate: async () => {},
       seed: async () => {},
     });
@@ -379,6 +517,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         capabilities,
         identity,
         provisioners,
+        resolveWorkers: async () => [],
         migrate: async () => {},
         seed: async () => {},
       });

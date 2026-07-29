@@ -9,7 +9,18 @@ describe("seed command", () => {
   test("is a non-interactive, agent-drivable command with the documented flags", () => {
     expect(seed.meta).toMatchObject({ name: "seed" });
     // Every lifecycle command works headlessly with full flags and a --json surface (docs/CLI.md).
-    expect(Object.keys(args)).toEqual(["env", "json", "dry-run", "redo", "confirm-reset", "yes", "confirm-production"]);
+    expect(Object.keys(args)).toEqual([
+      "env",
+      "worker",
+      "json",
+      "dry-run",
+      "redo",
+      "confirm-reset",
+      "yes",
+      "confirm-production",
+    ]);
+    // The fan-out over apps/* is the default; --worker narrows it to one worker.
+    expect(args.worker).toMatchObject({ type: "string" });
     expect(args.env).toMatchObject({ type: "string", default: "dev" });
     expect(args.json).toMatchObject({ type: "boolean" });
     expect(args["dry-run"]).toMatchObject({ type: "boolean" });

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -27,11 +27,18 @@ function fakeDispatcher() {
 }
 
 const dirs: string[] = [];
-async function projectDir(wrangler = "{}") {
-  const dir = await mkdtemp(join(tmpdir(), "pithy-turnstile-"));
-  dirs.push(dir);
-  await writeFile(join(dir, "wrangler.jsonc"), wrangler);
-  return dir;
+
+/**
+ * A project in the per-Worker layout: the root owns the shared `.dev.vars`, and `apps/api/` owns the
+ * `wrangler.jsonc` the sitekey vars are written into.
+ */
+async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir: string }> {
+  const projectDir = await mkdtemp(join(tmpdir(), "pithy-turnstile-"));
+  dirs.push(projectDir);
+  const workerDir = join(projectDir, "apps", "api");
+  await mkdir(workerDir, { recursive: true });
+  await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
+  return { projectDir, workerDir };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -40,12 +47,12 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeDev upserts the secret + sitekeys into .dev.vars", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const dir = await projectDir();
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: dir, dispatcher });
+    const { projectDir, workerDir } = await project();
+    const p = new CloudflareTurnstileProvisioner({ cf, projectDir, workerDir, dispatcher });
 
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
 
-    const content = await readFile(join(dir, ".dev.vars"), "utf8");
+    const content = await readFile(join(projectDir, ".dev.vars"), "utf8");
     expect(content).toContain(`${TURNSTILE_SECRET_NAME}={"visible":{"key":"1x"}}`);
     expect(content).toContain("TURNSTILE_SITEKEY_VISIBLE=1x00");
   });
@@ -53,7 +60,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeManagedSecret dispatches a create with the d1/environment/json routing facts", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: await projectDir(), dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher });
 
     await p.writeManagedSecret("staging", '{"visible":{"key":"1x"}}');
 
@@ -70,7 +77,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeManagedSecret falls back to update when create fails (idempotent re-run)", async () => {
     const { cf } = fakeCf();
     const dispatch = vi.fn().mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: await projectDir(), dispatcher: { dispatch } });
+    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher: { dispatch } });
 
     await p.writeManagedSecret("production", '{"visible":{"key":"1x"}}');
 
@@ -85,7 +92,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       .fn()
       .mockRejectedValueOnce(new Error("create boom: bad token"))
       .mockRejectedValueOnce(new Error("update boom: not found"));
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: await projectDir(), dispatcher: { dispatch } });
+    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher: { dispatch } });
 
     await expect(p.writeManagedSecret("production", '{"visible":{"key":"1x"}}')).rejects.toMatchObject({
       payload: { code: "core/internal", detail: expect.stringContaining("create boom: bad token") },
@@ -95,12 +102,13 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeManagedSitekeys writes into the env's wrangler vars, comment-preserving", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const dir = await projectDir('{\n  // staging\n  "env": { "staging": { "vars": {} } }\n}');
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: dir, dispatcher });
+    const { projectDir, workerDir } = await project('{\n  // staging\n  "env": { "staging": { "vars": {} } }\n}');
+    const p = new CloudflareTurnstileProvisioner({ cf, projectDir, workerDir, dispatcher });
 
     await p.writeManagedSitekeys("staging", { TURNSTILE_SITEKEY_VISIBLE: "stg-key" });
 
-    const written = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    // Written into the WORKER's wrangler.jsonc — there is no root one to write.
+    const written = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
     expect(written).toContain("// staging");
     expect(written).toContain('"TURNSTILE_SITEKEY_VISIBLE": "stg-key"');
   });
@@ -108,7 +116,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("ensureProductionWidget creates a managed widget for visible, reuses an existing one", async () => {
     const { cf, getTurnstile, addTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir: await projectDir(), dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher });
 
     getTurnstile.mockResolvedValueOnce(null);
     addTurnstile.mockResolvedValueOnce({ sitekey: "new-key", secret: "new-secret" });
@@ -131,7 +139,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const events: CliAuditEvent[] = [];
     const p = new CloudflareTurnstileProvisioner({
       cf,
-      projectDir: await projectDir(),
+      ...(await project()),
       dispatcher,
       audit: async (event) => void events.push(event),
     });
@@ -163,7 +171,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
   test("deleteProductionWidget deletes by sitekey when present, no-op when absent", async () => {
     const { cf, getTurnstile, deleteTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const d = new CloudflareTurnstileDeprovisioner({ cf, projectDir: await projectDir(), dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, ...(await project()), dispatcher });
 
     getTurnstile.mockResolvedValueOnce({ sitekey: "key-1" });
     await d.deleteProductionWidget("visible");
@@ -180,7 +188,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const d = new CloudflareTurnstileDeprovisioner({
       cf,
-      projectDir: await projectDir(),
+      ...(await project()),
       dispatcher,
       audit: async (event) => void events.push(event),
     });
@@ -206,7 +214,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
   test("deleteManagedSecret dispatches a delete to staging and production", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
-    const d = new CloudflareTurnstileDeprovisioner({ cf, projectDir: await projectDir(), dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, ...(await project()), dispatcher });
 
     await d.deleteManagedSecret();
 
@@ -219,15 +227,15 @@ describe("CloudflareTurnstileDeprovisioner", () => {
   test("clearDev strips the secret + sitekey keys from .dev.vars", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const dir = await projectDir();
+    const { projectDir, workerDir } = await project();
     await writeFile(
-      join(dir, ".dev.vars"),
+      join(projectDir, ".dev.vars"),
       `CLOUDFLARE_ACCOUNT_ID=acct\n${TURNSTILE_SECRET_NAME}={"visible":{"key":"1x"}}\nTURNSTILE_SITEKEY_VISIBLE=1x00\n`,
     );
-    const d = new CloudflareTurnstileDeprovisioner({ cf, projectDir: dir, dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, projectDir, workerDir, dispatcher });
 
     await d.clearDev(["visible"]);
 
-    expect(await readFile(join(dir, ".dev.vars"), "utf8")).toBe("CLOUDFLARE_ACCOUNT_ID=acct\n");
+    expect(await readFile(join(projectDir, ".dev.vars"), "utf8")).toBe("CLOUDFLARE_ACCOUNT_ID=acct\n");
   });
 });

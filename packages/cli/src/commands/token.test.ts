@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -72,10 +72,14 @@ describe("resolveAppDatabaseId", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("reads the app DB id from the env stanza, dev from the top level, and returns undefined when absent", async () => {
+  test("reads the app DB id from a worker's env stanza, dev from its top level, undefined when absent", async () => {
+    // The id lives in the Worker's own apps/<name>/wrangler.jsonc — there is no root one.
+    const worker = join(dir, "apps", "api");
+    await mkdir(worker, { recursive: true });
     await writeFile(
-      join(dir, "wrangler.jsonc"),
+      join(worker, "wrangler.jsonc"),
       JSON.stringify({
+        name: "api",
         d1_databases: [{ binding: "DB", database_id: "dev-db" }],
         env: { staging: { d1_databases: [{ binding: "DB", database_id: "staging-db" }] } },
       }),
@@ -85,7 +89,7 @@ describe("resolveAppDatabaseId", () => {
     expect(await resolveAppDatabaseId(dir, "production")).toBeUndefined();
   });
 
-  test("returns undefined when there is no wrangler.jsonc", async () => {
+  test("returns undefined when the project has no workers", async () => {
     expect(await resolveAppDatabaseId(dir, "staging")).toBeUndefined();
   });
 });

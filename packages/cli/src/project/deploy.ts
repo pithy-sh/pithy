@@ -9,9 +9,9 @@ import { runWrangler } from "./wrangler";
 export type RunDeploy = (target: WorkerTarget, args: string[]) => Promise<string>;
 
 export interface DeployProjectOptions {
-  /** The project root — where `apps/*` (or the single root worker) live. */
+  /** The project root — the parent of `apps/`, where every Worker lives. */
   projectDir: string;
-  /** Target environment; omitted deploys the top-level worker (no `--env`). */
+  /** Target environment; omitted deploys each worker's top-level config (no `--env`). */
   env?: string;
   /** Test seam: run one worker's deploy and return its captured stdout. Defaults to real wrangler. */
   runDeploy?: RunDeploy;
@@ -21,8 +21,8 @@ export interface DeployProjectOptions {
 
 /**
  * Shipping code is production-affecting the moment `production` is the named target — everything else
- * (`staging`, the top-level worker with no `--env`) is routine. Exported so the command layer and tests
- * agree on the same rule.
+ * (`staging`, a bare deploy with no `--env`) is routine. Exported so the command layer and tests agree on
+ * the same rule.
  */
 export function deploySeverity(env: string | undefined): "info" | "warning" {
   return env === "production" ? "warning" : "info";
@@ -82,16 +82,19 @@ function defaultRunDeploy(projectDir: string): RunDeploy {
 
 /**
  * Deploy the project's Workers — the logic behind `pithy deploy`. It enumerates the worker registry
- * (`apps/*`, or the single root worker) and runs `wrangler deploy` per worker, letting wrangler own
- * bundling, upload, bindings, and routes. One worker's failure does not abort the batch: every worker
- * is attempted and reported, so the caller can exit non-zero if any `ok` is false.
+ * (`apps/*` — there is no root Worker) and runs `wrangler deploy` in each worker's own directory, against
+ * that worker's own `wrangler.jsonc`, letting wrangler own bundling, upload, bindings, and routes. One
+ * worker's failure does not abort the batch: every worker is attempted and reported, so the caller can
+ * exit non-zero if any `ok` is false.
  */
 export async function deployProject(options: DeployProjectOptions): Promise<WorkerDeploy[]> {
-  const workers = await discoverWorkers(options.projectDir);
+  // Only real Workers deploy. A non-Worker process in the dev set (a Vite frontend with a
+  // `pithy.worker.jsonc` but no `wrangler.jsonc`) has nothing for `wrangler deploy` to ship.
+  const workers = (await discoverWorkers(options.projectDir)).filter((worker) => worker.hasWrangler !== false);
   if (workers.length === 0) {
     throw new NotFoundError({
       message: "No deployable workers here.",
-      action: "Add a worker under apps/, or run from a project with a wrangler.jsonc.",
+      action: "Every worker lives in apps/<name> with its own wrangler.jsonc. Run pithy worker add <name>.",
     });
   }
 

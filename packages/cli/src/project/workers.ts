@@ -1,13 +1,21 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "comment-json";
+import { defaultWorkerDev, parseWorkerManifest, WORKER_MANIFEST_FILE, type WorkerDev } from "./workerManifest";
 
-/** A deployable Worker: the name deploy labels it by, and the directory wrangler runs in. */
+/** A discovered Worker: its deploy name, its directory, its dev-set settings, and whether it is a real Worker. */
 export interface WorkerTarget {
   /** The Worker's name — its `wrangler.jsonc` `name`, or the directory when that is absent. */
   name: string;
-  /** The directory holding the Worker's `wrangler.jsonc` — the `cwd` for `wrangler deploy`. */
+  /** The directory holding the Worker's `wrangler.jsonc`/`pithy.worker.jsonc` — the `cwd` for wrangler. */
   dir: string;
+  /**
+   * How `pithy dev` runs this worker locally, from `pithy.worker.jsonc` (or a synthesized default). Real
+   * discovery always sets it; it is optional so the many test doubles that only need `name`/`dir` stay valid.
+   */
+  dev?: WorkerDev;
+  /** Whether the directory holds a `wrangler.jsonc`. `false` → a non-Worker process (deploy skips it). */
+  hasWrangler?: boolean;
 }
 
 /** Just the `name` field of a `wrangler.jsonc` — the Worker's deployed name. */
@@ -15,10 +23,10 @@ interface NamedWrangler {
   name?: string;
 }
 
-/** True if `dir` holds a `wrangler.jsonc` — the marker of a deployable Worker. */
-async function hasWrangler(dir: string): Promise<boolean> {
+/** True if `dir` holds a file named `file`. */
+async function hasFile(dir: string, file: string): Promise<boolean> {
   try {
-    return (await stat(join(dir, "wrangler.jsonc"))).isFile();
+    return (await stat(join(dir, file))).isFile();
   } catch {
     return false;
   }
@@ -34,11 +42,27 @@ async function workerName(dir: string, fallback: string): Promise<string> {
   }
 }
 
+/** Build a {@link WorkerTarget} for `dir`, reading its manifest (or synthesizing a default dev block). */
+async function toTarget(dir: string, fallbackName: string, hasWrangler: boolean): Promise<WorkerTarget> {
+  const manifest = await parseWorkerManifest(dir);
+  return {
+    name: hasWrangler ? await workerName(dir, fallbackName) : fallbackName,
+    dir,
+    dev: manifest?.dev ?? defaultWorkerDev(),
+    hasWrangler,
+  };
+}
+
 /**
- * The project's deployable Workers. `apps/` **is** the registry — every `apps/<name>/` holding a
- * `wrangler.jsonc` is one Worker (`docs/CLI.md` §6). Until a project adopts that layout it has a
- * single root worker (the current `pithy init` scaffold), so with no `apps/*` workers this falls back
- * to the root `wrangler.jsonc`. `dev` and `deploy` both discover the set this way — no hand-kept list.
+ * The project's Workers. `apps/` **is** the registry (`docs/CLI.md` §6): every `apps/<name>/` carrying a
+ * `pithy.worker.jsonc` **or** a `wrangler.jsonc` is one Worker. Discovery keys on `pithy.worker.jsonc` so a
+ * non-Worker process (a Vite frontend with no `wrangler.jsonc`) can still join the dev set; a `wrangler.jsonc`
+ * with no manifest is still discovered with a synthesized autostart dev block.
+ *
+ * **There is no root Worker.** Every Worker lives in `apps/<name>/` with its own `wrangler.jsonc` and its own
+ * `pithy.config.ts`, so capabilities, bindings, and Durable Object class migrations attach to the Worker that
+ * actually owns them. `dev`, `deploy`, `migrate`, `seed`, `upgrade`, and `doctor` all discover the set this
+ * way — no hand-kept list, and nothing special-cases the project root.
  */
 export async function discoverWorkers(projectDir: string): Promise<WorkerTarget[]> {
   let entries: string[] = [];
@@ -48,13 +72,12 @@ export async function discoverWorkers(projectDir: string): Promise<WorkerTarget[
     entries = [];
   }
 
-  const appWorkers: WorkerTarget[] = [];
+  const workers: WorkerTarget[] = [];
   for (const entry of entries) {
     const dir = join(projectDir, "apps", entry);
-    if (await hasWrangler(dir)) appWorkers.push({ name: await workerName(dir, entry), dir });
+    const hasManifest = await hasFile(dir, WORKER_MANIFEST_FILE);
+    const hasWrangler = await hasFile(dir, "wrangler.jsonc");
+    if (hasManifest || hasWrangler) workers.push(await toTarget(dir, entry, hasWrangler));
   }
-  if (appWorkers.length > 0) return appWorkers.sort((a, b) => a.name.localeCompare(b.name));
-
-  if (await hasWrangler(projectDir)) return [{ name: await workerName(projectDir, "app"), dir: projectDir }];
-  return [];
+  return workers.sort((a, b) => a.name.localeCompare(b.name));
 }

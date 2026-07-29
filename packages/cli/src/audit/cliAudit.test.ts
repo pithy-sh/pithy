@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -16,6 +16,14 @@ const unusedClients = {
   },
 } as unknown as CloudflareClients;
 
+/** Write a Worker's `apps/<name>/wrangler.jsonc`, as the per-Worker layout has it. */
+async function writeWorker(projectDir: string, name: string, config: unknown): Promise<string> {
+  const dir = join(projectDir, "apps", name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify(config));
+  return dir;
+}
+
 describe("resolveAuditDatabaseId", () => {
   let dir: string;
   beforeEach(async () => {
@@ -25,25 +33,35 @@ describe("resolveAuditDatabaseId", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("reads the top-level DB binding for dev and the env stanza otherwise", async () => {
-    await writeFile(
-      join(dir, "wrangler.jsonc"),
-      JSON.stringify({
-        d1_databases: [{ binding: "DB", database_id: "local-db" }],
-        env: { staging: { d1_databases: [{ binding: "DB", database_id: "staging-db" }] } },
-      }),
-    );
+  test("reads a worker's top-level DB binding for dev and its env stanza otherwise", async () => {
+    await writeWorker(dir, "api", {
+      name: "api",
+      d1_databases: [{ binding: "DB", database_id: "local-db" }],
+      env: { staging: { d1_databases: [{ binding: "DB", database_id: "staging-db" }] } },
+    });
 
     expect(await resolveAuditDatabaseId(dir, "dev")).toBe("local-db");
     expect(await resolveAuditDatabaseId(dir, "staging")).toBe("staging-db");
   });
 
-  test("is undefined when the env, the binding, or the file is absent", async () => {
-    expect(await resolveAuditDatabaseId(dir, "dev")).toBeUndefined(); // no wrangler.jsonc at all
+  test("is undefined when the env, the binding, or the worker is absent", async () => {
+    expect(await resolveAuditDatabaseId(dir, "dev")).toBeUndefined(); // no workers at all
 
-    await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify({ d1_databases: [{ binding: "OTHER", id: "x" }] }));
+    await writeWorker(dir, "api", { name: "api", d1_databases: [{ binding: "OTHER", id: "x" }] });
     expect(await resolveAuditDatabaseId(dir, "dev")).toBeUndefined();
     expect(await resolveAuditDatabaseId(dir, "nope")).toBeUndefined();
+  });
+
+  test("takes the first worker declaring DB, and honours an explicit worker name", async () => {
+    // `web` sorts first and binds no database; `api` holds the app DB. Workers share a resource by
+    // declaring the same binding name, so the first DB found IS the app database — no ambiguity error,
+    // because auditing must never break the command it records.
+    await writeWorker(dir, "web", { name: "web" });
+    await writeWorker(dir, "api", { name: "api", d1_databases: [{ binding: "DB", database_id: "app-db" }] });
+
+    expect(await resolveAuditDatabaseId(dir, "dev")).toBe("app-db");
+    expect(await resolveAuditDatabaseId(dir, "dev", "api")).toBe("app-db");
+    expect(await resolveAuditDatabaseId(dir, "dev", "web")).toBeUndefined();
   });
 });
 
@@ -51,10 +69,7 @@ describe("createCliAudit", () => {
   let dir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-"));
-    await writeFile(
-      join(dir, "wrangler.jsonc"),
-      JSON.stringify({ d1_databases: [{ binding: "DB", database_id: "x" }] }),
-    );
+    await writeWorker(dir, "api", { name: "api", d1_databases: [{ binding: "DB", database_id: "x" }] });
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });

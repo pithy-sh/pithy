@@ -1,5 +1,7 @@
+import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { devConfigPath } from "./devConfig";
 import type { FeatureIdentity } from "./naming";
 import { freePortBlock, resolvePortsRegistryPath } from "./ports";
 import { type DeprovisionedResource, deprovisionFeature, type FeatureProvisioners } from "./provision";
@@ -35,7 +37,10 @@ export interface DestroyFeatureOptions {
   projectDir: string;
   /** The feature identity — project/issue/slug — for recomputing resource names and the branch name. */
   identity: FeatureIdentity;
-  /** The composed capabilities, whose bindings the remote reconcile recomputes expected names from. */
+  /**
+   * Every capability the feature spans — the union of its Workers' own configs, the same one `provision`
+   * derived resource names from. The remote reconcile recomputes those exact names from it.
+   */
   capabilities: Capability[];
   /** The environment being torn down. Recorded on each audit event. */
   env: string;
@@ -74,6 +79,14 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
 
   const registryPath = options.registryPath ?? (await resolvePortsRegistryPath(options.projectDir));
   const branch = `feature/${options.identity.issue}-${options.identity.slug}`;
+  // Drop the feature's pinned ports **before** freeing its registry key, and in that order. Teardown leaves
+  // the worktree's files on disk by design (recursive deletion is what we must never do on Linux), and
+  // `.dev.config.json` is a port claim: every later `feature create`/`sync` rebuilds the registry from the
+  // pinned blocks it finds under `.worktrees`, so a surviving one hands this branch its block straight back —
+  // permanently, to a feature that no longer exists. Removing one file is not a recursive delete. If the run
+  // dies between the two steps, the registry is the only claim left and a re-run clears it; the reverse order
+  // would leave the stale claim to be reclaimed.
+  await rm(devConfigPath(options.projectDir), { force: true });
   await freePortBlock({ registryPath, branch });
 
   const teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });

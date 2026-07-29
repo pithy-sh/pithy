@@ -5,7 +5,7 @@ import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
-import type { ProjectConfig } from "../project/config";
+import type { WorkerConfig } from "../project/config";
 import { resolveSecretRegistry, runSecretsList, runSecretWrite } from "./secrets";
 
 class StubDispatcher implements SecretDispatcher {
@@ -160,12 +160,12 @@ describe("runSecretWrite", () => {
 });
 
 describe("resolveSecretRegistry", () => {
-  test("finds the secrets capability's registry in a loaded project", () => {
-    const config: ProjectConfig = { capabilities: [secrets({ registry })] };
+  test("finds the secrets capability's registry in a loaded worker config", () => {
+    const config: WorkerConfig = { capabilities: [secrets({ registry })] };
     expect(resolveSecretRegistry(config)).toBe(registry);
   });
 
-  test("throws when the secrets capability isn't enabled", () => {
+  test("throws when the worker doesn't enable the secrets capability", () => {
     expect(() => resolveSecretRegistry({ capabilities: [] })).toThrow(NotFoundError);
   });
 });
