@@ -1,9 +1,16 @@
 /**
- * The storage minting seams — the clean interfaces the media capability depends on, decoupled from the
- * `@pithy-sh/cloudflare` managers' SDK-typed returns. A test injects a fake minter; the real adapters
- * (over the CF Images, Stream, and R2 managers) live in `storage/cloudflare.ts`, the one file that
- * touches the SDK shapes. Every direct-upload URL is minted through `@pithy-sh/cloudflare` — no
- * hand-rolled `fetch` to the CF API (CLAUDE.md §Cloudflare access).
+ * The storage minting seams — the clean interfaces the media capability depends on. A test injects a
+ * fake minter; the real adapters live in `storage/cloudflare.ts`.
+ *
+ * {@link ImageMinter} and {@link VideoMinter} are adapted from the `@pithy-sh/cloudflare` managers,
+ * decoupled from those managers' SDK-typed returns. Every direct-upload URL is minted through that
+ * client — no hand-rolled `fetch` to the CF API (CLAUDE.md §Cloudflare access).
+ *
+ * {@link R2Minter} is different in kind, and deliberately so: it is not an SDK adapter but the narrow
+ * two-method slice of `@pithy-sh/storage`'s `ObjectStore` that media consumes. Media owns no R2
+ * mechanism — no bucket, no credential, no S3 client. Stating that slice as its own interface is what
+ * keeps `mediaStorage` testable with two async functions instead of a fifteen-method seam, and what
+ * lets the object plane change shape without reaching into media.
  */
 
 /** Mints a one-time Cloudflare Images direct-upload URL and deletes stored images. */
@@ -22,7 +29,11 @@ export interface VideoMinter {
   delete(uid: string): Promise<void>;
 }
 
-/** Mints presigned R2 (S3) PUT/GET URLs. */
+/**
+ * The presign contract media consumes from `@pithy-sh/storage`'s `ObjectStore`. Two methods, because
+ * two are all media needs: reads and deletes go through the `R2Bucket` binding instead, which costs no
+ * credential and no round trip (CLAUDE.md §Cloudflare access — bindings inside the Worker, S3 outside).
+ */
 export interface R2Minter {
   /** Presigned PUT URL for a client to upload bytes straight to R2. */
   mintUpload(key: string, contentType: string, contentLength: number): Promise<string>;

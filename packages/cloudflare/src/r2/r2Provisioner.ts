@@ -76,7 +76,13 @@ export class CloudflareR2Provisioner extends CloudflareManager {
     return decodeResponse(R2BucketInfo, response, "R2 bucket create");
   }
 
-  /** Delete an R2 bucket by name. Idempotent — a missing bucket is not an error, so teardown can re-run safely. */
+  /**
+   * Delete an R2 bucket by name. Idempotent — a missing bucket is not an error, so teardown can re-run safely.
+   *
+   * **The bucket must already be empty.** R2 rejects the delete otherwise, and "empty" includes multipart
+   * uploads that were never completed — parts nothing in this control plane can even see. Emptying is an
+   * S3-protocol operation: call `CloudflareR2Manager.emptyBucket` first, which needs the S3 key pair.
+   */
   async deleteBucket(name: string): Promise<void> {
     await cloudflareRequest(`delete R2 bucket ${name}`, async () => {
       try {

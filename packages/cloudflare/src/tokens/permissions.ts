@@ -18,6 +18,11 @@ export const PERMISSION_GROUPS = {
   "secrets:write": ["Secrets Store Write"],
   "email:routing": ["Email Routing Rules Write"],
   "kv:write": ["Workers KV Storage Write"],
+  "r2:read": ["Workers R2 Storage Read"],
+  "r2:write": ["Workers R2 Storage Write"],
+  "vectorize:read": ["Vectorize Read"],
+  "vectorize:write": ["Vectorize Write"],
+  "ai:read": ["Workers AI Read"],
 } as const;
 
 /** A known permission key — one of {@link PERMISSION_GROUPS}'s keys. */

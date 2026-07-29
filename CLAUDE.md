@@ -132,6 +132,14 @@ monorepo. Read the companion docs before any structural or surface decision:
   namespaced, stable-keyed migrations (`auth_0001_…`) merged into one ordered registry
   (library-before-app), run by **our `pithy migrate`** command. Every migration has a
   working, tested `down`.
+- **A capability's `migrationOrder` is allocated in one place: `packages/cli/src/migrations/orders.test.ts`.**
+  Take the `NEXT_FREE_ORDER` it advertises, declare it as `<NAME>_MIGRATION_ORDER`, add a row to that
+  file's `DECLARED` table, and bump the constant by 100. Never pick a number by grepping — two pairs of
+  capabilities once collided that way in a range that was 99% empty, and `pithy migrate` throws
+  `duplicate migration order` for any project composing a colliding pair. The order must be **unique
+  within its database** and **stable forever**: renumbering a released capability renames its composed
+  keys (`0350_media_0001_hashes`), so Kysely reads applied migrations as unapplied and re-runs them.
+  Order *across* capabilities is otherwise arbitrary — no capability's tables reference another's.
 - **Cross-context upgrades** (beyond D1 schema — KV reshapes, backfills, multi-step data
   migrations) are modeled as **Cloudflare Workflows**, not ad-hoc scripts.
 

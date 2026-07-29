@@ -213,6 +213,21 @@ describe("CloudflareAIManager", () => {
 
     it("round-trips TextGeneration and ImageToText through parse", () => {
       expect(TextGeneration.parse({ response: "hi" })).toEqual({ response: "hi" });
+
+      // Workers AI returns two envelopes and which one depends on the model. The default
+      // (`llama-4-scout`) returns the OpenAI chat-completion shape with no top-level `response`,
+      // which is what broke `generateText` live — both must normalize to the same result.
+      expect(TextGeneration.parse({ choices: [{ message: { content: "hi" } }] })).toEqual({ response: "hi" });
+
+      // A flat envelope wins when a model sends both, so behaviour does not depend on union order.
+      expect(TextGeneration.parse({ response: "flat", choices: [{ message: { content: "nested" } }] })).toEqual({
+        response: "flat",
+      });
+
+      // Neither shape present is still a decode failure — normalizing must not become "accept anything".
+      expect(TextGeneration.safeParse({ text: "hi" }).success).toBe(false);
+      expect(TextGeneration.safeParse({ choices: [] }).success).toBe(false);
+      expect(TextGeneration.safeParse({ choices: [{ message: {} }] }).success).toBe(false);
       expect(ImageToText.parse({ description: "a photo" })).toEqual({ description: "a photo" });
     });
   });

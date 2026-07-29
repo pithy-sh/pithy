@@ -455,8 +455,8 @@ Honesty matters here — there are real things pnpm 10 still does better in 2026
 
 ### Repo structure (high-level)
 
-The authoritative package roadmap lives in the foundation spec (§4). The set below is the
-spec's roadmap — not the full final tree:
+The authoritative package roadmap lives in the foundation spec (§4). The set below is what
+has shipped, plus what the roadmap still holds — not the full final tree:
 
 ```
 pithy/
@@ -464,15 +464,22 @@ pithy/
 │   └── docs/             # docs site at pithy.sh (framework TBD)
 ├── packages/
 │   ├── cli/              # @pithy-sh/cli — the CLI binary
-│   ├── core/             # @pithy-sh/core — runtime primitives, contract, codecs, registry
+│   ├── core/             # @pithy-sh/core — runtime primitives, contract, codecs, registry, Workflow seam
 │   ├── cloudflare/       # @pithy-sh/cloudflare — encapsulated CF REST client (out-of-Worker)
 │   ├── secrets/          # @pithy-sh/secrets — secrets store + key rotation
 │   ├── auth/             # @pithy-sh/auth — Better Auth: magic-link/OTP/Google/Apple
 │   ├── audit/            # @pithy-sh/audit — audit-trail capability + seam
 │   ├── email/            # @pithy-sh/email — CF Email via D1 job table + Workflow
 │   ├── turnstile/        # @pithy-sh/turnstile — bot-protection middleware
-│   ├── leaderboard/      # @pithy-sh/leaderboard — optional ranking plugin
-│   └── testers/          # @pithy-sh/testers — early-access/tester invitations
+│   ├── storage/          # @pithy-sh/storage — R2 object store seam, quotas, share links
+│   ├── media/            # @pithy-sh/media — media records + AI enrichment, over the store seam
+│   ├── vector/           # @pithy-sh/vector — Vectorize index with schema-declared filters
+│   ├── leaderboard/      # @pithy-sh/leaderboard — ranking across daily → all-time windows
+│   ├── rating/           # @pithy-sh/rating — pluggable skill rating (MMR) + experience (XP)
+│   ├── matchmaking/      # @pithy-sh/matchmaking — room codes, invites, friends, matched queues
+│   ├── multiplayer/      # @pithy-sh/multiplayer — authoritative turn-based sessions (Durable Objects)
+│   ├── wallet/           # @pithy-sh/wallet — per-user balance ledger with holds
+│   └── testers/          # @pithy-sh/testers — early-access/tester invitations (roadmap)
 ├── package.json
 ├── turbo.json
 ├── CLAUDE.md             # always-loaded agent instructions (points to docs/)
@@ -480,8 +487,11 @@ pithy/
 └── docs/                 # BRAND.md, CLI.md, STACK.md + superpowers/{specs,plans}
 ```
 
-> Capability names like `storage`, `vector`, and `jobs` that appear elsewhere in this doc
-> are **illustrative suggestions**, not committed packages. The spec's §4 roadmap governs.
+> `jobs` appears elsewhere in this doc as an **illustrative suggestion**. It was never
+> designed, and it is retired: durable background work is a core seam
+> (`@pithy-sh/core/src/workflow/`) that every capability registers against, not a capability
+> of its own. Any other name not in the tree above is illustrative too. The spec's §4
+> roadmap governs what ships next.
 
 Bun reads `workspaces` from the root `package.json`; no separate `pnpm-workspace.yaml` equivalent needed.
 

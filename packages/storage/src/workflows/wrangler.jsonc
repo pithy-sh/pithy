@@ -1,0 +1,48 @@
+{
+  // The prebuilt storage sweep worker. Like the email and media workers, this is a TEMPLATE, not a
+  // wrangler env-stanza file: staging and production are genuinely separate workers. `pithy storage
+  // provision` resolves it into one complete config per environment — filling the `<...>` placeholders,
+  // deriving the `workflows` array and the cron from the capability's specs — and deploys each with
+  // `wrangler deploy --config <resolved>`. The adopter authors none of it.
+  "name": "pithy-storage", // resolved per env → pithy-storage-staging / pithy-storage-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. Every storage route lives in the app worker; this worker is reached only by its
+  // cron and by Workflow dispatch. It can delete from the bucket, so it stays off workers.dev.
+  "workers_dev": false,
+
+  // The app database (the pithy_storage_* tables) and the secrets database, read for the R2 credentials.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
+    { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
+  ],
+
+  // The bucket the sweep lists and deletes orphans from.
+  "r2_buckets": [{ "binding": "STORAGE_BUCKET", "bucket_name": "<filled-at-provision>" }],
+
+  // The master key for decrypting the R2 credentials, read through the secretsStore accessor.
+  "secrets_store_secrets": [
+    {
+      "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+    }
+  ],
+
+  // The one Workflow this worker hosts. Rewritten at provision from `workflows/specs.ts`, so the
+  // binding, the class name, and the per-environment deployed name come from the spec rather than
+  // from this block — it is here so the template reads as a complete config.
+  "workflows": [{ "binding": "STORAGE_SWEEP", "name": "pithy-storage-sweep", "class_name": "StorageSweepWorkflow" }],
+
+  // The daily sweep. Also rewritten at provision from the spec's `schedule`, for the same reason.
+  "triggers": { "crons": ["0 3 * * *"] },
+
+  "vars": {
+    // The resolved StorageConfig as one JSON blob, filled at provision from the app's storage() config.
+    // The sweep reads `pendingTtlSeconds` from it; absent falls back to the defaults.
+    "STORAGE_CONFIG": "<filled-at-provision>",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

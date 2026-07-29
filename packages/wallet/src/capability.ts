@@ -9,9 +9,13 @@ import { walletExampleSeed } from "./seeds/example";
 
 /**
  * Where wallet's migrations sort in the app database. Unique per database; the registry composes keys like
- * `0600_wallet_0001_ledger`. Sits after multiplayer (500).
+ * `0650_wallet_0001_ledger`. Sits after rating (600).
+ *
+ * Wallet was also at 600 until this was corrected — `pithy migrate` threw `duplicate migration order 600
+ * in database "app"` for any project composing both. Nothing orders wallet against rating in particular;
+ * rating simply kept the slot, and the two tables do not reference each other.
  */
-export const WALLET_MIGRATION_ORDER = 600;
+export const WALLET_MIGRATION_ORDER = 650;
 
 export type WalletOptions = WalletConfigInput & {
   /** Mount the routes somewhere other than `/wallet`. */

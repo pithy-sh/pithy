@@ -6,6 +6,7 @@ import type { AuthContext } from "../http/authContext";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import type { SeedSet } from "../seed/seed";
+import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
@@ -39,19 +40,19 @@ export interface PithyVars {
    * `KvRegistry<YourNamespaces>`.
    */
   kv: unknown;
+  /**
+   * The durable-job dispatcher — `c.var.workflows.trigger("media/image-to-text", { id })`. Loosely
+   * `unknown` on this base seam for the same reason as `db`/`kv`: the precise key and parameter
+   * types depend on which capabilities are composed, and `createBackend`'s return narrows it.
+   * Inside a capability, cast to `WorkflowDispatcher<YourParams>`.
+   */
+  workflows: unknown;
 }
 
 /** The Hono env. `Bindings` and `Variables` are the base seam; `createBackend` returns a precisely-typed env. */
 export type PithyHonoEnv = { Bindings: Record<string, unknown>; Variables: PithyVars };
 
 export type PithyMiddleware = (app: Hono<PithyHonoEnv>) => void;
-
-/** A registered durable job (Cloudflare Workflow) — wired fully in a later phase. */
-export interface WorkflowSpec {
-  name: string;
-  /** The binding name of the Workflow in the Worker env. */
-  binding: string;
-}
 
 /**
  * The structural seam for one capability's secret-registry slice — secret name → its declaration.
@@ -138,8 +139,15 @@ export type CapabilityEmailHandler = (
 export interface Capability<
   Databases extends DatabaseSpecMap = DatabaseSpecMap,
   Namespaces extends KvNamespaceSpecMap = KvNamespaceSpecMap,
+  Name extends string = string,
+  Workflows extends WorkflowSpecMap = WorkflowSpecMap,
 > {
-  name: string;
+  /**
+   * The capability's identity: the `pithy add <name>` argument, the migration namespace, the
+   * `pithy_<name>_*` table prefix, the error-code domain, and the first segment of every workflow
+   * dispatch key. `defineCapability` captures it as a literal so those keys type precisely.
+   */
+  name: Name;
   /**
    * Other capabilities this one needs composed alongside it (by `name`) — the runtime mirror of the
    * manifest's `peerCapabilities`. `createBackend` fails fast at assembly if a listed peer is absent,
@@ -181,8 +189,14 @@ export interface Capability<
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */
   middleware?: PithyMiddleware[];
-  /** Durable jobs this capability registers. */
-  workflows?: WorkflowSpec[];
+  /**
+   * Durable jobs this capability registers (job name → {@link WorkflowSpec}) — the peer of
+   * `databases` and `kvNamespaces`. `createBackend` merges every capability's map into one registry
+   * keyed `<capability>/<job>`, derives each job's Workflow binding so a missing one fails at boot,
+   * and serves the typed dispatcher on `c.var.workflows`. The CLI reads the same specs to write the
+   * host worker's `workflows` array and its cron triggers.
+   */
+  workflows?: Workflows;
   /**
    * Inbound-email handler. The entrypoint (`createEntrypoint`) fans every incoming message to each
    * capability that declares one (e.g. `@pithy-sh/email`'s bounce/complaint handler).
@@ -216,7 +230,9 @@ export interface Capability<
 export type CapabilityInput<
   Databases extends DatabaseSpecMap = Record<never, never>,
   Namespaces extends KvNamespaceSpecMap = Record<never, never>,
-> = Omit<Capability<Databases, Namespaces>, "requiredBindings"> & {
+  Name extends string = string,
+  Workflows extends WorkflowSpecMap = Record<never, never>,
+> = Omit<Capability<Databases, Namespaces, Name, Workflows>, "requiredBindings"> & {
   requiredBindings: BindingSpecInput[];
 };
 
@@ -229,7 +245,9 @@ export type CapabilityInput<
 export function defineCapability<
   const Databases extends DatabaseSpecMap = Record<never, never>,
   const Namespaces extends KvNamespaceSpecMap = Record<never, never>,
->(input: CapabilityInput<Databases, Namespaces>): Capability<Databases, Namespaces> {
+  const Name extends string = string,
+  const Workflows extends WorkflowSpecMap = Record<never, never>,
+>(input: CapabilityInput<Databases, Namespaces, Name, Workflows>): Capability<Databases, Namespaces, Name, Workflows> {
   return {
     ...input,
     requiredBindings: input.requiredBindings.map((binding) => BindingSpec.parse(binding)),
@@ -240,10 +258,21 @@ export function defineCapability<
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never;
 
 /** This capability's database specs (or `never` when it isn't a `Capability`). */
-type DatabasesOf<C> = C extends Capability<infer D, KvNamespaceSpecMap> ? D : never;
+type DatabasesOf<C> = C extends Capability<infer D, KvNamespaceSpecMap, string, WorkflowSpecMap> ? D : never;
 
 /** This capability's KV namespace specs (or `never` when it isn't a `Capability`). */
-type NamespacesOf<C> = C extends Capability<DatabaseSpecMap, infer N> ? N : never;
+type NamespacesOf<C> = C extends Capability<DatabaseSpecMap, infer N, string, WorkflowSpecMap> ? N : never;
+
+/**
+ * This capability's jobs as a dispatch-key map: `<capability>/<job>` → that job's parameter type
+ * (the schema's **input** side, since the caller supplies pre-parse values). Re-keying here is what
+ * lets `trigger` accept a flat, namespaced key while a capability still declares its jobs by bare
+ * name.
+ */
+type WorkflowParamsOf<C> =
+  C extends Capability<DatabaseSpecMap, KvNamespaceSpecMap, infer Name, infer W>
+    ? { [Job in keyof W & string as `${Name}/${Job}`]: z.input<W[Job]["params"]> }
+    : never;
 
 /**
  * Merge a union of per-capability slices into one combined map, clamped to `Bound` so it is always
@@ -263,4 +292,14 @@ export type MergedDatabases<Caps extends readonly Capability[]> = MergeClamped<
 export type MergedKvNamespaces<Caps extends readonly Capability[]> = MergeClamped<
   NamespacesOf<Caps[number]>,
   KvNamespaceSpecMap
+>;
+
+/**
+ * The project-wide workflow parameter map: dispatch key → parameter type, across every composed
+ * capability. `createBackend` uses it to type `c.var.workflows.trigger`, so an unregistered key or a
+ * payload that does not match the declaring capability's schema is a compile error, not a 500.
+ */
+export type MergedWorkflowParams<Caps extends readonly Capability[]> = MergeClamped<
+  WorkflowParamsOf<Caps[number]>,
+  Record<string, unknown>
 >;

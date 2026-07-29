@@ -1,11 +1,15 @@
 import type { Capability, CapabilityEmailHandler } from "./capability/capability";
 import { type CreateBackendOptions, createBackend } from "./createBackend";
+import { triggerWorkflow } from "./workflow/dispatch";
+import { composeWorkflows, scheduledWorkflows } from "./workflow/register";
 
 /**
- * A deployable Worker entrypoint: `fetch` plus the single inbound `email` handler the runtime
- * permits per Worker. `createBackend` already produces the `fetch` side (a Hono app); this wraps it
- * and composes every capability's inbound-email handler behind one `email()` entry, so a Worker that
- * mounts `@pithy-sh/email` receives bounce/complaint mail without the user authoring a handler.
+ * A deployable Worker entrypoint: `fetch`, the single inbound `email` handler the runtime permits
+ * per Worker, and the single `scheduled` handler it permits for cron triggers. `createBackend`
+ * already produces the `fetch` side (a Hono app); this wraps it and composes every capability's
+ * inbound-email handler and every cron-carrying durable job behind those two entries, so a Worker
+ * that mounts `@pithy-sh/email` receives bounce/complaint mail — and fires its scheduler — without
+ * the user authoring a handler.
  */
 export interface PithyEntrypoint {
   /** The Worker `fetch` handler — the composed Hono app. */
@@ -18,6 +22,27 @@ export interface PithyEntrypoint {
    * rejecting it).
    */
   email?: (message: ForwardableEmailMessage, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
+  /**
+   * The Worker `scheduled` handler — starts every registered job that declares a `schedule`.
+   *
+   * **Present only when at least one job carries a cron.** The reason differs from `email`'s: an
+   * inert `email()` silently *drops* mail, which is a correctness bug, whereas an inert `scheduled()`
+   * is merely harmless. It is omitted anyway so that the export tracks the composition: a Worker
+   * mounting no scheduled job does not advertise a schedule it has none of.
+   *
+   * The converse does happen and is deliberate. A capability whose cron belongs to its *prebuilt host*
+   * — `@pithy-sh/email`'s every-minute scheduler is the shipped example — still declares that schedule
+   * on its spec, so an app worker composing it exports a `scheduled` handler while its own
+   * `wrangler.jsonc` declares no `triggers.crons`. Nothing ever invokes it, and if something did, the
+   * job's binding lives only on the host, so dispatch degrades with a logged warning. Deriving the
+   * export from "does this deployment declare crons" is not available here: `createEntrypoint` sees
+   * the composed capabilities, never the wrangler config.
+   *
+   * A cron is an *additional* entry point, never the only one: every scheduled job stays dispatchable
+   * through `c.var.workflows.trigger(...)`, because a backfill nobody can run on demand cannot be
+   * tested in staging.
+   */
+  scheduled?: (controller: unknown, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
 }
 
 /**
@@ -51,7 +76,31 @@ export function createEntrypoint<
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
   const handlers: CapabilityEmailHandler[] = all.flatMap((cap) => (cap.email ? [cap.email] : []));
 
+  const registry = composeWorkflows(all);
+  const scheduled = scheduledWorkflows(registry);
+
   const entrypoint: PithyEntrypoint = { fetch: (request, env, ctx) => app.fetch(request, env, ctx) };
+
+  // Cron-carrying jobs get the Worker's one `scheduled` entry. Each is started independently so one
+  // job whose binding is missing cannot stop the rest of the schedule from running; the failure is
+  // rethrown after the pass so the invocation is still recorded as failed.
+  if (scheduled.length > 0) {
+    entrypoint.scheduled = async (_controller, env) => {
+      const failures: unknown[] = [];
+      for (const entry of scheduled) {
+        // A cron supplies no caller input, which is an *empty* parameter object, not an absent one —
+        // `z.object({})` accepts `{}` and rejects `undefined`. A job whose schema requires fields it
+        // can never receive on a schedule therefore fails loudly here, which is the author's bug and
+        // is exactly what should surface.
+        try {
+          await triggerWorkflow(env, registry, entry.key, {});
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures[0] !== undefined) throw failures[0];
+    };
+  }
 
   // Only expose an `email` handler when something actually handles inbound mail — an inert one would
   // silently drop any message Email Routing delivered to this Worker.

@@ -1,0 +1,36 @@
+{
+  // The prebuilt vector worker. Like the email and media workers, this is a TEMPLATE, not a wrangler
+  // env-stanza file: each environment is a separate worker. `pithy vector provision` resolves it into one
+  // complete config per environment — filling the `<...>` placeholders and the per-index Vectorize bindings
+  // — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
+  "name": "pithy-vector", // resolved per env → pithy-vector-staging / pithy-vector-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. Search lives in the app worker; this one is reached only by Workflow dispatch.
+  "workers_dev": false,
+
+  // The app database — the document corpus a re-embed reads its text out of.
+  "d1_databases": [{ "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" }],
+
+  // One entry per configured index, rewritten at provision from the config's `binding` names. `remote` is
+  // not optional here: Vectorize has no local emulation, and a Workflow host always runs locally in dev.
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "<filled-at-provision>", "remote": true }],
+
+  // Workers AI — the embedding model. Remote for the same reason.
+  "ai": { "binding": "AI", "remote": true },
+
+  // The one Workflow this worker hosts. `class_name` matches the exported WorkflowEntrypoint subclass;
+  // `binding` is what the app worker and `pithy vector reprocess` dispatch to.
+  "workflows": [
+    { "binding": "VECTOR_REPROCESS", "name": "pithy-vector-reprocess", "class_name": "VectorReprocessWorkflow" }
+  ],
+
+  "vars": {
+    // The projected vector config as one JSON blob, filled at provision. A projection, not the config: an
+    // index's metadata is a Zod schema, and a schema cannot travel through a wrangler var.
+    "VECTOR_CONFIG": "<filled-at-provision>",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

@@ -55,6 +55,11 @@ export const EmailConfig = z
     customTheme: CustomTheme.optional().describe(
       "A partial override deep-merged over the preset — change any theme field, inherit the rest.",
     ),
+    // KNOWN DEFECT — this value never reaches the worker. `EmailConfigParams` carries no
+    // `schedulerEnabled`, so `resolveEmailConfig` never writes `SCHEDULER_ENABLED` and the template's
+    // hardcoded "true" always wins. Setting it false is silently ignored. Wiring it through means an
+    // eighth `resolveEmailConfig` param and a new `CloudflareEmailProvisioner` option, both of which
+    // are pinned by tests this change may not edit — so it is filed, not fixed here.
     schedulerEnabled: z.boolean().default(true).describe("Whether the every-minute scheduler Workflow runs."),
   })
   .describe("Configuration for the email capability.");
@@ -120,6 +125,38 @@ export function email(config: EmailConfigInput): EmailCapability {
         tables: emailSuppressionTables,
         migrationOrder: EMAIL_SUPPRESSIONS_MIGRATION_ORDER,
         migrations: { "0001_suppressions": email_0001_suppressions },
+      },
+    },
+    /**
+     * The two durable jobs email owns. Both classes live in the prebuilt email worker
+     * (`workflows/worker.ts`), never in the app worker — the app only ever dispatches into `send`.
+     *
+     * The map keys are the wire names: `workflowScriptName("email", "send", "staging")` resolves to
+     * `pithy-email-send-staging`, which is byte-for-byte what the committed template already deploys.
+     * Declaring them here is what lets the CLI generate the host's `workflows` array and its cron from
+     * the specs instead of a hand-maintained block that can drift from this file.
+     */
+    workflows: {
+      send: {
+        binding: "EMAIL_SENDER",
+        className: "EmailSendWorkflow",
+        params: z
+          .object({
+            jobIds: z
+              .array(z.string().min(1).describe("A queued `pithy_email_jobs` row id."))
+              .describe("The batch of queued job ids this instance sends — one durable step each."),
+          })
+          .describe("Parameters for one durable send batch."),
+      },
+      schedule: {
+        binding: "EMAIL_SCHEDULER",
+        className: "EmailSchedulerWorkflow",
+        params: z.object({}).describe("The scheduler takes no parameters — it finds its own due jobs."),
+        schedule: "* * * * *",
+        // Optional because the binding exists only on the prebuilt email worker, which self-fires it
+        // from its cron. An app worker binds EMAIL_SENDER and nothing else, so deriving a required
+        // EMAIL_SCHEDULER binding would fail every app's first request.
+        optional: true,
       },
     },
     routes: registerCallbacks,

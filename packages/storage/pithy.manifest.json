@@ -1,0 +1,49 @@
+{
+  "name": "storage",
+  "package": "@pithy-sh/storage",
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "r2", "name": "STORAGE_BUCKET" },
+    { "type": "workflow", "name": "STORAGE_SWEEP", "optional": true }
+  ],
+  "peerCapabilities": ["secrets"],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "storage",
+  "whenToEnable": "Put your users' files in your own R2, behind one ObjectStore seam any capability can hold. Uploads never pass through your Worker — the client PUTs straight to a presigned URL, so a 40 GiB file costs one request and not one byte of transfer — and anything over 100 MiB is split into resumable parts automatically. Downloads do stream through the Worker, deliberately: that is the only way a read can be authorized per request, honour Range and If-None-Match, and carry a Content-Disposition you chose. Uploaded bytes are treated as untrusted on the way back out: every object response carries nosniff and a locked-down CSP, and an active type (HTML, SVG, anything +xml, script) is served as an attachment whatever was stored — so a user's upload cannot execute on your origin, and this route is not where your own HTML belongs. Keys are server-derived and opaque, so a client can never name an object or guess the one beside it; you supply a logical path, and that path is what gets stored, indexed, and listed. It has per-owner byte quotas that count uploads still in flight, server-side copy, revocable share links (a presigned URL can only expire — a share can be taken back), and a daily Workflow that reconciles orphaned rows and orphaned objects in both directions. It takes no position on what the bytes are — no transcoding, no thumbnails, no AI. That is @pithy-sh/media, which already presigns through this ObjectStore against its own bucket and credential name, and inherits none of these tables or routes for doing so. Files belong to an authenticated owner, so add auth too.",
+  "scaffold": [
+    "Add a `storage({ ... })` block to pithy.config.ts. Every option has a working default; the one worth setting early is `quota`.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_storage_objects and pithy_storage_shares.",
+    "Run `pithy storage provision` to create the per-environment R2 buckets, write the credentials secret, and deploy the sweep worker. `pithy add` writes bindings and touches no Cloudflare account; provisioning is the separate, explicit step.",
+    "Supply an R2 S3 access-key pair to that command with --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .dev.vars. Cloudflare exposes no API for minting one, so it cannot be created for you — make the pair under R2 -> Manage API tokens.",
+    "Add `@pithy-sh/secrets` if it is not already installed. The R2 credentials are read through it, so storage will not compose without it.",
+    "Add `@pithy-sh/auth` if it is not already installed. Every owner-scoped route reads the authenticated user from the AuthContext seam; with no auth capability composed those routes deny, which is the right default but not a useful one."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/storage",
+      "describe": "Where the object routes mount. Share fetches mount separately at `sharePath`, `/s` by default, kept short because the whole URL gets pasted around."
+    },
+    {
+      "key": "multipartThresholdBytes",
+      "default": 104857600,
+      "describe": "Uploads larger than this are split into resumable parts; smaller ones get a single presigned PUT. 100 MiB. It cannot exceed R2's ~5 GiB single-part cap, because above that multipart is the only way to store the bytes at all."
+    },
+    {
+      "key": "partSizeBytes",
+      "default": 67108864,
+      "describe": "Bytes per part, for every part but the last. 64 MiB. R2 allows at most 10,000 parts, so this fixes the largest object you can store — about 625 GiB. Raise it for larger objects; the cost is that every retry re-sends a bigger part."
+    },
+    {
+      "key": "defaultVisibility",
+      "default": "private",
+      "describe": "Visibility for an upload that does not name one. Private, so a forgotten field can never publish a file."
+    },
+    {
+      "key": "pendingTtlSeconds",
+      "default": 86400,
+      "describe": "How long an unfinished upload holds its quota reservation before the daily sweep reclaims it. One day: long enough for a slow multipart upload, short enough that an abandoned one does not hold a quota forever. Edit the `quota` object by hand to cap per-owner bytes — it is unlimited by default."
+    }
+  ]
+}

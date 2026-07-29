@@ -44,6 +44,12 @@ export type FeatureProvisioners = Record<FeatureResourceKind, ResourceProvisione
 /**
  * The default provisioners, backed by the `@pithy-sh/cloudflare` control-plane clients. For D1 and KV the
  * id is the CF-assigned uuid/namespace id; for R2, which has no separate id, the bucket name is the id.
+ *
+ * **Known limitation, R2 only:** the delete here is the plain control-plane one, and R2 refuses to delete
+ * a bucket that still holds an object or a dangling multipart upload — so a feature bucket that was
+ * written to fails teardown. Emptying it first needs the S3 key pair, which the control-plane clients do
+ * not carry (`pithy storage deprovision --storage` takes it as a flag for exactly this reason). Wiring
+ * that through the feature lifecycle is the fix; until then, empty the bucket by hand.
  */
 export function cloudflareProvisioners(clients: CloudflareClients): FeatureProvisioners {
   const d1 = clients.d1Provisioner();

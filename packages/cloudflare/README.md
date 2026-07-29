@@ -79,12 +79,26 @@ const stream = cf.stream();
 
 ### R2
 
-R2 is its own capability (`src/r2/`). It speaks the S3 protocol, so it signs presigned URLs with an S3 access-key/secret pair — distinct from the CF API token, and validated through the `R2Credentials` Zod schema.
+R2 is its own capability (`src/r2/`). It speaks the S3 protocol, so it signs presigned URLs with an S3 access-key/secret pair — distinct from the CF API token, and validated through the `R2Credentials` Zod schema. `CloudflareR2Provisioner` handles bucket lifecycle; `CloudflareR2Manager` handles objects.
+
+A presigned PUT signs the content type and byte count, so the client must send exactly those. Presigned URLs last an hour unless `expiresIn` says otherwise.
 
 ```ts
 const r2 = cf.r2({ accessKeyId, secretAccessKey, bucketName: "assets" });
-const url = await r2.createUploadUrl("path/to/object");
+const url = await r2.createUploadUrl("path/to/object", "image/png", 4096);
+const download = await r2.createDownloadUrl("path/to/object", { expiresIn: 300 });
 ```
+
+Large uploads go multipart. Only the part upload is presigned — the client never opens, completes or aborts an upload, and never sees the credentials.
+
+```ts
+const uploadId = await r2.createMultipartUpload("path/to/video", "video/mp4");
+const partUrl = await r2.presignUploadPart("path/to/video", uploadId, 1);
+// …the client PUTs its bytes to partUrl and reports back the ETag header…
+await r2.completeMultipartUpload("path/to/video", uploadId, [{ partNumber: 1, etag }]);
+```
+
+`listParts` makes an interrupted upload resumable — ask which parts landed, re-send the rest. `abortMultipartUpload` discards one, and is idempotent so a sweep can re-run. Objects themselves are read and moved server-side with `headObject` (`null` when absent), `listObjects` (one page plus a `cursor`), `copyObject` and `deleteObject`.
 
 ### AI and Vectorize
 

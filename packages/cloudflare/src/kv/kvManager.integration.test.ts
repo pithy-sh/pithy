@@ -1,6 +1,6 @@
 import { Cloudflare } from "cloudflare";
-import { describe, expect, test } from "vitest";
-import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import { beforeAll, describe, expect, test } from "vitest";
+import { loadIntegrationCreds, reapStaleTestResources, uniqueName, withThrowawayResource } from "../test-utils/harness";
 import { CloudflareKVManager } from "./kvManager";
 
 /**
@@ -20,6 +20,27 @@ describe.skipIf(!creds.hasCreds)("CloudflareKVManager — LIVE", () => {
   // The namespace itself is created/deleted with the raw SDK: the manager addresses an existing
   // namespace by id, so namespace lifecycle is the harness's `create`/`teardown`, not the manager's.
   const client = new Cloudflare({ apiToken: creds.apiToken });
+
+  // A run killed before its `finally` orphans the namespace. One such run left `pithy-int-kv-…` on a real
+  // account alongside a Vectorize index from the same aborted invocation, so this is not hypothetical.
+  // KV lists namespaces by title and deletes by id, so the reaper maps one to the other.
+  beforeAll(async () => {
+    const byTitle = new Map<string, string>();
+    await reapStaleTestResources({
+      label: "KV namespace",
+      list: async () => {
+        byTitle.clear();
+        for await (const namespace of client.kv.namespaces.list({ account_id: creds.accountId })) {
+          byTitle.set(namespace.title, namespace.id);
+        }
+        return [...byTitle.keys()];
+      },
+      remove: async (title) => {
+        const id = byTitle.get(title);
+        if (id) await client.kv.namespaces.delete(id, { account_id: creds.accountId });
+      },
+    });
+  });
 
   test("creates a namespace, round-trips a key with metadata, then reads an absent key as null", async () => {
     await withThrowawayResource(

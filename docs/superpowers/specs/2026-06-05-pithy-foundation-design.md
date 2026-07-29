@@ -101,6 +101,14 @@ pithy-sh/                      # repo, @pithy-sh npm org, GitHub
 | **3** | payments/IAP (Apple+Google), integrations/webhooks, app-store onboarding helpers (§10.7), `@pithy-sh/testers` early-access (§10.22) | entitlements bound to users; signed-webhook verification |
 | **4+** | AI agent integrations (§10.20: Claude/Codex/Cursor skills+plugins, MCP); docs polish, showcase app, launch; later `pithy-sync` (offline-first); hosted admin dashboard (pro) | — |
 
+**Amended (#72).** Phase 2's storage slot shipped as `@pithy-sh/storage`. `@pithy-sh/vector`
+shipped alongside it and had **no** roadmap slot — it was an illustrative name in
+`docs/STACK.md` §7, never a chartered package. It is chartered here, in Phase 2 next to
+storage, and recorded as an amendment rather than back-dated: the roadmap moved. Several
+other capabilities have likewise landed ahead of any phase they were assigned (media,
+multiplayer, wallet, matchmaking, rating). The shipped set is the tree in `docs/STACK.md` §7;
+this table is the intent it departed from.
+
 Only Phase 0 is designed here; the roadmap proves the abstraction doesn't preclude
 later work. The user has stated several details below are *phase-agnostic* — they are
 captured as cross-cutting decisions (§10) regardless of when they ship.
@@ -222,7 +230,7 @@ export interface Capability {
   migrations?: MigrationProvider;        // namespaced (auth_0001_…)
   routes?: (app: Hono<{ Variables: PithyVars }>) => void;
   middleware?: PithyMiddleware[];
-  workflows?: WorkflowSpec[];            // durable jobs this capability registers (§10.10)
+  workflows?: WorkflowSpecMap;           // job name → spec; the durable jobs it owns (§10.10)
   requiredBindings: BindingSpec;         // D1 / KV / Email / Workflow / secrets
 }
 ```
@@ -253,6 +261,13 @@ In scope:
 
 Out of scope (later): concrete auth/email/turnstile/leaderboard/payments/secrets
 capabilities, `--eject`, docs site, showcase app, offline sync, hosted dashboard.
+
+**Amended (#72).** Item 2's **Workflow registration helpers** were the last Phase 0 piece to
+land. They shipped as `@pithy-sh/core/src/workflow/` — `WorkflowSpec` and its map, the
+`pithy-<capability>-<job>-<env>` naming rules, `composeWorkflows`, the typed dispatcher, and
+the host-worker template — after `email` and `media` had each hand-rolled a host Worker
+against the gap. Both now compose the seam and neither owns Workflow mechanism. Item 2 is
+discharged.
 
 DoD: from an empty dir, `pithy init` yields a Worker that `bun run dev` (wrangler/
 miniflare) boots, loads+validates per-env config, runs the empty migration registry, and
@@ -598,8 +613,12 @@ list` round out the set; all are agent-drivable (`--json`, non-interactive).
   D1 HTTP API via `@pithy-sh/cloudflare`'s `D1PreparedStatementREST` as a Kysely dialect;
   local dev stays on miniflare. Remaining detail: exact dialect wiring + auth-token sourcing.
 - Better Auth table id choices (revisit CMS decisions table-by-table).
-- Workflow binding ergonomics in the capability contract (one Workflow per job vs a
-  shared dispatcher).
+- Workflow binding ergonomics in the capability contract — **closed** (#72): one Workflow
+  per job on the wire, one shared dispatcher at the call site. A capability declares
+  `workflows` as a map keyed by job name (§7); core derives a binding per job, so a missing
+  one fails at boot, and composes every capability's map into one typed dispatcher —
+  `c.var.workflows.trigger('media/image-to-text', params)`. The two options were never
+  exclusive.
 - Shape of the client-facing "environment discovery" the CLI scaffolds (config file vs
   generated constants per env).
 - **Table prefix scheme** (§10.16): global `cb_` vs per-capability vs configurable.

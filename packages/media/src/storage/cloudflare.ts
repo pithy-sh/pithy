@@ -1,14 +1,19 @@
 import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
-import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
+import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
 import { z } from "zod";
 import type { ImageMinter, R2Minter, VideoMinter } from "./minter";
 
 /**
- * The SDK-friction boundary: adapters that wrap the `@pithy-sh/cloudflare` managers into the clean
- * {@link ImageMinter}/{@link VideoMinter}/{@link R2Minter} seams. This is the only media file that touches
- * the managers' SDK-typed responses; it validates the handful of fields it needs with a local Zod object
- * so an unexpected shape fails loudly rather than surfacing as `undefined`.
+ * The adapters that fill the {@link ImageMinter}/{@link VideoMinter}/{@link R2Minter} seams.
+ *
+ * Images and Stream are the SDK-friction boundary: this is the only media file that touches the
+ * `@pithy-sh/cloudflare` managers' SDK-typed responses, and it validates the handful of fields it needs
+ * with a local Zod object so an unexpected shape fails loudly rather than surfacing as `undefined`.
+ *
+ * R2 is not adapted from an SDK at all. It comes from `@pithy-sh/storage`'s {@link ObjectStore} — the
+ * object-plane seam built to be pointed at a second bucket under a second credential name. Media holds
+ * no `CloudflareR2Manager`, no key pair, and no bucket name; it holds a store it asks for two URLs.
  */
 
 /** The default max video duration (seconds) CF Stream requires for a direct upload — 6 hours. */
@@ -41,10 +46,17 @@ export function videoMinter(manager: CloudflareStreamManager): VideoMinter {
   };
 }
 
-/** Adapt a {@link CloudflareR2Manager} to the {@link R2Minter} seam. */
-export function r2Minter(manager: CloudflareR2Manager): R2Minter {
+/**
+ * Adapt an {@link ObjectStore} to the {@link R2Minter} seam — the whole of media's R2 wiring.
+ *
+ * Only the presign paths cross here. `deleteObject` and `readR2Object` stay on the `R2Bucket` binding
+ * in `storage.ts`: a binding read needs no credential, makes no round trip to resolve one, and streams
+ * its body, so routing it through the store would cost something and buy nothing. The store's default
+ * expiry (one hour) is the one media wants for both URLs, so neither call names one.
+ */
+export function objectStoreMinter(store: ObjectStore): R2Minter {
   return {
-    mintUpload: (key, contentType, contentLength) => manager.createUploadUrl(key, contentType, contentLength),
-    mintDownload: (key) => manager.createDownloadUrl(key),
+    mintUpload: (key, contentType, contentLength) => store.presignPut(key, contentType, contentLength),
+    mintDownload: (key) => store.presignGet(key),
   };
 }

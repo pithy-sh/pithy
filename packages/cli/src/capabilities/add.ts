@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
@@ -23,10 +24,21 @@ export interface AddCapabilityOptions {
 /** The managed-region marker each Worker's `pithy.config.ts` plants inside `capabilities: [...]`. */
 const MARKER = "// pithy:capabilities";
 
+/**
+ * One binding entry, as wrangler writes it. `remote` rides along when the spec sets it; the
+ * resource's identity (`database_id`, `id`, `bucket_name`) is provision-time and is filled later by
+ * `pithy feature provision` or the capability's own provisioner.
+ */
+interface BindingEntry {
+  binding: string;
+  remote?: boolean;
+}
+
 /** A single Durable Object namespace binding, as wrangler writes it. */
 interface DurableObjectBinding {
   name: string;
   class_name: string;
+  remote?: boolean;
 }
 
 /** A Durable Object class migration — a versioned tag registering (or dropping) DO classes. */
@@ -40,10 +52,14 @@ interface DurableObjectMigration {
  * per-environment (each environment gets its own DO namespace); DO class `migrations` are **top-level
  * only** (they register the class against the script, not per-environment), so they live on the root
  * config, not in `env.*` — see {@link appendDurableObjectMigrations}.
+ *
+ * `ai` is a single object, not an array: a Worker has exactly one Workers AI binding.
  */
 interface WranglerBindings {
-  d1_databases?: { binding: string }[];
-  kv_namespaces?: { binding: string }[];
+  d1_databases?: BindingEntry[];
+  kv_namespaces?: BindingEntry[];
+  r2_buckets?: BindingEntry[];
+  ai?: BindingEntry;
   durable_objects?: { bindings: DurableObjectBinding[] };
   migrations?: DurableObjectMigration[];
   env?: Record<string, WranglerBindings | undefined>;
@@ -124,30 +140,73 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   await writeFile(path, source);
 }
 
-/** Append a binding entry if its name isn't already bound. Mutates in place. */
+/**
+ * Stamp the spec's `remote` flag onto an emitted entry. An unset `remote` writes no key at all: the
+ * capability has no opinion, and an explicit `remote: false` would pin the binding to local
+ * emulation the adopter may well want to override.
+ */
+function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): Entry {
+  return binding.remote === undefined ? entry : { ...entry, remote: binding.remote };
+}
+
+/**
+ * Append a binding entry if its name isn't already bound. Mutates in place.
+ *
+ * The writer emits a binding's **shape** — its name, and whatever the spec can state (`class_name`,
+ * `remote`). Resource identity is provision-time and stays absent here: `database_id`, `id`, and
+ * `bucket_name` are written later by `pithy feature provision` or the capability's own provisioner.
+ * That is the contract `d1` and `kv` have had since the first release.
+ *
+ * **`vectorize` and `workflows` are deliberately not emitted at all**, and that is the difference
+ * between a binding wrangler completes later and a config wrangler refuses to load. Wrangler's
+ * validator *requires* `index_name` on every `vectorize` entry and `name` + `class_name` on every
+ * `workflows` entry — an entry carrying only `binding` fails the config, so `wrangler dev` and
+ * `wrangler deploy` both stop. Neither missing value is knowable here: a Vectorize index name is a
+ * provisioning output (`pithy-vector-<index>-<env>`) and a Workflow's script name is per environment
+ * (`pithy-<capability>-<job>-<env>`), while `add` is offline by design. So the whole entry is left to
+ * the capability's own provisioner — `pithy vector provision` and `pithy storage provision` write
+ * complete, per-environment entries through `project/appBindings.ts` once the resources exist. Same
+ * precedent as `service` below, and the same reason: an entry we cannot complete is worse than none.
+ */
 function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest): void {
   for (const binding of manifest.requiredBindings) {
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
-        stanza.d1_databases.push({ binding: binding.name });
+        stanza.d1_databases.push(withRemote({ binding: binding.name }, binding));
       }
     }
     if (binding.type === "kv") {
       stanza.kv_namespaces ??= [];
       if (!stanza.kv_namespaces.some((entry) => entry.binding === binding.name)) {
-        stanza.kv_namespaces.push({ binding: binding.name });
+        stanza.kv_namespaces.push(withRemote({ binding: binding.name }, binding));
       }
+    }
+    if (binding.type === "r2") {
+      stanza.r2_buckets ??= [];
+      if (!stanza.r2_buckets.some((entry) => entry.binding === binding.name)) {
+        stanza.r2_buckets.push(withRemote({ binding: binding.name }, binding));
+      }
+    }
+    // A Worker gets exactly one Workers AI binding, so `ai` is an object rather than an array. An
+    // existing one is left alone: it is either this capability's (idempotency) or an adopter's
+    // deliberate choice of binding name, and clobbering either would break their Worker.
+    if (binding.type === "ai") {
+      stanza.ai ??= withRemote({ binding: binding.name }, binding);
     }
     if (binding.type === "durable_object" && binding.className) {
       stanza.durable_objects ??= { bindings: [] };
       stanza.durable_objects.bindings ??= [];
       if (!stanza.durable_objects.bindings.some((entry) => entry.name === binding.name)) {
-        stanza.durable_objects.bindings.push({ name: binding.name, class_name: binding.className });
+        stanza.durable_objects.bindings.push(
+          withRemote({ name: binding.name, class_name: binding.className }, binding),
+        );
       }
     }
-    // Other binding kinds (email, secret, workflow, …) are wired by their
-    // capabilities' scaffold steps when those capabilities ship (Phase 1+).
+    // Still unwritten: `queue`, `ratelimit`, `email`, and `secret` — none of which any shipped
+    // capability declares — plus `service`, which the feature provisioner owns because it resolves to
+    // the target Worker's environment-scoped script name (feature/wranglerEnv.ts:applyWorkerEnv), and
+    // `vectorize`/`workflow`, which the capability's own provisioner owns (project/appBindings.ts).
   }
 }
 

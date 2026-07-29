@@ -68,26 +68,67 @@ export function removableBindings(target: HasBindings, others: readonly HasBindi
   return target.requiredBindings.filter((binding) => !kept.has(`${binding.type}:${binding.name}`));
 }
 
-/** A wrangler stanza's binding arrays — the keys `remove` touches (the mirror of `add`). */
+/** One binding entry as wrangler writes it — only `binding` identifies it for removal. */
+interface BindingEntry {
+  binding: string;
+}
+
+/**
+ * A wrangler stanza's binding arrays — the keys `remove` touches.
+ *
+ * Wider than `add`'s writer by two: `vectorize` and `workflows` are written by the capability's own
+ * provisioner rather than by `add` (they carry required fields only provisioning knows —
+ * `capabilities/add.ts` and `project/appBindings.ts` explain why), and removing a capability has to take
+ * them out whoever wrote them. Remove is the inverse of *the project's wiring*, not of one command.
+ */
 interface WranglerBindings {
-  d1_databases?: { binding: string }[];
-  kv_namespaces?: { binding: string }[];
+  d1_databases?: BindingEntry[];
+  kv_namespaces?: BindingEntry[];
+  r2_buckets?: BindingEntry[];
+  vectorize?: BindingEntry[];
+  ai?: BindingEntry;
+  workflows?: BindingEntry[];
   durable_objects?: { bindings: { name: string; class_name: string }[] };
   migrations?: { tag: string; new_sqlite_classes?: string[] }[];
   env?: Record<string, WranglerBindings | undefined>;
 }
 
+/**
+ * Drop every matching entry from an array **in place**. comment-json keeps an array's comments as
+ * symbol-keyed properties on the array object itself, so a `filter()` — a fresh, plain array —
+ * silently deletes them, and `pithy remove` would strip the adopter's notes along with the binding.
+ * Splice back-to-front so the surviving indices (and their comments) never shift under the loop.
+ * `feature/wranglerEnv.ts` documents the same rule for the id writer.
+ */
+function spliceWhere<Entry>(entries: Entry[], matches: (entry: Entry) => boolean): void {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry !== undefined && matches(entry)) entries.splice(index, 1);
+  }
+}
+
 /** Drop a set of bindings from one stanza in place (the per-environment keys). */
 function stripBindings(stanza: WranglerBindings, bindings: BindingSpec[]): void {
-  const d1 = new Set(bindings.filter((b) => b.type === "d1").map((b) => b.name));
-  const kv = new Set(bindings.filter((b) => b.type === "kv").map((b) => b.name));
-  const durableObjects = new Set(bindings.filter((b) => b.type === "durable_object").map((b) => b.name));
-  if (stanza.d1_databases) stanza.d1_databases = stanza.d1_databases.filter((entry) => !d1.has(entry.binding));
-  if (stanza.kv_namespaces) stanza.kv_namespaces = stanza.kv_namespaces.filter((entry) => !kv.has(entry.binding));
-  if (stanza.durable_objects) {
-    stanza.durable_objects.bindings = stanza.durable_objects.bindings.filter(
-      (entry) => !durableObjects.has(entry.name),
-    );
+  const named = (type: BindingSpec["type"]): Set<string> =>
+    new Set(bindings.filter((binding) => binding.type === type).map((binding) => binding.name));
+
+  const d1 = named("d1");
+  const kv = named("kv");
+  const r2 = named("r2");
+  const vectorize = named("vectorize");
+  const workflows = named("workflow");
+  const ai = named("ai");
+  const durableObjects = named("durable_object");
+
+  if (stanza.d1_databases) spliceWhere(stanza.d1_databases, (entry) => d1.has(entry.binding));
+  if (stanza.kv_namespaces) spliceWhere(stanza.kv_namespaces, (entry) => kv.has(entry.binding));
+  if (stanza.r2_buckets) spliceWhere(stanza.r2_buckets, (entry) => r2.has(entry.binding));
+  if (stanza.vectorize) spliceWhere(stanza.vectorize, (entry) => vectorize.has(entry.binding));
+  if (stanza.workflows) spliceWhere(stanza.workflows, (entry) => workflows.has(entry.binding));
+  // `ai` is a single object, not an array — the mirror of add's `??=` is dropping the key outright.
+  if (stanza.ai && ai.has(stanza.ai.binding)) stanza.ai = undefined;
+  if (stanza.durable_objects?.bindings) {
+    spliceWhere(stanza.durable_objects.bindings, (entry) => durableObjects.has(entry.name));
   }
 }
 
@@ -104,11 +145,9 @@ function stripDurableObjectMigrations(config: WranglerBindings, bindings: Bindin
   if (classes.size === 0 || !config.migrations) return;
 
   for (const migration of config.migrations) {
-    if (migration.new_sqlite_classes) {
-      migration.new_sqlite_classes = migration.new_sqlite_classes.filter((className) => !classes.has(className));
-    }
+    if (migration.new_sqlite_classes) spliceWhere(migration.new_sqlite_classes, (className) => classes.has(className));
   }
-  config.migrations = config.migrations.filter((migration) => (migration.new_sqlite_classes?.length ?? 0) > 0);
+  spliceWhere(config.migrations, (migration) => (migration.new_sqlite_classes?.length ?? 0) === 0);
   if (config.migrations.length === 0) config.migrations = undefined;
 }
 

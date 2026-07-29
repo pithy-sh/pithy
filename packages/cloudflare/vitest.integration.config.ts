@@ -10,6 +10,10 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
     testTimeout: 120_000,
+    // `testTimeout` does not cover hooks, and these suites reap stale resources in `beforeAll` — a
+    // reclaim that has to drain several buckets would blow vitest's 10s hook default and fail the run
+    // before a single test executed.
+    hookTimeout: 120_000,
     pool: "forks",
     passWithNoTests: true,
   },

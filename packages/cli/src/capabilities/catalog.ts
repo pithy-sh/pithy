@@ -39,7 +39,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     whenToEnable:
       "A queryable audit trail of security-relevant actions — who did what, when, and whether it succeeded — recorded from Workers and the CLI, attributed to the right actor.",
   },
-  { name: "storage", package: "@pithy-sh/storage", whenToEnable: "R2-backed object storage." },
+  {
+    name: "storage",
+    package: "@pithy-sh/storage",
+    whenToEnable:
+      "Put your users' files in your own R2, behind one ObjectStore seam any capability can hold — multipart uploads for the large ones, Range, ETag, and Content-Disposition streaming for the rest, per-owner scoping, byte quotas, server-side copy, revocable share links, and a daily workflow that reconciles orphaned rows and orphaned objects in both directions. Uploaded bytes are treated as untrusted on the way out: nosniff and a locked-down CSP on every object response, and an active type (HTML, SVG, anything +xml, script) served as an attachment whatever was stored — so a user's file cannot execute on your origin. Keys are server-derived and opaque, so a client can never name an object or guess the one beside it; you supply a logical path, and that path is stored, indexed, and listable. It takes no position on what the bytes are — no transcoding, no thumbnails, no AI. That is @pithy-sh/media, which already presigns through this ObjectStore against its own bucket and credential name, and inherits none of these tables or routes for doing so. `pithy add storage` writes the bindings and touches no Cloudflare account; `pithy storage provision` creates the bucket. Objects belong to an authenticated owner, so add auth too.",
+  },
   {
     name: "media",
     package: "@pithy-sh/media",
@@ -64,8 +69,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     whenToEnable:
       "Give every player a balance — a per-user ledger for chips, gold, gems, credits, or tokens, in your own D1. Every movement is atomic, idempotent (a payout delivered twice pays once), and overdraft-safe by a database CHECK constraint. Holds reserve a stake the moment a bet is placed, then release or capture it — which is what makes wagering safe, so it pairs with @pithy-sh/multiplayer. Currency-agnostic; whether the units map to money, and any regulation that implies, is yours. Reads scope to the caller; moving another player's balance needs the admin scope, so add auth too.",
   },
-  { name: "vector", package: "@pithy-sh/vector", whenToEnable: "Vectorize wrapper for embeddings and search." },
-  { name: "jobs", package: "@pithy-sh/jobs", whenToEnable: "Scheduled and queued background work." },
+  {
+    name: "vector",
+    package: "@pithy-sh/vector",
+    whenToEnable:
+      "Semantic search over your own Vectorize index, with the metadata half taken seriously. Vectorize returns partial results — silently — when you filter on a field whose metadata index was created after the vectors were written, and it stops at ten metadata indexes per index. Both fail quietly, in production. So filterable fields are a schema decision here: declare them once, and the package provisions the metadata indexes from that schema, types every filter against it, refuses a filter on a field the schema does not mark, and reconciles the live index against the config on every `pithy vector provision` — waiting for each metadata index to go live before anything writes a vector. `provision` records what it observed, and the Worker refuses to boot when the config declares a filterable field that record does not have, so a schema edited and deployed without re-provisioning fails naming the field rather than returning short results. Embeddings come from Workers AI, the model is pinned per index for writes and queries alike, and `pithy vector reprocess` re-embeds what a model change left behind. Documents live in your own D1; chunking stays yours. Pairs with @pithy-sh/media, whose extracted text and transcripts are the obvious thing to embed.",
+  },
 ];
 
 /** A catalog entry tagged with whether the project already has it installed. */

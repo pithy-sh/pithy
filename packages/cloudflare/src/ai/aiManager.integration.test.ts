@@ -25,12 +25,24 @@ describe.skipIf(!creds.hasCreds)("CloudflareAIManager — LIVE", () => {
     expect(typeof result.data[0]?.[0]).toBe("number");
   });
 
-  test("generates text, decoding the { response } payload", async () => {
+  test("generates text, normalizing whichever envelope the model returns", async () => {
     const result = await ai.generateText([{ role: "user", content: "Reply with the single word: pithy." }], {
       maxTokens: 16,
     });
     expect(typeof result.response).toBe("string");
     expect(result.response.length).toBeGreaterThan(0);
+  });
+
+  test("both live envelopes normalize — the default model and a flat-envelope one", async () => {
+    // The regression this guards: Workers AI moved its newer models to the OpenAI chat-completion
+    // shape, and the default (`llama-4-scout`) stopped carrying a top-level `response` entirely. A
+    // test that exercised only one model would have gone on passing while the other broke, which is
+    // exactly what happened. Naming both models pins both arms of the union against the live service.
+    const prompt = [{ role: "user" as const, content: "Reply with the single word: ok" }];
+    for (const model of ["@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/meta/llama-3.1-8b-instruct"]) {
+      const result = await ai.generateText(prompt, { model, maxTokens: 16 });
+      expect(result.response.length, `model ${model} returned no text`).toBeGreaterThan(0);
+    }
   });
 
   test("surfaces an unknown model as a wrapped request failure", async () => {
