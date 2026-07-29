@@ -37,12 +37,54 @@ export type VectorEmbeddings = z.infer<typeof VectorEmbeddings>;
  * The text-generation payload Cloudflare's instruct models return over the REST API: the generated
  * text plus optional usage. Generic — no application-specific post-processing.
  */
-export const TextGeneration = z
+/**
+ * A text-generation result, normalized to `{ response }` whichever envelope the model returned.
+ *
+ * Workers AI answers in two shapes and which one you get depends on the model, not on the request.
+ * Older models (`@cf/meta/llama-3.1-8b-instruct`) return a flat `{ response }`. Newer ones — including
+ * the default `@cf/meta/llama-4-scout-17b-16e-instruct` — return the OpenAI chat-completion envelope
+ * with the text at `choices[0].message.content` and **no** top-level `response` at all. Verified live
+ * on 2026-07-29; llama-3.1 currently returns both, so the flat arm is matched first.
+ *
+ * Accepting both and normalizing keeps `generateText`'s contract stable across a model swap, which is
+ * a per-call option — a caller overriding `model` should not have to know which era it belongs to.
+ */
+const FlatTextGeneration = z
+  .object({ response: z.string().describe("The generated text, on the flat legacy envelope.") })
+  .describe("The flat text-generation envelope older Workers AI models return.");
+
+const ChatCompletionText = z
   .object({
-    response: z.string().describe("The generated text."),
+    choices: z
+      .array(
+        z
+          .object({
+            message: z
+              .object({ content: z.string().describe("The generated text for this choice.") })
+              .describe("The assistant message this choice carries."),
+          })
+          .describe("One completion choice."),
+      )
+      .min(1)
+      .describe("The completions the model returned; the first is the answer."),
   })
-  .describe("A Cloudflare text-generation result: the model's generated text.");
-export type TextGeneration = z.infer<typeof TextGeneration>;
+  .describe("The OpenAI-compatible chat-completion envelope newer Workers AI models return.");
+
+export const TextGeneration = z
+  .union([FlatTextGeneration, ChatCompletionText])
+  .transform((value, ctx) => {
+    if ("response" in value) return { response: value.response };
+    const first = value.choices[0];
+    if (!first) {
+      // `.min(1)` makes this unreachable at runtime; the guard exists because
+      // `noUncheckedIndexedAccess` types the access as optional and a silent "" would be worse.
+      ctx.addIssue({ code: "custom", message: "The chat-completion envelope carried no choices." });
+      return z.NEVER;
+    }
+    return { response: first.message.content };
+  })
+  .describe("A Cloudflare text-generation result, normalized to the model's generated text.");
+export type TextGeneration = z.output<typeof TextGeneration>;
 
 /**
  * The image-to-text payload Cloudflare's vision models return: a textual description of the image.
