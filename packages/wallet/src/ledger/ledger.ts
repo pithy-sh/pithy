@@ -198,10 +198,10 @@ export function ledger(d1: D1Database, now: () => number = () => Date.now()): Le
       const statements = [
         prepared(ensureAccount(userId, currency, at)),
         prepared(entry(ref, userId, currency, "hold", amount, null, null, at)),
-        // biome-ignore lint/suspicious/noExplicitAny: the hold row is the z.input side.
         prepared(
           db
             .insertInto(WALLET_HOLDS_TABLE)
+            // biome-ignore lint/suspicious/noExplicitAny: the row is the schema's z.input side; Kysely's insert type derives from it.
             .values({ ref, userId, currency, amount, status: "open", createdAt: at, resolvedAt: null } as any),
         ),
         prepared(adjust(userId, currency, { held: sql`held + ${amount}` }, at)),

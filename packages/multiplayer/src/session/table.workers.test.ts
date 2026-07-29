@@ -66,7 +66,7 @@ const tableModel: GameModel<{ currency: string; ante: number }, TableState> = {
     return { state: { ...state, anted, pot }, effects };
   },
   isComplete: () => false, // a table never ends on a round
-  resolve: (ctx) => ({ outcome: { scores: {}, winnerUserId: null, draw: false } }),
+  resolve: (_ctx) => ({ outcome: { scores: {}, winnerUserId: null, draw: false } }),
   redact: (_ctx, state) => state,
 };
 registerGameModel(tableModel);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { GameContext } from "../model";
 import { randomSource } from "../random";
-import { ConnectNConfig, connectNGame, findWinner, type GridMove } from "./connectN";
+import { ConnectNConfig, connectNGame, findWinner } from "./connectN";
 
 const ttt = ConnectNConfig.parse({ rows: 3, cols: 3, connect: 3 });
 const ctx = (players: string[], config = ttt): GameContext<ConnectNConfig> => ({

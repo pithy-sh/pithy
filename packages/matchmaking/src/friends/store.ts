@@ -86,7 +86,7 @@ export function friendStore(db: MatchmakingDatabase): FriendStore {
       const { userA, userB } = canonical(userId, other);
       const row = await findPair(userA, userB);
       const parsed = row ? Friendship.parse(row) : undefined;
-      if (!parsed || parsed.status !== "pending" || parsed.requestedBy !== other) {
+      if (parsed?.status !== "pending" || parsed.requestedBy !== other) {
         throw new MatchmakingFriendRequestNotFoundError({
           detail: `No pending request from ${other} to ${userId} to accept.`,
         });

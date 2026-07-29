@@ -85,6 +85,19 @@ export function registerWalletRoutes(options: WalletRoutesOptions): (app: Hono<P
   const base = options.basePath ?? "/wallet";
   const { config } = options;
 
+  /**
+   * The caller's own id. `requireAuth()` has already run on every route that calls this, so a null
+   * `auth` is a wiring mistake rather than an unauthenticated request — hence `InternalError`, not a
+   * 401. Narrowing here rather than asserting non-null keeps the impossible case impossible to ignore.
+   */
+  const callerId = (c: Context<PithyHonoEnv>): string => {
+    const auth = c.var.auth;
+    if (!auth) {
+      throw new InternalError({ detail: "requireAuth() must run before a wallet handler reads the caller." });
+    }
+    return auth.userId;
+  };
+
   const body = async <S extends z.ZodType>(c: Context<PithyHonoEnv>, schema: S): Promise<z.output<S>> => {
     const result = schema.safeParse(await c.req.json().catch(() => undefined));
     if (!result.success) throw fromZodError(result.error);
@@ -94,13 +107,13 @@ export function registerWalletRoutes(options: WalletRoutesOptions): (app: Hono<P
   return (app) => {
     app.get(`${base}/:currency/transactions`, requireAuth(), async (c) => {
       const code = currency(config, c.req.param("currency"));
-      const rows = await ledger(db(c)).transactions(c.var.auth!.userId, code, 50);
+      const rows = await ledger(db(c)).transactions(callerId(c), code, 50);
       return c.json({ transactions: rows }, 200);
     });
 
     app.get(`${base}/:currency`, requireAuth(), async (c) => {
       const code = currency(config, c.req.param("currency"));
-      return c.json(await ledger(db(c)).balance(c.var.auth!.userId, code), 200);
+      return c.json(await ledger(db(c)).balance(callerId(c), code), 200);
     });
 
     app.post(`${base}/:currency/credit`, requireAuth(), requireAdmin(config.adminScope), async (c) => {

@@ -13,7 +13,7 @@ import {
   MultiplayerSessionNotFoundError,
 } from "../error/errors";
 import { applyWalletEffects } from "../game/effects";
-import { type GameContext, type GameModel, type ModelOutcome, resolveModel } from "../game/model";
+import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
 import { type GameSnapshot, isTerminal, SessionMeta, type SessionOutcome, type SessionView } from "./state";
 
