@@ -84,7 +84,10 @@
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20260610.1",
         "@pithy-sh/audit": "workspace:*",
+        "@pithy-sh/media": "workspace:*",
+        "@pithy-sh/storage": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
+        "@pithy-sh/vector": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
         "typescript": "^7.0.2",
@@ -218,6 +221,7 @@
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
+        "@pithy-sh/storage": "workspace:*",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
         "zod": "^4.0.0",
@@ -307,6 +311,29 @@
         "wrangler": "^4.99.0",
       },
     },
+    "packages/storage": {
+      "name": "@pithy-sh/storage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/cloudflare": "workspace:*",
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/secrets": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
     "packages/turnstile": {
       "name": "@pithy-sh/turnstile",
       "version": "0.0.0",
@@ -322,6 +349,30 @@
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.99.0",
+      },
+    },
+    "packages/vector": {
+      "name": "@pithy-sh/vector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/cloudflare": "workspace:*",
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/secrets": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.16.14",
+        "@cloudflare/workers-types": "^4.20260610.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "comment-json": "^5.0.0",
+        "kysely-d1": "^0.4.0",
         "typescript": "^7.0.2",
         "vitest": "^4.1.0",
         "wrangler": "^4.99.0",
@@ -720,9 +771,13 @@
 
     "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 
+    "@pithy-sh/storage": ["@pithy-sh/storage@workspace:packages/storage"],
+
     "@pithy-sh/tsconfig": ["@pithy-sh/tsconfig@workspace:tooling/tsconfig"],
 
     "@pithy-sh/turnstile": ["@pithy-sh/turnstile@workspace:packages/turnstile"],
+
+    "@pithy-sh/vector": ["@pithy-sh/vector@workspace:packages/vector"],
 
     "@pithy-sh/wallet": ["@pithy-sh/wallet@workspace:packages/wallet"],
 

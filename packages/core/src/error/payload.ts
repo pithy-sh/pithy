@@ -93,6 +93,42 @@ const InternalPublic = z
   })
   .describe("An unexpected server-side failure (500).");
 
+// --- @pithy-sh/core: durable-job (Cloudflare Workflow) dispatch codes ---
+
+const InvalidWorkflowParamsPublic = z
+  .object({
+    code: z
+      .literal("core/invalid_workflow_params")
+      .describe(
+        "The parameters passed to a workflow failed its declared schema. Raised at the call site, before the binding is touched, so a malformed trigger never becomes a failed step inside a running instance.",
+      ),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("Workflow dispatch parameters failed validation (400).");
+
+const MissingWorkflowBindingPublic = z
+  .object({
+    code: z
+      .literal("core/missing_workflow_binding")
+      .describe(
+        "A registered workflow's binding is absent from the Worker env — the host worker is not deployed or not bound.",
+      ),
+    status: z.literal(500).describe("Internal Server Error."),
+    ...publicFields,
+  })
+  .describe("A declared workflow binding is missing from the Worker env (500).");
+
+const UnknownWorkflowPublic = z
+  .object({
+    code: z
+      .literal("core/unknown_workflow")
+      .describe("Dispatch named a `<capability>/<job>` key that no composed capability registers."),
+    status: z.literal(500).describe("Internal Server Error."),
+    ...publicFields,
+  })
+  .describe("No registered workflow answers to the dispatch key (500).");
+
 // --- @pithy-sh/cloudflare: out-of-Worker CF REST client codes ---
 
 const CloudflareNotConfiguredPublic = z
@@ -681,6 +717,156 @@ const MatchmakingNotQueuedPublic = z
   })
   .describe("The player is not in the queue (404).");
 
+// --- @pithy-sh/storage: object store, quota, and share-link codes ---
+
+const StorageNotFoundPublic = z
+  .object({
+    code: z
+      .literal("storage/not_found")
+      .describe("No object row matches, or the object exists but is not visible to this caller."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("The object does not exist, or is not visible to the caller (404).");
+
+const StorageForbiddenPublic = z
+  .object({
+    code: z.literal("storage/forbidden").describe("The caller does not own the object and the object is not public."),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("The caller is not the owner and the object is not public (403).");
+
+const StorageQuotaExceededPublic = z
+  .object({
+    code: z
+      .literal("storage/quota_exceeded")
+      .describe(
+        "The declared upload size would push the owner past their byte quota. Checked at init against pending and stored rows together, so concurrent inits cannot race past the limit.",
+      ),
+    status: z.literal(413).describe("Content Too Large."),
+    ...publicFields,
+  })
+  .describe("The upload would exceed the owner's byte quota (413).");
+
+const StorageUploadIncompletePublic = z
+  .object({
+    code: z
+      .literal("storage/upload_incomplete")
+      .describe("The object is still pending — its bytes have not been uploaded, so it cannot be read or copied."),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("The object's upload has not completed (409).");
+
+const StorageMultipartFailedPublic = z
+  .object({
+    code: z
+      .literal("storage/multipart_failed")
+      .describe("R2 rejected the multipart completion — most often an ETag that does not match the uploaded part."),
+    status: z.literal(500).describe("Internal Server Error."),
+    ...publicFields,
+  })
+  .describe("A multipart upload could not be completed (500).");
+
+const StorageShareExpiredPublic = z
+  .object({
+    code: z.literal("storage/share_expired").describe("The share token is past its expiry."),
+    status: z.literal(410).describe("Gone."),
+    ...publicFields,
+  })
+  .describe("The share token has expired (410).");
+
+const StorageShareRevokedPublic = z
+  .object({
+    code: z
+      .literal("storage/share_revoked")
+      .describe(
+        "The share token was revoked. A presigned URL cannot be revoked, only expired — which is why shares are rows.",
+      ),
+    status: z.literal(410).describe("Gone."),
+    ...publicFields,
+  })
+  .describe("The share token has been revoked (410).");
+
+// --- @pithy-sh/vector: index, metadata, and query-boundary codes ---
+
+const VectorMetadataIndexDriftPublic = z
+  .object({
+    code: z
+      .literal("vector/metadata_index_drift")
+      .describe(
+        "A field declared filterable has no live metadata index. Fatal at boot: Vectorize does not error on such a filter, it silently omits every vector written before the index existed.",
+      ),
+    status: z.literal(500).describe("Internal Server Error."),
+    ...publicFields,
+  })
+  .describe("A declared filterable field has no live metadata index (500).");
+
+const VectorDimensionMismatchPublic = z
+  .object({
+    code: z
+      .literal("vector/dimension_mismatch")
+      .describe("The supplied vector's length does not match the index's configured dimensions."),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("The vector length does not match the index dimensions (400).");
+
+const VectorTopKExceededPublic = z
+  .object({
+    code: z
+      .literal("vector/topk_exceeded")
+      .describe("topK is above Vectorize's ceiling — 50 when values or metadata are returned, 100 when neither is."),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("topK exceeds the limit for this query mode (400).");
+
+const VectorFilterTooLargePublic = z
+  .object({
+    code: z
+      .literal("vector/filter_too_large")
+      .describe("The filter's compact JSON representation reaches Vectorize's 2,048-byte ceiling."),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("The metadata filter is too large (400).");
+
+const VectorMetadataTooLargePublic = z
+  .object({
+    code: z
+      .literal("vector/metadata_too_large")
+      .describe(
+        "One vector's metadata reaches Vectorize's 10 KiB ceiling. Long content belongs in D1, not in metadata.",
+      ),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("A vector's metadata exceeds the size limit (400).");
+
+const VectorIndexNotFoundPublic = z
+  .object({
+    code: z
+      .literal("vector/index_not_found")
+      .describe("The named index is not present in the vector capability's configuration."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("The named index is not configured (404).");
+
+const VectorUnfilterableFieldPublic = z
+  .object({
+    code: z
+      .literal("vector/unfilterable_field")
+      .describe(
+        "A filter names a field that is not marked filterable. The runtime guard behind the compile-time type error, for untyped callers.",
+      ),
+    status: z.literal(400).describe("Bad Request."),
+    ...publicFields,
+  })
+  .describe("The filter names a field with no metadata index (400).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -695,6 +881,9 @@ export const PublicErrorPayload = z
     ConflictPublic,
     RateLimitPublic,
     InternalPublic,
+    InvalidWorkflowParamsPublic,
+    MissingWorkflowBindingPublic,
+    UnknownWorkflowPublic,
     CloudflareNotConfiguredPublic,
     CloudflareRequestFailedPublic,
     CloudflareInvalidResponsePublic,
@@ -750,6 +939,20 @@ export const PublicErrorPayload = z
     MatchmakingAlreadyFriendsPublic,
     MatchmakingFriendRequestNotFoundPublic,
     MatchmakingNotQueuedPublic,
+    StorageNotFoundPublic,
+    StorageForbiddenPublic,
+    StorageQuotaExceededPublic,
+    StorageUploadIncompletePublic,
+    StorageMultipartFailedPublic,
+    StorageShareExpiredPublic,
+    StorageShareRevokedPublic,
+    VectorMetadataIndexDriftPublic,
+    VectorDimensionMismatchPublic,
+    VectorTopKExceededPublic,
+    VectorFilterTooLargePublic,
+    VectorMetadataTooLargePublic,
+    VectorIndexNotFoundPublic,
+    VectorUnfilterableFieldPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -763,6 +966,13 @@ const NotFound = NotFoundPublic.extend(detailField).describe(NotFoundPublic.desc
 const Conflict = ConflictPublic.extend(detailField).describe(ConflictPublic.description ?? "");
 const RateLimit = RateLimitPublic.extend(detailField).describe(RateLimitPublic.description ?? "");
 const Internal = InternalPublic.extend(detailField).describe(InternalPublic.description ?? "");
+const InvalidWorkflowParams = InvalidWorkflowParamsPublic.extend(detailField).describe(
+  InvalidWorkflowParamsPublic.description ?? "",
+);
+const MissingWorkflowBinding = MissingWorkflowBindingPublic.extend(detailField).describe(
+  MissingWorkflowBindingPublic.description ?? "",
+);
+const UnknownWorkflow = UnknownWorkflowPublic.extend(detailField).describe(UnknownWorkflowPublic.description ?? "");
 const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(detailField).describe(
   CloudflareNotConfiguredPublic.description ?? "",
 );
@@ -910,6 +1120,44 @@ const MatchmakingFriendRequestNotFound = MatchmakingFriendRequestNotFoundPublic.
 const MatchmakingNotQueued = MatchmakingNotQueuedPublic.extend(detailField).describe(
   MatchmakingNotQueuedPublic.description ?? "",
 );
+const StorageNotFound = StorageNotFoundPublic.extend(detailField).describe(StorageNotFoundPublic.description ?? "");
+const StorageForbidden = StorageForbiddenPublic.extend(detailField).describe(StorageForbiddenPublic.description ?? "");
+const StorageQuotaExceeded = StorageQuotaExceededPublic.extend(detailField).describe(
+  StorageQuotaExceededPublic.description ?? "",
+);
+const StorageUploadIncomplete = StorageUploadIncompletePublic.extend(detailField).describe(
+  StorageUploadIncompletePublic.description ?? "",
+);
+const StorageMultipartFailed = StorageMultipartFailedPublic.extend(detailField).describe(
+  StorageMultipartFailedPublic.description ?? "",
+);
+const StorageShareExpired = StorageShareExpiredPublic.extend(detailField).describe(
+  StorageShareExpiredPublic.description ?? "",
+);
+const StorageShareRevoked = StorageShareRevokedPublic.extend(detailField).describe(
+  StorageShareRevokedPublic.description ?? "",
+);
+const VectorMetadataIndexDrift = VectorMetadataIndexDriftPublic.extend(detailField).describe(
+  VectorMetadataIndexDriftPublic.description ?? "",
+);
+const VectorDimensionMismatch = VectorDimensionMismatchPublic.extend(detailField).describe(
+  VectorDimensionMismatchPublic.description ?? "",
+);
+const VectorTopKExceeded = VectorTopKExceededPublic.extend(detailField).describe(
+  VectorTopKExceededPublic.description ?? "",
+);
+const VectorFilterTooLarge = VectorFilterTooLargePublic.extend(detailField).describe(
+  VectorFilterTooLargePublic.description ?? "",
+);
+const VectorMetadataTooLarge = VectorMetadataTooLargePublic.extend(detailField).describe(
+  VectorMetadataTooLargePublic.description ?? "",
+);
+const VectorIndexNotFound = VectorIndexNotFoundPublic.extend(detailField).describe(
+  VectorIndexNotFoundPublic.description ?? "",
+);
+const VectorUnfilterableField = VectorUnfilterableFieldPublic.extend(detailField).describe(
+  VectorUnfilterableFieldPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -924,6 +1172,9 @@ export const ErrorPayload = z
     Conflict,
     RateLimit,
     Internal,
+    InvalidWorkflowParams,
+    MissingWorkflowBinding,
+    UnknownWorkflow,
     CloudflareNotConfigured,
     CloudflareRequestFailed,
     CloudflareInvalidResponse,
@@ -979,6 +1230,20 @@ export const ErrorPayload = z
     MatchmakingAlreadyFriends,
     MatchmakingFriendRequestNotFound,
     MatchmakingNotQueued,
+    StorageNotFound,
+    StorageForbidden,
+    StorageQuotaExceeded,
+    StorageUploadIncomplete,
+    StorageMultipartFailed,
+    StorageShareExpired,
+    StorageShareRevoked,
+    VectorMetadataIndexDrift,
+    VectorDimensionMismatch,
+    VectorTopKExceeded,
+    VectorFilterTooLarge,
+    VectorMetadataTooLarge,
+    VectorIndexNotFound,
+    VectorUnfilterableField,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

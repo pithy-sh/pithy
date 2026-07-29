@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
-import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
+import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { addCapability } from "./add";
 import {
   defaultRemoveSteps,
   importsPackage,
@@ -187,6 +189,98 @@ describe("removeFromWrangler — durable objects", () => {
     expect(result.migrations).toBeUndefined();
     // The shared D1 binding stays.
     expect(result.d1_databases).toEqual([{ binding: "DB" }]);
+  });
+});
+
+describe("add then remove", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-roundtrip-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** One capability declaring every binding kind the writer emits. */
+  const everyKind = CapabilityManifest.parse({
+    name: "media",
+    package: "@pithy-sh/media",
+    requiredBindings: [
+      { type: "d1", name: "DB" },
+      { type: "kv", name: "MEDIA" },
+      { type: "r2", name: "MEDIA_BUCKET" },
+      { type: "vectorize", name: "MEDIA_INDEX", remote: true },
+      { type: "ai", name: "AI", remote: true },
+      { type: "workflow", name: "MEDIA_IMAGE_TO_TEXT", className: "ImageToTextWorkflow", optional: true },
+      { type: "durable_object", name: "MEDIA_SESSION", className: "MediaSession" },
+    ],
+  });
+
+  /** A project another capability already wired, with comments inside the binding arrays. */
+  const fixture = `{
+  "name": "pithy-app",
+  "main": "src/index.ts",
+
+  // The app database. Every capability shares it.
+  "d1_databases": [{ "binding": "DB" }],
+  "kv_namespaces": [
+    // Sessions live here — auth owns this namespace.
+    { "binding": "SESSIONS" }
+  ],
+  "r2_buckets": [],
+  "vectorize": [],
+  "workflows": [],
+  "durable_objects": { "bindings": [] },
+
+  "env": {
+    "staging": {
+      "d1_databases": [{ "binding": "DB" }],
+      "kv_namespaces": [
+        // auth's namespace, one per environment.
+        { "binding": "SESSIONS" }
+      ],
+      "r2_buckets": [],
+      "vectorize": [],
+      "workflows": [],
+      "durable_objects": { "bindings": [] }
+    }
+  }
+}
+`;
+
+  test("restores wrangler.jsonc byte for byte, comments included", async () => {
+    await writeFile(join(dir, "wrangler.jsonc"), fixture);
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      "export default {\n  capabilities: [\n    // pithy:capabilities\n  ],\n};\n",
+    );
+    // Canonicalize through the writer first, so the comparison proves the mirror is complete rather
+    // than re-testing comment-json's formatting choices.
+    await writeWranglerConfig(dir, await readWranglerConfig(dir));
+    const before = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+
+    await addCapability({ workerDir: dir, manifest: everyKind });
+    const added = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    expect(added).not.toBe(before); // the add wrote something to undo
+
+    // `DB` and `SESSIONS` belong to another capability and must survive untouched.
+    const others = [
+      {
+        requiredBindings: [
+          BindingSpec.parse({ type: "d1", name: "DB" }),
+          BindingSpec.parse({ type: "kv", name: "SESSIONS" }),
+        ],
+      },
+    ];
+    const removed = await removeFromWrangler(dir, { requiredBindings: everyKind.requiredBindings }, others);
+    expect(removed).toEqual(["MEDIA", "MEDIA_BUCKET", "MEDIA_INDEX", "AI", "MEDIA_IMAGE_TO_TEXT", "MEDIA_SESSION"]);
+
+    const after = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    // Byte for byte: any binding kind add can write and remove cannot strip shows up here.
+    expect(after).toBe(before);
+    // Named explicitly, because a filter-style strip would drop these silently and still parse.
+    expect(after).toContain("// Sessions live here — auth owns this namespace.");
+    expect(after).toContain("// auth's namespace, one per environment.");
   });
 });
 

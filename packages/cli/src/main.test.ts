@@ -39,6 +39,32 @@ describe("main", () => {
     }
   });
 
+  test("vector exposes provision, reset, and reprocess", async () => {
+    const vector = await subcommand("vector");
+    expect(Object.keys(vector.subCommands ?? {})).toEqual(["provision", "reset", "reprocess"]);
+  });
+
+  test("storage exposes provision and deprovision, both --json", async () => {
+    const storage = await subcommand("storage");
+    expect(Object.keys(storage.subCommands ?? {})).toEqual(["provision", "deprovision"]);
+    for (const name of ["provision", "deprovision"] as const) {
+      const sub = (storage.subCommands as Record<string, CommandDef>)[name];
+      expect(Object.keys(sub?.args ?? {})).toContain("json");
+    }
+  });
+
+  test("storage and media deprovision take the R2 key pair — a bucket cannot be emptied without it", async () => {
+    // `--storage` deletes buckets, and R2 refuses to delete one that is not empty. Emptying is an
+    // S3-protocol operation, so the flags that carry the key pair have to be on deprovision too, not
+    // only on provision — otherwise the destructive path has no way to be driven non-interactively.
+    for (const command of ["storage", "media"] as const) {
+      const subCommands = (await subcommand(command)).subCommands as Record<string, CommandDef>;
+      expect(Object.keys(subCommands.deprovision?.args ?? {})).toEqual(
+        expect.arrayContaining(["storage", "r2-access-key-id", "r2-secret-access-key", "json"]),
+      );
+    }
+  });
+
   test("remove takes --drop and --env", async () => {
     expect(await argNames("remove")).toEqual(expect.arrayContaining(["capability", "drop", "env"]));
   });

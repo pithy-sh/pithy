@@ -1,0 +1,45 @@
+{
+  "name": "vector",
+  "package": "@pithy-sh/vector",
+  "requiredBindings": [
+    {
+      "type": "vectorize",
+      "name": "VECTORIZE",
+      "remote": true
+    },
+    {
+      "type": "ai",
+      "name": "AI",
+      "remote": true
+    },
+    {
+      "type": "d1",
+      "name": "DB"
+    },
+    {
+      "type": "workflow",
+      "name": "VECTOR_REPROCESS",
+      "optional": true
+    }
+  ],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "vector",
+  "whenToEnable": "Semantic search over your own content — ask in a sentence, get the passages that mean the same thing. Embeddings come from Workers AI and live in your own Vectorize index; the source text lives in your D1, because Vectorize returns ids and scores, not content, and caps metadata at 10 KiB. What this adds over calling the binding yourself is the part that bites: an index's filterable metadata is declared in Zod, so one declaration provisions the metadata indexes, types the filter builder, and is reconciled against the live index every time you run `pithy vector provision`. Vectorize does not error when you filter on a field it indexed late — it silently drops every vector written before the index existed, and you get a short result set that looks fine. So `provision` records what it observed, and the Worker refuses to boot when the config declares a filterable field that record does not have — edit a metadata schema, deploy without re-provisioning, and you get an error naming the field instead of quietly wrong search. A filter naming a field the schema does not mark filterable is refused outright rather than run. The model is pinned per index and used for writes and queries alike, so an index cannot be built in one embedding space and searched in another. Routes scope to the caller, so add auth too.",
+  "scaffold": [
+    "Add a `vector({ indexes: { ... } })` block to pithy.config.ts and declare at least one index: the Workers AI `model` that fills it, the `dimensions` that model produces, and a `metric` (`cosine` for text).",
+    "Give each index a `metadata` Zod object describing what its vectors carry, and mark the fields you will filter on with `filterable(...)` beside their `.describe()`. Vectorize allows ten metadata indexes per index, and a field indexed after vectors are written does not apply to them — decide this before you ingest.",
+    "Bind `VECTORIZE` (Vectorize) and `AI` (Workers AI) in each wrangler.jsonc env, plus the `DB` D1 binding your other capabilities use. Both are marked remote: neither has a local emulation, so `wrangler dev` reaches the real resource. A second index names its own `binding` — one Vectorize binding addresses exactly one index.",
+    "Run `pithy vector provision --env <env>` to create the index, its metadata indexes, and the prebuilt reprocess worker. It waits for each metadata index to become live: Vectorize applies them asynchronously, and a vector written before one exists is never covered by it. It then writes what it observed into wrangler.jsonc as the `VECTOR_PROVISIONED` var for that environment — commit it. The Worker checks its declared filterable fields against that record at boot and refuses to serve on a mismatch, so re-run provision whenever you change a metadata schema.",
+    "Run `pithy migrate` to create pithy_vector_documents — the durable corpus results hydrate from and re-embeds read out of.",
+    "Add `@pithy-sh/auth` if it is not already installed. Search routes scope to the authenticated caller; without auth every route is denied.",
+    "Changed a model, or added a filterable field after ingest? Run `pithy vector reprocess` — it re-embeds the rows whose model differs from config, and `--all` re-embeds the corpus. A late metadata index needs `pithy vector reset`, which rebuilds the index from that corpus."
+  ],
+  "configOptions": [
+    {
+      "key": "defaultTopK",
+      "default": 10,
+      "describe": "How many matches a query returns when the caller names none. A search page, not a scan — Vectorize's own ceiling is 50 per query when values or metadata come back, 100 when neither does. There is no `indexes` block above: `pithy add` can only seed scalar options, so add one by hand before any search works. Each index names its model, its dimensions, its metric, and the Zod object describing its metadata — mark a field `.meta({ filterable: true })` to make it filterable, then run `pithy vector provision`. Until an index is declared the routes answer `vector/index_not_found`."
+    }
+  ]
+}

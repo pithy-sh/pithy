@@ -1,7 +1,14 @@
 import { Hono } from "hono";
 import { noopEmit } from "./audit/recorder";
 import { BindingSpec } from "./capability/bindings";
-import type { Capability, MergedDatabases, MergedKvNamespaces, PithyHonoEnv, PithyVars } from "./capability/capability";
+import type {
+  Capability,
+  MergedDatabases,
+  MergedKvNamespaces,
+  MergedWorkflowParams,
+  PithyHonoEnv,
+  PithyVars,
+} from "./capability/capability";
 import { validateBindings } from "./capability/validateBindings";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { pithyErrorHandler } from "./error/http";
@@ -9,6 +16,8 @@ import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { buildWorkflowDispatcher, type WorkflowDispatcher } from "./workflow/dispatch";
+import { composeWorkflows } from "./workflow/register";
 
 /** Inputs to {@link createBackend}: the capabilities to assemble, plus the app's own capability. */
 export interface CreateBackendOptions<Caps extends readonly Capability[], App extends Capability> {
@@ -35,12 +44,13 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
   env?: string;
 }
 
-/** The Hono env `createBackend` returns — `db`/`kv` typed precisely from the merged capabilities. */
+/** The Hono env `createBackend` returns — `db`/`kv`/`workflows` typed precisely from the merged capabilities. */
 type BackendEnv<Caps extends readonly Capability[]> = {
   Bindings: Record<string, unknown>;
-  Variables: Omit<PithyVars, "db" | "kv"> & {
+  Variables: Omit<PithyVars, "db" | "kv" | "workflows"> & {
     db: DbRegistry<MergedDatabases<Caps>>;
     kv: KvRegistry<MergedKvNamespaces<Caps>>;
+    workflows: WorkflowDispatcher<MergedWorkflowParams<Caps>>;
   };
 };
 
@@ -127,13 +137,23 @@ export function createBackend<
 
   const databases = composeDatabases(all);
   const namespaces = composeKv(all);
+  const workflows = composeWorkflows(all);
 
-  // Each named database implies its D1 binding; each KV namespace implies its KV binding. Derive
-  // them so the fail-fast check covers every binding the request context will actually build.
+  // Each named database implies its D1 binding; each KV namespace implies its KV binding; each
+  // registered job implies its Workflow binding. Derive them so the fail-fast check covers every
+  // binding the request context will actually build or dispatch to.
+  //
+  // A job's `optional` rides through: `@pithy-sh/media` declares its enrichment Workflows optional
+  // so an app still boots before `pithy media provision` has deployed the host, and `dedupeBindings`
+  // ANDs `optional` across occurrences — deriving these as unconditionally required would override
+  // that and break every project that has not provisioned yet.
   const required = dedupeBindings([
     ...all.flatMap((cap) => cap.requiredBindings),
     ...Object.values(databases).map((db) => BindingSpec.parse({ type: "d1", name: db.binding })),
     ...Object.values(namespaces).map((ns) => BindingSpec.parse({ type: "kv", name: ns.binding })),
+    ...Object.values(workflows).map((entry) =>
+      BindingSpec.parse({ type: "workflow", name: entry.spec.binding, optional: entry.spec.optional ?? false }),
+    ),
   ]);
 
   // Build internally against the loose base env (db/kv are `unknown`, so `c.set` accepts the merged
@@ -169,6 +189,7 @@ export function createBackend<
     }
     if (c.get("db") === undefined) c.set("db", buildDbRegistry(env, databases));
     if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces, c.var.log));
+    if (c.get("workflows") === undefined) c.set("workflows", buildWorkflowDispatcher(env, workflows, c.var.log));
 
     // Auto access-log: one record per request carrying the response `status` and `elapsed`, resolved
     // from context with no caller effort — the completion of the request-correlation seam.

@@ -201,8 +201,12 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   }
 }
 
-/** The directory of the prebuilt email worker inside the installed `@pithy-sh/email` package (holds wrangler.jsonc). */
-function emailWorkerDir(): string {
+/**
+ * The directory of the prebuilt email worker inside the installed `@pithy-sh/email` package (holds
+ * wrangler.jsonc). Exported so the template test resolves the same file the deploy reads — a copy of
+ * this resolution in the test would be a copy free to drift from the path it is meant to guard.
+ */
+export function emailWorkerDir(): string {
   return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/email/src/workflows/worker")));
 }
 

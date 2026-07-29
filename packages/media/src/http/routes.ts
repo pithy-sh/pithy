@@ -60,7 +60,8 @@ function defaultResolveDeps(
       storage,
       schema,
       config,
-      dispatchEnrichment: makeEnrichmentDispatcher(env, config),
+      // The request logger, so an enrichment skipped for a missing binding says so in the request's log.
+      dispatchEnrichment: makeEnrichmentDispatcher(env, config, c.var.log),
       newId: () => crypto.randomUUID(),
       now: () => new Date(),
     };

@@ -45,6 +45,12 @@ export const BindingSpec = z
       .describe(
         'The Worker this binding calls, named as it appears in `apps/<name>/` (e.g. "api"). Meaningful only for a `service` binding — the CLI resolves it to that Worker\'s environment-scoped script name when writing `services` into wrangler.jsonc, so worker-to-worker RPC targets the right deployment per environment. Ignored for every other kind.',
       ),
+    remote: z
+      .boolean()
+      .optional()
+      .describe(
+        "Reach the real Cloudflare resource during local development instead of a local emulation. Set it for a binding that has none — Vectorize and Workers AI both lack local simulation — so `wrangler dev` and any Workflow host, which always runs locally, still work. Left unset rather than defaulting to false, so a spec that does not care emits no flag at all. Ignored in a deployed Worker.",
+      ),
   })
   .describe("Declares a Cloudflare binding a capability requires in the Worker env.")
   .check((ctx) => {

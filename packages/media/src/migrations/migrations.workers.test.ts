@@ -41,6 +41,15 @@ function makeRecord(overrides: Partial<MediaRecord> = {}): MediaRecord {
   } as MediaRecord;
 }
 
+/**
+ * The key `createMigrationRegistry` composes for one of media's local migrations —
+ * `0350_media_0002_assets`. Derived from {@link MEDIA_MIGRATION_ORDER} rather than written out, so
+ * renumbering the capability cannot leave a test asserting a key the registry no longer produces.
+ */
+function composedKey(localKey: string): string {
+  return `${String(MEDIA_MIGRATION_ORDER).padStart(4, "0")}_media_${localKey}`;
+}
+
 /** Build an app-database provider for the given local migration set. */
 function provider(migrations: Record<string, Migration>): MigrationProvider {
   const registry = createMigrationRegistry([
@@ -110,7 +119,7 @@ describe("media_0002_assets (record table — D1 mode)", () => {
     await runMigrations(env.DB, p);
     const results = await rollbackMigration(env.DB, p);
     expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
-      ["0300_media_0002_assets", "Down", "Success"],
+      [composedKey("0002_assets"), "Down", "Success"],
     ]);
     expect(await tables()).toEqual(["pithy_media_hashes"]);
   });
@@ -139,7 +148,7 @@ describe("media 0003_extend (generated extension migration)", () => {
     await runMigrations(env.DB, p);
     const results = await rollbackMigration(env.DB, p);
     expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
-      ["0300_media_0003_extend", "Down", "Success"],
+      [composedKey("0003_extend"), "Down", "Success"],
     ]);
     const { results: columns } = await env.DB.prepare("PRAGMA table_info(pithy_media_assets)").all<{ name: string }>();
     expect(columns.map((c) => c.name)).not.toContain("user_id");

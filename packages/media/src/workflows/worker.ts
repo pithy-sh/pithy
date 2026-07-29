@@ -76,8 +76,15 @@ async function readObjectBytes(
   throw new MediaEnrichmentError({ detail: `cannot read bytes for backend ${record.storageBackend}` });
 }
 
-/** Assemble the enrichment dependencies from the worker env. `transcribeModel` differs for audio vs video. */
-async function buildDeps(env: MediaWorkerEnv, transcribeModel: string): Promise<EnrichDeps> {
+/**
+ * Assemble the enrichment dependencies from the worker env. `transcribeKind` picks which speech-to-text
+ * model config supplies — audio and video are configured independently. A job that does not transcribe
+ * (image-to-text, document extraction) omits it and never reads the value; the audio model is the inert
+ * default rather than a claim about what the job does.
+ */
+async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" = "audio"): Promise<EnrichDeps> {
+  // Parsed once per run and threaded through — the models, the record store, and the delivery hash all
+  // come from this one config.
   const config = MediaConfig.parse(env.MEDIA_CONFIG ? JSON.parse(env.MEDIA_CONFIG) : {});
   const store = resolveRecordStore(env, config, LooseAsset);
   const secrets = await sharedSecretsStore(env, mediaSecretsRegistry);
@@ -90,7 +97,10 @@ async function buildDeps(env: MediaWorkerEnv, transcribeModel: string): Promise<
   return {
     store,
     ai: env.AI,
-    models: { imageToText: config.images.model, transcribe: transcribeModel },
+    models: {
+      imageToText: config.images.model,
+      transcribe: transcribeKind === "video" ? config.video.model : config.audio.model,
+    },
     readBytes: (record) => readObjectBytes(env, imagesAccountHash, record),
     readDocument: async (record) => ({
       name: record.filename,
@@ -105,16 +115,10 @@ async function buildDeps(env: MediaWorkerEnv, transcribeModel: string): Promise<
   };
 }
 
-/** Read the audio/video transcription model from config JSON, defaulting when absent. */
-function transcribeModelFor(env: MediaWorkerEnv, kind: "audio" | "video"): string {
-  const config = MediaConfig.parse(env.MEDIA_CONFIG ? JSON.parse(env.MEDIA_CONFIG) : {});
-  return kind === "video" ? config.video.model : config.audio.model;
-}
-
-/** Image → alt text and caption. */
+/** Image → alt text and caption. Does not transcribe. */
 export class MediaImageToTextWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
-    const deps = await buildDeps(this.env, transcribeModelFor(this.env, "audio"));
+    const deps = await buildDeps(this.env);
     await step.do(`image-to-text-${event.payload.id}`, () => runImageToText(deps, event.payload.id));
   }
 }
@@ -122,7 +126,7 @@ export class MediaImageToTextWorkflow extends WorkflowEntrypoint<MediaWorkerEnv,
 /** Audio → transcription. */
 export class MediaAudioTranscribeWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
-    const deps = await buildDeps(this.env, transcribeModelFor(this.env, "audio"));
+    const deps = await buildDeps(this.env, "audio");
     await step.do(`transcribe-audio-${event.payload.id}`, () => runAudioTranscription(deps, event.payload.id));
   }
 }
@@ -130,15 +134,15 @@ export class MediaAudioTranscribeWorkflow extends WorkflowEntrypoint<MediaWorker
 /** Video → transcription (Stream readiness + HLS batching). */
 export class MediaVideoTranscribeWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
-    const deps = await buildDeps(this.env, transcribeModelFor(this.env, "video"));
+    const deps = await buildDeps(this.env, "video");
     await step.do(`transcribe-video-${event.payload.id}`, () => runVideoTranscription(deps, event.payload.id));
   }
 }
 
-/** Document → extracted text. */
+/** Document → extracted text. Does not transcribe. */
 export class MediaDocExtractWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
-    const deps = await buildDeps(this.env, transcribeModelFor(this.env, "audio"));
+    const deps = await buildDeps(this.env);
     await step.do(`extract-document-${event.payload.id}`, () => runDocumentExtraction(deps, event.payload.id));
   }
 }

@@ -1,24 +1,30 @@
+import type {
+  HostD1Binding,
+  HostSecretsStoreBinding,
+  HostSendEmailBinding,
+  HostWorkflowBinding,
+  WorkflowHostTemplate,
+} from "@pithy-sh/core/src/workflow/host";
+import { resolveWorkflowHost } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { EmailTheme } from "../templates/theme";
-import { emailWorkerName } from "./provisionEmail";
 
 /**
- * The email worker's `wrangler.jsonc` template shape — only the fields provisioning resolves. The
- * committed template (`src/workflows/wrangler.jsonc`) is the source of truth for the static fields
- * (compatibility date, the every-minute cron, class names, the `send_email` binding, theme vars); this
- * resolver fills the per-environment placeholders into one standalone config.
+ * The email worker's `wrangler.jsonc` template shape. Email invented the prebuilt-host convention;
+ * `@pithy-sh/core`'s {@link WorkflowHostTemplate} is the generalization of it, so this is now that
+ * contract with the fields email's committed template always carries narrowed to required. The
+ * committed template (`src/workflows/wrangler.jsonc`) stays the source of truth for the static fields
+ * (compatibility date, the every-minute cron, class names, the `send_email` binding, theme vars).
  */
-export interface EmailWorkerWranglerTemplate {
-  name: string;
-  main: string;
+export interface EmailWorkerWranglerTemplate extends WorkflowHostTemplate {
   compatibility_date: string;
   compatibility_flags: string[];
   workers_dev: boolean;
-  d1_databases: Array<{ binding: string; database_name: string; database_id: string }>;
-  send_email: Array<{ name: string; remote?: boolean }>;
-  secrets_store_secrets: Array<{ binding: string; store_id: string; secret_name: string }>;
-  workflows: Array<{ binding: string; name: string; class_name: string }>;
+  d1_databases: HostD1Binding[];
+  send_email: HostSendEmailBinding[];
+  secrets_store_secrets: HostSecretsStoreBinding[];
+  workflows: HostWorkflowBinding[];
   triggers: { crons: string[] };
   vars: Record<string, string>;
 }
@@ -38,42 +44,45 @@ export interface EmailConfigParams {
   baseUrl: string;
   /** The resolved brand theme — serialized into the worker's `EMAIL_THEME` var. */
   theme: EmailTheme;
+  // No `schedulerEnabled`. `EmailConfig.schedulerEnabled` is parsed and exposed but never arrives
+  // here, so the template's hardcoded SCHEDULER_ENABLED="true" always wins — a known defect, filed
+  // rather than fixed, because closing it changes this signature and the provisioner's option bag,
+  // both of which are pinned by tests.
 }
 
 /**
  * Resolve the email-worker `wrangler.jsonc` template into one environment's standalone config — no
- * `[env.*]` stanzas (staging and production are genuinely separate workers, per CLAUDE.md). Fills the
- * per-env worker name, the three D1 ids (app `DB`, shared `EMAIL_SUPPRESSIONS`, per-env `SECRETS`), the
- * Secrets Store id + env-prefixed master-key entry name (matching the secrets manager's convention),
- * env-suffixed Workflow names, and the `BASE_URL`/`ENVIRONMENT` vars — leaving every static field
- * untouched. Pure: the caller parses the template and writes the result.
+ * `[env.*]` stanzas (staging and production are genuinely separate workers, per CLAUDE.md).
+ *
+ * The mechanics are `@pithy-sh/core`'s {@link resolveWorkflowHost}: this is the email-shaped face of
+ * it, mapping email's seven inputs onto the generic host params. What stays here is the part that is
+ * genuinely email's — which binding takes which database id, and the `@pithy-sh/secrets` import that
+ * names the env-scoped master key. Core must never depend on `@pithy-sh/secrets`, so the resolved
+ * string is passed in rather than the naming rule being hoisted.
+ *
+ * `database_name` is deliberately left alone. `pithy-app` and `pithy-email-suppressions` are the same
+ * resources in every environment, and the secrets manager owns the name of `pithy-secrets`; only the
+ * ids differ per environment.
  */
 export function resolveEmailConfig(
   template: EmailWorkerWranglerTemplate,
   params: EmailConfigParams,
 ): EmailWorkerWranglerTemplate {
   const { env, appDatabaseId, suppressionDatabaseId, secretsDatabaseId, storeId, baseUrl, theme } = params;
-  const resolved: EmailWorkerWranglerTemplate = structuredClone(template);
-  const databaseIds: Record<string, string> = {
-    DB: appDatabaseId,
-    EMAIL_SUPPRESSIONS: suppressionDatabaseId,
-    SECRETS: secretsDatabaseId,
-  };
-
-  resolved.name = emailWorkerName(env);
-  resolved.d1_databases = resolved.d1_databases.map((db) => ({
-    ...db,
-    database_id: databaseIds[db.binding] ?? db.database_id,
-  }));
-  // The master key entry is env-scoped — its name is env-prefixed, matching what the secrets manager wrote.
-  resolved.secrets_store_secrets = resolved.secrets_store_secrets.map((entry) => ({
-    ...entry,
-    store_id: storeId,
-    secret_name: entry.binding === "SECRETS_ENCRYPTION_KEYS" ? masterKeySecretName(env) : entry.secret_name,
-  }));
-  // Suffix every Workflow so staging and production are addressable, and never collide, in one account.
-  resolved.workflows = resolved.workflows.map((wf) => ({ ...wf, name: `${wf.name}-${env}` }));
-  resolved.vars = { ...resolved.vars, EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl, ENVIRONMENT: env };
-
-  return resolved;
+  const resolved = resolveWorkflowHost(template, {
+    capability: "email",
+    env,
+    databaseIds: {
+      DB: appDatabaseId,
+      EMAIL_SUPPRESSIONS: suppressionDatabaseId,
+      SECRETS: secretsDatabaseId,
+    },
+    secretsStoreId: storeId,
+    // The master key entry is env-scoped — its name is env-prefixed, matching what the secrets manager wrote.
+    masterKeySecretName: masterKeySecretName(env),
+    vars: { EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl },
+  });
+  // The resolver fills fields; it never drops one. So every field this template narrows to required
+  // survives — knowledge the generic return type cannot express, restored here.
+  return resolved as EmailWorkerWranglerTemplate;
 }

@@ -1,3 +1,4 @@
+import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 
 /**
@@ -25,9 +26,13 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
 /** The fixed name of the shared, durable suppression database — one per account, not per environment. */
 export const SUPPRESSION_DB_NAME = "pithy-email-suppressions";
 
-/** The deployed Worker name for an environment — also its resolved config basename. */
+/**
+ * The deployed Worker name for an environment — also its resolved config basename. Delegates to core's
+ * {@link workflowHostName}, which `resolveEmailConfig` also stamps onto the config: one source, so the
+ * name the CLI audits and deletes under cannot drift from the name it deploys under.
+ */
 export function emailWorkerName(env: ManagedEnvironment): string {
-  return `pithy-email-${env}`;
+  return workflowHostName("email", env);
 }
 
 /** The live Cloudflare/wrangler seam. Each step must be idempotent. */

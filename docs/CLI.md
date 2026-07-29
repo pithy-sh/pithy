@@ -33,7 +33,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | Command | Purpose |
 |---|---|
 | `pithy init` | Scaffold a new Pithy project in the current directory |
-| `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector, jobs) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
+| `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
@@ -468,10 +468,9 @@ For multi-row output (e.g., `pithy add --list`), use clean aligned columns with 
 
 ```
 auth          Authentication and session management
-storage       R2-backed object storage with signed URLs
+storage       Object storage in your own R2, with quotas and share links
 leaderboard   Ranking across daily, monthly, and all-time windows
-vector        Vectorize wrapper with metadata helpers
-jobs          Scheduled and queued background work
+vector        Semantic search with schema-declared metadata filters
 ```
 
 No ASCII art boxes. No Unicode borders. The whitespace is the layout.
@@ -504,7 +503,7 @@ Usage: pithy <command> [options]
 
 Commands:
   init              Scaffold a new project
-  add <capability>  Add a capability (auth, storage, leaderboard, vector, jobs)
+  add <capability>  Add a capability (auth, storage, leaderboard, vector)
   remove <capability>  Remove a capability
   dev               Start the local dev environment
   deploy            Deploy to Cloudflare Workers
@@ -532,10 +531,9 @@ Usage: pithy add <capability> [options]
 
 Capabilities:
   auth          Authentication and session management
-  storage       R2-backed object storage
+  storage       Object storage in your own R2
   leaderboard   Multi-tenant ranking
-  vector        Vectorize wrapper
-  jobs          Scheduled and queued background work
+  vector        Semantic search over Vectorize
 
 Options:
   --dry-run     Show what would change; don't write

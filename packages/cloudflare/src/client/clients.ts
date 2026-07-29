@@ -1,5 +1,6 @@
 import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
+import { CloudflareVectorizeProvisioner } from "../ai/vectorizeProvisioner";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareD1Provisioner } from "../d1/d1Provisioner";
 import { CloudflareEmailRoutingManager } from "../email/emailRoutingManager";
@@ -71,6 +72,8 @@ export class CloudflareClients {
   private kvProvisionerManager?: CloudflareKVProvisioner;
 
   private r2ProvisionerManager?: CloudflareR2Provisioner;
+
+  private vectorizeProvisionerManager?: CloudflareVectorizeProvisioner;
 
   constructor(config: CloudflareManagerConfig) {
     this.config = config;
@@ -185,6 +188,12 @@ export class CloudflareClients {
   r2Provisioner(): CloudflareR2Provisioner {
     this.r2ProvisionerManager ??= new CloudflareR2Provisioner(this.config);
     return this.r2ProvisionerManager;
+  }
+
+  /** The account-scoped Vectorize control plane — create, find, list, and delete indexes and their metadata indexes. */
+  vectorizeProvisioner(): CloudflareVectorizeProvisioner {
+    this.vectorizeProvisionerManager ??= new CloudflareVectorizeProvisioner(this.config);
+    return this.vectorizeProvisionerManager;
   }
 
   /** The account-scoped API-token control plane — mint, find, and delete account-owned tokens. */

@@ -10,7 +10,21 @@ You pick a storage backend per media type and toggle AI enrichment. The package 
 pithy add media
 ```
 
-That wires `media()` into `pithy.config.ts`, adds the manifest bindings, and runs the migrations. Then run `pithy media provision` to mint the scoped credentials, create the bucket, and deploy the enrichment worker. See the scaffold steps `pithy add media` prints.
+That wires `media()` into `pithy.config.ts`, adds the manifest bindings, and runs the migrations. See the scaffold steps `pithy add media` prints.
+
+## Provision it
+
+```
+pithy media provision --r2-access-key-id <id> --r2-secret-access-key <key>
+```
+
+One command, idempotent, safe to re-run. It creates the R2 bucket (and the `MEDIA` KV namespace when `recordStore: 'kv'`), writes two secrets for staging and production, and deploys the media enrichment worker — the prebuilt worker hosting the four Workflows — for each environment. `--json` prints one machine-readable line, so CI and agents drive the same command a human does.
+
+Two secrets, because two owners. `media-storage-credentials` is media's own: the API token it mints Cloudflare Images and Stream direct-upload URLs with. `media-r2-credentials` is `@pithy-sh/storage`'s R2 bundle — the key pair and that environment's bucket — read by the `ObjectStore` seam media presigns through. Media declares the name and never handles the key pair. Both are per environment, because the bucket is.
+
+**You create both credentials.** Cloudflare has no API for minting an R2 S3 access-key pair, so make one under R2 → Manage API tokens and pass it with the flags above, or set `R2_CREDENTIALS` in `.dev.vars`. The Images + Stream token comes from `--api-token` and the token carried alongside the R2 pair from `--r2-api-token`, both defaulting to `CLOUDFLARE_API_TOKEN` — that default is your broad bootstrap token, so supply scoped ones for production. Pithy stores and rotates them through `@pithy-sh/secrets`; it does not mint them.
+
+`pithy secrets provision` must have run first — that is where the secrets land. Teardown is `pithy media deprovision`, which removes the workers and leaves your stored media alone unless you pass `--storage`. With `--storage` the bucket goes too, and everything in it: any in-flight multipart upload is aborted, every key drained, then the bucket deleted. R2 refuses to delete a bucket that is not empty, and emptying one is an S3-protocol operation, so `--storage` needs the same key pair `provision` did — `--r2-access-key-id` and `--r2-secret-access-key`, or `R2_CREDENTIALS`.
 
 ## Configure it
 
@@ -39,7 +53,7 @@ Chosen per type, in config.
 | Audio     | R2                  | `r2`         | R2 presigned PUT                    |
 | Document  | R2                  | `r2`         | R2 presigned PUT                    |
 
-Cloudflare Images gives you variants and optimized delivery. R2 gives you raw ownership of the bytes. Cloudflare Stream gives you encoding and adaptive HLS delivery. Every direct-upload URL is minted through `@pithy-sh/cloudflare`.
+Cloudflare Images gives you variants and optimized delivery. R2 gives you raw ownership of the bytes. Cloudflare Stream gives you encoding and adaptive HLS delivery. Images and Stream URLs are minted through `@pithy-sh/cloudflare`; R2 presigned PUTs and GETs come from `@pithy-sh/storage`'s `ObjectStore`, pointed at `MEDIA_BUCKET` under media's own credential name. Reading and deleting an R2 object still goes through the bucket binding directly — no credential, no round trip.
 
 ## AI enrichment
 

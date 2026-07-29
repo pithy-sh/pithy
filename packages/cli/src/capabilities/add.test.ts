@@ -5,8 +5,18 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { incompleteBindings } from "../project/appBindings";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { addCapability } from "./add";
+
+/** The wrangler stanza shape these tests read back. */
+interface RichWrangler {
+  r2_buckets?: { binding: string; remote?: boolean }[];
+  vectorize?: { binding: string; index_name?: string }[];
+  ai?: { binding: string; remote?: boolean };
+  workflows?: { binding: string; name?: string; class_name?: string }[];
+  env: Record<string, RichWrangler | undefined>;
+}
 
 const manifest = CapabilityManifest.parse({
   name: "auth",
@@ -133,6 +143,60 @@ describe("addCapability", () => {
     // And the target really was wired — the isolation isn't a no-op.
     const target = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as WranglerBindings;
     expect(target.d1_databases).toEqual([{ binding: "DB" }]);
+  });
+
+  test("writes r2 and ai bindings into every env, threading remote", async () => {
+    const richManifest = CapabilityManifest.parse({
+      name: "media",
+      package: "@pithy-sh/media",
+      requiredBindings: [
+        { type: "r2", name: "MEDIA_BUCKET" },
+        { type: "vectorize", name: "MEDIA_INDEX", remote: true },
+        { type: "ai", name: "AI", remote: true },
+        { type: "workflow", name: "MEDIA_IMAGE_TO_TEXT", className: "ImageToTextWorkflow", optional: true },
+        { type: "workflow", name: "MEDIA_DOC_EXTRACT", optional: true },
+      ],
+    });
+    await addCapability({ workerDir: worker, manifest: richManifest });
+
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as RichWrangler;
+
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+      // No `remote` key at all when the spec doesn't set one — an explicit false would pin the
+      // binding to local emulation.
+      expect(stanza?.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET" }]);
+      // `ai` is a single object, not an array.
+      expect(stanza?.ai).toEqual({ binding: "AI", remote: true });
+    }
+
+    // Idempotent: a second add changes nothing, including the singular `ai` key.
+    const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    await addCapability({ workerDir: worker, manifest: richManifest });
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
+  });
+
+  test("writes no vectorize or workflows entry at all — wrangler would refuse a partial one", async () => {
+    // The regression: an entry carrying only `binding` fails wrangler's config validation, which
+    // requires `index_name` on vectorize and `name` + `class_name` on workflows. `add` is offline and
+    // knows neither, so it writes nothing and the capability's provisioner writes the whole entry.
+    const richManifest = CapabilityManifest.parse({
+      name: "media",
+      package: "@pithy-sh/media",
+      requiredBindings: [
+        { type: "vectorize", name: "MEDIA_INDEX", remote: true },
+        { type: "workflow", name: "MEDIA_IMAGE_TO_TEXT", className: "ImageToTextWorkflow", optional: true },
+        { type: "workflow", name: "MEDIA_DOC_EXTRACT", optional: true },
+      ],
+    });
+    await addCapability({ workerDir: worker, manifest: richManifest });
+
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as RichWrangler;
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+      expect(stanza?.vectorize ?? []).toEqual([]);
+      expect(stanza?.workflows ?? []).toEqual([]);
+      // And the config wrangler would load carries no incomplete entry anywhere.
+      expect(incompleteBindings(stanza)).toEqual([]);
+    }
   });
 
   test("a capability whose name is a substring of an existing registration is still added", async () => {
