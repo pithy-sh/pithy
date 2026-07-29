@@ -22,6 +22,22 @@ function app(options?: TurnstileOptions, env: Record<string, unknown> = { [TURNS
   return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, env);
 }
 
+/**
+ * The same app, but the handler forwards the untouched request the way `@pithy-sh/auth`'s catch-all
+ * hands `c.req.raw` to Better Auth. If the gate read the body off the request instead of a clone, this
+ * handler throws "Body has already been read" on every request the gate LET THROUGH.
+ */
+function forwardingApp(env: Record<string, unknown> = { [TURNSTILE_SECRET_NAME]: ONE_WIDGET }) {
+  const hono = new Hono();
+  hono.onError(pithyErrorHandler);
+  hono.use("/protected", turnstile());
+  hono.post("/protected", async (c) => {
+    const forwarded = await c.req.raw.text();
+    return c.json({ forwarded });
+  });
+  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, env);
+}
+
 /** Stub `fetch` to return a siteverify body. */
 function stubSiteverify(body: unknown, ok = true, status = 200) {
   const fetchMock = vi.fn().mockResolvedValue({ ok, status, statusText: "x", json: async () => body });
@@ -102,6 +118,26 @@ describe("turnstile() middleware", () => {
       body: JSON.stringify({ "cf-turnstile-response": "json-tok" }),
     });
     expect(res.status).toBe(200);
+  });
+
+  test("leaves a JSON body readable downstream — the gate reads a clone, never the request", async () => {
+    stubSiteverify({ success: true });
+    const body = JSON.stringify({ "cf-turnstile-response": "json-tok", email: "a@b.test" });
+    const res = await forwardingApp()({ headers: { "content-type": "application/json" }, body });
+    expect(res.status).toBe(200);
+    // The whole original body reaches the handler, not an empty or half-consumed stream.
+    expect(await res.json()).toEqual({ forwarded: body });
+  });
+
+  test("leaves a form body readable downstream too", async () => {
+    stubSiteverify({ success: true });
+    const body = new URLSearchParams({ "cf-turnstile-response": "tok", email: "a@b.test" });
+    const res = await forwardingApp()({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ forwarded: body.toString() });
   });
 
   test("reads the token from a header when configured", async () => {

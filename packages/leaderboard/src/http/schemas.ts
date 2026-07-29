@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { BOARD_KEY_PATTERN } from "../config/config";
 import { MAX_SEGMENT_SIZE } from "../rank/query";
 
 /**
  * The HTTP boundary shapes. Everything a client can send is parsed through one of these before it
- * reaches a handler.
+ * reaches a handler — declared on the route line with `zValidator(target, Schema, validationHook)`, so
+ * reading a route tells you what it takes.
  *
  * Note what is absent from {@link SubmitScoreBody}: `userId`, `achievedAt`, and `rank`. The player comes
  * from the AuthContext seam, the clock comes from the server, and the rank is derived — a client that
@@ -11,6 +13,34 @@ import { MAX_SEGMENT_SIZE } from "../rank/query";
  * declare itself first. Server-authoritative is not only about who may call submit; it is about which
  * fields a caller may name at all.
  */
+
+/** A player id is opaque to us — it comes from the adopter's auth provider — so it is bounded, not shaped. */
+const MAX_USER_ID_LENGTH = 256;
+
+export const BoardParam = z
+  .object({
+    board: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(BOARD_KEY_PATTERN, "A board key is lowercase, digits, and dashes — it is a URL path segment.")
+      .describe(
+        "Which board the route addresses. A shape check only: the same pattern config already enforces on every board key, so nothing that resolves today is rejected. Whether the key is *configured* stays the handler's 404.",
+      ),
+  })
+  .describe("The board a `/leaderboard/:board` route addresses.");
+export type BoardParam = z.infer<typeof BoardParam>;
+
+export const EntryParam = BoardParam.extend({
+  userId: z
+    .string()
+    .min(1)
+    .max(MAX_USER_ID_LENGTH)
+    .describe(
+      "The player whose entry a moderation route targets. Bounded in length, not in charset — player ids are minted by your auth provider, so we cap what reaches the store rather than guess its format.",
+    ),
+}).describe("The board and player a moderation route addresses.");
+export type EntryParam = z.infer<typeof EntryParam>;
 
 export const SubmitScoreBody = z
   .object({

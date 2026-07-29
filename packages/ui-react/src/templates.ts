@@ -1,0 +1,73 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * The React 19 front-end templates `pithy ui add react` copies into a Worker.
+ *
+ * This is a template library, not a runtime library: it ships text, has no dependencies of its own,
+ * and nothing imports it at runtime except the CLI's scaffolder. It is a real package rather than a
+ * folder inside `@pithy-sh/cli` for one reason that only gets truer with time — **a framework's
+ * templates need that framework's toolchain to be checked.** React needs `react`, `@types/react` and
+ * a `jsx: react-jsx` program; Svelte would need an entirely different set. Folding them into the CLI
+ * makes the CLI accumulate every framework's devDependencies and every framework's tsconfig, to
+ * typecheck files it only ever copies.
+ *
+ * The tree mirrors the scaffolded layout exactly. That is what lets a screen's `../../router` import
+ * resolve in the template as well as in the Worker it lands in, so the whole library typechecks in
+ * place instead of only after it has been written somewhere.
+ *
+ * **Grouping is the manifest's job, not the directory's.** The tree is one layout; which files a
+ * given invocation writes is chosen by {@link TEMPLATE_GROUPS}. That is why the auth screens sit in
+ * their final `src/routes/pithy/` home rather than an `auth/` subtree, and it is how a later screen
+ * set — payments, say — joins: add its files to the tree, name them in a new group, and no path,
+ * import, or contract moves.
+ */
+
+/** Absolute path to the template tree. Resolved from this module, so it holds in a workspace and once published. */
+export const TEMPLATE_DIR: string = join(dirname(fileURLToPath(import.meta.url)), "..", "templates");
+
+/**
+ * The named file groups this library offers, each keyed by path within {@link TEMPLATE_DIR}.
+ *
+ * `base` is every template, always. Every other group is a screen set that rides on a capability
+ * being composed — `auth` today; `payments` and whatever follows are additive entries here, and
+ * nothing about the CLI's stub contract has to change to admit one.
+ */
+export const TEMPLATE_GROUPS = {
+  base: [
+    "index.html",
+    "vite.config.ts",
+    "tsconfig.client.json",
+    "tsconfig.node.json",
+    "client-env.d.ts",
+    "src/client.tsx",
+    "src/router.tsx",
+    "src/styles.css",
+  ],
+  auth: [
+    "src/pithy-config.tsx",
+    "src/session.tsx",
+    "src/turnstile.tsx",
+    "src/routes/pithy/sign-in.tsx",
+    "src/routes/pithy/otp.tsx",
+    "src/routes/pithy/callback.tsx",
+  ],
+} as const satisfies Record<string, readonly string[]>;
+
+/** A group name this library offers. */
+export type TemplateGroup = keyof typeof TEMPLATE_GROUPS;
+
+/**
+ * The adopter's own home screen, which exists in two variants because it is the one file that
+ * differs between templates: the auth one carries the signed-in guard, the bare one does one typed
+ * `fetch`. Both live in the tree so both compile against the router and the session hook; exactly
+ * one is ever written, and always to the same place.
+ */
+export const HOME_SCREEN = {
+  target: "src/routes/app/home.tsx",
+  auth: "src/routes/app/home.tsx",
+  bare: "src/routes/app/home.bare.tsx",
+} as const;
+
+/** The token every template uses where the Worker's name belongs. */
+export const WORKER_TOKEN = "__PITHY_WORKER__";

@@ -1,5 +1,7 @@
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { UnauthorizedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import { isAPIError } from "better-auth/api";
 import type { Context, Hono } from "hono";
@@ -18,6 +20,7 @@ import { allowedOrigins, requireSameOrigin } from "./csrf";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
 import { getAuthInstance, resolveDb } from "./resolve";
+import { RevokeDeviceBody } from "./schemas";
 
 type Ctx = Context<PithyHonoEnv>;
 
@@ -33,6 +36,18 @@ function db(c: Ctx, wiring: AuthWiring) {
  * `basePath`. A handler that returns a Response ends the chain, so the specific routes never fall
  * through to the catch-all. (The tier-1 edge rate limiter is contributed as capability *middleware*, so
  * it runs before session resolution — see `capability.ts`.)
+ *
+ * What each Pithy-owned route accepts, declared on its route line (schemas in `./schemas`):
+ *
+ * | Route                      | Verification    | Input                       |
+ * | -------------------------- | --------------- | --------------------------- |
+ * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
+ * | `GET  /devices`            | bearer/session  | none                        |
+ * | `POST /devices/revoke`     | bearer/session  | json `RevokeDeviceBody`     |
+ *
+ * The catch-all takes NO validator, deliberately: `handleBetterAuth` hands Better Auth `c.req.raw`,
+ * and reading the body first would consume the stream. Better Auth validates its own endpoints, and
+ * `apiErrorToPithy` re-homes what it rejects.
  */
 export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) => void {
   return (app) => {
@@ -51,7 +66,9 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     app.post(`${base}/token/rotate`, csrf, (c) => rotateToken(c, wiring));
     // Device management (bearer/session gated; the revoke is CSRF-guarded as a mutating route).
     app.get(`${base}/devices`, requireAuth(), (c) => listMyDevices(c, wiring));
-    app.post(`${base}/devices/revoke`, requireAuth(), csrf, (c) => revokeMyDevice(c, wiring));
+    app.post(`${base}/devices/revoke`, requireAuth(), csrf, zValidator("json", RevokeDeviceBody, validationHook), (c) =>
+      revokeMyDevice(c, wiring, c.req.valid("json")),
+    );
 
     // Better Auth owns the rest (sign-in, verify, callback, sign-out, /token, /jwks, revoke-sessions…).
     app.all(`${base}/*`, (c) => handleBetterAuth(c, wiring));
@@ -203,16 +220,9 @@ async function listMyDevices(c: Ctx, wiring: AuthWiring): Promise<Response> {
 }
 
 /** Revoke one of the authenticated user's devices: sign out its sessions, then drop the device row. */
-async function revokeMyDevice(c: Ctx, wiring: AuthWiring): Promise<Response> {
+async function revokeMyDevice(c: Ctx, wiring: AuthWiring, body: RevokeDeviceBody): Promise<Response> {
   const userId = c.var.auth?.userId;
   if (!userId) throw new UnauthorizedError({ message: "Authentication required." });
-  const body = (await c.req.json().catch(() => ({}))) as { deviceId?: unknown };
-  if (typeof body.deviceId !== "string" || body.deviceId.length === 0) {
-    throw new ValidationError({
-      message: "A deviceId is required.",
-      action: "Pass the device's id in the request body.",
-    });
-  }
   const deviceId = body.deviceId;
   const database = db(c, wiring);
   const tokens = await deviceSessionTokens(database, userId, deviceId);

@@ -1,6 +1,8 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import type { VectorConfig, VectorIndexConfig } from "../config/config";
 import { vectorDocuments } from "../data/documents";
@@ -11,24 +13,30 @@ import type { VectorStore } from "../index/index";
 import { type MetadataIndexDescriptor, metadataIndexes } from "../index/metadata";
 import { requireAuth } from "./guard";
 import { deleteDocument, getDocument, type HandlerDeps, queryDocuments, upsertDocuments } from "./handlers";
+import { QueryInput, UpsertDocumentsInput, VectorDocumentParams, VectorIndexParams } from "./schemas";
 
 /**
- * The vector routes and their declared verification strategies:
+ * The vector routes, what each accepts, and their declared verification strategies — every one of them
+ * `bearer | session`:
  *
- *   POST   /vector/:index/documents      → write one or many  (bearer | session)
- *   POST   /vector/:index/query          → search              (bearer | session)
- *   GET    /vector/:index/documents/:id  → fetch one hydrated  (bearer | session)
- *   DELETE /vector/:index/documents/:id  → delete from both    (bearer | session)
+ *   POST   /vector/:index/documents      → write one or many  param: VectorIndexParams, json: UpsertDocumentsInput
+ *   POST   /vector/:index/query          → search             param: VectorIndexParams, json: QueryInput
+ *   GET    /vector/:index/documents/:id  → fetch one hydrated param: VectorDocumentParams
+ *   DELETE /vector/:index/documents/:id  → delete from both   param: VectorDocumentParams
  *
  * Every route is gated by {@link requireAuth} — there is no public vector surface. A corpus is content the
  * adopter owns, and an unauthenticated search endpoint is an exfiltration endpoint. `requireAuth` is copied
  * into this package rather than imported from `@pithy-sh/auth`, so a project with no auth capability
  * composed denies every route instead of serving them open.
  *
+ * The validators sit **after** the guard, deliberately: an unauthenticated request carrying a malformed body
+ * is a 401, not a 400 — shape is never answered for a caller who has not been verified.
+ *
  * `:index` names an index in `pithy.config.ts`, never a Cloudflare resource — an unknown one is a 404 from
- * config alone, before any binding is touched. Each index's metadata schema is introspected **once**, here at
- * registration, rather than per request: the descriptors are what the filter compiler checks against, and
- * they change only when the config does.
+ * config alone, before any binding is touched. The param schema bounds the segment's *shape* only; the name
+ * is still resolved in the dep resolver, so which indexes exist stays unprobeable. Each index's metadata
+ * schema is introspected **once**, here at registration, rather than per request: the descriptors are what
+ * the filter compiler checks against, and they change only when the config does.
  */
 
 /** The bindings the vector routes read off the request env. */
@@ -106,24 +114,46 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
     });
 
   return (app) => {
-    app.post(`${base}/:index/documents`, requireAuth(), async (c) => {
-      const deps = resolve(c, c.req.param("index"));
-      return c.json(await upsertDocuments(deps, await c.req.json()), 201);
-    });
+    app.post(
+      `${base}/:index/documents`,
+      requireAuth(),
+      zValidator("param", VectorIndexParams, validationHook),
+      zValidator("json", UpsertDocumentsInput, validationHook),
+      async (c) => {
+        const deps = resolve(c, c.req.valid("param").index);
+        return c.json(await upsertDocuments(deps, c.req.valid("json")), 201);
+      },
+    );
 
-    app.post(`${base}/:index/query`, requireAuth(), async (c) => {
-      const deps = resolve(c, c.req.param("index"));
-      return c.json(await queryDocuments(deps, await c.req.json()));
-    });
+    app.post(
+      `${base}/:index/query`,
+      requireAuth(),
+      zValidator("param", VectorIndexParams, validationHook),
+      zValidator("json", QueryInput, validationHook),
+      async (c) => {
+        const deps = resolve(c, c.req.valid("param").index);
+        return c.json(await queryDocuments(deps, c.req.valid("json")));
+      },
+    );
 
-    app.get(`${base}/:index/documents/:id`, requireAuth(), async (c) => {
-      const deps = resolve(c, c.req.param("index"));
-      return c.json(await getDocument(deps, c.req.param("id")));
-    });
+    app.get(
+      `${base}/:index/documents/:id`,
+      requireAuth(),
+      zValidator("param", VectorDocumentParams, validationHook),
+      async (c) => {
+        const params = c.req.valid("param");
+        return c.json(await getDocument(resolve(c, params.index), params.id));
+      },
+    );
 
-    app.delete(`${base}/:index/documents/:id`, requireAuth(), async (c) => {
-      const deps = resolve(c, c.req.param("index"));
-      return c.json(await deleteDocument(deps, c.req.param("id")));
-    });
+    app.delete(
+      `${base}/:index/documents/:id`,
+      requireAuth(),
+      zValidator("param", VectorDocumentParams, validationHook),
+      async (c) => {
+        const params = c.req.valid("param");
+        return c.json(await deleteDocument(resolve(c, params.index), params.id));
+      },
+    );
   };
 }

@@ -1,0 +1,20 @@
+// Gate 1 of issue #74's request contract. Scoped by biome.jsonc to packages/*/src/http/**.
+//
+// Every route Pithy provides declares what it accepts on the route line, with
+// `zValidator("param" | "query" | "json", Schema, validationHook)`, and reads it back through
+// `c.req.valid(...)`. Banning the raw accessors is what makes that structural rather than a
+// convention: with them gone, `c.req.valid()` is the ONLY way to reach request input, so an
+// unvalidated query or body is not merely discouraged — it is unreadable.
+//
+// Deliberately NOT banned: `c.req.header(...)`, `c.req.raw`, `c.req.url`, `c.req.valid(...)`.
+// Headers are read by CSRF and bearer paths that have no schema to declare, and `c.req.raw` is
+// how the auth catch-all hands the untouched request to Better Auth.
+language js
+
+or {
+  `$_.req.param($...)`,
+  `$_.req.query($...)`,
+  `$_.req.json($...)`
+} as $call where {
+  register_diagnostic(span=$call, message="Request input is read raw here. Declare it on the route line with zValidator(target, Schema, validationHook) and read it with c.req.valid(target).")
+}

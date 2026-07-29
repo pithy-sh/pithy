@@ -130,6 +130,132 @@ describe("matchmaking routes — rooms", () => {
   });
 });
 
+describe("matchmaking routes — validation", () => {
+  test("an over-long room code is rejected by the param schema before the store is touched", async () => {
+    const res = await makeApp().request(
+      `/matchmaking/rooms/${"A".repeat(64)}/join`,
+      { method: "POST", headers: { "x-user": "guest" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a badly shaped but short code still reaches normalizeCode and its own error", async () => {
+    // The `:code` param schema is a length bound only — the code's real shape stays with normalizeCode,
+    // so a plausible-length bad code answers `matchmaking/invalid_code`, not the validator's 400.
+    const res = await makeApp().request(
+      "/matchmaking/rooms/nope/join",
+      { method: "POST", headers: { "x-user": "guest" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("matchmaking/invalid_code");
+  });
+
+  test("an over-long game key is rejected before the game is resolved", async () => {
+    const res = await makeApp().request(
+      `/matchmaking/games/${"g".repeat(80)}/queue`,
+      { method: "POST", headers: { "x-user": "alice" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a game key of a plausible shape that is not configured is still a 404", async () => {
+    // The param schema is a shape check, never a list of configured keys — resolveMatchmakingGame keeps
+    // owning the 404 so an unknown game never reads as a malformed request.
+    const res = await makeApp().request(
+      "/matchmaking/games/chess/queue",
+      { method: "POST", headers: { "x-user": "alice" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("core/not_found");
+  });
+
+  test("an invite id that is not a UUID is a 400, not the invite store's 404", async () => {
+    // Order change: the `:id` param schema now runs before the lookup, so a malformed id is a malformed
+    // request. Only a well-shaped id that does not exist still answers matchmaking/invite_not_found.
+    const res = await makeApp().request(
+      "/matchmaking/invites/not-a-uuid/accept",
+      { method: "POST", headers: { "x-user": "bob" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a well-shaped invite id that does not exist is still a 404", async () => {
+    const res = await makeApp().request(
+      "/matchmaking/invites/22222222-2222-4222-8222-222222222222/decline",
+      { method: "POST", headers: { "x-user": "bob" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("matchmaking/invite_not_found");
+  });
+
+  test("an over-long friend user id is rejected by the param schema", async () => {
+    const res = await makeApp().request(
+      `/matchmaking/friends/${"u".repeat(300)}/request`,
+      { method: "POST", headers: { "x-user": "alice" } },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("an invite naming both an email and a name is a 400", async () => {
+    const res = await makeApp().request(
+      "/matchmaking/games/duel/invites",
+      {
+        method: "POST",
+        headers: { "x-user": "alice", "content-type": "application/json" },
+        body: JSON.stringify({ email: "bob@example.com", name: "Bob" }),
+      },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("an unparseable invite body is a 400, not the 500 a bare body read produced", async () => {
+    const res = await makeApp().request(
+      "/matchmaking/games/duel/invites",
+      {
+        method: "POST",
+        headers: { "x-user": "alice", "content-type": "application/json" },
+        body: "{ not json",
+      },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed body on an unknown game is the validator's 400, not the game's 404", async () => {
+    // Order change: the body validator is middleware, so it answers before the handler resolves the game.
+    const res = await makeApp().request(
+      "/matchmaking/games/chess/invites",
+      { method: "POST", headers: { "x-user": "alice", "content-type": "application/json" }, body: "{}" },
+      requestEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("the guards still run before the validators — a bad body without auth is a 401", async () => {
+    const res = await makeApp().request(
+      "/matchmaking/games/duel/invites",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      requestEnv(),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("matchmaking routes — invites", () => {
   test("invite by email, then the invitee accepts into a session", async () => {
     await seedAuthUser("bob", "bob@example.com", "Bob");

@@ -98,6 +98,13 @@ export async function siteverify(
  * submit) parse as form data; everything else — JSON, a `+json` media type, or a request with no/odd
  * content-type (some mobile/`fetch` clients) — is read as JSON. Any parse failure yields `null`, which the
  * caller turns into a missing-token denial, so this stays fail-closed.
+ *
+ * **The body is read off a clone, never off the request itself.** This gate is stacked on top of a route
+ * it does not own — `@pithy-sh/auth` mounts it on the magic-link and OTP paths, which are Better Auth's,
+ * and the handler there forwards `c.req.raw` untouched. Reading through `c.req.json()`/`c.req.parseBody()`
+ * consumes that stream (Hono's body cache calls `raw.json()`), so a request that PASSED the humanity check
+ * would then fail downstream with "Body has already been read" — the gate would work only when it denied.
+ * Cloning costs one buffer copy of a token-sized body and keeps the original readable by whoever follows.
  */
 async function readToken(c: Context, field: string, header?: string): Promise<string | null> {
   if (header) {
@@ -106,12 +113,13 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
   const contentType = (c.req.header("content-type") ?? "").toLowerCase();
   const isForm =
     contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data");
-  if (isForm) {
-    const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
-    const value = body[field];
-    return typeof value === "string" ? value : null;
-  }
-  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  const probe = c.req.raw.clone();
+  const body = isForm
+    ? await probe
+        .formData()
+        .then((form) => Object.fromEntries(form.entries()) as Record<string, unknown>)
+        .catch(() => null)
+    : ((await probe.json().catch(() => null)) as Record<string, unknown> | null);
   const value = body?.[field];
   return typeof value === "string" ? value : null;
 }

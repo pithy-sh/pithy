@@ -32,6 +32,13 @@ describe("deployProject", () => {
     await writeFile(join(at, "wrangler.jsonc"), JSON.stringify({ name }));
   }
 
+  /** Give a worker a front end: the `ui` block `pithy ui add` writes into its `pithy.worker.jsonc`. */
+  async function writeUi(dirName: string, build: string[] = ["vite", "build"]): Promise<void> {
+    const at = join(dir, "apps", dirName);
+    await mkdir(at, { recursive: true });
+    await writeFile(join(at, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub: "react", build } }));
+  }
+
   test("deploys each worker, passes --env, and parses the per-worker summary", async () => {
     await writeWorker("api", "pithy-api");
     await writeWorker("web", "pithy-web");
@@ -127,6 +134,157 @@ describe("deployProject", () => {
     expect((failure as PithyError).payload.message).toMatch(/worker/i);
   });
 
+  test("a worker with a ui block builds first, in its own dir, then deploys", async () => {
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    const order: string[] = [];
+    const builds: { command: string; args: string[]; cwd: string }[] = [];
+
+    const results = await deployProject({
+      projectDir: dir,
+      env: "production",
+      runBuild: async (target, command, args) => {
+        order.push(`build:${target.name}`);
+        builds.push({ command, args, cwd: target.dir });
+      },
+      runDeploy: async (target) => {
+        order.push(`deploy:${target.name}`);
+        return wranglerOutput(target.name, "v1");
+      },
+    });
+
+    expect(order).toEqual(["build:pithy-web", "deploy:pithy-web"]);
+    // No lockfile in the temp project, so the adopter's manager resolves to npm — never a hardcoded npx call.
+    expect(builds).toEqual([{ command: "npx", args: ["vite", "build"], cwd: join(dir, "apps", "web") }]);
+    expect(results[0]).toMatchObject({ name: "pithy-web", ok: true, built: true, versionId: "v1" });
+  });
+
+  test("the build runs through the project's own package manager, not a hardcoded npx", async () => {
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    await writeFile(join(dir, "bun.lock"), "");
+    const builds: { command: string; args: string[] }[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      runBuild: async (_target, command, args) => void builds.push({ command, args }),
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+    });
+
+    expect(builds).toEqual([{ command: "bun", args: ["x", "vite", "build"] }]);
+  });
+
+  test("--env reaches the UI build — the projection it inlines is the deployed environment's", async () => {
+    // Regression. `@pithy-sh/vite` resolves each capability's client-safe projection for a NAMED
+    // environment at build time and falls back to `dev`. A build that does not carry the deploy's
+    // `--env` therefore inlines dev values into a production bundle — for Turnstile, Cloudflare's
+    // always-passes test sitekey. It is silent, and it defeats the gate.
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    const environments: (string | undefined)[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      env: "production",
+      runBuild: async (_target, _command, _args, environment) => void environments.push(environment),
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+    });
+    expect(environments).toEqual(["production"]);
+  });
+
+  test("a bare deploy passes no environment, so the build resolves the plugin's own default", async () => {
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    const environments: (string | undefined)[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      runBuild: async (_target, _command, _args, environment) => void environments.push(environment),
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+    });
+    expect(environments).toEqual([undefined]);
+  });
+
+  test("a worker with no ui block never builds", async () => {
+    await writeWorker("api", "pithy-api");
+    let builds = 0;
+
+    const results = await deployProject({
+      projectDir: dir,
+      runBuild: async () => void builds++,
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+    });
+
+    expect(builds).toBe(0);
+    // The field is absent, not false: there was nothing to build.
+    expect(results).toEqual([
+      { name: "pithy-api", ok: true, versionId: "v1", url: "https://pithy-api.acme.workers.dev" },
+    ]);
+  });
+
+  test("a failed build fails that worker, skips its deploy, and the next worker still ships", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeUi("api");
+    await writeWorker("web", "pithy-web");
+    const deployed: string[] = [];
+
+    const results = await deployProject({
+      projectDir: dir,
+      env: "production",
+      runBuild: async () => {
+        throw new InternalError({ message: "npx vite build failed.", detail: "exit 1\nCould not resolve ./client" });
+      },
+      runDeploy: async (target) => {
+        deployed.push(target.name);
+        return wranglerOutput(target.name, "v3");
+      },
+    });
+
+    // Shipping a Worker whose assets never built is worse than not shipping it.
+    expect(deployed).toEqual(["pithy-web"]);
+    expect(results[0]).toMatchObject({ name: "pithy-api", ok: false, built: false });
+    expect(results[0]?.error).toMatch(/Could not resolve/);
+    expect(results[1]).toMatchObject({ name: "pithy-web", ok: true });
+  });
+
+  test("--env threads to deploy unchanged when a worker builds first", async () => {
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    const calls: string[][] = [];
+
+    await deployProject({
+      projectDir: dir,
+      env: "staging",
+      runBuild: async () => {},
+      runDeploy: async (_target, args) => {
+        calls.push(args);
+        return wranglerOutput("pithy-web", "v1");
+      },
+    });
+
+    // vite build writes .wrangler/deploy/config.json, which redirects the plain deploy — no -c, no new flag.
+    expect(calls).toEqual([["deploy", "--env", "staging"]]);
+  });
+
+  test("audits a failed build as a failed deploy of that worker, tagged with the stage", async () => {
+    await writeWorker("web", "pithy-web");
+    await writeUi("web");
+    const events: CliAuditEvent[] = [];
+
+    await deployProject({
+      projectDir: dir,
+      env: "production",
+      runBuild: async () => {
+        throw new Error("build failed");
+      },
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ outcome: "failure", severity: "warning", metadata: { stage: "build" } });
+  });
+
   test("audits a successful deploy per worker, at warning severity for production", async () => {
     await writeWorker("api", "pithy-api");
     const events: CliAuditEvent[] = [];
@@ -185,6 +343,12 @@ describe("summarizeDeploy", () => {
 
   test("a success with no scraped details is still a clean deployed line", () => {
     expect(summarizeDeploy({ name: "pithy-api", ok: true })).toBe("pithy-api: deployed.");
+  });
+
+  test("a failed build reads as a build failure — a different problem with a different fix", () => {
+    expect(summarizeDeploy({ name: "pithy-web", ok: false, built: false, error: "exit 1" })).toBe(
+      "pithy-web: build failed. exit 1",
+    );
   });
 
   test("a failure line names the worker and the reason", () => {

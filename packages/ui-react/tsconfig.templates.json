@@ -1,0 +1,30 @@
+{
+  // The templates are a SECOND program, not part of this package's own source. They compile the way
+  // they will once copied into a Worker: JSX, the DOM lib, and Vite's client types. Keeping them out
+  // of tsconfig.json is not tidiness — `@cloudflare/workers-types` and the DOM lib genuinely collide
+  // on `fetch`, `Request`, `Response`, `WebSocket` and `console`, and with `skipLibCheck` on that
+  // collision does not error, it just makes one of the two quietly wrong.
+  //
+  // This program exists so the screens are typechecked at all. While they were string literals inside
+  // the CLI, neither tsc nor Biome could see a line of them.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"],
+    "noEmit": true
+  },
+  // `vite.config.ts` is deliberately absent: it imports @cloudflare/vite-plugin and @pithy-sh/vite,
+  // which belong to the adopter's install, not this package's. The screens are what needed checking.
+  "include": ["templates/**/*.tsx", "templates/client-env.d.ts"]
+}

@@ -6,6 +6,7 @@ import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";
 import type { ObjectStore } from "../object/store";
 import { reapStaleStorageResources, withLiveBucket, withLiveDatabase } from "../test-utils/liveStorage";
 import { abortUpload, completeUpload, type HandlerDeps, initUpload } from "./handlers";
+import { CompleteUploadInput } from "./schemas";
 
 /**
  * LIVE integration test — upload init and completion against real R2 and real D1.
@@ -24,6 +25,13 @@ import { abortUpload, completeUpload, type HandlerDeps, initUpload } from "./han
 const creds = loadIntegrationCreds();
 
 const BODY = new TextEncoder().encode("<p>not the pdf it was declared to be</p>");
+
+/**
+ * What `zValidator("json", CompleteUploadInput, validationHook)` hands the handler for an empty body.
+ * The handlers no longer parse their own input — the route does — so a direct call supplies the
+ * *parsed* value, and `parts` is only optional on the way in.
+ */
+const NO_PARTS = CompleteUploadInput.parse({});
 
 /** The handler dependencies, wired the way `routes.ts` wires them from a request env. */
 function deps(db: StorageDatabase, store: ObjectStore): HandlerDeps {
@@ -75,7 +83,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("storage handlers — LIVE against
         });
         expect(put.ok).toBe(true);
 
-        const completed = await completeUpload(handler, init.object.id, {});
+        const completed = await completeUpload(handler, init.object.id, NO_PARTS);
         expect(completed.status).toBe("stored");
         // The fix, proved by R2 rather than asserted about a fake.
         expect(completed.contentType).toBe("text/html");
@@ -93,7 +101,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("storage handlers — LIVE against
         expect((await store.head(row.key))?.contentType).toBe("text/html");
 
         // Completing twice is a no-op, so a client that retried a dropped response gets one answer.
-        expect((await completeUpload(handler, init.object.id, {})).contentType).toBe("text/html");
+        expect((await completeUpload(handler, init.object.id, NO_PARTS)).contentType).toBe("text/html");
       });
     });
   });
@@ -110,7 +118,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("storage handlers — LIVE against
 
         // Error path: R2 answers the confirming HEAD with nothing, so the row is never allowed to claim
         // bytes that do not exist. Without this a `stored` row would 404 at read time, hours later.
-        await expect(completeUpload(handler, init.object.id, {})).rejects.toHaveProperty(
+        await expect(completeUpload(handler, init.object.id, NO_PARTS)).rejects.toHaveProperty(
           "payload.code",
           "storage/upload_incomplete",
         );

@@ -112,6 +112,70 @@ describe("wallet routes", () => {
     expect(res.status).toBe(400);
   });
 
+  test("a malformed :currency is a 400 before any currency lookup", async () => {
+    // The `:currency` validator is shape-only, so `CHIPS` never reaches `resolveCurrency`.
+    const res = await req(makeApp(), "GET", "/wallet/CHIPS", { user: "alice" });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed admin body is a 400", async () => {
+    const res = await req(makeApp(), "POST", "/wallet/chips/credit", {
+      user: "server",
+      scopes: ADMIN,
+      body: { userId: "alice", amount: 100 },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("an unparseable JSON body is a 400", async () => {
+    const app = makeApp();
+    const res = await app.request(
+      "http://x/wallet/chips/credit",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-user": "server", "x-scopes": ADMIN },
+        body: "{not json",
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("the guards still win over the validators", async () => {
+    const app = makeApp();
+    // A request that is both unauthenticated and malformed is a 401 — validators sit after the guards.
+    const unauthenticated = await req(app, "POST", "/wallet/chips/credit", { body: { amount: -5 } });
+    expect(unauthenticated.status).toBe(401);
+    // Authenticated but unscoped, still malformed → 403, not 400.
+    const unscoped = await req(app, "POST", "/wallet/chips/credit", { user: "server", body: { amount: -5 } });
+    expect(unscoped.status).toBe(403);
+  });
+
+  test("a malformed body on an unconfigured currency is a 400, not the currency 404", async () => {
+    // Pins a deliberate order change: the body validator now runs on the route line, before the handler
+    // resolves the currency. This used to be `wallet/currency_not_found` (404).
+    const res = await req(makeApp(), "POST", "/wallet/doubloons/credit", {
+      user: "server",
+      scopes: ADMIN,
+      body: { userId: "alice", amount: -5, ref: "c1" },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("a well-formed body on an unconfigured currency is still the currency 404", async () => {
+    const res = await req(makeApp(), "POST", "/wallet/doubloons/credit", {
+      user: "server",
+      scopes: ADMIN,
+      body: { userId: "alice", amount: 100, ref: "c1" },
+    });
+    expect(res.status).toBe(404);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("wallet/currency_not_found");
+  });
+
   test("transactions lists the caller's own history", async () => {
     const app = makeApp();
     await ledger(env.DB).credit("alice", "chips", 100, "c1", { memo: "welcome bonus" });

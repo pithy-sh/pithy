@@ -8,6 +8,7 @@ import type { Logger } from "../logger/logger";
 import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
+import type { ClientProjection, ClientProjectionContext } from "./client";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
 export interface PithyVars {
@@ -189,6 +190,14 @@ export interface Capability<
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */
   middleware?: PithyMiddleware[];
+  /**
+   * This capability's client-safe projection — the **only** values of its config that may reach a
+   * browser bundle. Resolved at build time against a {@link ClientProjectionContext} (the environment),
+   * validated through {@link ClientProjection}, and inlined by the Vite plugin as `virtual:pithy/<name>`.
+   * A capability with no browser surface declares none, and the front end reads `{ enabled: false }`.
+   * Opt-in by construction: a new config field never ships to a browser unless it is projected here.
+   */
+  client?: (context: ClientProjectionContext) => ClientProjection;
   /**
    * Durable jobs this capability registers (job name → {@link WorkflowSpec}) — the peer of
    * `databases` and `kvNamespaces`. `createBackend` merges every capability's map into one registry

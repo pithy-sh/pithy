@@ -1,0 +1,20 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // `@pithy-sh/core`'s `Capability` seam types a Worker `email()` handler, so typechecking anything
+    // that imports it needs the Workers globals — even though this package only ever runs in Node.
+    // The type roots cover every install layout: hoisted to the repo root, local to this package, or
+    // (today) resolved from core's own copy. `types` stays a plain package name.
+    "typeRoots": [
+      "./node_modules/@types",
+      "../../node_modules/@types",
+      "./node_modules",
+      "../../node_modules",
+      "../core/node_modules"
+    ],
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/**/*.ts"]
+}

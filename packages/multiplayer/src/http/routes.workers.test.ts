@@ -142,6 +142,52 @@ describe("multiplayer routes", () => {
     expect((await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "alice" })).status).toBe(404);
   });
 
+  test("a malformed game key is the validator's 400; a well-shaped unknown key keeps its 404", async () => {
+    const app = makeApp(CONFIG);
+    // `MultiplayerGameParams` bounds the segment to the kebab-case shape config already enforces, so an
+    // uppercase key — which no game could ever be configured under — is rejected a step before the lookup.
+    // The order is deliberate: the validator runs before the handler, so this is a 400 where it would
+    // previously have fallen through to the handler's game_not_found 404.
+    const malformed = await req(app, "POST", "/multiplayer/games/CHESS", { user: "alice" });
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+    // A key that is merely unconfigured is a shape the schema accepts, so config resolution still owns it.
+    const unknown = await req(app, "POST", "/multiplayer/games/chess", { user: "alice" });
+    expect(unknown.status).toBe(404);
+    expect((await unknown.json<{ error: { code: string } }>()).error.code).toBe("multiplayer/game_not_found");
+  });
+
+  test("an over-long session id is the validator's 400; an unparseable one stays the handler's 404", async () => {
+    const app = makeApp(CONFIG);
+    const res = await req(app, "GET", `/multiplayer/sessions/${"a".repeat(129)}`, { user: "alice" });
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+    // The id schema is a bound, not a format: `idFromString` still owns whether an id names a session,
+    // which is why `not-a-real-id` above is a 404 and not a 400.
+  });
+
+  test("the validator runs after the guard — an unauthenticated malformed request is still a 401", async () => {
+    const app = makeApp(CONFIG);
+    expect((await req(app, "POST", "/multiplayer/games/CHESS")).status).toBe(401);
+    expect((await req(app, "POST", `/multiplayer/sessions/${"a".repeat(129)}/join`)).status).toBe(401);
+  });
+
+  test("a body-less action is judged by the game's model, not by a body validator", async () => {
+    // No multiplayer route declares a json schema: the action payload belongs to the game's model, so a
+    // body-less action still reaches it and the model is what refuses it. Pinned as-is, unchanged by the
+    // validator migration — today the `battle` model throws a raw ZodError inside the DO, which crosses the
+    // RPC boundary unrevived and surfaces as a 500. A json validator would turn this into a 400 and would
+    // also 400 every game whose action legitimately takes no payload, which is why there isn't one.
+    const app = makeApp(CONFIG);
+    const created = await req(app, "POST", "/multiplayer/games/battle", { user: "alice" });
+    const id = (await created.json<SessionView>()).sessionId;
+    await req(app, "POST", `/multiplayer/sessions/${id}/join`, { user: "bob" });
+
+    const res = await req(app, "POST", `/multiplayer/sessions/${id}/action`, { user: "alice" });
+    expect(res.status).toBe(500);
+    expect((await res.json<{ error: { code: string } }>()).error.code).not.toBe("validation/invalid_input");
+  });
+
   test("the socket route forwards an authenticated upgrade to the DO and gets a 101", async () => {
     const app = makeApp(CONFIG);
     const created = await req(app, "POST", "/multiplayer/games/battle", { user: "alice" });

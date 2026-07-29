@@ -13,6 +13,7 @@ export const main = defineCommand({
     add: () => import("./commands/add").then((m) => m.default),
     remove: () => import("./commands/remove").then((m) => m.default),
     worker: () => import("./commands/worker").then((m) => m.default),
+    ui: () => import("./commands/ui").then((m) => m.default),
     dev: () => import("./commands/dev").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
     seed: () => import("./commands/seed").then((m) => m.default),

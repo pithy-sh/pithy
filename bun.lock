@@ -41,6 +41,7 @@
       "name": "@pithy-sh/auth",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/email": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
@@ -75,6 +76,7 @@
         "@pithy-sh/email": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
         "@pithy-sh/turnstile": "workspace:*",
+        "@pithy-sh/ui-react": "workspace:*",
         "citty": "^0.2.2",
         "comment-json": "^5.0.0",
         "kysely": "^0.29.0",
@@ -122,6 +124,7 @@
       "name": "@pithy-sh/core",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
         "kysely-d1": "^0.4.0",
@@ -141,6 +144,7 @@
       "name": "@pithy-sh/email",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
         "handlebars": "^4.7.8",
@@ -165,6 +169,7 @@
       "name": "@pithy-sh/leaderboard",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "croner": "^10.0.1",
         "hono": "^4.12.0",
@@ -187,6 +192,7 @@
       "name": "@pithy-sh/matchmaking",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
@@ -218,6 +224,7 @@
       "name": "@pithy-sh/media",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
@@ -242,6 +249,7 @@
       "name": "@pithy-sh/multiplayer",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
@@ -273,6 +281,7 @@
       "name": "@pithy-sh/rating",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
@@ -315,6 +324,7 @@
       "name": "@pithy-sh/storage",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
@@ -354,10 +364,27 @@
         "wrangler": "^4.115.0",
       },
     },
+    "packages/ui-react": {
+      "name": "@pithy-sh/ui-react",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@types/react": "^19.2.17",
+        "@types/react-dom": "^19.2.3",
+        "@vitest/coverage-v8": "^4.1.0",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+        "typescript": "^7.0.2",
+        "vite": "^8.0.16",
+        "vitest": "^4.1.0",
+      },
+    },
     "packages/vector": {
       "name": "@pithy-sh/vector",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
@@ -378,10 +405,30 @@
         "wrangler": "^4.115.0",
       },
     },
+    "packages/vite": {
+      "name": "@pithy-sh/vite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vite": "^8.0.16",
+        "vitest": "^4.1.0",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "vite": "^6.1.0 || ^7.0.0 || ^8.0.0",
+      },
+    },
     "packages/wallet": {
       "name": "@pithy-sh/wallet",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/core": "workspace:*",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
@@ -667,6 +714,8 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A=="],
 
+    "@hono/zod-validator": ["@hono/zod-validator@0.9.0", "", { "peerDependencies": { "hono": ">=4.11.2", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-n0ZSXmCiHVIp4Y5wlOOyZCeTd/rsawA/qW1cipB8QOYKZ9N8Tk0nZUZCXho9cu374AN4JpDNKioNKBJ/W+LBug=="],
+
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 
     "@img/sharp-darwin-arm64": ["@img/sharp-darwin-arm64@0.35.2", "", { "optionalDependencies": { "@img/sharp-libvips-darwin-arm64": "1.3.1" }, "os": "darwin", "cpu": "arm64" }, "sha512-eEieHsMksAW4IiO5NzauESRl2D2qz3J/kwUxUrSfV06A93eEaRfMpHXyUb1mAqrR7i8U9A0GRqE9pjn6u1Jjpg=="],
@@ -781,7 +830,11 @@
 
     "@pithy-sh/turnstile": ["@pithy-sh/turnstile@workspace:packages/turnstile"],
 
+    "@pithy-sh/ui-react": ["@pithy-sh/ui-react@workspace:packages/ui-react"],
+
     "@pithy-sh/vector": ["@pithy-sh/vector@workspace:packages/vector"],
+
+    "@pithy-sh/vite": ["@pithy-sh/vite@workspace:packages/vite"],
 
     "@pithy-sh/wallet": ["@pithy-sh/wallet@workspace:packages/wallet"],
 
@@ -872,6 +925,10 @@
     "@types/estree": ["@types/estree@1.0.9", "", {}, "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="],
 
     "@types/node": ["@types/node@22.19.21", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-VMeFBSCKQKmm2swI2kW51SFusDqekC6q9trBCvJ/JliDchFSuoYYKN7yVNjPthP1HKZcx3U1gI/wTcEBjEFKTA=="],
+
+    "@types/react": ["@types/react@19.2.17", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw=="],
+
+    "@types/react-dom": ["@types/react-dom@19.2.3", "", { "peerDependencies": { "@types/react": "^19.2.0" } }, "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ=="],
 
     "@typescript/typescript-aix-ppc64": ["@typescript/typescript-aix-ppc64@7.0.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ=="],
 
@@ -1004,6 +1061,8 @@
     "croner": ["croner@10.0.1", "", {}, "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g=="],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
+
+    "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 
     "dataloader": ["dataloader@1.4.0", "", {}, "sha512-68s5jYdlvasItOJnCuI2Q9s4q98g0pCyL3HrcKJu8KNugUl8ahgmZYg38ysLTgQjjXX3H8CJLkAvWrclWfcalw=="],
 
@@ -1273,6 +1332,10 @@
 
     "queue-microtask": ["queue-microtask@1.2.3", "", {}, "sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A=="],
 
+    "react": ["react@19.2.8", "", {}, "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw=="],
+
+    "react-dom": ["react-dom@19.2.8", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.8" } }, "sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ=="],
+
     "read-yaml-file": ["read-yaml-file@1.1.0", "", { "dependencies": { "graceful-fs": "^4.1.5", "js-yaml": "^3.6.1", "pify": "^4.0.1", "strip-bom": "^3.0.0" } }, "sha512-VIMnQi/Z4HT2Fxuwg5KrY174U1VdUIASQVWXXyqtNRtxSr9IYkn1rsI6Tb6HsrHCmB7gVpNwX6JxPTHcH6IoTA=="],
 
     "require-from-string": ["require-from-string@2.0.2", "", {}, "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="],
@@ -1292,6 +1355,8 @@
     "run-parallel": ["run-parallel@1.2.0", "", { "dependencies": { "queue-microtask": "^1.2.2" } }, "sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA=="],
 
     "safer-buffer": ["safer-buffer@2.1.2", "", {}, "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg=="],
+
+    "scheduler": ["scheduler@0.27.0", "", {}, "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q=="],
 
     "semver": ["semver@7.8.3", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-wnilbGyMxzbY7dNOl7jpKbLSjcfeweJWU5j4+u5qW+6/wuGD9KzIGOyZnQVSBM9E7DtWaaH3CyHkppYrKYoxwg=="],
 

@@ -36,12 +36,13 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
 | `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6) |
+| `pithy ui <add\|sync\|list> [--worker <name>]` | Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command. `sync` re-derives the asset routing after the Worker's capabilities change; `list` reports which Workers carry a UI (see Section 7 and `docs/UI.md`) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
-| `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 7 and `docs/SEED.md` |
+| `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 8 and `docs/SEED.md` |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`production`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
-| `pithy deploy` | Deploy to Cloudflare Workers |
+| `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see Section 7) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
 | `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
@@ -803,6 +804,7 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 ### 6.1 What it does
 
 - **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.autostart` (does this worker need to run for the local env to function?), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. It starts exactly the `autostart` workers. Add or remove a worker with `pithy worker add|remove` and the dev set follows automatically.
+- **Runs a front end as part of the set.** A Worker scaffolded by `pithy ui add` (Section 7) does not get a second process. Its `dev.command` replaces `wrangler dev` with Vite, and Vite serves the SPA *and* the Worker on that worker's one pinned port. The command is argv, and the token **`{port}`** in any argument is substituted with that port at spawn time: `["bun", "x", "vite", "dev", "--configLoader", "runner", "--strictPort", "--port", "{port}"]` runs as `bun x vite dev --configLoader runner --strictPort --port 8787`. `{port}` is the only token substituted.
 - **Supervises N workers.** Spawns each autostart worker, labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Section 6.3), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
@@ -883,23 +885,180 @@ All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): label
 
 ---
 
-## 7. Data seeding (`pithy seed`)
+## 7. Front ends (`pithy ui`)
+
+`pithy ui` scaffolds a front end into an existing Worker and wires it end to end. The SPA and the API deploy as one unit, on one origin, out of one `apps/<name>/`. This section specifies the command; `docs/UI.md` is the adopter-facing guide to what it writes and how the pieces fit.
+
+### 7.1 Command surface
+
+```
+pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--json]
+pithy ui sync [--worker <name>] [--json]
+pithy ui list [--json]
+```
+
+| Argument / flag | Applies to | Default | Purpose |
+|---|---|---|---|
+| `<framework>` | `add` | required | The stub to scaffold. `react` is the only stub Pithy ships |
+| `--worker <name>` | `add`, `sync` | resolved — see 7.2 | The Worker under `apps/` to scaffold into, or to re-derive |
+| `--auth` / `--no-auth` | `add` | see 7.3 | Scaffold the sign-in screens, or leave them out |
+| `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set |
+
+**There are no provider flags.** No `--google`, no `--github`, no `--turnstile`. Which social providers exist, and whether a humanity check gates sign-in, is already declared in that Worker's `pithy.config.ts`. A flag would be a second source of truth, frozen at scaffold time, that drifts the moment someone enables a provider in config. The scaffolded screens read the composed config at runtime instead (see `docs/UI.md`), so enabling a provider stays a one-line config edit and a redeploy — no CLI run, no file to regenerate, nothing to keep in step.
+
+### 7.2 Resolving the Worker
+
+`ui add` and `ui sync` wire exactly one Worker, so they take `--worker <name>` and follow the same rule as `add` and `remove` (Section 1.1): with a single Worker under `apps/` the flag is optional and that Worker is used; with several, the CLI prompts at a terminal and **fails with an actionable error under `--json`** rather than guessing. Scaffolding a front end into the wrong Worker would put an `assets` stanza and an asset-routing allowlist on a script that serves no browser.
+
+`ui list` takes no `--worker`: it reports the framework stubs `ui add` can scaffold, not the Workers that already carry one. For the per-Worker view — which Workers exist, which autostart, which port each holds — use `pithy worker list`.
+
+### 7.3 The auth screens
+
+`pithy ui add` asks once whether to scaffold the sign-in screens:
+
+```
+Scaffold the sign-in screens? [Y/n]
+```
+
+- The default is **yes when the target Worker composes the `auth` capability**. The prompt is skipped entirely when it does not — there is nothing for a sign-in screen to call.
+- `--auth` and `--no-auth` answer it non-interactively. Under `--json` the resolved default applies unless one of them is passed.
+- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens — and the router's route guard. With auth off, everything else is still scaffolded; only Pithy's screens are omitted.
+
+Passing `--auth` to a Worker that does not compose auth is an error, not a warning (7.8).
+
+### 7.4 What it writes
+
+Every file is written **only if it does not already exist**. `pithy ui add` never overwrites, never merges, never reformats. A file already on disk is left byte-for-byte alone and reported as kept. That is the whole ownership model: Pithy authors a file once, and from that moment it is yours.
+
+| Path (under `apps/<worker>/`) | Written when | What it is |
+|---|---|---|
+| `index.html` | always | The Vite entry document |
+| `vite.config.ts` | always | `cloudflare()` + `react()` + `pithy()` |
+| `tsconfig.client.json` | always | The client program — jsx + DOM, covering `src/**/*.tsx` and `client-env.d.ts` |
+| `tsconfig.node.json` | always | The config program — `types: ["node"]`, covering `vite.config.ts` |
+| `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
+| `src/client.tsx` | always | The SPA entry |
+| `src/router.tsx` | always | The two-glob router and its route guard |
+| `src/styles.css` | always | The stub's styles |
+| `src/pithy-config.tsx` | `--auth` | The one module that imports `virtual:pithy/*`, narrowed once for every screen |
+| `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
+| `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
+| `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback |
+| `src/routes/app/home.tsx` | always | Your first screen. Written once, never again |
+
+`src/index.ts` — the Worker entry — is not touched.
+
+Two structural rules the stub depends on, worth knowing before you move a file:
+
+- **Every client file is `.tsx`.** The Worker's existing `tsconfig.json` includes `src/**/*.ts`, which does not match `.tsx`, so the Worker's type program ignores the client entirely and needs no edit. For the same reason `client-env.d.ts` sits at the Worker root and not under `src/` — a `.d.ts` there *would* match.
+- **No `.ts` file in the Worker program may import a `.tsx` file.** The seam between a Worker and its client is runtime-only. One import across it pulls the browser build into the Worker's type program, and the rule above stops holding.
+
+### 7.5 What it wires
+
+Three files are edited.
+
+**`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
+
+- Every entry is emitted in **two forms**, the bare path and its `/*` glob, because `"/auth/*"` does not match a bare `"/auth"`.
+- Never a bare-prefix glob. `"/media*"` also captures `/mediafoo`; the pair `"/media"` + `"/media/*"` captures the route table exactly.
+
+`assets.directory` is **not** written. Under the Vite plugin the directory is the plugin's to set — it overwrites the key silently rather than erroring, so a value there would be a lie in the adopter's own config.
+
+The array form of `run_worker_first` also turns off Cloudflare's automatic `Sec-Fetch-Mode: navigate` detection, which is the point: `not_found_handling` then applies only to requests no worker-first pattern matched, so an API route can never be answered with the SPA shell.
+
+**`pithy.worker.jsonc` — the `dev` and `ui` blocks.**
+
+```jsonc
+{
+  "dev": { "autostart": true, "readySignal": "ready in \\d+", "command": ["bun", "x", "vite", "dev", "--configLoader", "runner", "--strictPort", "--port", "{port}"] },
+  "ui": { "stub": "react", "build": ["vite", "build", "--configLoader", "runner"] }
+}
+```
+
+`dev.command` is what joins the front end to the dev set (Section 6.1), `{port}` and all. `--strictPort` is not optional: without it Vite silently increments off a busy port, and a worker that quietly moves breaks every sibling that was told its address at creation. `ui.stub` records which stub was scaffolded — it is what makes a second `ui add` on the same Worker an error, and what tells `ui add --auth` it is backfilling a scaffold rather than starting one. `ui.build` is argv run through the adopter's package manager before `wrangler deploy`, so a UI-bearing Worker never ships a stale client. `pithy deploy --env <name>` sets `ENVIRONMENT` for that build, which is what makes a capability's per-environment client values — a Turnstile sitekey, say — resolve for the environment being shipped rather than for `dev`. Both commands carry `--configLoader runner`, and that is load-bearing rather than a preference: Vite's default config loader bundles `vite.config.ts` and leaves `@pithy-sh/vite` external, which asks Node to import raw TypeScript with extensionless relative imports — Node cannot resolve those, and refuses to strip types under `node_modules` at all. The runner loads the config through Vite's own resolver, where both are ordinary.
+
+**`package.json` — the client dependencies and the scripts that run them.** React, the Vite plugins, and `@pithy-sh/vite`, at the versions listed in `docs/UI.md`. Written at scaffold; `pithy ui` never revisits them.
+
+### 7.6 `pithy ui sync`
+
+`run_worker_first` is derived from the route table, and the route table changes when the Worker's capabilities do. `pithy ui sync` re-derives it and rewrites that one key. Run it after `pithy add <capability>` or `pithy remove <capability>` on a Worker that carries a UI — otherwise the new capability's routes are shadowed by the SPA shell, and a removed one's stay allowlisted.
+
+`sync` touches nothing else. No file is created, no dependency moves, no scaffolded screen is regenerated. It is idempotent: a run with nothing to change reports that nothing moved.
+
+### 7.7 `--json`
+
+One line, one object, one shape per subcommand. The `command` field is the subcommand's dotted name, matching `worker.add` and `feature.create` rather than the space-separated form the resource commands use.
+
+```
+$ pithy ui add react --worker api --json
+{"command":"ui.add","worker":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
+```
+
+`worker` is the Worker's name as `wrangler.jsonc` gives it, not the `apps/` directory. `created` and `skipped` are worker-relative and sorted; together they are every file the template declares, so a backfilling run reports the untouched ones rather than staying silent about them. `dependencies`, `devDependencies` and `scripts` name only what this run added.
+
+```
+$ pithy ui sync --worker api --json
+{"command":"ui.sync","worker":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"notFoundHandling":"single-page-application"}
+```
+
+`before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
+
+```
+$ pithy ui list --json
+{"command":"ui.list","stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"}]}
+```
+
+### 7.8 Errors
+
+Each one is a `PithyError` — the problem, then the action (Section 3.3).
+
+**Unknown framework.**
+
+```
+$ pithy ui add svelte --worker api
+Unknown UI framework: svelte.
+Run `pithy ui add react` — react is the only stub Pithy ships.
+```
+
+**A UI is already there.**
+
+```
+$ pithy ui add react --worker api
+apps/api already has a UI.
+Run `pithy ui sync --worker api` to re-derive its asset routing.
+```
+
+The check is the manifest's `ui` block, not the presence of files. The stub is scaffolded once; a second `add` would create nothing and imply otherwise.
+
+**`--auth` without the auth capability.**
+
+```
+$ pithy ui add react --worker api --auth
+apps/api does not compose the auth capability.
+Run `pithy add auth --worker api`, then re-run `pithy ui add react --worker api`.
+```
+
+**Several Workers, no `--worker`, under `--json`.** The resolution error from 7.2 — the same one `pithy add` raises, naming the Workers it found.
+
+---
+
+## 8. Data seeding (`pithy seed`)
 
 `pithy seed` loads test data into an environment from the same Zod schemas and codecs that define your tables and KV stores — no separate fixture format, no hand-written SQL. Fixtures are authored with `defineSeed` (the peer of `defineCapability`) and composed library-before-app, exactly like migrations. The full authoring model — `defineSeed`, media `once`/`always`, the standard asset-metadata convention, the env-safety layers — is documented in `docs/SEED.md`; this section covers the command itself.
 
-### 7.1 Flags
+### 8.1 Flags
 
 | Flag | Default | Purpose |
 |---|---|---|
 | `--env <name>` | `dev` | The environment to seed. `dev` runs locally against Miniflare; anything else runs against the live D1/KV/R2/Images/Stream for that env |
 | `--json` | `false` | Machine-readable output — the full write plan or run report as one JSON line. Implies non-interactive: `pithy seed` never prompts when `--json` is set |
 | `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
-| `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See 7.5 |
+| `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See 8.5 |
 | `--confirm-reset` | — | Unlock a non-`dev` `--redo`: the exact phrase `yes, i really want to reset <env>` |
 | `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `production`; `dev` never needs it |
-| `--confirm-production <phrase>` | — | The non-interactive unlock for `production` — see 7.3 |
+| `--confirm-production <phrase>` | — | The non-interactive unlock for `production` — see 8.3 |
 
-### 7.2 Output
+### 8.2 Output
 
 A normal run reports one line per seed set, then `Done.`:
 
@@ -938,7 +1097,7 @@ $ pithy seed --env dev --dry-run --json
 {"command":"seed","env":"dev","dryRun":true,"sets":[{"name":"0001_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[]}
 ```
 
-### 7.3 The production exception
+### 8.3 The production exception
 
 Every other flag in Pithy follows the same rule everywhere: `--json` means non-interactive, full stop. `pithy seed --env production` is the one place a flag additionally gates *content*, not just interactivity — because seeding production is rare and should stay rare.
 
@@ -960,15 +1119,15 @@ Every other flag in Pithy follows the same rule everywhere: `--json` means non-i
 
 Underneath both gates is a third, structural one that no flag can bypass: a seed set is only ever composed for `production` if it lists `production` in its own `environments` array. See `docs/SEED.md` for the full layered model.
 
-### 7.4 Idempotency
+### 8.4 Idempotency
 
 Every `pithy seed` run is safe to repeat. D1 rows insert with `INSERT OR IGNORE`; KV entries `put` by key; a `once` media asset uploads on its first run only and skips on every run after. Re-running `pithy seed` against an environment that already has the fixtures loaded writes nothing new and changes nothing existing.
 
-This is also why editing a fixture's values and re-running `pithy seed` does nothing: the row already exists, so it is ignored, unchanged. See 7.5.
+This is also why editing a fixture's values and re-running `pithy seed` does nothing: the row already exists, so it is ignored, unchanged. See 8.5.
 
-### 7.5 Resetting data (`--redo`)
+### 8.5 Resetting data (`--redo`)
 
-`--redo` is for the moment you edited a fixture's values and want them to actually land. Idempotency (7.4) means a plain re-seed never refreshes existing rows, so `--redo` exists to force it — but it is **not** a per-row refresh. It is a full schema reset:
+`--redo` is for the moment you edited a fixture's values and want them to actually land. Idempotency (8.4) means a plain re-seed never refreshes existing rows, so `--redo` exists to force it — but it is **not** a per-row refresh. It is a full schema reset:
 
 1. Roll every migration back — every `down`, not just the latest, in reverse order.
 2. Reapply every migration's `up`, recreating the schema empty.
@@ -1006,7 +1165,7 @@ A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `cr
 
 ---
 
-## 8. Cross-platform notes
+## 9. Cross-platform notes
 
 - **Path handling:** Use `node:path` for all path joins; never concatenate strings. Windows paths must work.
 - **Line endings:** Write `\n` on POSIX, `\r\n` on Windows. Detect via `os.EOL`.
@@ -1016,7 +1175,7 @@ A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `cr
 
 ---
 
-## 9. Future expansions
+## 10. Future expansions
 
 This document covers v1, which ships the full alias system, update notifications with installer detection, the Homebrew tap, the `doctor` command, and the `dev` orchestrator. Areas to formalize in v1.1+:
 

@@ -18,6 +18,7 @@ import {
   listMedia,
   searchDuplicates,
 } from "./handlers";
+import type { CreateMediaInput } from "./schemas";
 
 const schema = extendMediaAsset();
 
@@ -65,7 +66,9 @@ beforeEach(async () => {
   await media_0002_assets.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0002_assets.up>[0]);
 });
 
-const imageBody = {
+// The handlers now take the already-parsed value the route's `zValidator("json", CreateMediaInput, …)`
+// produced, so these fixtures are typed as that value rather than as raw literals.
+const imageBody: CreateMediaInput = {
   type: "image",
   name: "A photo",
   filename: "a.png",
@@ -87,11 +90,9 @@ describe("createMedia", () => {
     expect(record?.sha256).toBe("a".repeat(64));
   });
 
-  test("rejects an invalid body (bad media type) with a 400", async () => {
-    await expect(createMedia(makeDeps(), { ...imageBody, type: "hologram" })).rejects.toMatchObject({
-      payload: { status: 400 },
-    });
-  });
+  // Body shape is no longer this handler's job — a bad `type` is rejected by the route's
+  // `zValidator("json", CreateMediaInput, validationHook)` before the handler runs. That assertion now
+  // lives in routes.workers.test.ts ("a malformed body is a 400 …").
 
   test("persists an adopter extension field and enforces it when required", async () => {
     const extended = extendMediaAsset(z.object({ userId: z.string().describe("owner") }).describe("ext"));
@@ -172,7 +173,9 @@ describe("createMedia — security & validation", () => {
 
   test("requires a size for R2-backed uploads (the presigned PUT signs the length)", async () => {
     const deps = makeDeps();
-    const audio = { type: "audio", name: "clip", filename: "clip.mp3", contentType: "audio/mpeg" };
+    // Not a Zod failure: a well-formed body whose size requirement depends on the resolved backend.
+    // The schema cannot express it, so it stays a hand-thrown ValidationError inside the handler.
+    const audio: CreateMediaInput = { type: "audio", name: "clip", filename: "clip.mp3", contentType: "audio/mpeg" };
     await expect(createMedia(deps, audio)).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
     // With a size it succeeds.
     const ok = await createMedia(deps, { ...audio, size: 4096 });

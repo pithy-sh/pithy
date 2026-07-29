@@ -1,4 +1,5 @@
 import type { DevConfig } from "../feature/devConfig";
+import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
 
 /**
@@ -45,8 +46,11 @@ export interface StartCommand {
  * The command that starts one worker at its pinned `port`.
  *
  * A worker with an explicit `dev.command` (e.g. a Vite frontend with no `wrangler.jsonc`) runs that verbatim
- * — the port is **not** appended; it reaches the process through `<STEM>_PORT` in the env instead, so the
- * command stays whatever the manifest declared. A plain Worker runs `wrangler dev --port <port>
+ * — the port is **not** appended; it reaches the process through `<STEM>_PORT` in the env, or through the
+ * `{port}` token wherever the manifest placed it on the argv. That token is the one substitution, and it
+ * exists because the orchestrator spawns with no shell: `$WEB_PORT` in an argv array is a literal, never an
+ * expansion, and a dev server that takes its port as a flag (`vite dev --port {port}`) has nowhere else to
+ * read it. A command with no token runs byte-identically. A plain Worker runs `wrangler dev --port <port>
  * --inspector-port 0` (inspector `0` auto-assigns, so multiple workers never collide on the inspector port),
  * resolved through the project's package manager rather than a hardcoded global wrangler.
  *
@@ -65,8 +69,10 @@ export function startCommand(
 ): StartCommand {
   const custom = worker.dev?.command;
   if (custom && custom.length > 0) {
-    // A custom command is run verbatim: it is not necessarily wrangler, so no flag is appended.
-    return { command: custom[0] as string, args: custom.slice(1) };
+    // A custom command is run verbatim: it is not necessarily wrangler, so no flag is appended. The only
+    // edit is `{port}` → the pinned port, in every element that carries it.
+    const resolved = custom.map((part) => part.replaceAll(DEV_PORT_TOKEN, String(port)));
+    return { command: resolved[0] as string, args: resolved.slice(1) };
   }
   return launchWrangler(["dev", "--port", String(port), "--inspector-port", "0", "--persist-to", persistTo]);
 }

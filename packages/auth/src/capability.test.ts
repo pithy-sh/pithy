@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, test } from "vitest";
 import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
@@ -67,6 +68,67 @@ describe("auth capability", () => {
     // The unset providers stay off — each toggle is independent.
     expect(cap.authConfig.google.enabled).toBe(false);
     expect(cap.authConfig.apple.enabled).toBe(false);
+  });
+});
+
+// The client projection is a security boundary: it is the only auth config a browser bundle sees.
+describe("auth client projection", () => {
+  const context = { environment: "production" };
+
+  test("projects exactly the five keys a sign-in screen needs", () => {
+    const projection = resolveClientProjection(build(), context);
+    expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "otpLength", "providers", "signUpEnabled"]);
+    expect(projection).toEqual({
+      enabled: true,
+      basePath: "/auth",
+      providers: { google: false, apple: false, facebook: false, github: false },
+      otpLength: 6,
+      signUpEnabled: true,
+    });
+  });
+
+  test("no deployment or sensitive config value reaches the bundle", () => {
+    // A sensitive-looking extra field, as an adopter (or a future schema edit) might introduce it.
+    const extra = { oauthClientSecret: "sk_live_never_ship_me" } as unknown as Partial<AuthConfigInput>;
+    const cap = auth({
+      baseURL: "https://internal-api.example.com",
+      trustedOrigins: ["https://console.example.com"],
+      database: "PRIVATE_DB",
+      rateLimiterBinding: "PRIVATE_LIMITER",
+      sessionExpiresIn: 111111,
+      sessionUpdateAge: 222222,
+      verificationExpiresIn: 333333,
+      ...extra,
+    });
+    const serialized = JSON.stringify(resolveClientProjection(cap, context));
+    for (const secret of [
+      "sk_live_never_ship_me",
+      "internal-api.example.com",
+      "console.example.com",
+      "PRIVATE_DB",
+      "PRIVATE_LIMITER",
+      "111111",
+      "222222",
+      "333333",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  test("a provider toggle flips exactly one boolean", () => {
+    const off = resolveClientProjection(build(), context);
+    const on = resolveClientProjection(build({ google: { enabled: true } }), context);
+    expect(on).toEqual({ ...off, providers: { google: true, apple: false, facebook: false, github: false } });
+  });
+
+  test("disableSignUp projects as signUpEnabled: false", () => {
+    expect(resolveClientProjection(build({ disableSignUp: true }), context).signUpEnabled).toBe(false);
+  });
+
+  test("otpLength and basePath follow config", () => {
+    const projection = resolveClientProjection(build({ otpLength: 8, basePath: "/identity" }), context);
+    expect(projection.otpLength).toBe(8);
+    expect(projection.basePath).toBe("/identity");
   });
 });
 

@@ -13,7 +13,7 @@ import { assertValidSchedule } from "../window/schedule";
  */
 
 /** A board key is a URL path segment (`/leaderboard/<key>/top`), so it is kebab-case and lowercase. */
-const BOARD_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export const BOARD_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export const ScoreDirection = z
   .enum(["asc", "desc"])

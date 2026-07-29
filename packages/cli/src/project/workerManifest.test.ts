@@ -2,7 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { DEFAULT_READY_SIGNAL, defaultWorkerDev, parseWorkerManifest, WorkerManifest } from "./workerManifest";
+import {
+  DEFAULT_READY_SIGNAL,
+  DEV_PORT_TOKEN,
+  defaultWorkerDev,
+  parseWorkerManifest,
+  WorkerDev,
+  WorkerManifest,
+  WorkerUi,
+} from "./workerManifest";
 
 describe("WorkerManifest", () => {
   test("applies defaults for an empty dev block", () => {
@@ -24,6 +32,31 @@ describe("WorkerManifest", () => {
 
   test("rejects a non-positive preferredPort", () => {
     expect(WorkerManifest.safeParse({ dev: { preferredPort: 0 } }).success).toBe(false);
+  });
+
+  test("has no ui block until one is declared, and keeps it verbatim when it is", () => {
+    expect(WorkerManifest.parse({}).ui).toBeUndefined();
+    expect(
+      WorkerManifest.parse({
+        dev: { autostart: true, command: ["bun", "x", "vite", "dev", "--port", DEV_PORT_TOKEN] },
+        ui: { stub: "react", build: ["vite", "build"] },
+      }).ui,
+    ).toEqual({ stub: "react", build: ["vite", "build"] });
+  });
+
+  test("rejects a ui block with an empty build argv or a missing stub", () => {
+    expect(WorkerUi.safeParse({ stub: "react", build: [] }).success).toBe(false);
+    expect(WorkerUi.safeParse({ stub: "", build: ["vite", "build"] }).success).toBe(false);
+    expect(WorkerUi.safeParse({ build: ["vite", "build"] }).success).toBe(false);
+  });
+
+  test("every field of the ui block documents itself — the manifest is the documentation", () => {
+    expect(WorkerUi.description).toBeTruthy();
+    for (const field of Object.values(WorkerUi.shape)) expect(field.description).toBeTruthy();
+  });
+
+  test("the port token is documented on dev.command, so the schema teaches it", () => {
+    expect(WorkerDev.shape.command.description).toContain(DEV_PORT_TOKEN);
   });
 });
 
@@ -54,6 +87,24 @@ describe("parseWorkerManifest", () => {
     const manifest = await parseWorkerManifest(dir);
     expect(manifest?.dev.autostart).toBe(true);
     expect(manifest?.dev.preferredPort).toBe(8787);
+  });
+
+  test("reads the ui block a worker's front end declares", async () => {
+    await writeFile(
+      join(dir, "pithy.worker.jsonc"),
+      JSON.stringify({
+        dev: { autostart: true, command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"] },
+        ui: { stub: "react", build: ["vite", "build"] },
+      }),
+    );
+    const manifest = await parseWorkerManifest(dir);
+    expect(manifest?.ui).toEqual({ stub: "react", build: ["vite", "build"] });
+    expect(manifest?.dev.command).toContain("{port}");
+  });
+
+  test("throws on a ui block with an empty build", async () => {
+    await writeFile(join(dir, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub: "react", build: [] } }));
+    await expect(parseWorkerManifest(dir)).rejects.toThrow(/invalid/);
   });
 
   test("throws on invalid JSONC", async () => {

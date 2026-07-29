@@ -6,6 +6,7 @@ import type { DocumentStore } from "../data/documents";
 import type { VectorAi } from "../embed/embed";
 import type { VectorStore, VectorUpsert } from "../index/index";
 import { deleteDocument, getDocument, type HandlerDeps, queryDocuments, upsertDocuments } from "./handlers";
+import { UpsertDocumentsInput } from "./schemas";
 
 /**
  * The handlers against fakes, with no Worker and no network — the only way to test anything that touches
@@ -173,12 +174,16 @@ describe("upsertDocuments", () => {
     expect(documents.rows.get("generated-id")?.namespace).toBe("tenant-1");
   });
 
-  it("refuses a document that names both text and values — two sources for one vector", async () => {
-    await expect(upsertDocuments(deps(), { text: "hello", values: [1, 2, 3] })).rejects.toBeInstanceOf(PithyError);
+  // The two shape rules below moved off the handler and onto the route line — `zValidator("json",
+  // UpsertDocumentsInput, validationHook)` answers them with a `validation/invalid_input` 400 before a
+  // handler runs (pinned over HTTP in routes.test.ts). The handler now takes an already-validated value, so
+  // the rule is asserted where it is now enforced: on the schema.
+  it("refuses a document that names both text and values — two sources for one vector", () => {
+    expect(UpsertDocumentsInput.safeParse({ text: "hello", values: [1, 2, 3] }).success).toBe(false);
   });
 
-  it("refuses a document that names neither", async () => {
-    await expect(upsertDocuments(deps(), { metadata: {} })).rejects.toBeInstanceOf(PithyError);
+  it("refuses a document that names neither", () => {
+    expect(UpsertDocumentsInput.safeParse({ metadata: {} }).success).toBe(false);
   });
 
   it("refuses a precomputed vector of the wrong size, before it reaches the index", async () => {

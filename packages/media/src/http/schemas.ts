@@ -2,12 +2,28 @@ import { z } from "zod";
 import { MediaType } from "../data/enums";
 
 /**
- * The request schemas for the media routes. Validation happens at the HTTP boundary (CLAUDE.md §Zod).
+ * The request schemas for the media routes. Validation happens at the HTTP boundary (CLAUDE.md §Zod),
+ * declared on the route line with `zValidator(target, Schema, validationHook)` — so reading `routes.ts`
+ * tells you what each route accepts without opening a handler.
  * The create body is `loose` so an adopter's extension fields pass through to be validated against the
  * effective record schema; the known client fields are typed and bounded here.
  */
 
 const HEX = /^[0-9a-f]+$/;
+
+/**
+ * The `:id` path parameter every single-record media route carries. Deliberately a bounded generic
+ * string and NOT `z.uuid()`: ids are minted with `crypto.randomUUID()`, but the shape check exists to
+ * stop an unbounded string reaching the record store — not to pre-empt the store's own lookup. An
+ * unknown-but-well-formed id must still reach the handler and answer `media/not_found` (404), which a
+ * UUID check would turn into a 400.
+ */
+export const MediaIdParam = z
+  .object({
+    id: z.string().min(1).max(128).describe("The media record id from the path — bounded, not shape-checked."),
+  })
+  .describe("The path parameter identifying one media record.");
+export type MediaIdParam = z.output<typeof MediaIdParam>;
 
 /** The client-supplied part of a media record on upload-init. Server fields (id, status, storage) are set by the handler. */
 export const CreateMediaInput = z
@@ -64,7 +80,8 @@ export const ListMediaQuery = z
   .object({
     type: MediaType.optional().describe("Restrict the listing to one media type."),
     limit: z.coerce.number().int().min(1).max(100).optional().describe("Maximum records per page."),
-    cursor: z.string().optional().describe("Continuation cursor from a previous page."),
+    // Bounded, but no `.min(1)`: `?cursor=` (empty) already decodes to offset 0 today and must keep working.
+    cursor: z.string().max(64).optional().describe("Continuation cursor from a previous page."),
   })
   .describe("Query parameters for the media list route.");
 export type ListMediaQuery = z.output<typeof ListMediaQuery>;

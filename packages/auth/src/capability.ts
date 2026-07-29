@@ -157,6 +157,31 @@ export function auth(config: AuthConfigInput): AuthCapability {
       const loginMode = turnstileCap?.turnstileConfig.protect.login;
       wiring.turnstile = loginMode ? { mode: loginMode } : undefined;
     },
+    /**
+     * The client-safe projection — what a sign-in screen needs and nothing more: where to call
+     * (`basePath`), which buttons to render (the four provider toggles), how many OTP boxes to draw
+     * (`otpLength`), and whether to offer sign-up (`signUpEnabled`).
+     *
+     * Deliberately absent: `baseURL`, `trustedOrigins`, `database`, `rateLimiterBinding`, and every
+     * session/verification lifetime — a browser has no use for them and they describe the deployment.
+     * OAuth credentials cannot leak here because they are not in this config at all: they live in the
+     * secrets store (`authSecretsRegistry`), read only inside the Worker. That is what makes this
+     * projection provably safe — the sensitive values are not in reach of the function.
+     */
+    client: () => ({
+      enabled: true,
+      basePath: resolved.basePath,
+      // Nested, so a screen can iterate the set rather than naming four booleans — and so adding a
+      // fifth provider is one key here, not a new top-level name every screen has to learn.
+      providers: {
+        google: resolved.google.enabled,
+        apple: resolved.apple.enabled,
+        facebook: resolved.facebook.enabled,
+        github: resolved.github.enabled,
+      },
+      otpLength: resolved.otpLength,
+      signUpEnabled: !resolved.disableSignUp,
+    }),
     // Order matters: the tier-1 edge rate limiter runs first (before session resolution touches D1),
     // then the session-resolution middleware fills the AuthContext.
     middleware: [rateLimitMiddleware, createSessionMiddleware(wiring)],

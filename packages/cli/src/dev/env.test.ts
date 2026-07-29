@@ -73,4 +73,57 @@ describe("startCommand", () => {
     };
     expect(startCommand(worker, 5173, launch, "/p/.wrangler/state")).toEqual({ command: "vite", args: ["--host"] });
   });
+
+  test("{port} in a dev.command is replaced with the pinned port", () => {
+    // spawn runs with no shell, so `$WEB_PORT` on an argv would be a literal. The token is how a dev
+    // server that takes its port as a flag gets the port pithy assigned it.
+    const worker: WorkerTarget = {
+      name: "web",
+      dir: "/p/apps/web",
+      hasWrangler: true,
+      dev: {
+        autostart: true,
+        readySignal: "ready in \\d+",
+        command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"],
+      },
+    };
+    expect(startCommand(worker, 8790, launch, "/p/.wrangler/state")).toEqual({
+      command: "bun",
+      args: ["x", "vite", "dev", "--strictPort", "--port", "8790"],
+    });
+  });
+
+  test("every occurrence substitutes, including one embedded in a larger argument", () => {
+    const worker: WorkerTarget = {
+      name: "web",
+      dir: "/p/apps/web",
+      hasWrangler: false,
+      dev: {
+        autostart: true,
+        readySignal: "ready",
+        command: ["serve", "--port={port}", "--origin=http://localhost:{port}/{port}"],
+      },
+    };
+    expect(startCommand(worker, 5200, launch, "/p/.wrangler/state")).toEqual({
+      command: "serve",
+      args: ["--port=5200", "--origin=http://localhost:5200/5200"],
+    });
+  });
+
+  test("the wrangler branch is untouched by the token — it never appears in a wrangler argv", () => {
+    const worker: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
+    const { args } = startCommand(worker, 8787, launch, "/p/.wrangler/state");
+    expect(args).not.toContain("{port}");
+    expect(args).toEqual([
+      "x",
+      "wrangler",
+      "dev",
+      "--port",
+      "8787",
+      "--inspector-port",
+      "0",
+      "--persist-to",
+      "/p/.wrangler/state",
+    ]);
+  });
 });

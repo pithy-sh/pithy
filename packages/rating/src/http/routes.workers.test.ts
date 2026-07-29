@@ -131,3 +131,78 @@ describe("rating routes", () => {
     expect((await res.json<{ error: { code: string } }>()).error.code).toBe("rating/game_not_found");
   });
 });
+
+/** Read the `error` object off a rendered `PithyError` response. */
+async function errorOf(res: Response) {
+  return (await res.json<{ error: { code: string; status: number } }>()).error;
+}
+
+describe("rating route validation", () => {
+  test("a malformed body is a 400", async () => {
+    const res = await makeApp(CONFIG).request(
+      "/rating/games/duel/outcomes",
+      {
+        method: "POST",
+        headers: { "x-user": "server", "x-scopes": "rating:record", "content-type": "application/json" },
+        body: JSON.stringify({ ranks: { ada: "first" } }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("an unparseable JSON body is a 400, not a 500", async () => {
+    const res = await makeApp(CONFIG).request(
+      "/rating/games/duel/outcomes",
+      {
+        method: "POST",
+        headers: { "x-user": "server", "x-scopes": "rating:record", "content-type": "application/json" },
+        body: "{ not json",
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed game param is a 400", async () => {
+    const res = await makeApp(CONFIG).request("/rating/games/NOT_A_KEY/me", { headers: { "x-user": "ada" } }, env);
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed userId param is a 400", async () => {
+    const res = await makeApp(CONFIG).request(
+      `/rating/games/duel/players/${"u".repeat(201)}`,
+      { headers: { "x-user": "ada" } },
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("shape loses to identity — an unscoped caller sending a bad body is still a 403", async () => {
+    const res = await makeApp(CONFIG).request(
+      "/rating/games/duel/outcomes",
+      {
+        method: "POST",
+        headers: { "x-user": "server", "content-type": "application/json" },
+        body: JSON.stringify({ ranks: "nonsense" }),
+      },
+      env,
+    );
+    // The guards run before the validators, so identity is answered first — never a 400 that leaks
+    // whether the body would have been accepted.
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe("rating/record_forbidden");
+  });
+
+  test("shape beats resolution — a game key that is both malformed and unknown is a 400, not the 404", async () => {
+    // New order: the param validator runs before the handler's `resolveGame` lookup. A well-shaped but
+    // unconfigured key ("missing", above) is still the 404 — only a malformed segment stops earlier.
+    const res = await makeApp(CONFIG).request("/rating/games/Missing/me", { headers: { "x-user": "ada" } }, env);
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+});

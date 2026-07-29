@@ -8,13 +8,20 @@ import type { HashStore } from "../record/hashStore";
 import type { MediaRecord, RecordStore } from "../record/store";
 import { backendForType } from "../storage/backend";
 import type { MediaStorage } from "../storage/storage";
-import { CreateMediaInput, DuplicatesInput, FinalizeMediaInput, ListMediaQuery } from "./schemas";
+import type { CreateMediaInput, DuplicatesInput, FinalizeMediaInput, ListMediaQuery } from "./schemas";
 
 /**
  * The media request handlers — pure functions over injected dependencies, so every branch is unit-tested
  * against real D1/KV bindings without standing up a Worker. The route shell (`routes.ts`) resolves these
  * deps from the request env. Every mutating route is gated by `requireAuth` at the router; ownership
  * scoping is an adopter concern via an extension field (e.g. `userId`).
+ *
+ * Request shape is NOT validated here. Each route declares its own schema with
+ * `zValidator(target, Schema, validationHook)` and hands the handler the already-parsed value, so a
+ * malformed request is rejected before any dependency is resolved. What survives in these handlers is
+ * validation the schema cannot express: the R2 size rule (a cross-field, config-dependent check) and
+ * `validateRecord`, which validates the *assembled* record against the effective (adopter-extended)
+ * schema — neither is a property of the request body alone.
  */
 
 /** Triggers the configured enrichment Workflow(s) for a finalized record. A no-op when nothing applies. */
@@ -52,13 +59,6 @@ export interface UploadInitResult {
   storageKey: string;
 }
 
-/** Parse input at the HTTP boundary, mapping a Zod failure to a `validation/invalid_input` 400. */
-function parseInput<S extends z.ZodType>(schema: S, data: unknown): z.output<S> {
-  const result = schema.safeParse(data);
-  if (!result.success) throw fromZodError(result.error);
-  return result.data;
-}
-
 /**
  * Extract only the adopter's extension fields from a create body: every key that is NOT a base column.
  * Excluding the full base column set — not just the client-input keys — is a security boundary: it stops
@@ -85,8 +85,7 @@ function validateRecord(schema: z.ZodObject, record: MediaRecord): MediaRecord {
  * and any extension fields), and return where to upload. The bytes go straight to the backend — never
  * through the Worker.
  */
-export async function createMedia(deps: HandlerDeps, body: unknown): Promise<UploadInitResult> {
-  const input = parseInput(CreateMediaInput, body);
+export async function createMedia(deps: HandlerDeps, input: CreateMediaInput): Promise<UploadInitResult> {
   const extension = splitExtension(input);
   // An R2 presigned PUT signs the content length, so the client must upload exactly that many bytes — a
   // size is required for any R2-backed upload (audio and documents always; images/video when `store: 'r2'`).
@@ -138,8 +137,7 @@ export async function createMedia(deps: HandlerDeps, body: unknown): Promise<Upl
  * Finalize: mark the record `stored`, fold in any client-computed size/sha256/phash, and dispatch the
  * configured enrichment Workflow(s). Returns the updated record.
  */
-export async function finalizeMedia(deps: HandlerDeps, id: string, body: unknown): Promise<MediaRecord> {
-  const input = parseInput(FinalizeMediaInput, body ?? {});
+export async function finalizeMedia(deps: HandlerDeps, id: string, input: FinalizeMediaInput): Promise<MediaRecord> {
   const existing = await deps.store.get(id);
   if (!existing) throw new MediaNotFoundError({ detail: `finalize: no media record ${id}` });
   const changes: Partial<MediaRecord> = { status: "stored", updatedAt: deps.now() };
@@ -165,8 +163,7 @@ export async function getMedia(deps: HandlerDeps, id: string): Promise<MediaReco
 }
 
 /** List records, newest first, optionally filtered by type. */
-export function listMedia(deps: HandlerDeps, rawQuery: unknown) {
-  const query = parseInput(ListMediaQuery, rawQuery);
+export function listMedia(deps: HandlerDeps, query: ListMediaQuery) {
   return deps.store.list({ type: query.type, limit: query.limit, cursor: query.cursor });
 }
 
@@ -188,8 +185,7 @@ export async function deleteMedia(deps: HandlerDeps, id: string): Promise<{ id: 
  * each candidate is then hydrated from the record store so the caller gets the full record (a hash whose
  * record was deleted out from under it is skipped).
  */
-export async function searchDuplicates(deps: HandlerDeps, body: unknown) {
-  const input = parseInput(DuplicatesInput, body);
+export async function searchDuplicates(deps: HandlerDeps, input: DuplicatesInput) {
   const candidates = await findDuplicates(deps.hashes, {
     type: input.type,
     sha256: input.sha256,

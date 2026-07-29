@@ -14,6 +14,13 @@ import { z } from "zod";
 /** wrangler's own "ready" banner — the fallback `readySignal` when a worker declares none. */
 export const DEFAULT_READY_SIGNAL = "Ready on https?://";
 
+/**
+ * The placeholder `pithy dev` replaces with the worker's pinned port in every element of a `dev.command`.
+ * A dev server needs the port on its argv, and `pithy dev` spawns with **no shell** — `$WEB_PORT` in an
+ * argv array is a literal, never an expansion. So the manifest writes the token and dev substitutes it.
+ */
+export const DEV_PORT_TOKEN = "{port}";
+
 /** How `pithy dev` runs one worker locally: whether it autostarts, what marks it ready, its port, its command. */
 export const WorkerDev = z
   .object({
@@ -40,11 +47,32 @@ export const WorkerDev = z
       .min(1)
       .optional()
       .describe(
-        "Command that starts this process instead of `wrangler dev`. Set it for a non-Worker process, e.g. a Vite frontend with no wrangler.jsonc.",
+        `Command that starts this process instead of \`wrangler dev\`. Set it for a non-Worker process, e.g. a Vite frontend with no wrangler.jsonc. The token ${DEV_PORT_TOKEN} in any element is replaced with this worker's pinned port.`,
       ),
   })
   .describe("Local dev-orchestration settings for one worker (the `dev` block of pithy.worker.jsonc).");
 export type WorkerDev = z.output<typeof WorkerDev>;
+
+/**
+ * How a worker's front end is built. Present only when `pithy ui add` scaffolded one: the SPA is served
+ * by the Worker it lives in, so its assets must exist before `wrangler deploy` uploads them — `pithy deploy`
+ * runs `build` through the project's package manager, in the worker's own directory, first.
+ */
+export const WorkerUi = z
+  .object({
+    stub: z
+      .string()
+      .min(1)
+      .describe("The framework stub this worker's front end was scaffolded from, e.g. react. Upgrades read it."),
+    build: z
+      .array(z.string().min(1))
+      .min(1)
+      .describe(
+        'Argv that builds the front end, run through the project\'s package manager from this worker\'s directory before wrangler deploy, e.g. ["vite", "build"].',
+      ),
+  })
+  .describe("The front end this worker serves (the `ui` block of pithy.worker.jsonc): its stub and its build.");
+export type WorkerUi = z.output<typeof WorkerUi>;
 
 /** The `pithy.worker.jsonc` document: the dev-set descriptor beside a worker's `wrangler.jsonc`. */
 export const WorkerManifest = z
@@ -53,6 +81,9 @@ export const WorkerManifest = z
     // field defaults, so a manifest omitting `dev` would get an empty block instead of the wrangler defaults.
     dev: WorkerDev.default({ autostart: false, readySignal: DEFAULT_READY_SIGNAL }).describe(
       "Local dev-orchestration block for this worker.",
+    ),
+    ui: WorkerUi.optional().describe(
+      "The front end this worker serves. Absent for an API-only worker; written by pithy ui add.",
     ),
   })
   .describe("Pithy's per-worker manifest (pithy.worker.jsonc): how a worker joins the local dev set.");
