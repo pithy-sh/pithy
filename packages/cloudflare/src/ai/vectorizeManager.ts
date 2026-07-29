@@ -112,7 +112,7 @@ export class CloudflareVectorizeManager extends CloudflareManager {
   /** Fetch vectors by id. Returns an array (possibly empty); each element carries its values. */
   async getByIds(ids: string[]): Promise<VectorizeVector[]> {
     return cloudflareRequest("Vectorize getByIds", async () => {
-      const response = (await this.getClient().vectorize.indexes.getByIds(this.indexName, {
+      const response = (await this.getClient().vectorize.indexes.getByIDs(this.indexName, {
         account_id: this.accountId,
         ids,
       })) as IndexGetByIDsResponse;
@@ -123,7 +123,7 @@ export class CloudflareVectorizeManager extends CloudflareManager {
   /** Delete vectors by id. Returns the async-mutation id for the enqueued change. */
   async deleteByIds(ids: string[]): Promise<IndexDeleteByIDsResponse | null> {
     return cloudflareRequest("Vectorize deleteByIds", () =>
-      this.getClient().vectorize.indexes.deleteByIds(this.indexName, {
+      this.getClient().vectorize.indexes.deleteByIDs(this.indexName, {
         account_id: this.accountId,
         ids,
       }),

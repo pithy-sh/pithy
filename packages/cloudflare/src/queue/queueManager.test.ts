@@ -84,7 +84,7 @@ describe("CloudflareQueueManager", () => {
   describe("sendBatch", () => {
     it("sends messages via the REST bulk push", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValue({ success: true });
+      mockBulkPush.mockResolvedValue({});
       await manager.sendBatch([{ type: "test" }]);
       expect(mockBulkPush).toHaveBeenCalledWith("q-123", {
         account_id: "acct-1",
@@ -92,14 +92,8 @@ describe("CloudflareQueueManager", () => {
       });
     });
 
-    it("throws cloudflare/invalid_response when the API reports failure", async () => {
-      stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValue({ success: false, errors: ["quota exceeded"] });
-      await expect(manager.sendBatch([{ type: "test" }])).rejects.toThrowError(
-        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/invalid_response" }) }),
-      );
-    });
-
+    // A failed push is an SDK throw, not a `success: false` envelope — the SDK unwraps the envelope
+    // and raises `APIError` itself. That path is the `request_failed` case below.
     it("wraps an SDK push failure as cloudflare/request_failed with the cause in detail", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
       mockBulkPush.mockRejectedValue(new Error("boom"));
@@ -114,7 +108,7 @@ describe("CloudflareQueueManager", () => {
   describe("send", () => {
     it("delegates a single message to the bulk push", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValue({ success: true });
+      mockBulkPush.mockResolvedValue({});
       await manager.send({ type: "hello" });
       expect(mockBulkPush).toHaveBeenCalledWith("q-123", {
         account_id: "acct-1",
@@ -126,7 +120,7 @@ describe("CloudflareQueueManager", () => {
   describe("sendBatches", () => {
     it("processes all batches and returns aggregate results", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValue({ success: true });
+      mockBulkPush.mockResolvedValue({});
       const result = await manager.sendBatches([
         { batchNumber: 1, messageCount: 2, messages: [{ a: 1 }, { a: 2 }] },
         { batchNumber: 2, messageCount: 1, messages: [{ a: 3 }] },
@@ -139,7 +133,7 @@ describe("CloudflareQueueManager", () => {
 
     it("calls progress and success callbacks", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValue({ success: true });
+      mockBulkPush.mockResolvedValue({});
       const onProgress = vi.fn();
       const onSuccess = vi.fn();
       await manager.sendBatches([{ batchNumber: 1, messageCount: 3, messages: [1, 2, 3] }], {
@@ -152,7 +146,7 @@ describe("CloudflareQueueManager", () => {
 
     it("continues past a failed batch and reports it (default)", async () => {
       stubQueueList([{ queue_name: "my-queue", queue_id: "q-123" }]);
-      mockBulkPush.mockResolvedValueOnce({ success: true }).mockRejectedValueOnce(new Error("quota"));
+      mockBulkPush.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("quota"));
       const onError = vi.fn();
       const result = await manager.sendBatches(
         [

@@ -1,5 +1,5 @@
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import type { RequestOptions } from "cloudflare/core";
+import type { Cloudflare } from "cloudflare";
 import type { RouteCreateResponse, RouteListResponse } from "cloudflare/resources/workers/routes";
 import type { Deployment } from "cloudflare/resources/workers/scripts/deployments";
 import type { Script } from "cloudflare/resources/workers/scripts/scripts";
@@ -10,7 +10,7 @@ import { cloudflareRequest, messageOf } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 
 /** Per-call SDK timeout + retry budget for Worker management operations. */
-const requestOptions: RequestOptions = { timeout: 10000, maxRetries: 3 };
+const requestOptions: Cloudflare.RequestOptions = { timeout: 10000, maxRetries: 3 };
 
 /**
  * The placeholder module uploaded when a Worker script is first created. A Worker upload requires
@@ -131,9 +131,8 @@ export class CloudflareWorkersManager extends CloudflareManager {
   async getVersion(scriptName: string, versionId: string): Promise<VersionGetResponse> {
     return cloudflareRequest(`get version '${versionId}' for '${scriptName}'`, () =>
       this.getClient().workers.scripts.versions.get(
-        scriptName,
         versionId,
-        { account_id: this.accountId },
+        { account_id: this.accountId, script_name: scriptName },
         requestOptions,
       ),
     );
@@ -155,9 +154,8 @@ export class CloudflareWorkersManager extends CloudflareManager {
   async getDeployment(scriptName: string, deploymentId: string): Promise<Deployment> {
     return cloudflareRequest(`get deployment '${deploymentId}' for '${scriptName}'`, () =>
       this.getClient().workers.scripts.deployments.get(
-        scriptName,
         deploymentId,
-        { account_id: this.accountId },
+        { account_id: this.accountId, script_name: scriptName },
         requestOptions,
       ),
     );
@@ -193,9 +191,8 @@ export class CloudflareWorkersManager extends CloudflareManager {
   async deleteSecret(scriptName: string, secretName: string): Promise<void> {
     await cloudflareRequest(`delete secret '${secretName}' from '${scriptName}'`, () =>
       this.getClient().workers.scripts.secrets.delete(
-        scriptName,
         secretName,
-        { account_id: this.accountId },
+        { account_id: this.accountId, script_name: scriptName },
         requestOptions,
       ),
     );

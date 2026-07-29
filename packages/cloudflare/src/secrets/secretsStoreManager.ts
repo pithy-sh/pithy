@@ -85,8 +85,9 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
 
     if (existing) {
       await cloudflareRequest(`put secret ${name} (delete existing)`, () =>
-        this.getClient().secretsStore.stores.secrets.delete(this.storeId, existing.id, {
+        this.getClient().secretsStore.stores.secrets.delete(existing.id, {
           account_id: this.accountId,
+          store_id: this.storeId,
         }),
       );
 
@@ -114,8 +115,9 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
       });
     }
     await cloudflareRequest(`delete secret ${name}`, () =>
-      this.getClient().secretsStore.stores.secrets.delete(this.storeId, existing.id, {
+      this.getClient().secretsStore.stores.secrets.delete(existing.id, {
         account_id: this.accountId,
+        store_id: this.storeId,
       }),
     );
   }

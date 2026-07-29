@@ -134,7 +134,7 @@ describe("CloudflareSecretsStoreManager", () => {
 
       await manager.putSecret("FOO", "value-2");
 
-      expect(mockDelete).toHaveBeenCalledWith("store-abc", "id-existing", { account_id: "test-account-id" });
+      expect(mockDelete).toHaveBeenCalledWith("id-existing", { account_id: "test-account-id", store_id: "store-abc" });
       expect(mockCreate).toHaveBeenCalledWith("store-abc", {
         account_id: "test-account-id",
         body: [{ name: "FOO", value: "value-2", scopes: ["workers"] }],
@@ -221,7 +221,7 @@ describe("CloudflareSecretsStoreManager", () => {
 
       await manager.deleteSecret("FOO");
 
-      expect(mockDelete).toHaveBeenCalledWith("store-abc", "id-1", { account_id: "test-account-id" });
+      expect(mockDelete).toHaveBeenCalledWith("id-1", { account_id: "test-account-id", store_id: "store-abc" });
     });
 
     it("throws core/not_found when the secret is not present", async () => {

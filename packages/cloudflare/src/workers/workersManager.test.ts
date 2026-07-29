@@ -193,7 +193,11 @@ describe("CloudflareWorkersManager", () => {
     it("gets a single version", async () => {
       mockVersionsGet.mockResolvedValue({ id: "v1" });
       expect(await manager.getVersion("w1", "v1")).toEqual({ id: "v1" });
-      expect(mockVersionsGet).toHaveBeenCalledWith("w1", "v1", { account_id: "acct-1" }, expect.any(Object));
+      expect(mockVersionsGet).toHaveBeenCalledWith(
+        "v1",
+        { account_id: "acct-1", script_name: "w1" },
+        expect.any(Object),
+      );
     });
   });
 
@@ -235,7 +239,11 @@ describe("CloudflareWorkersManager", () => {
     it("deletes a secret", async () => {
       mockSecretsDelete.mockResolvedValue(undefined);
       await manager.deleteSecret("w1", "API_KEY");
-      expect(mockSecretsDelete).toHaveBeenCalledWith("w1", "API_KEY", { account_id: "acct-1" }, expect.any(Object));
+      expect(mockSecretsDelete).toHaveBeenCalledWith(
+        "API_KEY",
+        { account_id: "acct-1", script_name: "w1" },
+        expect.any(Object),
+      );
     });
 
     it("lists secrets from the async iterable", async () => {

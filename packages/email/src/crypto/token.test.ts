@@ -71,14 +71,14 @@ describe("callback token sign/verify", () => {
 
   // A `kid` that walks the prototype chain (`__proto__`, `constructor`) must not resolve to a usable
   // key — otherwise an attacker forges tokens against the coerced `"[object Object]"` / Object source.
-  test.each([
-    "__proto__",
-    "constructor",
-    "toString",
-    "hasOwnProperty",
-  ])("a prototype-chain kid (%s) is rejected, not used as a key", async (kid) => {
-    const forgeKey = kid === "__proto__" ? "[object Object]" : String(({} as Record<string, unknown>)[kid]);
-    const token = await mintToken(clickClaims, { key: forgeKey, kid, expiresAt });
-    await expect(verifyToken(token, KEYS_V1, now)).rejects.toMatchObject({ payload: { code: "email/invalid_token" } });
-  });
+  test.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+    "a prototype-chain kid (%s) is rejected, not used as a key",
+    async (kid) => {
+      const forgeKey = kid === "__proto__" ? "[object Object]" : String(({} as Record<string, unknown>)[kid]);
+      const token = await mintToken(clickClaims, { key: forgeKey, kid, expiresAt });
+      await expect(verifyToken(token, KEYS_V1, now)).rejects.toMatchObject({
+        payload: { code: "email/invalid_token" },
+      });
+    },
+  );
 });

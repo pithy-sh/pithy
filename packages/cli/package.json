@@ -22,7 +22,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@clack/prompts": "^1.5.0",
+    "@clack/prompts": "^1.7.0",
     "@pithy-sh/cloudflare": "workspace:*",
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/email": "workspace:*",
@@ -31,11 +31,11 @@
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
     "kysely": "^0.29.0",
-    "miniflare": "^4.20260611.0",
+    "miniflare": "^4.20260722.1",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260610.1",
+    "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/media": "workspace:*",
     "@pithy-sh/storage": "workspace:*",
@@ -45,7 +45,7 @@
     "@vitest/coverage-v8": "^4.1.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.99.0",
+    "wrangler": "^4.115.0",
     "zod": "^4.0.0"
   }
 }

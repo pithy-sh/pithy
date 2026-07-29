@@ -98,11 +98,11 @@ describe("CloudflareStreamManager", () => {
   });
 
   describe("createVideoDownload", () => {
-    it("calls stream.downloads.create with an empty body", async () => {
+    it("calls stream.downloads.create with the account id", async () => {
       mockDownloadsCreate.mockResolvedValue({ default: { status: "inprogress", percentComplete: 0 } });
       const result = await manager.createVideoDownload("vid-1");
       expect(result.default.status).toBe("inprogress");
-      expect(mockDownloadsCreate).toHaveBeenCalledWith("vid-1", { account_id: "acct-1", body: {} }, opts);
+      expect(mockDownloadsCreate).toHaveBeenCalledWith("vid-1", { account_id: "acct-1" }, opts);
     });
   });
 

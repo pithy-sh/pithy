@@ -73,8 +73,9 @@ export class CloudflareKVManager extends CloudflareManager {
     return cloudflareRequest(`KV get for key '${key}'`, async () => {
       try {
         // The SDK resolves the values endpoint to a `Response`, not the value — read the body as text.
-        const response = await this.getClient().kv.namespaces.values.get(this.namespaceId, key, {
+        const response = await this.getClient().kv.namespaces.values.get(key, {
           account_id: this.accountId,
+          namespace_id: this.namespaceId,
         });
         return await response.text();
       } catch (error) {
@@ -102,8 +103,9 @@ export class CloudflareKVManager extends CloudflareManager {
   /** Write a value, with optional TTL and metadata. */
   async set(key: string, value: string, options?: KVPutOptions): Promise<void> {
     await cloudflareRequest(`KV set for key '${key}'`, async () => {
-      await this.getClient().kv.namespaces.values.update(this.namespaceId, key, {
+      await this.getClient().kv.namespaces.values.update(key, {
         account_id: this.accountId,
+        namespace_id: this.namespaceId,
         value,
         ...(options?.expirationTtl !== undefined ? { expiration_ttl: options.expirationTtl } : {}),
         ...(options?.metadata !== undefined ? { metadata: JSON.stringify(options.metadata) } : {}),
@@ -114,7 +116,10 @@ export class CloudflareKVManager extends CloudflareManager {
   /** Delete a key. */
   async delete(key: string): Promise<void> {
     await cloudflareRequest(`KV delete for key '${key}'`, async () => {
-      await this.getClient().kv.namespaces.values.delete(this.namespaceId, key, { account_id: this.accountId });
+      await this.getClient().kv.namespaces.values.delete(key, {
+        account_id: this.accountId,
+        namespace_id: this.namespaceId,
+      });
     });
   }
 
@@ -140,7 +145,7 @@ export class CloudflareKVManager extends CloudflareManager {
         // masked as "no metadata", which would let a caller mistake a fetch failure for an empty tag.
         this.get(key),
         this.getClient()
-          .kv.namespaces.metadata.get(this.namespaceId, key, { account_id: this.accountId })
+          .kv.namespaces.metadata.get(key, { account_id: this.accountId, namespace_id: this.namespaceId })
           .catch((error: unknown) => {
             if (isNotFoundError(error)) return null;
             throw error;

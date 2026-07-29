@@ -29,6 +29,17 @@ function stubSiteverify(body: unknown, ok = true, status = 200) {
   return fetchMock;
 }
 
+/**
+ * The siteverify form body from a stubbed `fetch` call. The call is asserted rather than
+ * optional-chained: `calls[0]?.[1]` reads as safe but only defers the failure to a bare TypeError
+ * on `.body`. Throwing here names what actually went wrong — fetch was never called.
+ */
+function sentBody(fetchMock: ReturnType<typeof stubSiteverify>, call = 0): URLSearchParams {
+  const args = fetchMock.mock.calls[call];
+  if (!args) throw new Error(`Expected fetch call #${call + 1}, but fetch was called ${fetchMock.mock.calls.length}x.`);
+  return (args[1] as RequestInit).body as URLSearchParams;
+}
+
 /** The `code` from a `{ error: <public payload> }` response body. */
 async function errCode(res: Response): Promise<string> {
   return ((await res.json()) as { error: { code: string } }).error.code;
@@ -48,7 +59,7 @@ describe("turnstile() middleware", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit).body as URLSearchParams;
+    const sent = sentBody(fetchMock);
     expect(sent.get("secret")).toBe(SECRET);
     expect(sent.get("response")).toBe("tok");
     expect(sent.get("remoteip")).toBe("9.9.9.9");
@@ -67,7 +78,7 @@ describe("turnstile() middleware", () => {
       body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
     });
     expect(res.status).toBe(200);
-    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit).body as URLSearchParams;
+    const sent = sentBody(fetchMock);
     expect(sent.get("secret")).toBe("inv-secret");
   });
 
@@ -100,7 +111,7 @@ describe("turnstile() middleware", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(200);
-    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit).body as URLSearchParams;
+    const sent = sentBody(fetchMock);
     expect(sent.get("response")).toBe("hdr-tok");
   });
 
@@ -129,7 +140,7 @@ describe("turnstile() middleware", () => {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
     });
-    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit).body as URLSearchParams;
+    const sent = sentBody(fetchMock);
     expect(sent.get("action")).toBeNull();
   });
 

@@ -61,7 +61,7 @@ describe("CloudflareKVManager", () => {
       expect(value).toBe("hello");
       // The value endpoint resolves to a Response; returning it raw is the live bug this pins against.
       expect(value).not.toBe(response);
-      expect(mockValuesGet).toHaveBeenCalledWith("ns-123", "k1", { account_id: "acct-1" });
+      expect(mockValuesGet).toHaveBeenCalledWith("k1", { account_id: "acct-1", namespace_id: "ns-123" });
     });
 
     it("returns null when the SDK throws a 404 for an absent key (not request_failed)", async () => {
@@ -102,8 +102,9 @@ describe("CloudflareKVManager", () => {
     it("writes a value with TTL and metadata, mapping to the REST shape", async () => {
       mockValuesUpdate.mockResolvedValue(undefined);
       await manager.set("k1", "v1", { expirationTtl: 60, metadata: { tag: "a" } });
-      expect(mockValuesUpdate).toHaveBeenCalledWith("ns-123", "k1", {
+      expect(mockValuesUpdate).toHaveBeenCalledWith("k1", {
         account_id: "acct-1",
+        namespace_id: "ns-123",
         value: "v1",
         expiration_ttl: 60,
         metadata: JSON.stringify({ tag: "a" }),
@@ -113,7 +114,11 @@ describe("CloudflareKVManager", () => {
     it("omits TTL and metadata when not given", async () => {
       mockValuesUpdate.mockResolvedValue(undefined);
       await manager.set("k1", "v1");
-      expect(mockValuesUpdate).toHaveBeenCalledWith("ns-123", "k1", { account_id: "acct-1", value: "v1" });
+      expect(mockValuesUpdate).toHaveBeenCalledWith("k1", {
+        account_id: "acct-1",
+        namespace_id: "ns-123",
+        value: "v1",
+      });
     });
   });
 
@@ -121,7 +126,7 @@ describe("CloudflareKVManager", () => {
     it("deletes via the REST API", async () => {
       mockValuesDelete.mockResolvedValue(undefined);
       await manager.delete("k1");
-      expect(mockValuesDelete).toHaveBeenCalledWith("ns-123", "k1", { account_id: "acct-1" });
+      expect(mockValuesDelete).toHaveBeenCalledWith("k1", { account_id: "acct-1", namespace_id: "ns-123" });
     });
   });
 
