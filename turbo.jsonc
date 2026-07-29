@@ -5,15 +5,20 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "typecheck": {
-      "dependsOn": ["^build"]
-    },
-    "test": {
-      "dependsOn": ["^build"]
-    },
+    // No `^build` on typecheck or test. Every package exports `./src/*` → `./src/*.ts`, so packages
+    // consume each other's TypeScript source and nothing ever reads `dist/`. Depending on `^build`
+    // would rebuild every upstream package to produce output no test or typecheck consumes.
+    // `build` stays a separate CI step — it proves tsc emit and dts generation still work for publishing.
+    //
+    // That `^build` was also, by accident, throttling the test run: test tasks started staggered
+    // behind their dependencies' builds. Without it every package's vitest launches at once, and the
+    // `@cloudflare/vitest-pool-workers` suites each spawn workerd — enough oversubscription to time
+    // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
+    // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
+    "typecheck": {},
+    "test": {},
     "test:integration": {
       // Live Cloudflare — never cached; only packages that define the script run it.
-      "dependsOn": ["^build"],
       "cache": false
     },
     "vars:local": {

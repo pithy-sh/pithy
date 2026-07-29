@@ -13,8 +13,8 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test",
-    "test:integration": "turbo run test:integration",
+    "test": "turbo run test --concurrency=50%",
+    "test:integration": "turbo run test:integration --concurrency=50%",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",
     "format": "biome format --write .",
