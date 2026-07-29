@@ -9,7 +9,7 @@ const IdParams = z.object({ id: z.string().min(1).describe("The record id.") }).
 
 describe("composeWorkflows", () => {
   it("returns an empty registry when no capability declares a job", () => {
-    expect(composeWorkflows([defineCapability({ name: "wallet", requiredBindings: [] })])).toEqual({});
+    expect(composeWorkflows([defineCapability({ name: "ledger", requiredBindings: [] })])).toEqual({});
   });
 
   it("keys every job <capability>/<job> and carries the declaring capability", () => {

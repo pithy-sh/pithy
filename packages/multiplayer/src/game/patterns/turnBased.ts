@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MultiplayerInvalidTransitionError } from "../../error/errors";
-import type { WalletEffect } from "../effects";
+import type { LedgerEffect } from "../effects";
 import type { GameContext, GameModel, ModelOutcome, ResolveResult } from "../model";
 
 /**
@@ -26,13 +26,13 @@ export interface TurnBasedSpec<Config, Game, Move> {
   maxPlayers?: number;
   /** The initial game state when play begins. */
   start: (ctx: GameContext<Config>) => Game;
-  /** Apply the current player's validated move, returning the next game state (+ optional wallet effects). Throw a `PithyError` on an illegal move. */
+  /** Apply the current player's validated move, returning the next game state (+ optional ledger effects). Throw a `PithyError` on an illegal move. */
   play: (
     ctx: GameContext<Config>,
     game: Game,
     playerId: string,
     move: Move,
-  ) => { game: Game; effects?: readonly WalletEffect[] } | Game;
+  ) => { game: Game; effects?: readonly LedgerEffect[] } | Game;
   /** Whether the game has ended (someone won, the board is full…). */
   isEnd: (ctx: GameContext<Config>, game: Game) => boolean;
   /** The outcome once {@link isEnd} holds. */

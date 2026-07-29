@@ -49,8 +49,8 @@ describe("workerFirstPatterns", () => {
   });
 
   test("is sorted and deduplicated, so the written config is stable run to run", () => {
-    const patterns = workerFirstPatterns(["/wallet/x", "/auth", "/wallet", "/auth/y"]);
-    expect(patterns).toEqual(["/auth", "/auth/*", "/health", "/health/*", "/wallet", "/wallet/*"]);
+    const patterns = workerFirstPatterns(["/ledger/x", "/auth", "/ledger", "/auth/y"]);
+    expect(patterns).toEqual(["/auth", "/auth/*", "/health", "/health/*", "/ledger", "/ledger/*"]);
     expect([...patterns].sort()).toEqual(patterns);
   });
 });

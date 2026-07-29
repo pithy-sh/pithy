@@ -2,7 +2,7 @@
  * The canonical example identities — a small, fixed cast of demo users that every capability's
  * example seed set references. It is what makes `pithy seed` (with `seed.includeExamples`) fill a
  * fresh backend with *connected* data instead of isolated rows: the same three users own the seeded
- * auth records, leaderboard scores, wallet balances, and multiplayer results, so a new project can
+ * auth records, leaderboard scores, ledger balances, and multiplayer results, so a new project can
  * see the whole stack working together in `dev` without authoring a fixture first.
  *
  * This is the shared vocabulary that lets each capability seed user-linked rows without depending on

@@ -1,0 +1,7 @@
+---
+"@pithy-sh/ledger": minor
+"@pithy-sh/core": minor
+"@pithy-sh/cli": patch
+---
+
+New package: `@pithy-sh/ledger` — a per-user balance ledger for whatever an app's economy runs on (chips, gold, gems, credits), currency-agnostic, in your own D1. Correctness is enforced by the database, not by hopeful application code: every movement is a single `DB.batch` (atomic — the ledger entry and the balance change commit together or not at all), idempotent on a caller-supplied `ref` written as a `UNIQUE` row (a payout delivered twice pays once), and overdraft-safe by a `CHECK (balance >= 0 AND held >= 0 AND held <= balance)` on the account (a debit or hold past solvency aborts its transaction, even against a balance a concurrent operation just lowered — no race slips past SQLite). Statements are built with Kysely (so `CamelCasePlugin` owns the columns and reads go through the codecs) and compiled into the batch. Operations are credit, debit, atomic transfer, and the wagering primitives — hold (reserve a stake), release (return it), capture (spend it) — which is what makes betting safe, so it pairs with `@pithy-sh/multiplayer`. Amounts are integers in the currency's minor unit, never floats. It takes no position on whether the units map to money, or the regulation that implies — that is the adopter's. A thin HTTP surface lets players read their own balance and history; moving another player's funds is server-authoritative and needs the `ledger:admin` scope. `core` gains the `ledger/*` error codes; the CLI adds it to the capability catalog. Licensed MIT.

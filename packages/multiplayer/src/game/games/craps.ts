@@ -5,7 +5,7 @@ import { type BetDecision, type PendingBet, wageringTable } from "../patterns/wa
 /**
  * Craps — the flagship **wagering-table** game (built on the {@link wageringTable} pattern).
  *
- * The pattern owns the wagering plumbing: the bet book, the wallet holds placed when a bet lands, the
+ * The pattern owns the wagering plumbing: the bet book, the ledger holds placed when a bet lands, the
  * settlement when a bet resolves, and the persistent-table lifecycle. Craps supplies only the game: what a
  * valid bet is, who may roll (the shooter), and how a roll decides each pending bet. The house is the
  * counterparty for wins and losses — off the players' ledger — so how you fund and book the house edge is
@@ -24,7 +24,7 @@ export const CrapsConfig = z
     currency: z
       .string()
       .min(1)
-      .describe("The wallet currency bets and payouts are denominated in (from the wallet capability's `currencies`)."),
+      .describe("The ledger currency bets and payouts are denominated in (from the ledger capability's `currencies`)."),
     minBet: z.number().int().min(1).default(1).describe("The smallest bet allowed, in the currency's minor unit."),
     maxBet: z.number().int().min(1).optional().describe("The largest bet allowed, or omit for no cap."),
   })

@@ -16,7 +16,7 @@ const now = () => new Date();
 /**
  * A tiny demo board's worth of entries — the three canonical example users ({@link EXAMPLE_ADA} et al.)
  * on an all-time board named `demo`. The `userId`s are the shared cast from `@pithy-sh/core`, so these
- * scores belong to the same users `auth` seeds and `wallet`/`multiplayer` also reference: `pithy seed`
+ * scores belong to the same users `auth` seeds and `ledger`/`multiplayer` also reference: `pithy seed`
  * fills a fresh backend with connected data, not isolated rows. Composed in only when the project turns
  * on `seed.includeExamples` (`pithy.config.ts`), and only for `dev` and `staging` — an example fixture
  * never targets production, regardless of that setting.

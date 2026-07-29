@@ -189,7 +189,7 @@ This is the one piece worth understanding before you edit `wrangler.jsonc` by ha
 
 Cloudflare's asset router runs **before** your Worker. With `not_found_handling: "single-page-application"`, a path with no matching asset is answered with `index.html` — and the Worker is never invoked. That is exactly right for `/settings` and exactly wrong for `/health`. `run_worker_first` is the list of paths that skip the asset router and go straight to the Worker.
 
-So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/wallet`, `/media`, `/matchmaking`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
+So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/ledger`, `/media`, `/matchmaking`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
 
 Two rules the derivation follows:
 

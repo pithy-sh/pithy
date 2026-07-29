@@ -188,6 +188,28 @@
         "wrangler": "^4.115.0",
       },
     },
+    "packages/ledger": {
+      "name": "@pithy-sh/ledger",
+      "version": "0.0.0",
+      "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
+        "@pithy-sh/core": "workspace:*",
+        "hono": "^4.12.0",
+        "kysely": "^0.29.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@cloudflare/vitest-pool-workers": "^0.19.0",
+        "@cloudflare/workers-types": "^5.20260729.1",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "kysely-d1": "^0.4.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.115.0",
+      },
+    },
     "packages/matchmaking": {
       "name": "@pithy-sh/matchmaking",
       "version": "0.0.0",
@@ -259,8 +281,8 @@
         "@cloudflare/vitest-pool-workers": "^0.19.0",
         "@cloudflare/workers-types": "^5.20260729.1",
         "@pithy-sh/leaderboard": "workspace:*",
+        "@pithy-sh/ledger": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
-        "@pithy-sh/wallet": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",
         "kysely-d1": "^0.4.0",
@@ -270,11 +292,11 @@
       },
       "peerDependencies": {
         "@pithy-sh/leaderboard": "workspace:*",
-        "@pithy-sh/wallet": "workspace:*",
+        "@pithy-sh/ledger": "workspace:*",
       },
       "optionalPeers": [
         "@pithy-sh/leaderboard",
-        "@pithy-sh/wallet",
+        "@pithy-sh/ledger",
       ],
     },
     "packages/rating": {
@@ -422,28 +444,6 @@
       },
       "peerDependencies": {
         "vite": "^6.1.0 || ^7.0.0 || ^8.0.0",
-      },
-    },
-    "packages/wallet": {
-      "name": "@pithy-sh/wallet",
-      "version": "0.0.0",
-      "dependencies": {
-        "@hono/zod-validator": "^0.9.0",
-        "@pithy-sh/core": "workspace:*",
-        "hono": "^4.12.0",
-        "kysely": "^0.29.0",
-        "zod": "^4.0.0",
-      },
-      "devDependencies": {
-        "@cloudflare/vitest-pool-workers": "^0.19.0",
-        "@cloudflare/workers-types": "^5.20260729.1",
-        "@pithy-sh/tsconfig": "workspace:*",
-        "@types/node": "^22.15.0",
-        "@vitest/coverage-v8": "^4.1.0",
-        "kysely-d1": "^0.4.0",
-        "typescript": "^7.0.2",
-        "vitest": "^4.1.0",
-        "wrangler": "^4.115.0",
       },
     },
     "tooling/tsconfig": {
@@ -814,6 +814,8 @@
 
     "@pithy-sh/leaderboard": ["@pithy-sh/leaderboard@workspace:packages/leaderboard"],
 
+    "@pithy-sh/ledger": ["@pithy-sh/ledger@workspace:packages/ledger"],
+
     "@pithy-sh/matchmaking": ["@pithy-sh/matchmaking@workspace:packages/matchmaking"],
 
     "@pithy-sh/media": ["@pithy-sh/media@workspace:packages/media"],
@@ -835,8 +837,6 @@
     "@pithy-sh/vector": ["@pithy-sh/vector@workspace:packages/vector"],
 
     "@pithy-sh/vite": ["@pithy-sh/vite@workspace:packages/vite"],
-
-    "@pithy-sh/wallet": ["@pithy-sh/wallet@workspace:packages/wallet"],
 
     "@poppinss/colors": ["@poppinss/colors@4.1.6", "", { "dependencies": { "kleur": "^4.1.5" } }, "sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg=="],
 

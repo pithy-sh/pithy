@@ -17,7 +17,7 @@ const now = () => new Date();
 
 /**
  * A single resolved demo match: Ada wins a `demo` session over Grace and Alan — the same shared cast
- * `auth` seeds and `leaderboard`/`wallet` also reference. The row is authored as the durable *result*
+ * `auth` seeds and `leaderboard`/`ledger` also reference. The row is authored as the durable *result*
  * a session writes once it reaches its terminal state — the natural shape `pithy_multiplayer_results`
  * stores, not a live session (which lives only in the Durable Object while play is underway). Composed
  * in only when the project turns on `seed.includeExamples` (`pithy.config.ts`), and only for `dev` and

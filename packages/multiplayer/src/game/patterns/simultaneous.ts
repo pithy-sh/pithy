@@ -29,7 +29,7 @@ export interface SimultaneousSpec<Config, Submission> {
   maxPlayers?: number;
   /** Extra validation of a submission beyond its schema (e.g. "exactly 3 distinct moves"). Throw a `PithyError`. */
   validate?: (config: Config, submission: Submission, ctx: GameContext<Config>) => void;
-  /** Resolve every player's submission into an outcome (and optional wallet effects) once all have submitted. */
+  /** Resolve every player's submission into an outcome (and optional ledger effects) once all have submitted. */
   score: (ctx: GameContext<Config>, submissions: Record<string, Submission>) => ResolveResult | ModelOutcome;
 }
 

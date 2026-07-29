@@ -10,6 +10,8 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
     testTimeout: 300_000,
+    // Color off, as in the default suite — these assert CLI output too, and the shell must not decide it.
+    env: { NO_COLOR: "1" },
     pool: "forks",
     passWithNoTests: true,
   },

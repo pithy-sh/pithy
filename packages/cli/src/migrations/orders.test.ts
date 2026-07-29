@@ -8,7 +8,7 @@ import { describe, expect, test } from "vitest";
  *
  * `createMigrationRegistry` already enforces this — but only at the moment a project composes the
  * colliding pair, which is `pithy migrate` on an adopter's machine. Two collisions (auth/media at 300,
- * rating/wallet at 600) sat in the tree undetected for exactly that reason: every unit test composes
+ * rating/ledger at 600) sat in the tree undetected for exactly that reason: every unit test composes
  * synthetic capabilities, and no test had ever composed the real set.
  *
  * Composing the real set here is not possible — `@pithy-sh/multiplayer` imports `cloudflare:workers`,
@@ -49,7 +49,7 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   { constant: "LEADERBOARD_MIGRATION_ORDER", database: "app" },
   { constant: "MULTIPLAYER_MIGRATION_ORDER", database: "app" },
   { constant: "RATING_MIGRATION_ORDER", database: "app" },
-  { constant: "WALLET_MIGRATION_ORDER", database: "app" },
+  { constant: "LEDGER_MIGRATION_ORDER", database: "app" },
   { constant: "MATCHMAKING_MIGRATION_ORDER", database: "app" },
   { constant: "STORAGE_MIGRATION_ORDER", database: "app" },
   { constant: "VECTOR_MIGRATION_ORDER", database: "app" },

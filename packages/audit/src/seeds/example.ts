@@ -18,13 +18,13 @@ const minutesAgo = (minutes: number): Date => new Date(Date.now() - minutes * 60
 /**
  * A handful of example audit events — the durable, queryable trail the licensed dashboard reads. They
  * are attributed to the shared cast from `@pithy-sh/core` ({@link EXAMPLE_ADA} et al.), so the audit
- * trail lines up with the same users `auth` seeds and `leaderboard`/`wallet`/`multiplayer` reference:
+ * trail lines up with the same users `auth` seeds and `leaderboard`/`ledger`/`multiplayer` reference:
  * a fresh backend with `seed.includeExamples` on has a dashboard with something to show.
  *
  * The set is deliberately spread across the taxonomy the dashboard filters on — every `outcome`
  * (`success`/`failure`/`denied`), a range of `severity` (`info`→`critical`), and both `user` and
  * `system` actors — and across the domains that matter to a licensed product (`auth`, `entitlement`,
- * `admin`, `wallet`): a successful sign-in, a denied one, an entitlement grant, an admin config change,
+ * `admin`, `ledger`): a successful sign-in, a denied one, an entitlement grant, an admin config change,
  * a critical token-reuse alert, and a balance debit. Composed only when the project turns on
  * `seed.includeExamples`, and only for `dev`/`staging` — an example fixture never targets production.
  */
@@ -124,13 +124,13 @@ export const auditExampleSeed: SeedSet = defineSeed({
         id: 6,
         eventId: "example-audit-0006",
         occurredAt: minutesAgo(5),
-        action: "wallet/debit",
+        action: "ledger/debit",
         outcome: "success",
         severity: "info",
         actorType: "user",
         actorId: EXAMPLE_ALAN.id,
         sessionId: "example-session-alan",
-        resourceType: "wallet",
+        resourceType: "ledger",
         resourceId: "coins",
         ip: "203.0.113.31",
         userAgent: "PithyDemo/1.0 (dev seed)",

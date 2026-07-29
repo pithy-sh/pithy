@@ -478,7 +478,7 @@ pithy/
 │   ├── rating/           # @pithy-sh/rating — pluggable skill rating (MMR) + experience (XP)
 │   ├── matchmaking/      # @pithy-sh/matchmaking — room codes, invites, friends, matched queues
 │   ├── multiplayer/      # @pithy-sh/multiplayer — authoritative turn-based sessions (Durable Objects)
-│   ├── wallet/           # @pithy-sh/wallet — per-user balance ledger with holds
+│   ├── ledger/           # @pithy-sh/ledger — per-user balance ledger with holds
 │   └── testers/          # @pithy-sh/testers — early-access/tester invitations (roadmap)
 ├── package.json
 ├── turbo.json

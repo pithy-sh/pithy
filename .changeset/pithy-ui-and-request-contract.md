@@ -4,7 +4,7 @@
 "@pithy-sh/multiplayer": minor
 "@pithy-sh/turnstile": minor
 "@pithy-sh/storage": minor
-"@pithy-sh/wallet": minor
+"@pithy-sh/ledger": minor
 "@pithy-sh/rating": minor
 "@pithy-sh/vector": minor
 "@pithy-sh/email": minor

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MultiplayerInvalidTransitionError } from "../../error/errors";
-import type { WalletEffect } from "../effects";
+import type { LedgerEffect } from "../effects";
 import type { GameContext, GameModel } from "../model";
 
 /**
@@ -8,16 +8,16 @@ import type { GameContext, GameModel } from "../model";
  * players place bets on a random event, and the house is the counterparty. Craps, roulette, sic bo.
  *
  * The helper owns the wagering plumbing that every such game shares: the **bet book** (tracking pending
- * bets), the wallet **holds** placed when a bet lands, and the **settlement** (release/capture/credit) when
+ * bets), the ledger **holds** placed when a bet lands, and the **settlement** (release/capture/credit) when
  * a bet resolves — plus the persistent-table lifecycle (it never ends on a round; leaving returns a
  * player's open bets). A game built on it supplies only the game-specific parts: what a valid bet is, who
  * may trigger the random event, and how that event decides each pending bet. It never touches a hold ref or
- * a wallet effect directly.
+ * a ledger effect directly.
  *
- * Use it with `mode: "table"` and pair it with `@pithy-sh/wallet`.
+ * Use it with `mode: "table"` and pair it with `@pithy-sh/ledger`.
  */
 
-/** A bet the helper is holding: the player, the wallet hold `ref`, the staked `amount`, and game-specific `data`. */
+/** A bet the helper is holding: the player, the ledger hold `ref`, the staked `amount`, and game-specific `data`. */
 export interface PendingBet {
   userId: string;
   ref: string;
@@ -43,7 +43,7 @@ export interface WageringTableSpec<Config, Round, BetInput> {
   bet: z.ZodType<BetInput>;
   minPlayers?: number;
   maxPlayers?: number;
-  /** The wallet currency bets are held and paid in. */
+  /** The ledger currency bets are held and paid in. */
   currency: (config: Config) => string;
   /** The initial round state. */
   startRound: (ctx: GameContext<Config>) => Round;
@@ -76,7 +76,7 @@ export function wageringTable<Config, Round, BetInput>(
   const PendingBetSchema = z
     .object({
       userId: z.string().describe("The player who placed the bet."),
-      ref: z.string().describe("The wallet hold ref."),
+      ref: z.string().describe("The ledger hold ref."),
       amount: z.number().int().describe("The staked amount."),
       data: z.unknown().describe("Game-specific bet data."),
     })
@@ -117,7 +117,7 @@ export function wageringTable<Config, Round, BetInput>(
       if (parsed.kind === "bet") {
         const { amount, data } = spec.placeBet(ctx, current.round, playerId, parsed.bet as BetInput, current.bets);
         const ref = `${ctx.sessionId}:bet:${current.betSeq}`;
-        const effects: WalletEffect[] = [
+        const effects: LedgerEffect[] = [
           { op: "hold", userId: playerId, currency: spec.currency(ctx.config), amount, ref },
         ];
         return {
@@ -141,7 +141,7 @@ export function wageringTable<Config, Round, BetInput>(
       const { round, decisions } = spec.runEvent(ctx, current.round, current.bets);
       const decided = new Map(decisions.map((d) => [d.ref, d]));
       const currency = spec.currency(ctx.config);
-      const effects: WalletEffect[] = [];
+      const effects: LedgerEffect[] = [];
       for (const bet of current.bets) {
         const decision = decided.get(bet.ref);
         if (!decision) continue; // no decision — the bet carries to the next event
@@ -170,7 +170,7 @@ export function wageringTable<Config, Round, BetInput>(
 
     onLeave(_ctx, current, playerId) {
       // Return the leaver's held stakes and drop their bets.
-      const effects: WalletEffect[] = current.bets
+      const effects: LedgerEffect[] = current.bets
         .filter((b) => b.userId === playerId)
         .map((b) => ({ op: "release", ref: b.ref }));
       return { state: { ...current, bets: current.bets.filter((b) => b.userId !== playerId) }, effects };

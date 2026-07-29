@@ -2,14 +2,14 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import { ledger } from "@pithy-sh/wallet/src/ledger/ledger";
-import { wallet_0001_ledger } from "@pithy-sh/wallet/src/migrations/0001_ledger";
+import { openLedger } from "@pithy-sh/ledger/src/ledger";
+import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
 import type { Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER } from "../capability";
-import type { WalletEffect } from "../game/effects";
+import type { LedgerEffect } from "../game/effects";
 import { type GameModel, registerGameModel } from "../game/model";
 import { multiplayer_0001_results } from "../migrations/0001_results";
 import type { MultiplayerSession } from "./durableObject";
@@ -40,7 +40,7 @@ const tableModel: GameModel<{ currency: string; ante: number }, TableState> = {
   apply(ctx, state, playerId) {
     if (state.anted.includes(playerId)) throw new Error("already anted this round");
     const ante = ctx.config.ante;
-    const effects: WalletEffect[] = [
+    const effects: LedgerEffect[] = [
       {
         op: "debit",
         userId: playerId,
@@ -88,16 +88,16 @@ function provider(): MigrationProvider {
 beforeEach(async () => {
   for (const t of [
     "pithy_multiplayer_results",
-    "pithy_wallet_accounts",
-    "pithy_wallet_transactions",
-    "pithy_wallet_holds",
+    "pithy_ledger_accounts",
+    "pithy_ledger_transactions",
+    "pithy_ledger_holds",
     "pithy_migrations",
     "pithy_migrations_lock",
   ]) {
     await env.DB.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await runMigrations(env.DB, provider());
-  await wallet_0001_ledger.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await ledger_0001_accounts.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 const table: GameSnapshot = {
@@ -113,9 +113,9 @@ type TableView = { round: number; pot: number; anted: string[]; lastWinner: stri
 
 describe("the persistent-table lifecycle", () => {
   test("a table is active on create, runs many rounds, and players join and leave between them", async () => {
-    const w = ledger(env.DB);
-    await w.credit("alice", CUR, 100, "seed-a");
-    await w.credit("bob", CUR, 100, "seed-b");
+    const ledger = openLedger(env.DB);
+    await ledger.credit("alice", CUR, 100, "seed-a");
+    await ledger.credit("bob", CUR, 100, "seed-b");
 
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
     // Create → the table is immediately active with alice seated (no waiting for a full roster).
@@ -136,9 +136,9 @@ describe("the persistent-table lifecycle", () => {
     expect(r1.round).toBe(2);
     const winner1 = r1.lastWinner as string;
     // Winner: -10 ante +20 pot = +10 → 110. Loser: -10 → 90. Zero-sum.
-    expect((await w.balance(winner1, CUR)).balance).toBe(110);
+    expect((await ledger.balance(winner1, CUR)).balance).toBe(110);
     const loser1 = winner1 === "alice" ? "bob" : "alice";
-    expect((await w.balance(loser1, CUR)).balance).toBe(90);
+    expect((await ledger.balance(loser1, CUR)).balance).toBe(90);
 
     // Round 2: play another round — proves the table loops.
     await runInDurableObject(stub, (s: MultiplayerSession) => s.action("alice", {}));
@@ -161,7 +161,7 @@ describe("the persistent-table lifecycle", () => {
   });
 
   test("the last player leaving auto-closes the table", async () => {
-    await ledger(env.DB).credit("alice", CUR, 100, "seed-a");
+    await openLedger(env.DB).credit("alice", CUR, 100, "seed-a");
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
     await runInDurableObject(stub, (s: MultiplayerSession) => s.create(table, "alice"));
     const afterLeave = await runInDurableObject(stub, (s: MultiplayerSession) => s.leave("alice"));

@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { WalletEffect } from "./effects";
+import type { LedgerEffect } from "./effects";
 import type { RandomSource } from "./random";
 
 /**
@@ -28,30 +28,30 @@ export interface ModelOutcome {
   draw: boolean;
 }
 
-/** What `apply` returns: the next state, and any wallet effects the DO should settle (a bet's hold). */
+/** What `apply` returns: the next state, and any ledger effects the DO should settle (a bet's hold). */
 export interface ApplyResult<State> {
   /** The next game state. */
   state: State;
-  /** Wallet operations this transition implies — placed a bet, settled a round. Omit for a game with no wagering. */
-  effects?: readonly WalletEffect[];
+  /** Ledger operations this transition implies — placed a bet, settled a round. Omit for a game with no wagering. */
+  effects?: readonly LedgerEffect[];
 }
 
 /** Wrap a bare next-state as an {@link ApplyResult} — the shape a non-wagering model returns. */
-export function nextState<State>(state: State, effects?: readonly WalletEffect[]): ApplyResult<State> {
+export function nextState<State>(state: State, effects?: readonly LedgerEffect[]): ApplyResult<State> {
   return effects ? { state, effects } : { state };
 }
 
-/** What `resolve` returns: the final outcome, and any wallet effects the terminal result implies (payouts). */
+/** What `resolve` returns: the final outcome, and any ledger effects the terminal result implies (payouts). */
 export interface ResolveResult {
   /** The final outcome — scores, a winner, or a draw. */
   outcome: ModelOutcome;
-  /** Wallet operations the result implies — capture losing stakes, pay the winner. Omit for a game with no wagering. */
-  effects?: readonly WalletEffect[];
+  /** Ledger operations the result implies — capture losing stakes, pay the winner. Omit for a game with no wagering. */
+  effects?: readonly LedgerEffect[];
 }
 
 /** What a model gets on every call: its validated config, the roster in join/turn order, a clock, and RNG. */
 export interface GameContext<Config> {
-  /** The session's id (the DO id, hex). Use it to build stable, idempotent wallet-effect refs. */
+  /** The session's id (the DO id, hex). Use it to build stable, idempotent ledger-effect refs. */
   sessionId: string;
   /** The game's model-specific config (the `rules` block), already validated by {@link GameModel.config}. */
   config: Config;
@@ -88,17 +88,17 @@ export interface GameModel<Config = unknown, State = unknown> {
   /** The initial game state, built when the roster fills and play begins. */
   init(ctx: GameContext<Config>): State;
   /**
-   * Validate and apply one player's action, returning the next state (and any wallet effects it implies —
+   * Validate and apply one player's action, returning the next state (and any ledger effects it implies —
    * a placed bet's hold, a settled round's payouts). Throws a `PithyError` (`multiplayer/invalid_move` or
    * `multiplayer/invalid_transition`) when the action is illegal. A rejected action — or one whose effects
-   * the wallet cannot settle (a hold a player cannot cover) — is never persisted. May return a bare `State`
+   * the ledger cannot settle (a hold a player cannot cover) — is never persisted. May return a bare `State`
    * for a game with no wagering.
    */
   apply(ctx: GameContext<Config>, state: State, playerId: string, action: unknown): ApplyResult<State>;
   /** Whether the game has reached a terminal position (all committed, someone won, the board is full…). */
   isComplete(ctx: GameContext<Config>, state: State): boolean;
   /**
-   * The outcome once {@link isComplete} holds — scores, a winner, or a draw — and any wallet effects the
+   * The outcome once {@link isComplete} holds — scores, a winner, or a draw — and any ledger effects the
    * terminal result implies (final payouts).
    */
   resolve(ctx: GameContext<Config>, state: State): ResolveResult;
@@ -110,13 +110,13 @@ export interface GameModel<Config = unknown, State = unknown> {
   redact(ctx: GameContext<Config>, state: State, viewerId: string, revealed: boolean): unknown;
   /**
    * Table mode only: a player took a seat mid-session. Optional — react to the seating (a buy-in, dealing
-   * them in next round) and declare any wallet effects. `ctx.players` already includes the joiner. Omit for
+   * them in next round) and declare any ledger effects. `ctx.players` already includes the joiner. Omit for
    * a match-mode game, or a table game that needs no per-join bookkeeping.
    */
   onJoin?(ctx: GameContext<Config>, state: State, playerId: string): ApplyResult<State>;
   /**
    * Table mode only: a player left their seat mid-session. Optional — settle them out (release their open
-   * holds, cash out) and declare wallet effects. `ctx.players` already excludes the leaver. Omit if leaving
+   * holds, cash out) and declare ledger effects. `ctx.players` already excludes the leaver. Omit if leaving
    * needs no bookkeeping.
    */
   onLeave?(ctx: GameContext<Config>, state: State, playerId: string): ApplyResult<State>;

@@ -22,13 +22,13 @@
   },
   "peerDependencies": {
     "@pithy-sh/leaderboard": "workspace:*",
-    "@pithy-sh/wallet": "workspace:*"
+    "@pithy-sh/ledger": "workspace:*"
   },
   "peerDependenciesMeta": {
     "@pithy-sh/leaderboard": {
       "optional": true
     },
-    "@pithy-sh/wallet": {
+    "@pithy-sh/ledger": {
       "optional": true
     }
   },
@@ -43,7 +43,7 @@
     "@cloudflare/vitest-pool-workers": "^0.19.0",
     "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/leaderboard": "workspace:*",
-    "@pithy-sh/wallet": "workspace:*",
+    "@pithy-sh/ledger": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
