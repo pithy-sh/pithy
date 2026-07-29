@@ -1,5 +1,3 @@
-import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
-import type { z } from "zod";
 import { assertBoardDefinition } from "../board/registry";
 import type { LeaderboardBoard, LeaderboardConfig } from "../config/config";
 import type { LeaderboardDatabase } from "../data/tables";
@@ -11,12 +9,13 @@ import {
 } from "../error/errors";
 import { entriesAround, type RankedEntry, rankOf, topEntries } from "../rank/query";
 import { windowKeyAt } from "../window/schedule";
-import { HideBody, SegmentBody, SubmitScoreBody, VisibilityBody } from "./schemas";
+import type { HideBody, SegmentBody, SubmitScoreBody, VisibilityBody } from "./schemas";
 
 /**
  * The leaderboard handlers — pure functions over injected deps. Nothing here touches a Hono `Context`;
  * the routes unwrap the request and hand the pieces down, which is what makes every case below testable
- * without a request at all.
+ * without a request at all. Nothing here parses, either: the route line declares each shape with
+ * `zValidator`, so a handler receives values that are already the type it names.
  */
 export interface HandlerDeps {
   config: LeaderboardConfig;
@@ -24,13 +23,6 @@ export interface HandlerDeps {
   /** The authenticated player, from the core AuthContext seam. Never from the request body. */
   userId: string;
   now: () => Date;
-}
-
-/** Parse input at the HTTP boundary, mapping a Zod failure to a `validation/invalid_input` 400. */
-function parseInput<S extends z.ZodType>(schema: S, data: unknown): z.output<S> {
-  const result = schema.safeParse(data);
-  if (!result.success) throw fromZodError(result.error);
-  return result.data;
 }
 
 /** The configured board, or a 404. Board keys come from config, so an unknown key is not a lookup miss. */
@@ -57,9 +49,13 @@ export interface BoardPage {
   entries: RankedEntry[];
 }
 
-export async function submitScore(deps: HandlerDeps, boardKey: string, body: unknown): Promise<{ window: string }> {
+export async function submitScore(
+  deps: HandlerDeps,
+  boardKey: string,
+  body: SubmitScoreBody,
+): Promise<{ window: string }> {
   const b = board(deps, boardKey);
-  const { score } = parseInput(SubmitScoreBody, body);
+  const { score } = body;
   // Server-side bounds are the whole demonstrated anti-cheat baseline. Checked before anything is
   // written, so a rejected score leaves no trace on the board.
   if (b.min !== undefined && score < b.min) {
@@ -86,9 +82,9 @@ export async function readTop(
   return { board: b.key, window, entries: await topEntries(deps.db, b, window, query.limit, query.offset) };
 }
 
-export async function readSegment(deps: HandlerDeps, boardKey: string, body: unknown): Promise<BoardPage> {
+export async function readSegment(deps: HandlerDeps, boardKey: string, body: SegmentBody): Promise<BoardPage> {
   const b = board(deps, boardKey);
-  const { userIds, limit, offset, window: requested } = parseInput(SegmentBody, body);
+  const { userIds, limit, offset, window: requested } = body;
   const window = readWindow(deps, b, requested);
   return {
     board: b.key,
@@ -145,10 +141,10 @@ export async function setOwnVisibility(
   deps: HandlerDeps,
   boardKey: string,
   query: { window?: string },
-  body: unknown,
+  body: VisibilityBody,
 ): Promise<{ visible: boolean }> {
   const b = board(deps, boardKey);
-  const { visible } = parseInput(VisibilityBody, body);
+  const { visible } = body;
   const window = readWindow(deps, b, query.window);
   const updated = await entryStore(deps.db).setVisibility(b.key, window, deps.userId, visible);
   if (!updated) {
@@ -164,10 +160,10 @@ export async function hideEntry(
   boardKey: string,
   targetUserId: string,
   query: { window?: string },
-  body: unknown,
+  body: HideBody,
 ): Promise<{ hidden: boolean }> {
   const b = board(deps, boardKey);
-  const { hidden } = parseInput(HideBody, body);
+  const { hidden } = body;
   const window = readWindow(deps, b, query.window);
   const updated = await entryStore(deps.db).hide(b.key, window, targetUserId, hidden);
   if (!updated) {

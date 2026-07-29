@@ -1,7 +1,9 @@
 import type { DurableObjectNamespace, DurableObjectStub } from "@cloudflare/workers-types";
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { type ResolvedGame, resolveGame } from "../config/config";
 import { MultiplayerGameNotFoundError, MultiplayerSessionNotFoundError } from "../error/errors";
@@ -9,24 +11,42 @@ import type { MultiplayerSession } from "../session/durableObject";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/durableObject";
 import type { GameSnapshot } from "../session/state";
 import { requireAuth } from "./guard";
+import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
 
 /**
- * The multiplayer routes and their declared verification strategies. Every route is `bearer | session` —
- * gated by {@link requireAuth} — because membership binds to an authenticated user id and there is no
- * public session surface:
+ * The multiplayer routes, their declared verification strategies, and what they accept. Every route is
+ * `bearer | session` — gated by {@link requireAuth} — because membership binds to an authenticated user id
+ * and there is no public session surface:
  *
- *   POST /multiplayer/games/:game                → create a session          (bearer | session)
- *   POST /multiplayer/sessions/:id/join          → join a session            (bearer | session)
- *   POST /multiplayer/sessions/:id/action        → take a game action        (bearer | session)
- *   GET  /multiplayer/sessions/:id               → your redacted view        (bearer | session)
- *   GET  /multiplayer/sessions/:id/result        → the durable result        (bearer | session)
- *   GET  /multiplayer/sessions/:id/socket        → live play (WebSocket)     (bearer | session)
+ * | Method | Path                             | Strategy          | Validates                       |
+ * |--------|----------------------------------|-------------------|---------------------------------|
+ * | POST   | /multiplayer/games/:game         | bearer \| session | param `MultiplayerGameParams`    |
+ * | POST   | /multiplayer/sessions/:id/join   | bearer \| session | param `MultiplayerSessionParams` |
+ * | POST   | /multiplayer/sessions/:id/action | bearer \| session | param `MultiplayerSessionParams` |
+ * | POST   | /multiplayer/sessions/:id/leave  | bearer \| session | param `MultiplayerSessionParams` |
+ * | POST   | /multiplayer/sessions/:id/close  | bearer \| session | param `MultiplayerSessionParams` |
+ * | GET    | /multiplayer/sessions/:id/result | bearer \| session | param `MultiplayerSessionParams` |
+ * | GET    | /multiplayer/sessions/:id/socket | bearer \| session | param `MultiplayerSessionParams` |
+ * | GET    | /multiplayer/sessions/:id        | bearer \| session | param `MultiplayerSessionParams` |
  *
- * An action is whatever the game's model defines — a commit for a commit-reveal game, a cell for a
- * sequential grid — the route forwards its JSON body untouched to the model. The authenticated user id
- * comes from the core `AuthContext` seam (`c.var.auth.userId`) and is passed to the Durable Object on every
- * call — the DO never trusts a client-supplied id. The WebSocket upgrade is forwarded to the DO with that
- * id set on {@link USER_HEADER}, a server-set header the DO trusts.
+ * Validators run **after** {@link requireAuth}, so an unauthenticated caller is still denied 401 whatever it
+ * sends. The param schemas bound a segment's shape only: resolving a game key stays in the handler (an
+ * unknown game is still a 404), and judging a session id stays in {@link sessionStub} (an unparseable id is
+ * still a 404).
+ *
+ * **No route declares a json schema, including the one route that reads a body.** An action is whatever the
+ * game's model defines — a commit for a commit-reveal game, a cell for a sequential grid — and the route
+ * forwards its JSON body untouched to the model, which is the only thing that knows its shape. There is no
+ * shape for this capability to impose, and a `zValidator("json", …)` would still change what a caller may
+ * send: it rejects an empty body under a JSON content-type with a 400, where a body-less action legitimately
+ * reaches a model that takes no payload today. So the body is read off the raw request instead, with
+ * the same "unreadable body means no payload" fallback — the model, not multiplayer, decides what is legal.
+ * The join, leave, and close routes read no body at all, so validating one on them would only 400 the
+ * body-less request their clients already send.
+ *
+ * The authenticated user id comes from the core `AuthContext` seam (`c.var.auth.userId`) and is passed to the
+ * Durable Object on every call — the DO never trusts a client-supplied id. The WebSocket upgrade is forwarded
+ * to the DO with that id set on {@link USER_HEADER}, a server-set header the DO trusts.
  */
 export interface MultiplayerRoutesOptions {
   /** The games, validated against their models at assembly (each carries parsed `rules`). */
@@ -122,63 +142,107 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
 
   return (app) => {
     // Create a session for a configured game. The creator is its first member.
-    app.post(`${base}/games/:game`, requireAuth(), async (c) => {
-      const gameKey = c.req.param("game");
-      const game = resolveGame(games, gameKey);
-      if (!game) throw new MultiplayerGameNotFoundError({ detail: `No game "${gameKey}" is configured.` });
+    app.post(
+      `${base}/games/:game`,
+      requireAuth(),
+      zValidator("param", MultiplayerGameParams, validationHook),
+      async (c) => {
+        const gameKey = c.req.valid("param").game;
+        const game = resolveGame(games, gameKey);
+        if (!game) throw new MultiplayerGameNotFoundError({ detail: `No game "${gameKey}" is configured.` });
 
-      const namespace = sessionsBinding(c);
-      const id = namespace.newUniqueId();
-      const stub = namespace.get(id);
-      const view = await callSession(() => stub.create(snapshot(game), userId(c)));
-      return c.json(view, 201);
-    });
+        const namespace = sessionsBinding(c);
+        const id = namespace.newUniqueId();
+        const stub = namespace.get(id);
+        const view = await callSession(() => stub.create(snapshot(game), userId(c)));
+        return c.json(view, 201);
+      },
+    );
 
-    app.post(`${base}/sessions/:id/join`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      const view = await callSession(() => stub.join(userId(c)));
-      return c.json(view, 200);
-    });
+    app.post(
+      `${base}/sessions/:id/join`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        const view = await callSession(() => stub.join(userId(c)));
+        return c.json(view, 200);
+      },
+    );
 
-    app.post(`${base}/sessions/:id/action`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      const body = await c.req.json().catch(() => undefined);
-      const view = await callSession(() => stub.action(userId(c), body));
-      return c.json(view, 200);
-    });
+    app.post(
+      `${base}/sessions/:id/action`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        // The action payload is the one thing this capability does not shape — it belongs to the game's
+        // model (see the docblock), so it is read raw and forwarded. Read off `c.req.raw` rather than
+        // declared as a json validator so a body-less action still reaches a model that takes no payload,
+        // instead of becoming a 400.
+        const body = await c.req.raw.json().catch(() => undefined);
+        const view = await callSession(() => stub.action(userId(c), body));
+        return c.json(view, 200);
+      },
+    );
 
-    // Table mode: take or leave a seat, or close the table.
-    app.post(`${base}/sessions/:id/leave`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      return c.json(await callSession(() => stub.leave(userId(c))), 200);
-    });
+    // Table mode: take or leave a seat, or close the table. Neither reads a body.
+    app.post(
+      `${base}/sessions/:id/leave`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        return c.json(await callSession(() => stub.leave(userId(c))), 200);
+      },
+    );
 
-    app.post(`${base}/sessions/:id/close`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      return c.json(await callSession(() => stub.close(userId(c))), 200);
-    });
+    app.post(
+      `${base}/sessions/:id/close`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        return c.json(await callSession(() => stub.close(userId(c))), 200);
+      },
+    );
 
-    app.get(`${base}/sessions/:id/result`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      const result = await callSession(() => stub.result());
-      if (!result) throw new MultiplayerSessionNotFoundError({ detail: "The session has no terminal result yet." });
-      return c.json(result, 200);
-    });
+    app.get(
+      `${base}/sessions/:id/result`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        const result = await callSession(() => stub.result());
+        if (!result) throw new MultiplayerSessionNotFoundError({ detail: "The session has no terminal result yet." });
+        return c.json(result, 200);
+      },
+    );
 
     // The WebSocket upgrade — forwarded to the DO with the authenticated id set on the trusted header. The
     // DO answers a non-upgrade request with 426, so the check lives there, once.
-    app.get(`${base}/sessions/:id/socket`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      const forwarded = new Request(c.req.raw);
-      forwarded.headers.set(USER_HEADER, userId(c));
-      return stub.fetch(forwarded) as unknown as Response;
-    });
+    app.get(
+      `${base}/sessions/:id/socket`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        const forwarded = new Request(c.req.raw);
+        forwarded.headers.set(USER_HEADER, userId(c));
+        return stub.fetch(forwarded) as unknown as Response;
+      },
+    );
 
     // Registered last so `/sessions/:id/*` static suffixes above are matched first.
-    app.get(`${base}/sessions/:id`, requireAuth(), async (c) => {
-      const stub = sessionStub(sessionsBinding(c), c.req.param("id"));
-      const view = await callSession(() => stub.view(userId(c)));
-      return c.json(view, 200);
-    });
+    app.get(
+      `${base}/sessions/:id`,
+      requireAuth(),
+      zValidator("param", MultiplayerSessionParams, validationHook),
+      async (c) => {
+        const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
+        const view = await callSession(() => stub.view(userId(c)));
+        return c.json(view, 200);
+      },
+    );
   };
 }

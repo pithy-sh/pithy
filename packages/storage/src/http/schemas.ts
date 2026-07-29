@@ -4,9 +4,11 @@ import { MAX_OBJECT_KEY_BYTES } from "../object/key";
 import { ReportedPart } from "../object/multipart";
 
 /**
- * The request schemas for the storage routes. Every body and query string is parsed here before a
- * handler sees it (CLAUDE.md §Zod: validate at every boundary), and a failure maps to
- * `validation/invalid_input` through `fromZodError`.
+ * The request schemas for the storage routes. Every path parameter, query string and body is parsed
+ * here before a handler sees it (CLAUDE.md §Zod: validate at every boundary), declared on the route
+ * line with `zValidator(target, Schema, validationHook)` — so reading `routes.ts` tells you what a
+ * route accepts without opening a handler. A failure maps to `validation/invalid_input` through
+ * `fromZodError`.
  *
  * Two shapes deserve a note.
  *
@@ -45,6 +47,57 @@ const logicalPath = z
   .describe(
     "The file's logical name, e.g. `invoices/2026/q3.pdf`. Stored, indexed, and listable by prefix; never part of the R2 key, so slashes are naming, not directories.",
   );
+
+/**
+ * The `:id` path parameter every single-object route carries. Deliberately a bounded generic string
+ * and **not** `z.uuid()`: ids are minted with `crypto.randomUUID()`, but this is a shape check, not a
+ * lookup. A well-formed id nobody owns must still reach the handler and answer `storage/not_found`
+ * (404) — the answer that keeps the route from being an enumeration oracle. A UUID check would turn
+ * that into a 400 and hand back a shape the caller could probe against.
+ */
+export const ObjectIdParam = z
+  .object({
+    id: z
+      .string()
+      .min(1)
+      .max(128)
+      .describe("The object id from the path. Bounded so an unbounded string never reaches the database."),
+  })
+  .describe("The path parameter identifying one stored object.");
+export type ObjectIdParam = z.output<typeof ObjectIdParam>;
+
+/**
+ * The `:token` path parameter the two share routes carry. Bounded only — a minted token is 43
+ * base64url characters, but the bound exists to stop an unbounded string reaching the shares table,
+ * not to pre-empt the lookup. An unknown-but-well-formed token still answers `storage/not_found`.
+ */
+export const ShareTokenParam = z
+  .object({
+    token: z
+      .string()
+      .min(1)
+      .max(128)
+      .describe("The share token from the path — the credential itself, checked against the shares table."),
+  })
+  .describe("The path parameter identifying one share link.");
+export type ShareTokenParam = z.output<typeof ShareTokenParam>;
+
+/**
+ * The query string an object read accepts. Only `?download=1` means anything; every other value is
+ * simply not a download, which is what the bare string comparison said before and still says. Typed
+ * as a bounded string rather than `z.literal("1")` because `?download=0` is a request that works
+ * today, and a literal would answer it with a 400.
+ */
+export const ObjectReadQuery = z
+  .object({
+    download: z
+      .string()
+      .max(16)
+      .optional()
+      .describe("`1` serves the bytes as an attachment. Anything else, or omitted, serves them inline."),
+  })
+  .describe("Query parameters for reading an object's bytes, by id or through a share link.");
+export type ObjectReadQuery = z.output<typeof ObjectReadQuery>;
 
 export const CreateUploadInput = z
   .object({

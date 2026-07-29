@@ -5,6 +5,9 @@ import {
   CreateShareInput,
   CreateUploadInput,
   ListObjectsQuery,
+  ObjectIdParam,
+  ObjectReadQuery,
+  ShareTokenParam,
   UpdateObjectInput,
 } from "./schemas";
 
@@ -110,5 +113,32 @@ describe("ListObjectsQuery", () => {
 
   test("an empty query lists everything you own", () => {
     expect(ListObjectsQuery.parse({})).toEqual({});
+  });
+});
+
+describe("path parameters and the read query", () => {
+  test("an object id is bounded, not shape-checked — an unknown one must still reach its 404", () => {
+    expect(ObjectIdParam.parse({ id: "00000000-0000-4000-8000-000000000001" }).id).toBe(
+      "00000000-0000-4000-8000-000000000001",
+    );
+    // Not a UUID, and deliberately accepted: the handler's `storage/not_found` is the answer that
+    // keeps the route from confirming which ids exist.
+    expect(ObjectIdParam.safeParse({ id: "not-a-uuid" }).success).toBe(true);
+    expect(ObjectIdParam.safeParse({ id: "" }).success).toBe(false);
+    expect(ObjectIdParam.safeParse({ id: "x".repeat(129) }).success).toBe(false);
+  });
+
+  test("a share token is bounded — a minted one is 43 base64url characters", () => {
+    expect(ShareTokenParam.safeParse({ token: "aB-_09".repeat(7) }).success).toBe(true);
+    expect(ShareTokenParam.safeParse({ token: "" }).success).toBe(false);
+    expect(ShareTokenParam.safeParse({ token: "x".repeat(129) }).success).toBe(false);
+  });
+
+  test("?download is a bounded string, so every value that works today still parses", () => {
+    expect(ObjectReadQuery.parse({}).download).toBeUndefined();
+    expect(ObjectReadQuery.parse({ download: "1" }).download).toBe("1");
+    // `?download=0` is simply not a download. A literal `"1"` would have answered it with a 400.
+    expect(ObjectReadQuery.safeParse({ download: "0" }).success).toBe(true);
+    expect(ObjectReadQuery.safeParse({ download: "1".repeat(17) }).success).toBe(false);
   });
 });

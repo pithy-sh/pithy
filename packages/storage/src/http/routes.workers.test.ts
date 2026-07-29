@@ -202,6 +202,142 @@ async function storeFile(app: Hono<PithyHonoEnv>, user: string, path: string, bo
   return { id, key: row.key };
 }
 
+/** The `PithyError` payload the HTTP codec wrote, for the rejection-path assertions. */
+async function errorOf(response: Response): Promise<{ code: string; status: number; message: string }> {
+  return ((await response.json()) as { error: { code: string; status: number; message: string } }).error;
+}
+
+/** Longer than any bound a storage path parameter carries. */
+const OVER_LONG = "x".repeat(129);
+
+describe("declared request shapes", () => {
+  test("a malformed upload body is a 400 with the validation code", async () => {
+    const app = makeApp();
+    // No `size`. A presigned PUT signs Content-Length, so the schema requires it.
+    const response = await app.request("/storage", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": ADA },
+      body: JSON.stringify({ path: "a.txt", contentType: "text/plain" }),
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("an unparseable JSON body is a 400, not the 500 the old bare body read produced", async () => {
+    const app = makeApp();
+    const response = await app.request("/storage", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": ADA },
+      body: "{ not json",
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed query is a 400 — the page size is capped on the route line", async () => {
+    const app = makeApp();
+    const response = await app.request("/storage?limit=999", { headers: { "x-user": ADA } });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("an over-long prefix is a 400 — the free-form listing filter is bounded", async () => {
+    const app = makeApp();
+    const response = await app.request(`/storage?prefix=${"p".repeat(1025)}`, { headers: { "x-user": ADA } });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("an over-long ?download is a 400 — the read query is declared, not merely read", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA, "fox.txt", "hello");
+    const response = await app.request(`/storage/${id}?download=${"1".repeat(17)}`, { headers: { "x-user": ADA } });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("?download=0 still serves inline — the flag is a bounded string, not a literal", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA, "fox.txt", "hello");
+    const response = await app.request(`/storage/${id}?download=0`, { headers: { "x-user": ADA } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toMatch(/^inline;/);
+  });
+
+  test("a malformed body on a share mint is a 400", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA, "a.txt", "hello");
+    const response = await app.request(`/storage/${id}/shares`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": ADA },
+      body: JSON.stringify({ expiresInSeconds: -1 }),
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("a well-formed but unknown id still reaches the handler and answers the domain 404", async () => {
+    const app = makeApp();
+    // `ObjectIdParam` is a bounded generic string, not `z.uuid()`, precisely so this stays a
+    // `storage/not_found` — the answer that keeps the route from confirming which ids exist.
+    const response = await app.request("/storage/00000000-0000-4000-8000-000000009999", {
+      headers: { "x-user": ADA },
+    });
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe("storage/not_found");
+  });
+
+  test("a malformed id is a 400 — the validator now wins over the handler's 404", async () => {
+    const app = makeApp();
+    // Over the 128-character bound AND unresolvable. The order is deliberate and new: the param
+    // validator runs before the handler, so this is a 400 where it used to be `storage/not_found`.
+    const response = await app.request(`/storage/${OVER_LONG}`, { headers: { "x-user": ADA } });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("a malformed share token is a 400 rather than a lookup that could not have matched", async () => {
+    const app = makeApp();
+    const response = await app.request(`/s/${OVER_LONG}`);
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe("validation/invalid_input");
+  });
+
+  test("the guard runs before the validator — an unauthenticated malformed request is 401, not 400", async () => {
+    const app = makeApp();
+    // Both wrong: no session, and no `size`. Shape is not something a caller learns before it is
+    // verified, so the guard's 401 has to win.
+    const response = await app.request("/storage", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: "a.txt", contentType: "text/plain" }),
+    });
+    expect(response.status).toBe(401);
+    expect((await errorOf(response)).code).toBe("auth/invalid_token");
+  });
+
+  test("abort takes no body, so it declares no json schema and a bodyless POST still works", async () => {
+    const app = makeApp();
+    const created = await init(app, ADA, { path: "a.txt", contentType: "text/plain", size: 5 });
+    const id = (created.json as unknown as { object: { id: string } }).object.id;
+    const response = await app.request(`/storage/${id}/abort`, { method: "POST", headers: { "x-user": ADA } });
+    expect(response.status).toBe(200);
+  });
+
+  test("a complete with no body at all still completes — an absent body reads as an empty one", async () => {
+    const app = makeApp();
+    const created = await init(app, ADA, { path: "a.txt", contentType: "text/plain", size: 5 });
+    const id = (created.json as unknown as { object: { id: string } }).object.id;
+    const row = await db.selectFrom(STORAGE_OBJECTS_TABLE).select("key").where("id", "=", id).executeTakeFirstOrThrow();
+    await bucket.put(row.key, "hello");
+    // No `content-type`, no body: `hono/validator` hands the schema `{}`, which is what the old
+    // `.catch(() => ({}))` produced. A single-PUT upload has no parts to assemble.
+    const response = await app.request(`/storage/${id}/complete`, { method: "POST", headers: { "x-user": ADA } });
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { status: string }).status).toBe("stored");
+  });
+});
+
 describe("verification strategies", () => {
   test("an unauthenticated upload is denied", async () => {
     const response = await makeApp().request("/storage", {

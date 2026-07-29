@@ -28,6 +28,7 @@
     "@pithy-sh/email": "workspace:*",
     "@pithy-sh/secrets": "workspace:*",
     "@pithy-sh/turnstile": "workspace:*",
+    "@pithy-sh/ui-react": "workspace:*",
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
     "kysely": "^0.29.0",

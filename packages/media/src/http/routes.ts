@@ -1,4 +1,6 @@
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
@@ -15,20 +17,23 @@ import {
   listMedia,
   searchDuplicates,
 } from "./handlers";
+import { CreateMediaInput, DuplicatesInput, FinalizeMediaInput, ListMediaQuery, MediaIdParam } from "./schemas";
 
 /**
- * The media routes and their declared verification strategies:
+ * The media routes, their declared verification strategies, and what each accepts:
  *
- *   POST   /media               → upload-init      (bearer | session — mints a URL, creates a record)
- *   POST   /media/duplicates    → duplicate search (bearer | session)
- *   POST   /media/:id/finalize  → finalize upload  (bearer | session — marks stored, dispatches enrichment)
- *   GET    /media/:id           → fetch one        (bearer | session)
- *   GET    /media               → list             (bearer | session)
- *   DELETE /media/:id           → delete           (bearer | session)
+ *   POST   /media               → upload-init      (bearer | session) json: CreateMediaInput
+ *   POST   /media/duplicates    → duplicate search (bearer | session) json: DuplicatesInput
+ *   POST   /media/:id/finalize  → finalize upload  (bearer | session) param: MediaIdParam, json: FinalizeMediaInput
+ *   GET    /media/:id           → fetch one        (bearer | session) param: MediaIdParam
+ *   GET    /media               → list             (bearer | session) query: ListMediaQuery
+ *   DELETE /media/:id           → delete           (bearer | session) param: MediaIdParam
  *
- * Every route is gated by {@link requireAuth} — there is no public media surface. Bytes never proxy
- * through the Worker: upload-init returns a direct-upload URL the client uploads to. Ownership scoping
- * (e.g. filtering by an `userId` extension field) is an adopter concern layered over these routes.
+ * Every route is gated by {@link requireAuth} — there is no public media surface. The validators sit
+ * AFTER the guard on purpose: an unauthenticated request with a malformed body is a 401, not a 400 —
+ * shape is never leaked to a caller who has not been verified. Bytes never proxy through the Worker:
+ * upload-init returns a direct-upload URL the client uploads to. Ownership scoping (e.g. filtering by a
+ * `userId` extension field) is an adopter concern layered over these routes.
  */
 export interface MediaRoutesOptions {
   /** The resolved media config. */
@@ -74,33 +79,38 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
   const resolve = options.resolveDeps ?? defaultResolveDeps(options.config, options.schema);
 
   return (app) => {
-    app.post(`${base}/duplicates`, requireAuth(), async (c) => {
-      const result = await searchDuplicates(await resolve(c), await c.req.json());
+    app.post(`${base}/duplicates`, requireAuth(), zValidator("json", DuplicatesInput, validationHook), async (c) => {
+      const result = await searchDuplicates(await resolve(c), c.req.valid("json"));
       return c.json(result);
     });
 
-    app.post(base, requireAuth(), async (c) => {
-      const result = await createMedia(await resolve(c), await c.req.json());
+    app.post(base, requireAuth(), zValidator("json", CreateMediaInput, validationHook), async (c) => {
+      const result = await createMedia(await resolve(c), c.req.valid("json"));
       return c.json(result, 201);
     });
 
-    app.post(`${base}/:id/finalize`, requireAuth(), async (c) => {
-      const body = await c.req.json().catch(() => ({}));
-      const record = await finalizeMedia(await resolve(c), c.req.param("id"), body);
+    app.post(
+      `${base}/:id/finalize`,
+      requireAuth(),
+      zValidator("param", MediaIdParam, validationHook),
+      zValidator("json", FinalizeMediaInput, validationHook),
+      async (c) => {
+        const record = await finalizeMedia(await resolve(c), c.req.valid("param").id, c.req.valid("json"));
+        return c.json(record);
+      },
+    );
+
+    app.get(`${base}/:id`, requireAuth(), zValidator("param", MediaIdParam, validationHook), async (c) => {
+      const record = await getMedia(await resolve(c), c.req.valid("param").id);
       return c.json(record);
     });
 
-    app.get(`${base}/:id`, requireAuth(), async (c) => {
-      const record = await getMedia(await resolve(c), c.req.param("id"));
-      return c.json(record);
+    app.get(base, requireAuth(), zValidator("query", ListMediaQuery, validationHook), async (c) => {
+      return c.json(await listMedia(await resolve(c), c.req.valid("query")));
     });
 
-    app.get(base, requireAuth(), async (c) => {
-      return c.json(await listMedia(await resolve(c), c.req.query()));
-    });
-
-    app.delete(`${base}/:id`, requireAuth(), async (c) => {
-      return c.json(await deleteMedia(await resolve(c), c.req.param("id")));
+    app.delete(`${base}/:id`, requireAuth(), zValidator("param", MediaIdParam, validationHook), async (c) => {
+      return c.json(await deleteMedia(await resolve(c), c.req.valid("param").id));
     });
   };
 }

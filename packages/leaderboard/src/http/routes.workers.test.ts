@@ -397,3 +397,98 @@ describe("error payloads", () => {
     expect(await res.json()).not.toHaveProperty("detail");
   });
 });
+
+/** The `error` object every rejected request answers with. `Response.json()` is `unknown` under strict mode. */
+const errorOf = async (res: Response): Promise<{ code: string; status: number }> =>
+  ((await res.json()) as { error: { code: string; status: number } }).error;
+
+describe("declared input", () => {
+  test("rejects a malformed param — a board key is a path segment, so its shape is checked on the route line", async () => {
+    // Shape only. `NOT_A_KEY` could never be a configured board (config enforces the same pattern), so
+    // this rejects nothing that resolved before; an unknown but well-shaped key still 404s below.
+    const res = await req(makeApp(CONFIG), "GET", "/leaderboard/NOT_A_KEY/top", { user: "u1" });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("still 404s a well-shaped board key that is simply not configured", async () => {
+    const res = await req(makeApp(CONFIG), "GET", "/leaderboard/nope/top", { user: "u1" });
+    expect(res.status).toBe(404);
+    expect((await errorOf(res)).code).toBe("leaderboard/board_not_found");
+  });
+
+  test("rejects a malformed query", async () => {
+    const res = await req(makeApp(CONFIG), "GET", "/leaderboard/b1/top?limit=lots", { user: "u1" });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("rejects a malformed body", async () => {
+    const res = await req(makeApp(CONFIG), "POST", "/leaderboard/b1", {
+      user: "u1",
+      scopes: SUBMIT,
+      body: { score: "lots" },
+    });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("rejects a JSON body it cannot even parse, as a 400 rather than a crash", async () => {
+    const res = await makeApp(CONFIG).request(
+      "http://x/leaderboard/b1",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-user": "u1", "x-scopes": SUBMIT },
+        body: "{ not json",
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("bounds a moderation target's user id rather than passing an unbounded string to the store", async () => {
+    const res = await req(makeApp(CONFIG), "DELETE", `/leaderboard/b1/entries/${"u".repeat(300)}`, {
+      user: "mod",
+      scopes: ADMIN,
+    });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+});
+
+describe("declared input runs after the guards and before the handler", () => {
+  test("an unauthenticated request with a malformed body is still a 401", async () => {
+    const res = await req(makeApp(CONFIG), "POST", "/leaderboard/b1", { body: { score: "lots" } });
+    expect(res.status).toBe(401);
+  });
+
+  test("an unscoped request with a malformed body is still a 403", async () => {
+    const res = await req(makeApp(CONFIG), "PUT", "/leaderboard/b1/entries/u1/hidden", {
+      user: "mod",
+      body: { hidden: "yes" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("an unknown board with a malformed body is a 400, not the 404 it used to be", async () => {
+    // The order changed deliberately with the move to route-line validation: the request was never
+    // well-formed enough to have a board, so the shape answers before the board lookup does.
+    const res = await req(makeApp(CONFIG), "POST", "/leaderboard/nope", {
+      user: "u1",
+      scopes: SUBMIT,
+      body: { score: "lots" },
+    });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("the same inversion on the consent route", async () => {
+    const res = await req(makeApp(CONFIG), "PUT", "/leaderboard/nope/me/visibility", {
+      user: "u1",
+      body: { visible: "maybe" },
+    });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+});

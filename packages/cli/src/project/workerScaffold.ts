@@ -62,6 +62,8 @@ function workerFiles(name: string): Record<string, string> {
     "readySignal": "Ready on https?://"
     // "preferredPort": 8787   // a hint only — the feature's reserved port block is authoritative.
     // "command": ["bun", "run", "dev"]   // set this for a non-Worker process (e.g. a Vite frontend).
+    //   {port} in any element of command becomes this worker's pinned port. pithy dev spawns with no
+    //   shell, so an env var like $PORT on the argv would stay a literal.
   }
 }
 `;

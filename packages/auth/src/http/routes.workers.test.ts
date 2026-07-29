@@ -350,6 +350,70 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(400);
+    // The route-line `zValidator("json", RevokeDeviceBody)` now rejects it, so the code is the shared
+    // validation code rather than the hand-rolled `validation/invalid_input` the handler used to throw.
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("devices/revoke with an over-long deviceId is a 400 — the bound is on the route line", async () => {
+    const { token } = await signIn();
+    const res = await buildApp(buildWiring()).request(
+      "/auth/devices/revoke",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ deviceId: "d".repeat(257) }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("devices/revoke with an unparseable body is a 400, not a 500", async () => {
+    const { token } = await signIn();
+    const res = await buildApp(buildWiring()).request(
+      "/auth/devices/revoke",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: "{not json",
+      },
+      appEnv(),
+    );
+    // Hono's validator raises `HTTPException(400)` on an unreadable JSON body; `pithyErrorHandler`
+    // maps it to the same payload a schema failure produces.
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+  });
+
+  test("devices/revoke checks auth before the body — an unauthenticated bad body is 401, not 400", async () => {
+    // Pins the guard order: `requireAuth()` and `csrf` run before the validator, so an invalid body
+    // never leaks the fact that the route exists to an unauthenticated caller.
+    const res = await buildApp(buildWiring()).request(
+      "/auth/devices/revoke",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      appEnv(),
+    );
+    expect(res.status).toBe(401);
+    expect((await res.json<{ error: { code: string } }>()).error.code).toBe("auth/invalid_token");
+  });
+
+  test("devices/revoke with a well-formed but unknown deviceId reaches the handler and revokes nothing", async () => {
+    // The schema bounds the shape only — resolution stays in the handler, so an unknown id is a 200
+    // with `revoked: 0`, never a 400.
+    const { token } = await signIn(DEVICE_HEADERS);
+    const res = await buildApp(buildWiring()).request(
+      "/auth/devices/revoke",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ deviceId: "no-such-device" }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json<{ revoked: number }>()).revoked).toBe(0);
   });
 
   test("turnstile auto-gates the OTP send route — a tokenless request is denied", async () => {

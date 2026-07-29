@@ -177,6 +177,30 @@ monorepo. Read the companion docs before any structural or surface decision:
   default-denied), or `public`. No implicit auth. **Turnstile is a humanity check applied
   as composable middleware, not an identity strategy** (it can stack on top of any of the
   above, e.g. a `public` signup route that still requires a Turnstile token).
+- **Every route also declares a request contract, and that is as mandatory as the
+  verification strategy.** How a caller is verified and what a caller may send are two
+  halves of one declaration, and both belong on the route line:
+  `zValidator("param" | "query" | "json", Schema, validationHook)` from
+  `@hono/zod-validator`, with the handler reading `c.req.valid(target)`. `validationHook`
+  (`@pithy-sh/core/src/http/validation`) is the only hook — it maps the `ZodError` through
+  `fromZodError`, so a bad request renders as a `validation/invalid_input` 400 through
+  `pithyErrorHandler` like every other failure, never through zod-validator's own response.
+  Request schemas live in the capability's `src/http/schemas.ts`. **Never parse input inside
+  a handler** — a handler takes typed values, so the route signature carries the contract.
+- **Two gates keep it true, and neither is optional.** A Biome GritQL plugin
+  (`plugins/no-raw-request-input.grit`) fails any `c.req.param(`, `c.req.query(`, or
+  `c.req.json(` under `packages/*/src/http/**`: with the raw accessors gone, `c.req.valid()`
+  is the only way to reach query or body, so unvalidated input is unreadable rather than
+  merely discouraged. And each capability's `src/http/routeContract.test.ts` asserts
+  `uncoveredParamRoutes(app)` is empty, so a `:segment` with no param validator fails CI.
+  Params need the positive check because they have no accessor to ban.
+- **Validators go after the guards, never before** —
+  `app.post(path, requireAuth(), requireScope(…), zValidator(…), handler)`. A validator
+  ahead of a guard turns a 401/403 into a 400 and tells an unauthenticated caller which
+  requests were well-formed. Config-backed resolution (`board()`, `currency()`,
+  `resolveGame()`) stays in the handler and keeps raising its domain 404: a param schema
+  constrains the string, it never replaces the lookup, and it is never built from the
+  configured key set.
 - `core` defines the `AuthContext` seam and request `Variables`; only `@pithy-sh/auth`
   implements bearer/session validation. Other capabilities use `requireAuth()` / the seam.
 
@@ -358,5 +382,7 @@ monorepo. Read the companion docs before any structural or surface decision:
 
 A capability is "done" only when it ships: the package, its manifest, namespaced
 migrations with tested rollbacks, its routes/middleware/workflows with declared
-verification strategies, `pithy add <capability>` wiring, tests, a security review, and
+verification strategies **and declared request contracts** (§HTTP — a validator on every
+input surface, schemas in `src/http/schemas.ts`, and a `routeContract.test.ts` proving no
+`:segment` is unvalidated), `pithy add <capability>` wiring, tests, a security review, and
 docs. Docs are part of the product, not an afterthought.

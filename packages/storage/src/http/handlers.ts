@@ -1,5 +1,3 @@
-import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
-import type { z } from "zod";
 import type { StorageConfig } from "../config/config";
 import { StorageShare } from "../data/share";
 import { StorageObject } from "../data/storageObject";
@@ -15,7 +13,7 @@ import { deriveObjectKey } from "../object/key";
 import { collectParts, needsMultipart, planMultipart } from "../object/multipart";
 import type { ObjectStore, UploadedPart } from "../object/store";
 import { assertWithinQuota, insertReservingQuota, updateSettlingQuota } from "../quota/quota";
-import {
+import type {
   CompleteUploadInput,
   CopyObjectInput,
   CreateShareInput,
@@ -28,6 +26,12 @@ import {
  * The storage request handlers — pure functions over injected dependencies, so every branch is tested
  * against real D1 and real R2 without standing up a Worker. `routes.ts` is a thin shell that resolves
  * these dependencies from the request env and maps their results onto responses.
+ *
+ * **Request shape is not validated here.** Each route declares its own schemas with
+ * `zValidator(target, Schema, validationHook)` and hands the handler the already-parsed value, so a
+ * malformed request is refused before a dependency is resolved or a row is read. What survives in
+ * these handlers is everything a request schema cannot express — ownership, quota, upload state —
+ * which is the whole of what they were ever really about.
  *
  * **The object key never leaves this module.** Every client-facing shape goes through {@link view},
  * which drops `key` and `uploadId`. That is not tidiness: the key is the only thing a presigned URL
@@ -97,13 +101,6 @@ export interface ShareView {
   objectId: string;
   expiresAt: Date | null;
   createdAt: Date;
-}
-
-/** Parse input at the HTTP boundary, mapping a Zod failure to `validation/invalid_input` (400). */
-function parseInput<S extends z.ZodType>(schema: S, data: unknown): z.output<S> {
-  const result = schema.safeParse(data);
-  if (!result.success) throw fromZodError(result.error);
-  return result.data;
 }
 
 /** Drop the server-only fields. The single place a row becomes something a client may see. */
@@ -183,8 +180,7 @@ async function saveObject(deps: HandlerDeps, object: StorageObject): Promise<Sto
  * multipart upload exists to clean up. When the conditional insert loses the race anyway, that
  * multipart upload is aborted — a refused init leaves R2 holding nothing.
  */
-export async function initUpload(deps: HandlerDeps, body: unknown): Promise<UploadInitResult> {
-  const input = parseInput(CreateUploadInput, body);
+export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): Promise<UploadInitResult> {
   const now = deps.now();
 
   await assertWithinQuota({
@@ -270,8 +266,11 @@ export async function initUpload(deps: HandlerDeps, body: unknown): Promise<Uplo
  * lifecycle. `updateSettlingQuota` evaluates the sum inside the update, so the second completion sees
  * the first (`quota/quota.ts`).
  */
-export async function completeUpload(deps: HandlerDeps, id: string, body: unknown): Promise<StorageObjectView> {
-  const input = parseInput(CompleteUploadInput, body ?? {});
+export async function completeUpload(
+  deps: HandlerDeps,
+  id: string,
+  input: CompleteUploadInput,
+): Promise<StorageObjectView> {
   const object = await loadObject(deps, id);
   assertOwner(object, deps.ownerId);
   // Completing twice is a no-op rather than an error: a client that retried a dropped response gets
@@ -463,9 +462,8 @@ const DEFAULT_LIST_LIMIT = 50;
  */
 export async function listObjects(
   deps: HandlerDeps,
-  rawQuery: unknown,
+  query: ListObjectsQuery,
 ): Promise<{ objects: StorageObjectView[]; cursor?: string }> {
-  const query = parseInput(ListObjectsQuery, rawQuery);
   const limit = query.limit ?? DEFAULT_LIST_LIMIT;
   const after = decodeCursor(query.cursor);
 
@@ -524,8 +522,11 @@ export async function presignObject(deps: HandlerDeps, id: string): Promise<{ ur
 }
 
 /** Rename a file, change who may read it, or both. The key never moves — only the row changes. */
-export async function updateObject(deps: HandlerDeps, id: string, body: unknown): Promise<StorageObjectView> {
-  const input = parseInput(UpdateObjectInput, body ?? {});
+export async function updateObject(
+  deps: HandlerDeps,
+  id: string,
+  input: UpdateObjectInput,
+): Promise<StorageObjectView> {
   const object = await loadObject(deps, id);
   assertOwner(object, deps.ownerId);
   return view(
@@ -547,8 +548,7 @@ export async function updateObject(deps: HandlerDeps, id: string, body: unknown)
  * duplicate bytes into their own quota on the owner's storage bill, which is a decision an adopter
  * should make explicitly rather than inherit.
  */
-export async function copyObject(deps: HandlerDeps, id: string, body: unknown): Promise<StorageObjectView> {
-  const input = parseInput(CopyObjectInput, body);
+export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjectInput): Promise<StorageObjectView> {
   const source = await loadObject(deps, id);
   assertOwner(source, deps.ownerId);
   assertStored(source);
@@ -614,8 +614,7 @@ export async function deleteObject(deps: HandlerDeps, id: string): Promise<{ id:
 }
 
 /** Mint a revocable share link for one file. */
-export async function createShare(deps: HandlerDeps, id: string, body: unknown): Promise<ShareView> {
-  const input = parseInput(CreateShareInput, body ?? {});
+export async function createShare(deps: HandlerDeps, id: string, input: CreateShareInput): Promise<ShareView> {
   const object = await loadObject(deps, id);
   assertOwner(object, deps.ownerId);
   assertStored(object);

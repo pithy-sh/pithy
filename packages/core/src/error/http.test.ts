@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { describe, expect, test } from "vitest";
 import { HttpError, pithyErrorHandler } from "./http";
 import { ForbiddenError, PithyError } from "./pithyError";
@@ -48,6 +49,35 @@ describe("pithyErrorHandler (Hono onError)", () => {
     expect(body.error.code).toBe("core/internal");
     expect(body.error.message).toBe("Something unexpected happened.");
     expect(JSON.stringify(body)).not.toContain("raw stack-revealing detail");
+  });
+
+  test("a Hono HTTPException 400 becomes validation/invalid_input, not a 500", async () => {
+    const app = new Hono();
+    app.onError(pithyErrorHandler);
+    app.get("/", () => {
+      throw new HTTPException(400, { message: "Malformed JSON in request body" });
+    });
+
+    const res = await app.request("/");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error.code).toBe("validation/invalid_input");
+    expect(body.error.message).toBe("The request body could not be parsed.");
+    expect(JSON.stringify(body)).not.toContain("Malformed JSON");
+  });
+
+  test("a non-400 HTTPException stays a generic 500 — we have no public wording for it", async () => {
+    const app = new Hono();
+    app.onError(pithyErrorHandler);
+    app.get("/", () => {
+      throw new HTTPException(418, { message: "internal framework wording" });
+    });
+
+    const res = await app.request("/");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error.code).toBe("core/internal");
+    expect(JSON.stringify(body)).not.toContain("internal framework wording");
   });
 
   test("a thrown unknown is still wrapped — the original is the PithyError cause", async () => {

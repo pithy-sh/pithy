@@ -1,8 +1,9 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
-import type { z } from "zod";
 import type { LeaderboardConfig } from "../config/config";
 import { BOOKMARK_HEADER, leaderboardSession, readBookmark } from "../session/bookmark";
 import { requireAdminScope, requireAuth, requireSubmitScope } from "./guard";
@@ -18,26 +19,49 @@ import {
   setOwnVisibility,
   submitScore,
 } from "./handlers";
-import { AroundQuery, TopQuery, WindowQuery } from "./schemas";
+import {
+  AroundQuery,
+  BoardParam,
+  EntryParam,
+  HideBody,
+  SegmentBody,
+  SubmitScoreBody,
+  TopQuery,
+  VisibilityBody,
+  WindowQuery,
+} from "./schemas";
 
 /**
- * The leaderboard routes and their declared verification strategies:
+ * The leaderboard routes, each declaring both how a caller is verified and what it may send:
  *
- *   GET    /leaderboard                          → list boards       (bearer | session)
- *   POST   /leaderboard/:board                   → submit a score    (bearer | session + submit scope)
- *   GET    /leaderboard/:board/top               → top-N page        (bearer | session)
- *   POST   /leaderboard/:board/segment           → friends/cohort    (bearer | session)
- *   GET    /leaderboard/:board/me                → my rank           (bearer | session)
- *   GET    /leaderboard/:board/around            → around me         (bearer | session)
- *   PUT    /leaderboard/:board/me/visibility     → my consent        (bearer | session)
- *   PUT    /leaderboard/:board/entries/:userId/hidden → hide entry   (bearer | session + admin scope)
- *   DELETE /leaderboard/:board/entries/:userId   → remove entry      (bearer | session + admin scope)
+ *   GET    /leaderboard                          → list boards    (bearer | session) — takes nothing
+ *   POST   /leaderboard/:board                   → submit a score (bearer | session + submit scope)
+ *                                                  param BoardParam, json SubmitScoreBody
+ *   GET    /leaderboard/:board/top               → top-N page     (bearer | session)
+ *                                                  param BoardParam, query TopQuery
+ *   POST   /leaderboard/:board/segment           → friends/cohort (bearer | session)
+ *                                                  param BoardParam, json SegmentBody
+ *   GET    /leaderboard/:board/me                → my rank        (bearer | session)
+ *                                                  param BoardParam, query WindowQuery
+ *   GET    /leaderboard/:board/around            → around me      (bearer | session)
+ *                                                  param BoardParam, query AroundQuery
+ *   PUT    /leaderboard/:board/me/visibility     → my consent     (bearer | session)
+ *                                                  param BoardParam, query WindowQuery, json VisibilityBody
+ *   PUT    /leaderboard/:board/entries/:userId/hidden → hide entry (bearer | session + admin scope)
+ *                                                  param EntryParam, query WindowQuery, json HideBody
+ *   DELETE /leaderboard/:board/entries/:userId   → remove entry   (bearer | session + admin scope)
+ *                                                  param EntryParam, query WindowQuery
  *
  * Every route is gated by {@link requireAuth} — there is no public leaderboard surface, because an entry
  * with no authenticated player has nothing to key on. Submit additionally requires the board's submit
  * scope while `serverAuthoritative` is on (the default), and the two moderation routes require the admin
  * scope. Turnstile, if the adopter runs it, stacks on top as middleware — it is a humanity check, not an
  * identity, so it never replaces any of the above.
+ *
+ * Validators sit **after** the guards, never before: who you are is decided before what you sent, so an
+ * unauthorised request with a malformed body is still a 401. They sit **before** the handler, which is
+ * what moves a malformed request ahead of the board lookup — an unknown board sent a bad body now answers
+ * 400 rather than 404. The request was never well-formed enough to have a board.
  */
 export interface LeaderboardRoutesOptions {
   config: LeaderboardConfig;
@@ -90,56 +114,86 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
     return c.json(body as object, status);
   };
 
-  /**
-   * Parse the query string, mapping a Zod failure to a `validation/invalid_input` 400. Letting the raw
-   * ZodError escape would surface a malformed `?limit=` as a 500 — our fault, not the caller's.
-   */
-  const query = <S extends z.ZodType>(c: Context<PithyHonoEnv>, schema: S): z.output<S> => {
-    const result = schema.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
-    if (!result.success) throw fromZodError(result.error);
-    return result.data;
-  };
-
   return (app) => {
     app.get(base, requireAuth(), (c) => respond(c, false, (deps) => listBoards(deps)));
 
     // Static segments are registered before `:board`-rooted reads so they cannot be shadowed.
-    app.post(`${base}/:board/segment`, requireAuth(), async (c) => {
-      const body = await c.req.json();
-      return respond(c, false, (deps) => readSegment(deps, c.req.param("board"), body));
-    });
-
-    app.get(`${base}/:board/top`, requireAuth(), (c) =>
-      respond(c, false, (deps) => readTop(deps, c.req.param("board"), query(c, TopQuery))),
+    app.post(
+      `${base}/:board/segment`,
+      requireAuth(),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("json", SegmentBody, validationHook),
+      (c) => respond(c, false, (deps) => readSegment(deps, c.req.valid("param").board, c.req.valid("json"))),
     );
 
-    app.get(`${base}/:board/me`, requireAuth(), (c) =>
-      respond(c, false, (deps) => readOwnRank(deps, c.req.param("board"), query(c, WindowQuery))),
+    app.get(
+      `${base}/:board/top`,
+      requireAuth(),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("query", TopQuery, validationHook),
+      (c) => respond(c, false, (deps) => readTop(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
-    app.get(`${base}/:board/around`, requireAuth(), (c) =>
-      respond(c, false, (deps) => readAround(deps, c.req.param("board"), query(c, AroundQuery))),
+    app.get(
+      `${base}/:board/me`,
+      requireAuth(),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("query", WindowQuery, validationHook),
+      (c) => respond(c, false, (deps) => readOwnRank(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
-    app.put(`${base}/:board/me/visibility`, requireAuth(), async (c) => {
-      const body = await c.req.json();
-      return respond(c, true, (deps) => setOwnVisibility(deps, c.req.param("board"), query(c, WindowQuery), body));
-    });
-
-    app.put(`${base}/:board/entries/:userId/hidden`, requireAuth(), requireAdminScope(adminScope), async (c) => {
-      const body = await c.req.json();
-      return respond(c, true, (deps) =>
-        hideEntry(deps, c.req.param("board"), c.req.param("userId"), query(c, WindowQuery), body),
-      );
-    });
-
-    app.delete(`${base}/:board/entries/:userId`, requireAuth(), requireAdminScope(adminScope), (c) =>
-      respond(c, true, (deps) => removeEntry(deps, c.req.param("board"), c.req.param("userId"), query(c, WindowQuery))),
+    app.get(
+      `${base}/:board/around`,
+      requireAuth(),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("query", AroundQuery, validationHook),
+      (c) => respond(c, false, (deps) => readAround(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
-    app.post(`${base}/:board`, requireAuth(), requireSubmitScope(serverAuthoritative, submitScope), async (c) => {
-      const body = await c.req.json();
-      return respond(c, true, (deps) => submitScore(deps, c.req.param("board"), body), 201);
-    });
+    app.put(
+      `${base}/:board/me/visibility`,
+      requireAuth(),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("query", WindowQuery, validationHook),
+      zValidator("json", VisibilityBody, validationHook),
+      (c) =>
+        respond(c, true, (deps) =>
+          setOwnVisibility(deps, c.req.valid("param").board, c.req.valid("query"), c.req.valid("json")),
+        ),
+    );
+
+    app.put(
+      `${base}/:board/entries/:userId/hidden`,
+      requireAuth(),
+      requireAdminScope(adminScope),
+      zValidator("param", EntryParam, validationHook),
+      zValidator("query", WindowQuery, validationHook),
+      zValidator("json", HideBody, validationHook),
+      (c) => {
+        const { board, userId } = c.req.valid("param");
+        return respond(c, true, (deps) => hideEntry(deps, board, userId, c.req.valid("query"), c.req.valid("json")));
+      },
+    );
+
+    app.delete(
+      `${base}/:board/entries/:userId`,
+      requireAuth(),
+      requireAdminScope(adminScope),
+      zValidator("param", EntryParam, validationHook),
+      zValidator("query", WindowQuery, validationHook),
+      (c) => {
+        const { board, userId } = c.req.valid("param");
+        return respond(c, true, (deps) => removeEntry(deps, board, userId, c.req.valid("query")));
+      },
+    );
+
+    app.post(
+      `${base}/:board`,
+      requireAuth(),
+      requireSubmitScope(serverAuthoritative, submitScope),
+      zValidator("param", BoardParam, validationHook),
+      zValidator("json", SubmitScoreBody, validationHook),
+      (c) => respond(c, true, (deps) => submitScore(deps, c.req.valid("param").board, c.req.valid("json")), 201),
+    );
   };
 }

@@ -1,5 +1,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Hono } from "hono";
 import { resolveSigningKeys } from "../crypto/signingKey";
@@ -14,6 +16,7 @@ import { EmailInvalidTokenError } from "../error/errors";
 import { recordEvent } from "../send/events";
 import { normalizeEmail, suppress } from "../send/suppression";
 import { CALLBACK_BASE } from "../templates/engine";
+import { CallbackTokenParam, UnsubscribeQuery } from "./schemas";
 
 /**
  * The callback routes — click, open, and unsubscribe. Every link in a tracked email points here with
@@ -21,6 +24,16 @@ import { CALLBACK_BASE } from "../templates/engine";
  * session, and the token's signature is the only gate. A forged, altered, or expired token is rejected
  * (`email/invalid_token` → 400) before anything is recorded. The click route only ever 302-redirects to
  * an `http(s)` destination carried inside the signed token, so it cannot be turned into an open redirect.
+ *
+ * | Method | Path                          | Strategy      | Validates |
+ * |--------|-------------------------------|---------------|-----------|
+ * | GET    | /_pithy/email/c/:token        | signed token  | param `CallbackTokenParam` |
+ * | GET    | /_pithy/email/o/:token        | signed token  | param `CallbackTokenParam` |
+ * | GET    | /_pithy/email/u/:token        | signed token  | param `CallbackTokenParam`, query `UnsubscribeQuery` |
+ *
+ * The validators bound shape and size only — the signature check stays in the handler, so a well-formed
+ * token that is forged or expired is still `email/invalid_token` (400), not `validation/invalid_input`.
+ * No route reads a body.
  *
  * The per-request handlers take the signing-key version set directly so they are unit-testable without
  * standing up the secrets store; `registerCallbacks` is the thin shell that resolves the keys from the
@@ -138,27 +151,32 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     };
   };
 
-  app.get(`${CALLBACK_BASE}/c/:token`, async (c) => {
+  app.get(`${CALLBACK_BASE}/c/:token`, zValidator("param", CallbackTokenParam, validationHook), async (c) => {
     const { db, keys } = await setup(c.env as unknown as CallbackEnv);
-    return handleClick(db, keys, c.req.param("token"), new Date());
+    return handleClick(db, keys, c.req.valid("param").token, new Date());
   });
 
-  app.get(`${CALLBACK_BASE}/o/:token`, async (c) => {
+  app.get(`${CALLBACK_BASE}/o/:token`, zValidator("param", CallbackTokenParam, validationHook), async (c) => {
     const { db, keys } = await setup(c.env as unknown as CallbackEnv);
-    return handleOpen(db, keys, c.req.param("token"), new Date());
+    return handleOpen(db, keys, c.req.valid("param").token, new Date());
   });
 
-  app.get(`${CALLBACK_BASE}/u/:token`, async (c) => {
-    const env = c.env as unknown as CallbackEnv;
-    const { db, suppressionDb, keys } = await setup(env);
-    return handleUnsubscribe(
-      db,
-      suppressionDb,
-      keys,
-      c.req.param("token"),
-      new Date(),
-      c.req.query("reason"),
-      env.ENVIRONMENT,
-    );
-  });
+  app.get(
+    `${CALLBACK_BASE}/u/:token`,
+    zValidator("param", CallbackTokenParam, validationHook),
+    zValidator("query", UnsubscribeQuery, validationHook),
+    async (c) => {
+      const env = c.env as unknown as CallbackEnv;
+      const { db, suppressionDb, keys } = await setup(env);
+      return handleUnsubscribe(
+        db,
+        suppressionDb,
+        keys,
+        c.req.valid("param").token,
+        new Date(),
+        c.req.valid("query").reason,
+        env.ENVIRONMENT,
+      );
+    },
+  );
 }

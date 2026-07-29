@@ -34,6 +34,7 @@ That's Phase 0: `pithy init` takes an empty directory to a Worker that boots, va
 - **`pithy.config.ts`** — the entire user-owned surface. Your app is a capability like any other: routes, middleware, databases, KV namespaces, and the bindings they need.
 - **A Worker that boots.** `createBackend(config)` assembles your capabilities into one Hono app — typed `db`/`kv` registries on every request, fail-fast binding validation, and `GET /health`.
 - **`pithy migrate`.** One ordered, per-database migration registry, run against an `--env` (`--rollback` to step back). Kysely migrations with tested rollbacks — not raw SQL, not wrangler's D1 migrations.
+- **`pithy ui add react`.** A React 19 front end scaffolded into a Worker you already have, on the same origin as its API. One dev server, one build, one deploy. See [`docs/UI.md`](docs/UI.md).
 
 Every command is agent-drivable: full flags, no required prompt, `--json` everywhere. Humans and agents drive the same CLI.
 
@@ -44,6 +45,7 @@ Phase 0 — the foundation. `init`, the Worker contract, the migration runner, a
 ## Docs
 
 - [`docs/CLI.md`](docs/CLI.md) — command behavior, flags, output.
+- [`docs/UI.md`](docs/UI.md) — front ends: `pithy ui`, the React stub, one origin.
 - [`docs/STACK.md`](docs/STACK.md) — the toolchain.
 - [`docs/BRAND.md`](docs/BRAND.md) — identity and voice.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to work in this repo.

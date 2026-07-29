@@ -1,4 +1,4 @@
-import { fromZodError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { VectorIndexConfig } from "../config/config";
 import type { VectorDocument } from "../data/document";
 import type { DocumentStore } from "../data/documents";
@@ -7,12 +7,16 @@ import { embedBatched } from "../embed/embed";
 import { compileFilter } from "../index/filter";
 import { deleteVectors, queryVectors, upsertVectors, type VectorStore, type VectorUpsert } from "../index/index";
 import type { MetadataIndexDescriptor } from "../index/metadata";
-import { QueryInput, UpsertDocumentsInput, type VectorDocumentInput } from "./schemas";
+import type { QueryInput, UpsertDocumentsInput, VectorDocumentInput } from "./schemas";
 
 /**
  * The vector route handlers, over an injected {@link HandlerDeps} rather than a request context — so every
  * one of them is unit-tested against fakes with no Worker, no Vectorize, and no network. Vectorize has no
  * local emulation, so this is the only way any of this gets a test at all.
+ *
+ * Nothing here parses a request. Shape is declared on the route line with `zValidator`, so a handler is
+ * handed a value that has already been validated and takes it typed — what is left in these functions is
+ * the ordering, the embedding, and the Vectorize ceilings, which are the parts a schema cannot state.
  *
  * Two orderings here are load-bearing and are the reason these are handlers rather than three lines each.
  *
@@ -77,19 +81,13 @@ export interface QueryResult {
   matches: QueryMatchResult[];
 }
 
-/** Normalize the two accepted write shapes — a batch, or a bare document — into one list. */
-function documentsOf(body: unknown): VectorDocumentInput[] {
-  const parsed = UpsertDocumentsInput.safeParse(body);
-  if (!parsed.success) throw fromZodError(parsed.error);
-  return "documents" in parsed.data ? [...parsed.data.documents] : [parsed.data];
-}
-
 /**
  * Write one or many documents into an index. Text is embedded with the index's pinned model; a supplied
  * `values` array is inserted as-is. Ids may be supplied to make the write idempotent.
  */
-export async function upsertDocuments(deps: HandlerDeps, body: unknown): Promise<UpsertResult> {
-  const inputs = documentsOf(body);
+export async function upsertDocuments(deps: HandlerDeps, body: UpsertDocumentsInput): Promise<UpsertResult> {
+  // The two accepted write shapes — a batch, or a bare document — normalized into one list.
+  const inputs: VectorDocumentInput[] = "documents" in body ? [...body.documents] : [body];
   const at = deps.now();
 
   // Embed every text in one call: Workers AI charges per request, and a batch keeps the vectors of one
@@ -145,11 +143,7 @@ export async function upsertDocuments(deps: HandlerDeps, body: unknown): Promise
  * neither values nor metadata is requested, which both keeps the response small and raises the topK ceiling
  * from 50 to 100 — the content comes from D1, where it is authoritative anyway.
  */
-export async function queryDocuments(deps: HandlerDeps, body: unknown): Promise<QueryResult> {
-  const parsed = QueryInput.safeParse(body);
-  if (!parsed.success) throw fromZodError(parsed.error);
-  const input = parsed.data;
-
+export async function queryDocuments(deps: HandlerDeps, input: QueryInput): Promise<QueryResult> {
   const vector = input.values ?? ((await embedBatched(deps.ai, deps.index, [input.text as string]))[0] as number[]);
   const filter = input.filter ? compileFilter(deps.filterable, input.filter) : undefined;
 

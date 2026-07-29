@@ -1,7 +1,8 @@
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
-import type { z } from "zod";
 import type { RatingConfig, ResolvedRatingGame } from "../config/config";
 import { resolveGame } from "../config/config";
 import { ratingStore } from "../data/store";
@@ -10,17 +11,21 @@ import { RatingGameNotFoundError } from "../error/errors";
 import { classifyLevel } from "../experience/xp";
 import { recordOutcome } from "../record/record";
 import { requireAuth, requireRecordScope } from "./guard";
-import { RecordOutcomeBody } from "./schemas";
+import { RatingGameParams, RatingPlayerParams, RecordOutcomeBody } from "./schemas";
 
 /**
  * The rating capability's HTTP surface. Three routes, every one `requireAuth()`-gated — there is no
  * public surface:
  *
- * | Method | Path                                  | Strategy            |
- * |--------|---------------------------------------|---------------------|
- * | POST   | /rating/games/:game/outcomes          | bearer \| session + record scope |
- * | GET    | /rating/games/:game/me                | bearer \| session   |
- * | GET    | /rating/games/:game/players/:userId   | bearer \| session   |
+ * | Method | Path                                  | Strategy            | Validates |
+ * |--------|---------------------------------------|---------------------|-----------|
+ * | POST   | /rating/games/:game/outcomes          | bearer \| session + record scope | param `RatingGameParams`, json `RecordOutcomeBody` |
+ * | GET    | /rating/games/:game/me                | bearer \| session   | param `RatingGameParams` |
+ * | GET    | /rating/games/:game/players/:userId   | bearer \| session   | param `RatingPlayerParams` |
+ *
+ * Validators run **after** the guards, so an unauthenticated or unscoped caller is still denied 401/403
+ * whatever it sends. A param schema bounds the segment's shape only — resolving the key against the
+ * configured games stays in the handler, and an unknown game is still a `rating/game_not_found` 404.
  *
  * Recording is server-authoritative by default: a client cannot report a win. Reads honor the game's
  * `hideSkill` flag — a hidden rating returns XP, rank, and games but a `null` skill number.
@@ -54,9 +59,11 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
       `${base}/games/:game/outcomes`,
       requireAuth(),
       requireRecordScope(config.serverAuthoritative, config.recordScope),
+      zValidator("param", RatingGameParams, validationHook),
+      zValidator("json", RecordOutcomeBody, validationHook),
       async (c) => {
-        const resolved = game(games, c.req.param("game"));
-        const body = parse(RecordOutcomeBody, await c.req.json().catch(() => ({})));
+        const resolved = game(games, c.req.valid("param").game);
+        const body = c.req.valid("json");
         const recorded = await recordOutcome(ratingStore(ratingDatabase(dbOf(c))), resolved, {
           ranks: body.ranks,
           teams: body.teams,
@@ -67,15 +74,26 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
       },
     );
 
-    app.get(`${base}/games/:game/me`, requireAuth(), async (c) => {
-      const resolved = game(games, c.req.param("game"));
-      return c.json(await view(c, resolved, userId(c)));
-    });
+    app.get(
+      `${base}/games/:game/me`,
+      requireAuth(),
+      zValidator("param", RatingGameParams, validationHook),
+      async (c) => {
+        const resolved = game(games, c.req.valid("param").game);
+        return c.json(await view(c, resolved, userId(c)));
+      },
+    );
 
-    app.get(`${base}/games/:game/players/:userId`, requireAuth(), async (c) => {
-      const resolved = game(games, c.req.param("game"));
-      return c.json(await view(c, resolved, c.req.param("userId")));
-    });
+    app.get(
+      `${base}/games/:game/players/:userId`,
+      requireAuth(),
+      zValidator("param", RatingPlayerParams, validationHook),
+      async (c) => {
+        const params = c.req.valid("param");
+        const resolved = game(games, params.game);
+        return c.json(await view(c, resolved, params.userId));
+      },
+    );
   };
 }
 
@@ -112,10 +130,4 @@ function dbOf(c: Context<PithyHonoEnv>): D1Database {
   const db = c.env.DB as D1Database | undefined;
   if (!db) throw new InternalError({ detail: "The rating routes require a `DB` D1 binding." });
   return db;
-}
-
-function parse<T>(schema: z.ZodType<T>, data: unknown): T {
-  const result = schema.safeParse(data);
-  if (!result.success) throw fromZodError(result.error);
-  return result.data;
 }

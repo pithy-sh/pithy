@@ -1,6 +1,8 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import type { StorageConfig } from "../config/config";
@@ -25,6 +27,17 @@ import {
   updateObject,
 } from "./handlers";
 import {
+  CompleteUploadInput,
+  CopyObjectInput,
+  CreateShareInput,
+  CreateUploadInput,
+  ListObjectsQuery,
+  ObjectIdParam,
+  ObjectReadQuery,
+  ShareTokenParam,
+  UpdateObjectInput,
+} from "./schemas";
+import {
   parseConditions,
   parseRangeHeader,
   rangeNotSatisfiable,
@@ -34,23 +47,42 @@ import {
 } from "./serve";
 
 /**
- * The storage routes and their declared verification strategies:
+ * The storage routes, their declared verification strategies, and what each accepts:
  *
  *   POST   /storage                 → start an upload            (bearer | session)
+ *                                     json: CreateUploadInput
  *   GET    /storage                 → list your files            (bearer | session, owner-scoped)
+ *                                     query: ListObjectsQuery
  *   DELETE /storage/shares/:token   → revoke a share             (bearer | session, owner-scoped)
+ *                                     param: ShareTokenParam
  *   POST   /storage/:id/complete    → finalize a multipart       (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam, json: CompleteUploadInput
  *   POST   /storage/:id/abort       → abandon an upload          (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam — no body
  *   GET    /storage/:id/parts       → resume a multipart         (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam
  *   POST   /storage/:id/copy        → server-side copy           (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam, json: CopyObjectInput
  *   POST   /storage/:id/shares      → mint a revocable share     (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam, json: CreateShareInput
  *   GET    /storage/:id/url         → presigned direct URL       (bearer | session, owner-or-public)
+ *                                     param: ObjectIdParam
  *   GET    /storage/:id             → stream the bytes           (public when `visibility: 'public'`,
  *                                                                 otherwise bearer | session + owner)
+ *                                     param: ObjectIdParam, query: ObjectReadQuery
  *   HEAD   /storage/:id             → metadata only              (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam
  *   PATCH  /storage/:id             → rename or change access    (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam, json: UpdateObjectInput
  *   DELETE /storage/:id             → delete file and row        (bearer | session, owner-scoped)
+ *                                     param: ObjectIdParam
  *   GET    /s/:token                → fetch via a share link     (public — the token is the credential)
+ *                                     param: ShareTokenParam, query: ObjectReadQuery
+ *
+ * **Every validator sits after the guard.** An unauthenticated request with a malformed body is a
+ * 401, never a 400 — shape is not something a caller learns before being verified. `POST
+ * /storage/:id/abort` carries no json validator because it reads no body: adding one would 400 the
+ * bodyless POST every client sends today.
  *
  * `GET /storage/:id` is the one route with two strategies, because a public file must be readable by
  * someone with no session at all. It is therefore **not** wrapped in {@link requireAuth}: the guard
@@ -140,6 +172,7 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
     c: Context<PithyHonoEnv>,
     deps: HandlerDeps,
     object: Awaited<ReturnType<typeof readableObject>>,
+    download: boolean,
   ) => {
     const requested = parseRangeHeader(c.req.header("range"), object.size);
     if (requested.kind === "unsatisfiable") return rangeNotSatisfiable(object.size ?? 0);
@@ -159,82 +192,119 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
       range: result.range,
       path: object.path,
       visibility: object.visibility,
-      download: c.req.query("download") === "1",
+      download,
     });
   };
 
   return (app) => {
-    app.post(base, requireAuth(), async (c) => {
-      return c.json(await initUpload(await resolve(c), await c.req.json()), 201);
+    app.post(base, requireAuth(), zValidator("json", CreateUploadInput, validationHook), async (c) => {
+      return c.json(await initUpload(await resolve(c), c.req.valid("json")), 201);
     });
 
-    app.get(base, requireAuth(), async (c) => {
-      return c.json(await listObjects(await resolve(c), c.req.query()));
+    app.get(base, requireAuth(), zValidator("query", ListObjectsQuery, validationHook), async (c) => {
+      return c.json(await listObjects(await resolve(c), c.req.valid("query")));
     });
 
     // Static before `:id` — see the file doc comment.
-    app.delete(`${base}/shares/:token`, requireAuth(), async (c) => {
-      return c.json(await revokeShare(await resolve(c), c.req.param("token")));
-    });
+    app.delete(
+      `${base}/shares/:token`,
+      requireAuth(),
+      zValidator("param", ShareTokenParam, validationHook),
+      async (c) => {
+        return c.json(await revokeShare(await resolve(c), c.req.valid("param").token));
+      },
+    );
 
-    app.post(`${base}/:id/complete`, requireAuth(), async (c) => {
-      const body = await c.req.json().catch(() => ({}));
-      return c.json(await completeUpload(await resolve(c), c.req.param("id"), body));
-    });
+    app.post(
+      `${base}/:id/complete`,
+      requireAuth(),
+      zValidator("param", ObjectIdParam, validationHook),
+      zValidator("json", CompleteUploadInput, validationHook),
+      async (c) => {
+        return c.json(await completeUpload(await resolve(c), c.req.valid("param").id, c.req.valid("json")));
+      },
+    );
 
-    app.post(`${base}/:id/abort`, requireAuth(), async (c) => {
-      return c.json(await abortUpload(await resolve(c), c.req.param("id")));
+    // No json validator: this route reads no body, and a client that sends none must keep working.
+    app.post(`${base}/:id/abort`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
+      return c.json(await abortUpload(await resolve(c), c.req.valid("param").id));
     });
 
     // The resume path: what R2 already holds, and a fresh URL for every part still missing. Minting
     // on demand is what keeps a part URL's TTL short without making a stalled upload unrecoverable.
-    app.get(`${base}/:id/parts`, requireAuth(), async (c) => {
-      return c.json(await listUploadParts(await resolve(c), c.req.param("id")));
+    app.get(`${base}/:id/parts`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
+      return c.json(await listUploadParts(await resolve(c), c.req.valid("param").id));
     });
 
-    app.post(`${base}/:id/copy`, requireAuth(), async (c) => {
-      return c.json(await copyObject(await resolve(c), c.req.param("id"), await c.req.json()), 201);
-    });
+    app.post(
+      `${base}/:id/copy`,
+      requireAuth(),
+      zValidator("param", ObjectIdParam, validationHook),
+      zValidator("json", CopyObjectInput, validationHook),
+      async (c) => {
+        return c.json(await copyObject(await resolve(c), c.req.valid("param").id, c.req.valid("json")), 201);
+      },
+    );
 
-    app.post(`${base}/:id/shares`, requireAuth(), async (c) => {
-      const body = await c.req.json().catch(() => ({}));
-      return c.json(await createShare(await resolve(c), c.req.param("id"), body), 201);
-    });
+    app.post(
+      `${base}/:id/shares`,
+      requireAuth(),
+      zValidator("param", ObjectIdParam, validationHook),
+      zValidator("json", CreateShareInput, validationHook),
+      async (c) => {
+        return c.json(await createShare(await resolve(c), c.req.valid("param").id, c.req.valid("json")), 201);
+      },
+    );
 
-    app.get(`${base}/:id/url`, requireAuth(), async (c) => {
-      return c.json(await presignObject(await resolve(c), c.req.param("id")));
+    app.get(`${base}/:id/url`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
+      return c.json(await presignObject(await resolve(c), c.req.valid("param").id));
     });
 
     // No `requireAuth`: a public object must be readable without a session. The handler authorizes.
-    app.get(`${base}/:id`, async (c) => {
-      const deps = await resolve(c);
-      const object = await readableObject(deps, c.req.param("id"));
-      return stream(c, deps, object);
-    });
+    app.get(
+      `${base}/:id`,
+      zValidator("param", ObjectIdParam, validationHook),
+      zValidator("query", ObjectReadQuery, validationHook),
+      async (c) => {
+        const deps = await resolve(c);
+        const object = await readableObject(deps, c.req.valid("param").id);
+        return stream(c, deps, object, c.req.valid("query").download === "1");
+      },
+    );
 
-    app.on("HEAD", `${base}/:id`, requireAuth(), async (c) => {
+    app.on("HEAD", `${base}/:id`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
       const deps = await resolve(c);
-      const object = await readableObject(deps, c.req.param("id"));
+      const object = await readableObject(deps, c.req.valid("param").id);
       const metadata = await deps.store.head(object.key);
       if (!metadata) return c.notFound();
       return serveMetadata({ metadata, path: object.path, visibility: object.visibility });
     });
 
-    app.patch(`${base}/:id`, requireAuth(), async (c) => {
-      const body = await c.req.json().catch(() => ({}));
-      return c.json(await updateObject(await resolve(c), c.req.param("id"), body));
-    });
+    app.patch(
+      `${base}/:id`,
+      requireAuth(),
+      zValidator("param", ObjectIdParam, validationHook),
+      zValidator("json", UpdateObjectInput, validationHook),
+      async (c) => {
+        return c.json(await updateObject(await resolve(c), c.req.valid("param").id, c.req.valid("json")));
+      },
+    );
 
-    app.delete(`${base}/:id`, requireAuth(), async (c) => {
-      return c.json(await deleteObject(await resolve(c), c.req.param("id")));
+    app.delete(`${base}/:id`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
+      return c.json(await deleteObject(await resolve(c), c.req.valid("param").id));
     });
 
     // Public by design: the token is the credential, and it is checked on every fetch — which is what
     // makes revocation possible at all.
-    app.get(`${share}/:token`, async (c) => {
-      const deps = await resolve(c);
-      const object = await resolveShare(deps, c.req.param("token"));
-      return stream(c, deps, object);
-    });
+    app.get(
+      `${share}/:token`,
+      zValidator("param", ShareTokenParam, validationHook),
+      zValidator("query", ObjectReadQuery, validationHook),
+      async (c) => {
+        const deps = await resolve(c);
+        const object = await resolveShare(deps, c.req.valid("param").token);
+        return stream(c, deps, object, c.req.valid("query").download === "1");
+      },
+    );
   };
 }

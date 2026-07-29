@@ -1,0 +1,22 @@
+{
+  // The CLIENT program. Deliberately separate from tsconfig.json (the Worker's): the client needs JSX
+  // and the DOM, the Worker needs the Workers globals, and nothing may import across the two.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"],
+    "noEmit": true
+  },
+  "include": ["src/**/*.tsx", "client-env.d.ts"]
+}
