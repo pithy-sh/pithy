@@ -29,7 +29,16 @@ export interface SeedProjectConfig {
   productionEnvironments?: readonly string[];
 }
 
-/** The shape `pithy.config.ts` default-exports: `createBackend`'s options, plus optional token config. */
+/**
+ * The **root** `pithy.config.ts`: project identity and project-wide policy. It deliberately carries no
+ * capabilities — what a Worker is *made of* is per-Worker and lives in `apps/<name>/pithy.config.ts`
+ * ({@link WorkerConfig}). These three settings are the ones that cannot be per-Worker:
+ *
+ * - `name` is the first segment of every feature resource name and the only key teardown has to find them by,
+ *   so it must be one stable value for the whole project.
+ * - `tokens` configures account-level Cloudflare API token profiles.
+ * - `seed.productionEnvironments` is a safety policy; a Worker must not be able to quietly omit it.
+ */
 export interface ProjectConfig {
   /**
    * The project name — a short, hyphenated-lowercase identifier (e.g. `acme`). It is the branch-first
@@ -38,46 +47,105 @@ export interface ProjectConfig {
    * absent it falls back to the app Worker's `wrangler.jsonc` name, then the project directory name.
    */
   name?: string;
-  capabilities: Capability[];
-  app?: Capability;
   /** Overrides for the predefined CF token profiles (`pithy token`). Optional. */
   tokens?: TokenConfig;
   /** `pithy seed` settings. Optional; defaults to no example seeds. */
   seed?: SeedProjectConfig;
 }
 
-function isProjectConfig(value: unknown): value is ProjectConfig {
-  return typeof value === "object" && value !== null && Array.isArray((value as ProjectConfig).capabilities);
+/**
+ * One Worker's `apps/<name>/pithy.config.ts`: what *that* Worker is made of. Capabilities are per-Worker
+ * because everything they drive is per-Worker — the composed route tree (`createEntrypoint`), the
+ * `requiredBindings` written into that Worker's `wrangler.jsonc`, and Durable Object class migrations, which
+ * register a class against a specific script. A Worker that only needs KV composes only what it declares.
+ *
+ * Workers share a resource by declaring the **same binding name**: feature resource names are derived from
+ * `(project, issue, slug, binding, kind)` with no Worker segment, so two Workers that both declare `DB` are
+ * backed by one D1, and a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`).
+ */
+export interface WorkerConfig {
+  /** Library capabilities this Worker composes, in order. `pithy add --worker <name>` registers them here. */
+  capabilities: Capability[];
+  /** This Worker's own app capability, composed last. */
+  app?: Capability;
 }
 
-/**
- * Load a project's `pithy.config.ts` — the CLI's view of what the backend is
- * made of. Imported live (the config is code), so this runs under a TS-capable
- * runtime; Phase 0 ships the bin on Bun.
- */
-export async function loadProject(projectDir: string): Promise<ProjectConfig> {
-  const path = join(projectDir, "pithy.config.ts");
+function isWorkerConfig(value: unknown): value is WorkerConfig {
+  return typeof value === "object" && value !== null && Array.isArray((value as WorkerConfig).capabilities);
+}
+
+function isProjectConfig(value: unknown): value is ProjectConfig {
+  return typeof value === "object" && value !== null;
+}
+
+/** Import a `pithy.config.ts` and return its default export, with actionable errors for the two failure modes. */
+async function importConfig(path: string, missing: () => never): Promise<unknown> {
   try {
     await access(path);
   } catch {
-    throw new NotFoundError({
-      message: "No pithy.config.ts here.",
-      action: "Run from a Pithy project. pithy init creates one.",
-    });
+    missing();
   }
 
-  const module = (await import(pathToFileURL(path).href)) as { default?: unknown };
-  if (!isProjectConfig(module.default)) {
+  let module: { default?: unknown };
+  try {
+    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+  } catch (cause) {
+    // The file is present but could not be imported — most often its `@pithy-sh/*` imports do not resolve
+    // because dependencies are not installed yet, or the config has a syntax/runtime error. Surface an
+    // actionable error rather than the raw module-resolution stack (which every consumer would otherwise leak).
     throw new InternalError({
-      message: "pithy.config.ts doesn't default-export a config.",
-      action: "Export default { capabilities, app }.",
+      message: `Could not load ${path}.`,
+      action: "Install the project's dependencies (e.g. bun install), then check the config for errors.",
+      detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
   return module.default;
 }
 
-/** Every capability in composition order: libraries first, the app last. */
-export function allCapabilities(config: ProjectConfig): Capability[] {
+/**
+ * Load one Worker's `apps/<name>/pithy.config.ts` — the capabilities that Worker composes. Imported live
+ * (the config is code), so this runs under a TS-capable runtime; Phase 0 ships the bin on Bun.
+ */
+export async function loadWorkerConfig(workerDir: string): Promise<WorkerConfig> {
+  const path = join(workerDir, "pithy.config.ts");
+  const value = await importConfig(path, () => {
+    throw new NotFoundError({
+      message: `No pithy.config.ts in ${workerDir}.`,
+      action: "Every worker under apps/ needs one. pithy worker add creates it.",
+    });
+  });
+  if (!isWorkerConfig(value)) {
+    throw new InternalError({
+      message: `${path} doesn't default-export a worker config.`,
+      action: "Export default { capabilities, app }.",
+    });
+  }
+  return value;
+}
+
+/**
+ * Load the **root** `pithy.config.ts` — the project's identity and policy. Capabilities are not here; they
+ * live per Worker ({@link loadWorkerConfig}).
+ */
+export async function loadProject(projectDir: string): Promise<ProjectConfig> {
+  const path = join(projectDir, "pithy.config.ts");
+  const value = await importConfig(path, () => {
+    throw new NotFoundError({
+      message: "No pithy.config.ts here.",
+      action: "Run from a Pithy project. pithy init creates one.",
+    });
+  });
+  if (!isProjectConfig(value)) {
+    throw new InternalError({
+      message: "pithy.config.ts doesn't default-export a config.",
+      action: "Export default { name }.",
+    });
+  }
+  return value;
+}
+
+/** Every capability one Worker composes, in order: libraries first, its app last. */
+export function allCapabilities(config: WorkerConfig): Capability[] {
   return config.app ? [...config.capabilities, config.app] : [...config.capabilities];
 }
 

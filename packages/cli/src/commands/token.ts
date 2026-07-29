@@ -4,10 +4,12 @@ import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-s
 import { resolveTokenProfiles, TOKEN_STORES, type TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
-import { allCapabilities, loadProject, type ProjectConfig } from "../project/config";
+import { loadProject, type ProjectConfig } from "../project/config";
+import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
@@ -132,13 +134,32 @@ async function buildAudit(
   };
 }
 
+/**
+ * Every secret backend declared anywhere in the project, merged by name. The name is the join key, so a
+ * Worker that composes `secrets` contributes its registry and one that does not contributes nothing —
+ * a project with no secrets capability at all resolves to `{}` rather than failing a mint.
+ */
+function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistry {
+  const registries: SecretRegistry[] = [];
+  for (const worker of workers) {
+    try {
+      registries.push(resolveSecretRegistry(worker.config));
+    } catch {
+      // This Worker composes no secrets capability — nothing to contribute.
+    }
+  }
+  return Object.assign({}, ...registries) as SecretRegistry;
+}
+
 /** Assemble the token engine: the aggregated profiles, the secret-registry backends, and the audit sink. */
 async function buildEngine(projectDir: string, env: string): Promise<TokenEngine> {
   const { accountId, apiToken, storeId } = loadCreds(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
+  // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
   const config: ProjectConfig | undefined = await loadProject(projectDir).catch(() => undefined);
-  const capabilities = config ? allCapabilities(config) : [];
-  const registry = config ? resolveSecretRegistry(config) : {};
+  const workers = await resolveWorkers({ projectDir }).catch(() => []);
+  const capabilities = projectCapabilities(workers);
+  const registry = mergedSecretRegistry(workers);
   return {
     accountId,
     projectDir,

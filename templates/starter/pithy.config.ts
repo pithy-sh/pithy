@@ -1,33 +1,25 @@
-// pithy.config.ts — the backend you own.
+// pithy.config.ts — your project's identity and policy.
 //
-// This file is the entire user-owned surface. Logic lives in @pithy-sh/* packages
-// and upgrades with them; this file only says what your backend is made of.
-
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-
-// Your app is a capability like any other: routes, middleware, databases, KV
-// namespaces, and the bindings they need. It composes last, after every
-// library capability.
-const app = defineCapability({
-  // The app's capability name. Also its migration namespace once it has tables.
-  name: "app",
-  // Bindings your own routes need beyond what capabilities declare. Validated
-  // on the first request — a missing binding fails fast with the binding's name.
-  requiredBindings: [],
-  // Mount your routes here. Every route declares how callers are verified —
-  // bearer, session, signed-webhook, or public. `GET /health` is built in.
-  // routes: (a) => {
-  //   a.get("/hello", (c) => c.text("Hi."));
-  // },
-});
+// This file is project-wide. It deliberately does NOT list capabilities: what a
+// Worker is made of is per-Worker, and lives in apps/<name>/pithy.config.ts.
+// Only settings that cannot be per-Worker belong here.
 
 const config = {
-  // Library capabilities, composed in order. `pithy add <capability>` registers
-  // them here.
-  capabilities: [
-    // pithy:capabilities (managed region — do not remove this marker)
-  ],
-  app,
+  // The project name. It is the first segment of every Cloudflare resource
+  // `pithy feature` creates (<project>-f<issue>-<slug>-<binding>-<kind>), and the
+  // only key teardown has to find them by — so it must stay stable across
+  // machines and checkouts. Set it once; don't rename it casually.
+  name: "pithy-app",
+
+  // Overrides for the predefined Cloudflare API token profiles (`pithy token`).
+  // Account-level, so it lives here rather than on a Worker.
+  // tokens: { overrides: {} },
+
+  // `pithy seed` policy. `productionEnvironments` names every environment this
+  // project treats as production, beyond the built-in production/prod — each one
+  // requires the type-to-confirm phrase, not just --yes. A safety rule no single
+  // Worker should be able to quietly omit.
+  // seed: { includeExamples: false, productionEnvironments: ["live"] },
 };
 
 export default config;

@@ -12,7 +12,8 @@ import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } fr
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
-import { allCapabilities, loadProject, requireProjectName } from "../project/config";
+import { loadProject, requireProjectName } from "../project/config";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -65,17 +66,25 @@ async function buildAudit(projectDir: string, capabilities: Capability[]): Promi
   });
 }
 
-/** Resolve the feature identity (project + issue + slug) from the current branch and pithy.config. */
-async function branchIdentity(
-  projectDir: string,
-): Promise<{ identity: FeatureIdentity; capabilities: ReturnType<typeof allCapabilities> }> {
+/**
+ * Resolve the feature identity (project + issue + slug) from the current branch and the root config, plus
+ * the capabilities the feature spans.
+ *
+ * The two come from different places, deliberately. **Identity** is project-wide policy and lives in the
+ * root `pithy.config.ts`. **Capabilities** are per Worker (`apps/<name>/pithy.config.ts`), so they are
+ * unioned: a feature provisions one resource per binding name for the whole feature — two Workers that both
+ * declare `DB` deliberately share one database — and the migrate/seed it runs must cover every table any
+ * Worker owns.
+ */
+async function branchIdentity(projectDir: string): Promise<{ identity: FeatureIdentity; capabilities: Capability[] }> {
   const { issue, slug } = await deriveIdentityFromBranch(projectDir);
   const config = await loadProject(projectDir);
   // Never guessed: this name is the first segment of every resource name, and the only key teardown has
   // to find them again. A fallback that differs between a worktree and a clone would make destroy
   // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
   const project = requireProjectName(config);
-  return { identity: { project, issue, slug }, capabilities: allCapabilities(config) };
+  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
+  return { identity: { project, issue, slug }, capabilities };
 }
 
 /** `pithy feature create <slug> --issue <n>` — local, automatic. Run from the main checkout. */
@@ -106,12 +115,12 @@ const create = defineCommand({
         });
       }
 
-      const config = await loadProject(projectDir);
+      // Capabilities are read from the worktree it creates, not from here: the feature branch is what
+      // decides which Workers exist and what each composes.
       const report = await createFeature({
         projectDir,
         issue: args.issue,
         slug: args.slug,
-        capabilities: allCapabilities(config),
         skipInstall: args["skip-install"],
       });
 
@@ -160,11 +169,11 @@ const sync = defineCommand({
       });
 
       // A freshly-pulled branch has an empty local backend; both steps are idempotent when it is not.
+      // Each fans out over the worktree's Workers, so a Worker the branch added is covered without asking.
       let data = false;
       if (!args["skip-data"]) {
-        const capabilities = allCapabilities(await loadProject(projectDir));
-        await migrateProject({ env: "dev", projectDir, capabilities });
-        await seedProject({ env: "dev", projectDir, capabilities, json: true });
+        await migrateProject({ env: "dev", projectDir });
+        await seedProject({ env: "dev", projectDir, json: true });
         data = true;
       }
 

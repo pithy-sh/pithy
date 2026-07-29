@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   detectPackageManager,
+  execArgs,
   installArgs,
   installPackage,
   promoteDependencies,
@@ -100,6 +101,15 @@ describe("promoteDependencies", () => {
       ran = true;
     });
     expect(ran).toBe(false);
+  });
+});
+
+describe("execArgs", () => {
+  test("resolves a workspace-local bin per package manager", () => {
+    expect(execArgs("bun", "wrangler", ["dev"])).toEqual({ command: "bun", args: ["x", "wrangler", "dev"] });
+    expect(execArgs("pnpm", "wrangler", ["dev"])).toEqual({ command: "pnpm", args: ["exec", "wrangler", "dev"] });
+    expect(execArgs("yarn", "wrangler", ["dev"])).toEqual({ command: "yarn", args: ["wrangler", "dev"] });
+    expect(execArgs("npm", "wrangler", ["dev"])).toEqual({ command: "npx", args: ["wrangler", "dev"] });
   });
 });
 

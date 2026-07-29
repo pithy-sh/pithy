@@ -22,6 +22,23 @@ describe("main", () => {
     );
   });
 
+  test("registers the six commands added for the standard surface (docs/CLI.md §1.1)", () => {
+    expect(Object.keys(main.subCommands as object)).toEqual(
+      expect.arrayContaining(["worker", "dev", "env", "upgrade", "alias", "doctor"]),
+    );
+  });
+
+  test("worker exposes add, list, and remove subcommands", async () => {
+    const worker = await subcommand("worker");
+    expect(Object.keys(worker.subCommands ?? {})).toEqual(expect.arrayContaining(["add", "list", "remove"]));
+  });
+
+  test("the new commands are agent-drivable — every one supports --json", async () => {
+    for (const name of ["dev", "env", "upgrade", "alias", "doctor"]) {
+      expect(await argNames(name)).toContain("json");
+    }
+  });
+
   test("remove takes --drop and --env", async () => {
     expect(await argNames("remove")).toEqual(expect.arrayContaining(["capability", "drop", "env"]));
   });

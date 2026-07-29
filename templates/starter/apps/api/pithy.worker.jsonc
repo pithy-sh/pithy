@@ -1,0 +1,11 @@
+{
+  // How `pithy dev` runs this Worker locally. This file is yours; wrangler.jsonc stays wrangler's.
+  "dev": {
+    // Must this run for the local environment to function? pithy dev starts exactly the autostart workers.
+    "autostart": true,
+    // Regex marking "ready" in this Worker's output.
+    "readySignal": "Ready on https?://"
+    // "preferredPort": 8787   // a hint only — the feature's reserved port block is authoritative.
+    // "command": ["bun", "run", "dev"]   // set this for a non-Worker process (e.g. a Vite frontend).
+  }
+}

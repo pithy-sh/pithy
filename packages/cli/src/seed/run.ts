@@ -1,17 +1,23 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { uploadImageBytes, uploadStreamBytes } from "@pithy-sh/cloudflare/src/media/assetSeeder";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases, type MergedDatabases } from "@pithy-sh/core/src/data/databases";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
-import { composeKv } from "@pithy-sh/core/src/kv/namespaces";
+import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
+import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { MediaSeedItem, R2SeedItem } from "@pithy-sh/core/src/seed/seed";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { previewReset, type ResetPreviewEntry, resetProject } from "../migrations/run";
+import {
+  previewReset,
+  type ResetPreviewEntry,
+  resetProject,
+  resolveWorkerScopes,
+  type WorkerScope,
+} from "../migrations/run";
 import {
   type ImagesFactory,
   openSeedDriver,
@@ -19,6 +25,8 @@ import {
   type RemoteD1Factory,
   type RemoteKvFactory,
   type RemoteR2Factory,
+  type ResolvedStoreIds,
+  resolveStoreIds,
   type SeedDriver,
   type StreamFactory,
 } from "./drivers";
@@ -41,10 +49,18 @@ import { assertResetConfirmed, assertSeedConfirmed, assertSetAllowedForEnv } fro
 
 /** Options for {@link seedProject}. */
 export interface SeedProjectOptions {
-  /** The project's composed capabilities (libraries plus the app). */
-  capabilities: Capability[];
-  /** The project root — where wrangler.jsonc, .wrangler/ state, and fixture files live. */
+  /**
+   * The project root — the parent of `apps/`, the owner of the `.wrangler/state` stores every Worker's
+   * local backends live in, and the fallback base directory for a fixture's relative media paths.
+   */
   projectDir: string;
+  /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
+  worker?: string;
+  /**
+   * The Workers to seed, already resolved. Skips `apps/` discovery — for a caller that resolved the set
+   * itself, and for tests, whose fixture Workers carry no importable `pithy.config.ts`.
+   */
+  workers?: WorkerScope[];
   /** Target environment. `dev` runs locally via Miniflare; other environments run over the REST managers. */
   env: string;
   /** Whether `example` sets are composed in (the project's `seed.includeExamples`; default off). */
@@ -99,6 +115,24 @@ export interface SeedProjectOptions {
   mediaUploader?: MediaUploader;
 }
 
+/** One Worker's slice of a seed run: what its own capabilities' fixtures wrote, and what they didn't. */
+export interface SeedWorkerReport {
+  /** The Worker's name. */
+  worker: string;
+  /** The per-set outcome, in run order. */
+  sets: SeedPlanSet[];
+  /** Namespaced keys of sets present but disallowed for `env` — surfaced, never silently dropped. */
+  skippedByEnv: string[];
+  /**
+   * Namespaced keys an earlier Worker in the fan-out already wrote **to the same store**. Workers share a
+   * resource by declaring the same binding, so the same capability composed into two Workers usually
+   * writes one fixture to one store — it runs once, and the Workers that skipped it say so rather than
+   * double-counting. A binding the two Workers point at different resources is not that: the fixture runs
+   * again there, and never appears here.
+   */
+  shared: string[];
+}
+
 /** The structured outcome of a seed run — the `--json` payload and the source of the human summary. */
 export interface SeedRunReport {
   /** The command that produced the report. */
@@ -107,13 +141,12 @@ export interface SeedRunReport {
   env: string;
   /** Whether this was a dry run (nothing written). */
   dryRun: boolean;
-  /** The per-set outcome, in run order. */
-  sets: SeedPlanSet[];
-  /** Namespaced keys of sets present but disallowed for `env` — surfaced, never silently dropped. */
-  skippedByEnv: string[];
+  /** The per-Worker outcome, in fan-out order. */
+  workers: SeedWorkerReport[];
   /**
    * Present only when `--redo` was passed: the databases whose schema was (a real run) or would be (a
-   * dry run) fully reset — every migration rolled back, then reapplied — before seeding.
+   * dry run) fully reset — every migration rolled back, then reapplied — before seeding. One entry per
+   * physical database, so one two Workers share is listed once.
    */
   reset?: ResetPreviewEntry[];
 }
@@ -249,7 +282,7 @@ async function writeMediaRecord(
 
 /** Read every media item's action from its sidecar (no upload) — the dry-run plan's media state source. */
 async function resolveMediaStates(
-  sets: ReturnType<typeof buildSeedPlan>["sets"],
+  sets: readonly ResolvedSeedSet[],
   env: string,
   projectDir: string,
   fs: MediaFs | undefined,
@@ -272,7 +305,7 @@ async function resolveMediaStates(
  * grow the asset table without bound. A recorded asset must be `once` (stable, recorded UUID). Checked
  * before any write so a bad fixture never lands a partial run.
  */
-function assertMediaRecordsSupported(sets: ReturnType<typeof buildSeedPlan>["sets"]): void {
+function assertMediaRecordsSupported(sets: readonly ResolvedSeedSet[]): void {
   for (const resolved of sets) {
     for (const item of resolved.set.media ?? []) {
       if (item.mode === "always" && item.record) {
@@ -295,13 +328,109 @@ function mediaEntry(result: SeedMediaResult): SeedPlanSet["media"][number] {
   };
 }
 
+/** One Worker's composed fixtures, after the fan-out has removed the sets an earlier Worker covers. */
+interface ComposedWorker {
+  /** The Worker whose capabilities composed these sets. */
+  worker: WorkerScope;
+  /** The sets this Worker actually runs, in order. */
+  sets: ResolvedSeedSet[];
+  /** Namespaced keys of sets present but disallowed for the environment. */
+  skippedByEnv: string[];
+  /** Namespaced keys an earlier Worker in the fan-out already covers. */
+  shared: string[];
+}
+
 /**
- * Seed a project for one environment — compose, gate, and write. A `dryRun` composes the plan and
- * reads each media sidecar to report the action, but touches no backend and needs no credentials. A
- * real run passes the escalating-confirmation gate, opens the driver, and writes every set in order:
- * per set the D1 groups (validated on encode), KV groups (validated on put), R2 objects, and media
- * assets (uploaded once or always, with the minted UUID recorded). The env allowlist is re-asserted
- * per set at write time, so a set can never reach a disallowed environment.
+ * The stores one Worker's resolved set writes to, as a stable fingerprint: each D1 database, KV
+ * namespace, and R2 bucket the fixture touches, resolved through that Worker's own `wrangler.jsonc` to
+ * the identity the driver will persist under. Bindings are per-Worker, so the same fixture in two
+ * Workers can land in two different databases; the fingerprint is what tells those two writes apart.
+ * Images and Stream carry no store identity — they are account-global, so a media-only set fingerprints
+ * empty and is genuinely written once.
+ */
+function storeFingerprint(
+  resolved: ResolvedSeedSet,
+  ids: ResolvedStoreIds,
+  databases: () => MergedDatabases,
+  namespaces: () => MergedKvNamespaces,
+): string {
+  const targets = new Set<string>();
+  const addD1 = (database: string): void => {
+    const binding = databases()[database]?.binding;
+    if (binding) targets.add(`d1:${ids.d1.get(binding) ?? binding}`);
+  };
+
+  for (const group of resolved.set.d1 ?? []) addD1(group.database);
+  for (const group of resolved.set.kv ?? []) {
+    const binding = namespaces()[group.namespace]?.binding;
+    if (binding) targets.add(`kv:${ids.kv.get(binding) ?? binding}`);
+  }
+  for (const item of resolved.set.r2 ?? []) targets.add(`r2:${ids.r2.get(item.binding) ?? item.binding}`);
+  for (const item of resolved.set.media ?? []) if (item.record) addD1(item.record.database);
+
+  return [...targets].sort().join("|");
+}
+
+/**
+ * Compose every Worker's fixtures for one environment, deduped across the fan-out. A seed set's key is
+ * `NNNN_<capability>_<name>` — the same capability composed into two Workers yields the same key and the
+ * same rows. It does **not** guarantee the same destination: bindings are per-Worker, so two Workers can
+ * point one binding at two different databases (a wiring `migrate` supports and migrates separately).
+ * So a claim is (key, resolved stores), exactly as migrate groups by resolved database — the first
+ * Worker to claim one runs it and the rest record it as shared: one write per store, and a report that
+ * says so. Same key, different store, and the set runs again where it has not landed yet.
+ */
+async function composeFanOut(workers: WorkerScope[], env: string, includeExamples: boolean): Promise<ComposedWorker[]> {
+  const claimed = new Set<string>();
+  const composed: ComposedWorker[] = [];
+  for (const worker of workers) {
+    const { sets, skippedByEnv } = buildSeedPlan(worker.capabilities, { env, includeExamples });
+    const own: ResolvedSeedSet[] = [];
+    const shared: string[] = [];
+
+    // Resolved lazily: a Worker with no fixtures reads no config, and a fixture with no D1/KV target
+    // never composes the merged maps (a dry run over a half-wired project stays as forgiving as it was).
+    const ids = sets.length > 0 ? await resolveStoreIds({ workerDir: worker.dir, env }) : emptyStoreIds();
+    let databases: MergedDatabases | undefined;
+    let namespaces: MergedKvNamespaces | undefined;
+
+    for (const resolved of sets) {
+      const claim = `${resolved.key} ${storeFingerprint(
+        resolved,
+        ids,
+        () => (databases ??= composeDatabases(worker.capabilities)),
+        () => (namespaces ??= composeKv(worker.capabilities)),
+      )}`;
+      if (claimed.has(claim)) {
+        shared.push(resolved.key);
+        continue;
+      }
+      claimed.add(claim);
+      own.push(resolved);
+    }
+    composed.push({ worker, sets: own, skippedByEnv: [...skippedByEnv], shared });
+  }
+  return composed;
+}
+
+/** The store map for a Worker with nothing to seed — no config read, every lookup a miss. */
+function emptyStoreIds(): ResolvedStoreIds {
+  return { d1: new Map(), kv: new Map(), r2: new Map() };
+}
+
+/**
+ * Seed every Worker for one environment — compose, gate, and write. There is no root Worker: fixtures
+ * come from each Worker's own `pithy.config.ts` capabilities, so the run fans out over `apps/*` and
+ * reports per Worker. Sets are deduped across the fan-out ({@link composeFanOut}), and each Worker's
+ * backends resolve from its own `wrangler.jsonc` while the local Miniflare stores stay at the project
+ * root — two Workers that declare one binding share one store.
+ *
+ * A `dryRun` composes the plan and reads each media sidecar to report the action, but touches no backend
+ * and needs no credentials. A real run passes the escalating-confirmation gate, opens a driver per
+ * Worker, and writes every set in order: per set the D1 groups (validated on encode), KV groups
+ * (validated on put), R2 objects, and media assets (uploaded once or always, with the minted UUID
+ * recorded). The env allowlist is re-asserted per set at write time, so a set can never reach a
+ * disallowed environment.
  *
  * `redo` runs a full schema reset (every migration's `down`, then every `up` — {@link resetProject})
  * ahead of the write loop, gated by the exact same confirmation as any other seed. It is not a
@@ -309,28 +438,47 @@ function mediaEntry(result: SeedMediaResult): SeedPlanSet["media"][number] {
  * ordinary non-destructive writes that follow simply land fresh — no row-identity logic needed.
  */
 export async function seedProject(options: SeedProjectOptions): Promise<SeedRunReport> {
-  const { sets, skippedByEnv } = buildSeedPlan(options.capabilities, {
-    env: options.env,
-    includeExamples: options.includeExamples ?? false,
+  const workers = await resolveWorkerScopes({
+    projectDir: options.projectDir,
+    ...(options.worker !== undefined ? { worker: options.worker } : {}),
+    ...(options.workers !== undefined ? { workers: options.workers } : {}),
   });
+  const composed = await composeFanOut(workers, options.env, options.includeExamples ?? false);
 
-  // Fail fast, before any write, on a media fixture the seeder cannot re-run idempotently.
-  assertMediaRecordsSupported(sets);
+  // Fail fast, before any write and across the whole fan-out, on a media fixture the seeder cannot re-run.
+  for (const entry of composed) assertMediaRecordsSupported(entry.sets);
+
+  // The reset preview and the reset itself both fan out over exactly the Workers this run targets.
+  const resetScope = {
+    projectDir: options.projectDir,
+    env: options.env,
+    ...(options.worker !== undefined ? { worker: options.worker } : {}),
+    ...(options.workers !== undefined ? { workers: options.workers } : {}),
+    ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
+  };
 
   if (options.dryRun) {
-    const states = await resolveMediaStates(sets, options.env, options.projectDir, options.mediaFs);
-    const plan = buildDryRunPlan(
-      options.env,
-      sets,
-      (item) => states.get(item) ?? { action: item.mode === "always" ? "reupload" : "upload" },
-    );
-    const reset = options.redo ? await previewReset(options.capabilities) : undefined;
+    const reports: SeedWorkerReport[] = [];
+    for (const entry of composed) {
+      const states = await resolveMediaStates(entry.sets, options.env, options.projectDir, options.mediaFs);
+      const plan = buildDryRunPlan(
+        options.env,
+        entry.sets,
+        (item) => states.get(item) ?? { action: item.mode === "always" ? "reupload" : "upload" },
+      );
+      reports.push({
+        worker: entry.worker.name,
+        sets: plan.sets,
+        skippedByEnv: entry.skippedByEnv,
+        shared: entry.shared,
+      });
+    }
+    const reset = options.redo ? await previewReset(resetScope) : undefined;
     return {
       command: "seed",
       env: options.env,
       dryRun: true,
-      sets: plan.sets,
-      skippedByEnv,
+      workers: reports,
       ...(reset ? { reset } : {}),
     };
   }
@@ -357,7 +505,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
 
     // The numbers reported are the registry's static migration counts — identical before and after a
     // successful reset, so one preview call serves both the report and (implicitly) the operation.
-    reset = await previewReset(options.capabilities);
+    reset = await previewReset(resetScope);
 
     const audit = options.audit ?? (async () => {});
     // Recorded *after* the drop, truthfully: `outcome` reflects what actually happened, never intent.
@@ -371,12 +519,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     };
 
     try {
-      await resetProject({
-        capabilities: options.capabilities,
-        projectDir: options.projectDir,
-        env: options.env,
-        remoteD1: options.remoteD1,
-      });
+      await resetProject(resetScope);
     } catch (error) {
       await audit({ ...auditEvent, outcome: "failure" });
       throw error;
@@ -384,8 +527,35 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     await audit({ ...auditEvent, outcome: "success" });
   }
 
+  const reports: SeedWorkerReport[] = [];
+  for (const entry of composed) {
+    reports.push({
+      worker: entry.worker.name,
+      sets: entry.sets.length > 0 ? await writeWorker(entry, options) : [],
+      skippedByEnv: entry.skippedByEnv,
+      shared: entry.shared,
+    });
+  }
+
+  return {
+    command: "seed",
+    env: options.env,
+    dryRun: false,
+    workers: reports,
+    ...(reset ? { reset } : {}),
+  };
+}
+
+/**
+ * Write one Worker's sets. The driver resolves that Worker's own bindings from its own `wrangler.jsonc`,
+ * while local persistence stays at the project root, so Workers sharing a binding write to one store.
+ * Opened only when the Worker has something to write — a Worker with no fixtures never builds a
+ * Miniflare instance and never reaches for credentials.
+ */
+async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): Promise<SeedPlanSet[]> {
   const driver = await openSeedDriver({
-    projectDir: options.projectDir,
+    workerDir: entry.worker.dir,
+    persistRoot: options.projectDir,
     env: options.env,
     remoteD1: options.remoteD1,
     remoteKv: options.remoteKv,
@@ -394,12 +564,12 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     stream: options.stream,
   });
   try {
-    const databases = composeDatabases(options.capabilities);
-    const namespaces = composeKv(options.capabilities);
+    const databases = composeDatabases(entry.worker.capabilities);
+    const namespaces = composeKv(entry.worker.capabilities);
     const uploader = options.mediaUploader ?? driverUploader(driver);
     const reportSets: SeedPlanSet[] = [];
 
-    for (const resolved of sets) {
+    for (const resolved of entry.sets) {
       // Safety layer 1, re-asserted at the write site: a set can never land in a disallowed env.
       assertSetAllowedForEnv(resolved.set, options.env);
       const setReport: SeedPlanSet = { name: resolved.key, d1: [], kv: [], r2: [], media: [] };
@@ -455,14 +625,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
       reportSets.push(setReport);
     }
 
-    return {
-      command: "seed",
-      env: options.env,
-      dryRun: false,
-      sets: reportSets,
-      skippedByEnv,
-      ...(reset ? { reset } : {}),
-    };
+    return reportSets;
   } finally {
     await driver.dispose();
   }

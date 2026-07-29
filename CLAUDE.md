@@ -18,9 +18,10 @@ monorepo. Read the companion docs before any structural or surface decision:
    the same bearer flow for SPAs, **or** cookie-based sessions. **When cookie/session
    mode is enabled, CSRF protection is enabled with it.** Bearer flows are CSRF-exempt.
 3. **Fat package, thin config-driven wiring (the Better Auth model).** Logic lives in
-   packages and upgrades via minor releases. The only user-owned surface is thin:
-   `pithy.config.ts`, `wrangler.jsonc`, a mount file. Do not push handler code into
-   the user's repo by default (`--eject` is an opt-in escape hatch).
+   packages and upgrades via minor releases. The only user-owned surface is thin, and it is
+   **per Worker**: `apps/<name>/{pithy.config.ts, wrangler.jsonc, pithy.worker.jsonc}` plus a
+   mount file, over a root `pithy.config.ts` carrying project identity and policy. Do not push
+   handler code into the user's repo by default (`--eject` is an opt-in escape hatch).
 4. **Capabilities compose through one contract.** `core`, each capability, and the app
    are all `Capability` objects contributing a subset of {config, migrations, routes,
    middleware, workflows, bindings}. Capabilities depend on **core seams** (e.g.
@@ -233,13 +234,38 @@ monorepo. Read the companion docs before any structural or surface decision:
   orchestration), `migrate` (+ `--rollback`), `seed`, `upgrade`, `deploy`, `feature`
   create/destroy (worktree lifecycle), `env`, `doctor` (env/health + update check), `alias`
   (install the opt-in `p.` shortcut). The canonical binary is always `pithy`.
-- **`apps/` is the Worker registry.** A project's deployable Workers each live in
-  `apps/<name>/` (distinct from `packages/*` = `@pithy-sh/*` library capabilities). Every
-  command that needs the worker set (`dev`, `deploy`, the port allocator) **discovers it by
-  enumerating `apps/*`** — no hand-maintained list. Each worker carries a co-located,
-  Zod-described `dev` block: `dev.autostart` (must it run for local dev to function?),
-  `dev.readySignal` (regex marking ready), `dev.preferredPort` (hint). The port allocator
+- **`apps/` is the Worker registry, and there is no root Worker.** A project's deployable
+  Workers each live in `apps/<name>/` (distinct from `packages/*` = `@pithy-sh/*` library
+  capabilities); nothing special-cases the project root. Every command that needs the worker
+  set (`dev`, `deploy`, `migrate`, `seed`, `upgrade`, `doctor`, the port allocator)
+  **discovers it by enumerating `apps/*`** — no hand-maintained list. Each worker carries a
+  co-located `pithy.worker.jsonc` with a Zod-described `dev` block: `dev.autostart` (must it
+  run for local dev to function?), `dev.readySignal` (regex marking ready),
+  `dev.preferredPort` (hint), and an optional `dev.command` (run a non-Worker process — e.g. a
+  Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on
+  `pithy.worker.jsonc`, which is what lets such a process join the dev set. The port allocator
   assigns one port **per autostart worker**, reconciling as workers are added/removed.
+- **One `pithy.config.ts` per Worker; the root one is identity and policy only.** Capabilities
+  are per-Worker because everything they drive is per-Worker: the composed route tree
+  (`createEntrypoint`), the `requiredBindings` written into that Worker's `wrangler.jsonc`, and
+  **Durable Object class migrations, which register a class against a specific script**. So
+  `apps/<name>/pithy.config.ts` holds `{ capabilities, app }`, and the root `pithy.config.ts`
+  holds only what cannot be per-Worker: `name` (the stable prefix every feature resource name
+  derives from, and the only key teardown finds them by), `tokens` (account-level CF token
+  profiles), and `seed.productionEnvironments` (a safety policy no Worker may quietly omit).
+  A Worker composes only what it declares — a KV-only Worker never sees a D1 it doesn't use.
+- **Workers share a resource by declaring the same binding name.** Feature resource names are
+  derived from `(project, issue, slug, binding, kind)` with **no Worker segment**, so two
+  Workers that both declare `DB` are backed by one D1; a Worker wanting its own declares a
+  different binding (e.g. `COLLAB_DB`). Sharing is expressed in the binding name, not in
+  topology config. Locally this is why `pithy dev`, `migrate`, and `seed` persist Miniflare
+  state at the **project root** (`<root>/.wrangler/state`) rather than per Worker — per-Worker
+  state would silently give two Workers separate copies of a database they meant to share.
+- **Worker-to-worker calls go through a `service` binding**, not a URL an adopter hand-writes:
+  a capability declares `{ type: "service", name: "COLLAB", service: "collab" }`, and
+  `pithy feature provision` resolves `collab` to that feature's script name per environment, so
+  RPC stays inside the feature environment. `pithy dev` exports each worker's `*_ORIGIN` for the
+  local equivalent over loopback.
 - **Config must be self-documenting.** Capability config carries human-readable rationale
   (Zod `.describe()` + a `whenToEnable` manifest field). `pithy init` offers **app-target
   profiles** (mobile-only / web-only / both) that flip a coherent default set, and the CLI

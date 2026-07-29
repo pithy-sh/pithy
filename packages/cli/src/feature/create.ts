@@ -1,4 +1,3 @@
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { migrateProject } from "../migrations/run";
 import { detectPackageManager, type InstallRunner } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
@@ -16,14 +15,14 @@ import { createWorktree, defaultGit, type GitRunner } from "./worktree";
  */
 
 /** A local/dev backend step (migrate or seed) — a seam so create is testable without Miniflare. */
-export type LocalRunner = (args: { projectDir: string; capabilities: Capability[] }) => Promise<void>;
+export type LocalRunner = (args: { projectDir: string }) => Promise<void>;
 
-const localMigrate: LocalRunner = async ({ projectDir, capabilities }) => {
-  await migrateProject({ env: "dev", projectDir, capabilities });
+const localMigrate: LocalRunner = async ({ projectDir }) => {
+  await migrateProject({ env: "dev", projectDir });
 };
 
-const localSeed: LocalRunner = async ({ projectDir, capabilities }) => {
-  await seedProject({ env: "dev", projectDir, capabilities, json: true });
+const localSeed: LocalRunner = async ({ projectDir }) => {
+  await seedProject({ env: "dev", projectDir, json: true });
 };
 
 /** The structured outcome of `pithy feature create` — the `--json` payload and the human summary source. */
@@ -52,8 +51,6 @@ export interface CreateFeatureOptions {
   issue: string;
   /** The kebab-case slug. */
   slug: string;
-  /** The composed capabilities to migrate + seed. */
-  capabilities: Capability[];
   /** Skip the dependency install (tests set this; a real run installs so the gates run in the tree). */
   skipInstall?: boolean;
   /** Ports per feature block (defaults to the registry's block size). */
@@ -98,10 +95,13 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
     ...(options.discoverWorkers !== undefined ? { discoverWorkers: options.discoverWorkers } : {}),
   });
 
+  // Migrate and seed run against the **worktree**, and discover its Workers themselves: the branch being
+  // created is what decides which Workers exist and what each composes, and it may already differ from the
+  // main checkout this command was run in.
   const migrate = options.migrate ?? localMigrate;
   const seed = options.seed ?? localSeed;
-  await migrate({ projectDir: worktree.wtPath, capabilities: options.capabilities });
-  await seed({ projectDir: worktree.wtPath, capabilities: options.capabilities });
+  await migrate({ projectDir: worktree.wtPath });
+  await seed({ projectDir: worktree.wtPath });
 
   return {
     command: "feature.create",

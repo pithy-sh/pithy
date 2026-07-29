@@ -17,7 +17,7 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
-import { allCapabilities, loadProject } from "../project/config";
+import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -27,8 +27,8 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * aren't there.
  */
 async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
-  const capabilities = await loadProject(projectDir)
-    .then(allCapabilities)
+  const capabilities = await resolveWorkers({ projectDir })
+    .then(projectCapabilities)
     .catch(() => []);
   return createCliAudit({
     projectDir,
@@ -39,14 +39,18 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   });
 }
 
-/** Load the email capability's resolved config (from identity + brand theme) from `pithy.config.ts`. */
+/**
+ * Load the email capability's resolved config (identity + brand theme). Capabilities live in each Worker's
+ * `apps/<name>/pithy.config.ts`, and the config is one brand identity for the project, so the first Worker
+ * composing `email` provides it.
+ */
 async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig> {
-  const config = await loadProject(projectDir);
-  const cap = allCapabilities(config).find(isEmailCapability);
+  const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities);
+  const cap = capabilities.find(isEmailCapability);
   if (!cap) {
     throw new ValidationError({
       message: "The email capability is not configured.",
-      action: "Add `email({ ... })` to pithy.config.ts (run `pithy add email`).",
+      action: "Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).",
     });
   }
   return cap.emailConfig;
@@ -81,35 +85,40 @@ interface WranglerStanza {
 }
 
 /**
- * Resolve the per-environment resources the email worker binds, from the project's `wrangler.jsonc`
+ * Resolve the per-environment resources the email worker binds, from the **app Worker's** `wrangler.jsonc`
  * (the app `DB` id and `BASE_URL` per env) and a live lookup of the env's secrets database. Each missing
  * value throws an actionable error rather than deploying a half-wired worker.
+ *
+ * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc`, so a project with several
+ * names one with `--worker`; one Worker needs no ceremony. `BASE_URL` in particular is that Worker's public
+ * URL — the address a tracked link resolves back to — so it is not something to guess.
  */
 function buildResolveEnv(
-  projectDir: string,
+  worker: ResolvedWorker,
   cf: CloudflareClients,
 ): (env: ManagedEnvironment) => Promise<EmailEnvResources> {
   return async (env) => {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
+    const path = join(worker.dir, "wrangler.jsonc");
+    const config = parse(await readFile(path, "utf8")) as unknown as WranglerStanza;
     const stanza = config.env?.[env];
     if (!stanza) {
       throw new ValidationError({
-        message: `wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to wrangler.jsonc with its DB binding and a BASE_URL var.`,
+        message: `${worker.name}'s wrangler.jsonc has no env.${env} stanza.`,
+        action: `Add the ${env} environment to ${path} with its DB binding and a BASE_URL var.`,
       });
     }
     const appDatabaseId = stanza.d1_databases?.find((db) => db.binding === "DB")?.database_id;
     if (!appDatabaseId) {
       throw new ValidationError({
-        message: `wrangler.jsonc env.${env} has no DB database_id.`,
+        message: `${worker.name}'s wrangler.jsonc env.${env} has no DB database_id.`,
         action: `Provision the ${env} app database and set its id on the DB binding.`,
       });
     }
     const baseUrl = stanza.vars?.BASE_URL;
     if (!baseUrl) {
       throw new ValidationError({
-        message: `wrangler.jsonc env.${env} has no BASE_URL var.`,
-        action: `Set vars.BASE_URL to the ${env} app worker's public URL (tracking links are built against it).`,
+        message: `${worker.name}'s wrangler.jsonc env.${env} has no BASE_URL var.`,
+        action: `Set vars.BASE_URL to the ${env} ${worker.name} worker's public URL (tracking links are built against it).`,
       });
     }
     const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
@@ -127,6 +136,11 @@ const provision = defineCommand({
   meta: { name: "provision", description: "Provision the shared suppression DB and per-environment email workers" },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding and BASE_URL (default: the project's only worker)",
+    },
     "routing-zone": {
       type: "string",
       description:
@@ -148,6 +162,10 @@ const provision = defineCommand({
       const projectDir = process.cwd();
       const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
       const { theme } = await loadEmailConfig(projectDir);
+      const appWorker = await resolveSingleWorker({
+        projectDir,
+        ...(args.worker !== undefined ? { worker: args.worker } : {}),
+      });
       const cf = new CloudflareClients({ accountId, apiToken });
       // Routing is wired only when all three pieces are given — the inbound address/zone/worker are an
       // operator choice (and must avoid the apex MX), so it's opt-in, not derived.
@@ -161,7 +179,7 @@ const provision = defineCommand({
         apiToken,
         storeId,
         theme,
-        resolveEnv: buildResolveEnv(projectDir, cf),
+        resolveEnv: buildResolveEnv(appWorker, cf),
         routing,
         audit: await buildAudit(projectDir, accountId, apiToken),
       });

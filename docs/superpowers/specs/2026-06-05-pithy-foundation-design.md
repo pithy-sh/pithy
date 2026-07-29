@@ -379,7 +379,7 @@ opinionated **feature-branch → main** promotion flow as stubbed, ready-to-use 
   design discussion):** on a feature branch, CI provisions a **clean D1** (via the CF
   API), runs `pithy migrate` + `pithy seed` against it, binds it to a **preview Worker
   deployment**, and tears it all down on close. Gives every feature a clean, seeded
-  environment. Provided as opinionated CI + `pithy env` subcommands.
+  environment. Provided as opinionated CI + `pithy feature` subcommands.
 - **Seed / test-data harness (easy–medium):** port the CMS seeder model — a `pithy seed`
   command driven by the same Zod schemas/codecs, used by both local dev and ephemeral CI
   envs.

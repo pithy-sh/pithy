@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
 
-/** The directory an ejected capability's source is copied into, relative to `pithy.config.ts`. */
+/**
+ * The directory an ejected capability's source is copied into, relative to the Worker's
+ * `pithy.config.ts` — so it lands in `apps/<worker>/capabilities/<cap>/`, beside the config that
+ * imports it. Ejecting is per-Worker because the wiring it forks is per-Worker.
+ */
 export const EJECT_DIR = "capabilities";
 
 /** The local import path an ejected capability is wired to — also the "this is ejected" signal for upgrade. */
@@ -28,26 +32,32 @@ export function parseEjectedCapabilities(configSource: string): string[] {
   return names;
 }
 
-/** Read `pithy.config.ts` and return the ejected capability names (empty if the file is unreadable). */
-export async function ejectedCapabilities(projectDir: string): Promise<string[]> {
+/**
+ * Read a Worker's `pithy.config.ts` and return the ejected capability names (empty if the file is
+ * unreadable). `workerDir` is `apps/<name>` — the config that wires the capability is the one that says
+ * whether it was forked.
+ */
+export async function ejectedCapabilities(workerDir: string): Promise<string[]> {
   try {
-    return parseEjectedCapabilities(await readFile(join(projectDir, "pithy.config.ts"), "utf8"));
+    return parseEjectedCapabilities(await readFile(join(workerDir, "pithy.config.ts"), "utf8"));
   } catch {
     return [];
   }
 }
 
-/** Whether a specific capability has been ejected in this project. */
-export async function isEjected(projectDir: string, capability: string): Promise<boolean> {
-  return (await ejectedCapabilities(projectDir)).includes(capability);
+/** Whether a specific capability has been ejected in this Worker. */
+export async function isEjected(workerDir: string, capability: string): Promise<boolean> {
+  return (await ejectedCapabilities(workerDir)).includes(capability);
 }
 
 /** Promote a forked capability's runtime deps into the project. Injected in tests. */
 export type PromoteDeps = (projectDir: string, deps: string[]) => Promise<void>;
 
 export interface EjectCapabilityOptions {
-  /** The project root — where `pithy.config.ts`, `package.json`, and `node_modules` live. */
+  /** The project root — where `package.json`, the lockfile, and `node_modules` live. */
   projectDir: string;
+  /** The Worker's directory (`apps/<name>`) — its `pithy.config.ts`, and where the fork lands. */
+  workerDir: string;
   /** The capability's short name, e.g. `auth` — the local directory and import leaf. */
   capability: string;
   /** The capability's package, e.g. `@pithy-sh/auth` — the source and manifest to read. */
@@ -61,7 +71,7 @@ export interface EjectCapabilityOptions {
 /** What eject did: where the source landed and which deps it promoted. */
 export interface EjectResult {
   capability: string;
-  /** The project-relative directory the source was copied into. */
+  /** The Worker-relative directory the source was copied into (`capabilities/<cap>`). */
   path: string;
   /** The `name@version` deps promoted into the project (workspace-internal ones excluded). */
   promotedDependencies: string[];
@@ -102,8 +112,8 @@ async function promotableDependencies(projectDir: string, pkg: string): Promise<
 }
 
 /** Repoint the managed-region import from the package to the local copy; idempotent if already local. */
-async function repointImport(projectDir: string, pkg: string, capability: string): Promise<void> {
-  const path = join(projectDir, "pithy.config.ts");
+async function repointImport(workerDir: string, pkg: string, capability: string): Promise<void> {
+  const path = join(workerDir, "pithy.config.ts");
   const source = await readFile(path, "utf8");
   const packageSpecifier = `"${pkg}/src/index"`;
   const localSpecifier = `"${ejectImportPath(capability)}"`;
@@ -113,22 +123,24 @@ async function repointImport(projectDir: string, pkg: string, capability: string
   }
   if (source.includes(localSpecifier)) return; // already ejected — a --force re-copy leaves it local
   throw new NotFoundError({
-    message: `pithy.config.ts doesn't import ${pkg}.`,
+    message: `${path} doesn't import ${pkg}.`,
     action: `Run pithy add ${capability} first, then eject.`,
   });
 }
 
 /**
- * Eject a capability: copy its entire installed `src/` into `<project>/capabilities/<cap>/`, repoint
- * the `pithy.config.ts` import at the local copy, and promote the package's runtime deps so the copy
- * builds standalone. The capability is now the user's — nothing from `@pithy-sh/<cap>` is imported and
- * it no longer upgrades (the principle-3 trade). Refuses to overwrite an existing local copy unless
- * `force` is set; `force` removes it first so stale files don't linger.
+ * Eject a capability into **one Worker**: copy its entire installed `src/` into
+ * `apps/<worker>/capabilities/<cap>/`, repoint that Worker's `pithy.config.ts` import at the local copy,
+ * and promote the package's runtime deps into the project so the copy builds standalone. The capability
+ * is now the user's — nothing from `@pithy-sh/<cap>` is imported and it no longer upgrades (the
+ * principle-3 trade). Another Worker that wires the same capability keeps the package; a fork is scoped
+ * to the Worker that asked for it. Refuses to overwrite an existing local copy unless `force` is set;
+ * `force` removes it first so stale files don't linger.
  */
 export async function ejectCapability(options: EjectCapabilityOptions): Promise<EjectResult> {
-  const { projectDir, capability, package: pkg, force } = options;
+  const { projectDir, workerDir, capability, package: pkg, force } = options;
   const source = join(projectDir, "node_modules", pkg, "src");
-  const dest = join(projectDir, EJECT_DIR, capability);
+  const dest = join(workerDir, EJECT_DIR, capability);
 
   if (!(await exists(source))) {
     throw new NotFoundError({
@@ -155,7 +167,7 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   const promote = options.promoteDeps ?? ((dir, deps) => promoteDependencies(dir, deps).then(() => {}));
   await promote(projectDir, promotedDependencies);
 
-  await repointImport(projectDir, pkg, capability);
+  await repointImport(workerDir, pkg, capability);
 
   return { capability, path: `${EJECT_DIR}/${capability}`, promotedDependencies, forced: Boolean(alreadyEjected) };
 }

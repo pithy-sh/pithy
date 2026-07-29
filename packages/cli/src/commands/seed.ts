@@ -3,9 +3,9 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
-import type { ResetPreviewEntry } from "../migrations/run";
-import { allCapabilities, loadProject } from "../project/config";
-import { seedProject } from "../seed/run";
+import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
+import { loadProject } from "../project/config";
+import { type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { saffron } from "../terminal/style";
@@ -37,10 +37,27 @@ function describeReset(entry: ResetPreviewEntry, dryRun: boolean): string {
 }
 
 /**
+ * One worker's block of the run report: its sets, then what it skipped and why. A worker is named on
+ * every line so a fan-out over several workers reads as one list, not several interleaved ones.
+ */
+function describeWorker(worker: SeedWorkerReport, env: string, width: number): string {
+  const name = worker.worker.padEnd(width);
+  const lines: string[] = [];
+  for (const key of worker.skippedByEnv) lines.push(`${name}  skipped ${key}: not allowed in ${env}.`);
+  for (const key of worker.shared) lines.push(`${name}  ${key}: already seeded by another worker.`);
+  for (const set of worker.sets) lines.push(`${name}  ${describeSet(set)}`);
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+}
+
+/**
  * The audit emitter for a seed run, or a no-op when auditing is unavailable. A `--redo` schema reset is
  * the most destructive thing the seeder does, so it must leave a record of who reset which environment.
  */
-async function buildSeedAudit(projectDir: string, env: string, capabilities: Capability[]): Promise<CliAuditEmit> {
+async function buildSeedAudit(
+  projectDir: string,
+  env: string,
+  capabilities: readonly Capability[],
+): Promise<CliAuditEmit> {
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -81,6 +98,7 @@ export default defineCommand({
   meta: { name: "seed", description: "Seed an environment from your Zod-typed fixtures" },
   args: {
     env: { type: "string", default: "dev", description: "Target environment" },
+    worker: { type: "string", description: "Seed one worker instead of every worker in apps/" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     "dry-run": { type: "boolean", default: false, description: "Print the write plan; change nothing" },
     redo: {
@@ -105,9 +123,16 @@ export default defineCommand({
       const dryRun = args["dry-run"];
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 
-      const report = await seedProject({
-        capabilities: allCapabilities(config),
+      // Resolved once: the fan-out seeds these workers, and the audit emitter needs their capabilities
+      // to know whether the project composes `audit` at all.
+      const workers = await resolveWorkerScopes({
         projectDir,
+        ...(args.worker !== undefined ? { worker: args.worker } : {}),
+      });
+
+      const report = await seedProject({
+        projectDir,
+        workers,
         env: args.env,
         includeExamples: config.seed?.includeExamples ?? false,
         dryRun,
@@ -119,7 +144,11 @@ export default defineCommand({
         productionEnvironments: config.seed?.productionEnvironments,
         prompt: interactive ? productionPrompt() : undefined,
         promptReset: interactive ? resetPrompt(args.env) : undefined,
-        audit: await buildSeedAudit(projectDir, args.env, allCapabilities(config)),
+        audit: await buildSeedAudit(
+          projectDir,
+          args.env,
+          workers.flatMap((worker) => worker.capabilities),
+        ),
       });
 
       if (args.json) {
@@ -133,14 +162,12 @@ export default defineCommand({
       for (const entry of report.reset ?? []) {
         process.stdout.write(`${describeReset(entry, dryRun)}\n`);
       }
-      for (const key of report.skippedByEnv) {
-        process.stdout.write(`Skipped ${key}: not allowed in ${args.env}.\n`);
-      }
-      if (report.sets.length === 0) {
+      if (report.workers.every((worker) => worker.sets.length === 0)) {
         process.stdout.write(`Nothing to seed for ${args.env}.\n`);
       }
-      for (const set of report.sets) {
-        process.stdout.write(`${describeSet(set)}\n`);
+      const width = Math.max(0, ...report.workers.map((worker) => worker.worker.length));
+      for (const worker of report.workers) {
+        process.stdout.write(describeWorker(worker, args.env, width));
       }
       if (dryRun) process.stdout.write("Dry run. Nothing written.\n");
       process.stdout.write(`${formatDone()}\n`);

@@ -26,7 +26,8 @@ describe("pithy init", () => {
     const { stdout } = await run("bun", [bin, "init", "--name", "smoke", "--dir", target, "--json"]);
 
     const result = JSON.parse(stdout.trim()) as { command: string; appName: string; targetDir: string };
-    expect(result).toEqual({ command: "init", appName: "smoke", targetDir: target });
+    // `worker` names the first worker created at apps/<name>; a non-interactive run takes the default.
+    expect(result).toEqual({ command: "init", appName: "smoke", targetDir: target, worker: "api" });
 
     const pkg = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as { name: string };
     expect(pkg.name).toBe("smoke");
@@ -102,15 +103,21 @@ describe("pithy migrate", () => {
     const target = join(dir, "app");
     await run("bun", [bin, "init", "--name", "app", "--dir", target, "--json"]);
 
+    // The run is grouped per worker — the scaffold's single `apps/api` worker, with no databases yet.
     const { stdout } = await run("bun", [bin, "migrate", "--json"], { cwd: target });
-    expect(JSON.parse(stdout.trim())).toEqual({ command: "migrate", env: "dev", rollback: false, databases: [] });
+    expect(JSON.parse(stdout.trim())).toEqual({
+      command: "migrate",
+      env: "dev",
+      rollback: false,
+      workers: [{ worker: "app-api", databases: [] }],
+    });
 
     const rollback = await run("bun", [bin, "migrate", "--rollback", "--json"], { cwd: target });
     expect(JSON.parse(rollback.stdout.trim())).toEqual({
       command: "migrate",
       env: "dev",
       rollback: true,
-      databases: [],
+      workers: [{ worker: "app-api", databases: [] }],
     });
   });
 

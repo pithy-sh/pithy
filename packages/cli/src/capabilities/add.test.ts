@@ -1,11 +1,11 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { scaffoldProject } from "../project/scaffold";
+import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { addCapability } from "./add";
 
 const manifest = CapabilityManifest.parse({
@@ -24,9 +24,12 @@ interface WranglerBindings {
 }
 
 let dir: string;
+/** The Worker `pithy add` wires into. Capabilities are per-Worker, so this — never the project root. */
+let worker: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-add-"));
   await scaffoldProject({ targetDir: dir, appName: "add-test" });
+  worker = join(dir, "apps", DEFAULT_WORKER);
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -34,9 +37,9 @@ afterEach(async () => {
 
 describe("addCapability", () => {
   test("registers the capability import and call in pithy.config.ts, keeping the marker", async () => {
-    await addCapability({ projectDir: dir, manifest });
+    await addCapability({ workerDir: worker, manifest });
 
-    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain('import { auth } from "@pithy-sh/auth/src/index";');
     expect(config).toContain("auth(),");
     // The marker survives for the next add, after the new registration.
@@ -44,9 +47,9 @@ describe("addCapability", () => {
   });
 
   test("adds required bindings to every wrangler.jsonc environment, preserving comments", async () => {
-    await addCapability({ projectDir: dir, manifest });
+    await addCapability({ workerDir: worker, manifest });
 
-    const raw = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    const raw = await readFile(join(worker, "wrangler.jsonc"), "utf8");
     expect(raw).toContain("The top level is the dev environment");
 
     const wrangler = parse(raw) as unknown as WranglerBindings;
@@ -57,18 +60,18 @@ describe("addCapability", () => {
   });
 
   test("running it twice changes nothing", async () => {
-    await addCapability({ projectDir: dir, manifest });
-    const configOnce = await readFile(join(dir, "pithy.config.ts"), "utf8");
-    const wranglerOnce = await readFile(join(dir, "wrangler.jsonc"), "utf8");
+    await addCapability({ workerDir: worker, manifest });
+    const configOnce = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    const wranglerOnce = await readFile(join(worker, "wrangler.jsonc"), "utf8");
 
-    await addCapability({ projectDir: dir, manifest });
-    expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(configOnce);
-    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(wranglerOnce);
+    await addCapability({ workerDir: worker, manifest });
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(configOnce);
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(wranglerOnce);
   });
 
   test("a config without the managed-region marker fails with an action line", async () => {
-    await writeFile(join(dir, "pithy.config.ts"), "export default { capabilities: [] };\n");
-    await expect(addCapability({ projectDir: dir, manifest })).rejects.toThrow(PithyError);
+    await writeFile(join(worker, "pithy.config.ts"), "export default { capabilities: [] };\n");
+    await expect(addCapability({ workerDir: worker, manifest })).rejects.toThrow(PithyError);
   });
 
   test("a durable_object capability wires the DO binding per env and the class migration tag top-level", async () => {
@@ -80,7 +83,7 @@ describe("addCapability", () => {
         { type: "d1", name: "DB" },
       ],
     });
-    await addCapability({ projectDir: dir, manifest: doManifest });
+    await addCapability({ workerDir: worker, manifest: doManifest });
 
     interface DoWrangler {
       d1_databases: { binding: string }[];
@@ -91,7 +94,7 @@ describe("addCapability", () => {
         { durable_objects?: { bindings: { name: string; class_name: string }[] }; migrations?: unknown }
       >;
     }
-    const wrangler = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as DoWrangler;
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as DoWrangler;
 
     // The DO binding is emitted into every environment (each gets its own namespace).
     for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
@@ -106,21 +109,42 @@ describe("addCapability", () => {
     expect(wrangler.env.production?.migrations).toBeUndefined();
 
     // Idempotent: a second add changes nothing.
-    const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
-    await addCapability({ projectDir: dir, manifest: doManifest });
-    expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(once);
+    const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    await addCapability({ workerDir: worker, manifest: doManifest });
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
+  });
+
+  test("wires only the target worker — a sibling's config and bindings are untouched", async () => {
+    // A second worker, copied from the scaffolded one: same shape, different directory.
+    const sibling = join(dir, "apps", "edge");
+    await cp(worker, sibling, { recursive: true });
+
+    await addCapability({ workerDir: worker, manifest });
+
+    const siblingConfig = await readFile(join(sibling, "pithy.config.ts"), "utf8");
+    expect(siblingConfig).not.toContain("@pithy-sh/auth");
+    expect(siblingConfig).toContain("// pithy:capabilities");
+
+    const siblingWrangler = parse(
+      await readFile(join(sibling, "wrangler.jsonc"), "utf8"),
+    ) as unknown as WranglerBindings;
+    expect(siblingWrangler.d1_databases).toEqual([]);
+    expect(siblingWrangler.kv_namespaces).toEqual([]);
+    // And the target really was wired — the isolation isn't a no-op.
+    const target = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as WranglerBindings;
+    expect(target.d1_databases).toEqual([{ binding: "DB" }]);
   });
 
   test("a capability whose name is a substring of an existing registration is still added", async () => {
     // Register `myauth` first; its `myauth(),` line must not satisfy the
     // idempotency check for `auth` (whose `auth(),` is a substring of it).
     await addCapability({
-      projectDir: dir,
+      workerDir: worker,
       manifest: CapabilityManifest.parse({ name: "myauth", package: "@pithy-sh/myauth", requiredBindings: [] }),
     });
-    await addCapability({ projectDir: dir, manifest });
+    await addCapability({ workerDir: worker, manifest });
 
-    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain('import { auth } from "@pithy-sh/auth/src/index";');
     expect(config).toMatch(/^\s*auth\(\),$/m); // a real auth() line, not just the myauth() substring
   });
@@ -137,9 +161,9 @@ describe("addCapability", () => {
     });
 
     test("renders each option as key: default with its describe as a comment", async () => {
-      await addCapability({ projectDir: dir, manifest: withOptions });
+      await addCapability({ workerDir: worker, manifest: withOptions });
 
-      const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+      const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
       expect(config).toContain("auth({");
       expect(config).toContain("// Where the auth routes mount.");
       expect(config).toContain('basePath: "/auth",');
@@ -150,12 +174,12 @@ describe("addCapability", () => {
 
     test("an override replaces the rendered default", async () => {
       await addCapability({
-        projectDir: dir,
+        workerDir: worker,
         manifest: withOptions,
         configValues: { basePath: "/authentication" },
       });
 
-      const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+      const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
       expect(config).toContain('basePath: "/authentication",');
       expect(config).not.toContain('basePath: "/auth",');
       // Un-overridden options keep their default.
@@ -163,11 +187,11 @@ describe("addCapability", () => {
     });
 
     test("running it twice with options changes nothing", async () => {
-      await addCapability({ projectDir: dir, manifest: withOptions });
-      const once = await readFile(join(dir, "pithy.config.ts"), "utf8");
+      await addCapability({ workerDir: worker, manifest: withOptions });
+      const once = await readFile(join(worker, "pithy.config.ts"), "utf8");
 
-      await addCapability({ projectDir: dir, manifest: withOptions });
-      expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toBe(once);
+      await addCapability({ workerDir: worker, manifest: withOptions });
+      expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(once);
     });
   });
 });

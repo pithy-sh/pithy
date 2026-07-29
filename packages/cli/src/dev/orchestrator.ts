@@ -1,0 +1,507 @@
+import { execFile, spawn as spawnChild } from "node:child_process";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  buildDevConfig,
+  type DevConfig,
+  devConfigPath,
+  readDevConfig,
+  scanPinnedBlocks,
+  writeDevConfig,
+} from "../feature/devConfig";
+import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
+import { detectPackageManager, execArgs } from "../project/packageManager";
+import { defaultWorkerDev } from "../project/workerManifest";
+import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
+import { dim, workerColor } from "../terminal/style";
+import { buildWorkerEnv, startCommand, type WranglerLauncher } from "./env";
+import { type DataStream, teeStream } from "./logging";
+import {
+  isAlive as isAliveDefault,
+  type Sleep,
+  sweepStaleDevPorts,
+  type TryBind,
+  tryBind as tryBindDefault,
+  verifyPinnedPort,
+} from "./ports";
+import { type DevState, devStatePath, readDevState, removeDevState, writeDevState } from "./state";
+
+/** A spawned child, minimally what the orchestrator drives — satisfied by a real `ChildProcess` or a fake. */
+export interface ChildLike {
+  pid?: number;
+  stdout: DataStream | null;
+  stderr: DataStream | null;
+  once(event: "exit", listener: (code: number | null) => void): unknown;
+  /** The spawn error channel (e.g. ENOENT when a `dev.command` binary is missing) — required so it is handled, not thrown. */
+  once(event: "error", listener: (error: Error) => void): unknown;
+}
+
+/** The spawn seam. Detached makes the child a process-group leader, so `kill(-pid)` tears down its subtree. */
+export type SpawnDev = (
+  command: string,
+  args: string[],
+  options: { cwd: string; env: Record<string, string>; detached: boolean },
+) => ChildLike;
+
+/** A log destination — the terminal's tee'd copy in `logs/dev.log`, injectable so tests capture lines. */
+export interface LogSink {
+  write: (line: string) => void;
+  end: () => Promise<void> | void;
+}
+
+/** Everything `startDev` needs, every dependency defaulted to its real implementation. */
+export interface StartDevOptions {
+  projectDir: string;
+  json?: boolean;
+  discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
+  loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
+  /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
+  ensureDevConfig?: (options: EnsureDevConfigOptions) => Promise<DevConfig>;
+  /** Seams handed to the real {@link ensureDevConfig} (git branch, registry path, write). */
+  ensureDeps?: EnsureDevConfigDeps;
+  tryBind?: TryBind;
+  /** Reap our own orphans on the pinned ports. `knownPids` are the previous session's recorded children. */
+  sweep?: (ports: number[], knownPids: readonly number[]) => Promise<number[]>;
+  spawn?: SpawnDev;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  isAlive?: (pid: number) => boolean;
+  sleep?: Sleep;
+  launchWrangler?: WranglerLauncher;
+  hasSetsid?: boolean;
+  stdout?: (text: string) => void;
+  openLog?: (path: string) => LogSink;
+  baseEnv?: NodeJS.ProcessEnv;
+  now?: () => Date;
+  readState?: (path: string) => Promise<DevState | null>;
+  writeState?: (path: string, state: DevState) => Promise<void>;
+  removeState?: (path: string, ownPid: number) => void;
+  ownPid?: number;
+}
+
+/** The resolved endpoint for one started worker. */
+export interface StartedWorker {
+  name: string;
+  port: number;
+  origin: string;
+}
+
+/** A running dev session's handle — its resolved workers, its lifecycle promises, and a shutdown hook. */
+export interface DevHandle {
+  workers: StartedWorker[];
+  /** Resolves once every started worker has matched its ready signal (the ready banner fires). */
+  ready: Promise<void>;
+  /** Resolves once the session has fully torn down (all children gone, state removed). */
+  closed: Promise<void>;
+  /** Tear the session down: SIGTERM every child group, SIGKILL survivors after a grace window, clean up. */
+  shutdown: (reason: string) => Promise<void>;
+  state: DevState;
+}
+
+/** How long a child gets to exit on SIGTERM before it is SIGKILLed. */
+const SHUTDOWN_GRACE_MS = 5000;
+
+const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The real log sink: truncate `logs/dev.log` fresh, stream lines to it, flush on close. */
+function openLogDefault(path: string): LogSink {
+  mkdirSync(dirname(path), { recursive: true });
+  const stream = createWriteStream(path, { flags: "w" });
+  return {
+    write: (line) => void stream.write(`${line}\n`),
+    end: () => new Promise<void>((resolve) => stream.end(() => resolve())),
+  };
+}
+
+/** The real spawn: a group-leader child (POSIX `setsid` via `detached`) with piped stdout/stderr. */
+const spawnDefault: SpawnDev = (command, args, options) =>
+  spawnChild(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    detached: options.detached,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+const execFileAsync = promisify(execFile);
+
+/** Seams for {@link ensureDevConfig} — the git and registry lookups a test drives itself. */
+export interface EnsureDevConfigDeps {
+  /** Resolve the central `.dev-ports.json` (default: the main repo root, or the project when there is no repo). */
+  registryPathFor?: (projectDir: string) => Promise<string>;
+  /** The current branch, the registry's key (default: `git rev-parse --abbrev-ref HEAD`; `null` off a branch). */
+  branchFor?: (projectDir: string) => Promise<string | null>;
+  /** Persist the built config (default: {@link writeDevConfig}). */
+  writeConfig?: (path: string, config: DevConfig) => Promise<void>;
+}
+
+/** Arguments to {@link ensureDevConfig}. */
+export interface EnsureDevConfigOptions extends EnsureDevConfigDeps {
+  /** The project (or worktree) root that owns `.dev.config.json`. */
+  projectDir: string;
+  /** Every discovered worker — not just the autostart set, so a port survives an autostart flip. */
+  workers: WorkerTarget[];
+  /** The config already on disk, whose worker→port pairs are preserved. `null` on first run. */
+  existing?: DevConfig | null;
+}
+
+/** The registry lives at the main repo root; with no repo at all, the project keeps its own. */
+async function defaultRegistryPath(projectDir: string): Promise<string> {
+  try {
+    return await resolvePortsRegistryPath(projectDir);
+  } catch {
+    return join(projectDir, ".dev-ports.json");
+  }
+}
+
+/** The current branch, or `null` when there is no repo or HEAD is detached. */
+async function defaultBranch(projectDir: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectDir });
+    const branch = stdout.trim();
+    return branch === "" || branch === "HEAD" ? null : branch;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guarantee this project has pinned ports, then return them — the bootstrap behind `pithy dev`.
+ *
+ * `.dev.config.json` is written at feature creation, but a plain `pithy init` project is the main checkout,
+ * which `pithy feature sync` deliberately refuses to touch (it would replace the repo's shared `.dev.vars`
+ * with symlinks). So the scaffold's own `pithy dev` had no way to ever get one. This writes the port half —
+ * and only the port half; `.dev.vars` stays exactly as it is.
+ *
+ * The invariant is unchanged: ports are **assigned** here, from the same central registry under the same
+ * file lock, then verified before anything binds — never probed at startup. Idempotent: a block is reused
+ * once allocated, and assignment is sticky, so a second run returns the same ports and a worker added later
+ * takes a free port without moving a sibling's address. An existing config keeps its own block and branch —
+ * the registry is never re-keyed underneath a live feature.
+ */
+export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<DevConfig> {
+  const existing = options.existing ?? null;
+  const writeConfig = options.writeConfig ?? writeDevConfig;
+
+  let branch: string;
+  let block: PortBlock;
+  if (existing) {
+    branch = existing.branch;
+    block = { block: existing.ports.index, base: existing.ports.base, size: existing.ports.size };
+  } else {
+    const registryPath = await (options.registryPathFor ?? defaultRegistryPath)(options.projectDir);
+    const named = await (options.branchFor ?? defaultBranch)(options.projectDir);
+    // Off a branch (no repo, detached HEAD) the checkout path is the stable key — one block per checkout.
+    branch = named ?? `local:${options.projectDir}`;
+    // Rebuild any registry entry lost since the worktrees were created, so a fresh registry can never hand
+    // out a block a live feature still holds.
+    await reclaimPortBlocks({ registryPath, reservations: await scanPinnedBlocks(dirname(registryPath)) });
+    block = await allocatePortBlock({ registryPath, branch });
+  }
+
+  const config = buildDevConfig({ branch, block, workers: options.workers, previous: existing });
+  await writeConfig(devConfigPath(options.projectDir), config);
+  return config;
+}
+
+/** Compile a worker's ready-signal regex, falling back to the default when the source is invalid. */
+function readyRegexFor(worker: WorkerTarget): RegExp {
+  const source = (worker.dev ?? defaultWorkerDev()).readySignal;
+  try {
+    return new RegExp(source);
+  } catch {
+    return new RegExp(defaultWorkerDev().readySignal);
+  }
+}
+
+/**
+ * Start and supervise the local dev session — the engine behind `pithy dev`.
+ *
+ * It discovers the autostart workers, resolves each one's **pinned** port from `.dev.config.json` (bootstrapping
+ * one from the central port registry when the project has none — see {@link ensureDevConfig}), verifies
+ * every port is free on both loopback families before spawning anything (a conflict aborts the whole session
+ * — it never drifts to another port), stops any previous session and reaps orphaned workers, then spawns each
+ * worker as a process-group leader with its siblings' addresses wired into the env. Output is tee'd — colorized
+ * to the terminal, plain to `logs/dev.log` — and a single ready banner fires once every worker matches its
+ * ready signal. Returns a handle; signal wiring and process exit stay with the caller so the engine is testable.
+ */
+export async function startDev(options: StartDevOptions): Promise<DevHandle> {
+  const projectDir = options.projectDir;
+  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
+  const loadDevConfig = options.loadDevConfig ?? ((dir: string) => readDevConfig(devConfigPath(dir)));
+  const bind = options.tryBind ?? tryBindDefault;
+  const spawn = options.spawn ?? spawnDefault;
+  const kill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
+  const isAlive = options.isAlive ?? isAliveDefault;
+  const sleep = options.sleep ?? realSleep;
+  const hasSetsid = options.hasSetsid ?? process.platform !== "win32";
+  const stdout = options.stdout ?? ((text: string) => void process.stdout.write(text));
+  const openLog = options.openLog ?? openLogDefault;
+  const now = options.now ?? (() => new Date());
+  const readState = options.readState ?? readDevState;
+  const writeState = options.writeState ?? writeDevState;
+  const removeState = options.removeState ?? removeDevState;
+  const ownPid = options.ownPid ?? process.pid;
+  const emitLine = (text: string) => stdout(`${text}\n`);
+
+  // 1. Discover the autostart set. apps/ is the registry; no hand-kept list.
+  const discovered = await discoverWorkers(projectDir);
+  const autostart = discovered.filter((w) => (w.dev ?? defaultWorkerDev()).autostart);
+  if (autostart.length === 0) {
+    throw new ValidationError({
+      message: "No autostart workers to run.",
+      action: "Add one with pithy worker add, or set dev.autostart in a worker's pithy.worker.jsonc.",
+    });
+  }
+
+  // 2. Resolve pinned ports from the dev config — never probe. A project that has none yet (a plain
+  //    `pithy init` checkout, which `pithy feature sync` refuses to touch) gets one bootstrapped here from
+  //    the same central registry, so ports stay assigned-then-verified rather than probed at startup.
+  const ensure = options.ensureDevConfig ?? ensureDevConfig;
+  const existing = await loadDevConfig(projectDir);
+  const unpinned = autostart.filter((w) => !existing?.workers[w.name]);
+  const config =
+    unpinned.length === 0 && existing
+      ? existing
+      : await ensure({ projectDir, workers: discovered, existing, ...(options.ensureDeps ?? {}) });
+
+  const started: { worker: WorkerTarget; port: number; origin: string }[] = [];
+  for (const worker of autostart) {
+    const pinned = config.workers[worker.name];
+    if (!pinned) {
+      throw new ValidationError({
+        message: `Worker "${worker.name}" has no port in .dev.config.json.`,
+        action: "Delete .dev.config.json and run pithy dev again to reassign this project's ports.",
+      });
+    }
+    started.push({ worker, port: pinned.port, origin: pinned.origin });
+  }
+
+  // 3. Stop a previous session, then reap orphaned workerd/wrangler still holding the pinned ports. This runs
+  //    BEFORE verification: a crashed prior session's orphan must be reaped, not treated as an external
+  //    conflict that blocks startup (docs/CLI.md §6.2 — a crashed session can't block the next one). The
+  //    sweep is scoped to our own orphans — the previous session's pids and workerd/wrangler-shaped
+  //    commands — so anything genuinely external falls through to step 4 and is reported, never killed.
+  const statePath = devStatePath(projectDir);
+  const previous = await stopPreviousSession({ statePath, readState, isAlive, kill, sleep, emitLine });
+  const sweep =
+    options.sweep ??
+    ((ports: number[], knownPids: readonly number[]) =>
+      sweepStaleDevPorts(ports, { knownPids, selfPid: ownPid, log: (m) => emitLine(m) }));
+  await sweep(
+    started.map((s) => s.port),
+    previous?.childPids ?? [],
+  );
+
+  // 4. Verify every pinned port is now free on both loopback families — one conflict (something genuinely
+  //    external still holds it) aborts the whole session with one error; it never drifts to another port.
+  for (const { worker, port } of started) {
+    await verifyPinnedPort(worker.name, port, bind);
+  }
+
+  // 5. Resolve the wrangler launcher through the project's package manager (never a hardcoded global).
+  const launchWrangler =
+    options.launchWrangler ??
+    (await (async () => {
+      const pm = await detectPackageManager(projectDir);
+      return (args: string[]) => execArgs(pm, "wrangler", args);
+    })());
+
+  // 6. Open the log, wire the shared env, and spawn.
+  const logPath = join(projectDir, "logs", "dev.log");
+  const log = openLog(logPath);
+  log.write(
+    `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
+  );
+  const childEnv = buildWorkerEnv(config, options.baseEnv ?? process.env);
+  // One local store for the whole project. Each worker runs in its own apps/<name>/, where wrangler would
+  // otherwise create a private `.wrangler/` — so two workers sharing a binding would not share the data.
+  const persistTo = join(projectDir, ".wrangler", "state");
+
+  const children: { name: string; child: ChildLike }[] = [];
+  const pipes: Promise<void>[] = [];
+  const exits: Promise<void>[] = [];
+  const readyState = new Map<string, boolean>();
+  const readyRegex = new Map<string, RegExp>();
+  let bannerShown = false;
+  let resolveReady!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  let shuttingDown = false;
+
+  const showBannerIfReady = () => {
+    if (bannerShown || [...readyState.values()].some((r) => !r)) return;
+    bannerShown = true;
+    if (!options.json) {
+      emitLine("Ready.");
+      for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
+      emitLine(dim(`logs → ${logPath}`));
+    }
+    for (const s of started) log.write(`ready: ${s.worker.name} ${s.origin}`);
+    resolveReady();
+  };
+
+  const signalChild = (pid: number | undefined, signal: NodeJS.Signals) => {
+    if (!pid) return;
+    try {
+      kill(hasSetsid ? -pid : pid, signal);
+    } catch {
+      // Already exited (ESRCH) — nothing to signal.
+    }
+  };
+
+  const shutdown = async (reason: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    emitLine(`Stopping — ${reason}.`);
+    log.write(`stopping — ${reason}`);
+    for (const { child } of children) signalChild(child.pid, "SIGTERM");
+    const allExited = Promise.allSettled(exits);
+    const timedOut = await Promise.race([allExited.then(() => false), sleep(SHUTDOWN_GRACE_MS).then(() => true)]);
+    if (timedOut) {
+      emitLine("Children still alive after grace window — sending SIGKILL.");
+      for (const { child } of children) signalChild(child.pid, "SIGKILL");
+      await allExited;
+    }
+    await Promise.allSettled(pipes);
+    await log.end();
+    removeState(statePath, ownPid);
+    resolveClosed();
+  };
+
+  emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
+
+  for (const { worker, port } of started) {
+    readyState.set(worker.name, false);
+    readyRegex.set(worker.name, readyRegexFor(worker));
+    const { command, args } = startCommand(worker, port, launchWrangler, persistTo);
+    const child = spawn(command, args, { cwd: worker.dir, env: childEnv, detached: hasSetsid });
+    children.push({ name: worker.name, child });
+
+    const onLine = (line: string) => {
+      if (bannerShown || readyState.get(worker.name)) return;
+      if (readyRegex.get(worker.name)?.test(line)) {
+        readyState.set(worker.name, true);
+        showBannerIfReady();
+      }
+    };
+    const paint = workerColor(children.length - 1);
+    if (child.stdout) {
+      pipes.push(
+        teeStream({
+          stream: child.stdout,
+          label: worker.name,
+          paint,
+          sinks: { terminal: (l) => emitLine(l), log: (l) => log.write(l), line: onLine },
+        }),
+      );
+    }
+    if (child.stderr) {
+      pipes.push(
+        teeStream({
+          stream: child.stderr,
+          label: worker.name,
+          paint,
+          sinks: { terminal: (l) => emitLine(l), log: (l) => log.write(l), line: onLine },
+        }),
+      );
+    }
+
+    exits.push(
+      new Promise<void>((resolve) => {
+        child.once("exit", (code) => {
+          resolve();
+          if (!shuttingDown) void shutdown(`${worker.name} exited (${code})`);
+        });
+        // A spawn failure (ENOENT for a missing dev.command binary, EACCES, …) emits 'error' and never 'exit'.
+        // Without this listener Node re-throws it as an uncaught error, crashing dev with a raw stack and never
+        // shutting down. Handle it: report it, settle this child's exit, and tear the session down.
+        child.once("error", (error) => {
+          emitLine(`${worker.name} failed to start: ${error.message}`);
+          log.write(`error: ${worker.name} ${error.message}`);
+          resolve();
+          if (!shuttingDown) void shutdown(`${worker.name} failed to start`);
+        });
+      }),
+    );
+  }
+
+  // 7. Record the live session so a re-run can stop it and reap its children.
+  const state: DevState = {
+    pid: ownPid,
+    startedAt: now().toISOString(),
+    childPids: children.map((c) => c.child.pid).filter((pid): pid is number => typeof pid === "number"),
+    workers: Object.fromEntries(
+      children.map(({ name, child }, i) => [name, { port: started[i]?.port ?? 0, pid: child.pid ?? 0 }]),
+    ),
+  };
+  await writeState(statePath, state);
+
+  return {
+    workers: started.map((s) => ({ name: s.worker.name, port: s.port, origin: s.origin })),
+    ready,
+    closed,
+    shutdown,
+    state,
+  };
+}
+
+/**
+ * Stop a still-running previous session, or reap the orphaned children of a crashed one. Returns the state
+ * it read, so the port sweep knows which pids were ours and can leave every other one to be reported.
+ */
+async function stopPreviousSession(deps: {
+  statePath: string;
+  readState: (path: string) => Promise<DevState | null>;
+  isAlive: (pid: number) => boolean;
+  kill: (pid: number, signal: NodeJS.Signals) => void;
+  sleep: Sleep;
+  emitLine: (text: string) => void;
+}): Promise<DevState | null> {
+  const prev = await deps.readState(deps.statePath);
+  if (!prev) return null;
+  if (deps.isAlive(prev.pid)) {
+    deps.emitLine(`Stopping previous session (pid ${prev.pid}).`);
+    trySignal(deps.kill, prev.pid, "SIGINT");
+    const gone = await waitFor(prev.pid, 5000, deps.isAlive, deps.sleep);
+    if (!gone) {
+      trySignal(deps.kill, prev.pid, "SIGKILL");
+      await waitFor(prev.pid, 2000, deps.isAlive, deps.sleep);
+    }
+    return prev;
+  }
+  for (const pid of prev.childPids) {
+    if (deps.isAlive(pid)) {
+      deps.emitLine(`Reaping orphan child pid ${pid}.`);
+      trySignal(deps.kill, pid, "SIGTERM");
+    }
+  }
+  return prev;
+}
+
+function trySignal(kill: (pid: number, signal: NodeJS.Signals) => void, pid: number, signal: NodeJS.Signals): void {
+  try {
+    kill(pid, signal);
+  } catch {
+    // Already gone.
+  }
+}
+
+async function waitFor(
+  pid: number,
+  timeoutMs: number,
+  isAlive: (pid: number) => boolean,
+  sleep: Sleep,
+): Promise<boolean> {
+  const start = Date.now();
+  for (;;) {
+    if (!isAlive(pid)) return true;
+    if (Date.now() - start > timeoutMs) return false;
+    await sleep(100);
+  }
+}

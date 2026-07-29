@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { scaffoldProject } from "../project/scaffold";
+import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { runAdd } from "./flow";
 
 /**
@@ -12,9 +12,12 @@ import { runAdd } from "./flow";
  * (the same constraint e2e.test.ts documents).
  */
 let dir: string;
+/** The Worker `add` wires and migrates — its own config names the capabilities, its wrangler the D1s. */
+let worker: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(import.meta.dirname, "..", "..", ".migrate-"));
   await scaffoldProject({ targetDir: dir, appName: "migrate-test" });
+  worker = join(dir, "apps", DEFAULT_WORKER);
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -77,7 +80,7 @@ export function widgets() {
 }
 
 test("add runs the capability's dev migrations and reports what moved", async () => {
-  const result = await runAdd({ projectDir: dir, capability: "widgets", install: installWidgets });
+  const result = await runAdd({ projectDir: dir, workerDir: worker, capability: "widgets", install: installWidgets });
 
   expect(result.databases).toHaveLength(1);
   const run = result.databases[0];
@@ -89,14 +92,20 @@ test("add runs the capability's dev migrations and reports what moved", async ()
 });
 
 test("add --eject copies the source, repoints the import, and still migrates via the local copy", async () => {
-  const result = await runAdd({ projectDir: dir, capability: "widgets", install: installWidgets, eject: true });
+  const result = await runAdd({
+    projectDir: dir,
+    workerDir: worker,
+    capability: "widgets",
+    install: installWidgets,
+    eject: true,
+  });
 
   // The source landed in the repo, structure preserved.
   expect(result.eject?.path).toBe("capabilities/widgets");
-  expect(await readFile(join(dir, "capabilities/widgets/index.ts"), "utf8")).toContain("defineCapability");
+  expect(await readFile(join(worker, "capabilities/widgets/index.ts"), "utf8")).toContain("defineCapability");
 
   // The config now imports the local copy, not the package.
-  const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+  const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
   expect(config).toContain('from "./capabilities/widgets"');
   expect(config).not.toContain("@pithy-sh/widgets/src/index");
 

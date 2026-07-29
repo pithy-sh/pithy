@@ -1,36 +1,100 @@
+import { join, relative } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { createRemoteCliAudit } from "../audit/cliAudit";
+import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
 import { type ConfigPrompt, coerceConfigValue, collectSetFlags, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import type { DatabaseRun } from "../migrations/run";
-import { allCapabilities, loadProject } from "../project/config";
+import { type ResolvedWorker, type ResolveOptions, resolveSingleWorker } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
+/** What {@link buildAudit} needs, plus the factory seam a test observes. */
+export interface BuildAuditOptions {
+  /**
+   * The **project root** — the parent of `apps/`. Both halves of the lookup hang off it: the shared
+   * `.dev.vars` holding the Cloudflare credentials, and the `apps/*` scan that resolves the audit
+   * database. Passing a Worker directory here finds no `apps/`, so nothing is ever recorded.
+   */
+  projectDir: string;
+  /** The target Worker's name — narrows the audit-database lookup to the Worker being wired. */
+  worker: string;
+  /** The environment the record lands in. */
+  env: string;
+  /** The target Worker's capabilities — auditing is wired only when `audit` is among them. */
+  capabilities: Capability[];
+  /** Audit factory seam (default: {@link createRemoteCliAudit}). */
+  create?: (options: CreateCliAuditOptions) => Promise<CliAuditEmit>;
+}
+
 /**
- * The audit emitter for `pithy add`. There is no environment concept here — a capability is wired into
- * dev config, not deployed — so `"dev"` is the fallback env the audit database resolves against. A
- * no-op when Cloudflare creds or the audit capability aren't there (which is always true the very
+ * The audit emitter for the wiring commands, `pithy add` and `pithy remove`. Both act on **one** Worker
+ * in a project, so the audit database is looked up from the project root and narrowed to that Worker.
+ * `add` has no environment concept — a capability is wired into config, not deployed — so it passes
+ * `"dev"`, which makes its emitter inert by design; `remove` passes the env its `--drop` destroys.
+ *
+ * A no-op when Cloudflare creds or the audit capability aren't there (which is always true the very
  * first time `pithy add audit` itself runs — nothing can audit-log its own installation).
  */
-async function buildAudit(projectDir: string) {
+export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEmit> {
+  const { projectDir, worker, env, capabilities } = options;
+  const create = options.create ?? createRemoteCliAudit;
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
-  const capabilities = await loadProject(projectDir)
-    .then(allCapabilities)
-    .catch(() => []);
-  return createRemoteCliAudit({
+  return create({
     projectDir,
-    env: "dev",
+    worker,
+    env,
     capabilities,
     clients: new CloudflareClients({ accountId, apiToken }),
     apiToken,
+  });
+}
+
+/**
+ * Pick the Worker interactively when a project has several and none was named. Supplied only when a
+ * human is attached — an agent run (`--json`, no TTY) gets the actionable error from
+ * {@link resolveSingleWorker} instead of a prompt it cannot answer.
+ */
+export async function promptWorker(choices: ResolvedWorker[]): Promise<string> {
+  const { isCancel, select } = await import("@clack/prompts");
+  const answer = await select({
+    message: "Which worker?",
+    options: choices.map((choice) => ({ value: choice.name, label: choice.name })),
+  });
+  if (isCancel(answer)) {
+    process.stderr.write("Cancelled.\n");
+    process.exit(1);
+  }
+  return answer as string;
+}
+
+/** Options for {@link targetWorker}: the project, the `--worker` value, and whether a human is attached. */
+export interface TargetWorkerOptions extends ResolveOptions {
+  /** The `--worker` value, when one was passed. */
+  worker?: string;
+  /** True only at a real terminal without `--json` — the one condition a prompt is answerable. */
+  interactive: boolean;
+}
+
+/**
+ * The Worker a wiring command acts on — shared by `pithy add` and `pithy remove`, which must resolve it
+ * the same way. `--worker` names it; a single-Worker project needs no ceremony; several Workers prompt a
+ * human and raise an actionable error for anyone else. The prompt is attached **only** when a human is
+ * attached, so an agent driving `--json` is told what to pass instead of hanging on a question.
+ */
+export function targetWorker(options: TargetWorkerOptions): Promise<ResolvedWorker> {
+  const { interactive, worker, ...resolve } = options;
+  return resolveSingleWorker({
+    ...resolve,
+    ...(worker === undefined ? {} : { worker }),
+    ...(interactive ? { prompt: promptWorker } : {}),
   });
 }
 
@@ -83,6 +147,7 @@ export default defineCommand({
     // Optional so `pithy add --list` runs without a capability.
     capability: { type: "positional", required: false, description: "Capability name, e.g. auth" },
     list: { type: "boolean", default: false, description: "List the capabilities you can add" },
+    worker: { type: "string", description: "Which worker to wire it into (apps/<name>)" },
     set: { type: "string", description: "Override a config option: --set key=value (repeatable)" },
     eject: {
       type: "boolean",
@@ -113,26 +178,38 @@ export default defineCommand({
       }
 
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      // Which Worker gets the wiring. One worker needs no ceremony; several never guess.
+      const target = await targetWorker({
+        projectDir,
+        interactive,
+        ...(args.worker === undefined ? {} : { worker: args.worker }),
+      });
+
       const result = await runAdd({
         projectDir,
+        workerDir: target.dir,
+        worker: target.name,
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
         prompt: interactive ? promptConfigValues : undefined,
         eject: args.eject,
         force: args.force,
-        audit: await buildAudit(projectDir),
+        audit: await buildAudit({ projectDir, worker: target.name, env: "dev", capabilities: target.capabilities }),
       });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "add", ...result })}\n`);
         return;
       }
+      process.stdout.write(`Wired ${result.capability} into ${result.worker}.\n`);
       for (const run of result.databases) {
         process.stdout.write(`${describeRun(run)}\n`);
       }
       if (result.eject) {
+        // The fork lands beside the Worker's config, so report it project-relative: apps/<worker>/capabilities/<cap>.
+        const path = relative(projectDir, join(target.dir, result.eject.path));
         process.stdout.write(
-          `Ejected ${result.capability} into ${result.eject.path}/. It's yours now — ${result.package} no longer upgrades it.\n`,
+          `Ejected ${result.capability} into ${path}/. It's yours now — ${result.package} no longer upgrades it.\n`,
         );
         if (result.eject.promotedDependencies.length > 0) {
           process.stdout.write(

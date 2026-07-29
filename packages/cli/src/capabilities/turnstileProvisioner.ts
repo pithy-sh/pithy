@@ -31,8 +31,16 @@ const SECRET_FACTS = { backend: "d1", scope: "environment", rotatable: true, val
 
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;
-  /** The project root — where `.dev.vars` and `wrangler.jsonc` live. */
+  /**
+   * The project root — owner of the one shared `.dev.vars` every worker symlinks to, so a dev sitekey
+   * written here reaches every worker at once.
+   */
   projectDir: string;
+  /**
+   * The web-facing Worker's directory — its `wrangler.jsonc` is where the per-environment sitekey vars are
+   * written. Per-Worker, because the widget is bound to the domain *that* Worker serves (`BASE_URL`).
+   */
+  workerDir: string;
   /** The secrets manager dispatcher — writes/deletes the secret in a deployed env's managed store. */
   dispatcher: SecretDispatcher;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -48,12 +56,14 @@ export interface CloudflareTurnstileProvisionerOptions {
 export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #cf: CloudflareClients;
   readonly #projectDir: string;
+  readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
     this.#projectDir = options.projectDir;
+    this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -85,7 +95,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   }
 
   async writeManagedSitekeys(env: ManagedTurnstileEnv, sitekeys: Record<string, string>): Promise<void> {
-    await editEnvVars(this.#projectDir, env, (vars) => Object.assign(vars, sitekeys));
+    await editEnvVars(this.#workerDir, env, (vars) => Object.assign(vars, sitekeys));
   }
 
   async ensureProductionWidget(
@@ -116,12 +126,14 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
 export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #projectDir: string;
+  readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
     this.#projectDir = options.projectDir;
+    this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -161,20 +173,20 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   async clearManagedSitekeys(modes: TurnstileMode[]): Promise<void> {
     const keys = modes.map((mode) => sitekeyVarName(mode));
     for (const env of ["staging", "production"] as const) {
-      await editEnvVars(this.#projectDir, env, (vars) => {
+      await editEnvVars(this.#workerDir, env, (vars) => {
         for (const key of keys) delete vars[key];
       });
     }
   }
 }
 
-/** Read `wrangler.jsonc`, mutate its `env.<env>.vars` map, and write it back comment-preserving. */
+/** Read the Worker's `wrangler.jsonc`, mutate its `env.<env>.vars` map, and write it back comment-preserving. */
 async function editEnvVars(
-  projectDir: string,
+  workerDir: string,
   env: ManagedTurnstileEnv,
   mutate: (vars: Record<string, string>) => void,
 ): Promise<void> {
-  const config = (await readWranglerConfig(projectDir)) as WranglerEnvVars;
+  const config = (await readWranglerConfig(workerDir)) as WranglerEnvVars;
   config.env ??= {};
   config.env[env] ??= {};
   const stanza = config.env[env];
@@ -182,5 +194,5 @@ async function editEnvVars(
     stanza.vars ??= {};
     mutate(stanza.vars);
   }
-  await writeWranglerConfig(projectDir, config);
+  await writeWranglerConfig(workerDir, config);
 }

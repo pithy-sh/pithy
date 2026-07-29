@@ -1,8 +1,9 @@
+import { basename } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
-import { allCapabilities, loadProject } from "../project/config";
+import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
 import { addCapability, type ConfigValue } from "./add";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
@@ -93,22 +94,47 @@ export type ConfigPrompt = (
 /** Install the package with the project's package manager. Injectable for tests. */
 export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
 
-/** Run the project's dev migrations. Injectable for tests. */
-export type MigrateStep = (projectDir: string) => Promise<DatabaseRun[]>;
+/** What the migrate step is told: the persistence root, and the one Worker just wired. */
+export interface MigrateTarget {
+  /** The project root — the owner of the `.wrangler/state` store every Worker's local D1 lives in. */
+  projectDir: string;
+  /** The target Worker's directory — its `wrangler.jsonc` supplies the D1 bindings. */
+  workerDir: string;
+  /** The target Worker's name. */
+  worker: string;
+}
+
+/** Run the target Worker's dev migrations. Injectable for tests. */
+export type MigrateStep = (target: MigrateTarget) => Promise<DatabaseRun[]>;
 
 /** Eject a capability's source into the repo. Injectable for tests. */
 export type EjectStep = (options: EjectCapabilityOptions) => Promise<EjectResult>;
 
 const defaultInstall: InstallStep = (input) => installPackage(input);
 
-const defaultMigrate: MigrateStep = async (projectDir) => {
-  const config = await loadProject(projectDir);
-  return migrateProject({ capabilities: allCapabilities(config), projectDir, env: "dev" });
+/**
+ * Migrate the Worker just wired, and only it: its own `pithy.config.ts` names the capabilities and its
+ * own `wrangler.jsonc` the D1 bindings, while the local Miniflare store stays under the project root —
+ * the one `wrangler dev` uses. The config is re-read here, after wiring, so the migration that just
+ * arrived is in the registry.
+ */
+const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker }) => {
+  const config = await loadWorkerConfig(workerDir);
+  const runs = await migrateProject({
+    projectDir,
+    env: "dev",
+    workers: [{ name: worker, dir: workerDir, capabilities: allCapabilities(config) }],
+  });
+  return runs[0]?.databases ?? [];
 };
 
 export interface RunAddOptions {
-  /** The project root — where pithy.config.ts and wrangler.jsonc live. */
+  /** The project root — where the lockfile and `node_modules` live; the package installs here. */
   projectDir: string;
+  /** The target Worker's directory (`apps/<name>`) — its `pithy.config.ts` and `wrangler.jsonc`. */
+  workerDir: string;
+  /** The target Worker's name, for the result and the audit trail. Defaults to `workerDir`'s basename. */
+  worker?: string;
   /** The capability name, e.g. `auth`. */
   capability: string;
   /** Raw `--set key=value` overrides; coerced against the manifest's options. */
@@ -131,6 +157,8 @@ export interface RunAddOptions {
 
 export interface AddResult {
   capability: string;
+  /** The Worker it was wired into — the one whose config, bindings, and migrations moved. */
+  worker: string;
   package: string;
   packageManager: string;
   databases: DatabaseRun[];
@@ -139,10 +167,14 @@ export interface AddResult {
 }
 
 /**
- * The whole of `pithy add <capability>`: install the package, read its real
- * manifest, wire config + bindings, scaffold its config options, and run its dev
- * migrations. Handler logic stays in the package (principle 3) — only the thin
+ * The whole of `pithy add <capability> [--worker <name>]`: install the package, read its real
+ * manifest, wire **one Worker's** config + bindings, scaffold its config options, and run that
+ * Worker's dev migrations. Handler logic stays in the package (principle 3) — only the thin
  * registration lands in the user's repo. Idempotent: a second run changes nothing.
+ *
+ * The package is a project dependency (one install at the root, shared by every Worker); the wiring is
+ * per-Worker. Adding the same capability to a second Worker re-uses the installed package and writes
+ * only that Worker's config and bindings.
  *
  * Audited on success and on failure as `capability/added` — routine (`info`) severity, since adding a
  * capability is reversible and never touches production data. The whole run is wrapped rather than
@@ -150,7 +182,8 @@ export interface AddResult {
  * logical action from the audit trail's point of view.
  */
 export async function runAdd(options: RunAddOptions): Promise<AddResult> {
-  const { projectDir, capability } = options;
+  const { projectDir, workerDir, capability } = options;
+  const worker = options.worker ?? basename(workerDir);
   const install = options.install ?? defaultInstall;
   const migrate = options.migrate ?? defaultMigrate;
   const audit = options.audit ?? (async () => {});
@@ -164,7 +197,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       configValues = await options.prompt(manifest, configValues);
     }
 
-    await addCapability({ projectDir, manifest, configValues });
+    await addCapability({ workerDir, manifest, configValues });
 
     // Eject before migrating: eject repoints the config import to the local copy and promotes the
     // capability's deps, so the migrate step loads the ejected config with everything it imports present.
@@ -173,13 +206,14 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       const runEject = options.ejectStep ?? ejectCapability;
       eject = await runEject({
         projectDir,
+        workerDir,
         capability: manifest.name,
         package: manifest.package,
         force: options.force,
       });
     }
 
-    const databases = await migrate(projectDir);
+    const databases = await migrate({ projectDir, workerDir, worker });
 
     await audit({
       action: "capability/added",
@@ -187,10 +221,10 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       severity: "info",
       resourceType: "capability",
       resourceId: manifest.name,
-      metadata: { package: manifest.package, packageManager, ejected: Boolean(eject) },
+      metadata: { worker, package: manifest.package, packageManager, ejected: Boolean(eject) },
     });
 
-    return { capability: manifest.name, package: manifest.package, packageManager, databases, eject };
+    return { capability: manifest.name, worker, package: manifest.package, packageManager, databases, eject };
   } catch (error) {
     await audit({
       action: "capability/added",
@@ -198,7 +232,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       severity: "info",
       resourceType: "capability",
       resourceId: capability,
-      metadata: { error: messageOf(error) },
+      metadata: { worker, error: messageOf(error) },
     });
     throw error;
   }

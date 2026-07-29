@@ -77,8 +77,18 @@ export interface SeedDriver {
 
 /** Options for {@link openSeedDriver}. */
 export interface SeedDriverOptions {
-  /** The project root — where wrangler.jsonc and .wrangler/ state live. */
-  projectDir: string;
+  /**
+   * The Worker's directory — its `wrangler.jsonc` supplies the D1/KV/R2 bindings and their ids. Bindings
+   * are per-Worker because a Worker's resources are declared on the Worker that uses them.
+   */
+  workerDir: string;
+  /**
+   * The project root — the owner of the `.wrangler/state` stores `wrangler dev` uses, and of the one
+   * repo-wide `.dev.vars` the remote clients read their credentials from. Persistence is deliberately
+   * project-scoped, not Worker-scoped: two Workers that declare the same binding share one local store,
+   * which a per-Worker persistence directory would silently split in two.
+   */
+  persistRoot: string;
   /** Target environment. `dev` resolves locally via Miniflare; other environments resolve over REST. */
   env: string;
   /** Test seam for the remote D1 client. */
@@ -124,14 +134,53 @@ interface WranglerSeedConfig extends WranglerBindings {
   env?: Record<string, WranglerBindings | undefined>;
 }
 
-/** Read and parse wrangler.jsonc (comments allowed). A missing file yields an empty config. */
-async function readWranglerConfig(projectDir: string): Promise<WranglerSeedConfig> {
+/** Read and parse a Worker's wrangler.jsonc (comments allowed). A missing file yields an empty config. */
+async function readWranglerConfig(workerDir: string): Promise<WranglerSeedConfig> {
   try {
-    const raw = await readFile(join(projectDir, "wrangler.jsonc"), "utf8");
+    const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
     return parse(raw) as unknown as WranglerSeedConfig;
   } catch {
     return {};
   }
+}
+
+/**
+ * One Worker's backends, by binding, as the **identity of the store each binding resolves to** for an
+ * environment — the same fallback chain the drivers themselves use (locally the id, else the name, else
+ * the binding; remotely the target env stanza's id). It resolves ids only: no Miniflare instance, no REST
+ * client, no credentials.
+ *
+ * The fan-out needs this before it opens anything. Workers share a resource by declaring the same
+ * binding, so the same fixture composed into two Workers normally writes to one store and must run once —
+ * but "same binding" is not "same store": two Workers can point one binding at two different databases,
+ * a wiring `pithy migrate` supports and migrates separately. Deduping a seed set on its key alone would
+ * then skip the second store and report it as already seeded. A binding with no id resolves to its own
+ * name, which is exactly what the local driver persists under; remotely the driver raises the real
+ * missing-id error at write time.
+ */
+export interface ResolvedStoreIds {
+  /** D1 binding → resolved database identity. */
+  d1: Map<string, string>;
+  /** KV binding → resolved namespace identity. */
+  kv: Map<string, string>;
+  /** R2 binding → resolved bucket identity. */
+  r2: Map<string, string>;
+}
+
+/** Read one Worker's `wrangler.jsonc` and resolve every D1/KV/R2 binding's store identity for `env`. */
+export async function resolveStoreIds(options: { workerDir: string; env: string }): Promise<ResolvedStoreIds> {
+  const config = await readWranglerConfig(options.workerDir);
+  const bindings: WranglerBindings = options.env === "dev" ? config : (config.env?.[options.env] ?? {});
+
+  const ids: ResolvedStoreIds = { d1: new Map(), kv: new Map(), r2: new Map() };
+  for (const entry of bindings.d1_databases ?? []) {
+    // Locally a store persists under id-else-name-else-binding; remotely only a real `database_id` counts.
+    const local = entry.database_id ?? entry.database_name;
+    ids.d1.set(entry.binding, (options.env === "dev" ? local : entry.database_id) ?? entry.binding);
+  }
+  for (const entry of bindings.kv_namespaces ?? []) ids.kv.set(entry.binding, entry.id ?? entry.binding);
+  for (const entry of bindings.r2_buckets ?? []) ids.r2.set(entry.binding, entry.bucket_name ?? entry.binding);
+  return ids;
 }
 
 /** Return the cached handle for `binding`, or an actionable error naming the missing wrangler binding. */
@@ -152,7 +201,7 @@ function resolveLocal<T>(cache: Map<string, T>, binding: string, kind: string): 
  * (Miniflare's `get*` are async). Images/Stream are still remote — resolved lazily by `assets`.
  */
 async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets): Promise<SeedDriver> {
-  const config = await readWranglerConfig(options.projectDir);
+  const config = await readWranglerConfig(options.workerDir);
   const d1Ids: Record<string, string> = {};
   for (const entry of config.d1_databases ?? []) {
     d1Ids[entry.binding] = entry.database_id ?? entry.database_name ?? entry.binding;
@@ -162,7 +211,7 @@ async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets)
   const r2Ids: Record<string, string> = {};
   for (const entry of config.r2_buckets ?? []) r2Ids[entry.binding] = entry.bucket_name ?? entry.binding;
 
-  const state = join(options.projectDir, ".wrangler", "state", "v3");
+  const state = join(options.persistRoot, ".wrangler", "state", "v3");
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",
@@ -284,11 +333,11 @@ interface LazyClients {
 }
 
 /** Build the credential-lazy clients accessor shared by the remote resources and the always-remote assets. */
-function lazyClients(projectDir: string, config: WranglerSeedConfig): LazyClients {
+function lazyClients(persistRoot: string, config: WranglerSeedConfig): LazyClients {
   let clients: CloudflareClients | undefined;
   let vars: Record<string, string> | undefined;
   const env = (): Record<string, string> => {
-    vars ??= loadCloudflareEnv(projectDir);
+    vars ??= loadCloudflareEnv(persistRoot);
     return vars;
   };
   return {
@@ -347,8 +396,8 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  * from credentials so a local run with no media never needs them.
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
-  const config = await readWranglerConfig(options.projectDir);
-  const clients = lazyClients(options.projectDir, config);
+  const config = await readWranglerConfig(options.workerDir);
+  const clients = lazyClients(options.persistRoot, config);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
 }

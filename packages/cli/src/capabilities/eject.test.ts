@@ -30,17 +30,21 @@ describe("parseEjectedCapabilities", () => {
 
 describe("ejectCapability", () => {
   let dir: string;
+  /** The Worker whose wiring is being forked — where the config lives and the source lands. */
+  let worker: string;
   const noop = async () => {};
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-eject-"));
-    // A project with turnstile added the normal way (package import in the managed region).
+    worker = join(dir, "apps", "api");
+    await mkdir(worker, { recursive: true });
+    // A project with turnstile added the normal way (package import in the worker's managed region).
     await writeFile(
       join(dir, "package.json"),
       JSON.stringify({ name: "app", dependencies: { "@pithy-sh/core": "^0.1.0", "@pithy-sh/turnstile": "^0.1.0" } }),
     );
     await writeFile(
-      join(dir, "pithy.config.ts"),
+      join(worker, "pithy.config.ts"),
       [
         'import { turnstile } from "@pithy-sh/turnstile/src/index";',
         "export default {",
@@ -73,6 +77,7 @@ describe("ejectCapability", () => {
   function eject(overrides: Partial<Parameters<typeof ejectCapability>[0]> = {}) {
     return ejectCapability({
       projectDir: dir,
+      workerDir: worker,
       capability: "turnstile",
       package: "@pithy-sh/turnstile",
       promoteDeps: noop,
@@ -82,14 +87,16 @@ describe("ejectCapability", () => {
 
   test("copies the package src tree into capabilities/<cap>/, preserving structure", async () => {
     const result = await eject();
-    expect(await readFile(join(dir, "capabilities/turnstile/index.ts"), "utf8")).toContain("export { turnstile }");
-    expect(await readFile(join(dir, "capabilities/turnstile/http/middleware.ts"), "utf8")).toContain("export const mw");
+    expect(await readFile(join(worker, "capabilities/turnstile/index.ts"), "utf8")).toContain("export { turnstile }");
+    expect(await readFile(join(worker, "capabilities/turnstile/http/middleware.ts"), "utf8")).toContain(
+      "export const mw",
+    );
     expect(result.path).toBe("capabilities/turnstile");
   });
 
   test("rewrites the managed-region import to the local path, leaving the registration alone", async () => {
     await eject();
-    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain('import { turnstile } from "./capabilities/turnstile";');
     expect(config).not.toContain("@pithy-sh/turnstile/src/index");
     expect(config).toContain("turnstile(),");
@@ -107,27 +114,33 @@ describe("ejectCapability", () => {
   });
 
   test("refuses to overwrite an existing local copy without --force", async () => {
-    await mkdir(join(dir, "capabilities", "turnstile"), { recursive: true });
-    await writeFile(join(dir, "capabilities", "turnstile", "mine.ts"), "// my edits");
+    await mkdir(join(worker, "capabilities", "turnstile"), { recursive: true });
+    await writeFile(join(worker, "capabilities", "turnstile", "mine.ts"), "// my edits");
     await expect(eject()).rejects.toThrow(PithyError);
     // The user's edit survives — nothing was clobbered.
-    expect(await readFile(join(dir, "capabilities", "turnstile", "mine.ts"), "utf8")).toBe("// my edits");
+    expect(await readFile(join(worker, "capabilities", "turnstile", "mine.ts"), "utf8")).toBe("// my edits");
   });
 
   test("--force re-copies over an existing local copy, discarding stale files", async () => {
-    await mkdir(join(dir, "capabilities", "turnstile"), { recursive: true });
-    await writeFile(join(dir, "capabilities", "turnstile", "mine.ts"), "// my edits");
+    await mkdir(join(worker, "capabilities", "turnstile"), { recursive: true });
+    await writeFile(join(worker, "capabilities", "turnstile", "mine.ts"), "// my edits");
 
     const result = await eject({ force: true });
 
     expect(result.forced).toBe(true);
-    expect(await readFile(join(dir, "capabilities/turnstile/index.ts"), "utf8")).toContain("turnstile");
-    await expect(readFile(join(dir, "capabilities", "turnstile", "mine.ts"), "utf8")).rejects.toThrow();
+    expect(await readFile(join(worker, "capabilities/turnstile/index.ts"), "utf8")).toContain("turnstile");
+    await expect(readFile(join(worker, "capabilities", "turnstile", "mine.ts"), "utf8")).rejects.toThrow();
   });
 
   test("fails when the package src is not installed", async () => {
     await expect(
-      ejectCapability({ projectDir: dir, capability: "ghost", package: "@pithy-sh/ghost", promoteDeps: noop }),
+      ejectCapability({
+        projectDir: dir,
+        workerDir: worker,
+        capability: "ghost",
+        package: "@pithy-sh/ghost",
+        promoteDeps: noop,
+      }),
     ).rejects.toThrow(PithyError);
   });
 
@@ -144,7 +157,7 @@ describe("ejectCapability", () => {
     });
     await expect(failure).rejects.toThrow("registry down");
     // The import was not repointed — the project still resolves the installed package.
-    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain("@pithy-sh/turnstile/src/index");
     expect(config).not.toContain("./capabilities/turnstile");
   });

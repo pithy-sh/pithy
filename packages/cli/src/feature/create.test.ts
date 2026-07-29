@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
@@ -18,7 +18,7 @@ const emptyProvisioners: FeatureProvisioners = {
   r2: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
 };
 
-/** A trivial capability — create only needs it to hand to the (injected) migrate/seed seams. */
+/** A trivial capability — destroy recomputes this feature's resource names from its bindings. */
 function appCapability() {
   return defineCapability({ name: "app", requiredBindings: [] });
 }
@@ -34,7 +34,9 @@ describe("createFeature → destroyFeature round-trip", () => {
     g(["config", "user.email", "t@t.dev"]);
     g(["config", "user.name", "T"]);
     g(["config", "commit.gpgsign", "false"]);
-    await writeFile(join(repo, "wrangler.jsonc"), '{\n  "name": "app"\n}\n');
+    // One Worker in apps/app, owning its own wrangler.jsonc — apps/ IS the registry, there is no root Worker.
+    await mkdir(join(repo, "apps", "app"), { recursive: true });
+    await writeFile(join(repo, "apps", "app", "wrangler.jsonc"), '{\n  "name": "app"\n}\n');
     g(["add", "-A"]);
     g(["commit", "-q", "-m", "init"]);
     g(["branch", "-M", "main"]);
@@ -54,7 +56,6 @@ describe("createFeature → destroyFeature round-trip", () => {
       projectDir: repo,
       issue: "77",
       slug: "demo",
-      capabilities: [appCapability()],
       skipInstall: true,
       git,
       migrate: async ({ projectDir }) => void migrated.push(projectDir),
@@ -110,7 +111,6 @@ describe("createFeature → destroyFeature round-trip", () => {
       projectDir: repo,
       issue: "77",
       slug: "demo",
-      capabilities: [appCapability()],
       skipInstall: true,
       git,
       migrate: async () => {},
@@ -126,7 +126,7 @@ describe("createFeature → destroyFeature round-trip", () => {
   });
 
   test("two features get non-overlapping port blocks, so both can run at once", async () => {
-    const common = { projectDir: repo, capabilities: [appCapability()], skipInstall: true, git };
+    const common = { projectDir: repo, skipInstall: true, git };
     const noop = { migrate: async () => {}, seed: async () => {} };
 
     const a = await createFeature({ ...common, ...noop, issue: "77", slug: "demo" });
@@ -137,6 +137,41 @@ describe("createFeature → destroyFeature round-trip", () => {
     const bPorts = Object.values(b.dev.workers).map((w) => w.port);
     // No port is shared between the two features — no startup race is even possible.
     expect(aPorts.some((port) => bPorts.includes(port))).toBe(false);
+  });
+
+  test("destroy leaves no port claim behind: the next feature gets the freed block, not a higher one", async () => {
+    const registryPath = join(repo, ".dev-ports.json");
+    const noop = { migrate: async () => {}, seed: async () => {} };
+    const first = await createFeature({ projectDir: repo, issue: "77", slug: "demo", skipInstall: true, git, ...noop });
+    expect(first.dev.ports.index).toBe(0);
+
+    await destroyFeature({
+      projectDir: first.worktree,
+      identity: { project: "app", issue: "77", slug: "demo" },
+      capabilities: [appCapability()],
+      env: "feature",
+      git,
+      registryPath,
+    });
+
+    // Teardown leaves the worktree's files on disk by design, but `.dev.config.json` is a port claim —
+    // the next create rebuilds the registry from the claims it finds, so a surviving one would hand the
+    // destroyed feature its block straight back, permanently.
+    await expect(readDevConfig(devConfigPath(first.worktree))).resolves.toBeNull();
+
+    const second = await createFeature({
+      projectDir: repo,
+      issue: "78",
+      slug: "next",
+      skipInstall: true,
+      git,
+      ...noop,
+    });
+
+    expect(second.dev.ports.index).toBe(0); // the freed block, reused
+    const registry = JSON.parse(await readFile(registryPath, "utf8"));
+    expect(registry["feature/77-demo"]).toBeUndefined();
+    expect(Object.keys(registry)).toEqual(["feature/78-next"]);
   });
 
   test("destroy is idempotent: running it with no worktree and no credentials exits cleanly", async () => {
