@@ -106,7 +106,7 @@ shipped alongside it and had **no** roadmap slot — it was an illustrative name
 `docs/STACK.md` §7, never a chartered package. It is chartered here, in Phase 2 next to
 storage, and recorded as an amendment rather than back-dated: the roadmap moved. Several
 other capabilities have likewise landed ahead of any phase they were assigned (media,
-multiplayer, wallet, matchmaking, rating). The shipped set is the tree in `docs/STACK.md` §7;
+multiplayer, ledger, matchmaking, rating). The shipped set is the tree in `docs/STACK.md` §7;
 this table is the intent it departed from.
 
 Only Phase 0 is designed here; the roadmap proves the abstraction doesn't preclude

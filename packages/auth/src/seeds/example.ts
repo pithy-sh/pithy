@@ -4,7 +4,7 @@ import { User } from "../data/betterAuth";
 
 /**
  * Where the example set sorts among the whole project's seed registry. Auth seeds the identities
- * first — before the leaderboard/wallet/multiplayer example sets, which reference these same users
+ * first — before the leaderboard/ledger/multiplayer example sets, which reference these same users
  * by id — so `order` encodes that dependency, exactly like the migration registry.
  */
 const AUTH_EXAMPLE_SEED_ORDER = 100;

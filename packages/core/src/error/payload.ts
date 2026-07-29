@@ -491,12 +491,12 @@ const MultiplayerInvalidMovePublic = z
   })
   .describe("A committed move failed the game's server-side validation (400).");
 
-// --- @pithy-sh/wallet: balance-ledger capability codes ---
+// --- @pithy-sh/ledger: balance-ledger capability codes ---
 
-const WalletCurrencyNotFoundPublic = z
+const LedgerCurrencyNotFoundPublic = z
   .object({
     code: z
-      .literal("wallet/currency_not_found")
+      .literal("ledger/currency_not_found")
       .describe(
         "No currency with that code is configured. Currency codes come from `pithy.config.ts`, not the database.",
       ),
@@ -505,28 +505,28 @@ const WalletCurrencyNotFoundPublic = z
   })
   .describe("A requested currency code is not configured (404).");
 
-const WalletAccountNotFoundPublic = z
+const LedgerAccountNotFoundPublic = z
   .object({
     code: z
-      .literal("wallet/account_not_found")
+      .literal("ledger/account_not_found")
       .describe("The player has no account in this currency yet — no funds have ever moved through it."),
     status: z.literal(404).describe("Not Found."),
     ...publicFields,
   })
   .describe("A player has no account in this currency (404).");
 
-const WalletHoldNotFoundPublic = z
+const LedgerHoldNotFoundPublic = z
   .object({
-    code: z.literal("wallet/hold_not_found").describe("No hold with that reference exists."),
+    code: z.literal("ledger/hold_not_found").describe("No hold with that reference exists."),
     status: z.literal(404).describe("Not Found."),
     ...publicFields,
   })
   .describe("A referenced hold does not exist (404).");
 
-const WalletInsufficientFundsPublic = z
+const LedgerInsufficientFundsPublic = z
   .object({
     code: z
-      .literal("wallet/insufficient_funds")
+      .literal("ledger/insufficient_funds")
       .describe(
         "The account's available balance cannot cover the debit or hold. The overdraft guard rejected it — no funds moved.",
       ),
@@ -535,20 +535,20 @@ const WalletInsufficientFundsPublic = z
   })
   .describe("An account cannot cover a debit or hold (409).");
 
-const WalletHoldNotOpenPublic = z
+const LedgerHoldNotOpenPublic = z
   .object({
     code: z
-      .literal("wallet/hold_not_open")
+      .literal("ledger/hold_not_open")
       .describe("The hold has already been released or captured, so it cannot be resolved again."),
     status: z.literal(409).describe("Conflict — the hold is already in a terminal state."),
     ...publicFields,
   })
   .describe("A hold that is already resolved cannot be resolved again (409).");
 
-const WalletInvalidAmountPublic = z
+const LedgerInvalidAmountPublic = z
   .object({
     code: z
-      .literal("wallet/invalid_amount")
+      .literal("ledger/invalid_amount")
       .describe(
         "An amount was not a positive integer in the currency's minor unit. Amounts are never zero, negative, or fractional.",
       ),
@@ -918,12 +918,12 @@ export const PublicErrorPayload = z
     MultiplayerSessionFullPublic,
     MultiplayerInvalidTransitionPublic,
     MultiplayerInvalidMovePublic,
-    WalletCurrencyNotFoundPublic,
-    WalletAccountNotFoundPublic,
-    WalletHoldNotFoundPublic,
-    WalletInsufficientFundsPublic,
-    WalletHoldNotOpenPublic,
-    WalletInvalidAmountPublic,
+    LedgerCurrencyNotFoundPublic,
+    LedgerAccountNotFoundPublic,
+    LedgerHoldNotFoundPublic,
+    LedgerInsufficientFundsPublic,
+    LedgerHoldNotOpenPublic,
+    LedgerInvalidAmountPublic,
     RatingUnknownAlgorithmPublic,
     RatingUnsupportedPlayerCountPublic,
     RatingInvalidParamsPublic,
@@ -1057,23 +1057,23 @@ const MultiplayerInvalidTransition = MultiplayerInvalidTransitionPublic.extend(d
 const MultiplayerInvalidMove = MultiplayerInvalidMovePublic.extend(detailField).describe(
   MultiplayerInvalidMovePublic.description ?? "",
 );
-const WalletCurrencyNotFound = WalletCurrencyNotFoundPublic.extend(detailField).describe(
-  WalletCurrencyNotFoundPublic.description ?? "",
+const LedgerCurrencyNotFound = LedgerCurrencyNotFoundPublic.extend(detailField).describe(
+  LedgerCurrencyNotFoundPublic.description ?? "",
 );
-const WalletAccountNotFound = WalletAccountNotFoundPublic.extend(detailField).describe(
-  WalletAccountNotFoundPublic.description ?? "",
+const LedgerAccountNotFound = LedgerAccountNotFoundPublic.extend(detailField).describe(
+  LedgerAccountNotFoundPublic.description ?? "",
 );
-const WalletHoldNotFound = WalletHoldNotFoundPublic.extend(detailField).describe(
-  WalletHoldNotFoundPublic.description ?? "",
+const LedgerHoldNotFound = LedgerHoldNotFoundPublic.extend(detailField).describe(
+  LedgerHoldNotFoundPublic.description ?? "",
 );
-const WalletInsufficientFunds = WalletInsufficientFundsPublic.extend(detailField).describe(
-  WalletInsufficientFundsPublic.description ?? "",
+const LedgerInsufficientFunds = LedgerInsufficientFundsPublic.extend(detailField).describe(
+  LedgerInsufficientFundsPublic.description ?? "",
 );
-const WalletHoldNotOpen = WalletHoldNotOpenPublic.extend(detailField).describe(
-  WalletHoldNotOpenPublic.description ?? "",
+const LedgerHoldNotOpen = LedgerHoldNotOpenPublic.extend(detailField).describe(
+  LedgerHoldNotOpenPublic.description ?? "",
 );
-const WalletInvalidAmount = WalletInvalidAmountPublic.extend(detailField).describe(
-  WalletInvalidAmountPublic.description ?? "",
+const LedgerInvalidAmount = LedgerInvalidAmountPublic.extend(detailField).describe(
+  LedgerInvalidAmountPublic.description ?? "",
 );
 const RatingUnknownAlgorithm = RatingUnknownAlgorithmPublic.extend(detailField).describe(
   RatingUnknownAlgorithmPublic.description ?? "",
@@ -1209,12 +1209,12 @@ export const ErrorPayload = z
     MultiplayerSessionFull,
     MultiplayerInvalidTransition,
     MultiplayerInvalidMove,
-    WalletCurrencyNotFound,
-    WalletAccountNotFound,
-    WalletHoldNotFound,
-    WalletInsufficientFunds,
-    WalletHoldNotOpen,
-    WalletInvalidAmount,
+    LedgerCurrencyNotFound,
+    LedgerAccountNotFound,
+    LedgerHoldNotFound,
+    LedgerInsufficientFunds,
+    LedgerHoldNotOpen,
+    LedgerInvalidAmount,
     RatingUnknownAlgorithm,
     RatingUnsupportedPlayerCount,
     RatingInvalidParams,

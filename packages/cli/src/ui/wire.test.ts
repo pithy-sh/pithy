@@ -91,17 +91,17 @@ describe("wire", () => {
       capabilities: [
         ...CONFIG.capabilities,
         defineCapability({
-          name: "wallet",
+          name: "ledger",
           requiredBindings: [],
           routes: (app) => {
-            app.get("/wallet/balance", (c) => c.json({}));
+            app.get("/ledger/balance", (c) => c.json({}));
           },
         }),
       ],
     });
     expect(grown.before).toEqual(["/auth", "/auth/*", "/health", "/health/*"]);
-    expect(grown.after).toContain("/wallet");
-    expect(grown.after).toContain("/wallet/*");
+    expect(grown.after).toContain("/ledger");
+    expect(grown.after).toContain("/ledger/*");
     // The comment is still there after the in-place array update.
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toContain("The adopter's note.");
   });

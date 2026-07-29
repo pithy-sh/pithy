@@ -1,0 +1,24 @@
+{
+  "name": "ledger",
+  "package": "@pithy-sh/ledger",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "ledger",
+  "whenToEnable": "Give every player a balance. A per-user ledger for whatever your economy runs on — chips, gold, gems, credits, tokens — in your own D1, currency-agnostic. Every movement is atomic (the ledger entry and the balance change commit together), idempotent (a replayed operation applies once, so a payout delivered twice pays once), and overdraft-safe (a database CHECK constraint makes a balance that can go negative impossible). It has holds — reserve a player's stake the moment a bet is placed, then release it or capture it when the outcome lands — which is what makes wagering safe, so it pairs naturally with @pithy-sh/multiplayer. It takes no position on whether your units map to money; that, and any regulation it implies, is yours. Reads are scoped to the caller; moving another player's balance over HTTP is server-authoritative and needs the admin scope, so add auth too.",
+  "scaffold": [
+    "Add a `ledger({ currencies: [...] })` block to pithy.config.ts and declare at least one currency.",
+    "Give each currency a `code` (a lowercase id like `chips`), a `name`, and optionally `decimals` (display scale — balances are always stored as integers in the minor unit).",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_ledger_accounts, pithy_ledger_transactions, and pithy_ledger_holds.",
+    "Add `@pithy-sh/auth` if it is not already installed. Balance reads scope to the authenticated user; admin credit/debit routes need the `ledger:admin` scope, minted for your trusted server.",
+    "Move balances in-process from your own code with `openLedger(env.DB)` — credit, debit, transfer, hold, release, capture — passing a unique `ref` for each operation so retries are safe."
+  ],
+  "configOptions": [
+    {
+      "key": "adminScope",
+      "default": "ledger:admin",
+      "describe": "The scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative — mint it for your trusted server's token, never a player's. Edit the `currencies` array by hand to define your economy's units."
+    }
+  ]
+}

@@ -6,7 +6,7 @@ import type { MiddlewareHandler } from "hono";
  * The storage routes' identity gate.
  *
  * **Copied, not imported.** This is deliberately a local copy of the same three lines
- * `@pithy-sh/media` and `@pithy-sh/wallet` each carry, rather than an import from `@pithy-sh/auth`.
+ * `@pithy-sh/media` and `@pithy-sh/ledger` each carry, rather than an import from `@pithy-sh/auth`.
  * Importing it would make auth a hard dependency of storage, and a hard dependency is the wrong
  * shape twice over: storage works perfectly well for system-owned objects with no auth capability
  * composed, and — far more importantly — a package that *imports* its authorization from another

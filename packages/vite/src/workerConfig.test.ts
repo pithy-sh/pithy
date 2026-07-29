@@ -36,14 +36,14 @@ describe("loadWorkerConfig", () => {
         export default {
           capabilities: [
             { name: "auth", requiredBindings: [] },
-            { name: "wallet", requiredBindings: [] },
+            { name: "ledger", requiredBindings: [] },
           ],
           app: { name: "api", requiredBindings: [] },
         };
       `,
     });
     const { capabilities } = await loadWorkerConfig(join(dir, "pithy.config.ts"));
-    expect([...capabilities.keys()].sort()).toEqual(["api", "auth", "wallet"]);
+    expect([...capabilities.keys()].sort()).toEqual(["api", "auth", "ledger"]);
   });
 
   test("loads TypeScript syntax and extensionless relative imports — what a bare import() cannot", async () => {

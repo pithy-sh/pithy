@@ -91,7 +91,7 @@ export default {
         baseUrl: context.environment === "production" ? "https://acme.com" : "http://localhost:8787",
       }),
     },
-    { name: "wallet", requiredBindings: [] },
+    { name: "ledger", requiredBindings: [] },
   ],
   app: {
     name: "api",
@@ -125,7 +125,7 @@ describe("pithy() virtual modules", () => {
 
   test("a composed capability with no client projection is disabled, not an error", async () => {
     const dir = await workerDir({ "pithy.config.ts": AUTH_CONFIG });
-    const code = await driver(pithy(), dir).loadCapability("wallet");
+    const code = await driver(pithy(), dir).loadCapability("ledger");
     expect(defaultExport(code)).toEqual({ enabled: false });
   });
 
@@ -199,7 +199,7 @@ describe("pithy() virtual modules", () => {
     await writeFile(join(dir, "pithy.config.ts"), configSource(dir, AUTH_CONFIG), "utf8");
 
     const hooks = driver(pithy(), dir);
-    await Promise.all(["auth", "wallet", "leaderboard", "api"].map((name) => hooks.loadCapability(name)));
+    await Promise.all(["auth", "ledger", "leaderboard", "api"].map((name) => hooks.loadCapability(name)));
     expect(await loadCount(dir)).toBe(1);
   });
 });
@@ -302,9 +302,9 @@ describe("pithy() through a real vite build", () => {
       `,
       "entry.ts": [
         'import auth from "virtual:pithy/auth";',
-        'import wallet from "virtual:pithy/wallet";',
+        'import ledger from "virtual:pithy/ledger";',
         'import { otpLength } from "virtual:pithy/auth";',
-        "export const screen = { auth, wallet, otpLength };",
+        "export const screen = { auth, ledger, otpLength };",
       ].join("\n"),
     });
 

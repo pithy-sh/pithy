@@ -12,7 +12,7 @@ import {
   MultiplayerSessionFullError,
   MultiplayerSessionNotFoundError,
 } from "../error/errors";
-import { applyWalletEffects } from "../game/effects";
+import { applyLedgerEffects } from "../game/effects";
 import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
 import { type GameSnapshot, isTerminal, SessionMeta, type SessionOutcome, type SessionView } from "./state";
@@ -250,7 +250,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
       if (model.onJoin) {
         const state = await this.loadModelState(model);
         const seated = model.onJoin(ctx, state, userId);
-        await applyWalletEffects(this.env.DB, seated.effects ?? []);
+        await applyLedgerEffects(this.env.DB, seated.effects ?? []);
         await this.ctx.storage.put(MODEL_STATE_KEY, seated.state);
       }
       meta.rng.cursor = rng.spent();
@@ -296,9 +296,9 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     const state = await this.loadModelState(model);
     const { state: next, effects } = model.apply(ctx, state, userId, payload);
 
-    // Settle the action's wallet effects (a bet's hold) BEFORE committing the new state: a hold the player
+    // Settle the action's ledger effects (a bet's hold) BEFORE committing the new state: a hold the player
     // cannot cover throws here, so the action is rejected and the game state never advances.
-    await applyWalletEffects(this.env.DB, effects ?? []);
+    await applyLedgerEffects(this.env.DB, effects ?? []);
     await this.ctx.storage.put(MODEL_STATE_KEY, next);
     meta.rng.cursor = rng.spent(); // persist any randomness the action drew (a dice roll, a card draw)
 
@@ -306,7 +306,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     // model loops rounds internally and settles each via effects; the table ends only on close or empty.
     if (meta.game.mode === "match" && model.isComplete(ctx, next)) {
       const resolved = model.resolve(ctx, next);
-      await applyWalletEffects(this.env.DB, resolved.effects ?? []); // final payouts
+      await applyLedgerEffects(this.env.DB, resolved.effects ?? []); // final payouts
       // resolve persists meta (with the advanced cursor) as it commits the terminal state.
       await this.resolve(meta, resolved.outcome);
     } else {
@@ -337,7 +337,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     if (model.onLeave) {
       const state = await this.loadModelState(model);
       const settled = model.onLeave(ctx, state, userId);
-      await applyWalletEffects(this.env.DB, settled.effects ?? []);
+      await applyLedgerEffects(this.env.DB, settled.effects ?? []);
       await this.ctx.storage.put(MODEL_STATE_KEY, settled.state);
     }
     meta.rng.cursor = rng.spent();
@@ -474,7 +474,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     if (state !== undefined && model.isComplete(ctx, state)) {
       // The final action raced the deadline and won — resolve rather than abandon.
       const resolved = model.resolve(ctx, state);
-      await applyWalletEffects(this.env.DB, resolved.effects ?? []);
+      await applyLedgerEffects(this.env.DB, resolved.effects ?? []);
       await this.resolve(meta, resolved.outcome);
     } else {
       await this.abandon(meta);

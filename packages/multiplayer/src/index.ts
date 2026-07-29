@@ -30,7 +30,7 @@ export {
 } from "./config/config";
 export { MultiplayerResult, SessionResultStatus } from "./data/result";
 export { BUILT_IN_GAMES } from "./game/builtins";
-export type { WalletEffect } from "./game/effects";
+export type { LedgerEffect } from "./game/effects";
 // Example games, each built on a reusable pattern helper.
 export {
   BattleConfig,

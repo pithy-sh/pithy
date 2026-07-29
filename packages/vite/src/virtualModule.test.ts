@@ -35,11 +35,11 @@ describe("resolveVirtualId", () => {
 
 describe("capabilityNameFromResolvedId", () => {
   test("reads the name back off a resolved id", () => {
-    expect(capabilityNameFromResolvedId("\0virtual:pithy/wallet")).toBe("wallet");
+    expect(capabilityNameFromResolvedId("\0virtual:pithy/ledger")).toBe("ledger");
   });
 
   test("returns null for anything else", () => {
-    expect(capabilityNameFromResolvedId("virtual:pithy/wallet")).toBeNull();
+    expect(capabilityNameFromResolvedId("virtual:pithy/ledger")).toBeNull();
     expect(capabilityNameFromResolvedId("\0virtual:pithy/")).toBeNull();
     expect(capabilityNameFromResolvedId("/src/client.tsx")).toBeNull();
   });

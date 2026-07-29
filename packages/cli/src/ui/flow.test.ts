@@ -164,10 +164,10 @@ describe("pithy ui", () => {
     expect(same.changed).toBe(false);
     expect(same.before).toEqual(same.after);
 
-    const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("wallet", "/wallet")] };
+    const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
     const changed = await runUiSync({ workerDir, worker: "api", config: grown });
     expect(changed.changed).toBe(true);
-    expect(changed.after.filter((path) => !changed.before.includes(path))).toEqual(["/wallet", "/wallet/*"]);
+    expect(changed.after.filter((path) => !changed.before.includes(path))).toEqual(["/ledger", "/ledger/*"]);
 
     // No file creation — sync only re-derives.
     await expect(readFile(join(workerDir, "src", "routes", "pithy", "sign-in.tsx"), "utf8")).rejects.toThrow();
