@@ -1,13 +1,7 @@
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import {
-  CloudflareNotConfiguredError,
-  CloudflareRequestError,
-  cloudflareRequest,
-  decodeResponse,
-  reasonOf,
-} from "../client/errors";
+import { CloudflareNotConfiguredError, cloudflareRequest, decodeResponse } from "../client/errors";
 import { CloudflareManager, type CloudflareManagerConfig } from "../client/manager";
 
 /** Scopes attached to every secret we create. CF requires at least one; "workers" is the bind target. */
@@ -69,40 +63,29 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
   }
 
   /**
-   * Insert or update a secret. If a secret with the same name already exists it is replaced
-   * (delete + create) so the new value takes effect; otherwise a fresh secret is created. The SDK's
-   * `edit` endpoint does not expose `value` in its typed params, so delete-then-create is the only
-   * typed path to update a value.
+   * Insert or update a secret. An existing entry is updated in place via `edit`; otherwise a fresh
+   * secret is created.
    *
-   * Pass `previousValue` to opt into atomic recovery: when the delete-then-create dance hits a
-   * transient create failure, this method attempts to restore `previousValue` so the secret is never
-   * left absent from the store — for any secret whose absence is a platform-level outage. Recovery is
-   * best-effort; if it also fails, a combined `cloudflare/request_failed` is raised (without either
-   * plaintext value) so an operator can intervene.
+   * `edit` is what makes this safe. The old value is overwritten, never deleted first, so a failed
+   * update leaves the prior value intact and bound — there is no window where the secret is absent
+   * from the store (which, for a secret like the master encryption key, is a platform-level outage).
+   * Scopes are re-sent so an entry converges on the same shape whichever branch wrote it.
    */
-  async putSecret(name: string, value: string, previousValue?: string): Promise<void> {
+  async putSecret(name: string, value: string): Promise<void> {
     const existing = await this.findByName(name);
-
-    if (existing) {
-      await cloudflareRequest(`put secret ${name} (delete existing)`, () =>
-        this.getClient().secretsStore.stores.secrets.delete(existing.id, {
-          account_id: this.accountId,
-          store_id: this.storeId,
-        }),
-      );
-
-      // The prior entry is gone. From here a create failure leaves the store missing this secret, so
-      // if the caller supplied a previous value we attempt to restore it before surfacing the error.
-      try {
-        await this.createSecret(name, value);
-      } catch (error) {
-        if (previousValue === undefined) throw error;
-        await this.restorePreviousValue(name, previousValue, error);
-      }
+    if (!existing) {
+      await this.createSecret(name, value);
       return;
     }
 
-    await this.createSecret(name, value);
+    await cloudflareRequest(`put secret ${name}`, () =>
+      this.getClient().secretsStore.stores.secrets.edit(existing.id, {
+        account_id: this.accountId,
+        store_id: this.storeId,
+        value,
+        scopes: [...DEFAULT_SCOPES],
+      }),
+    );
   }
 
   /** Delete a secret by name. Resolves the id via `listSecrets`, then issues DELETE by id. */
@@ -156,32 +139,6 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
         body: [{ name, value, scopes: [...DEFAULT_SCOPES] }],
       }),
     );
-  }
-
-  /**
-   * Best-effort recovery after a failed update: re-create the secret with its prior value. Always
-   * throws. On a clean restore it reports the original create failure (the value is back); if the
-   * restore also fails, it raises a combined error naming both upstream failures. Neither plaintext
-   * value is ever embedded — only the upstream `Error.message`s.
-   */
-  private async restorePreviousValue(name: string, previousValue: string, originalError: unknown): Promise<never> {
-    try {
-      await this.getClient().secretsStore.stores.secrets.create(this.storeId, {
-        account_id: this.accountId,
-        body: [{ name, value: previousValue, scopes: [...DEFAULT_SCOPES] }],
-      });
-    } catch (restoreError) {
-      throw new CloudflareRequestError({
-        message: `Failed to put secret ${name} AND failed to restore prior value.`,
-        detail:
-          `put secret ${name}: create failed and recovery failed — ` +
-          `original=${reasonOf(originalError)}; restore=${reasonOf(restoreError)}`,
-      });
-    }
-    throw new CloudflareRequestError({
-      message: `Failed to put secret ${name}: create failed, prior value restored.`,
-      detail: `put secret ${name}: create failed (${reasonOf(originalError)}); prior value restored`,
-    });
   }
 
   private async findByName(name: string): Promise<CfSecretEntry | undefined> {

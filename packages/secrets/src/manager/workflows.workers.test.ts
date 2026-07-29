@@ -14,9 +14,9 @@ import { runWriteWorkflow } from "./writeWorkflow";
 const syncStep: StepRunner = { do: (_name, fn) => fn() };
 
 class StubWriter implements ConfigWriter {
-  readonly writes: Array<{ value: string; previous: string }> = [];
-  async write(value: string, previous: string): Promise<void> {
-    this.writes.push({ value, previous });
+  readonly writes: string[] = [];
+  async write(value: string): Promise<void> {
+    this.writes.push(value);
   }
 }
 

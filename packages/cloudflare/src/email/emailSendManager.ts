@@ -1,13 +1,11 @@
-import { z } from "zod";
-import { CloudflareRequestError, cloudflareRequest, decodeResponse } from "../client/errors";
+import { cloudflareRequest } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 
 /**
  * Out-of-Worker sends through the Cloudflare Email Service REST API — the control-plane counterpart to
  * the in-Worker `send_email` binding. Used by the CLI's `pithy email test` to render and deliver one
  * template through a project's configuration without deploying. Inside a Worker, always prefer the
- * binding (no token, principle-1 aligned). The send endpoint is not in the typed SDK, so this falls
- * back to the documented raw-`fetch` escape hatch (`getApiToken()`), still inside this client.
+ * binding (no token, principle-1 aligned).
  */
 
 /** A message to send over REST. `from` mirrors the binding's `{ email, name }`; the wire uses `address`. */
@@ -28,26 +26,17 @@ export interface EmailSendResult {
   permanentBounces: string[];
 }
 
-/** The REST send envelope. Local (not exported) so it needs no `.describe()` for the schema meta-test. */
-const SendEnvelope = z.object({
-  success: z.boolean(),
-  errors: z.array(z.object({ code: z.number(), message: z.string() })).default([]),
-  result: z
-    .object({
-      message_id: z.string().optional(),
-      delivered: z.array(z.string()).default([]),
-      queued: z.array(z.string()).default([]),
-      permanent_bounces: z.array(z.string()).default([]),
-    })
-    .nullable(),
-});
-
 export class CloudflareEmailSendManager extends CloudflareManager {
   getServiceType(): string {
     return "Email Sending";
   }
 
-  /** Prove reach by reading the account's sending limits; never throws (returns false on any failure). */
+  /**
+   * Prove reach by reading the account's sending limits; never throws (returns false on any failure).
+   * `/email/sending/limits` has no typed SDK method — only `send` and `subdomains` do — so this stays
+   * on the documented raw-`fetch` escape hatch. Probing `subdomains.list` instead would change what
+   * the check proves: a token scoped to send but not to read subdomains would start reporting false.
+   */
   async validateServiceAccess(): Promise<boolean> {
     try {
       const res = await fetch(
@@ -60,39 +49,29 @@ export class CloudflareEmailSendManager extends CloudflareManager {
     }
   }
 
-  /** Send one message through the Email Sending REST API. Throws `cloudflare/request_failed` on any API error. */
+  /**
+   * Send one message through the Email Sending API. Throws `cloudflare/request_failed` on any API
+   * error — the SDK unwraps the envelope and raises on `success: false`, so a resolved call is a send.
+   *
+   * `from` is sent as the object form only when a display name exists; the SDK's object form requires
+   * `name`, and the bare-string form is the wire's own representation of "address, no display name".
+   */
   async send(message: EmailSendInput): Promise<EmailSendResult> {
     return cloudflareRequest("Email Service send", async () => {
-      const body: Record<string, unknown> = {
+      const result = await this.getClient().emailSending.send({
+        account_id: this.getAccountId(),
         to: message.to,
-        from: { address: message.from.email, name: message.from.name },
+        from: message.from.name ? { address: message.from.email, name: message.from.name } : message.from.email,
         subject: message.subject,
         html: message.html,
         text: message.text,
-      };
-      if (message.replyTo) body.reply_to = message.replyTo;
-
-      const response = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/email/sending/send`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${this.getApiToken()}`, "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const envelope = decodeResponse(SendEnvelope, await response.json(), "Email Service send");
-      if (!envelope.success) {
-        const detail = envelope.errors.map((e) => `${e.code}: ${e.message}`).join("; ") || `HTTP ${response.status}`;
-        throw new CloudflareRequestError({
-          message: "The email could not be sent.",
-          detail: `Email Service send failed — ${detail}`,
-        });
-      }
+        ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+      });
       return {
-        messageId: envelope.result?.message_id,
-        delivered: envelope.result?.delivered ?? [],
-        queued: envelope.result?.queued ?? [],
-        permanentBounces: envelope.result?.permanent_bounces ?? [],
+        messageId: result.message_id,
+        delivered: result.delivered,
+        queued: result.queued,
+        permanentBounces: result.permanent_bounces,
       };
     });
   }

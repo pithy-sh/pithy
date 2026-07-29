@@ -1,25 +1,33 @@
 import { z } from "zod";
-import { CloudflareInvalidResponseError, CloudflareNotConfiguredError, CloudflareRequestError } from "../client/errors";
-
-const API_BASE = "https://api.cloudflare.com/client/v4";
-
-/** A `fetch`-shaped function. Injectable so tests drive the client without a network. */
-export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
+import {
+  CloudflareInvalidResponseError,
+  CloudflareRequestError,
+  cloudflareRequest,
+  isNotFoundError,
+} from "../client/errors";
+import { CloudflareManager, type CloudflareManagerConfig } from "../client/manager";
 
 /** Pause `ms` milliseconds between status polls. Injectable so tests run with no real delay. */
 export type Sleeper = (ms: number) => Promise<void>;
 
-export interface CloudflareWorkflowsClientConfig {
-  accountId: string;
-  apiToken: string;
-  /** Override the network layer (tests). Defaults to the global `fetch`. */
-  fetcher?: Fetcher;
+export interface CloudflareWorkflowsClientConfig extends CloudflareManagerConfig {
   /** Override the poll delay (tests). Defaults to a real `setTimeout`. */
   sleeper?: Sleeper;
 }
 
 export const WorkflowInstanceStatus = z
-  .enum(["queued", "running", "paused", "errored", "terminated", "complete", "waitingForPause", "waiting", "unknown"])
+  .enum([
+    "queued",
+    "running",
+    "paused",
+    "errored",
+    "terminated",
+    "complete",
+    "waitingForPause",
+    "waiting",
+    "rollingBack",
+    "unknown",
+  ])
   .describe("Lifecycle state of a Cloudflare Workflow instance, from the status endpoint.");
 export type WorkflowInstanceStatus = z.output<typeof WorkflowInstanceStatus>;
 
@@ -38,75 +46,77 @@ export type WorkflowInstance = z.output<typeof WorkflowInstance>;
 /** Terminal states a poll stops on. */
 const TERMINAL: ReadonlySet<WorkflowInstanceStatus> = new Set(["complete", "errored", "terminated"]);
 
-/** The CF API envelope. Internal — only `result` is surfaced (validated by the caller). */
-const apiEnvelope = z.object({
-  success: z.boolean(),
-  errors: z.array(z.object({ code: z.number(), message: z.string() })).default([]),
-  result: z.unknown(),
-});
-
-function errorText(errors: Array<{ code: number; message: string }>): string {
-  return errors.length === 0 ? "no error detail" : errors.map((e) => `${e.code}: ${e.message}`).join("; ");
-}
-
 const defaultSleeper: Sleeper = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * A thin client over the Cloudflare Workflows REST API — the only sanctioned way to reach the CF
- * API for Workflows (CLAUDE.md: no hand-rolled CF `fetch` outside `@pithy-sh/cloudflare`). The
+ * A client over the Cloudflare Workflows API — the only sanctioned way to reach CF Workflows from
+ * outside a Worker (CLAUDE.md: no hand-rolled CF `fetch` outside `@pithy-sh/cloudflare`). The
  * `pithy secrets` CLI uses it to trigger a per-env manager's Workflow and poll to completion: the
  * CLI never runs secret logic locally, since the master key is worker-only.
  *
- * Endpoints: https://developers.cloudflare.com/workflows/.
+ * The SDK owns transport and envelope handling. Instance status is still re-validated through
+ * {@link WorkflowInstance} rather than taken from the SDK's types: the SDK narrows `output` to
+ * `string | number`, but a Workflow's return value is arbitrary JSON, and the status enum is a wire
+ * value we decode at the boundary like every other external input.
  */
-export class CloudflareWorkflowsClient {
-  readonly #accountId: string;
-  readonly #apiToken: string;
-  readonly #fetcher: Fetcher;
+export class CloudflareWorkflowsClient extends CloudflareManager {
   readonly #sleeper: Sleeper;
 
   constructor(config: CloudflareWorkflowsClientConfig) {
-    if (!config.accountId || !config.apiToken) {
-      throw new CloudflareNotConfiguredError({ detail: "CloudflareWorkflowsClient needs accountId and apiToken." });
-    }
-    this.#accountId = config.accountId;
-    this.#apiToken = config.apiToken;
-    this.#fetcher = config.fetcher ?? ((url, init) => fetch(url, init));
+    super(config);
     this.#sleeper = config.sleeper ?? defaultSleeper;
+  }
+
+  getServiceType(): string {
+    return "Workflows";
+  }
+
+  /** Prove reach by listing the account's Workflows; never throws. */
+  async validateServiceAccess(): Promise<boolean> {
+    try {
+      for await (const _workflow of this.getClient().workflows.list({ account_id: this.accountId })) break;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Create (trigger) a Workflow instance and return its id. */
   async createInstance(workflowName: string, params: unknown, instanceId?: string): Promise<string> {
-    const body: Record<string, unknown> = { params };
-    if (instanceId) body.id = instanceId;
-    const envelope = await this.#request(
-      `create instance of ${workflowName}`,
-      "POST",
-      `workflows/${workflowName}/instances`,
-      body,
-    );
-    const result = z.object({ id: z.string() }).safeParse(envelope.result);
-    if (!result.success) {
-      throw new CloudflareInvalidResponseError({ detail: `create instance of ${workflowName}: missing instance id` });
-    }
-    return result.data.id;
+    return cloudflareRequest(`create instance of ${workflowName}`, async () => {
+      const created = await this.getClient().workflows.instances.create(workflowName, {
+        account_id: this.accountId,
+        params,
+        ...(instanceId ? { instance_id: instanceId } : {}),
+      });
+      if (!created.id) {
+        throw new CloudflareInvalidResponseError({ detail: `create instance of ${workflowName}: missing instance id` });
+      }
+      return created.id;
+    });
   }
 
   /** Fetch an instance's status. Returns `null` on a 404 (a just-created instance can briefly lag). */
   async getInstanceStatus(workflowName: string, instanceId: string): Promise<WorkflowInstance | null> {
-    const response = await this.#fetcher(
-      `${API_BASE}/accounts/${this.#accountId}/workflows/${workflowName}/instances/${instanceId}`,
-      { method: "GET", headers: this.#headers() },
-    );
-    if (response.status === 404) return null;
-    const envelope = await this.#parse(`get status of ${workflowName}/${instanceId}`, response);
-    const parsed = WorkflowInstance.safeParse(envelope.result);
-    if (!parsed.success) {
-      throw new CloudflareInvalidResponseError({
-        detail: `get status of ${workflowName}/${instanceId}: unexpected shape`,
-      });
-    }
-    return parsed.data;
+    const operation = `get status of ${workflowName}/${instanceId}`;
+    return cloudflareRequest(operation, async () => {
+      let response: unknown;
+      try {
+        response = await this.getClient().workflows.instances.get(instanceId, {
+          account_id: this.accountId,
+          workflow_name: workflowName,
+        });
+      } catch (error) {
+        // The instance is not queryable yet — the caller keeps polling. Any other failure is real.
+        if (isNotFoundError(error)) return null;
+        throw error;
+      }
+      const parsed = WorkflowInstance.safeParse(response);
+      if (!parsed.success) {
+        throw new CloudflareInvalidResponseError({ detail: `${operation}: unexpected shape` });
+      }
+      return parsed.data;
+    });
   }
 
   /**
@@ -138,47 +148,6 @@ export class CloudflareWorkflowsClient {
       message: `Workflow ${workflowName} did not finish in time.`,
       detail: `instance ${id} still running after ${maxPolls} polls`,
     });
-  }
-
-  #headers(): Record<string, string> {
-    return { Authorization: `Bearer ${this.#apiToken}`, "Content-Type": "application/json" };
-  }
-
-  async #request(
-    operation: string,
-    method: string,
-    path: string,
-    body: unknown,
-  ): Promise<z.output<typeof apiEnvelope>> {
-    const response = await this.#fetcher(`${API_BASE}/accounts/${this.#accountId}/${path}`, {
-      method,
-      headers: this.#headers(),
-      body: JSON.stringify(body),
-    });
-    return this.#parse(operation, response);
-  }
-
-  async #parse(operation: string, response: Response): Promise<z.output<typeof apiEnvelope>> {
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch (cause) {
-      throw new CloudflareRequestError(
-        { message: `Cloudflare request failed: ${operation}.`, detail: "non-JSON response" },
-        { cause },
-      );
-    }
-    const envelope = apiEnvelope.safeParse(json);
-    if (!envelope.success) {
-      throw new CloudflareInvalidResponseError({ detail: `${operation}: response did not match the CF API envelope` });
-    }
-    if (!response.ok || !envelope.data.success) {
-      throw new CloudflareRequestError({
-        message: `Cloudflare request failed: ${operation}.`,
-        detail: `${operation}: ${errorText(envelope.data.errors)}`,
-      });
-    }
-    return envelope.data;
   }
 }
 

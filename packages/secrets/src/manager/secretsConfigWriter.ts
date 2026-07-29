@@ -8,10 +8,10 @@ export const ENCRYPTION_KEYS_SECRET = "SECRETS_ENCRYPTION_KEYS";
 
 /**
  * The real {@link ConfigWriter}: writes the master-key config back to CF Secrets Store over REST
- * during at-rest rotation (the binding itself is read-only). `putSecret` passes the prior value for
- * atomic recovery — losing this config would make every stored secret undecryptable. This is the
- * one write to CF Secrets Store that cannot run locally, so it is exercised by the integration
- * suite, not the local one.
+ * during at-rest rotation (the binding itself is read-only). `putSecret` updates the entry in place,
+ * so a failed write leaves the prior config bound and decryptable — losing this config would make
+ * every stored secret undecryptable. This is the one write to CF Secrets Store that cannot run
+ * locally, so it is exercised by the integration suite, not the local one.
  */
 export class SecretsStoreConfigWriter implements ConfigWriter {
   readonly #manager: CloudflareSecretsStoreManager;
@@ -22,8 +22,8 @@ export class SecretsStoreConfigWriter implements ConfigWriter {
     this.#secretName = secretName;
   }
 
-  async write(value: string, previous: string): Promise<void> {
-    await this.#manager.putSecret(this.#secretName, value, previous);
+  async write(value: string): Promise<void> {
+    await this.#manager.putSecret(this.#secretName, value);
   }
 }
 

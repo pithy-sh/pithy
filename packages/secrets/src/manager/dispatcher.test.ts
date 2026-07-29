@@ -1,33 +1,23 @@
-import { CloudflareWorkflowsClient, type Fetcher } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
-import { describe, expect, test } from "vitest";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { describe, expect, test, vi } from "vitest";
 import { WorkflowSecretDispatcher } from "./dispatcher";
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-}
-
-function queueFetcher(responses: Response[]): Fetcher {
-  const queue = [...responses];
-  return async () => {
-    const next = queue.shift();
-    if (!next) throw new Error("queueFetcher: no more responses");
-    return next;
-  };
+/**
+ * The dispatcher's job is name resolution and payload shape — the transport belongs to
+ * `CloudflareWorkflowsClient` and is covered by its own suite. Stubbing the client (rather than
+ * mocking the `cloudflare` SDK) keeps this test on that seam; a `vi.mock("cloudflare")` here would
+ * also resolve to a different SDK instance than the one `@pithy-sh/cloudflare` imports, and silently
+ * hit the network.
+ */
+function stubClient() {
+  const dispatchAndPoll = vi.fn().mockResolvedValue(undefined);
+  return { client: { dispatchAndPoll } as unknown as CloudflareWorkflowsClient, dispatchAndPoll };
 }
 
 describe("WorkflowSecretDispatcher", () => {
   test("dispatches to the env's manager Workflow by name and resolves on completion", async () => {
+    const { client, dispatchAndPoll } = stubClient();
     const names: string[] = [];
-    const fetcher = queueFetcher([
-      jsonResponse({ success: true, errors: [], result: { id: "wf-1" } }),
-      jsonResponse({ success: true, errors: [], result: { status: "complete" } }),
-    ]);
-    const client = new CloudflareWorkflowsClient({
-      accountId: "acc",
-      apiToken: "tok",
-      fetcher,
-      sleeper: async () => {},
-    });
     const dispatcher = new WorkflowSecretDispatcher(client, (env) => {
       const name = `pithy-secrets-write-${env}`;
       names.push(name);
@@ -44,5 +34,12 @@ describe("WorkflowSecretDispatcher", () => {
     });
 
     expect(names).toEqual(["pithy-secrets-write-staging"]);
+    expect(dispatchAndPoll).toHaveBeenCalledWith("pithy-secrets-write-staging", {
+      mode: "create",
+      name: "x",
+      value: "v",
+      valueType: "text",
+      rotatable: false,
+    });
   });
 });
