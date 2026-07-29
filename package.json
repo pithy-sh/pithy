@@ -14,6 +14,8 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test --concurrency=50%",
+    "test:node": "turbo run test:node",
+    "test:workers": "turbo run test:workers --concurrency=50%",
     "test:integration": "turbo run test:integration --concurrency=50%",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",

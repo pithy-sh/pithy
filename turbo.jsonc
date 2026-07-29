@@ -16,7 +16,22 @@
     // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
     // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
     "typecheck": {},
+    // `test` runs both vitest projects (node + workers) in one process — the convenient local
+    // default, and the one to run before pushing. `test:node` and `test:workers` run one project
+    // each, which is what lets CI schedule them separately: the Node-runtime job needs the node
+    // suites alone (workerd tests prove nothing about the host runtime that launched them).
+    //
+    // `--concurrency` is close to irrelevant here, which is worth writing down because it looks
+    // like the obvious knob. Measured cold on 8 cores: the full `test` run is 90.2s at 50%, 90.4s
+    // at 75%, and 102.4s at 100% — so the only thing tuning buys is a penalty for oversubscribing.
+    // 50% stays because it is portable (a share of the machine, not a number for one machine) and
+    // because the workers suites each spawn workerd, which is what times out `beforeAll` hooks when
+    // too many run at once. The wall clock is set by total CPU work, not by scheduling: cold serial
+    // cost is ~191s (node 64s + workers 127s), and 90s is roughly what 8 cores can do with it.
+    // The lever that actually works is doing less work — turbo's cache locally, `--affected` in CI.
     "test": {},
+    "test:node": {},
+    "test:workers": {},
     "test:integration": {
       // Live Cloudflare — never cached; only packages that define the script run it.
       "cache": false

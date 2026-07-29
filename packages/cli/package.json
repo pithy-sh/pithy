@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:node": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",

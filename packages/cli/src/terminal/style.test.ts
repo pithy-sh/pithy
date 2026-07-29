@@ -55,6 +55,44 @@ describe("link", () => {
   });
 });
 
+/**
+ * `safe()` is the guard against ANSI injection, and the reason `link` sanitizes at all: both halves
+ * of a hyperlink are values read out of a project's `wrangler.jsonc` — a resource id and a URL built
+ * from it — so an embedded ESC could terminate this OSC-8 sequence early and open its own, rendering
+ * a link that opens somewhere other than what it displays. Without the stripping these cases emit an
+ * attacker-controlled target, so they are what holds that guard in place.
+ */
+describe("link strips control characters", () => {
+  const ESC = "\x1b";
+
+  test("an ESC in the url cannot terminate the sequence and open another", async () => {
+    const { link } = await loadStyle({ FORCE_COLOR: "1" });
+    const out = link(`https://example.com${ESC}]8;;https://evil.test${ESC}\\`, "id-123");
+    // Only link's own four ESCs survive: the opener, the separator, and the closing pair.
+    expect([...out].filter((c) => c === ESC)).toHaveLength(4);
+    expect(out).not.toContain(`${ESC}]8;;https://evil.test`);
+  });
+
+  test("an ESC in the link text is stripped too", async () => {
+    const { link } = await loadStyle({ FORCE_COLOR: "1" });
+    const out = link("https://example.com", `id-123${ESC}]8;;https://evil.test${ESC}\\`);
+    expect([...out].filter((c) => c === ESC)).toHaveLength(4);
+    expect(out).not.toContain(`${ESC}]8;;https://evil.test`);
+  });
+
+  test("C0 and C1 control characters go, printable characters stay", async () => {
+    const { link } = await loadStyle({ FORCE_COLOR: "1" });
+    expect(link("https://example.com", `a${ESC}b\x00c\x07d\x7fe\x9bf`)).toContain("abcdef");
+  });
+
+  test("the no-color path sanitizes the text it returns", async () => {
+    const { link } = await loadStyle({ NO_COLOR: "1", FORCE_COLOR: "1" });
+    expect(link("https://example.com", `id-123${ESC}]8;;https://evil.test${ESC}\\`)).toBe(
+      "id-123]8;;https://evil.test\\",
+    );
+  });
+});
+
 describe("supportsHyperlinks", () => {
   test("true when FORCE_COLOR is set", async () => {
     const { supportsHyperlinks } = await loadStyle({ FORCE_COLOR: "1" });
