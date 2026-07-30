@@ -5,10 +5,14 @@
   // Gate 1 of the route request contract. Scoped to the HTTP layer of the capability packages: those
   // are the routes Pithy provides, and the only place `c.req.valid()` is guaranteed to be available.
   // An adopter's own handlers are theirs — we specify the pattern, we don't police their code.
+  //
+  // The second glob reaches a seam that nests its own HTTP layer one level deeper —
+  // `packages/core/src/controlPlane/http/**`. Without it the `control-plane` routes, which are the
+  // highest-risk routes Pithy ships, would have been the only ones where `c.req.json(` stayed legal.
   "plugins": [
     {
       "path": "plugins/no-raw-request-input.grit",
-      "includes": ["**/packages/*/src/http/**"]
+      "includes": ["**/packages/*/src/http/**", "**/packages/*/src/*/http/**"]
     }
   ],
   "formatter": {

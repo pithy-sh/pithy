@@ -2,15 +2,23 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { type CatalogEntry, capabilityPackageDir } from "./catalog";
 
 /** Every capability ships under this npm scope; the CLI resolves them by name. */
 const SCOPE = "@pithy-sh";
 /** The manifest file each capability package ships at its root (strict JSON). */
 const MANIFEST_FILE = "pithy.manifest.json";
 
-/** Where a capability's manifest lands once installed into the project. */
+/**
+ * Where a capability's manifest lands once installed into the project.
+ *
+ * The directory comes from the catalog's `package`, not from the capability name. Almost always they
+ * agree — but `controlplane` ships inside `@pithy-sh/core`, so a name-derived path would look in a
+ * package that does not exist. Deriving it from the one field that already records where a capability
+ * lives means the exception is stated once (see {@link CatalogEntry.package}) rather than mirrored here.
+ */
 function manifestPath(projectDir: string, name: string): string {
-  return join(projectDir, "node_modules", SCOPE, name, MANIFEST_FILE);
+  return join(projectDir, "node_modules", SCOPE, capabilityPackageDir(name), MANIFEST_FILE);
 }
 
 /** Read and validate one manifest file; a malformed payload throws through Zod. */
@@ -48,7 +56,11 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
 /**
  * Every installed capability's manifest, validated — what `pithy add --list`
  * cross-references against the catalog. Scans `node_modules/@pithy-sh/*` and
- * skips packages that ship no manifest (core, cli). Empty when nothing's installed.
+ * skips packages that ship no manifest (cli). Empty when nothing's installed.
+ *
+ * Core does ship one now: the `control-plane` seam is a real capability living inside it, so the
+ * directory scan finds `@pithy-sh/core` and reads it out as `controlplane`. Nothing here special-cases
+ * that — the scan reads whatever manifest it finds, and the name comes from the file.
  */
 export async function availableManifests(projectDir: string): Promise<CapabilityManifest[]> {
   const scopeDir = join(projectDir, "node_modules", SCOPE);

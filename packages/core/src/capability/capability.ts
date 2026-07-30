@@ -1,6 +1,8 @@
 import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
+import type { ControlPlaneContext } from "../controlPlane/context";
+import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
@@ -15,6 +17,27 @@ import type { ClientProjection, ClientProjectionContext } from "./client";
 export interface PithyVars {
   /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * The verified control-plane caller (`c.var.controlPlane`), populated only by the `control-plane`
+   * middleware; `null` on every other request. Read through `requireControlPlane(scope)`.
+   *
+   * Deliberately a second variable rather than a flavour of {@link auth}. A management client is not a
+   * user of the adopter's app — it holds no session and owns no user row — so if a control-plane call
+   * set `auth`, every `requireAuth()` in every capability would pass for it. That is a scope escalation
+   * across the whole tree, and separating the two seams is what makes it impossible rather than merely
+   * unlikely.
+   */
+  controlPlane: ControlPlaneContext | null;
+  /**
+   * The seam's verifier, published by the `controlplane()` capability's middleware and consumed by
+   * `requireControlPlane(scope)`; `null` when that capability is not composed.
+   *
+   * It exists so a capability contributing admin routes — `@pithy-sh/payments` is the first — can write
+   * `requireControlPlane(...)` at module scope without holding the adopter's seam config and without
+   * importing from a sibling package. `null` is what makes those routes **deny** in a Worker that never
+   * enabled the seam, rather than stand open because the thing meant to protect them is absent.
+   */
+  controlPlaneVerifier: ControlPlaneVerifier | null;
   /**
    * The audit recorder seam. Any capability records a security-relevant action with `c.var.emit(...)`
    * (CLAUDE.md §Security). `@pithy-sh/audit` replaces the default with a D1-backed recorder; with no

@@ -8,10 +8,52 @@
 export interface CatalogEntry {
   /** Capability name, the `pithy add <name>` argument. */
   name: string;
-  /** The npm package providing it, always `@pithy-sh/<name>`. */
+  /**
+   * The npm package providing it — `@pithy-sh/<name>` for all but one.
+   *
+   * `controlplane` ships inside `@pithy-sh/core`, because every capability contributing admin routes
+   * imports its guard, and a capability may depend on a core seam but never on a sibling package. This
+   * field is therefore the authority on where a capability's manifest lives, and `manifests.ts` resolves
+   * the directory from it rather than from the name — one place to state the exception, so the two
+   * cannot drift.
+   */
   package: string;
   /** One-line rationale — why a project would enable this. */
   whenToEnable: string;
+}
+
+/** The npm scope every capability ships under. */
+export const CAPABILITY_SCOPE = "@pithy-sh";
+
+/**
+ * The npm package a capability ships in — the catalog's `package`, or `@pithy-sh/<name>` when the
+ * catalog does not know it (an installed package that predates a catalog entry).
+ *
+ * **Use this rather than interpolating the name.** `@pithy-sh/${capability}` was the rule everywhere
+ * until `controlplane` shipped inside `@pithy-sh/core`, and every remaining hand-rolled interpolation
+ * is a place that silently reaches for a package that does not exist.
+ */
+export function capabilityPackageName(name: string): string {
+  return CATALOG.find((candidate) => candidate.name === name)?.package ?? `${CAPABILITY_SCOPE}/${name}`;
+}
+
+/**
+ * The package directory a capability's files live in — {@link capabilityPackageName} minus the scope.
+ * This is the `node_modules/@pithy-sh/<dir>` a manifest is read from.
+ */
+export function capabilityPackageDir(name: string): string {
+  return capabilityPackageName(name).slice(`${CAPABILITY_SCOPE}/`.length);
+}
+
+/**
+ * Packages that host more than the one capability named after them, and must therefore never be
+ * uninstalled when that capability is removed.
+ *
+ * `@pithy-sh/core` is every capability's dependency and the runtime the app is built on. Removing
+ * `controlplane` unwires the seam; uninstalling core would take the project with it.
+ */
+export function isSharedCapabilityPackage(pkg: string): boolean {
+  return pkg === `${CAPABILITY_SCOPE}/core`;
 }
 
 export const CATALOG: readonly CatalogEntry[] = [
@@ -80,6 +122,12 @@ export const CATALOG: readonly CatalogEntry[] = [
     package: "@pithy-sh/payments",
     whenToEnable:
       "Three payment rails — Apple, Google, Stripe — resolving to one cross-rail entitlement, in your own Worker and your own D1. Buy Pro on iOS, be entitled on the web, with no hosted data plane holding your purchase history. A product is not an entitlement: `pro_monthly` and `pro_annual`, across three stores' catalogs, grant one key — `pro` — and gating code names the key, never a SKU. Every write converges on one idempotent projection keyed on (rail, provider transaction id), so a client submission, a provider webhook, and a reconciliation pass produce the identical row: a dropped client call costs nothing and a replayed webhook changes nothing. The projection is monotonic on the provider's own event time, because providers do not guarantee delivery order and a stale `expired` arriving after the `renewed` that superseded it would silently revoke a paying subscriber. Sandbox purchases are tracked as sandbox and never grant a production entitlement. A cron Workflow re-verifies what the webhooks missed, because webhook-only systems rot silently. Add auth — every route belongs to an authenticated purchaser or a machine proving authenticity, and there are no public routes. Add secrets: the three rails' credentials are read through it, so payments will not compose without it. Ledger fulfillment is opt-in per product; most products never touch a balance.",
+  },
+  {
+    name: "controlplane",
+    package: "@pithy-sh/core",
+    whenToEnable:
+      "Let a management client — the Pithy dashboard, or one you write yourself — reach into your own Worker, with no data plane in between. Present and denying by default: with no connection registered every route answers 403, and there is no backdoor to open. `pithy dashboard connect --env production` grants exactly the operations you name, per environment, so a staging credential can never touch production. The credential is asymmetric — the client holds a private key, you hold and can revoke the public one — so nothing secret of yours ever leaves your infrastructure and a breach on their side is not a breach on yours. Rotation is append, prove, then expire, never replace, so a rotation that fails leaves the old key working instead of locking anyone out; revocation is a row you delete, immediate and needing nothing from them. Every call carries a signed 60-second single-scope token bound to a digest of its own body, is checked for replay, and lands in your audit trail under its own actor kind, so what the dashboard did is answerable separately from what your users did. Capabilities contribute their own admin routes behind it — payments puts manual entitlement grant and revoke here — so adding one adds its management surface with nothing to wire. It ships inside @pithy-sh/core, so it is already installed; adding it composes it, and connecting a client is the deliberate second step.",
   },
 ];
 

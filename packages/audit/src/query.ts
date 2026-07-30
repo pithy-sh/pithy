@@ -5,10 +5,15 @@ import type { AuditDatabase } from "./data/tables";
 
 /**
  * A filter over the audit trail. Every field is optional and ANDed together; an empty filter returns
- * the whole trail (newest first). This is the typed read seam consumers — notably the future premium
- * dashboard's `control-plane` routes — use to read events by actor, action, time range, resource,
- * outcome, and severity. It is a Kysely query, not an HTTP surface (exposing audit over HTTP belongs
- * to the dashboard work).
+ * the whole trail (newest first). This is the typed read seam consumers use to read events by actor,
+ * action, time range, resource, outcome, and severity.
+ *
+ * It is a Kysely query, not an HTTP surface, and it stays that way. The `control-plane` seam now
+ * exists (`@pithy-sh/core/src/controlPlane`, `docs/CONTROL-PLANE.md`), and a capability that wants to
+ * expose its own admin surface contributes routes behind `requireControlPlane(scope)` — so audit
+ * routes, when they land, will be this package's own contribution rather than something core reaches
+ * in and adds. `actorType: "control-plane"` is what separates a management client's actions from the
+ * adopter's own users', which is the question that surface is actually asked.
  */
 export interface AuditQuery {
   /** Match the acting principal's kind. */

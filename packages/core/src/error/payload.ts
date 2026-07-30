@@ -989,6 +989,72 @@ const PaymentsClawbackFailedPublic = z
   })
   .describe("A refund could not be clawed back from a spent balance (409).");
 
+// --- @pithy-sh/core: the `control-plane` verification strategy ---
+//
+// NOT Cloudflare's control plane. Everywhere else in this repo "control plane" means the Cloudflare
+// REST API `@pithy-sh/cloudflare` calls to provision D1, KV, and Workers — outbound, CF-authenticated,
+// provisioning, and carrying the `cloudflare/*` codes above. These are the inverse: **inbound** calls
+// from a management client the adopter registered, authenticated by a key the adopter trusts. Two
+// meanings, one word, one tree. See `docs/CONTROL-PLANE.md`.
+
+const ControlPlaneNotConnectedPublic = z
+  .object({
+    code: z
+      .literal("controlplane/not_connected")
+      .describe(
+        "No management-client connection is registered for this environment. The shipped default: the seam is present and denies everything until the adopter provisions a credential. There is no backdoor.",
+      ),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("No control-plane connection is registered for this environment (403).");
+
+const ControlPlaneInvalidCredentialPublic = z
+  .object({
+    code: z
+      .literal("controlplane/invalid_credential")
+      .describe(
+        "The presented credential failed verification. Deliberately one code for every failing step — malformed token, unknown `kid`, bad signature, wrong `aud`, wrong environment, expired, outside clock skew, replayed `jti`, mismatched body digest — so a caller cannot use the response to learn which check it tripped. `detail` names the step for the log, and the HTTP codec strips it.",
+      ),
+    status: z.literal(401).describe("Unauthorized."),
+    ...publicFields,
+  })
+  .describe("The control-plane credential failed verification (401).");
+
+const ControlPlaneInsufficientScopePublic = z
+  .object({
+    code: z
+      .literal("controlplane/insufficient_scope")
+      .describe(
+        "The credential verified, but the token's scope does not cover this operation, or the connection was never granted it. Scopes are stored and enforced on the adopter's side — enforced only by the caller, they would not be a limit at all. Default deny on anything unscoped.",
+      ),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("The control-plane credential lacks the scope this operation requires (403).");
+
+const ControlPlaneKeyNotFoundPublic = z
+  .object({
+    code: z
+      .literal("controlplane/key_not_found")
+      .describe("The `keyId` named for expiry is not registered on this connection."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No registered key answers to that key id (404).");
+
+const ControlPlaneKeyConflictPublic = z
+  .object({
+    code: z
+      .literal("controlplane/key_conflict")
+      .describe(
+        "A key operation conflicts with the connection's current state: the `keyId` is already registered, or expiring it would leave the connection with no live key. The second case is the lockout this seam exists to make impossible — a connection whose every key is expired has no authenticated path back.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("A key operation conflicts with the connection's current state (409).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -1085,6 +1151,11 @@ export const PublicErrorPayload = z
     PaymentsProviderUnavailablePublic,
     PaymentsEntitlementRequiredPublic,
     PaymentsClawbackFailedPublic,
+    ControlPlaneNotConnectedPublic,
+    ControlPlaneInvalidCredentialPublic,
+    ControlPlaneInsufficientScopePublic,
+    ControlPlaneKeyNotFoundPublic,
+    ControlPlaneKeyConflictPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -1320,6 +1391,21 @@ const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(det
 const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(detailField).describe(
   PaymentsClawbackFailedPublic.description ?? "",
 );
+const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(detailField).describe(
+  ControlPlaneNotConnectedPublic.description ?? "",
+);
+const ControlPlaneInvalidCredential = ControlPlaneInvalidCredentialPublic.extend(detailField).describe(
+  ControlPlaneInvalidCredentialPublic.description ?? "",
+);
+const ControlPlaneInsufficientScope = ControlPlaneInsufficientScopePublic.extend(detailField).describe(
+  ControlPlaneInsufficientScopePublic.description ?? "",
+);
+const ControlPlaneKeyNotFound = ControlPlaneKeyNotFoundPublic.extend(detailField).describe(
+  ControlPlaneKeyNotFoundPublic.description ?? "",
+);
+const ControlPlaneKeyConflict = ControlPlaneKeyConflictPublic.extend(detailField).describe(
+  ControlPlaneKeyConflictPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -1416,6 +1502,11 @@ export const ErrorPayload = z
     PaymentsProviderUnavailable,
     PaymentsEntitlementRequired,
     PaymentsClawbackFailed,
+    ControlPlaneNotConnected,
+    ControlPlaneInvalidCredential,
+    ControlPlaneInsufficientScope,
+    ControlPlaneKeyNotFound,
+    ControlPlaneKeyConflict,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

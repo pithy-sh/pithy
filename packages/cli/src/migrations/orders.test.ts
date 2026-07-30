@@ -34,11 +34,11 @@ import { describe, expect, test } from "vitest";
  * which makes Kysely treat applied migrations as unapplied and re-run them.
  *
  * There is no shortage of numbers. The ceiling is 9999 per database and the `app` database currently
- * reaches 1000, so ~89 more capabilities fit at this spacing. Both collisions this test exists to
+ * reaches 1100, so ~88 more capabilities fit at this spacing. Both collisions this test exists to
  * prevent happened in a space that was 99% empty — the failure was uncoordinated allocation, not
  * capacity, which is why the procedure above routes every author through one file.
  */
-const NEXT_FREE_ORDER = 1100;
+const NEXT_FREE_ORDER = 1200;
 
 /** Every declared migration order, and the database it sorts within. */
 const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
@@ -54,6 +54,11 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   { constant: "STORAGE_MIGRATION_ORDER", database: "app" },
   { constant: "VECTOR_MIGRATION_ORDER", database: "app" },
   { constant: "PAYMENTS_MIGRATION_ORDER", database: "app" },
+  // The `control-plane` seam. Ships inside `@pithy-sh/core` rather than its own package, because every
+  // capability contributing admin routes imports its guard, and a capability may depend on a core seam
+  // but never on a sibling package. So core declares an order like any other capability — see the
+  // scanner below, which no longer skips it.
+  { constant: "CONTROLPLANE_MIGRATION_ORDER", database: "app" },
   // Its own durable database, shared by every environment — so it does not compete with `app`.
   { constant: "EMAIL_SUPPRESSIONS_MIGRATION_ORDER", database: "emailSuppressions" },
   // The secrets manager's own database, likewise separate.
@@ -81,11 +86,19 @@ function sourceFiles(dir: string): string[] {
   return found;
 }
 
-/** Scan every package's source for declared orders. `@pithy-sh/core` owns the ceiling, not an order. */
+/**
+ * Scan every package's source for declared orders — core included.
+ *
+ * Core used to be skipped here, on the reasoning that it owns the ceiling rather than an order. That
+ * stopped being true when the `control-plane` seam landed inside it: core now ships a real migration
+ * for `pithy_controlplane_connections` and therefore competes for a slot in the `app` database like
+ * any other capability. Leaving the skip in place would have meant core's order was the one number in
+ * the repo nothing checked for collision — precisely the uncoordinated allocation this file exists to
+ * prevent.
+ */
 function scanDeclaredOrders(): Map<string, number> {
   const orders = new Map<string, number>();
   for (const pkg of readdirSync(PACKAGES)) {
-    if (pkg === "core") continue;
     const src = join(PACKAGES, pkg, "src");
     let files: string[];
     try {

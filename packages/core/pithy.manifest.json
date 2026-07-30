@@ -1,0 +1,54 @@
+{
+  "name": "controlplane",
+  "package": "@pithy-sh/core",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "kv", "name": "CONTROL_PLANE" }],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["audit"],
+  "migrationNamespace": "controlplane",
+  "whenToEnable": "Let a management client — the Pithy dashboard, or one you write yourself — reach into this project's own Worker without any data plane in between. It is present-and-denying by default: with no connection registered, every control-plane route answers 403, and there is no backdoor to open. Connect one with `pithy dashboard connect --env production` and the client gets exactly the operations you granted it, per environment, so a staging credential can never touch production. The credential is asymmetric: the client holds a private key, you hold and can revoke the public one, and nothing secret of yours ever leaves your infrastructure. Rotation is append, prove, then expire — never replace — so a rotation that fails leaves the old key working rather than locking anyone out, and revocation is a row you delete, immediate and needing nothing from anybody else. Every call is verified against a signed 60-second single-scope token bound to a digest of its own body, checked for replay, and written to your audit trail with its own actor kind, so 'what did the dashboard do' is answerable separately from 'what did my users do'. Capabilities contribute their own admin routes behind it — @pithy-sh/payments puts manual entitlement grant and revoke here — so adding one adds its management surface with nothing to wire. Turning this on grants nobody anything; connecting a client is the deliberate second step.",
+  "scaffold": [
+    "Add a `controlplane()` block to pithy.config.ts. Every option has a working default; leave `issuer` alone unless you run your own management client.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Bind a KV namespace named CONTROL_PLANE in wrangler.jsonc. It holds spent token ids for a few minutes and nothing else.",
+    "Run `pithy migrate` to create pithy_controlplane_connections.",
+    "Run `pithy dashboard connect --env <environment>` to register a management client. Until you do, every control-plane route denies — which is the correct state, not a broken one.",
+    "Add `@pithy-sh/audit` if it is not already installed. The seam emits on every allowed and every denied call, and this is the surface where an unaudited admin action is least acceptable."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/control-plane",
+      "describe": "Where the seam's own routes mount — ping, manifest, and the three key-lifecycle routes. Capability admin routes mount under their own capability's path, not here."
+    },
+    {
+      "key": "issuer",
+      "default": "https://app.pithy.sh",
+      "describe": "The management-client origin a new connection is registered against, and the `iss` every one of its tokens must carry. Trust-critical and effectively permanent: each connection stores the issuer it was created with, and verification checks that stored value, so changing this only affects connections made afterwards. Point it at your own origin if you run your own client."
+    },
+    {
+      "key": "maxTokenLifetimeSeconds",
+      "default": 60,
+      "describe": "The longest `exp - iat` a token may claim. A cap rather than a suggestion: it is what keeps the replay memory sound, since a token allowed to live longer than that memory would become replayable the moment its id aged out."
+    },
+    {
+      "key": "clockSkewSeconds",
+      "default": 60,
+      "describe": "How far a caller's clock may drift from this Worker's before its tokens are rejected. Applied either side of `iat` and `exp`."
+    },
+    {
+      "key": "jtiTtlSeconds",
+      "default": 300,
+      "describe": "How long a spent token id is remembered, so the same token cannot be presented twice. Must exceed the maximum token lifetime plus TWO clock skews, because a token is accepted a skew before it was issued and a skew after it expires. Config that would let the memory be shorter is rejected outright, since that gap is exactly where replay reopens."
+    },
+    {
+      "key": "keyRetentionDays",
+      "default": 30,
+      "describe": "How long an expired or revoked key stays on the row before it is pruned. Verification parses this array on every call, so it is bounded on purpose; the audit trail is the history of record, not the row."
+    },
+    {
+      "key": "maxKeys",
+      "default": 8,
+      "describe": "The hardest cap on retained keys, whatever the retention window says. Two live at once is the normal state during a rotation overlap; eight is room for a long tail of superseded ones without letting the blob grow without limit."
+    }
+  ]
+}
