@@ -38,6 +38,7 @@ const plan: ReconcilePlan = {
   ],
   ejectedSkipped: ["billing"],
   pendingMigrations: 3,
+  entitlementGap: [],
 };
 
 describe("plan rendering", () => {
@@ -57,6 +58,7 @@ describe("plan rendering", () => {
       perCapability: [],
       ejectedSkipped: [],
       pendingMigrations: 0,
+      entitlementGap: [],
     };
     expect(__test.planLines(clean)).toEqual(["Nothing to upgrade."]);
   });
@@ -107,6 +109,7 @@ describe("worker grouping", () => {
       perCapability: [],
       ejectedSkipped: [],
       pendingMigrations: 0,
+      entitlementGap: [],
     };
     const out = __test.renderUpgrade([
       { plan, applied: null },
@@ -140,6 +143,7 @@ describe("worker grouping", () => {
       perCapability: [],
       ejectedSkipped: [],
       pendingMigrations: 0,
+      entitlementGap: [],
     };
     expect(__test.renderUpgrade([{ plan: clean, applied: null }])).toEqual(["web:", "  Nothing to upgrade."]);
   });

@@ -1,0 +1,23 @@
+{
+  "id": "evt_stripeChargeRefunded",
+  "object": "event",
+  "api_version": "2025-04-30.basil",
+  "created": 1768003200,
+  "livemode": true,
+  "type": "charge.refunded",
+  "data": {
+    "object": {
+      "id": "ch_1PithyCoins",
+      "object": "charge",
+      "amount": 499,
+      "amount_refunded": 499,
+      "currency": "usd",
+      "customer": "cus_PithyAda",
+      "payment_intent": "pi_1PithyCoins",
+      "refunded": true,
+      "created": 1767225600,
+      "livemode": true,
+      "metadata": { "pithy_account_reference": "ada", "pithy_price_id": "price_1Coins" }
+    }
+  }
+}

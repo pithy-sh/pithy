@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "packageName": "com.acme.app",
+  "eventTimeMillis": "1768435200000",
+  "oneTimeProductNotification": {
+    "version": "1.0",
+    "notificationType": 1,
+    "purchaseToken": "ppgmhnokdjkfbicoloakhnli.AO-J1OyR4wKcTz8mHbXe1uQfLp",
+    "sku": "coins_100"
+  }
+}

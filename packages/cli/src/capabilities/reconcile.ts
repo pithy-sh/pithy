@@ -8,6 +8,7 @@ import { countPendingMigrations, type DatabaseRun, migrateProject } from "../mig
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { ejectedCapabilities } from "./eject";
+import { findEntitlementGap } from "./entitlementGap";
 import { availableManifests } from "./manifests";
 
 /**
@@ -89,8 +90,15 @@ export const ReconcilePlan = z
       .describe(
         "Unapplied migrations for `env` across this Worker's databases — applied only when upgrade runs with --migrate.",
       ),
+    entitlementGap: z
+      .array(z.string())
+      .describe(
+        "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
+      ),
   })
-  .describe("A read-only reconcile plan for one Worker: binding/config drift, ejected skips, and pending migrations.");
+  .describe(
+    "A read-only reconcile plan for one Worker: binding/config drift, ejected skips, pending migrations, and the entitlement composition gap.",
+  );
 export type ReconcilePlan = z.infer<typeof ReconcilePlan>;
 
 /** The one Worker a migration seam runs against, plus the project root its local D1 state lives under. */
@@ -405,7 +413,10 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
   const pendingMigrations = await countPending({ projectDir, workerDir, worker, env, capabilities });
-  return { worker, env, perCapability, ejectedSkipped, pendingMigrations };
+  // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
+  // in its composed set, so the question is per Worker exactly as the rest of the plan is.
+  const entitlementGap = await findEntitlementGap(workerDir, capabilities);
+  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap };
 }
 
 /** Append a binding entry to a stanza if its name isn't already bound. Mirrors `pithy add`, plus r2. */

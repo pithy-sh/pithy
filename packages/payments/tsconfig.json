@@ -1,0 +1,13 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
+  // `src/client/**` is the browser surface and has its own program, `tsconfig.client.json`: the DOM lib
+  // and the Workers types collide on `fetch`, `Request` and `Response`, and skipLibCheck hides the
+  // collision rather than reporting it. Both programs run under `bun run typecheck`.
+  "exclude": ["src/client/**"]
+}

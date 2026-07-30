@@ -1,0 +1,48 @@
+{
+  "notification": {
+    "notificationType": "DID_RENEW",
+    "subtype": "BILLING_RECOVERY",
+    "notificationUUID": "b8f1a7d6-3c92-4d51-9e0b-7a2f5c1d4e33",
+    "version": "2.0",
+    "signedDate": 1767225600000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Production",
+      "status": 1
+    }
+  },
+  "transaction": {
+    "transactionId": "2000000731004811",
+    "originalTransactionId": "2000000617339002",
+    "webOrderLineItemId": "2000000091822640",
+    "bundleId": "com.acme.app",
+    "productId": "com.acme.pro.monthly",
+    "subscriptionGroupIdentifier": "20845513",
+    "purchaseDate": 1767225600000,
+    "originalPurchaseDate": 1759276800000,
+    "expiresDate": 1769904000000,
+    "quantity": 1,
+    "type": "Auto-Renewable Subscription",
+    "appAccountToken": "3f6c1d20-8a4b-4f77-9c31-b0e5d2a91746",
+    "inAppOwnershipType": "PURCHASED",
+    "signedDate": 1767225600000,
+    "environment": "Production",
+    "transactionReason": "RENEWAL",
+    "storefront": "USA",
+    "storefrontId": "143441",
+    "price": 4990,
+    "currency": "USD"
+  },
+  "renewalInfo": {
+    "originalTransactionId": "2000000617339002",
+    "autoRenewProductId": "com.acme.pro.monthly",
+    "productId": "com.acme.pro.monthly",
+    "autoRenewStatus": 1,
+    "renewalDate": 1769904000000,
+    "recentSubscriptionStartDate": 1759276800000,
+    "signedDate": 1767225600000,
+    "environment": "Production"
+  }
+}

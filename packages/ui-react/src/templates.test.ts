@@ -46,15 +46,37 @@ describe("the React template library", () => {
     expect(declaredPaths().length).toBe(files.length);
   });
 
-  test("base is what every template gets; auth is additive on top of it", () => {
+  test("base is what every template gets; every other group is additive on top of it", () => {
     expect(TEMPLATE_GROUPS.base).toContain("src/router.tsx");
     expect(TEMPLATE_GROUPS.base).toContain("client-env.d.ts");
-    // The screens ride on the auth capability, so none of them may sit in base.
-    for (const path of TEMPLATE_GROUPS.auth) {
-      expect(TEMPLATE_GROUPS.base as readonly string[]).not.toContain(path);
-      const authOwned = ["src/session.tsx", "src/turnstile.tsx", "src/pithy-config.tsx"];
-      expect(path.startsWith("src/routes/pithy/") || authOwned.includes(path)).toBe(true);
+    // The one module that imports the virtual modules and narrows them belongs to every capability, not
+    // to auth — a payments-only scaffold needs it too. docs/UI.md states the rule.
+    expect(TEMPLATE_GROUPS.base).toContain("src/pithy-config.tsx");
+
+    // A capability's screens ride on that capability being composed, so none of them may sit in base.
+    const capabilityOwned: Record<string, readonly string[]> = {
+      auth: ["src/session.tsx", "src/turnstile.tsx"],
+      payments: ["src/payments.tsx"],
+    };
+    for (const [group, helpers] of Object.entries(capabilityOwned)) {
+      for (const path of TEMPLATE_GROUPS[group as "auth" | "payments"]) {
+        expect(TEMPLATE_GROUPS.base as readonly string[], path).not.toContain(path);
+        expect(path.startsWith("src/routes/pithy/") || helpers.includes(path), path).toBe(true);
+      }
     }
+  });
+
+  test("no file is claimed by two groups — a scaffold writes each path once", () => {
+    const declared = Object.values(TEMPLATE_GROUPS).flat();
+    expect(new Set(declared).size).toBe(declared.length);
+  });
+
+  test("the payments group is the two screens and the bridge, and nothing from auth", () => {
+    expect([...TEMPLATE_GROUPS.payments]).toEqual([
+      "src/payments.tsx",
+      "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/subscription.tsx",
+    ]);
   });
 
   test("the home screen has both variants, and they land at the same target", () => {

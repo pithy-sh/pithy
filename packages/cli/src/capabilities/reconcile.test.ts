@@ -324,6 +324,31 @@ describe("buildReconcilePlan — migrations and purity", () => {
     expect(plan.pendingMigrations).toBe(4);
   });
 
+  test("reports the entitlement gap for a Worker whose routes gate with no provider composed", async () => {
+    await writeManifest(dir, authManifest);
+    await mkdir(join(workerDir, "src"), { recursive: true });
+    await writeFile(
+      join(workerDir, "src", "reports.ts"),
+      'app.get("/reports", requireEntitlement("pro"), (c) => c.json({}));\n',
+      "utf8",
+    );
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    expect(plan.entitlementGap).toEqual(["src/reports.ts"]);
+  });
+
+  test("a composed provider closes the gap, whatever the routes gate on", async () => {
+    await writeManifest(dir, authManifest);
+    await mkdir(join(workerDir, "src"), { recursive: true });
+    await writeFile(join(workerDir, "src", "reports.ts"), 'requireEntitlement("pro");\n', "utf8");
+    const plan = await buildReconcilePlan({
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: [...AUTH, { name: "payments", requiredBindings: [], providesEntitlements: true }],
+    });
+    expect(plan.entitlementGap).toEqual([]);
+  });
+
   test("writes nothing — building a plan is read-only", async () => {
     await writeManifest(dir, authManifest);
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));

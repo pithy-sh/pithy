@@ -1,0 +1,36 @@
+{
+  "name": "payments",
+  "package": "@pithy-sh/payments",
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "workflow", "name": "PAYMENTS_RECONCILE", "optional": true }
+  ],
+  "peerCapabilities": ["secrets"],
+  "optionalCapabilities": ["auth", "ledger"],
+  "migrationNamespace": "payments",
+  "whenToEnable": "Three payment rails — Apple, Google, Stripe — resolving to one cross-rail entitlement, in your own Worker and your own D1. Buy Pro on iOS, be entitled on the web, with no hosted data plane holding your purchase history. A product is not an entitlement: `pro_monthly` and `pro_annual`, across three stores' catalogs, grant one key — `pro` — and gating code names the key, never a SKU. Every write converges on one idempotent projection keyed on (rail, provider transaction id), so a client submission, a provider webhook, and a reconciliation pass produce the identical row: a dropped client call costs nothing and a replayed webhook changes nothing. The projection is monotonic on the provider's own event time, because providers do not guarantee delivery order and a stale `expired` arriving after the `renewed` that superseded it would silently revoke a paying subscriber. Sandbox purchases are tracked as sandbox and never grant a production entitlement. A cron Workflow re-verifies what the webhooks missed, because webhook-only systems rot silently. Add auth — every route belongs to an authenticated purchaser or a machine proving authenticity, and there are no public routes. Add secrets: the three rails' credentials are read through it, so payments will not compose without it. Ledger fulfillment is opt-in per product; most products never touch a balance.",
+  "scaffold": [
+    "Add a `payments({ rails: {...}, products: {...} })` block to pithy.config.ts. The catalog lives in config, not in D1 — a product's entitlement mapping is policy, so it belongs in git rather than in a mutable table. A new SKU needs a deploy, which is the correct trade.",
+    "Give every product a `type` (`consumable`, `non_consumable`, or `subscription`), a display `name`, the `entitlements` it grants, and one block per rail it ships on. Omit a rail to ship without it — `remove_ads` on mobile only is expressed by omission, not a flag.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_payments_purchases, pithy_payments_entitlements, pithy_payments_provider_accounts, and pithy_payments_webhook_events.",
+    "Add `@pithy-sh/secrets` if it is not already installed, then supply each rail's credentials through it: Apple's App Store Connect key with its key and issuer ids, Google's service account, Stripe's secret key and webhook signing secret. Apple's root certificates are public and ship with the package.",
+    "Add `@pithy-sh/auth` if it is not already installed. Purchases belong to an authenticated user; with no auth capability composed every route denies.",
+    "Selling through Stripe also needs a `stripe` block naming where its hosted pages return to — `successUrl`, `cancelUrl`, `portalReturnUrl`. Required whenever the rail is on, and config rather than request input: a client that could name a return URL could send a paying customer to a page it controls. Put `{CHECKOUT_SESSION_ID}` in the success URL's query and the thank-you page can post it to /payments/purchases for an entitlement at once.",
+    "Set the account link on every purchase your app starts — Apple's appAccountToken and Google's obfuscatedAccountId, in the app's own purchase flow. A webhook arrives carrying the provider's identifier, not a Pithy user id, so a purchase made without one arrives orphaned. Stripe needs nothing from you here: /payments/checkout sets `client_reference_id` from the authenticated caller, which is the one hook a client must never be allowed to name.",
+    "Run `pithy payments provision` to deploy the reconciliation Workflow and write its binding. `pithy add` touches no Cloudflare account; provisioning is the separate, explicit step. Skipping it costs nothing up front — the binding is optional and every route works without it — but webhook-only systems rot silently, so the nightly pass is what turns a dropped delivery into a repaired row rather than a support ticket.",
+    "Gate a paid route with `requireEntitlement(\"pro\")` from @pithy-sh/core. The gate lives in core, so a Worker with no payments capability composed denies rather than opens."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/payments",
+      "describe": "Where the payments routes mount, webhooks included. Edit the `rails` and `products` objects by hand — the catalog maps each store's SKU to one logical product and the entitlements it grants, and it is the whole point of the capability."
+    },
+    {
+      "key": "graceGrantsAccess",
+      "default": true,
+      "describe": "Whether a subscription in its billing-retry grace period still grants its entitlements. True, because that is the point of grace — a failed card should not lock a paying subscriber out mid-period. Once grace is exhausted the purchase moves to on_hold, which never grants."
+    }
+  ]
+}

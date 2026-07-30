@@ -1,4 +1,5 @@
 import authModule from "virtual:pithy/auth";
+import paymentsModule from "virtual:pithy/payments";
 import turnstileModule from "virtual:pithy/turnstile";
 
 /**
@@ -34,4 +35,28 @@ export const turnstileConfig = turnstileModule.enabled
       sitekey: "",
       mode: "visible" as const,
       token: { field: "cf-turnstile-response", header: null },
+    };
+
+/**
+ * Payments' projection, narrowed the same way. `enabled` is false when the capability is not composed, and
+ * also when it is composed with an empty catalog — a paywall with nothing on it is nothing to render, so
+ * the two read alike and a screen branches once.
+ *
+ * Only the browser-safe half of the catalog is here. Apple's issuer id, Google's service-account
+ * credentials and Stripe's secret and signing keys live in the secrets store and never enter a projection.
+ */
+export const paymentsConfig = paymentsModule.enabled
+  ? paymentsModule
+  : {
+      enabled: false as const,
+      environment: "dev",
+      rails: { apple: false, google: false, stripe: false },
+      basePath: "/payments",
+      products: [] as {
+        id: string;
+        type: "consumable" | "non_consumable" | "subscription";
+        entitlements: string[];
+        name: string;
+        stripePriceId: string | null;
+      }[],
     };

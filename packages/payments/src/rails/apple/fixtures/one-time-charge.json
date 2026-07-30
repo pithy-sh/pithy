@@ -1,0 +1,32 @@
+{
+  "notification": {
+    "notificationType": "ONE_TIME_CHARGE",
+    "notificationUUID": "2b5e8c14-0d3a-4f96-b71e-8c4d9a2f6031",
+    "version": "2.0",
+    "signedDate": 1770163200000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Production"
+    }
+  },
+  "transaction": {
+    "transactionId": "2000000744120933",
+    "bundleId": "com.acme.app",
+    "productId": "com.acme.coins100",
+    "purchaseDate": 1770163200000,
+    "originalPurchaseDate": 1770163200000,
+    "quantity": 1,
+    "type": "Consumable",
+    "appAccountToken": "3f6c1d20-8a4b-4f77-9c31-b0e5d2a91746",
+    "inAppOwnershipType": "PURCHASED",
+    "signedDate": 1770163200000,
+    "environment": "Production",
+    "transactionReason": "PURCHASE",
+    "storefront": "JPN",
+    "storefrontId": "143462",
+    "price": 500000,
+    "currency": "JPY"
+  }
+}

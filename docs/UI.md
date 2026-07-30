@@ -10,7 +10,7 @@ pithy ui add react --worker api
 
 It scaffolds the client into `apps/api/`, beside the Worker that serves it, and edits three files to connect them.
 
-- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, Pithy's sign-in screens when the Worker composes `auth`, and one screen of your own.
+- **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens when the Worker composes `auth`, its paywall and subscription screens when it composes `payments`, and one screen of your own.
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Joins the dev set.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
@@ -41,11 +41,13 @@ apps/api/
     client.tsx               new   SPA entry: mounts the router
     router.tsx               new   the two-glob router and its route guard
     styles.css               new
-    pithy-config.tsx         new   --auth  the one module that imports virtual:pithy/*
+    pithy-config.tsx         new   the one module that imports virtual:pithy/*
     session.tsx              new   --auth  session hook, signOut, signed-in guard
     turnstile.tsx            new   --auth  the widget and its token placement
+    payments.tsx             new   --payments  the client bound to the base path, and the guard's data
     routes/
-      pithy/                 new   --auth  Pithy's screens — sign-in, otp, callback
+      pithy/sign-in.tsx      new   --auth  and otp.tsx, callback.tsx — Pithy's screens
+      pithy/paywall.tsx      new   --payments  and subscription.tsx
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
   pithy.worker.jsonc         edited  dev block + ui block
@@ -76,7 +78,7 @@ That is a deliberate boundary, and it is about growth. A framework's templates n
 
 It also means the screens are ordinary source: `tsc` typechecks them and Biome lints them, in the layout they will have once copied. A template that does not compile fails CI here, rather than in your project.
 
-The tree mirrors the scaffolded layout one-to-one, and which files a given invocation writes is chosen by a named group in the library's manifest rather than by directory. `base` is written always; `auth` rides on the auth capability. A later screen set — payments, say — is a new group naming new files in the same tree: no path moves, no import changes, and no change to the stub contract.
+The tree mirrors the scaffolded layout one-to-one, and which files a given invocation writes is chosen by a named group in the library's manifest rather than by directory. `base` is written always; `auth` rides on the auth capability, and `payments` on the payments one. The groups stack rather than choose — a Worker composing both gets both screen sets, because they name disjoint files over one layout. That is what a later screen set costs too: a new group naming new files in the same tree, with no path moved, no import changed, and no change to the stub contract.
 
 ## Routing
 
@@ -111,7 +113,7 @@ The exact shape of each projection is declared in `client-env.d.ts`, which is wh
 
 **Import the default and narrow on `enabled`. Do not import a projection key by name.** A capability that is not composed projects `{ enabled: false }` and nothing else, so `import { sitekey } from "virtual:pithy/turnstile"` is a missing export — and the build fails on precisely the case the mechanism exists to survive. Each module's declared type is a union discriminated on `enabled`, so narrowing is what makes the other fields visible, and TypeScript will not let you read one without it.
 
-The scaffold does this in exactly one place. `src/pithy-config.tsx` imports each virtual module, narrows it once, and re-exports `authConfig` and `turnstileConfig`; every screen reads those. If you add a screen of your own, read it from there too — or import the virtual module directly and narrow it yourself. Either is fine; a bare named import is not.
+The scaffold does this in exactly one place. `src/pithy-config.tsx` imports each virtual module, narrows it once, and re-exports `authConfig`, `turnstileConfig` and `paymentsConfig`; every screen reads those. It is written by every scaffold, not by a capability's own group, precisely because it belongs to all of them. If you add a screen of your own, read it from there too — or import the virtual module directly and narrow it yourself. Either is fine; a bare named import is not.
 
 Four things make this work the way it does.
 
@@ -145,6 +147,43 @@ Two boundaries the stub respects:
 - **Social sign-in is never gated.** The provider runs its own bot defense, and the OAuth redirect flow carries no token to check.
 
 The public sitekey reaches the screen through `virtual:pithy/turnstile`, per environment. Sitekeys are public by design; the widget secret is never in config and never in the client — it lives in `@pithy-sh/secrets`.
+
+## Paywalls, and where the purchase flow lives
+
+The payments screens are the one place the stub deliberately owns less than it looks like it does.
+
+`pithy ui add` writes a file once and may never rewrite it. That is the right ownership rule, and it is exactly why a frozen paywall ages badly: store rules move under it. Price-change consent prompts, external purchase link entitlements, subscription-management requirements — each arrives after the file was written, and a purchase flow sitting in your repo is one Pithy cannot fix for you.
+
+So the surface splits by what changes. **`@pithy-sh/payments` exports the hooks** — `useEntitlement`, `usePurchase`, `useSubscription`, `useCheckout`, from `@pithy-sh/payments/src/client/hooks` — and owns the calls, the redirect-and-return dance, the error mapping and the entitlement reads. They upgrade with a minor release. **The scaffolded screen renders and styles**, calling those hooks rather than reimplementing them. The screens are still yours to rewrite; what you inherit for free is the part that goes stale.
+
+`src/payments.tsx` is the thin bridge: it binds every call to this project's own base path, and answers the router's entitlement guard.
+
+### The web scaffold sells on one rail
+
+StoreKit and Play Billing need native app code to present a purchase sheet, and `pithy ui add` does not scaffold a mobile client. So the paywall lists every product and offers a buy button only for the ones Stripe sells; the rest read "available in the app."
+
+| Stub | Apple | Google | Stripe |
+|---|---|---|---|
+| Paywall / product picker | Display only | Display only | Purchasable |
+| Subscription status | Yes | Yes | Yes |
+| Manage subscription | Store deep link | Store deep link | Billing Portal |
+| Restore purchases | Native only — absent from web | Native only — absent from web | Not applicable |
+| Entitlement route guard | Yes | Yes | Yes |
+
+Hosted Checkout needs no SDK script and no publishable key in the page: the server mints a session, the client follows one URL, and Stripe owns everything in between. The store deep links live in the package rather than in the template, so a store moving one is a minor release.
+
+### The entitlement route guard
+
+A route module gates itself the way it declares a session — one export:
+
+```tsx
+export const path = "/reports";
+export const entitlement = "pro";
+```
+
+An entitlement belongs to somebody, so declaring one implies the session guard: the same order the server states it in, `requireAuth()` then `requireEntitlement()`.
+
+**It is a UX affordance, never a security boundary.** The server check is the boundary — every paid route declares `requireEntitlement()`, and no answer in the browser changes that. The guard exists so a visitor without `pro` lands on the paywall instead of watching a screen fill with 403s. Its failure direction follows from that: with payments not composed at all, the guard renders rather than blocks, exactly as the session guard does with no auth capability.
 
 ## Web auth: cookies, one origin, CSRF
 
@@ -189,7 +228,7 @@ This is the one piece worth understanding before you edit `wrangler.jsonc` by ha
 
 Cloudflare's asset router runs **before** your Worker. With `not_found_handling: "single-page-application"`, a path with no matching asset is answered with `index.html` — and the Worker is never invoked. That is exactly right for `/settings` and exactly wrong for `/health`. `run_worker_first` is the list of paths that skip the asset router and go straight to the Worker.
 
-So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/ledger`, `/media`, `/matchmaking`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
+So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/ledger`, `/media`, `/matchmaking`, `/payments`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
 
 Two rules the derivation follows:
 

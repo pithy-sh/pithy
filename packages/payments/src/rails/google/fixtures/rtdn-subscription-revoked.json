@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "packageName": "com.acme.app",
+  "eventTimeMillis": "1768521600000",
+  "subscriptionNotification": {
+    "version": "1.0",
+    "notificationType": 12,
+    "purchaseToken": "gjdmnbkpaifcmlkgomhnpjbi.AO-J1OwXn3rM5pQe7vT2yLb0dK",
+    "subscriptionId": "pro_monthly"
+  }
+}

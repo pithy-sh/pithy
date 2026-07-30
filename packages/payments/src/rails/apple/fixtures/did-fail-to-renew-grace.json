@@ -1,0 +1,43 @@
+{
+  "notification": {
+    "notificationType": "DID_FAIL_TO_RENEW",
+    "subtype": "GRACE_PERIOD",
+    "notificationUUID": "0a7b3f11-5d64-42c8-8e19-9f0c2b6d5a47",
+    "version": "2.0",
+    "signedDate": 1769904000000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Production",
+      "status": 4
+    }
+  },
+  "transaction": {
+    "transactionId": "2000000731004811",
+    "originalTransactionId": "2000000617339002",
+    "bundleId": "com.acme.app",
+    "productId": "com.acme.pro.monthly",
+    "purchaseDate": 1767225600000,
+    "originalPurchaseDate": 1759276800000,
+    "expiresDate": 1769904000000,
+    "quantity": 1,
+    "type": "Auto-Renewable Subscription",
+    "appAccountToken": "3f6c1d20-8a4b-4f77-9c31-b0e5d2a91746",
+    "inAppOwnershipType": "PURCHASED",
+    "signedDate": 1769904000000,
+    "environment": "Production",
+    "price": 4990,
+    "currency": "USD"
+  },
+  "renewalInfo": {
+    "originalTransactionId": "2000000617339002",
+    "autoRenewProductId": "com.acme.pro.monthly",
+    "productId": "com.acme.pro.monthly",
+    "autoRenewStatus": 1,
+    "isInBillingRetryPeriod": true,
+    "gracePeriodExpiresDate": 1770422400000,
+    "signedDate": 1769904000000,
+    "environment": "Production"
+  }
+}

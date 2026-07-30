@@ -1,0 +1,43 @@
+{
+  "id": "evt_stripeSubscriptionCanceled",
+  "object": "event",
+  "api_version": "2025-04-30.basil",
+  "created": 1768003200,
+  "livemode": true,
+  "type": "customer.subscription.updated",
+  "data": {
+    "object": {
+      "id": "sub_1PithyAdaPro",
+      "object": "subscription",
+      "customer": "cus_PithyAda",
+      "status": "active",
+      "cancel_at_period_end": true,
+      "canceled_at": 1768003200,
+      "created": 1767225600,
+      "start_date": 1767225600,
+      "currency": "usd",
+      "latest_invoice": "in_1PithyAdaJan",
+      "livemode": true,
+      "metadata": { "pithy_account_reference": "ada" },
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_1PithyAdaPro",
+            "object": "subscription_item",
+            "quantity": 1,
+            "current_period_start": 1767225600,
+            "current_period_end": 1769904000,
+            "price": {
+              "id": "price_1Abc",
+              "object": "price",
+              "currency": "usd",
+              "unit_amount": 999,
+              "recurring": { "interval": "month", "interval_count": 1 }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

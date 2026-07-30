@@ -1,0 +1,19 @@
+{
+  "id": "evt_stripeInvoicePaid",
+  "object": "event",
+  "api_version": "2025-04-30.basil",
+  "created": 1769904000,
+  "livemode": true,
+  "type": "invoice.paid",
+  "data": {
+    "object": {
+      "id": "in_1PithyAdaFeb",
+      "object": "invoice",
+      "customer": "cus_PithyAda",
+      "subscription": "sub_1PithyAdaPro",
+      "amount_paid": 999,
+      "currency": "usd",
+      "livemode": true
+    }
+  }
+}

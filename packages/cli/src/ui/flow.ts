@@ -17,6 +17,21 @@ import { readWorkerUi } from "./workerUi";
 /** The capability the auth template's screens are written against. */
 const AUTH_CAPABILITY = "auth";
 
+/** The capability the paywall and subscription screens are written against. */
+const PAYMENTS_CAPABILITY = "payments";
+
+/** Which capability-gated screen set a decision is about. */
+export type UiScreenSet = typeof AUTH_CAPABILITY | typeof PAYMENTS_CAPABILITY;
+
+/**
+ * Ask whether to scaffold one capability's screens.
+ *
+ * One seam for every screen set rather than one per set: a third capability's screens must be a new member
+ * of {@link UiScreenSet} and nothing else, and a prompt-per-capability is exactly the shape that stops
+ * being true.
+ */
+export type UiScreenPrompt = (request: { screens: UiScreenSet; suggestion: boolean }) => Promise<boolean>;
+
 /** One entry of `pithy ui list`. */
 export interface UiStubListing {
   /** The `<framework>` positional. */
@@ -46,11 +61,13 @@ export interface UiAddOptions {
   framework: string;
   /** `--auth` / `--no-auth`. Undefined means "decide", by prompt when one is attached. */
   auth?: boolean;
+  /** `--payments` / `--no-payments`. Undefined means "decide", the same way. */
+  payments?: boolean;
   /**
-   * Ask whether to scaffold the auth screens. Supplied only when a human is attached; without it the
-   * decision falls to whether `auth` is composed, so no invocation can ever block.
+   * Ask whether to scaffold a capability's screens. Supplied only when a human is attached; without it
+   * every decision falls to whether that capability is composed, so no invocation can ever block.
    */
-  prompt?: (suggestion: boolean) => Promise<boolean>;
+  prompt?: UiScreenPrompt;
   /** Package-manager override. Tests set it; otherwise it is detected from the project's lockfile. */
   packageManager?: PackageManager;
 }
@@ -63,6 +80,8 @@ export interface UiAddReport {
   framework: string;
   /** Whether the auth template was included. */
   auth: boolean;
+  /** Whether the payments screens were included. */
+  payments: boolean;
   /** Worker-relative paths created by this run, sorted. */
   created: string[];
   /** Worker-relative paths that already existed and were left byte-identical, sorted. */
@@ -90,23 +109,35 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Which template to write. `--auth` and `--no-auth` decide outright. With neither, a human is asked
- * (defaulting to yes when `auth` is composed on this worker) and anyone else — `--json`, an agent, CI
- * — gets that same default with no prompt, because no invocation may block.
+ * Whether to write one capability's screens. `--auth`/`--no-auth` and `--payments`/`--no-payments` decide
+ * outright. With neither, a human is asked (defaulting to yes when the capability is composed on this
+ * worker) and anyone else — `--json`, an agent, CI — gets that same default with no prompt, because no
+ * invocation may block.
  *
- * Asking for the auth screens on a worker with no auth capability is an error, not a scaffold of
+ * Asking for a capability's screens on a worker that does not compose it is an error, not a scaffold of
  * broken imports.
  */
-async function resolveTemplate(options: UiAddOptions, composed: boolean): Promise<boolean> {
-  let auth = options.auth;
-  if (auth === undefined) auth = options.prompt ? await options.prompt(composed) : composed;
-  if (auth && !composed) {
+async function resolveScreens(
+  options: UiAddOptions,
+  screens: UiScreenSet,
+  requested: boolean | undefined,
+  composed: boolean,
+): Promise<boolean> {
+  let wanted = requested;
+  if (wanted === undefined)
+    wanted = options.prompt ? await options.prompt({ screens, suggestion: composed }) : composed;
+  if (wanted && !composed) {
     throw new ValidationError({
-      message: `The auth screens need the auth capability, and ${options.worker} doesn't compose it.`,
-      action: `Run pithy add auth --worker ${options.worker} first, or scaffold the bare template with --no-auth.`,
+      message: `The ${screens} screens need the ${screens} capability, and ${options.worker} doesn't compose it.`,
+      action: `Run pithy add ${screens} --worker ${options.worker} first, or leave them out with --no-${screens}.`,
     });
   }
-  return auth;
+  return wanted;
+}
+
+/** Whether a worker composes a capability by name. */
+function composes(config: WorkerConfig, capability: string): boolean {
+  return allCapabilities(config).some((composed) => composed.name === capability);
 }
 
 /**
@@ -120,12 +151,12 @@ async function resolveTemplate(options: UiAddOptions, composed: boolean): Promis
 async function planFiles(
   options: UiAddOptions,
   stub: UiStub,
-  auth: boolean,
+  screens: { auth: boolean; payments: boolean },
 ): Promise<{ files: Record<string, string>; strict: boolean }> {
   const current = await readWorkerUi(options.workerDir);
   const files = await loadStubFiles(stub, {
     worker: options.worker,
-    auth,
+    ...screens,
     packageManager: options.packageManager ?? "npm",
   });
   if (!current) return { files, strict: true };
@@ -160,10 +191,15 @@ async function planFiles(
 export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const stub = resolveStub(options.framework);
   const packageManager = options.packageManager ?? (await detectPackageManager(options.projectDir));
-  const composed = allCapabilities(options.config).some((capability) => capability.name === AUTH_CAPABILITY);
-  const auth = await resolveTemplate(options, composed);
+  const auth = await resolveScreens(options, AUTH_CAPABILITY, options.auth, composes(options.config, AUTH_CAPABILITY));
+  const payments = await resolveScreens(
+    options,
+    PAYMENTS_CAPABILITY,
+    options.payments,
+    composes(options.config, PAYMENTS_CAPABILITY),
+  );
 
-  const plan = await planFiles({ ...options, packageManager }, stub, auth);
+  const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments });
   const written = await scaffoldFiles({ workerDir: options.workerDir, files: plan.files, strict: plan.strict });
 
   const assets = await wireAssets(options.workerDir, options.config);
@@ -174,6 +210,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     worker: options.worker,
     framework: stub.id,
     auth,
+    payments,
     created: written.written,
     skipped: written.skipped,
     runWorkerFirst: assets.after,

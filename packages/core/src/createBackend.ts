@@ -11,6 +11,7 @@ import type {
 } from "./capability/capability";
 import { validateBindings } from "./capability/validateBindings";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
+import { noEntitlementProvider } from "./entitlement/entitlement";
 import { pithyErrorHandler } from "./error/http";
 import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
@@ -174,6 +175,8 @@ export function createBackend<
     }
     if (c.get("auth") === undefined) c.set("auth", null);
     if (c.get("emit") === undefined) c.set("emit", noopEmit);
+    // Fail closed: with no payments capability composed, nothing is held and every gate denies.
+    if (c.get("entitlements") === undefined) c.set("entitlements", noEntitlementProvider);
     if (c.get("log") === undefined) {
       c.set(
         "log",

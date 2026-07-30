@@ -40,6 +40,7 @@ const cleanPlanFor = (worker: string): ReconcilePlan => ({
   perCapability: [],
   ejectedSkipped: [],
   pendingMigrations: 0,
+  entitlementGap: [],
 });
 const cleanPlan = cleanPlanFor("api");
 
@@ -208,6 +209,7 @@ describe("renderDoctorText", () => {
             },
           ],
           pendingMigrations: 2,
+          entitlementGap: [],
         }),
       }),
     );
@@ -237,6 +239,7 @@ describe("renderDoctorText", () => {
         "    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc",
         "                 env: staging, production",
         "    migrations   2 pending — run: pithy migrate --env dev",
+        "    entitlements no gated route without a provider ✓",
         "",
         "OS:   macOS 14.5",
         "Node: 22.10.0",
@@ -266,6 +269,25 @@ describe("renderDoctorText", () => {
         "    config       parses against every capability schema ✓",
         "    bindings     all required bindings present ✓",
         "    migrations   2 pending — run: pithy migrate --env dev",
+        "    entitlements no gated route without a provider ✓",
+      ].join("\n"),
+    );
+  });
+
+  test("an entitlement gap names the gating files and the command that fixes it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0", core: "1.2.0" }),
+        installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
+        buildPlan: planStub({ ...cleanPlan, entitlementGap: ["src/routes/reports.ts", "src/routes/team.ts"] }),
+      }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      [
+        "    entitlements gated routes, no provider — run: pithy add payments",
+        "                 src/routes/reports.ts",
+        "                 src/routes/team.ts",
       ].join("\n"),
     );
   });

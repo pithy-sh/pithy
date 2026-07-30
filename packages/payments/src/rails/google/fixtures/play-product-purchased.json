@@ -1,0 +1,14 @@
+{
+  "kind": "androidpublisher#productPurchase",
+  "purchaseTimeMillis": "1768435200000",
+  "purchaseState": 0,
+  "consumptionState": 0,
+  "developerPayload": "",
+  "orderId": "GPA.3311-8452-9910-77304",
+  "acknowledgementState": 1,
+  "obfuscatedExternalAccountId": "b7e1c94f2a6d4c0e",
+  "regionCode": "US",
+  "quantity": 1,
+  "productId": "coins_100",
+  "purchaseToken": "ppgmhnokdjkfbicoloakhnli.AO-J1OyR4wKcTz8mHbXe1uQfLp"
+}
