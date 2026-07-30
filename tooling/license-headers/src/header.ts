@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /** The copyright line every source file carries. Free-form by design — the gate never asserts it. */
 export const COPYRIGHT_LINE = "SPDX-FileCopyrightText: 2026 Pithy";
 

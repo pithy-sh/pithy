@@ -18,5 +18,5 @@
 // glob: a `concurrent: false` entry is a config parse error, not an option.
 export default {
   "*": "biome check --no-errors-on-unmatched --files-ignore-unknown=true",
-  "packages/*/src/**/*.{ts,tsx}": "bun scripts/license-headers.ts --fix",
+  "{packages,tooling}/*/src/**/*.{ts,tsx}": "bun scripts/license-headers.ts --fix",
 };

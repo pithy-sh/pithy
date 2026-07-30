@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,6 +152,57 @@ describe("audit", () => {
     );
 
     expect(audit(root)).toEqual([]);
+  });
+});
+
+describe("audit of tooling packages", () => {
+  /** A tooling package: private, never published, so no LICENSE file — but its source is still ours. */
+  function goodTooling(name: string): void {
+    put(`tooling/${name}/package.json`, JSON.stringify({ name: `@pithy-sh/${name}`, license: "MIT" }));
+    put(`tooling/${name}/src/index.ts`, `${buildHeader("MIT")}\n\nexport const a = 1;\n`);
+  }
+
+  test("requires a header on tooling source", () => {
+    goodRoot();
+    goodTooling("license-headers");
+    put("tooling/license-headers/src/bare.ts", "export const b = 2;\n");
+
+    expect(audit(root)).toEqual([
+      { kind: "missing-header", path: "tooling/license-headers/src/bare.ts", expected: "MIT", actual: null },
+    ]);
+  });
+
+  // A private package produces no tarball, so a LICENSE file in it would be a file nobody can ever
+  // receive. The header is the part that carries.
+  test("does not require a LICENSE file in a tooling package", () => {
+    goodRoot();
+    goodTooling("license-headers");
+
+    expect(audit(root)).toEqual([]);
+  });
+
+  test("still requires a LICENSE file in a published package", () => {
+    goodRoot();
+    goodPackage("core");
+    rmSync(join(root, "packages/core/LICENSE"));
+
+    expect(kinds(root)).toEqual(["missing-license-file"]);
+  });
+
+  test("still requires a licence field on a tooling package, to derive the identifier from", () => {
+    goodRoot();
+    goodTooling("license-headers");
+    put("tooling/license-headers/package.json", JSON.stringify({ name: "@pithy-sh/license-headers" }));
+
+    expect(kinds(root)).toEqual(["missing-license-field"]);
+  });
+
+  test("stamps tooling source through the commit-hook path", () => {
+    goodRoot();
+    goodTooling("license-headers");
+    put("tooling/license-headers/src/bare.ts", "export const b = 2;\n");
+
+    expect(fixFiles(root, ["tooling/license-headers/src/bare.ts"])).toEqual(["tooling/license-headers/src/bare.ts"]);
   });
 });
 

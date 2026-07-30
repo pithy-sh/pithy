@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,14 +25,32 @@ function put(relative: string, content: string): void {
 }
 
 describe("discoverPackages", () => {
-  test("reads each package's directory, name and declared license", () => {
+  test("reads each package's directory, name, declared license and group", () => {
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core", license: "MIT" }));
     put("packages/audit/package.json", JSON.stringify({ name: "@pithy-sh/audit", license: "FSL-1.1-MIT" }));
 
     expect(discoverPackages(root)).toEqual([
-      { name: "@pithy-sh/audit", dir: join(root, "packages/audit"), license: "FSL-1.1-MIT" },
-      { name: "@pithy-sh/core", dir: join(root, "packages/core"), license: "MIT" },
+      { name: "@pithy-sh/audit", dir: join(root, "packages/audit"), license: "FSL-1.1-MIT", group: "packages" },
+      { name: "@pithy-sh/core", dir: join(root, "packages/core"), license: "MIT", group: "packages" },
     ]);
+  });
+
+  // `tooling/*` is a workspace like `packages/*` — private and never published, but its source is
+  // still ours and still needs a header. The licence tool itself living unlicensed was the tell.
+  test("finds tooling packages as well as published ones", () => {
+    put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core", license: "MIT" }));
+    put("tooling/license-headers/package.json", JSON.stringify({ name: "@pithy-sh/license-headers", license: "MIT" }));
+
+    expect(discoverPackages(root).map((p) => [p.name, p.group])).toEqual([
+      ["@pithy-sh/core", "packages"],
+      ["@pithy-sh/license-headers", "tooling"],
+    ]);
+  });
+
+  test("still works when a workspace directory is absent entirely", () => {
+    put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core", license: "MIT" }));
+
+    expect(discoverPackages(root).map((p) => p.name)).toEqual(["@pithy-sh/core"]);
   });
 
   test("reports a missing license field as null rather than throwing", () => {

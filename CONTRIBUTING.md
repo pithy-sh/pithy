@@ -40,7 +40,7 @@ gh auth refresh -s project
 
 ## Licence headers
 
-Every `.ts` and `.tsx` under `packages/*/src` carries two lines:
+Every `.ts` and `.tsx` under `packages/*/src` and `tooling/*/src` carries two lines:
 
 ```ts
 // SPDX-FileCopyrightText: 2026 Pithy
@@ -55,6 +55,8 @@ Run it yourself any time:
 bun scripts/license-headers.ts --check   # what's wrong
 bun scripts/license-headers.ts --fix     # fix it
 ```
+
+`tooling/*` packages are stamped too, but are not asked for a `LICENSE` file — they are private and never published, so there is no tarball for one to travel in.
 
 Two things it deliberately leaves alone. The copyright line is free-form — edit it and the gate won't argue, so naming an entity later costs one pass, not a rewrite of every file. And `templates/` trees are never stamped: those files are copied verbatim into the adopter's repo by `pithy init` and `pithy ui add`, where they become the adopter's code, under the adopter's copyright.
 

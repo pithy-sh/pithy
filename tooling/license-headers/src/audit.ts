@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { applyHeader, mentionsSpdx, readIdentifier } from "./header";
@@ -50,10 +53,12 @@ function rel(root: string, path: string): string {
 export function audit(root: string): Finding[] {
   const findings: Finding[] = [];
 
-  findings.push(...auditUnit(root, root, ROOT_NAME, { headers: false }));
+  findings.push(...auditUnit(root, root, ROOT_NAME, { headers: false, licenseFile: true }));
 
   for (const pkg of discoverPackages(root)) {
-    findings.push(...auditUnit(root, pkg.dir, pkg.name, { headers: true }));
+    // `tooling/*` is private and never published. A LICENSE file there would be one nobody can
+    // receive — there is no tarball to put it in — so only the header requirement carries over.
+    findings.push(...auditUnit(root, pkg.dir, pkg.name, { headers: true, licenseFile: pkg.group === "packages" }));
   }
 
   for (const file of templateFiles(root)) {
@@ -66,7 +71,12 @@ export function audit(root: string): Finding[] {
 }
 
 /** Check one manifest + its LICENSE, and — for a real package — every header under its `src`. */
-function auditUnit(root: string, dir: string, name: string, options: { headers: boolean }): Finding[] {
+function auditUnit(
+  root: string,
+  dir: string,
+  name: string,
+  options: { headers: boolean; licenseFile: boolean },
+): Finding[] {
   const manifestPath = join(dir, "package.json");
   if (!existsSync(manifestPath)) return [];
 
@@ -84,8 +94,11 @@ function auditUnit(root: string, dir: string, name: string, options: { headers: 
   // what stops a bare package costing two fix-and-rerun rounds to diagnose.
   const licensePath = join(dir, "LICENSE");
   if (!existsSync(licensePath)) {
-    findings.push({ kind: "missing-license-file", package: name, path: rel(root, licensePath) });
+    if (options.licenseFile) {
+      findings.push({ kind: "missing-license-file", package: name, path: rel(root, licensePath) });
+    }
   } else if (expected !== null && readFileSync(licensePath, "utf8") !== expected) {
+    // Checked even where one is not required: a LICENSE that exists has to be right regardless.
     findings.push({ kind: "license-file-mismatch", package: name, path: rel(root, licensePath) });
   }
 
