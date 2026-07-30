@@ -1,0 +1,38 @@
+{
+  "notification": {
+    "notificationType": "SUBSCRIBED",
+    "subtype": "INITIAL_BUY",
+    "notificationUUID": "6d2e4c8a-91b7-4a03-bf52-1c8d7e0a3f91",
+    "version": "2.0",
+    "signedDate": 1759276800000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Sandbox",
+      "status": 1
+    }
+  },
+  "transaction": {
+    "transactionId": "2000000617339002",
+    "originalTransactionId": "2000000617339002",
+    "webOrderLineItemId": "2000000082014377",
+    "bundleId": "com.acme.app",
+    "productId": "com.acme.pro.monthly",
+    "subscriptionGroupIdentifier": "20845513",
+    "purchaseDate": 1759276800000,
+    "originalPurchaseDate": 1759276800000,
+    "expiresDate": 1761955200000,
+    "quantity": 1,
+    "type": "Auto-Renewable Subscription",
+    "appAccountToken": "3f6c1d20-8a4b-4f77-9c31-b0e5d2a91746",
+    "inAppOwnershipType": "PURCHASED",
+    "signedDate": 1759276800000,
+    "environment": "Sandbox",
+    "transactionReason": "PURCHASE",
+    "storefront": "USA",
+    "storefrontId": "143441",
+    "price": 4990,
+    "currency": "USD"
+  }
+}

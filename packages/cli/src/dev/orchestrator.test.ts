@@ -468,3 +468,32 @@ describe("startDev — spawn error", () => {
     expect(h.removed).toEqual([4242]);
   });
 });
+
+describe("startDev — entitlement composition check", () => {
+  test("a Worker gating routes with no provider composed is warned about, by file, before starting", async () => {
+    const h = harness({
+      checkEntitlements: async (dir) => (dir === "/proj/apps/api" ? ["src/routes/reports.ts"] : []),
+    });
+    await startDev(h.options);
+
+    const warning = h.stdoutLines.findIndex((l) => l.includes("routes gate on an entitlement"));
+    expect(warning).toBeGreaterThanOrEqual(0);
+    expect(h.stdoutLines[warning]).toContain("api:");
+    expect(h.stdoutLines[warning + 1]).toContain("src/routes/reports.ts");
+    expect(h.stdoutLines[warning + 2]).toContain("pithy add payments");
+    // Reported before the run starts, so it is read rather than buried under worker output.
+    expect(h.stdoutLines.findIndex((l) => l.startsWith("Starting "))).toBeGreaterThan(warning);
+  });
+
+  test("the warning does not stop the session — it is wiring, not a reason to refuse to run", async () => {
+    const h = harness({ checkEntitlements: async () => ["src/routes/reports.ts"] });
+    await startDev(h.options);
+    expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/api", "/proj/apps/web"]);
+  });
+
+  test("no gap says nothing — the check is silent on the projects that are not paid", async () => {
+    const h = harness({ checkEntitlements: async () => [] });
+    await startDev(h.options);
+    expect(h.stdoutLines.some((l) => l.includes("entitlement"))).toBe(false);
+  });
+});

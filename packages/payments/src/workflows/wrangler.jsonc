@@ -1,0 +1,49 @@
+{
+  // The prebuilt payments reconcile worker. Like the storage, email, and media workers, this is a TEMPLATE,
+  // not a wrangler env-stanza file: staging and production are genuinely separate workers. `pithy payments
+  // provision` resolves it into one complete config per environment — filling the `<...>` placeholders,
+  // deriving the `workflows` array and the cron from the capability's specs — and deploys each with
+  // `wrangler deploy --config <resolved>`. The adopter authors none of it.
+  "name": "pithy-payments", // resolved per env → pithy-payments-staging / pithy-payments-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. Every payments route lives in the app worker; this worker is reached only by its cron and
+  // by Workflow dispatch. It holds three stores' credentials and can rewrite any purchase row, so it stays
+  // off workers.dev.
+  "workers_dev": false,
+
+  // The app database (the pithy_payments_* tables) and the secrets database, read for the rails' credentials.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
+    { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
+  ],
+
+  // The master key for decrypting the provider credentials, read through the secretsStore accessor.
+  "secrets_store_secrets": [
+    {
+      "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+    }
+  ],
+
+  // The one Workflow this worker hosts. Rewritten at provision from `workflows/specs.ts`, so the binding, the
+  // class name, and the per-environment deployed name come from the spec rather than from this block — it is
+  // here so the template reads as a complete config.
+  "workflows": [
+    { "binding": "PAYMENTS_RECONCILE", "name": "pithy-payments-reconcile", "class_name": "PaymentsReconcileWorkflow" }
+  ],
+
+  // The daily pass, at 04:00 UTC. Also rewritten at provision from the spec's `schedule`, for the same reason
+  // — and offset from storage's 03:00 sweep so two hosts in one account do not contend for the same minute.
+  "triggers": { "crons": ["0 4 * * *"] },
+
+  "vars": {
+    // The resolved PaymentsConfig as one JSON blob, filled at provision from the app's payments() config. The
+    // pass reads the catalog from it — a refreshed SKU has to map to a product before it can be projected.
+    "PAYMENTS_CONFIG": "<filled-at-provision>",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

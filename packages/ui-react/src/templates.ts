@@ -30,8 +30,14 @@ export const TEMPLATE_DIR: string = join(dirname(fileURLToPath(import.meta.url))
  * The named file groups this library offers, each keyed by path within {@link TEMPLATE_DIR}.
  *
  * `base` is every template, always. Every other group is a screen set that rides on a capability
- * being composed — `auth` today; `payments` and whatever follows are additive entries here, and
- * nothing about the CLI's stub contract has to change to admit one.
+ * being composed — `auth` and `payments` today, and whatever follows is an additive entry here with
+ * nothing about the CLI's stub contract having to change to admit it.
+ *
+ * **`src/pithy-config.tsx` is base, not auth.** It is the one module that imports the
+ * `virtual:pithy/*` modules and narrows each on `enabled`, for *every* capability — `docs/UI.md` says
+ * so in as many words, and a payments-only scaffold would otherwise never get the file its screens
+ * read. It compiles with nothing composed: each projection is then `{ enabled: false }` and the
+ * narrowing falls to the defaults it declares.
  */
 export const TEMPLATE_GROUPS = {
   base: [
@@ -41,17 +47,18 @@ export const TEMPLATE_GROUPS = {
     "tsconfig.node.json",
     "client-env.d.ts",
     "src/client.tsx",
+    "src/pithy-config.tsx",
     "src/router.tsx",
     "src/styles.css",
   ],
   auth: [
-    "src/pithy-config.tsx",
     "src/session.tsx",
     "src/turnstile.tsx",
     "src/routes/pithy/sign-in.tsx",
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
   ],
+  payments: ["src/payments.tsx", "src/routes/pithy/paywall.tsx", "src/routes/pithy/subscription.tsx"],
 } as const satisfies Record<string, readonly string[]>;
 
 /** A group name this library offers. */

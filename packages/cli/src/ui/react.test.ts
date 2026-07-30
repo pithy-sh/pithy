@@ -6,10 +6,14 @@ import { loadStubFiles } from "./templates";
 // says WHICH of them a given context writes stays pure, and is asserted as a value below.
 let BARE: Record<string, string>;
 let AUTH: Record<string, string>;
+let PAY: Record<string, string>;
+let BOTH: Record<string, string>;
 
 beforeAll(async () => {
-  BARE = await loadStubFiles(reactStub, { worker: "api", auth: false, packageManager: "bun" });
-  AUTH = await loadStubFiles(reactStub, { worker: "api", auth: true, packageManager: "bun" });
+  BARE = await loadStubFiles(reactStub, { worker: "api", auth: false, payments: false, packageManager: "bun" });
+  AUTH = await loadStubFiles(reactStub, { worker: "api", auth: true, payments: false, packageManager: "bun" });
+  PAY = await loadStubFiles(reactStub, { worker: "api", auth: false, payments: true, packageManager: "bun" });
+  BOTH = await loadStubFiles(reactStub, { worker: "api", auth: true, payments: true, packageManager: "bun" });
 });
 
 /** Every route module the stub writes, by path. */
@@ -19,7 +23,7 @@ function routeModules(files: Record<string, string>): [string, string][] {
 
 describe("the React 19 stub", () => {
   test("manifest() is pure — the same context yields the same declaration", () => {
-    const context = { worker: "api", auth: false, packageManager: "bun" } as const;
+    const context = { worker: "api", auth: false, payments: false, packageManager: "bun" } as const;
     const once = reactStub.manifest(context);
     const again = reactStub.manifest(context);
     expect(again).toEqual(once);
@@ -28,15 +32,20 @@ describe("the React 19 stub", () => {
 
   test("every declared template exists on disk — a packaging fault fails here, not in an adopter's repo", async () => {
     for (const auth of [false, true]) {
-      const files = await loadStubFiles(reactStub, { worker: "api", auth, packageManager: "bun" });
-      for (const file of reactStub.manifest({ worker: "api", auth, packageManager: "bun" })) {
+      const files = await loadStubFiles(reactStub, { worker: "api", auth, payments: false, packageManager: "bun" });
+      for (const file of reactStub.manifest({ worker: "api", auth, payments: false, packageManager: "bun" })) {
         expect(files[file.target], file.source).toBeTypeOf("string");
       }
     }
   });
 
   test("the worker name is substituted, and no token survives into the output", async () => {
-    const files = await loadStubFiles(reactStub, { worker: "acme-api", auth: true, packageManager: "bun" });
+    const files = await loadStubFiles(reactStub, {
+      worker: "acme-api",
+      auth: true,
+      payments: false,
+      packageManager: "bun",
+    });
     expect(files["index.html"]).toContain("acme-api");
     for (const [path, contents] of Object.entries(files)) {
       expect(contents, path).not.toContain("__PITHY_WORKER__");
@@ -52,11 +61,15 @@ describe("the React 19 stub", () => {
     expect(Object.keys(AUTH).some((path) => path.startsWith("src/") && path.endsWith(".d.ts"))).toBe(false);
   });
 
-  test("the bare template has no auth imports and no dead files", () => {
+  test("the bare template has no capability screens and no dead files", () => {
+    // `src/pithy-config.tsx` is base rather than auth: it is the one module that narrows EVERY
+    // capability's projection, and a payments-only scaffold needs it as much as an auth one does. It
+    // compiles with nothing composed — each projection is `{ enabled: false }` and its defaults apply.
     expect(Object.keys(BARE).sort()).toEqual([
       "client-env.d.ts",
       "index.html",
       "src/client.tsx",
+      "src/pithy-config.tsx",
       "src/router.tsx",
       "src/routes/app/home.tsx",
       "src/styles.css",
@@ -65,9 +78,10 @@ describe("the React 19 stub", () => {
       "vite.config.ts",
     ]);
     for (const [path, contents] of Object.entries(BARE)) {
-      if (path === "client-env.d.ts") continue;
-      expect(contents, path).not.toMatch(/from ["']virtual:pithy\/auth["']/);
-      expect(contents, path).not.toMatch(/from ["']virtual:pithy\/turnstile["']/);
+      // The two files whose job is to name the virtual modules: the ambient declarations, and the one
+      // module that narrows them.
+      if (path === "client-env.d.ts" || path === "src/pithy-config.tsx") continue;
+      expect(contents, path).not.toMatch(/from ["']virtual:pithy\//);
     }
     // Home does one typed fetch and nothing else.
     expect(BARE["src/routes/app/home.tsx"]).toContain('fetch("/health"');
@@ -76,7 +90,6 @@ describe("the React 19 stub", () => {
   test("the auth template adds exactly the screens, the session hook, and the widget", () => {
     const added = Object.keys(AUTH).filter((path) => !(path in BARE));
     expect(added.sort()).toEqual([
-      "src/pithy-config.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/otp.tsx",
       "src/routes/pithy/sign-in.tsx",
@@ -90,11 +103,58 @@ describe("the React 19 stub", () => {
   });
 
   test("every route module declares its own path — dropping a file in is the registration", () => {
-    const modules = routeModules(AUTH);
-    expect(modules.length).toBe(4);
-    for (const [path, contents] of modules) {
+    // Four with auth, six with payments as well. Every one of them, in every combination.
+    expect(routeModules(AUTH).length).toBe(4);
+    expect(routeModules(BOTH).length).toBe(6);
+    for (const [path, contents] of routeModules(BOTH)) {
       expect(contents, path).toMatch(/^export const path = "\/[^"]*";$/m);
     }
+  });
+
+  test("the payments template adds exactly the two screens and the bridge", () => {
+    const added = Object.keys(PAY).filter((path) => !(path in BARE));
+    expect(added.sort()).toEqual([
+      "src/payments.tsx",
+      "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/subscription.tsx",
+    ]);
+    // Nothing from the auth set rides along: a payments-only scaffold has no session hook and no widget.
+    expect(PAY["src/session.tsx"]).toBeUndefined();
+    expect(PAY["src/turnstile.tsx"]).toBeUndefined();
+  });
+
+  test("the two screen sets stack — one worker can compose both, and neither claims the other's files", () => {
+    const authOnly = Object.keys(AUTH).filter((path) => !(path in BARE));
+    const payOnly = Object.keys(PAY).filter((path) => !(path in BARE));
+    expect(Object.keys(BOTH).sort()).toEqual([...Object.keys(BARE), ...authOnly, ...payOnly].sort());
+    for (const path of payOnly) expect(BOTH[path], path).toBe(PAY[path]);
+  });
+
+  test("the screens call the package's hooks rather than reimplementing the purchase flow", () => {
+    // The whole point of headless-in-the-package: a frozen paywall ages badly because store rules move,
+    // so the flow upgrades with a minor release and only the rendering is written once.
+    expect(PAY["src/routes/pithy/paywall.tsx"]).toContain('from "@pithy-sh/payments/src/client/hooks"');
+    expect(PAY["src/routes/pithy/subscription.tsx"]).toContain('from "@pithy-sh/payments/src/client/hooks"');
+    // And no screen re-derives a request: every fetch of a payments route belongs to the package.
+    for (const path of ["src/routes/pithy/paywall.tsx", "src/routes/pithy/subscription.tsx"]) {
+      expect(PAY[path], path).not.toMatch(/fetch\(/);
+    }
+  });
+
+  test("the entitlement route guard is a redirect, and says it is not a security boundary", () => {
+    const router = PAY["src/router.tsx"] ?? "";
+    expect(router).toContain("import.meta.glob<{ holdsEntitlement:");
+    expect(router).toContain('const PAYWALL_PATH = "/paywall"');
+    expect(router).toContain("never a security boundary");
+    // The bridge answers it, and refuses to lock a screen when payments is not composed at all.
+    expect(PAY["src/payments.tsx"]).toContain("export async function holdsEntitlement");
+    expect(PAY["src/payments.tsx"]).toContain("if (!paymentsConfig.enabled) return true;");
+  });
+
+  test("the guard machinery is in base, so the router is byte-identical in every template", () => {
+    // It is globbed rather than imported for exactly this reason — the alternative is two routers.
+    expect(BARE["src/router.tsx"]).toBe(PAY["src/router.tsx"]);
+    expect(BARE["src/router.tsx"]).toBe(AUTH["src/router.tsx"]);
   });
 
   test("the router globs both route directories, lazily, with app winning on a conflict", () => {
@@ -119,7 +179,9 @@ describe("the React 19 stub", () => {
   });
 
   test("the client is cookie/session — no token store, no bearer header, no rotation", () => {
-    for (const [path, contents] of Object.entries(AUTH)) {
+    // Every template, not only the auth one: a scaffold that only leaked a token when payments was
+    // requested would be a scaffold nobody checked.
+    for (const [path, contents] of Object.entries(BOTH)) {
       // Any *use* of web storage — a bare mention in a comment explaining why there is none is fine.
       expect(contents, path).not.toMatch(/\b(local|session)Storage\s*[.[]/);
       // The HEADER, not the word: prose about OAuth authorization endpoints is not a bearer token.
@@ -127,13 +189,15 @@ describe("the React 19 stub", () => {
       expect(contents, path).not.toMatch(/\bBearer\b/);
       expect(contents, path).not.toContain("refreshToken");
     }
-    expect(AUTH["src/session.tsx"]).toContain('credentials: "include"');
-    expect(AUTH["src/session.tsx"]).toContain("/get-session");
+    expect(BOTH["src/session.tsx"]).toContain('credentials: "include"');
+    expect(BOTH["src/session.tsx"]).toContain("/get-session");
   });
 
   test("the client calls its API same-origin — no CORS config and no origin variable", () => {
-    for (const [path, contents] of Object.entries(AUTH)) {
-      // The only absolute URL in the scaffold is Cloudflare's Turnstile script.
+    for (const [path, contents] of Object.entries(BOTH)) {
+      // The only absolute URL in the whole scaffold is Cloudflare's Turnstile script. Not Stripe's:
+      // hosted Checkout needs no SDK. Not the app stores': those URLs live in @pithy-sh/payments, so a
+      // store moving one is a minor release rather than an edit to a file Pithy may never rewrite.
       const absolute = contents.match(/https?:\/\/[^"'\s`]+/g) ?? [];
       for (const url of absolute) {
         expect(url, `${path}: ${url}`).toContain("challenges.cloudflare.com");
@@ -144,17 +208,19 @@ describe("the React 19 stub", () => {
   test("only pithy-config.tsx imports a virtual module — every screen reads it narrowed", () => {
     // A NAMED import of a projection key breaks the build whenever that capability is not composed:
     // the module then exports `enabled` and nothing else. One narrowing module makes that impossible.
-    const virtualImporters = Object.entries(AUTH)
+    const virtualImporters = Object.entries(BOTH)
       .filter(([path]) => path.endsWith(".tsx"))
       .filter(([, contents]) => /from "virtual:pithy\//.test(contents))
       .map(([path]) => path);
     expect(virtualImporters).toEqual(["src/pithy-config.tsx"]);
-    const config = AUTH["src/pithy-config.tsx"] ?? "";
+    const config = BOTH["src/pithy-config.tsx"] ?? "";
     expect(config).toContain('import authModule from "virtual:pithy/auth"');
     expect(config).toContain('import turnstileModule from "virtual:pithy/turnstile"');
+    expect(config).toContain('import paymentsModule from "virtual:pithy/payments"');
     // Narrowed on the discriminant, not asserted past it.
     expect(config).toContain("authModule.enabled");
     expect(config).toContain("turnstileModule.enabled");
+    expect(config).toContain("paymentsModule.enabled");
   });
 
   test("the sign-in screen renders from config, never from a flag", () => {
@@ -206,19 +272,30 @@ describe("the React 19 stub", () => {
     expect(otp).toContain("Array.from({ length: authConfig.otpLength }");
   });
 
-  test("client-env.d.ts declares both virtual modules in BOTH templates", () => {
-    // Create-never-overwrite means a later `pithy ui add --auth` cannot come back and add them,
-    // so the bare scaffold has to carry them or the backfilled screens would not typecheck.
-    for (const files of [BARE, AUTH]) {
+  test("client-env.d.ts declares every virtual module in every template", () => {
+    // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add them,
+    // so the bare scaffold has to carry all three or the backfilled screens would not typecheck.
+    for (const files of [BARE, AUTH, PAY, BOTH]) {
       const ambient = files["client-env.d.ts"] ?? "";
       expect(ambient).toContain('declare module "virtual:pithy/auth"');
       expect(ambient).toContain('declare module "virtual:pithy/turnstile"');
+      expect(ambient).toContain('declare module "virtual:pithy/payments"');
       // Each module is a union discriminated on `enabled`, exported as the default — the shape that
       // makes an uncomposed capability narrow instead of breaking the build.
       expect(ambient).toContain("export default config;");
       expect(ambient).toContain("{ enabled: false }");
       expect(ambient).toContain("otpLength: number;");
       expect(ambient).toContain("signUpEnabled: boolean;");
+      expect(ambient).toContain("stripePriceId: string | null;");
+    }
+  });
+
+  test("the payments projection declares no credential, in the ambient types or anywhere else", () => {
+    // The capability's own test is the real gate; this is the second half of it, on the consuming side —
+    // an ambient declaration naming a secret is a scaffold inviting somebody to project one.
+    const ambient = BOTH["client-env.d.ts"] ?? "";
+    for (const shape of ["issuerId", "privateKey", "serviceAccount", "webhookSecret", "secretKey"]) {
+      expect(ambient, shape).not.toContain(shape);
     }
   });
 

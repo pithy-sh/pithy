@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "packageName": "com.acme.app",
+  "eventTimeMillis": "1768608000000",
+  "voidedPurchaseNotification": {
+    "purchaseToken": "ppgmhnokdjkfbicoloakhnli.AO-J1OyR4wKcTz8mHbXe1uQfLp",
+    "orderId": "GPA.3311-8452-9910-77304",
+    "productType": 2,
+    "refundType": 1
+  }
+}

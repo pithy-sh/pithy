@@ -264,7 +264,7 @@ function healthLine(label: string, content: string): string {
   return `${HEALTH_INDENT}${label.padEnd(HEALTH_LABEL)}${content}`;
 }
 
-/** One Worker's three check lines. Every check is shown, so a passing one still reads as checked. */
+/** One Worker's four check lines. Every check is shown, so a passing one still reads as checked. */
 function workerHealthLines(health: WorkerHealth): string[] {
   const lines: string[] = [];
 
@@ -296,6 +296,14 @@ function workerHealthLines(health: WorkerHealth): string[] {
         `${health.migrations.pending} pending — run: pithy migrate --env ${health.migrations.env}`,
       ),
     );
+  }
+
+  if (health.entitlements.ok) {
+    lines.push(healthLine("entitlements", "no gated route without a provider ✓"));
+  } else {
+    // Report-only: `pithy upgrade` cannot pick a capability for the adopter, so the line names the fix.
+    lines.push(healthLine("entitlements", "gated routes, no provider — run: pithy add payments"));
+    for (const gate of health.entitlements.gates) lines.push(`${HEALTH_CONT}${gate}`);
   }
 
   return lines;

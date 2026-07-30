@@ -1,0 +1,14 @@
+{
+  "notification": {
+    "notificationType": "TEST",
+    "notificationUUID": "8e1d6b73-4f20-4c89-a05e-3b7c9d1f2a64",
+    "version": "2.0",
+    "signedDate": 1770249600000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Production"
+    }
+  }
+}

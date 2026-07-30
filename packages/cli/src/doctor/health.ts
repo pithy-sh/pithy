@@ -36,7 +36,19 @@ export interface MigrationHealth {
   env: string;
 }
 
-/** One Worker's health. `ok` is the AND of its three checks. */
+/**
+ * The `entitlements` check: routes gated on an entitlement with no capability composed to resolve one.
+ * The seam fails closed, so this Worker would deny every gated route in production and look, to the
+ * runtime, exactly like a project full of unentitled users. Unlike the other three checks, `pithy upgrade`
+ * cannot fix it — which capability to compose is the adopter's decision, so this only ever reports.
+ */
+export interface EntitlementHealth {
+  ok: boolean;
+  /** The Worker's own source files carrying a gate, relative to its directory. */
+  gates: string[];
+}
+
+/** One Worker's health. `ok` is the AND of its four checks. */
 export interface WorkerHealth {
   /** The Worker's name, as `pithy worker list` shows it. */
   worker: string;
@@ -44,6 +56,7 @@ export interface WorkerHealth {
   config: ConfigHealth;
   bindings: BindingHealth;
   migrations: MigrationHealth;
+  entitlements: EntitlementHealth;
 }
 
 /** The whole project's health: one entry per Worker. `ok` is the AND across them — any failure fails the doctor exit. */
@@ -112,14 +125,24 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
     env: plan.env,
   };
 
-  return { worker, ok: config.ok && bindings.ok && migrations.ok, config, bindings, migrations };
+  const entitlements: EntitlementHealth = { ok: plan.entitlementGap.length === 0, gates: plan.entitlementGap };
+
+  return {
+    worker,
+    ok: config.ok && bindings.ok && migrations.ok && entitlements.ok,
+    config,
+    bindings,
+    migrations,
+    entitlements,
+  };
 }
 
 /**
  * Build the project's health from one read-only reconcile plan per Worker. For each Worker, `config` fails
  * when a capability's `pithy.config.ts` registration is missing manifest options; `bindings` fails when a
  * required binding is absent from an environment; `migrations` fails when the target env has unapplied
- * migrations. The project is healthy only when every Worker is. Writes nothing — safe to run on every
+ * migrations; `entitlements` fails when a route gates on an entitlement no composed capability resolves.
+ * The project is healthy only when every Worker is. Writes nothing — safe to run on every
  * `pithy doctor` invocation.
  */
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {

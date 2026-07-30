@@ -3,6 +3,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { findEntitlementGap } from "../capabilities/entitlementGap";
 import {
   buildDevConfig,
   type DevConfig,
@@ -12,6 +13,7 @@ import {
   writeDevConfig,
 } from "../feature/devConfig";
 import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
+import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
@@ -52,9 +54,24 @@ export interface LogSink {
 }
 
 /** Everything `startDev` needs, every dependency defaulted to its real implementation. */
+/**
+ * One Worker's entitlement composition gap: the gating source files, or empty when there is none. A
+ * config that cannot be loaded yields no gap — `pithy dev` reports wiring, and a config that will not
+ * load is wrangler's error to raise, not a reason to invent an entitlement warning.
+ */
+const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> => {
+  try {
+    return await findEntitlementGap(workerDir, allCapabilities(await loadWorkerConfig(workerDir)));
+  } catch {
+    return [];
+  }
+};
+
 export interface StartDevOptions {
   projectDir: string;
   json?: boolean;
+  /** Test seam: the entitlement composition check, without loading a real `pithy.config.ts`. */
+  checkEntitlements?: (workerDir: string) => Promise<string[]>;
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
   /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
@@ -373,6 +390,19 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     removeState(statePath, ownPid);
     resolveClosed();
   };
+
+  // The entitlement composition check, reported once at startup. The seam fails closed, so a Worker that
+  // gates routes on an entitlement while composing no provider denies every one of them — and at runtime
+  // that is indistinguishable from a project full of unentitled users. Non-fatal: it is a warning about
+  // wiring, not a reason to refuse to run, and a config that will not load is left to wrangler to report.
+  const checkEntitlements = options.checkEntitlements ?? defaultCheckEntitlements;
+  for (const { worker } of started) {
+    const gates = await checkEntitlements(worker.dir);
+    if (gates.length === 0) continue;
+    emitLine(`${worker.name}: routes gate on an entitlement, but no capability resolves one — they will deny.`);
+    for (const gate of gates) emitLine(dim(`  ${gate}`));
+    emitLine(dim("  run: pithy add payments"));
+  }
 
   emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
 

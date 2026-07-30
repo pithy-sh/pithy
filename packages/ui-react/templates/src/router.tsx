@@ -20,13 +20,18 @@ const pithyRoutes = import.meta.glob<RouteModule>("./routes/pithy/**/*.tsx");
 const appRoutes = import.meta.glob<RouteModule>("./routes/app/**/*.tsx");
 
 // The session module is optional: it exists only in the auth template. Globbing it (rather than
-// importing it) is what lets this file be byte-identical in both templates.
+// importing it) is what lets this file be byte-identical in every template. The payments module is
+// globbed for the same reason, and answers the entitlement guard below.
 const sessionModules = import.meta.glob<{ getSession: () => Promise<unknown> }>("./session.tsx");
+const paymentsModules = import.meta.glob<{ holdsEntitlement: (key: string) => Promise<boolean> }>("./payments.tsx");
 
 /** Where the guard sends a signed-out visitor. */
 const SIGN_IN_PATH = "/sign-in";
 
-/** What a route module exports. `session` is the only opt-in: set it to guard the screen. */
+/** Where the entitlement guard sends a visitor who does not hold what a screen asks for. */
+const PAYWALL_PATH = "/paywall";
+
+/** What a route module exports. `session` and `entitlement` are the two opt-ins. */
 export interface RouteModule {
   /** The path this screen answers, e.g. `/sign-in`. */
   path: string;
@@ -34,12 +39,15 @@ export interface RouteModule {
   default: ComponentType;
   /** Set to `"required"` to send signed-out visitors to the sign-in screen. */
   session?: "required";
+  /** Set to an entitlement key to send visitors who do not hold it to the paywall. */
+  entitlement?: string;
 }
 
 /** One resolved entry in the route table. */
 interface Route {
   component: ComponentType;
   session?: "required" | undefined;
+  entitlement?: string | undefined;
 }
 
 /**
@@ -53,7 +61,7 @@ async function buildRoutes(): Promise<Map<string, Route>> {
     for (const load of Object.values(group)) {
       const module = await load();
       if (typeof module.path !== "string") continue;
-      table.set(module.path, { component: lazy(load), session: module.session });
+      table.set(module.path, { component: lazy(load), session: module.session, entitlement: module.entitlement });
     }
   }
   return table;
@@ -141,6 +149,41 @@ function Guarded(props: { children: ReactNode }): ReactNode {
   return <p className="muted">One moment.</p>;
 }
 
+/** Does the visitor hold `key`? True when no payments module exists, so a guard cannot lock a screen shut. */
+async function holdsEntitlement(key: string): Promise<boolean> {
+  const load = Object.values(paymentsModules)[0];
+  if (!load) return true;
+  return (await load()).holdsEntitlement(key);
+}
+
+/**
+ * Renders its children only for a visitor holding `entitlement`; everyone else is sent to the paywall.
+ *
+ * **A UX affordance, never a security boundary.** The server's `requireEntitlement()` is the boundary —
+ * every paid route checks it, and no answer here can change that. This exists so a visitor without `pro`
+ * arrives at the paywall instead of watching a screen fill with 403s.
+ */
+function Entitled(props: { entitlement: string; children: ReactNode }): ReactNode {
+  const [state, setState] = useState<"checking" | "in" | "out">("checking");
+
+  useEffect(() => {
+    let live = true;
+    void holdsEntitlement(props.entitlement).then((held) => {
+      if (live) setState(held ? "in" : "out");
+    });
+    return () => {
+      live = false;
+    };
+  }, [props.entitlement]);
+
+  useEffect(() => {
+    if (state === "out") navigate(PAYWALL_PATH);
+  }, [state]);
+
+  if (state === "in") return props.children;
+  return <p className="muted">One moment.</p>;
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 
 function Screen(): ReactNode {
@@ -160,13 +203,16 @@ function Screen(): ReactNode {
   }
 
   const Component = route.component;
-  return route.session === "required" ? (
-    <Guarded>
+  // An entitlement belongs to somebody, so asking for one implies a session — the same order the server
+  // declares it in, `requireAuth()` then `requireEntitlement()`. Session outside, entitlement inside.
+  const screen = route.entitlement ? (
+    <Entitled entitlement={route.entitlement}>
       <Component />
-    </Guarded>
+    </Entitled>
   ) : (
     <Component />
   );
+  return route.session === "required" || route.entitlement ? <Guarded>{screen}</Guarded> : screen;
 }
 
 /** Mount this once. It resolves the route table, then renders the screen for the current path. */

@@ -1,0 +1,33 @@
+{
+  "notification": {
+    "notificationType": "REFUND",
+    "notificationUUID": "f4c9d0e2-7b18-4a35-92cd-6e3f1a8b0d52",
+    "version": "2.0",
+    "signedDate": 1770076800000,
+    "data": {
+      "appAppleId": 1234567890,
+      "bundleId": "com.acme.app",
+      "bundleVersion": "412",
+      "environment": "Production"
+    }
+  },
+  "transaction": {
+    "transactionId": "2000000731004811",
+    "originalTransactionId": "2000000617339002",
+    "bundleId": "com.acme.app",
+    "productId": "com.acme.pro.monthly",
+    "purchaseDate": 1767225600000,
+    "originalPurchaseDate": 1759276800000,
+    "expiresDate": 1769904000000,
+    "revocationDate": 1770076800000,
+    "revocationReason": 0,
+    "quantity": 1,
+    "type": "Auto-Renewable Subscription",
+    "appAccountToken": "3f6c1d20-8a4b-4f77-9c31-b0e5d2a91746",
+    "inAppOwnershipType": "PURCHASED",
+    "signedDate": 1770076800000,
+    "environment": "Production",
+    "price": 4990,
+    "currency": "USD"
+  }
+}

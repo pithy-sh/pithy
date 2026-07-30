@@ -1,0 +1,251 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { defineCommand } from "citty";
+import { parse } from "comment-json";
+import { createCliAudit } from "../audit/cliAudit";
+import {
+  CloudflarePaymentsProvisioner,
+  loadPayments,
+  type PaymentsEnvResources,
+} from "../capabilities/paymentsProvisioner";
+import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+
+/**
+ * `pithy payments provision` / `reconcile`.
+ *
+ * `pithy add payments` writes bindings and touches no Cloudflare account. This command stands up the one
+ * thing those bindings point at: the prebuilt reconcile worker that hosts the nightly pass, per environment.
+ *
+ * **No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key,
+ * and Stripe's key pair are downloaded by a human from three consoles — nothing can mint them. They go in
+ * through `pithy secrets set` under `payments-provider-credentials`, and this command deploys the worker that
+ * reads them. A provision run before the secrets are set still succeeds; the first pass is what reports the
+ * missing rail.
+ *
+ * `reconcile` runs the same pass on demand, in a deployed environment, and waits for its report. It is the
+ * support tool the issue names — "my subscription isn't showing up" is answered by `--user`, through exactly
+ * the steps the cron runs, so an answer here is an answer about production behaviour rather than about a
+ * script somebody wrote for the occasion.
+ */
+
+/**
+ * The audit emitter for a payments command. Provisioning spans every managed environment at once, so there is
+ * no single target env to key the audit database on — `"dev"` is the fallback, matching `pithy storage` and
+ * `pithy media`. A no-op when the credentials or the audit capability are not there.
+ */
+async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
+  const capabilities = await resolveWorkers({ projectDir })
+    .then(projectCapabilities)
+    .catch(() => []);
+  return createCliAudit({
+    projectDir,
+    env: "dev",
+    capabilities,
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
+}
+
+/** Load the payments capability's resolved catalog from `pithy.config.ts`. */
+async function loadPaymentsConfig(projectDir: string) {
+  const { isPaymentsCapability } = await loadPayments();
+  // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one project-wide
+  // decision, so the first Worker composing this capability provides it.
+  const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isPaymentsCapability);
+  if (!capability) {
+    throw new ValidationError({
+      message: "The payments capability is not configured.",
+      action: "Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments`).",
+    });
+  }
+  return capability.paymentsConfig;
+}
+
+/** The CF credentials and Secrets Store id payments provisioning needs, from `.dev.vars` then `process.env`. */
+function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken: string; storeId: string } {
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
+  if (!accountId || !apiToken) {
+    throw new ValidationError({
+      message: "Cloudflare credentials are missing.",
+      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+    });
+  }
+  if (!storeId) {
+    throw new ValidationError({
+      message: "The CF Secrets Store id is missing.",
+      action: "Set SECRETS_STORE_ID in .dev.vars (the reconcile worker decrypts the rails' credentials from it).",
+    });
+  }
+  return { accountId, apiToken, storeId };
+}
+
+/** A wrangler env stanza — only the fields the reconcile worker deploy reads from the project's config. */
+interface WranglerStanza {
+  d1_databases?: { binding: string; database_id?: string }[];
+  env?: Record<string, WranglerStanza | undefined>;
+}
+
+/**
+ * Resolve the per-environment resources the reconcile worker binds, from the project's `wrangler.jsonc` (the
+ * app `DB` id per env) and a live lookup of the env's secrets database. Each missing value throws an
+ * actionable error rather than deploying a half-wired worker.
+ */
+function buildResolveEnv(
+  projectDir: string,
+  cf: CloudflareClients,
+): (env: ManagedEnvironment) => Promise<PaymentsEnvResources> {
+  return async (env) => {
+    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
+    const stanza = config.env?.[env];
+    if (!stanza) {
+      throw new ValidationError({
+        message: `wrangler.jsonc has no env.${env} stanza.`,
+        action: `Add the ${env} environment to wrangler.jsonc with its DB binding.`,
+      });
+    }
+    const appDatabaseId = stanza.d1_databases?.find((database) => database.binding === "DB")?.database_id;
+    if (!appDatabaseId) {
+      throw new ValidationError({
+        message: `wrangler.jsonc env.${env} has no DB database_id.`,
+        action: `Provision the ${env} app database and set its id on the DB binding — the purchase rows live there.`,
+      });
+    }
+    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
+    if (!secretsDb) {
+      throw new ValidationError({
+        message: `The ${env} secrets database (${managerWorkerName(env)}) does not exist.`,
+        action: "Run `pithy secrets provision` first — the reconcile worker reads the rails' credentials from it.",
+      });
+    }
+    return { appDatabaseId, secretsDatabaseId: secretsDb.uuid };
+  };
+}
+
+/** Build the live provisioner for a project. */
+async function buildProvisioner(projectDir: string) {
+  const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
+  const paymentsConfig = await loadPaymentsConfig(projectDir);
+  const cf = new CloudflareClients({ accountId, apiToken });
+  return {
+    paymentsConfig,
+    provisioner: new CloudflarePaymentsProvisioner({
+      cf,
+      accountId,
+      apiToken,
+      storeId,
+      paymentsConfig,
+      resolveEnv: buildResolveEnv(projectDir, cf),
+      workflows: new CloudflareWorkflowsClient({ accountId, apiToken }),
+      audit: await buildAudit(projectDir, accountId, apiToken),
+    }),
+  };
+}
+
+const provision = defineCommand({
+  meta: { name: "provision", description: "Deploy the reconciliation Workflow worker and write its bindings" },
+  args: {
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const { provisioner } = await buildProvisioner(projectDir);
+      const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments();
+
+      // The account check first, before a single deploy. Failing here means failing before one environment is
+      // half provisioned rather than part way through the fan-out.
+      await provisioner.preflight();
+
+      const environments: ManagedEnvironment[] = [...managedEnvironments()];
+      for (const env of environments) {
+        await provisioner.deployWorker(env);
+        // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
+        // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
+        // (`pithy-payments-reconcile-<env>`). An entry short of either field fails the whole config, so `add`
+        // emits none and this completes it — see capabilities/add.ts.
+        await applyAppBindings(projectDir, env, {
+          workflows: appWorkflowBindings(paymentsWorkflowRegistry, PAYMENTS_CAPABILITY, env),
+        });
+      }
+
+      if (args.json) {
+        process.stdout.write(`${formatJsonLine({ command: "payments provision", environments })}\n`);
+        return;
+      }
+      for (const env of environments) {
+        process.stdout.write(`${env}: reconcile worker deployed, PAYMENTS_RECONCILE bound.\n`);
+      }
+      process.stdout.write(
+        "Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.\n",
+      );
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
+const reconcile = defineCommand({
+  meta: { name: "reconcile", description: "Run a reconciliation pass now and report the drift it found" },
+  args: {
+    env: { type: "string", default: "staging", description: "Target environment" },
+    user: { type: "string", description: "Reconcile one user's purchases only — the support path" },
+    rail: { type: "string", description: "Reconcile one rail only: apple, google, or stripe" },
+    "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const { provisioner } = await buildProvisioner(projectDir);
+      const { PaymentsReconcileParams } = await loadPayments();
+
+      // Parsed here rather than sent raw: a mistyped rail is a message in this terminal instead of a Workflow
+      // instance that starts, fails a step, and burns its retry budget where nobody is watching.
+      const params = PaymentsReconcileParams.parse({
+        ...(args.user === undefined ? {} : { userId: args.user }),
+        ...(args.rail === undefined ? {} : { rail: args.rail }),
+        ...(args["dry-run"] ? { dryRun: true } : {}),
+      });
+
+      // Parsed, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
+      // one-line answer into `pithy-payments-reconcile-dev` and a raw Cloudflare request error from a worker
+      // that was never deployed. The same reason `commands/secrets.ts` parses it.
+      const env = ManagedEnvironment.parse(args.env);
+
+      const report = (await provisioner.reconcile(env, params)) as {
+        scanned?: number;
+        drifted?: number;
+        unchanged?: number;
+        skipped?: number;
+        failed?: number;
+      } | null;
+
+      if (args.json) {
+        process.stdout.write(`${formatJsonLine({ command: "payments reconcile", env, report })}\n`);
+        return;
+      }
+      process.stdout.write(
+        `${report?.scanned ?? 0} scanned, ${report?.drifted ?? 0} drifted, ${report?.skipped ?? 0} skipped, ${report?.failed ?? 0} failed.\n`,
+      );
+      // A rising drift count is the signal the webhook path is broken, so it is worth one plain sentence here
+      // rather than only a number.
+      if ((report?.drifted ?? 0) > 0 && !args["dry-run"]) {
+        process.stdout.write("Drift was repaired. Repeated drift means webhooks are not arriving — check the rail.\n");
+      }
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
+export default defineCommand({
+  meta: { name: "payments", description: "Provision the reconciliation Workflow, and run a pass on demand" },
+  subCommands: { provision, reconcile },
+});

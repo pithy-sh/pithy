@@ -867,6 +867,128 @@ const VectorUnfilterableFieldPublic = z
   })
   .describe("The filter names a field with no metadata index (400).");
 
+// --- @pithy-sh/payments: purchase, entitlement, and rail codes ---
+
+const PaymentsInvalidReceiptPublic = z
+  .object({
+    code: z
+      .literal("payments/invalid_receipt")
+      .describe(
+        "The submitted receipt or transaction is malformed — not a JWS, not a token the rail issues, or missing the fields the rail's own format requires. Nothing was asked of the provider.",
+      ),
+    status: z.literal(400).describe("Bad Request — the receipt could not be read."),
+    ...publicFields,
+  })
+  .describe("A submitted receipt is malformed (400).");
+
+const PaymentsVerificationFailedPublic = z
+  .object({
+    code: z
+      .literal("payments/verification_failed")
+      .describe(
+        "The rail was asked and said no: a signature that does not verify against the provider's keys, or a transaction the provider does not acknowledge. Distinct from `provider_unavailable`, which is the rail failing to answer at all.",
+      ),
+    status: z.literal(400).describe("Bad Request — the provider rejected the receipt."),
+    ...publicFields,
+  })
+  .describe("The provider rejected the receipt (400).");
+
+const PaymentsWebhookUnverifiedPublic = z
+  .object({
+    code: z
+      .literal("payments/webhook_unverified")
+      .describe(
+        "An inbound provider notification failed its authenticity check — Apple's JWS chain, Google's OIDC token, or Stripe's HMAC. Separate from `verification_failed` because this is the `signed-webhook` strategy denying an unauthenticated caller, not a verdict about a purchase.",
+      ),
+    status: z.literal(401).describe("Unauthorized — the notification did not prove it came from the provider."),
+    ...publicFields,
+  })
+  .describe("An inbound webhook failed signature verification (401).");
+
+const PaymentsRailNotConfiguredPublic = z
+  .object({
+    code: z
+      .literal("payments/rail_not_configured")
+      .describe(
+        "The request names a payment rail this project has not enabled. Rails come from `pithy.config.ts`, not the database — so a Stripe checkout on an Apple-only project is a missing resource, not a malformed request.",
+      ),
+    status: z.literal(404).describe("Not Found — the rail is not enabled for this project."),
+    ...publicFields,
+  })
+  .describe("A named rail is not enabled (404).");
+
+const PaymentsProductNotFoundPublic = z
+  .object({
+    code: z
+      .literal("payments/product_not_found")
+      .describe(
+        "No catalog product maps the rail's SKU or price id. The catalog lives in `pithy.config.ts` and is deliberately not runtime-mutable, so a new SKU needs a deploy.",
+      ),
+    status: z.literal(404).describe("Not Found — no catalog product maps that SKU."),
+    ...publicFields,
+  })
+  .describe("A provider SKU maps to no catalog product (404).");
+
+const PaymentsEnvironmentMismatchPublic = z
+  .object({
+    code: z
+      .literal("payments/environment_mismatch")
+      .describe(
+        "A sandbox purchase reached a production deployment, or the reverse. Rejected outright: granting a real entitlement from a sandbox transaction is the most common in-app-purchase security defect, so the environment travels with every purchase and never widens.",
+      ),
+    status: z.literal(400).describe("Bad Request — the purchase belongs to a different environment."),
+    ...publicFields,
+  })
+  .describe("A purchase belongs to a different store environment (400).");
+
+const PaymentsReceiptAlreadyOwnedPublic = z
+  .object({
+    code: z
+      .literal("payments/receipt_already_owned")
+      .describe(
+        "The transaction is already projected against a different user. A replay by its own owner is a 200 — the write path is idempotent — but a receipt lifted from another account is refused rather than silently rebound, which is what makes a stolen receipt worthless.",
+      ),
+    status: z.literal(409).describe("Conflict — the transaction belongs to another user."),
+    ...publicFields,
+  })
+  .describe("A submitted transaction belongs to another user (409).");
+
+const PaymentsProviderUnavailablePublic = z
+  .object({
+    code: z
+      .literal("payments/provider_unavailable")
+      .describe(
+        "The rail could not be reached or answered with a server error. The purchase is neither granted nor refused — the reconciliation Workflow repairs it, so the caller may retry.",
+      ),
+    status: z.literal(503).describe("Service Unavailable — the provider did not answer."),
+    ...publicFields,
+  })
+  .describe("The provider could not be reached (503).");
+
+const PaymentsEntitlementRequiredPublic = z
+  .object({
+    code: z
+      .literal("payments/entitlement_required")
+      .describe(
+        "The caller does not hold an entitlement the route requires. Also what a gate returns when no entitlement provider is composed at all — the seam fails closed, and which of the two it was is in `detail`, never in the response.",
+      ),
+    status: z.literal(403).describe("Forbidden — the caller is not entitled."),
+    ...publicFields,
+  })
+  .describe("The caller lacks a required entitlement (403).");
+
+const PaymentsClawbackFailedPublic = z
+  .object({
+    code: z
+      .literal("payments/clawback_failed")
+      .describe(
+        "A refund's clawback debit was refused because the balance no longer covers it. The refusal is correct — routing around it would mean either a negative balance or a silent write-off — so the refund still stands and this is the record of the shortfall, usually written to the audit trail rather than returned to a caller.",
+      ),
+    status: z.literal(409).describe("Conflict — the balance cannot cover the reversal."),
+    ...publicFields,
+  })
+  .describe("A refund could not be clawed back from a spent balance (409).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -953,6 +1075,16 @@ export const PublicErrorPayload = z
     VectorMetadataTooLargePublic,
     VectorIndexNotFoundPublic,
     VectorUnfilterableFieldPublic,
+    PaymentsInvalidReceiptPublic,
+    PaymentsVerificationFailedPublic,
+    PaymentsWebhookUnverifiedPublic,
+    PaymentsRailNotConfiguredPublic,
+    PaymentsProductNotFoundPublic,
+    PaymentsEnvironmentMismatchPublic,
+    PaymentsReceiptAlreadyOwnedPublic,
+    PaymentsProviderUnavailablePublic,
+    PaymentsEntitlementRequiredPublic,
+    PaymentsClawbackFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -1158,6 +1290,36 @@ const VectorIndexNotFound = VectorIndexNotFoundPublic.extend(detailField).descri
 const VectorUnfilterableField = VectorUnfilterableFieldPublic.extend(detailField).describe(
   VectorUnfilterableFieldPublic.description ?? "",
 );
+const PaymentsInvalidReceipt = PaymentsInvalidReceiptPublic.extend(detailField).describe(
+  PaymentsInvalidReceiptPublic.description ?? "",
+);
+const PaymentsVerificationFailed = PaymentsVerificationFailedPublic.extend(detailField).describe(
+  PaymentsVerificationFailedPublic.description ?? "",
+);
+const PaymentsWebhookUnverified = PaymentsWebhookUnverifiedPublic.extend(detailField).describe(
+  PaymentsWebhookUnverifiedPublic.description ?? "",
+);
+const PaymentsRailNotConfigured = PaymentsRailNotConfiguredPublic.extend(detailField).describe(
+  PaymentsRailNotConfiguredPublic.description ?? "",
+);
+const PaymentsProductNotFound = PaymentsProductNotFoundPublic.extend(detailField).describe(
+  PaymentsProductNotFoundPublic.description ?? "",
+);
+const PaymentsEnvironmentMismatch = PaymentsEnvironmentMismatchPublic.extend(detailField).describe(
+  PaymentsEnvironmentMismatchPublic.description ?? "",
+);
+const PaymentsReceiptAlreadyOwned = PaymentsReceiptAlreadyOwnedPublic.extend(detailField).describe(
+  PaymentsReceiptAlreadyOwnedPublic.description ?? "",
+);
+const PaymentsProviderUnavailable = PaymentsProviderUnavailablePublic.extend(detailField).describe(
+  PaymentsProviderUnavailablePublic.description ?? "",
+);
+const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(detailField).describe(
+  PaymentsEntitlementRequiredPublic.description ?? "",
+);
+const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(detailField).describe(
+  PaymentsClawbackFailedPublic.description ?? "",
+);
 
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
@@ -1244,6 +1406,16 @@ export const ErrorPayload = z
     VectorMetadataTooLarge,
     VectorIndexNotFound,
     VectorUnfilterableField,
+    PaymentsInvalidReceipt,
+    PaymentsVerificationFailed,
+    PaymentsWebhookUnverified,
+    PaymentsRailNotConfigured,
+    PaymentsProductNotFound,
+    PaymentsEnvironmentMismatch,
+    PaymentsReceiptAlreadyOwned,
+    PaymentsProviderUnavailable,
+    PaymentsEntitlementRequired,
+    PaymentsClawbackFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

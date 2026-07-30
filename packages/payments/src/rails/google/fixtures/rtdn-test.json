@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "packageName": "com.acme.app",
+  "eventTimeMillis": "1768435200000",
+  "testNotification": {
+    "version": "1.0"
+  }
+}

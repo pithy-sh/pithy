@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
-import { listStubs, runUiAdd, runUiSync } from "../ui/flow";
+import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
 import { targetWorker } from "./add";
 
 /**
@@ -12,12 +12,18 @@ import { targetWorker } from "./add";
  * second source of truth that drifts the moment someone edits config or runs `pithy add auth`.
  */
 
-/** Ask whether to scaffold the auth screens. Attached only when a human can answer. */
-async function promptAuthTemplate(suggestion: boolean): Promise<boolean> {
+/** What each capability's screen set is called at a prompt. */
+const SCREEN_QUESTIONS: Record<UiScreenSet, string> = {
+  auth: "Scaffold the passwordless sign-in screens?",
+  payments: "Scaffold the paywall and subscription screens?",
+};
+
+/** Ask whether to scaffold one capability's screens. Attached only when a human can answer. */
+async function promptScreens(request: { screens: UiScreenSet; suggestion: boolean }): Promise<boolean> {
   const { confirm, isCancel } = await import("@clack/prompts");
   const answer = await confirm({
-    message: "Scaffold the passwordless sign-in screens?",
-    initialValue: suggestion,
+    message: SCREEN_QUESTIONS[request.screens],
+    initialValue: request.suggestion,
   });
   if (isCancel(answer)) {
     process.stderr.write("Cancelled.\n");
@@ -36,8 +42,10 @@ const add = defineCommand({
   args: {
     framework: { type: "positional", required: true, description: "Framework stub, e.g. react. See pithy ui list" },
     worker: { type: "string", description: "Which worker to scaffold into (apps/<name>)" },
-    // No default: undefined means "decide" — prompt a human, else follow whether auth is composed.
+    // No default on either: undefined means "decide" — prompt a human, else follow whether the
+    // capability is composed on that worker.
     auth: { type: "boolean", description: "Include the passwordless sign-in screens (--no-auth for the bare SPA)" },
+    payments: { type: "boolean", description: "Include the paywall and subscription screens (--no-payments to skip)" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -57,14 +65,18 @@ const add = defineCommand({
         config: target.config,
         framework: args.framework,
         ...(args.auth === undefined ? {} : { auth: args.auth }),
-        ...(interactive ? { prompt: promptAuthTemplate } : {}),
+        ...(args.payments === undefined ? {} : { payments: args.payments }),
+        ...(interactive ? { prompt: promptScreens } : {}),
       });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report })}\n`);
         return;
       }
-      const template = report.auth ? "Sign-in screens included." : "Bare template.";
+      const screens = [report.auth ? "sign-in" : null, report.payments ? "paywall" : null].filter(
+        (name) => name !== null,
+      );
+      const template = screens.length === 0 ? "Bare template." : `Screens included: ${screens.join(", ")}.`;
       process.stdout.write(`Scaffolded a ${report.framework} front end into ${report.worker}. ${template}\n`);
       if (report.skipped.length > 0) {
         process.stdout.write(`${report.created.length} files added. ${report.skipped.length} left as they were.\n`);

@@ -21,6 +21,7 @@ function routed(name: string, base: string) {
 
 const WITH_AUTH: WorkerConfig = { capabilities: [routed("auth", "/auth")] };
 const WITHOUT_AUTH: WorkerConfig = { capabilities: [routed("leaderboard", "/leaderboard")] };
+const WITH_PAYMENTS: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("payments", "/payments")] };
 
 describe("pithy ui", () => {
   let projectDir: string;
@@ -84,22 +85,63 @@ describe("pithy ui", () => {
     ]);
   });
 
-  test("--json with neither flag never blocks: it follows whether auth is composed", async () => {
+  test("--json with no flags never blocks: it follows what the worker composes", async () => {
     // No prompt is supplied, which is exactly the agent/CI path.
-    expect((await runUiAdd(options(WITH_AUTH))).auth).toBe(true);
+    const report = await runUiAdd(options(WITH_AUTH));
+    expect(report.auth).toBe(true);
+    expect(report.payments).toBe(false);
   });
 
-  test("at a TTY it prompts, suggesting yes when auth is composed", async () => {
-    const asked: boolean[] = [];
+  test("at a TTY it asks about each composed screen set, suggesting yes for each", async () => {
+    const asked: { screens: string; suggestion: boolean }[] = [];
     const report = await runUiAdd({
-      ...options(WITH_AUTH),
-      prompt: async (suggestion) => {
-        asked.push(suggestion);
+      ...options(WITH_PAYMENTS),
+      prompt: async (request) => {
+        asked.push(request);
         return false;
       },
     });
-    expect(asked).toEqual([true]);
+    expect(asked).toEqual([
+      { screens: "auth", suggestion: true },
+      { screens: "payments", suggestion: true },
+    ]);
     expect(report.auth).toBe(false);
+    expect(report.payments).toBe(false);
+  });
+
+  test("a worker composing payments gets the paywall and the subscription screen", async () => {
+    const report = await runUiAdd({ ...options(WITH_PAYMENTS), auth: false, payments: true });
+    expect(report.payments).toBe(true);
+    expect(report.created).toContain("src/routes/pithy/paywall.tsx");
+    expect(report.created).toContain("src/routes/pithy/subscription.tsx");
+    expect(report.created).toContain("src/payments.tsx");
+    // Derived from the real route table, so the payments routes reach the worker instead of the SPA shell.
+    expect(report.runWorkerFirst).toContain("/payments");
+    expect(report.runWorkerFirst).toContain("/payments/*");
+  });
+
+  test("--payments on a worker with no payments capability is actionable, never a broken scaffold", async () => {
+    try {
+      await runUiAdd({ ...options(WITH_AUTH), auth: false, payments: true });
+      expect.unreachable("expected --payments without the capability to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      const payload = (error as PithyError).payload;
+      expect(payload.action).toContain("pithy add payments");
+      expect(payload.action).toContain("--no-payments");
+    }
+    await expect(readFile(join(workerDir, "vite.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("--payments after --no-payments adds exactly the payments files", async () => {
+    const first = await runUiAdd({ ...options(WITH_PAYMENTS), auth: true, payments: false });
+    const second = await runUiAdd({ ...options(WITH_PAYMENTS), auth: true, payments: true });
+    expect(second.created.sort()).toEqual([
+      "src/payments.tsx",
+      "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/subscription.tsx",
+    ]);
+    expect(second.skipped).toEqual(first.created);
   });
 
   test("--auth on a worker with no auth capability is actionable, never a broken scaffold", async () => {
@@ -123,7 +165,6 @@ describe("pithy ui", () => {
 
     const second = await runUiAdd({ ...options(WITH_AUTH), auth: true });
     expect(second.created.sort()).toEqual([
-      "src/pithy-config.tsx",
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/otp.tsx",
       "src/routes/pithy/sign-in.tsx",

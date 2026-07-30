@@ -1,0 +1,27 @@
+{
+  "id": "evt_stripeSessionSubscription",
+  "object": "event",
+  "api_version": "2025-04-30.basil",
+  "created": 1767225600,
+  "livemode": true,
+  "type": "checkout.session.completed",
+  "data": {
+    "object": {
+      "id": "cs_test_pithyPro",
+      "object": "checkout.session",
+      "mode": "subscription",
+      "status": "complete",
+      "payment_status": "paid",
+      "amount_total": 999,
+      "currency": "usd",
+      "customer": "cus_PithyAda",
+      "client_reference_id": "ada",
+      "payment_intent": null,
+      "subscription": "sub_1PithyAdaPro",
+      "created": 1767225600,
+      "expires_at": 1767312000,
+      "livemode": true,
+      "metadata": { "pithy_account_reference": "ada", "pithy_price_id": "price_1Abc" }
+    }
+  }
+}

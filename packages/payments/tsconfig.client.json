@@ -1,0 +1,19 @@
+{
+  // The client modules are a SECOND program, not part of the Worker's. They compile the way they will in
+  // the browser they ship to: the DOM lib, no `@cloudflare/workers-types`. Keeping them out of
+  // tsconfig.json is not tidiness — the DOM lib and the Workers types genuinely collide on `fetch`,
+  // `Request`, `Response` and `WebSocket`, and with `skipLibCheck` on that collision does not error, it
+  // quietly makes one of the two wrong. `@pithy-sh/ui-react` splits its template program for the same
+  // reason.
+  //
+  // It also earns its place as a gate. An adopter's `tsconfig.client.json` typechecks these files out of
+  // node_modules, under exactly these settings, so a client module that reached into the package's
+  // server type graph would break their build and not ours. This program is where that breaks here first.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/client/**/*.ts"]
+}

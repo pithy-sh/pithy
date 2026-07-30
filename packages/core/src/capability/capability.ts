@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
 import type { DatabaseSpecMap } from "../data/databases";
+import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
@@ -21,6 +22,16 @@ export interface PithyVars {
    * an audited action is never broken by an audit write.
    */
   emit: AuditEmit;
+  /**
+   * The entitlement resolver seam — every entitlement the current caller holds. A paid route gates on
+   * it with `requireEntitlement("pro")`; `@pithy-sh/payments` replaces the default with a D1-backed
+   * resolver over its materialized read model.
+   *
+   * **The default denies**, which is the one place this seam deliberately differs from `emit`: a
+   * missing audit write cannot grant access, but a missing entitlement check can. With no provider
+   * composed it is {@link noEntitlementProvider} — holds nothing, so every gate 403s.
+   */
+  entitlements: EntitlementResolver;
   /**
    * The logger seam (`c.var.log`). `createBackend` binds a per-request logger carrying request
    * correlation (`request`/`method`/`path`/`env`/`version`); capabilities log through it instead of
@@ -190,6 +201,17 @@ export interface Capability<
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */
   middleware?: PithyMiddleware[];
+  /**
+   * Whether this capability fills the entitlement seam — replaces `c.var.entitlements` with a real
+   * resolver. `@pithy-sh/payments` declares it; nothing else does today.
+   *
+   * It exists so the **CLI** can answer a question no amount of runtime care can: a Worker whose routes
+   * call `requireEntitlement()` while composing no provider is not broken, it is silently paywalled
+   * shut. The seam already fails closed, so the runtime cannot tell that mistake from a legitimately
+   * unentitled user. `pithy doctor` and `pithy dev` compare the gates in a Worker's source against this
+   * flag and say so, which turns a fleet of production 403s into one line at startup.
+   */
+  providesEntitlements?: boolean;
   /**
    * This capability's client-safe projection — the **only** values of its config that may reach a
    * browser bundle. Resolved at build time against a {@link ClientProjectionContext} (the environment),

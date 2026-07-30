@@ -479,6 +479,7 @@ pithy/
 │   ├── matchmaking/      # @pithy-sh/matchmaking — room codes, invites, friends, matched queues
 │   ├── multiplayer/      # @pithy-sh/multiplayer — authoritative turn-based sessions (Durable Objects)
 │   ├── ledger/           # @pithy-sh/ledger — per-user balance ledger with holds
+│   ├── payments/         # @pithy-sh/payments — Apple/Google/Stripe → one cross-rail entitlement
 │   └── testers/          # @pithy-sh/testers — early-access/tester invitations (roadmap)
 ├── package.json
 ├── turbo.json

@@ -15,6 +15,14 @@ export interface UiStubContext {
   worker: string;
   /** Whether to write the auth template (the passwordless screens) on top of the bare SPA. */
   auth: boolean;
+  /**
+   * Whether to write the payments screens — the paywall and the subscription status page.
+   *
+   * A second capability-gated screen set, chosen exactly the way `auth` is. It rides on the target Worker
+   * composing `payments`, and it stacks: a Worker with both gets both, because the groups name disjoint
+   * files over one layout.
+   */
+  payments: boolean;
   /** The project's package manager — what the generated docs and commands tell the adopter to run. */
   packageManager: PackageManager;
 }

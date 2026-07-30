@@ -10,8 +10,8 @@ import type { WorkerConfig } from "../project/config";
  * `index.html` **before** the Worker runs. A `run_worker_first` that names the wrong prefix does not
  * degrade — `GET /health` comes back as 200 text/html and `POST /auth/sign-in/magic-link` as 405,
  * with the Worker never invoked. Pithy's routes sit at capability base paths (`/auth`,
- * `/leaderboard`, `/ledger`, …) plus `/health`; none of them is under `/api`. So the only correct
- * list is the one the Worker's own composed route table produces.
+ * `/leaderboard`, `/ledger`, `/payments`, …) plus `/health`; none of them is under `/api`. So the only
+ * correct list is the one the Worker's own composed route table produces.
  *
  * Two verified details shape the emitted patterns:
  * - `"/auth/*"` does **not** match bare `"/auth"`, so each segment emits both.

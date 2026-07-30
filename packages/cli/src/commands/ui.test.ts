@@ -22,18 +22,20 @@ describe("ui command", () => {
     expect(Object.keys(ui.subCommands ?? {})).toEqual(["add", "sync", "list"]);
   });
 
-  test("add takes a framework positional, --worker, --auth, and --json", () => {
-    expect(Object.keys(args("add"))).toEqual(["framework", "worker", "auth", "json"]);
+  test("add takes a framework positional, --worker, one flag per screen set, and --json", () => {
+    expect(Object.keys(args("add"))).toEqual(["framework", "worker", "auth", "payments", "json"]);
     expect(args("add").framework).toMatchObject({ type: "positional", required: true });
     expect(args("add").worker).toMatchObject({ type: "string" });
     expect(args("add").json).toMatchObject({ type: "boolean", default: false });
   });
 
-  test("--auth carries NO default, so `neither flag given` stays distinguishable", () => {
-    // A default of false would make --no-auth unobservable and kill the "default to yes when auth is
-    // composed" rule; a default of true would scaffold broken imports on a worker without auth.
-    expect(args("add").auth).toMatchObject({ type: "boolean" });
-    expect(args("add").auth?.default).toBeUndefined();
+  test("no screen-set flag carries a default, so `neither flag given` stays distinguishable", () => {
+    // A default of false would make --no-auth unobservable and kill the "default to yes when the
+    // capability is composed" rule; a default of true would scaffold broken imports on a worker without it.
+    for (const screens of ["auth", "payments"]) {
+      expect(args("add")[screens], screens).toMatchObject({ type: "boolean" });
+      expect(args("add")[screens]?.default, screens).toBeUndefined();
+    }
   });
 
   test("there are no provider flags — the sign-in screen reads pithy.config.ts instead", () => {

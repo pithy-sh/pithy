@@ -53,6 +53,25 @@ describe("main", () => {
     }
   });
 
+  test("payments exposes provision and reconcile, both --json", async () => {
+    const payments = await subcommand("payments");
+    expect(Object.keys(payments.subCommands ?? {})).toEqual(["provision", "reconcile"]);
+    for (const name of ["provision", "reconcile"] as const) {
+      const sub = (payments.subCommands as Record<string, CommandDef>)[name];
+      expect(Object.keys(sub?.args ?? {})).toContain("json");
+    }
+  });
+
+  test("payments reconcile can be driven headlessly — every narrowing is a flag", async () => {
+    // The support path is "reconcile one user in production and tell me what changed", and an agent has to be
+    // able to run it with no prompt. Every field of the pass's params that a human would want is a flag here.
+    const payments = await subcommand("payments");
+    const reconcile = (payments.subCommands as Record<string, CommandDef>).reconcile;
+    expect(Object.keys(reconcile?.args ?? {})).toEqual(
+      expect.arrayContaining(["env", "user", "rail", "dry-run", "json"]),
+    );
+  });
+
   test("storage and media deprovision take the R2 key pair — a bucket cannot be emptied without it", async () => {
     // `--storage` deletes buckets, and R2 refuses to delete one that is not empty. Emptying is an
     // S3-protocol operation, so the flags that carry the key pair have to be on deprovision too, not
