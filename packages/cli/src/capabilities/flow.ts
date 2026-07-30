@@ -6,6 +6,7 @@ import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
 import { addCapability, type ConfigValue } from "./add";
+import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { loadManifest } from "./manifests";
 
@@ -189,7 +190,10 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
   const audit = options.audit ?? (async () => {});
 
   try {
-    const { packageManager } = await install({ projectDir, pkg: `@pithy-sh/${capability}` });
+    // Resolved through the catalog, never interpolated from the name: `controlplane` ships inside
+    // `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed and the install
+    // would fail before the manifest was ever read.
+    const { packageManager } = await install({ projectDir, pkg: capabilityPackageName(capability) });
 
     const manifest = await loadManifest(capability, projectDir);
     let configValues = coerceSetFlags(manifest, options.setFlags ?? []);

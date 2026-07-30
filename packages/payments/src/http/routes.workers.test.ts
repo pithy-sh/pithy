@@ -1,6 +1,13 @@
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
+import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
+import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
+import type { ReplayGuard } from "@pithy-sh/core/src/controlPlane/kv/replay";
+import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
@@ -65,7 +72,11 @@ import {
   stripeSignatureHeader,
 } from "../rails/stripe/fixtures/events";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
-import { PAYMENTS_CONTROL_PLANE_SCOPE } from "./guards";
+import {
+  PAYMENTS_CONTROL_PLANE_SCOPES,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+} from "./guards";
 import { registerPaymentsRoutes } from "./routes";
 
 const TABLES = [
@@ -153,13 +164,89 @@ let serviceAccountKey: MintedServiceAccountKey;
 /** Every emitted audit event, so the trail is asserted rather than assumed. */
 let emitted: AuditEventInput[];
 
+/**
+ * The control-plane connection this suite's Worker is connected to.
+ *
+ * The two admin routes are exercised through the **real** verification pipeline — a genuine Ed25519 signature
+ * over genuine claims, checked by `createControlPlaneVerifier` against a registration that exists — rather than
+ * through a stub that says yes. That is what makes the negative cases mean something: a call refused here is
+ * refused by the same code that would refuse it in production, not by a fake.
+ */
+const CONNECTION_ID = "1f6b4d8e-5c02-4a37-9b41-0d7e3a91c8f5";
+const CONTROL_PLANE_ISSUER = "https://app.pithy.sh";
+const CONTROL_PLANE_KEY_ID = "k-2026-01";
+/** The connection's environment, matched against the Worker's own. `production`, like every request below. */
+const CONTROL_PLANE_ENVIRONMENT = "production";
+
+/** The management client's signing key. Only the public half is ever registered. */
+let controlPlaneKeys: CryptoKeyPair;
+
 beforeAll(async () => {
   chain = await mintChain();
   googleKey = await mintOidcKey();
   unpublishedKey = await mintOidcKey("nobody-published-this");
   serviceAccountKey = await mintServiceAccountKey();
   CREDENTIALS.google.privateKey = serviceAccountKey.pem;
+  controlPlaneKeys = (await crypto.subtle.generateKey("Ed25519", false, ["sign", "verify"])) as CryptoKeyPair;
 });
+
+/** The registration the adopter stored, with whatever scopes a case wants granted. */
+async function connection(scopes: readonly ControlPlaneScope[]): Promise<ControlPlaneConnection> {
+  return {
+    id: CONNECTION_ID,
+    environment: CONTROL_PLANE_ENVIRONMENT,
+    issuer: CONTROL_PLANE_ISSUER,
+    workerUrl: "https://acme.example",
+    scopes: [...scopes],
+    keys: [
+      {
+        keyId: CONTROL_PLANE_KEY_ID,
+        publicKey: await exportPublicJwk(controlPlaneKeys.publicKey),
+        validFrom: new Date(NOW.getTime() - 86_400_000),
+        validUntil: null,
+        revokedAt: null,
+      },
+    ],
+    createdAt: new Date(NOW.getTime() - 86_400_000),
+    updatedAt: new Date(NOW.getTime() - 86_400_000),
+  };
+}
+
+/** A replay set per app, so one token is spendable once and a second presentation is refused for real. */
+function memoryReplayGuard(): ReplayGuard {
+  const spent = new Set<string>();
+  return {
+    async claim(jti) {
+      if (spent.has(jti)) return false;
+      spent.add(jti);
+      return true;
+    },
+  };
+}
+
+/**
+ * The verifier the seam's own middleware would publish, over one in-memory connection.
+ *
+ * The registration is resolved lazily inside `loadConnection` — exporting a JWK is async and `makeApp` is not,
+ * and a verifier that awaits its own registration on first use is closer to the real one (which reads D1)
+ * than a suite-wide fixture would be. `countConnections` answers 1 always, so an unknown `aud` reads as a
+ * credential failure rather than as "nothing is connected here".
+ */
+function controlPlaneVerifier(scopes: readonly ControlPlaneScope[]): ControlPlaneVerifier {
+  const registered = connection(scopes);
+  const replay = memoryReplayGuard();
+  return createControlPlaneVerifier({
+    loadConnection: async (id) => {
+      const row = await registered;
+      return id === row.id ? row : null;
+    },
+    countConnections: async () => 1,
+    replay,
+    environment: CONTROL_PLANE_ENVIRONMENT,
+    config: ControlPlaneConfig.parse({}),
+    now: () => NOW,
+  });
+}
 
 beforeEach(async () => {
   for (const table of [...TABLES, ...LEDGER_TABLES]) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
@@ -196,6 +283,12 @@ interface AppOptions {
   play?: { subscription?: unknown; product?: unknown; status?: number };
   /** What Stripe's API answers. Absent bodies are 404s; `status` makes every call fail with that code. */
   stripe?: { checkout?: unknown; portal?: unknown; session?: unknown; status?: number };
+  /**
+   * The control-plane seam. Absent means composed with both payments scopes granted; a shorter list narrows
+   * the grant; **`null` means the seam is not composed at all** — a Worker that never added `controlplane()`,
+   * where `createBackend` seeds the verifier as null and every admin route must therefore deny.
+   */
+  controlPlane?: readonly ControlPlaneScope[] | null;
 }
 
 /** Every call the Stripe rail made, so a test can assert what left the Worker and not only what came back. */
@@ -250,10 +343,15 @@ function googleTransport(options: AppOptions): GoogleHttpFetch {
 function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {}) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
+  // Built once per app, so a replay set spans the requests one test makes.
+  const verifier =
+    options.controlPlane === null ? null : controlPlaneVerifier(options.controlPlane ?? PAYMENTS_CONTROL_PLANE_SCOPES);
   app.use("*", async (c, next) => {
     const user = c.req.header("x-user");
     const scopes = c.req.header("x-scopes")?.split(",").filter(Boolean) ?? [];
     c.set("auth", user ? { userId: user, sessionId: "s1", scopes } : null);
+    // Null, not absent, when the seam is not composed — the shape `createBackend` seeds either way.
+    c.set("controlPlaneVerifier", verifier);
     c.set("emit", async (event) => {
       emitted.push(event);
     });
@@ -284,15 +382,43 @@ interface RequestOptions {
   credentials?: unknown;
   /** The `Authorization` header — where a Pub/Sub push carries its OIDC token. */
   authorization?: string;
+  /**
+   * Present a control-plane credential: a real Ed25519 token, minted over the exact bytes this request sends
+   * and for the one operation named here. Absent means no credential, which is what every negative case wants.
+   */
+  controlPlane?: {
+    /** The single operation the token is minted for. Not necessarily the one the route requires. */
+    scope: string;
+    /** Who, in the management client's own id space, is acting. Lands on the audit event as `actorId`. */
+    subject?: string;
+    /** The connection the token addresses. Bend it to prove an unknown `aud` is refused. */
+    connectionId?: string;
+    /** A fixed `jti`, so two requests can present the same token and the replay guard can refuse the second. */
+    tokenId?: string;
+  };
 }
 
-function request(app: Hono<PithyHonoEnv>, method: string, path: string, options: RequestOptions = {}) {
+async function request(app: Hono<PithyHonoEnv>, method: string, path: string, options: RequestOptions = {}) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (options.user) headers["x-user"] = options.user;
   if (options.scopes) headers["x-scopes"] = options.scopes;
   if (options.authorization) headers.authorization = options.authorization;
   const body =
     options.raw ?? (method !== "GET" && options.body !== undefined ? JSON.stringify(options.body) : undefined);
+  if (options.controlPlane) {
+    headers[CONTROL_PLANE_HEADER] = await mintControlPlaneToken({
+      privateKey: controlPlaneKeys.privateKey,
+      keyId: CONTROL_PLANE_KEY_ID,
+      issuer: CONTROL_PLANE_ISSUER,
+      connectionId: options.controlPlane.connectionId ?? CONNECTION_ID,
+      subject: options.controlPlane.subject ?? "support-1",
+      scope: options.controlPlane.scope,
+      // The digest covers these exact bytes, so a token cannot be lifted onto a different body.
+      body: body === undefined ? undefined : new TextEncoder().encode(body),
+      now: () => NOW,
+      ...(options.controlPlane.tokenId === undefined ? {} : { tokenId: options.controlPlane.tokenId }),
+    });
+  }
   const bindings: Record<string, unknown> = {
     ...env,
     [PAYMENTS_PROVIDER_SECRET]: JSON.stringify(options.credentials ?? CREDENTIALS),
@@ -654,9 +780,15 @@ describe("the guards, and their order relative to the validators", () => {
   test("an ordinary user needs no scope for their own purchases — these are not control-plane routes", async () => {
     const app = makeApp();
     expect((await request(app, "GET", "/payments/entitlements", { user: "ada" })).status).toBe(200);
+    // And a scope string on the AuthContext neither helps nor hinders here: the two vocabularies are separate,
+    // and no route in this package reads a control-plane scope off `c.var.auth`.
     expect(
-      (await request(app, "GET", "/payments/entitlements", { user: "ada", scopes: PAYMENTS_CONTROL_PLANE_SCOPE }))
-        .status,
+      (
+        await request(app, "GET", "/payments/entitlements", {
+          user: "ada",
+          scopes: PAYMENTS_CONTROL_PLANE_SCOPES.join(","),
+        })
+      ).status,
     ).toBe(200);
   });
 });
@@ -2127,44 +2259,77 @@ describe("ledger fulfillment", () => {
 
 /**
  * The control plane: the only way an entitlement appears without money moving, and therefore the surface with
- * the most to prove. Default-denied twice over, audited on both writes, and the subject named in the body
- * rather than read from the seam — which is exactly why it is gated the way it is.
+ * the most to prove. One gate — core's `requireControlPlane` — over a real signed credential, one scope per
+ * operation, audited to the management client, and the subject named in the body rather than read from a seam.
+ *
+ * Every case below runs the genuine verification pipeline. A refusal here is the pipeline refusing, and a pass
+ * is a real Ed25519 signature over the exact bytes the request carried.
  */
 describe("POST /payments/entitlements/grant", () => {
   const path = "/payments/entitlements/grant";
   const body = { userId: "grace", entitlement: "pro" };
+  /** A token minted for this route's own operation, by the support tool. */
+  const granting = { controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE, subject: "support-1" } };
 
-  test("401 with no caller at all", async () => {
+  test("401 with no credential at all", async () => {
     const response = await request(makeApp(), "POST", path, { body });
     expect(response.status).toBe(401);
+    expect(await errorCode(response)).toBe("controlplane/invalid_credential");
     expect(await entitlements()).toEqual([]);
   });
 
-  test("403 for an ordinary signed-in caller — a user token carries no scopes", async () => {
-    const response = await request(makeApp(), "POST", path, { user: "ada", body });
+  test("403 when the seam is not composed — the route is shut, not open", async () => {
+    // A Worker that added payments and never added `controlplane()`. The gate it imports denies rather than
+    // passing, which is the whole reason an admin route may import its authorization from core at all.
+    const response = await request(makeApp(CATALOG, { controlPlane: null }), "POST", path, { ...granting, body });
     expect(response.status).toBe(403);
-    expect(await errorCode(response)).toBe("auth/forbidden");
+    expect(await errorCode(response)).toBe("controlplane/not_connected");
     expect(await entitlements()).toEqual([]);
   });
 
-  test("403 for a credential holding some other scope", async () => {
-    const response = await request(makeApp(), "POST", path, { user: "ada", scopes: "storage:admin", body });
-    expect(response.status).toBe(403);
+  test("an ordinary signed-in user opens nothing, even carrying the scope strings", async () => {
+    // The interim gate read `c.var.auth.scopes`, so a user token spelling these used to pass. It is worth
+    // nothing now: this route never looks at the AuthContext, and a management call never populates one.
+    const response = await request(makeApp(), "POST", path, {
+      user: "ada",
+      scopes: `payments:admin,${PAYMENTS_CONTROL_PLANE_SCOPES.join(",")}`,
+      body,
+    });
+    expect(response.status).toBe(401);
+    expect(await errorCode(response)).toBe("controlplane/invalid_credential");
+    expect(await entitlements()).toEqual([]);
   });
 
-  test("does not tell an unauthenticated caller whether its body was well-formed", async () => {
-    // The validator sits behind both guards. A 400 here would confirm the shape of a request the caller may
-    // not send, which is what a validator ahead of a guard leaks.
+  test("403 when the adopter granted the connection revoke and not grant", async () => {
+    // The point of splitting the scope. A refund tool cannot comp, whatever its token asks for.
+    const app = makeApp(CATALOG, { controlPlane: [PAYMENTS_ENTITLEMENT_REVOKE_SCOPE] });
+    const response = await request(app, "POST", path, { ...granting, body });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("controlplane/insufficient_scope");
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("403 when the token is minted for the other operation", async () => {
+    // Both scopes granted, but one token exercises exactly one operation. The revoke token is refused here
+    // even though the same connection could revoke with it — the token's scope must match the route's.
+    const response = await request(makeApp(), "POST", path, {
+      controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE },
+      body,
+    });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("controlplane/insufficient_scope");
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("does not tell an unverified caller whether its body was well-formed", async () => {
+    // The validator sits behind the gate. A 400 here would confirm the shape of a request the caller may not
+    // send, which is what a validator ahead of a guard leaks.
     const response = await request(makeApp(), "POST", path, { body: { nonsense: true } });
     expect(response.status).toBe(401);
   });
 
-  test("grants, and audits the write with the acting credential and the subject account", async () => {
-    const response = await request(makeApp(), "POST", path, {
-      user: "support-1",
-      scopes: PAYMENTS_CONTROL_PLANE_SCOPE,
-      body,
-    });
+  test("grants, and audits the write to the management client rather than to a user", async () => {
+    const response = await request(makeApp(), "POST", path, { ...granting, body });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "pro", granted: true, expiresAt: null } });
@@ -2175,15 +2340,23 @@ describe("POST /payments/entitlements/grant", () => {
     const recorded = emitted.find((event) => event.action === PaymentsAuditActions.entitlementGranted);
     expect(recorded?.outcome).toBe("success");
     expect(recorded?.severity).toBe("warning");
+    // `control-plane`, not `user`: the trail must be able to answer "was this our customer or the dashboard".
+    expect(recorded?.actorType).toBe("control-plane");
     expect(recorded?.actorId).toBe("support-1");
-    expect(recorded?.metadata).toMatchObject({ userId: "grace", entitlement: "pro", expiresAt: null });
+    // No session exists on a management call, so none is claimed.
+    expect(recorded?.sessionId).toBeUndefined();
+    expect(recorded?.metadata).toMatchObject({
+      connectionId: CONNECTION_ID,
+      userId: "grace",
+      entitlement: "pro",
+      expiresAt: null,
+    });
   });
 
   test("takes an expiry, so a comp can end", async () => {
     const expiresAt = new Date(NOW.getTime() + 30 * 86_400_000);
     const response = await request(makeApp(), "POST", path, {
-      user: "support-1",
-      scopes: PAYMENTS_CONTROL_PLANE_SCOPE,
+      ...granting,
       body: { ...body, expiresAt: expiresAt.toISOString() },
     });
     expect(response.status).toBe(200);
@@ -2192,17 +2365,28 @@ describe("POST /payments/entitlements/grant", () => {
 
   test("refuses an entitlement key the seam would never accept", async () => {
     const response = await request(makeApp(), "POST", path, {
-      user: "support-1",
-      scopes: PAYMENTS_CONTROL_PLANE_SCOPE,
+      ...granting,
       body: { userId: "grace", entitlement: "Pro Monthly!" },
     });
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe("validation/invalid_input");
   });
 
+  test("one token, one call — a replayed request is refused", async () => {
+    // The guard reads the body to check the digest and the validator parses it afterwards, so the happy path
+    // above already proves the clone. This proves the other half: the same token cannot be spent twice.
+    const app = makeApp();
+    const options = {
+      controlPlane: { ...granting.controlPlane, tokenId: "aa5f0f8c-9d31-4a20-b0c7-3e2f5c9a1d64" },
+      body,
+    };
+    expect((await request(app, "POST", path, options)).status).toBe(200);
+    expect((await request(app, "POST", path, options)).status).toBe(401);
+  });
+
   test("a comped account reads its entitlement back through the ordinary route", async () => {
     const app = makeApp();
-    await request(app, "POST", path, { user: "support-1", scopes: PAYMENTS_CONTROL_PLANE_SCOPE, body });
+    await request(app, "POST", path, { ...granting, body });
     const response = await request(app, "GET", "/payments/entitlements", { user: "grace" });
     expect(await response.json()).toEqual({ entitlements: [{ key: "pro", granted: true, expiresAt: null }] });
   });
@@ -2211,10 +2395,31 @@ describe("POST /payments/entitlements/grant", () => {
 describe("POST /payments/entitlements/revoke", () => {
   const path = "/payments/entitlements/revoke";
   const body = { userId: "ada", entitlement: "pro" };
+  const revoking = { controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, subject: "support-1" } };
 
-  test("401 with no caller, 403 without the scope", async () => {
+  test("401 with no credential, 403 with the seam uncomposed", async () => {
     expect((await request(makeApp(), "POST", path, { body })).status).toBe(401);
-    expect((await request(makeApp(), "POST", path, { user: "ada", body })).status).toBe(403);
+    const uncomposed = await request(makeApp(CATALOG, { controlPlane: null }), "POST", path, { ...revoking, body });
+    expect(uncomposed.status).toBe(403);
+    expect(await errorCode(uncomposed)).toBe("controlplane/not_connected");
+  });
+
+  test("403 when the adopter granted the connection grant and not revoke", async () => {
+    // The mirror of the grant route's case, and the other half of why one `payments:admin` flag was wrong: a
+    // comp tool cannot take paid access away from a live customer.
+    const app = makeApp(CATALOG, { controlPlane: [PAYMENTS_ENTITLEMENT_GRANT_SCOPE] });
+    const response = await request(app, "POST", path, { ...revoking, body });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("controlplane/insufficient_scope");
+  });
+
+  test("an ordinary signed-in user opens nothing here either", async () => {
+    const response = await request(makeApp(), "POST", path, {
+      user: "ada",
+      scopes: PAYMENTS_CONTROL_PLANE_SCOPES.join(","),
+      body,
+    });
+    expect(response.status).toBe(401);
   });
 
   test("clears a purchase-derived entitlement immediately, and audits it", async () => {
@@ -2226,11 +2431,7 @@ describe("POST /payments/entitlements/revoke", () => {
     expect((await entitlements())[0]?.active).toBe(1);
     emitted = [];
 
-    const response = await request(app, "POST", path, {
-      user: "support-1",
-      scopes: PAYMENTS_CONTROL_PLANE_SCOPE,
-      body,
-    });
+    const response = await request(app, "POST", path, { ...revoking, body });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "pro", granted: false, expiresAt: null } });
@@ -2239,17 +2440,18 @@ describe("POST /payments/entitlements/revoke", () => {
 
     const recorded = emitted.find((event) => event.action === PaymentsAuditActions.entitlementRevoked);
     expect(recorded?.severity).toBe("warning");
+    expect(recorded?.actorType).toBe("control-plane");
     expect(recorded?.actorId).toBe("support-1");
-    expect(recorded?.metadata).toMatchObject({ userId: "ada", entitlement: "pro" });
+    expect(recorded?.metadata).toMatchObject({
+      connectionId: CONNECTION_ID,
+      userId: "ada",
+      entitlement: "pro",
+    });
   });
 
   test("is idempotent, and legal against an account that never held the key", async () => {
     const app = makeApp();
-    const options = {
-      user: "support-1",
-      scopes: PAYMENTS_CONTROL_PLANE_SCOPE,
-      body: { userId: "grace", entitlement: "pro" },
-    };
+    const options = { ...revoking, body: { userId: "grace", entitlement: "pro" } };
     expect((await request(app, "POST", path, options)).status).toBe(200);
     expect((await request(app, "POST", path, options)).status).toBe(200);
     expect(await entitlements()).toHaveLength(1);

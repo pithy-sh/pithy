@@ -1,6 +1,8 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
+import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
@@ -31,7 +33,7 @@ import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
-import { requireAuth, requireControlPlane } from "./guards";
+import { PAYMENTS_ENTITLEMENT_GRANT_SCOPE, PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, requireAuth } from "./guards";
 import {
   AppleWebhookNotification,
   CheckoutRequest,
@@ -59,11 +61,19 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   POST /payments/entitlements/revoke  → take one back                  (control-plane)     json: EntitlementRevokeRequest
  *
  * **The two control-plane routes are the only way an entitlement appears without money moving**, and that is
- * the whole reason they are gated the way they are. `requireAuth()` first, so an unauthenticated caller reads
- * 401 rather than being told which scope it is missing; `requireControlPlane()` second, which denies unless
- * the credential carries `payments:admin` — a scope nothing holds by default, on a seam that is `null` with no
- * auth capability composed. Both writes are audited, because the audit trail is the only record of who
- * decided an account should have something nobody paid for.
+ * the whole reason they are gated the way they are. Each wears core's `requireControlPlane()` and nothing
+ * else: an EdDSA-signed token on the `pithy-control-plane` header, verified against a public key the adopter
+ * registered, bound to one connection, one environment, one request body and one use — and carrying the single
+ * scope that route needs, `payments:entitlements:grant` or `payments:entitlements:revoke`. The two are granted
+ * separately, so a refund tool cannot comp and a comp tool cannot revoke.
+ *
+ * **`requireAuth()` is deliberately absent from those two lines, and adding it would break them.** A
+ * management client is not a user of this app; the seam never populates `c.var.auth`, precisely so that a
+ * control-plane credential cannot satisfy an ordinary `requireAuth()` anywhere in the tree. An auth gate here
+ * would deny every legitimate management call and no credential could fix it. With the seam not composed at
+ * all the gate raises `controlplane/not_connected`, so the routes are shut rather than open. Both writes are
+ * audited to the management client, because the trail is the only record of who decided an account should have
+ * something nobody paid for.
  *
  * `POST /payments/purchases` and `/restore` serve every rail with no branch of their own: the rail a caller names
  * selects a verifier through `resolveRailProvider`, and everything past that point is the normalized event. A
@@ -144,6 +154,25 @@ function callerId(c: Context<PithyHonoEnv>): string {
   const auth = c.var.auth;
   if (!auth) throw new InternalError({ detail: "requireAuth() must run before a payments handler reads the caller." });
   return auth.userId;
+}
+
+/**
+ * The verified management client behind a control-plane call. `requireControlPlane()` has run on every route
+ * that calls this, so a null context is a wiring mistake rather than an unverified request — hence
+ * `InternalError`, not a 401.
+ *
+ * Deliberately not {@link callerId}. A management client has no user row and no session, so there is nothing
+ * here to read off `c.var.auth`; keeping the two accessors apart is what stops a control-plane caller from
+ * being recorded as, or mistaken for, a user of this app.
+ */
+function controlPlaneCaller(c: Context<PithyHonoEnv>): ControlPlaneContext {
+  const caller = c.var.controlPlane;
+  if (!caller) {
+    throw new InternalError({
+      detail: "requireControlPlane() must run before a payments handler reads the management caller.",
+    });
+  }
+  return caller;
 }
 
 /** Every rail's credentials, read through the one reader at the point of need. */
@@ -525,22 +554,23 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * verified and never projected.
      *
      * Support needs this on day one, and it is the more dangerous of the two: a caller that could reach it
-     * could give itself anything the product sells. Hence two gates in this order. `requireAuth()` first, so
-     * an unauthenticated caller gets a 401 and learns nothing about scopes; `requireControlPlane()` second,
-     * which denies unless the credential carries `payments:admin` — default-denied twice over, since an
-     * ordinary token's `scopes` is `[]` and an uncomposed auth capability leaves `c.var.auth` null. The
-     * validator sits behind both, so a well-formed body is never confirmed to a caller who may not send one.
+     * could give itself anything the product sells. So it is a control-plane route and nothing else.
+     * `requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE)` establishes authenticity — signature, registered
+     * key, connection, environment, token lifetime, body digest, single use — before anything below runs, and
+     * denies unless the adopter granted *that* operation. Holding the revoke scope confers nothing here: the
+     * seam matches scopes exactly, with no prefix rule. The validator sits behind the gate, so a well-formed
+     * body is never confirmed to a caller who may not send one.
      *
      * The write is a repair of the read model, not a purchase: null provenance, no purchase row, and the
      * projection stays authoritative for any key the catalog sells. See `entitlement/manual.ts`.
      */
     app.post(
       `${base}/entitlements/grant`,
-      requireAuth(),
-      requireControlPlane(),
+      requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE),
       zValidator("json", EntitlementGrantRequest, validationHook),
       async (c) => {
         const input = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
         const granted = await grantEntitlement(
           database(c),
           { userId: input.userId, entitlement: input.entitlement, expiresAt: input.expiresAt ?? null },
@@ -551,14 +581,18 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           outcome: "success",
           // Notable, not routine: nothing else in this package writes an entitlement no store paid for.
           severity: "warning",
-          actorType: "user",
-          actorId: callerId(c),
-          sessionId: c.var.auth?.sessionId,
+          // A management client, not a user of this app — so `control-plane`, and the actor is the token's
+          // `sub`: which person at the dashboard did this, not merely "the dashboard". No `sessionId`, because
+          // a control-plane call creates none and a null one would read as a correlation that got lost.
+          actorType: "control-plane",
+          actorId: caller.subject,
           resourceType: "entitlement",
           resourceId: granted.id,
-          // The subject is the queryable fact — "what has been comped to this account" is the question the
-          // trail gets asked, and the acting credential is already the event's actor.
+          // The subject account is the queryable fact — "what has been comped to this account" is the question
+          // the trail gets asked. The connection joins it to *which* management client, per adopter and per
+          // environment, which the actor's own id space cannot answer on its own.
           metadata: {
+            connectionId: caller.connectionId,
             userId: input.userId,
             entitlement: input.entitlement,
             expiresAt: granted.expiresAt?.toISOString() ?? null,
@@ -583,14 +617,18 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * Immediate, because the read model is what every gate hits: the account loses access on its next
      * request. Idempotent, and legal against an account that never held the key — the inactive row is the
      * record that somebody decided it, and support tooling should not have to ask first.
+     *
+     * Its own scope, `payments:entitlements:revoke`, granted separately from grant's. Taking paid access away
+     * from a live customer and handing product out for free are different mistakes with different victims, and
+     * an adopter's refund tooling has no business being able to make the second one.
      */
     app.post(
       `${base}/entitlements/revoke`,
-      requireAuth(),
-      requireControlPlane(),
+      requireControlPlane(PAYMENTS_ENTITLEMENT_REVOKE_SCOPE),
       zValidator("json", EntitlementRevokeRequest, validationHook),
       async (c) => {
         const input = c.req.valid("json");
+        const caller = controlPlaneCaller(c);
         const revoked = await revokeEntitlement(
           database(c),
           { userId: input.userId, entitlement: input.entitlement },
@@ -600,12 +638,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           action: PaymentsAuditActions.entitlementRevoked,
           outcome: "success",
           severity: "warning",
-          actorType: "user",
-          actorId: callerId(c),
-          sessionId: c.var.auth?.sessionId,
+          // Same attribution as the grant: the management client's own subject, and the connection it called
+          // on. See that handler for why neither is a user id and why there is no session.
+          actorType: "control-plane",
+          actorId: caller.subject,
           resourceType: "entitlement",
           resourceId: revoked.id,
-          metadata: { userId: input.userId, entitlement: input.entitlement },
+          metadata: { connectionId: caller.connectionId, userId: input.userId, entitlement: input.entitlement },
         });
         return c.json(
           {

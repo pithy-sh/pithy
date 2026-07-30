@@ -22,6 +22,7 @@ export const main = defineCommand({
     deploy: () => import("./commands/deploy").then((m) => m.default),
     upgrade: () => import("./commands/upgrade").then((m) => m.default),
     token: () => import("./commands/token").then((m) => m.default),
+    dashboard: () => import("./commands/dashboard").then((m) => m.default),
     secrets: () => import("./commands/secrets").then((m) => m.default),
     email: () => import("./commands/email").then((m) => m.default),
     media: () => import("./commands/media").then((m) => m.default),

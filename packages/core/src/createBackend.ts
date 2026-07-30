@@ -174,6 +174,14 @@ export function createBackend<
       validated = true;
     }
     if (c.get("auth") === undefined) c.set("auth", null);
+    // Its own variable, never folded into `auth`: a management client is not a user of this app, so a
+    // control-plane call must not satisfy any capability's `requireAuth()`. Null until the seam's
+    // middleware verifies a credential, which is what makes every control-plane route default-denied.
+    if (c.get("controlPlane") === undefined) c.set("controlPlane", null);
+    // Null unless the `controlplane()` capability's middleware publishes one. Every
+    // `requireControlPlane()` gate in the tree denies while it is null, so an admin route in a Worker
+    // that never composed the seam is closed rather than unguarded.
+    if (c.get("controlPlaneVerifier") === undefined) c.set("controlPlaneVerifier", null);
     if (c.get("emit") === undefined) c.set("emit", noopEmit);
     // Fail closed: with no payments capability composed, nothing is held and every gate denies.
     if (c.get("entitlements") === undefined) c.set("entitlements", noEntitlementProvider);

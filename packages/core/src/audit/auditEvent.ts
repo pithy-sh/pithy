@@ -45,11 +45,18 @@ export const AuditSeverity = z
   );
 export type AuditSeverity = z.output<typeof AuditSeverity>;
 
-/** What kind of principal acted. `anonymous` covers an unauthenticated request; `system` an internal job. */
+/**
+ * What kind of principal acted. `anonymous` covers an unauthenticated request; `system` an internal job.
+ *
+ * `control-plane` is its own kind rather than a flavour of `service` because the question an adopter
+ * actually asks is "what did the management client do", separately from "what did my users do". A
+ * control-plane caller is not a user of their app at all — it holds no session and owns no user row —
+ * so folding it into `user` or `service` would make that question unanswerable from the trail.
+ */
 export const AuditActorType = z
-  .enum(["user", "service", "system", "anonymous"])
+  .enum(["user", "service", "system", "anonymous", "control-plane"])
   .describe(
-    "The kind of principal that acted: `user` (an authenticated person), `service` (a service account or CI token), `system` (an internal job, no external actor), or `anonymous` (an unauthenticated request).",
+    "The kind of principal that acted: `user` (an authenticated person), `service` (a service account or CI token), `system` (an internal job, no external actor), `anonymous` (an unauthenticated request), or `control-plane` (a management client calling in under the `control-plane` strategy — a principal outside the adopter's own user base, whose actions are answerable separately from their users').",
   );
 export type AuditActorType = z.output<typeof AuditActorType>;
 

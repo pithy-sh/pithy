@@ -1,6 +1,9 @@
 import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
+import type { ControlPlaneContext } from "../controlPlane/context";
+import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
+import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
@@ -15,6 +18,27 @@ import type { ClientProjection, ClientProjectionContext } from "./client";
 export interface PithyVars {
   /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * The verified control-plane caller (`c.var.controlPlane`), populated only by the `control-plane`
+   * middleware; `null` on every other request. Read through `requireControlPlane(scope)`.
+   *
+   * Deliberately a second variable rather than a flavour of {@link auth}. A management client is not a
+   * user of the adopter's app — it holds no session and owns no user row — so if a control-plane call
+   * set `auth`, every `requireAuth()` in every capability would pass for it. That is a scope escalation
+   * across the whole tree, and separating the two seams is what makes it impossible rather than merely
+   * unlikely.
+   */
+  controlPlane: ControlPlaneContext | null;
+  /**
+   * The seam's verifier, published by the `controlplane()` capability's middleware and consumed by
+   * `requireControlPlane(scope)`; `null` when that capability is not composed.
+   *
+   * It exists so a capability contributing admin routes — `@pithy-sh/payments` is the first — can write
+   * `requireControlPlane(...)` at module scope without holding the adopter's seam config and without
+   * importing from a sibling package. `null` is what makes those routes **deny** in a Worker that never
+   * enabled the seam, rather than stand open because the thing meant to protect them is absent.
+   */
+  controlPlaneVerifier: ControlPlaneVerifier | null;
   /**
    * The audit recorder seam. Any capability records a security-relevant action with `c.var.emit(...)`
    * (CLAUDE.md §Security). `@pithy-sh/audit` replaces the default with a D1-backed recorder; with no
@@ -190,6 +214,24 @@ export interface Capability<
    * extends what CI can do without the adopter hand-editing token scopes. Additive and optional.
    */
   ciPermissions?: readonly string[];
+  /**
+   * The admin routes this capability contributes behind the `control-plane` strategy, described well
+   * enough for a management client to call them — full mounted path, required scope, and a one-line
+   * summary. Omit it, or leave it empty, when a capability has no management surface; that is the
+   * normal case.
+   *
+   * Federated the same way migrations, error codes, and audit actions are: a capability declares its
+   * own and `GET /control-plane/manifest` reports the union, so a management client composes both its
+   * navigation *and* its calls from what the Worker says about itself. Knowing a capability is
+   * installed is not enough to call it — `basePath` is configurable, so a client that hardcoded
+   * `/payments` breaks against an adopter who mounted it at `/billing`.
+   *
+   * **Build the paths from the capability's resolved config, never from its defaults**, or the
+   * declaration describes a Worker other than this one. `missingAdminRoutes` checks each entry against
+   * the router that actually mounted; a stale declaration is worse than none, because a client
+   * believes it.
+   */
+  adminRoutes?: readonly AdminRoute[];
   /**
    * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
    * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes

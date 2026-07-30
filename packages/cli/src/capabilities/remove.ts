@@ -8,6 +8,7 @@ import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { uninstallPackage } from "../project/packageManager";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
 import { EJECT_DIR, ejectImportPath, isEjected } from "./eject";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
@@ -333,7 +334,14 @@ export interface RemoveResult {
 export async function removeCapability(options: RemoveCapabilityOptions): Promise<RemoveResult> {
   const { workerDir, capability, steps } = options;
   const audit = options.audit ?? (async () => {});
-  const pkg = `@pithy-sh/${capability}`;
+  // Resolved through the catalog, never interpolated from the name. `controlplane` ships inside
+  // `@pithy-sh/core`, and the interpolated form built a package that has never existed — which made
+  // `packageInstalled` and `workersUsingPackage` both answer for a phantom. The second is the dangerous
+  // one: `keptFor` came back empty always, so the guard that refuses `--drop` while a sibling Worker
+  // still wires the capability never fired, and dropping the seam's tables from one Worker would have
+  // deleted every registered public key out from under another Worker still serving control-plane
+  // routes against them.
+  const pkg = capabilityPackageName(capability);
 
   const capabilities = await steps.loadCapabilities();
   const target = capabilities.find((c) => c.name === capability);
@@ -427,10 +435,14 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   let packageManager: string | undefined;
   if (ejected) {
     await steps.deleteSource(join(workerDir, EJECT_DIR, capability));
-  } else if (installed && keptFor.length === 0) {
+  } else if (installed && keptFor.length === 0 && !isSharedCapabilityPackage(pkg)) {
     // One install at the root, shared by every Worker. Uninstalling it while a sibling Worker still
     // imports it would break that Worker's pithy.config.ts — and every command that loads it. So the
     // wiring goes and the package stays, which a later `pithy remove` from the last Worker cleans up.
+    //
+    // A shared package is never uninstalled at all. `controlplane` lives in `@pithy-sh/core`, which is
+    // every capability's dependency and the runtime the app is built on: removing the seam unwires it,
+    // and uninstalling core would take the project with it.
     ({ packageManager } = await steps.uninstall(pkg));
   }
 
