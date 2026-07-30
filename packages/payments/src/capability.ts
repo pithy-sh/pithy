@@ -12,6 +12,7 @@ import type { Migration } from "kysely/migration";
 import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
 import { installEntitlementResolver } from "./entitlement/resolver";
+import { paymentsAdminRoutes } from "./http/guards";
 import { registerPaymentsRoutes } from "./http/routes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { paymentsSecretsRegistry } from "./secret/registry";
@@ -207,6 +208,11 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
     },
     // Replaces core's fail-closed `noEntitlementProvider` with the D1-backed resolver.
     middleware: [installEntitlementResolver(PAYMENTS_DATABASE_NAME)],
+    // The management surface, described for `GET /control-plane/manifest`. Built from the resolved
+    // `basePath` rather than the default, so an adopter who mounted payments at `/billing` gets a
+    // manifest naming `/billing/entitlements/grant` — the whole point of describing rather than
+    // assuming. `routeContract.test.ts` checks these against the routes actually registered.
+    adminRoutes: paymentsAdminRoutes(resolved.basePath),
     routes: registerPaymentsRoutes({ config: resolved }),
     seeds: [paymentsExampleSeed],
   });

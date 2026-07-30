@@ -1,4 +1,5 @@
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import type { MiddlewareHandler } from "hono";
@@ -81,6 +82,35 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
 ];
+
+/**
+ * Payments' management surface, as `GET /control-plane/manifest` reports it.
+ *
+ * Declared beside the scopes rather than in `routes.ts` so the scope a route demands and the scope a
+ * manifest advertises are the same constant, read from one place. `basePath` is a parameter and never a
+ * default: an adopter who mounted payments at `/billing` must get a manifest naming
+ * `/billing/entitlements/grant`, or a management client composing its calls from it would 404 against
+ * exactly the adopters who customised anything.
+ *
+ * The summaries say what the operation *is for*, not what it does mechanically. A client renders these
+ * next to a button somebody is about to press on a paying customer's account.
+ */
+export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
+  return [
+    {
+      method: "POST",
+      path: `${basePath}/entitlements/grant`,
+      scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+      summary: "Comp an entitlement, or repair a purchase that verified but never projected.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/entitlements/revoke`,
+      scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+      summary: "Take an entitlement back, effective immediately.",
+    },
+  ];
+}
 
 /** Require an authenticated caller (the core AuthContext seam). */
 export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {

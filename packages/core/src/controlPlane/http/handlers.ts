@@ -6,6 +6,7 @@ import type { ControlPlaneContext } from "../context";
 import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
+import type { CapabilityDescriptor, ControlPlaneManifest } from "../discovery/adminRoute";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import type { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
 
@@ -35,11 +36,11 @@ export interface ControlPlaneHandlerDeps {
    * assembly. A thunk because that hook runs after the routes closure is built.
    *
    * This is assembly-time knowledge no capability has about its siblings, and it is what makes
-   * **discovery over configuration** work: a management client builds its navigation from what a Worker
-   * declares it has, so a Worker without payments simply has no purchases pane, and `pithy add support`
-   * produces a support pane with nothing for either side to configure.
+   * **discovery over configuration** work: a management client builds its navigation *and its calls*
+   * from what a Worker declares, so a Worker without payments simply has no purchases pane, and
+   * `pithy add support` produces a working support pane with nothing for either side to configure.
    */
-  composedCapabilities: () => readonly string[];
+  composedCapabilities: () => readonly CapabilityDescriptor[];
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -138,7 +139,7 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       connectionId: context.connectionId,
       capabilities: [...deps.composedCapabilities()],
       grantedScopes: [...context.grantedScopes],
-    });
+    } satisfies ControlPlaneManifest);
   };
 }
 

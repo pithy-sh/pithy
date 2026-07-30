@@ -1,8 +1,15 @@
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
+import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
+import {
+  PAYMENTS_CONTROL_PLANE_SCOPES,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+} from "./guards";
 import { registerPaymentsRoutes } from "./routes";
 
 /**
@@ -101,5 +108,71 @@ describe("payments route contract", () => {
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
+  });
+});
+
+describe("the admin surface payments advertises", () => {
+  /**
+   * The smallest catalog `payments()` will parse: one rail on, one product sold on it. The admin
+   * surface does not depend on what is sold, but a catalog has to be coherent to assemble at all.
+   */
+  const CATALOG = {
+    rails: { apple: true },
+    products: {
+      pro_monthly: {
+        type: "subscription" as const,
+        name: "Pro",
+        entitlements: ["pro"],
+        apple: { productId: "com.acme.pro.monthly" },
+      },
+    },
+  };
+
+  /** The composed capability, so what is inspected is what an adopter actually gets. */
+  function composed(basePath?: string) {
+    const capability = payments({ ...CATALOG, ...(basePath === undefined ? {} : { basePath }) });
+    const app = new Hono<PithyHonoEnv>();
+    capability.routes?.(app);
+    return { capability, app };
+  }
+
+  test("every advertised admin route is one payments actually mounts", () => {
+    // `GET /control-plane/manifest` tells a management client these two routes exist and which scope
+    // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
+    // nothing serves — and blaming the adopter's Worker for it.
+    const { capability, app } = composed();
+    expect(capability.adminRoutes).toHaveLength(2);
+    expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+  });
+
+  test("a moved base path moves the advertised routes too", () => {
+    // The case that motivated describing routes at all. An adopter mounting payments at `/billing`
+    // would 404 every management call from a client that assumed the `/payments` default.
+    const { capability, app } = composed("/billing");
+    expect(capability.adminRoutes?.map((route) => route.path)).toEqual([
+      "/billing/entitlements/grant",
+      "/billing/entitlements/revoke",
+    ]);
+    expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+  });
+
+  test("each advertised route names the scope its guard actually requires", () => {
+    // The scopes are the join key with what `pithy dashboard connect` offers an adopter to grant, so a
+    // manifest naming a different string would tell a client to ask for a grant nothing checks.
+    const { capability } = composed();
+    expect(capability.adminRoutes?.map((route) => route.scope)).toEqual([
+      PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+      PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+    ]);
+    expect(new Set(capability.adminRoutes?.map((route) => route.scope))).toEqual(
+      new Set(PAYMENTS_CONTROL_PLANE_SCOPES),
+    );
+  });
+
+  test("only the control-plane routes are advertised — the purchase routes are not a management surface", () => {
+    // Declaring is opt-in and one-directional. Payments serves plenty of bearer routes; none of them
+    // belong in a manifest a management client dispatches from.
+    const { capability } = composed();
+    expect(capability.adminRoutes?.every((route) => route.path.includes("/entitlements/"))).toBe(true);
   });
 });

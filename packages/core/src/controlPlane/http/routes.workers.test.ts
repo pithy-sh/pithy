@@ -1,11 +1,13 @@
 import { env } from "cloudflare:test";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "../data/tables";
+import { ControlPlaneManifest } from "../discovery/adminRoute";
 import { controlplane_0001_connections } from "../migrations/0001_connections";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
@@ -36,8 +38,14 @@ const SUBJECT = "usr_dashboard_operator";
 /** The Worker's env for every request: the real Miniflare bindings plus the environment name. */
 const BINDINGS = { ...env, ENVIRONMENT };
 
+/**
+ * A capability with no management surface — the ordinary case, and the one the manifest must still
+ * report so "composed but nothing to administer" is distinguishable from "not installed".
+ */
+const quiet = defineCapability({ name: "quiet", requiredBindings: [] });
+
 /** One composed backend, exactly as a Worker assembles it. Stateless — every request re-reads D1. */
-const backend = createBackend({ capabilities: [controlplane()] });
+const backend = createBackend({ capabilities: [controlplane(), quiet] });
 
 /** A management client's key pair: the private half it signs with, the public half the adopter stores. */
 interface Signer {
@@ -240,10 +248,52 @@ describe("GET /control-plane/manifest", () => {
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
     expect(response.status).toBe(200);
-    const json = await body<{ capabilities: string[]; grantedScopes: string[]; connectionId: string }>(response);
-    expect(json.capabilities).toContain("controlplane");
+    const json = await body<ControlPlaneManifest>(response);
+    expect(json.capabilities.map((capability) => capability.name)).toContain("controlplane");
     expect(json.grantedScopes).toEqual([MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE]);
     expect(json.connectionId).toBe(CONNECTION_ID);
+    // The response is the contract a management client parses, so it parses here too. A field renamed
+    // without the schema noticing would break every client and nothing else.
+    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
+  });
+
+  test("describes how to call each route, not merely that a capability exists", async () => {
+    // The whole point of the manifest. Knowing `controlplane` is composed does not tell a client where
+    // it is mounted or which scope each route needs — and `basePath` is configurable, so assuming is
+    // how a client 404s against every adopter who customised anything.
+    await connect([registered(alice)]);
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = await body<ControlPlaneManifest>(response);
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+
+    expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      "GET /control-plane/keys",
+      "GET /control-plane/manifest",
+      "GET /control-plane/ping",
+      "POST /control-plane/keys",
+      "POST /control-plane/keys/:keyId/expire",
+    ]);
+    // Every route says what it needs, so a client can grey out what this connection cannot do rather
+    // than discovering a 403 by pressing the button.
+    expect(seam?.adminRoutes.find((route) => route.path.endsWith("/ping"))?.scope).toBeNull();
+    expect(seam?.adminRoutes.find((route) => route.method === "POST" && route.path.endsWith("/keys"))?.scope).toBe(
+      KEYS_ROTATE_SCOPE,
+    );
+    for (const route of seam?.adminRoutes ?? []) expect(route.summary.length).toBeGreaterThan(0);
+  });
+
+  test("a capability with no management surface is reported, with an empty route list", async () => {
+    // "Composed but has nothing to administer" and "not installed" are different facts, and a client
+    // that cannot tell them apart renders the wrong thing for both.
+    await connect([registered(alice)]);
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = await body<ControlPlaneManifest>(response);
+    const plain = json.capabilities.find((capability) => capability.name === "quiet");
+
+    expect(plain).toBeDefined();
+    expect(plain?.adminRoutes).toEqual([]);
   });
 
   test("requires manifest:read — a connection never granted it is refused", async () => {

@@ -32,6 +32,16 @@ export {
   type ControlPlaneDatabase,
   controlPlaneDatabase,
 } from "./controlPlane/data/tables";
+// The manifest a management client parses, and the shape a capability declares its admin surface in.
+// Both are exported for the same reason the minting side is: writing your own client has to be a real
+// option, and a client that had to re-derive this contract from the docs would drift from it.
+export {
+  AdminRoute,
+  type AdminRouteMethod,
+  CapabilityDescriptor,
+  ControlPlaneManifest,
+} from "./controlPlane/discovery/adminRoute";
+export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discovery/drift";
 export { requireControlPlane } from "./controlPlane/http/guard";
 export { CONTROL_PLANE_HEADER } from "./controlPlane/http/verify";
 export {

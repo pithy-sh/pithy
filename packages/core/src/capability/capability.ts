@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
+import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
 import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
@@ -213,6 +214,24 @@ export interface Capability<
    * extends what CI can do without the adopter hand-editing token scopes. Additive and optional.
    */
   ciPermissions?: readonly string[];
+  /**
+   * The admin routes this capability contributes behind the `control-plane` strategy, described well
+   * enough for a management client to call them — full mounted path, required scope, and a one-line
+   * summary. Omit it, or leave it empty, when a capability has no management surface; that is the
+   * normal case.
+   *
+   * Federated the same way migrations, error codes, and audit actions are: a capability declares its
+   * own and `GET /control-plane/manifest` reports the union, so a management client composes both its
+   * navigation *and* its calls from what the Worker says about itself. Knowing a capability is
+   * installed is not enough to call it — `basePath` is configurable, so a client that hardcoded
+   * `/payments` breaks against an adopter who mounted it at `/billing`.
+   *
+   * **Build the paths from the capability's resolved config, never from its defaults**, or the
+   * declaration describes a Worker other than this one. `missingAdminRoutes` checks each entry against
+   * the router that actually mounted; a stale declaration is worse than none, because a client
+   * believes it.
+   */
+  adminRoutes?: readonly AdminRoute[];
   /**
    * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
    * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes

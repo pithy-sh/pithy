@@ -180,7 +180,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | Route | Requires | Purpose |
 |---|---|---|
 | `GET /control-plane/ping` | any verified caller | Connectivity and key proof. Used at connect, and to prove a new key before the old one is expired |
-| `GET /control-plane/manifest` | `manifest:read` | Which capabilities this Worker composes, and this environment's identity. Discovery over configuration |
+| `GET /control-plane/manifest` | `manifest:read` | Which capabilities this Worker composes, **and how to call each one's admin routes** — path, method, and required scope. Discovery over configuration (§14) |
 | `GET /control-plane/keys` | `keys:rotate` | The registration state — which keys are live, their ages, and their validity windows |
 | `POST /control-plane/keys` | `keys:rotate` | Register a new public key. **Authenticated with the key it replaces** |
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
@@ -192,6 +192,8 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 The same federation as migrations, error codes, and audit actions. A capability declares admin routes behind `requireControlPlane(scope)` and they compose into the tree with nothing to wire.
 
 `@pithy-sh/payments` is the first: `POST /payments/entitlements/grant` and `/revoke`, the only way an entitlement appears without money moving.
+
+A capability also **declares** those routes via `adminRoutes`, so a management client learns how to call them from the Worker itself rather than from a route table it ships with (§14).
 
 ```ts
 app.post(
@@ -214,9 +216,52 @@ Admin routes contributed by a capability inherit that capability's license. The 
 
 ## 14. Discovery over configuration
 
-A management client composes its navigation from `GET /control-plane/manifest` rather than from settings someone maintains.
+A management client composes its navigation **and its calls** from `GET /control-plane/manifest`, rather than from settings someone maintains or a route table it ships with.
 
-A Worker that does not compose payments has no purchases to show, and that is a fact the client discovers. Run `pithy add support` and a support pane appears on the next visit, with nothing for either side to configure.
+```json
+{
+  "environment": "production",
+  "connectionId": "b6a1f0c2-3d4e-4f50-8a9b-0c1d2e3f4a5b",
+  "capabilities": [
+    { "name": "controlplane", "adminRoutes": [
+      { "method": "GET",  "path": "/control-plane/ping", "scope": null,
+        "summary": "Prove connectivity and which key answered. Always available to a verified caller." }
+    ]},
+    { "name": "payments", "adminRoutes": [
+      { "method": "POST", "path": "/billing/entitlements/grant", "scope": "payments:entitlements:grant",
+        "summary": "Comp an entitlement, or repair a purchase that verified but never projected." },
+      { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
+        "summary": "Take an entitlement back, effective immediately." }
+    ]},
+    { "name": "auth", "adminRoutes": [] }
+  ],
+  "grantedScopes": ["manifest:read", "payments:entitlements:grant"]
+}
+```
+
+**Knowing a capability is installed is not enough to call it.** Note the paths above: this adopter mounted payments at `/billing`. `basePath` is configurable on every capability, so a client that hardcoded `/payments` would 404 against exactly the adopters who customised anything. Each capability builds its declaration from its *resolved* config, so the manifest names where things actually are.
+
+Each route also names the scope it needs. Against `grantedScopes`, that is what lets a client grey out `revoke` — not granted here — instead of offering a button that answers 403.
+
+A capability with no management surface reports an empty list rather than being absent. "Composed, but nothing to administer" and "not installed" are different facts, and a client that cannot tell them apart renders the wrong thing for both.
+
+So a Worker that does not compose payments has no purchases pane, and that is a fact the client discovers. Run `pithy add support` and a **working** support pane appears on the next visit — panes *and* the calls behind them — with nothing for either side to configure.
+
+**The declaration is checked, not trusted.** A hand-maintained list beside generated behaviour is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
+
+There is deliberately **no version number**. With the routes described here, a client dispatches on what this Worker declares right now; a version would be a second source of truth to keep in sync with the first.
+
+### Declaring one
+
+```ts
+defineCapability({
+  name: "support",
+  adminRoutes: supportAdminRoutes(resolved.basePath),
+  routes: registerSupportRoutes({ config: resolved }),
+});
+```
+
+Build the paths from the capability's resolved `basePath`, never from its default — otherwise the declaration describes a Worker other than this one.
 
 ---
 

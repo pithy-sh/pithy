@@ -7,8 +7,9 @@ import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
 import { ControlPlaneConnection } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
+import type { CapabilityDescriptor } from "./discovery/adminRoute";
 import { createControlPlaneVerifier } from "./http/guard";
-import { registerControlPlaneRoutes } from "./http/routes";
+import { controlPlaneRouteDescriptors, registerControlPlaneRoutes } from "./http/routes";
 import {
   CONTROL_PLANE_KV_BINDING,
   type ControlPlaneKvNamespaces,
@@ -97,10 +98,11 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
 
   const now = () => new Date();
 
-  // What this Worker composed, filled by the `compose` hook below. Assembly-time knowledge a capability
-  // has no other way to reach — `GET /control-plane/manifest` reports it, which is what lets a
-  // management client discover this Worker's surface instead of being configured with it.
-  let composed: readonly string[] = [];
+  // What this Worker composed and what each part exposes, filled by the `compose` hook below.
+  // Assembly-time knowledge a capability has no other way to reach — `GET /control-plane/manifest`
+  // reports it, which is what lets a management client discover this Worker's surface, and how to call
+  // it, instead of being configured with both.
+  let composed: readonly CapabilityDescriptor[] = [];
 
   const capability = defineCapability({
     name: "controlplane",
@@ -119,8 +121,13 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     // Built from the resolved config, so `jtiTtlSeconds` actually governs how long a spent token id is
     // remembered. A constant here would make that setting decorative.
     kvNamespaces: controlPlaneKvNamespaces(config.jtiTtlSeconds),
+    // The seam describes itself too. Built from the same resolved `basePath` the routes mount on, so a
+    // moved mount point is reported rather than becoming a lie a client believes.
+    adminRoutes: controlPlaneRouteDescriptors(config.basePath),
     compose: ({ capabilities }) => {
-      composed = capabilities.map((cap) => cap.name);
+      // Every capability, including those exposing nothing. A client rendering a capability it cannot
+      // act on is useful; a client that cannot tell "no admin surface" from "not installed" is not.
+      composed = capabilities.map((cap) => ({ name: cap.name, adminRoutes: [...(cap.adminRoutes ?? [])] }));
     },
     middleware: [
       (app) => {

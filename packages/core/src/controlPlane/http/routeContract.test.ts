@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { type ControlPlaneOptions, controlplane } from "../capability";
+import { missingAdminRoutes } from "../discovery/drift";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -78,5 +79,36 @@ describe("control-plane route contract", () => {
     }
     expect(handlerCounts.size).toBe(5);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
+  });
+
+  test("every admin route the seam advertises is a route it actually mounts", () => {
+    // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
+    // tells a management client these five routes exist and which scope each needs; a declaration that
+    // drifted from the registrations would have the client calling paths nothing serves.
+    const capability = controlplane();
+    const app = new Hono<PithyHonoEnv>();
+    capability.routes?.(app);
+
+    expect(capability.adminRoutes).toHaveLength(5);
+    expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+  });
+
+  test("a moved base path moves the advertised routes too", () => {
+    // The reason paths are described rather than assumed. An adopter who mounts the seam elsewhere must
+    // get a manifest naming where it actually is.
+    const capability = controlplane({ basePath: "/admin/cp" });
+    const app = new Hono<PithyHonoEnv>();
+    capability.routes?.(app);
+
+    expect(capability.adminRoutes?.every((route) => route.path.startsWith("/admin/cp/"))).toBe(true);
+    expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+  });
+
+  test("ping advertises a null scope — it needs a verified caller and no grant", () => {
+    // A client reads this to know it can always prove a key, including on a connection granted nothing.
+    const advertised = controlplane().adminRoutes ?? [];
+    const ping = advertised.find((route) => route.path.endsWith("/ping"));
+    expect(ping?.scope).toBeNull();
+    expect(advertised.filter((route) => route.scope === null)).toHaveLength(1);
   });
 });
