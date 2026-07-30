@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { rename, unlink, writeFile } from "node:fs/promises";
 
 /** Write `content` to `path` atomically: write to a sibling `.tmp` file first, then rename. */

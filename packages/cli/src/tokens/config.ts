@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { ProjectConfig } from "../project/config";
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";

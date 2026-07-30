@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareEmailSendManager } from "./emailSendManager";
 

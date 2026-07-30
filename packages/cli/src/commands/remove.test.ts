@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import remove, { rejectJson } from "./remove";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The package entrypoint — the surface `pithy add payments` wires into `pithy.config.ts`. Deliberately
  * narrow: the capability factory, its catalog types and lookups, the four table schemas, and the projection

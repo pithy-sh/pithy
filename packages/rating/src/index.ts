@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The package entrypoint — the surface `pithy add rating` wires into `pithy.config.ts`. Deliberately
  * narrow: the capability factory, its config/options types, the rating-algorithm seam (so an adopter can

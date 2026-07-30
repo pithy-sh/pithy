@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError } from "../error/pithyError";
 import { workflowHostName, workflowScriptName } from "./naming";
 import type { WorkflowRegistry } from "./spec";

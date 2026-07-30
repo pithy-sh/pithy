@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { extractMarkdown, generateImageText, type MediaAi, transcribeAudioBytes } from "../ai/enrich";
 import {
   type AudioSegment,

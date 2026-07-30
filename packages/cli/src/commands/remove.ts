@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";

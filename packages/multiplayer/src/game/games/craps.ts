@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { MultiplayerInvalidMoveError, MultiplayerInvalidTransitionError } from "../../error/errors";
 import { type BetDecision, type PendingBet, wageringTable } from "../patterns/wageringTable";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";

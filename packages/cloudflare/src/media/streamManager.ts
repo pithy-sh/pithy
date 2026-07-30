@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Cloudflare } from "cloudflare";
 import type { DirectUploadCreateParams, DirectUploadCreateResponse } from "cloudflare/resources/stream/direct-upload";
 import type { StreamEditParams, Video } from "cloudflare/resources/stream/stream";

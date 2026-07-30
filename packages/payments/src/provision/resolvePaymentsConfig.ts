@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 

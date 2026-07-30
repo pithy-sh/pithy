@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { triggerWorkflow } from "@pithy-sh/core/src/workflow/dispatch";
 import { workflowKey } from "@pithy-sh/core/src/workflow/naming";

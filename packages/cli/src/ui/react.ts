@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
 import type { UiStub, UiStubContext, UiStubFile } from "./stubs";
 

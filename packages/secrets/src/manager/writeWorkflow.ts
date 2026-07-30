@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { currentValue } from "../crypto/versionedValue";
 import type { SecretsStoreEnv } from "../env/bindings";
 import { runWriteSecret, type WriteSecretParams } from "../management/writeSecret";

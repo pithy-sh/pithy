@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { RatingAlgorithm } from "../algorithm/algorithm";

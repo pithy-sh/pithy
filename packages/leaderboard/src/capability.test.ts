@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import { isLeaderboardCapability, LEADERBOARD_MIGRATION_ORDER, leaderboard, needsRankWorker } from "./capability";
 import { LeaderboardConfig } from "./config/config";

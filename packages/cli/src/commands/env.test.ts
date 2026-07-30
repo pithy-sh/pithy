@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { EnvInventory, WorkerEnvironments } from "../project/envInventory";
 

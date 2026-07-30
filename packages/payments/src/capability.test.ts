@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";

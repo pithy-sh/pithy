@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";

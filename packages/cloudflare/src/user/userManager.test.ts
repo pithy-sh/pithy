@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareInvalidResponseError } from "../client/errors";
 import { CloudflareUserManager } from "./userManager";

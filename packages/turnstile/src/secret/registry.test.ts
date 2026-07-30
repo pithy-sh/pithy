@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { selectTurnstileSecret, TURNSTILE_SECRET_NAME, TurnstileSecrets, turnstileSecretsRegistry } from "./registry";
 

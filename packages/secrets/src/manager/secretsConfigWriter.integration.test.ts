@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";

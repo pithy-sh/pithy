@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { DurableObject } from "cloudflare:workers";
 import { matchmakingDatabase } from "../data/tables";
 import { friendStore } from "../friends/store";

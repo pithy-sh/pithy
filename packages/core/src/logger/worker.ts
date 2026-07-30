@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createLogger, type Logger } from "./logger";
 import type { LogFields, LogLevel, LogRecord } from "./record";
 import { serializeRecord } from "./record";

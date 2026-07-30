@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { PithyError } from "../../error/pithyError";

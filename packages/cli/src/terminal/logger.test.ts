@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { describe, expect, test } from "vitest";
 import { createCliLogger } from "./logger";

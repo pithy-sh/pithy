@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { isStorageCapability, STORAGE_MIGRATION_ORDER, storage } from "./capability";
 import { STORAGE_R2_SECRET } from "./secret/registry";

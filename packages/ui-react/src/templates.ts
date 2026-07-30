@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 

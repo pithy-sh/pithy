@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { EXAMPLE_ADA, EXAMPLE_ALAN, EXAMPLE_GRACE, EXAMPLE_IDENTITIES } from "./exampleIdentities";
 

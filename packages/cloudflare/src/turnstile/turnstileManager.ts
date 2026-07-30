@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import type { Cloudflare } from "cloudflare";
 import type { Widget, WidgetListResponse } from "cloudflare/resources/turnstile/widgets";

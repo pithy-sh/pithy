@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { PaymentsProviderUnavailableError, PaymentsRailNotConfiguredError } from "../../error/errors";
 import { type AppleHttpFetch, appleJson } from "./http";

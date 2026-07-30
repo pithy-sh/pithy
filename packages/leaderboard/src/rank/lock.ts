@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { LeaderboardLock } from "../data/lock";
 import { LEADERBOARD_LOCKS_TABLE, type LeaderboardDatabase } from "../data/tables";
 

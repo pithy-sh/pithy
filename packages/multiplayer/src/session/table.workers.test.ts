@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env, runInDurableObject } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";

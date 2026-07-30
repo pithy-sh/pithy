@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { SecretInvalidValueError } from "../error/errors";
 import type { SecretRegistryEntry } from "../registry";
 

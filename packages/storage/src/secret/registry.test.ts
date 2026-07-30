@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { defineSecretRegistry, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { SecretsAccessor } from "@pithy-sh/secrets/src/secretsStore";

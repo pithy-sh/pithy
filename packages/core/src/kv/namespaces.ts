@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { KVNamespace } from "@cloudflare/workers-types";
 import type { z } from "zod";
 import type { Capability } from "../capability/capability";

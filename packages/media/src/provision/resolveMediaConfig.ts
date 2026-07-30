@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";

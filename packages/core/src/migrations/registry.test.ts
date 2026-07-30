@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { describe, expect, test } from "vitest";
 import { PithyError } from "../error/pithyError";

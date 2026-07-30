@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import {

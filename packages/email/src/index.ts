@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The package entrypoint — the surface `pithy add email` wires into `pithy.config.ts`. Deliberately
  * narrow: the capability factory plus the enqueue API and the types an app needs to send mail. Every

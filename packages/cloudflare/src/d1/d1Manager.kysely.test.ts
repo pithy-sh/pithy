@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, it, vi } from "vitest";

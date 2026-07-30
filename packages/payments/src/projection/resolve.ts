@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PAYMENTS_ENTITLEMENTS_TABLE, type PaymentsDatabase } from "../data/tables";

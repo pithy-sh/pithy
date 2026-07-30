@@ -38,6 +38,26 @@ The [Pithy board](https://github.com/orgs/pithy-sh/projects/1) tracks each issue
 gh auth refresh -s project
 ```
 
+## Licence headers
+
+Every `.ts` and `.tsx` under `packages/*/src` carries two lines:
+
+```ts
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+```
+
+You do not write them. A commit hook stamps staged files, deriving the identifier from the package's own `license` field — so a file in `@pithy-sh/audit` gets `FSL-1.1-MIT` without you thinking about it. CI checks the whole repo with `bun scripts/license-headers.ts --check`, which also reconciles each package's `LICENSE` file against what its `package.json` declares.
+
+Run it yourself any time:
+
+```bash
+bun scripts/license-headers.ts --check   # what's wrong
+bun scripts/license-headers.ts --fix     # fix it
+```
+
+Two things it deliberately leaves alone. The copyright line is free-form — edit it and the gate won't argue, so naming an entity later costs one pass, not a rewrite of every file. And `templates/` trees are never stamped: those files are copied verbatim into the adopter's repo by `pithy init` and `pithy ui add`, where they become the adopter's code, under the adopter's copyright.
+
 ## Live integration tests
 
 Most tests run locally (node + Miniflare). A few exercise live Cloudflare, are excluded from the default suite, and are named `*.integration.test.ts` — run with `bun run --filter <package> test:integration`. They are required before a release.

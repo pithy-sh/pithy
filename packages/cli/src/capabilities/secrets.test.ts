@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";

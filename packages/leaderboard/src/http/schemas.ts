@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { BOARD_KEY_PATTERN } from "../config/config";
 import { MAX_SEGMENT_SIZE } from "../rank/query";

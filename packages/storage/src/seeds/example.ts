@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { EXAMPLE_ADA, EXAMPLE_GRACE } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { d1SeedGroup, defineSeed, type R2SeedItem, type SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { StorageObject } from "../data/storageObject";

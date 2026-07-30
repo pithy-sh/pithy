@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { z } from "zod";
 import type { ValidationIssue } from "./payload";
 import { ErrorPayload } from "./payload";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import type { PaymentsPurchase, PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";

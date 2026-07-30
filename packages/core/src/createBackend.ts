@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Hono } from "hono";
 import { noopEmit } from "./audit/recorder";
 import { BindingSpec } from "./capability/bindings";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";

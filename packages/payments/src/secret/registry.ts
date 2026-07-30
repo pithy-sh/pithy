@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { z } from "zod";
 import type { PaymentsRail } from "../data/rail";

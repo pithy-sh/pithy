@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { MediaDelivery } from "../config/config";
 import { MediaUnsupportedError } from "../error/errors";
 import type { MediaRecord } from "../record/store";

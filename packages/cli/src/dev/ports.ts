@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile } from "node:child_process";
 import net from "node:net";
 import { promisify } from "node:util";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import type { R2Bucket } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";

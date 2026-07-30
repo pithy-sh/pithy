@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { beforeEach, describe, expect, test } from "vitest";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
 import { createLogger, type Logger, type LogSink, noopLogger } from "./logger";

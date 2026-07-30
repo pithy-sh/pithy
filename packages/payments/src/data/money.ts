@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Money, as the three rails report it and as the purchases table stores it.
  *

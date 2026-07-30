@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import { defineSeed } from "@pithy-sh/core/src/seed/seed";
 import { describe, expect, test } from "vitest";

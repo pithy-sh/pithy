@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { z } from "zod";
 import type { Ed25519PublicJwk } from "../data/connection";
 import { ControlPlaneInvalidCredentialError } from "../error/errors";

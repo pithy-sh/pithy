@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";

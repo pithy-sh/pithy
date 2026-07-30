@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { initialVersionedValue } from "../crypto/versionedValue";
 import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
 import type { SecretValueType } from "../registry";

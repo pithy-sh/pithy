@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type AuditEmit, noopEmit } from "@pithy-sh/core/src/audit/recorder";

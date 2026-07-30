@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { detectShell } from "./shell";

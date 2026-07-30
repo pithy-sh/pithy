@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { describe, expect, test } from "vitest";
 import { media } from "../capability";

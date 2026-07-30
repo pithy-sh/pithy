@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { defineSeed } from "@pithy-sh/core/src/seed/seed";
 import { describe, expect, test } from "vitest";

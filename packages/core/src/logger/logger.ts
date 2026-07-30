@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ErrorPayload } from "../error/payload";
 import { PithyError } from "../error/pithyError";
 import { LOG_LEVEL_ORDER, type LogFields, type LogLevel, type LogRecord } from "./record";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";

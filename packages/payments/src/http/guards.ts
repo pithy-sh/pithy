@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";

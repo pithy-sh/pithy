@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "comment-json";

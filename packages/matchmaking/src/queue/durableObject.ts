@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { DurableObject } from "cloudflare:workers";
 import type { MatchmakingQueueSettings, MatchmakingSnapshot } from "../config/config";
 import { MatchmakingNotQueuedError } from "../error/errors";

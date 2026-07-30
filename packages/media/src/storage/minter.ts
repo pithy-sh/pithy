@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The storage minting seams — the clean interfaces the media capability depends on. A test injects a
  * fake minter; the real adapters live in `storage/cloudflare.ts`.

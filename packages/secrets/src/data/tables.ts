@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { SecretRotation } from "./secretRotations";
 import { SystemSecret } from "./systemSecrets";
 

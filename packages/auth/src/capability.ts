@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Capability, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";

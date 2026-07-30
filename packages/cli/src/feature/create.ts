@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { migrateProject } from "../migrations/run";
 import { detectPackageManager, type InstallRunner } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";

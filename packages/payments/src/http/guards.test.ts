@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import {

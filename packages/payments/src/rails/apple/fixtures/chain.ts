@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Test material: a real X.509 certificate chain and real JWS signatures, minted at test time.
  *

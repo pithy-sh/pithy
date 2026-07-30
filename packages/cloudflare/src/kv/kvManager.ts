@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Key } from "cloudflare/resources/kv/namespaces/keys";
 import {
   CloudflareInvalidResponseError,

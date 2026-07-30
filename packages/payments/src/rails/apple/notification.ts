@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { minorUnitsFromScaled } from "../../data/money";
 import type { PurchaseEnvironment } from "../../data/purchase";

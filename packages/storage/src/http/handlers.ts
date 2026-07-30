@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { StorageConfig } from "../config/config";
 import { StorageShare } from "../data/share";
 import { StorageObject } from "../data/storageObject";

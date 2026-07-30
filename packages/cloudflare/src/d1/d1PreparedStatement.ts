@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Cloudflare } from "cloudflare";
 import type { QueryResult } from "cloudflare/resources/d1/database";
 import { cloudflareRequest } from "../client/errors";

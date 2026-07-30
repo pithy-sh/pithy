@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { type Capability, defineCapability } from "../capability/capability";

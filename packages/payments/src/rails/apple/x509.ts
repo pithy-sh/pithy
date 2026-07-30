@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import {
   ASN1_BOOLEAN,

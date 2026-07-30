@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 

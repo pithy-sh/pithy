@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase } from "../data/tables";

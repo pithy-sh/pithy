@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { StorageVisibility } from "../data/storageObject";
 import { MAX_OBJECT_KEY_BYTES } from "../object/key";

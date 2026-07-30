@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { formatDone, formatError, formatErrorJson, formatJsonLine, formatList, withErrorReporting } from "./output";

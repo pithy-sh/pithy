@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { MediaType } from "../data/enums";
 import type { MediaAsset } from "../data/mediaAsset";
 

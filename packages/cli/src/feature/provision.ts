@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { rm } from "node:fs/promises";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";

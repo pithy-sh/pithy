@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { RatingRecord } from "./rating";
 import { RATING_RATINGS_TABLE, type RatingDatabase } from "./tables";
 

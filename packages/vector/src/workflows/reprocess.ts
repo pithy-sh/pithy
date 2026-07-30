@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { VectorIndexConfig } from "../config/config";
 import type { VectorDocument } from "../data/document";
 import type { DocumentStore } from "../data/documents";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import { APPLE_ROOT_CERTIFICATES } from "./certs";

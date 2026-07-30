@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "../ai/vectorizeProvisioner";

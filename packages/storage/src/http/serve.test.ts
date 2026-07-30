@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ReadableStream } from "@cloudflare/workers-types";
 import { describe, expect, test } from "vitest";
 import type { ObjectMetadata } from "../object/store";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { type SqlBool, sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LeaderboardEntry } from "../data/entry";

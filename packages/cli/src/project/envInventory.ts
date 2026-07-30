@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { relative } from "node:path";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";

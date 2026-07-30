@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";

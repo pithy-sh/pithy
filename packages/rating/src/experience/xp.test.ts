@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import type { RatingLevel } from "../config/config";
 import { awardXp, classifyLevel, xpFor } from "./xp";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test, vi } from "vitest";
 import { D1_TRANSIENT_ERRORS, D1RetryableError, type D1RetryInfo, withD1Retry } from "./withD1Retry";
 

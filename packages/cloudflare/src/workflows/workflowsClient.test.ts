@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { CloudflareNotConfiguredError, CloudflareRequestError } from "../client/errors";
 import { CloudflareWorkflowsClient } from "./workflowsClient";

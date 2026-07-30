@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join } from "node:path";
 import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";

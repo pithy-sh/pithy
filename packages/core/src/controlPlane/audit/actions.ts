@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { AuditEventInput } from "../../audit/auditEvent";
 import type { AuditEmit } from "../../audit/recorder";
 import type { Logger } from "../../logger/logger";

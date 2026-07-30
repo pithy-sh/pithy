@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";

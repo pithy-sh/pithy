@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { describe, expect, it } from "vitest";
 import { isLedgerCapability, LEDGER_MIGRATION_ORDER, ledger } from "./capability";

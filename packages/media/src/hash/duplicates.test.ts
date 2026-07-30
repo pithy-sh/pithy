@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import type { HashMatch, HashPhashEntry, HashStore } from "../record/hashStore";
 import { classifyDistance, findDuplicates, hammingDistance, SIMILAR_THRESHOLD } from "./duplicates";

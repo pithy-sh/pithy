@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { uploadImageBytes, uploadStreamBytes } from "@pithy-sh/cloudflare/src/media/assetSeeder";
 import { composeDatabases, type MergedDatabases } from "@pithy-sh/core/src/data/databases";

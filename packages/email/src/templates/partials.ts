@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The shared head + footer partials every template includes via `{{> emailHead}}` ... `{{> emailFoot}}`.
  * They carry the full document shell: a Gmail-safe table layout, the theme (logo light/dark swap, accent,

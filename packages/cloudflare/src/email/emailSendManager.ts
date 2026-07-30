@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { cloudflareRequest } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 

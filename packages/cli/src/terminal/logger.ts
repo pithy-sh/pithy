@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createLocalLogger, type LocalPalette } from "@pithy-sh/core/src/logger/local";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { cyan, dim, red, yellow } from "./style";

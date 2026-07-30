@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Capability } from "../capability/capability";
 import { InternalError } from "../error/pithyError";
 import { workflowKey } from "./naming";

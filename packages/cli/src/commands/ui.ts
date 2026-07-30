@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCommand } from "citty";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";

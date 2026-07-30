@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";

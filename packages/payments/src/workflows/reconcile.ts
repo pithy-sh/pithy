@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database } from "@cloudflare/workers-types";
 import { type AuditEmit, noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { MediaType } from "../data/enums";
 import type { HashStore } from "../record/hashStore";

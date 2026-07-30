@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { AuditEvent, type AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";

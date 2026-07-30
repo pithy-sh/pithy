@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 /**
  * The package entrypoint — the surface `pithy add audit` wires into `pithy.config.ts`. Deliberately
  * narrow: the capability factory, the recorder/query seams an app reads the trail with, the federated

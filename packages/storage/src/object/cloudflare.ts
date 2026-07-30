@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import type { R2StorageCredentials } from "../secret/registry";
 import { type PresignedObjects, UploadedPart } from "./store";

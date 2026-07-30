@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { AuditEventRow } from "./auditEvent";

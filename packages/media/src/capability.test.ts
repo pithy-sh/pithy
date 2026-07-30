@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { isMediaCapability, MEDIA_MIGRATION_ORDER, media } from "./capability";

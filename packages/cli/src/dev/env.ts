@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";

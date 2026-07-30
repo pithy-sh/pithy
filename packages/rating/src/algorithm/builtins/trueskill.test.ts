@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import type { RatingEntry } from "../algorithm";
 import { erf, normCdf, normPdf, normPpf, TrueSkillParams, TrueSkillState, trueskill } from "./trueskill";

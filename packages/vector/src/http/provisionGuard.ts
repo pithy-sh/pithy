@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import type { VectorConfig } from "../config/config";
 import { assertProvisionedMetadataIndexes, readProvisionRecord } from "../index/provisioned";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkersProvisioner } from "./workersProvisioner";
 

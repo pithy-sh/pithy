@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
 import { AUDIT_MIGRATION_ORDER, audit, isAuditCapability } from "./capability";

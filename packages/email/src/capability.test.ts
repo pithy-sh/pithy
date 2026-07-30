@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { describe, expect, test } from "vitest";
 import { EMAIL_MIGRATION_ORDER, email, isEmailCapability } from "./capability";

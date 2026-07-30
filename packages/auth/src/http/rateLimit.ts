@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { RateLimitError } from "@pithy-sh/core/src/error/pithyError";
 import type { MiddlewareHandler } from "hono";

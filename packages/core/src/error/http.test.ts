@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { describe, expect, test } from "vitest";

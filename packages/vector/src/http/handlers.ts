@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { VectorIndexConfig } from "../config/config";
 import type { VectorDocument } from "../data/document";

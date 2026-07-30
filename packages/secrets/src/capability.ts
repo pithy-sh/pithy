@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { secretsTables } from "./data/tables";
 import { secrets_0001_init } from "./migrations/0001_init";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Vectorize's published ceilings, in one place, verified against
  * https://developers.cloudflare.com/vectorize/platform/limits/ and

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { createHash } from "node:crypto";
 
 /** A Cloudflare resource kind `pithy feature` can name. */

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";

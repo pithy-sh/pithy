@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { battleGame } from "./games/battle";
 import { connectNGame } from "./games/connectN";
 import { crapsGame } from "./games/craps";

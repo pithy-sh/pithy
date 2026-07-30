@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Kysely } from "kysely";
 import type { Migration } from "kysely/migration";
 import type { ExtensionColumn } from "../data/extend";

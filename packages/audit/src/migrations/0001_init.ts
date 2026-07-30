@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import type { Kysely } from "kysely";
 import type { Migration } from "kysely/migration";
 

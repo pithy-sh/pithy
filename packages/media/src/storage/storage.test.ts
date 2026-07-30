@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { R2Bucket } from "@cloudflare/workers-types";
 import { describe, expect, test } from "vitest";
 import { MediaConfig } from "../config/config";

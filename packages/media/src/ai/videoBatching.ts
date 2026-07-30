@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Pure batching and overlap-dedup for video/audio transcription. These functions carry the whole
  * algorithm the transcription Workflow orchestrates — no Cloudflare imports, no I/O, no clock. The

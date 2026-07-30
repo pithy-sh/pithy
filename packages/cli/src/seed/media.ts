@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";

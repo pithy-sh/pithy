@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { composeSeeds } from "@pithy-sh/core/src/seed/compose";
 import { EXAMPLE_IDENTITIES } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { describe, expect, it } from "vitest";

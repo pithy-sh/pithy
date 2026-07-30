@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PassThrough } from "node:stream";
 import { describe, expect, test } from "vitest";
 import { createLineSplitter, normalizeNewlines, stripAnsi, teeStream } from "./logging";

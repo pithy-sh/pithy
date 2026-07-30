@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Device, DevicePlatform } from "../data/device";
 import type { AuthDatabase } from "../data/tables";
 

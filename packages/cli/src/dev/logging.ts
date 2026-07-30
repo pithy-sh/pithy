@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching the ANSI ESC (\x1b) is required to strip color codes.
 const ANSI_RX = /\x1b\[[0-9;]*m/g;
 

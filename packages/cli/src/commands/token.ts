@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";

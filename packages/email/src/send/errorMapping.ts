@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { EmailRateLimitedError, EmailSendFailedError, EmailSuppressedError } from "../error/errors";
 

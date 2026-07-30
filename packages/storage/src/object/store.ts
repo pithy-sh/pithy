@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { R2Bucket, R2Conditional, R2Object, R2Range, ReadableStream } from "@cloudflare/workers-types";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";

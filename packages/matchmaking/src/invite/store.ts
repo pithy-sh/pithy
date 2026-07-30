@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Invite } from "../data/invite";
 import { MATCHMAKING_INVITES_TABLE, type MatchmakingDatabase } from "../data/tables";
 import { MatchmakingInviteNotFoundError } from "../error/errors";

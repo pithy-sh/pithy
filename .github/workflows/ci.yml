@@ -1,7 +1,13 @@
 name: CI
 
 # Skip CI for changes that can't affect build/typecheck/test/lint. `paths-ignore` skips a run only when
-# EVERY changed file matches, so a mixed code+docs change still runs. If `CI` is ever made a required
+# EVERY changed file matches, so a mixed code+docs change still runs.
+#
+# `LICENSE` used to be on this list and no longer is: the `verify` job now reconciles every LICENSE
+# file against the licence its package declares, so a licence-only change is precisely the one that
+# must run CI rather than skip it.
+#
+# If `CI` is ever made a required
 # status check (needs branch protection — a public/Pro feature), a docs-only PR would skip the job and
 # report no status; add an always-pass guard job then. Not a concern while the repo is unprotected.
 on:
@@ -14,7 +20,6 @@ on:
       - ".husky/**"
       - ".gitignore"
       - ".editorconfig"
-      - "LICENSE"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -24,7 +29,6 @@ on:
       - ".husky/**"
       - ".gitignore"
       - ".editorconfig"
-      - "LICENSE"
   # Manual full run, ignoring the affected calculation — the escape hatch for "test everything now".
   workflow_dispatch:
 
@@ -149,6 +153,13 @@ jobs:
 
       - name: Lint + format (Biome)
         run: bunx biome ci .
+
+      # Whole-repo by design, like the two steps around it. The three layers it reconciles —
+      # a package's `license` field, its LICENSE file, and every header under its src — are only
+      # consistent as a set, so checking an affected subset would miss exactly the drift it exists
+      # to catch.
+      - name: License headers
+        run: bun scripts/license-headers.ts --check
 
       - name: Typecheck
         run: bun run typecheck

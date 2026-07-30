@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Cron } from "croner";
 import { LeaderboardInvalidScheduleError } from "../error/errors";
 

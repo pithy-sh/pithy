@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import type { ObjectStore } from "@pithy-sh/storage/src/object/store";

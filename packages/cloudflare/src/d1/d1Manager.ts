@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { D1 } from "cloudflare/resources/d1/d1";
 import type { QueryResult } from "cloudflare/resources/d1/database";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Cloudflare } from "cloudflare";
 import type { Image, V1CreateParams, V1EditParams } from "cloudflare/resources/images/v1/v1";
 import type {

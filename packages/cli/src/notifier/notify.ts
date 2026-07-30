@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { saffron } from "../terminal/style";
 import { type FetchLike, refreshCliState } from "./check";
 import { type Installer, upgradeCommandFor } from "./installer";

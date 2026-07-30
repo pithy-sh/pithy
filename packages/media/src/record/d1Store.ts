@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { z } from "zod";
 import { MEDIA_ASSETS_TABLE, type MediaDatabase } from "../data/tables";
 import { MediaNotFoundError } from "../error/errors";

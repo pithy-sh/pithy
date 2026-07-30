@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { createDatabase } from "@pithy-sh/core/src/data/db";

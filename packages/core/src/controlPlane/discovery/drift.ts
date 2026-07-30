@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Hono } from "hono";
 import type { Capability } from "../../capability/capability";
 import type { AdminRoute } from "./adminRoute";

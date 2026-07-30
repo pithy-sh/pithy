@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { HostedSession, PortalSessionInput } from "../contract";
 import { stripeHttpFetch, stripeJson } from "./api";
 import { hostedSession, type StripeCheckoutOptions } from "./checkout";

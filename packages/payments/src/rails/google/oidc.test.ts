@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import { type MintedOidcKey, mintOidcKey, signOidcToken, tamperClaims } from "./fixtures/push";

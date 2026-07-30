@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The framework-free half of the client surface: five calls against this project's own payments routes,
  * and the guards that make their answers safe to read.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";

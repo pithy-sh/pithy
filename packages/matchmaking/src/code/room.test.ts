@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, it } from "vitest";

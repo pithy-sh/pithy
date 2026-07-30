@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import type { AuthEmailMessage, SendAuthEmail } from "../instance/auth";
 

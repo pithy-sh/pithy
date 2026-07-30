@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { DurableObjectNamespace, DurableObjectStub } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The write-back seam for the master-key config. The at-rest rotation Workflow updates
  * `SECRETS_ENCRYPTION_KEYS` (a CF Secrets Store entry) via the CF API — the binding itself is

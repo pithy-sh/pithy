@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { detectInstaller } from "./installer";
 import type { NotifierState } from "./state";
 

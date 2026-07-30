@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { z } from "zod";
 import type { AuditDatabase } from "./data/tables";

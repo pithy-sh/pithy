@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";

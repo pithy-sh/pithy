@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database } from "@cloudflare/workers-types";
 import type { MediaType } from "../data/enums";
 import { MediaHash } from "../data/mediaHash";

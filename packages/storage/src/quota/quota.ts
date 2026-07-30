@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { sql } from "kysely";
 import type { StorageObjectRow, StorageObjectStatus } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";

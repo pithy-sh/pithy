@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { PackageManager } from "../project/packageManager";
 import { reactStub } from "./react";

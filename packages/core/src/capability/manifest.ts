@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { Hono } from "hono";

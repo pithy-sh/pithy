@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";

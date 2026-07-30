@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Semver comparison for the update notifier — hand-rolled so the CLI adds no dependency for a three-number
  * compare (docs/CLI.md §5). Only `major.minor.patch` is significant here: a prerelease or build suffix is

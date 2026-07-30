@@ -10,6 +10,7 @@
         "@changesets/cli": "^2.31.0",
         "@commitlint/cli": "^21.0.2",
         "@commitlint/config-conventional": "^21.0.2",
+        "@pithy-sh/license-headers": "workspace:*",
         "husky": "^9.1.7",
         "lint-staged": "^17.0.7",
         "turbo": "^2.10.7",
@@ -485,6 +486,17 @@
         "vite": "^6.1.0 || ^7.0.0 || ^8.0.0",
       },
     },
+    "tooling/license-headers": {
+      "name": "@pithy-sh/license-headers",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+      },
+    },
     "tooling/tsconfig": {
       "name": "@pithy-sh/tsconfig",
       "version": "0.0.0",
@@ -854,6 +866,8 @@
     "@pithy-sh/leaderboard": ["@pithy-sh/leaderboard@workspace:packages/leaderboard"],
 
     "@pithy-sh/ledger": ["@pithy-sh/ledger@workspace:packages/ledger"],
+
+    "@pithy-sh/license-headers": ["@pithy-sh/license-headers@workspace:tooling/license-headers"],
 
     "@pithy-sh/matchmaking": ["@pithy-sh/matchmaking@workspace:packages/matchmaking"],
 

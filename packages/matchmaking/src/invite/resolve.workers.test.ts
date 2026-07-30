@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { resolveInvitee } from "./resolve";

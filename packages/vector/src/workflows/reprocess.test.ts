@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import type { VectorIndexConfig } from "../config/config";
 import type { VectorDocument } from "../data/document";

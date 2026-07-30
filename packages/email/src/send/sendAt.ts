@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { normalizeIanaTimezone } from "@pithy-sh/core/src/data/codecs";
 import { EmailInvalidPayloadError } from "../error/errors";
 

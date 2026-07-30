@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import { dirname, join } from "node:path";

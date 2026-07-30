@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The `pithy add controlplane` surface — **not a barrel over `@pithy-sh/core`.**
  *

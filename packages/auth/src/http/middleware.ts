@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import { ControlPlaneKeyConflictError, ControlPlaneKeyNotFoundError } from "../error/errors";
 import type { Ed25519PublicJwk, RegisteredKey } from "./connection";

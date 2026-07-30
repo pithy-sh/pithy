@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PaymentsConfig } from "../config/config";
 import { railEnabled } from "../config/config";
 import type { PaymentsRail } from "../data/rail";

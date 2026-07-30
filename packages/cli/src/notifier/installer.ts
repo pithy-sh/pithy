@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Detect which package manager installed the `pithy` binary and, from that, the exact upgrade command to
  * offer. Ships docs/CLI.md §5.3 verbatim: path-based detection over `process.argv[1]`, order-sensitive so

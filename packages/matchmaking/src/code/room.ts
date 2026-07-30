@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { MatchmakingGame } from "../config/config";
 import { MatchmakingInvalidCodeError, MatchmakingRoomFullError, MatchmakingRoomNotFoundError } from "../error/errors";
 import { roomStore } from "../kv/rooms";

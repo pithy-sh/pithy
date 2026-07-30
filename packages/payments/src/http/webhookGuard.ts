@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";

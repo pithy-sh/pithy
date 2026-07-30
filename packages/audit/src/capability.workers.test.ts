@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { env } from "cloudflare:test";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";

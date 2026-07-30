@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import { PithyError } from "../error/pithyError";
 import { MAX_WORKFLOW_NAME_BYTES, workflowHostName, workflowKey, workflowScriptName } from "./naming";

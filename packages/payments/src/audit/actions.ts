@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The audit action codes `@pithy-sh/payments` emits, as `domain/reason` strings under the `payments` domain.
  *

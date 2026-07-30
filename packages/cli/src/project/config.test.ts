@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";

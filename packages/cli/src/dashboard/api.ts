@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";

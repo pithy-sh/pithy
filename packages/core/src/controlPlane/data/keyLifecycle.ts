@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ControlPlaneKeyConflictError, ControlPlaneKeyNotFoundError } from "../error/errors";
 import type { RegisteredKey } from "./connection";
 

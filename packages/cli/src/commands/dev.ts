@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCommand } from "citty";
 import { startDev } from "../dev/orchestrator";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";

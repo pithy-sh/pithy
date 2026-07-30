@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";

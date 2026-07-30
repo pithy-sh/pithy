@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
 import { type ManagedEnvironment, resolveWriteTargets } from "../scope";
 

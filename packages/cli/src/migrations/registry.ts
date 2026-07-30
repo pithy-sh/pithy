@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";

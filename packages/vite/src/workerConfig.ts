@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { access } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";

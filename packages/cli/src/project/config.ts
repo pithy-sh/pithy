@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { access } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";

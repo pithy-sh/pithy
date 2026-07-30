@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { EmailJob } from "../data/emailJob";
 import { EmailJob as EmailJobSchema } from "../data/emailJob";
 import type { EmailJobStatus, SendMode } from "../data/enums";

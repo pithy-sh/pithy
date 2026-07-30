@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { kvMetadata, TypedKv } from "@pithy-sh/core/src/kv/kv";

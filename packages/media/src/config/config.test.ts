@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { DEFAULT_IMAGE_TO_TEXT_MODEL, DEFAULT_TRANSCRIBE_MODEL, MediaConfig } from "./config";
 

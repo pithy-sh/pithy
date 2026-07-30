@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { extractMarkdown, generateImageText, type MarkdownFile, type MediaAi, transcribeAudioBytes } from "./enrich";
 

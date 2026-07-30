@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PaymentsPurchase } from "../../data/purchase";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsGoogleCredentials } from "../../secret/registry";

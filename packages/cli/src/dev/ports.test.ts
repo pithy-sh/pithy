@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import { isReapableDevCommand, sweepStaleDevPorts, verifyPinnedPort, waitForExit } from "./ports";

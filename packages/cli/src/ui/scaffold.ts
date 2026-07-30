@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { access, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";

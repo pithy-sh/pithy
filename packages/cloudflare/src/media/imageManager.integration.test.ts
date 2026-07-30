@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { loadIntegrationCreds, withThrowawayResource } from "../test-utils/harness";
 import { CloudflareImageManager } from "./imageManager";

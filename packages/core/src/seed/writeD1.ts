@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Kysely } from "kysely";
 import { z } from "zod";
 import { fromZodError } from "../error/pithyError";

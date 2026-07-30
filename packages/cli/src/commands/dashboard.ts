@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFile } from "node:fs/promises";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";

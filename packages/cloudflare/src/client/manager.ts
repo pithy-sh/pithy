@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Cloudflare } from "cloudflare";
 import type { Account } from "cloudflare/resources/accounts/accounts";
 import { CloudflareNotConfiguredError, cloudflareRequest } from "./errors";

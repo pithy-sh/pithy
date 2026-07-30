@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { CommandDef } from "citty";
 import { describe, expect, test } from "vitest";

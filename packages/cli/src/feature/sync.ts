@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";

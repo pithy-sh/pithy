@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
 import { describe, expect, test } from "vitest";
 import {

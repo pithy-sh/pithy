@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { MAX_NAME_BYTES, MAX_TOPK_WITHOUT_PAYLOAD, MAX_UPSERT_BATCH, MAX_VECTOR_ID_BYTES } from "../index/limits";
 

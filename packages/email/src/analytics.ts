@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { EmailEventType } from "./data/enums";
 import type { EmailDatabase } from "./data/tables";
 

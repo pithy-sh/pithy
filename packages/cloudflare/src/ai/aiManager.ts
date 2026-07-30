@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { AIRunParams, AIRunResponse } from "cloudflare/resources/ai/ai";
 import type { ModelListResponse } from "cloudflare/resources/ai/models/models";
 import { fromUint8Array } from "js-base64";

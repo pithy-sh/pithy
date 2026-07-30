@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFileSync } from "node:fs";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";

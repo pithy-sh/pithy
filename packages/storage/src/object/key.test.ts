@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { deriveObjectKey, isDerivedObjectKey, isValidObjectKey, MAX_OBJECT_KEY_BYTES, OBJECT_KEY_PREFIX } from "./key";
 

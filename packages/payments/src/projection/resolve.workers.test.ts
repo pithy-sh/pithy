@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { entitlementGrantsAccess, grantedEntitlementKeys } from "@pithy-sh/core/src/entitlement/entitlement";

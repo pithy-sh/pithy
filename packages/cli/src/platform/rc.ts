@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";

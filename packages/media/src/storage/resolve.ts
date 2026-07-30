@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";

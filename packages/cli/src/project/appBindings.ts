@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";

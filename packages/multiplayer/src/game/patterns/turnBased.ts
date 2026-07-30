@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { MultiplayerInvalidTransitionError } from "../../error/errors";
 import type { LedgerEffect } from "../effects";

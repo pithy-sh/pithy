@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test, vi } from "vitest";
 import { CACHE_MS, type FetchLike, fetchLatestVersion, refreshCliState, registryUrl } from "./check";
 import { defaultState, type NotifierState } from "./state";

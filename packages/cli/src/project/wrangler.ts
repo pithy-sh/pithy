@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";

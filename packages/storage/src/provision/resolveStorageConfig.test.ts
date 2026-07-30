@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { describe, expect, test } from "vitest";
 import { StorageConfig } from "../config/config";

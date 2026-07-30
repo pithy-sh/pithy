@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Retry a D1 write through transient faults. Ported from the CMS `withD1Retry`, adapted to
  * Pithy: no injected logger (core has none), an optional `onRetry` notifier instead, and a

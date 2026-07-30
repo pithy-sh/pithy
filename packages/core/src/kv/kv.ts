@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { KVNamespace, KVNamespacePutOptions } from "@cloudflare/workers-types";
 import type { z } from "zod";
 import { InternalError, messageOf, NotFoundError } from "../error/pithyError";

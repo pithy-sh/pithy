@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeAll, describe, expect, test } from "vitest";
 import { PithyError } from "../../error/pithyError";
 import { Ed25519PublicJwk } from "../data/connection";

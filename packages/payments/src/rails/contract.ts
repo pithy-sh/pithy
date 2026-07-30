@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import type { ProviderEventInput } from "../projection/event";

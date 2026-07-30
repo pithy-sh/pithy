@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { MediaConfig } from "../config/config";
 import type { MediaType, StorageBackend } from "../data/enums";
 

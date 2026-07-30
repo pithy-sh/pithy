@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { r2CredentialsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { z } from "zod";

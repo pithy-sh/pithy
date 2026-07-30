@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "vitest";
 import type { RatedOutcome, RatingEntry } from "../algorithm";
 import { EloParams, EloState, elo } from "./elo";

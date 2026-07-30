@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: FSL-1.1-MIT
+
 import { describe, expect, test, vi } from "vitest";
 import { emitFromCLI } from "./emitFromCLI";
 import type { ResolvedActor } from "./resolveActor";

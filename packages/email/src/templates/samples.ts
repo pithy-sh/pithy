@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Placeholder payloads — one valid input per template — for previewing a rendered email without real
  * data. `pithy email test` uses these to send a sample of any template through a project's config so a

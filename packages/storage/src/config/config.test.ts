@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { DEFAULT_MULTIPART_THRESHOLD_BYTES, DEFAULT_PART_SIZE_BYTES, MAX_UPLOAD_PARTS } from "../object/multipart";
 import { maxObjectBytes, StorageConfig } from "./config";

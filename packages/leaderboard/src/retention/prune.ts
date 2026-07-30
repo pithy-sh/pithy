@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { LeaderboardBoard } from "../config/config";
 import type { LeaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";

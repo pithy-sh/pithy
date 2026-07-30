@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type { VerifiedPurchase } from "../contract";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { AuthAuditActions } from "./actions";
 

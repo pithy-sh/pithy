@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { SuppressionReason } from "../data/enums";
 import type { EmailSuppressionDatabase } from "../data/tables";

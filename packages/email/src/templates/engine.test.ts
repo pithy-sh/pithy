@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { verifyToken } from "../crypto/token";
 import { CALLBACK_BASE, listTemplates, renderEmail } from "./engine";

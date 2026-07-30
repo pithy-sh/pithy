@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareKVManager } from "../kv/kvManager";

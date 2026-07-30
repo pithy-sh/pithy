@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretsWriteWorkflowName, WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";

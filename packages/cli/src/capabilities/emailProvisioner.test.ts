@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { SUPPRESSION_DB_NAME } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";

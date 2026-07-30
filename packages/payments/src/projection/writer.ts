@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";

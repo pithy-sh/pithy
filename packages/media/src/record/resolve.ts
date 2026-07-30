@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";

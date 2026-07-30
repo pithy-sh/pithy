@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 // Bindings the Workers-runtime test project provides to `*.workers.test.ts`, matching the Miniflare config

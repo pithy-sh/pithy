@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { zValidator } from "@hono/zod-validator";
 import type { Hono } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";

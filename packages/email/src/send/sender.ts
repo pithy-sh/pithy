@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The minimal shape of the Cloudflare Email Service `send_email` binding this capability depends on.
  * We type only what we use, structurally — the real binding (`env.EMAIL`) satisfies it, and tests

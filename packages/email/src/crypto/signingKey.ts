@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { VersionedSecret } from "@pithy-sh/secrets/src/secretsStore";

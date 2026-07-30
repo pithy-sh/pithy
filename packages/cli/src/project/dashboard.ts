@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Cloudflare dashboard deep-link builders, keyed by resource kind. `pithy env` renders a
  * provisioned resource's id as a link to the exact dashboard page for that resource, so an

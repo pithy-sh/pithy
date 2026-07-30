@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { defineSeed, kvSeedGroup } from "@pithy-sh/core/src/seed/seed";

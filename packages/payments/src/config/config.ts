@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
 import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";

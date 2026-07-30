@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 

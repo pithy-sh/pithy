@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { z } from "zod";
 import { PithyError } from "../error/pithyError";
 import type { Logger } from "../logger/logger";

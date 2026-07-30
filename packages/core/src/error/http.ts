@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";

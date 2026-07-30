@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The `ls --check` audit. Compares the secrets the registry declares against what is actually
  * present in an environment, surfacing two problems:

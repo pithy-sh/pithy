@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { PithyError } from "../error/pithyError";
 import { boundParameterBudget, chunkByBoundParameters, MAX_BOUND_PARAMETERS } from "./boundParameters";

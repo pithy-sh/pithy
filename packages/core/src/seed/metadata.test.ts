@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { buildAssetMetadata, PITHY_ENV_METADATA_KEY, STANDARD_ASSET_METADATA_KEYS } from "./metadata";
 

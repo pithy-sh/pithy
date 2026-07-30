@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type EntitlementView,

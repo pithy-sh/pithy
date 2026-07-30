@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type {
   AccountTokenSummary,

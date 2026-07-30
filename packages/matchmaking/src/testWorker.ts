@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 // The Miniflare `main` for `*.workers.test.ts`: it exists only to register the Durable Object classes so
 // the test bindings (`QUEUE`, `PRESENCE`) resolve. Its fetch is inert.
 

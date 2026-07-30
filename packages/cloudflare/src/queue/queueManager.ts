@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageBulkPushResponse } from "cloudflare/resources/queues/messages";
 import { CloudflareNotConfiguredError, cloudflareRequest, reasonOf } from "../client/errors";

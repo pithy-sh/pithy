@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { DurableObject } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";

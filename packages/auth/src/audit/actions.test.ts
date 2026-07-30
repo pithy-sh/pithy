@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { AuditAction } from "@pithy-sh/core/src/audit/auditEvent";
 import { describe, expect, test } from "vitest";
 import { AuthAuditActions } from "./actions";

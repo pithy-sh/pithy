@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { MultiplayerResult } from "./result";
 import { MULTIPLAYER_RESULTS_TABLE, type MultiplayerDatabase } from "./tables";
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database } from "@cloudflare/workers-types";
 import type { DatabaseIntrospector, DatabaseMetadataOptions, SchemaMetadata, TableMetadata } from "kysely";
 import { CamelCasePlugin, Kysely, sql } from "kysely";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { runWrangler } from "./wrangler";

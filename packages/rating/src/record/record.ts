@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { RatedOutcome, RatingEntry } from "../algorithm/algorithm";
 import type { ResolvedRatingGame } from "../config/config";

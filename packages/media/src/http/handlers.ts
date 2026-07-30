@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";

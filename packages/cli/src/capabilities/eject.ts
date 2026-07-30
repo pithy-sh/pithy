@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";

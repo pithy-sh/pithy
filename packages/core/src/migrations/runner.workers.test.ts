@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";

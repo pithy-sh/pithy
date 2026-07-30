@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { CliAuditEmit } from "../audit/cliAudit";

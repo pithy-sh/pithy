@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { defineSecretRegistry, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { z } from "zod";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
 

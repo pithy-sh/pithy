@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { MultiplayerInvalidMoveError } from "../../error/errors";
 import type { ModelOutcome } from "../model";

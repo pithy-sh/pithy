@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { D1Database, D1DatabaseSession } from "@cloudflare/workers-types";
 import { type LeaderboardDatabase, leaderboardDatabase } from "../data/tables";
 

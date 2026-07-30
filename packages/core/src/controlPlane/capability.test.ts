@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";

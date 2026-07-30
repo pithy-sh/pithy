@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile } from "node:child_process";
 import { open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";

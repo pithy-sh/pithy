@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { resolve } from "node:path";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { type EnvironmentModuleNode, normalizePath, type Plugin, type ViteDevServer } from "vite";

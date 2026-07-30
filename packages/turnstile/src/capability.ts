@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
 import { TurnstileConfig, type TurnstileConfigInput } from "./config/config";

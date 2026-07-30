@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { encodeVersionedValue, initialVersionedValue } from "../crypto/versionedValue";
 import type { SecretsStoreEnv } from "../env/bindings";

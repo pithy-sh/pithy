@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { PurchaseStatus } from "../data/status";
 import { PaymentsClawbackFailedError } from "../error/errors";

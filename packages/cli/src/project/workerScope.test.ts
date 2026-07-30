@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";

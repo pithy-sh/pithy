@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import Handlebars from "handlebars";
 import { mintToken } from "../crypto/token";
 import { EmailInvalidPayloadError, EmailTemplateNotFoundError } from "../error/errors";

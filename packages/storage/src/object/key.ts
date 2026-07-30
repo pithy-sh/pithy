@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * Key **policy** for the storage capability. It lives here, apart from {@link ObjectStore}, because
  * the store is *mechanism*: it takes an explicit key and moves bytes, and knows nothing about how

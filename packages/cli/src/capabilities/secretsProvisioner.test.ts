@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import {
   MANAGER_CF_API_TOKEN_NAME,

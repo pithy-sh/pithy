@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test } from "vitest";
 import { isSecretsCapability, secrets } from "./capability";

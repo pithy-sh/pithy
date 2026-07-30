@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { VectorDocument } from "./document";

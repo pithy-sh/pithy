@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCommand } from "citty";
 import { migrateProject, type WorkerMigrationRun } from "../migrations/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";

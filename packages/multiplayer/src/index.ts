@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The package entrypoint — the surface `pithy add multiplayer` wires into `pithy.config.ts`. Deliberately
  * narrow: the capability factory, its config and options types, the game-model seam, and the session shapes

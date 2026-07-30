@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The presence protocol — the header and event shapes shared by the presence Durable Object and the HTTP
  * routes. Kept free of any `cloudflare:workers` import so the routes (and their node-side tests) can depend

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { VectorConfig } from "@pithy-sh/vector/src/config/config";

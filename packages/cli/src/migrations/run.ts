@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";

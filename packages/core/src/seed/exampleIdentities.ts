@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The canonical example identities — a small, fixed cast of demo users that every capability's
  * example seed set references. It is what makes `pithy seed` (with `seed.includeExamples`) fill a

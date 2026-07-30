@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tables";

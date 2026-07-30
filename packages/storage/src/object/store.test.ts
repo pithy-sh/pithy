@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { R2Bucket } from "@cloudflare/workers-types";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { SecretsAccessor } from "@pithy-sh/secrets/src/secretsStore";

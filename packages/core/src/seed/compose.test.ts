@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { type Capability, defineCapability } from "../capability/capability";
 import { PithyError } from "../error/pithyError";

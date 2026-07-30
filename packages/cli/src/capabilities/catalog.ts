@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The built-in discovery catalog — the capabilities `pithy add --list` shows
  * before anything is installed. Hand-maintained as capabilities ship; the full

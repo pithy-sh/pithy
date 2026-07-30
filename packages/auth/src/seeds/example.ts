@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { EXAMPLE_IDENTITIES } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { d1SeedGroup, defineSeed, type SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { User } from "../data/betterAuth";

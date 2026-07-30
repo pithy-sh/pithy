@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";

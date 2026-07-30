@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";

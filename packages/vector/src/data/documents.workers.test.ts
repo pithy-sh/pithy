@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env } from "cloudflare:test";
 import { MAX_BOUND_PARAMETERS } from "@pithy-sh/core/src/data/boundParameters";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";

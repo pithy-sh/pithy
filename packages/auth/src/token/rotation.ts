@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { RotatedToken } from "../data/rotatedToken";
 import type { AuthDatabase } from "../data/tables";

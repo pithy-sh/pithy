@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The package entrypoint — the surface `pithy add storage` wires into `pithy.config.ts`.
  *

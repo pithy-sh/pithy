@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { basename } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCommand } from "citty";
 import { addWorker, listWorkers, removeWorker } from "../project/workerCommand";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";

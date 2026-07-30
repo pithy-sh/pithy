@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import type { Entitlement, EntitlementResolver } from "@pithy-sh/core/src/entitlement/entitlement";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";

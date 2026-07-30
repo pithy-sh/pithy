@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { lstat, symlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerTarget } from "../project/workers";

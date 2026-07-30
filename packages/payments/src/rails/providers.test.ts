@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
 import type { PaymentsRail } from "../data/rail";

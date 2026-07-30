@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ControlPlaneConfig } from "../config/config";
 import { ControlPlaneContext } from "../context";
 import type { ControlPlaneConnection } from "../data/connection";

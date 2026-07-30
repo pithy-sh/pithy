@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { loadIntegrationCreds } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { beforeAll, describe, expect, test } from "vitest";
 import { StorageObject } from "../data/storageObject";

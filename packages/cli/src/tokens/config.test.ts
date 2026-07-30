@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import type { ProjectConfig } from "../project/config";
 import { tokenOverrideResolver } from "./config";

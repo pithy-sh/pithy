@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Capability, TokenProfileSeam } from "@pithy-sh/core/src/capability/capability";
 import { CloudflareNotConfiguredError } from "../client/errors";
 import { accountResource, type TokenPermission } from "./accountTokensManager";

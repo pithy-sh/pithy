@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from "vitest";
 import { PaymentsInvalidReceiptError, PaymentsRailNotConfiguredError } from "../../error/errors";
 import { base64UrlDecode, base64UrlEncode, decodeJwtJson, pemPrivateKey, splitJwt } from "./jwt";

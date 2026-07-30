@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";

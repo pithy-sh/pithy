@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { join, relative } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";

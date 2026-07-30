@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { defineCommand } from "citty";
 import { buildEnvInventory, type EnvInventory, type EnvResource } from "../project/envInventory";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";

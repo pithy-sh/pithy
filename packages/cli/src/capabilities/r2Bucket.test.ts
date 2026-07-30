@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { describe, expect, test, vi } from "vitest";
 import { deleteR2BucketWithContents, resolveR2Credentials } from "./r2Bucket";

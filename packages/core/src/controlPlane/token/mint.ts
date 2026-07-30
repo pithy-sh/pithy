@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { Ed25519PublicJwk } from "../data/connection";
 import { base64UrlEncode } from "./base64url";
 import { ControlPlaneClaims, type ControlPlaneJwsHeader } from "./claims";

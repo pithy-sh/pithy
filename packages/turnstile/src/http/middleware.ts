@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, MiddlewareHandler } from "hono";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defaultGit, type GitRunner } from "./worktree";
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { basename, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { DEFAULT_WORKER, ensureEmptyTarget, scaffoldProject } from "../project/scaffold";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { z } from "zod";
 import { MultiplayerGameNotFoundError, MultiplayerInvalidMoveError } from "../error/errors";
 import { type GameModel, playerBounds, registeredKinds, resolveModel } from "../game/model";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { VectorMetadataIndexDriftError } from "../error/errors";
 import type { MetadataIndexDescriptor, MetadataIndexType } from "./metadata";
 

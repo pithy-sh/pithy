@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 

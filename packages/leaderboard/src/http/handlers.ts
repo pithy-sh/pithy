@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { assertBoardDefinition } from "../board/registry";
 import type { LeaderboardBoard, LeaderboardConfig } from "../config/config";
 import type { LeaderboardDatabase } from "../data/tables";

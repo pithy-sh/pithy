@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 /**
  * The audit action codes `@pithy-sh/auth` emits, as `domain/reason` strings under the `auth` domain.
  *

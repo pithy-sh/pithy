@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { MatchmakingQueueSettings, MatchmakingSnapshot } from "../config/config";

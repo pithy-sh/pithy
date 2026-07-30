@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { execFile, spawn as spawnChild } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

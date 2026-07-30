@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { Hono } from "hono";

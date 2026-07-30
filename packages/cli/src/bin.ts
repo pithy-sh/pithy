@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { readFileSync } from "node:fs";
 import { runMain } from "citty";
 import { handleHiddenFlags } from "./commands/alias";

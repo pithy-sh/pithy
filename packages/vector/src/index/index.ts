@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { VectorIndexConfig } from "../config/config";

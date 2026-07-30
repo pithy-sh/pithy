@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, it } from "vitest";
 import type { VectorIndexConfig } from "../config/config";
