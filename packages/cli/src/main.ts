@@ -32,6 +32,7 @@ export const main = defineCommand({
     payments: () => import("./commands/payments").then((m) => m.default),
     support: () => import("./commands/support").then((m) => m.default),
     storage: () => import("./commands/storage").then((m) => m.default),
+    testers: () => import("./commands/testers").then((m) => m.default),
     vector: () => import("./commands/vector").then((m) => m.default),
     turnstile: () => import("./commands/turnstile").then((m) => m.default),
     alias: () => import("./commands/alias").then((m) => m.default),

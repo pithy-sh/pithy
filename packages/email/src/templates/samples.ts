@@ -23,6 +23,18 @@ export const samplePayloads: Record<string, unknown> = {
     actionUrl: "https://example.com/activity",
   },
   invite: { inviterName: "Pat", organizationName: "Acme", acceptUrl: "https://example.com/accept" },
+  testerNudge: {
+    subject: "One step left to join the test",
+    heading: "Confirm your place",
+    paragraphs: [
+      "You were invited to test an early build. Confirming takes one tap, and it is the step that actually enrols you.",
+      "The test runs for a fixed period, and it needs everyone who joined to stay joined for the whole of it.",
+    ],
+    ctaUrl: "https://example.com/testers/opt-in/sample-token",
+    ctaLabel: "Confirm",
+    optOutUrl: "https://example.com/testers/opt-out/sample-token",
+    optOutLabel: "No thanks, take me off this list",
+  },
   passwordChanged: { name: "Sam", when: "just now", supportUrl: "https://example.com/support" },
   newsletter: {
     subject: "Sample newsletter",

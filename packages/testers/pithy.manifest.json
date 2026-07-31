@@ -1,0 +1,49 @@
+{
+  "name": "testers",
+  "package": "@pithy-sh/testers",
+  "requiredBindings": [
+    {
+      "type": "d1",
+      "name": "DB"
+    },
+    {
+      "type": "workflow",
+      "name": "TESTERS_DAILY",
+      "optional": true
+    }
+  ],
+  "peerCapabilities": ["email"],
+  "optionalCapabilities": ["auth", "controlplane", "audit", "secrets"],
+  "migrationNamespace": "testers",
+  "whenToEnable": "Google Play makes every new personal developer account run a closed test with at least 12 testers opted in for 14 continuous days before it will grant production access, and there is no screen anywhere that tells you where you stand. Lose one tester on day nine and the clock effectively starts again. This runs that process: a cohort with a target and a window, a roster you invite by email from your own domain, a one-tap confirmation link that needs no account, and a fourteen-day clock replayed from your own event log so a correction is a recomputation rather than an overwrite. The clock is honest about what it is. Pithy's count is an estimate from your own invite records; Google's count is authoritative and no API exposes it — not the roster, not the number, not a tester quietly opting out — so every figure derived from it is named `estimated`, the response carries that sentence as a required field, and nothing here claims to read the console. What Pithy can read is activity, and that is the part nobody else has: resolve each tester to their user through `@pithy-sh/auth` and you learn who has actually opened the app, so a tester dark for eight days shows up on day eight rather than on day fourteen when the count finally moves. A daily Workflow advances state, chases whoever needs chasing under a mandatory per-tester cooldown, and writes one snapshot per cohort per day — which is what makes the trend chartable at all, because activity cannot be reconstructed after the fact the way an event log can. Every nudge ships default copy, so this works from the CLI with no dashboard; a control-plane caller may override the words as plain text and never as markup, because those words go out over your own DKIM signature.",
+  "scaffold": [
+    "Add a `testers({ baseUrl: 'https://<your-worker>' })` block to pithy.config.ts. `baseUrl` is required before you can send an invitation — an email cannot carry a relative link.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_testers_cohorts, pithy_testers_members, pithy_testers_events, and pithy_testers_cohort_snapshots.",
+    "Paste the store's opt-in link when you create the cohort — `pithy testers create <name> --store-url https://play.google.com/apps/testing/<package>`. Copy it from Play Console; it is where a tester actually enrols, and Pithy will not guess the format.",
+    "Add `email(...)` to the same Worker if it is not there already. Invitations and nudges are enqueued through it, so they inherit its retries, suppression list, and bounce handling.",
+    "Run `pithy testers provision` to deploy the daily-pass Worker and bind TESTERS_DAILY. It creates nothing else — no bucket, no secret — because the confirmation token is a random value on the tester's own row rather than a signature.",
+    "Create a cohort: `pithy testers create <name>`. It inherits your configured target and window and then freezes its own copy, so a later config change cannot rewrite whether last Tuesday counted.",
+    "Invite testers: `pithy testers invite <cohort> --email <address>`. Carry more than twelve — twelve is the number that must still be standing at the end, not the number to start with.",
+    "Watch it: `pithy testers status <cohort>` reports the estimated clock, observed activity, the forecast, and the trend. `--json` for an agent.",
+    "Run the pass: `pithy testers run` sends what is due, advances state, and records the day's snapshot. The provisioned Worker does the same at 05:00 UTC; `run` is how you exercise it now.",
+    "Read `docs/store-apis.md` in this package before assuming any of this talks to Google. It does not, and that document explains exactly what the Play Developer API does and does not expose."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/testers",
+      "describe": "Where the testers routes mount, the public opt-in link included. Change it and the confirmation links in already-sent invitations break, so pick it before you invite anybody."
+    },
+    {
+      "key": "baseUrl",
+      "default": "https://example.com",
+      "describe": "The absolute origin the opt-in link is built from. Required before an invitation can be sent, because an email cannot carry a relative URL. Set it to the origin your Worker actually answers on, per environment."
+    },
+    {
+      "key": "modelVersion",
+      "default": "1",
+      "describe": "The label stamped on every daily snapshot identifying which set of survival and health constants produced its forecast. Bump it whenever you change one: a trend line silently spanning two models is a lie, and the dashboard uses this to annotate where your change took effect."
+    }
+  ]
+}
