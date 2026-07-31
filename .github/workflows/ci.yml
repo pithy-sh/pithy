@@ -161,6 +161,22 @@ jobs:
       - name: License headers
         run: bun scripts/license-headers.ts --check
 
+      # Whole-repo for the same reason as the step above, and learned the same way. Two capabilities
+      # in flight at once each took migration order 1200 from the same `NEXT_FREE_ORDER`; because both
+      # branches bumped the constant to the same value, git merged the registry with no conflict and
+      # the collision only existed once both were on one tree. `pithy migrate` throws
+      # `duplicate migration order` for any project composing such a pair.
+      #
+      # The test itself is sound — it scans every package's source rather than trusting the registry —
+      # but it lives in `@pithy-sh/cli` and so only ran when the affected calculation reached that
+      # package. That happens today only because every capability declares itself in the CLI's
+      # manifest, which is a load-bearing coincidence rather than a guarantee: a capability landing
+      # without that wiring, or declaring its order outside `capability.ts`, would skip the check
+      # entirely. Running it here makes it unconditional, and it costs a fifth of a second.
+      - name: Migration orders
+        working-directory: packages/cli
+        run: bunx vitest run src/migrations/orders.test.ts
+
       - name: Typecheck
         run: bun run typecheck
 
