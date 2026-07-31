@@ -1058,6 +1058,76 @@ const ControlPlaneKeyConflictPublic = z
   })
   .describe("A key operation conflicts with the connection's current state (409).");
 
+// --- @pithy-sh/support: inbound inbox, taxonomy, and classification codes ---
+
+const SupportNotFoundPublic = z
+  .object({
+    code: z.literal("support/not_found").describe("A requested support thread, message, or attachment does not exist."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("A requested support thread does not exist (404).");
+
+const SupportInvalidCategoryPublic = z
+  .object({
+    code: z
+      .literal("support/invalid_category")
+      .describe(
+        "A support category key or its description failed validation. Raised by `defineSupportCategories` at author time, so a typo fails where the constant is written rather than the first time a model happens to return it.",
+      ),
+    status: z.literal(400).describe("Bad Request — the taxonomy declaration is malformed."),
+    ...publicFields,
+  })
+  .describe("A support category declaration is invalid (400).");
+
+const SupportUnparseableMessagePublic = z
+  .object({
+    code: z
+      .literal("support/unparseable_message")
+      .describe(
+        "An inbound message could not be read as email, or carried no sender to thread and reply to. Expected traffic on a public address rather than an exceptional condition — inbound mail is attacker-controlled.",
+      ),
+    status: z.literal(400).describe("Bad Request — the message was not usable as email."),
+    ...publicFields,
+  })
+  .describe("An inbound support message could not be parsed (400).");
+
+const SupportRejectedPublic = z
+  .object({
+    code: z
+      .literal("support/rejected")
+      .describe(
+        "An inbound message was refused by the guard before anything was persisted — over the size bound, or over a per-sender or global rate bound. A public support address is a public write endpoint into the adopter's D1, and this is the code that says the bound held.",
+      ),
+    status: z.literal(429).describe("Too Many Requests — a size or rate bound refused the message."),
+    ...publicFields,
+  })
+  .describe("An inbound support message was refused by the volume guard (429).");
+
+const SupportClassificationFailedPublic = z
+  .object({
+    code: z
+      .literal("support/classification_failed")
+      .describe(
+        "The Workers AI classification step could not complete — the binding is absent, or the model was unavailable. A model that answers badly is not this: an unusable answer becomes `uncategorized`, because a thread with no classification is a legitimate state and a retry budget should not burn on a model that will say the same thing again.",
+      ),
+    status: z.literal(500).describe("Internal Server Error — classification could not run."),
+    ...publicFields,
+  })
+  .describe("A support classification step failed (500).");
+
+const SupportReplyFailedPublic = z
+  .object({
+    code: z
+      .literal("support/reply_failed")
+      .describe(
+        "A reply could not be enqueued: `@pithy-sh/email` is not composed, or it refused the job. Support never sends mail itself — every reply goes through the email capability's durable send path so it carries the adopter's domain, their DKIM, and the threading headers that keep the customer's view of the conversation intact.",
+      ),
+    status: z.literal(502).describe("Bad Gateway — the send path refused or is absent."),
+    ...publicFields,
+  })
+  .describe("A support reply could not be enqueued (502).");
+
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
  * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
@@ -1159,6 +1229,12 @@ export const PublicErrorPayload = z
     ControlPlaneInsufficientScopePublic,
     ControlPlaneKeyNotFoundPublic,
     ControlPlaneKeyConflictPublic,
+    SupportNotFoundPublic,
+    SupportInvalidCategoryPublic,
+    SupportUnparseableMessagePublic,
+    SupportRejectedPublic,
+    SupportClassificationFailedPublic,
+    SupportReplyFailedPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -1410,6 +1486,21 @@ const ControlPlaneKeyConflict = ControlPlaneKeyConflictPublic.extend(detailField
   ControlPlaneKeyConflictPublic.description ?? "",
 );
 
+const SupportNotFound = SupportNotFoundPublic.extend(detailField).describe(SupportNotFoundPublic.description ?? "");
+const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(detailField).describe(
+  SupportInvalidCategoryPublic.description ?? "",
+);
+const SupportUnparseableMessage = SupportUnparseableMessagePublic.extend(detailField).describe(
+  SupportUnparseableMessagePublic.description ?? "",
+);
+const SupportRejected = SupportRejectedPublic.extend(detailField).describe(SupportRejectedPublic.description ?? "");
+const SupportClassificationFailed = SupportClassificationFailedPublic.extend(detailField).describe(
+  SupportClassificationFailedPublic.description ?? "",
+);
+const SupportReplyFailed = SupportReplyFailedPublic.extend(detailField).describe(
+  SupportReplyFailedPublic.description ?? "",
+);
+
 /**
  * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
  * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
@@ -1510,6 +1601,12 @@ export const ErrorPayload = z
     ControlPlaneInsufficientScope,
     ControlPlaneKeyNotFound,
     ControlPlaneKeyConflict,
+    SupportNotFound,
+    SupportInvalidCategory,
+    SupportUnparseableMessage,
+    SupportRejected,
+    SupportClassificationFailed,
+    SupportReplyFailed,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

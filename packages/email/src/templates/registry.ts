@@ -154,6 +154,34 @@ const MarketingCampaignPayload = z
   })
   .describe("Inputs for a per-user marketing campaign email (tracking-enabled, marketing category).");
 
+/**
+ * The one template `@pithy-sh/support` sends through.
+ *
+ * **One template, not one per canned reply.** The wording of a support answer belongs to the adopter
+ * and changes on a Tuesday; a Handlebars body here is precompiled at build time and changes on a
+ * release. So this is the *shell* — the theme, the HTML and text pair, the shape a reply arrives in —
+ * and the words are `body`, chosen and edited by a human in the dashboard from the catalog
+ * `@pithy-sh/support` federates. The machine's job is a better blank page, not the letter.
+ *
+ * `{{body}}` is Handlebars-escaped, which matters more here than anywhere else in this file: it is
+ * the only template whose payload is free text somebody typed rather than a value this codebase
+ * produced.
+ */
+const SupportReplyPayload = z
+  .object({
+    subject: z.string().describe("The reply's subject line, already `Re:`-prefixed by the support capability."),
+    body: z
+      .string()
+      .describe(
+        "The reply text a human wrote. Rendered as paragraphs, HTML-escaped — it is free text from an operator, never markup.",
+      ),
+    agentName: z
+      .string()
+      .optional()
+      .describe("Who is answering, signed at the bottom. Optional; omitted rather than guessed."),
+  })
+  .describe("Inputs for a support reply — the shell around text a human wrote and edited.");
+
 /** The full template set, keyed by id. */
 export const templates: Record<string, EmailTemplate> = {
   magicLink: {
@@ -227,6 +255,25 @@ export const templates: Record<string, EmailTemplate> = {
     ),
     text: "Hi{{#if name}} {{name}}{{/if}},\n\nYour account credentials were changed on {{when}}. If this wasn't you, contact support: {{supportUrl}}",
     links: [{ path: "supportUrl", label: "password-support" }],
+  },
+  supportReply: {
+    id: "supportReply",
+    category: "transactional",
+    // Wide: a support reply is prose, frequently quoting the customer back at themselves, and the
+    // narrow shell is sized for a button and a sentence.
+    width: "wide",
+    payload: SupportReplyPayload,
+    subject: "{{subject}}",
+    html: layout(
+      // No heading, and no button. A reply that opened with a headline would read as a broadcast —
+      // the whole point is that it looks like a person wrote it, because one did. `linebreaks` keeps
+      // the operator's paragraphing while Handlebars still escapes the content.
+      `<div style="margin:0 0 16px; white-space:pre-wrap">{{body}}</div>{{#if agentName}}<p class="t-subtle" style="margin:24px 0 0; font-size:14px">— {{agentName}}</p>{{/if}}`,
+    ),
+    text: "{{body}}{{#if agentName}}\n\n— {{agentName}}{{/if}}",
+    // Deliberately none. Rewriting a link a human typed into a tracked redirect would put a
+    // marketing URL in a one-to-one reply, and a support answer is a letter, not a campaign.
+    links: [],
   },
   newsletter: {
     id: "newsletter",

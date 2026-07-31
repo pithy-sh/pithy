@@ -42,6 +42,7 @@
     "@pithy-sh/media": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
     "@pithy-sh/storage": "workspace:*",
+    "@pithy-sh/support": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@pithy-sh/vector": "workspace:*",
     "@types/node": "^22.15.0",

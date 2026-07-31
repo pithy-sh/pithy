@@ -1,0 +1,31 @@
+{
+  "name": "support",
+  "package": "@pithy-sh/support",
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "r2", "name": "SUPPORT_BUCKET", "optional": true },
+    { "type": "workflow", "name": "SUPPORT_CLASSIFY", "optional": true }
+  ],
+  "peerCapabilities": ["secrets"],
+  "optionalCapabilities": ["controlplane", "email", "auth", "payments", "audit", "storage"],
+  "migrationNamespace": "support",
+  "whenToEnable": "An inbound support inbox that lands mail in your own D1, classifies it on your own Workers AI binding, and links each sender to the account and purchases your app already knows about. Support is the employee a solo developer cannot hire, and every piece needed to build it was already in the catalog. Mail arrives through Cloudflare Email Routing, is parsed (multipart and attachments included), threaded on In-Reply-To and References so a conversation stays one conversation, and classified three ways at once — category, priority, sentiment — which makes a sortable inbox rather than a labelled one. The taxonomy is federated: eight categories ship, and you add your own with defineSupportCategories. Classification runs on your binding, so the inference lands on your bill and your customers' support mail never leaves your infrastructure. Everything is derived from immutable mail: a wrong classification is recomputed, not repaired, and there is no assignment and no status workflow, because that is a helpdesk product and this is not one. Replies go out through @pithy-sh/email carrying your domain, your DKIM, and correct threading headers — which only the Worker can set. The admin surface is control-plane only and default-denied. **Cloudflare Email Routing takes over a zone's MX**, so use a subdomain (support@help.yourdomain.com) and never your apex, or you will move your real mail off your existing provider.",
+  "scaffold": [
+    "Pick the address this inbox will answer on, and put it in `inboundAddresses`. **Use a subdomain, never your apex.** Enabling Email Routing on a zone points its MX at Cloudflare, so `support@yourdomain.com` would move all of your real inbound mail off your current provider. `support@help.yourdomain.com` costs you a subdomain zone and nothing else. Until this is set the inbox is inert and ignores every message.",
+    "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the R2 credentials attachment URLs are signed with are stored and read through @pithy-sh/secrets.",
+    "Run `pithy support provision --routing-zone <zone-id> --inbound-address <addr> --app-worker <name>`. It creates the `SUPPORT_BUCKET` R2 bucket, deploys the prebuilt classification worker for each environment, and creates the Email Routing rule that delivers mail to your app worker. Idempotent; re-run it freely.",
+    "Add the `DB` (D1) binding to each wrangler.jsonc env, and `SUPPORT_BUCKET` (R2) if you are keeping attachments. Add the `SUPPORT_CLASSIFY` Workflow binding your app dispatches to after storing a message — `pithy support provision` writes it.",
+    "Add the controlplane capability (`pithy add controlplane`) and run `pithy dashboard connect`. Every support route is control-plane only and default-denied: without a registered connection the whole admin surface answers 403, which is the correct posture for an inbox holding other people's private correspondence. Grant the five scopes deliberately — `support:threads:reply` sends mail to real people under your domain and is not the same permission as reading.",
+    "Add the email capability (`pithy add email`) if you want to answer from the dashboard. Without it the inbox still receives, threads, and classifies; the reply route returns `support/reply_failed` naming what is missing.",
+    "Add auth and payments if you have them. Neither is required, and both are reached by guarded dynamic import — with them installed a thread arrives already knowing who the sender is, what they bought, and whether their last renewal failed.",
+    "Add your own categories with `defineSupportCategories({ ... })` and your own canned replies with `defineSupportReplies({ ... })`. A category's description is prompt input, read by the model verbatim; a canned reply is a starting point a human picks and edits, never something sent automatically.",
+    "Leave `search.fts` off unless your inbox has outgrown a `LIKE` scan. Turning it on builds an FTS5 index, and an FTS5 virtual table anywhere in a D1 database makes `wrangler d1 export` refuse to dump the **whole** database — your other tables included."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/support",
+      "describe": "The path the control-plane admin routes mount under."
+    }
+  ]
+}

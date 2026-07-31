@@ -268,7 +268,12 @@ beforeEach(async () => {
   }
   const provider = createMigrationRegistry([
     { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
-    { database: "app", namespace: "email", order: EMAIL_MIGRATION_ORDER, migrations: { "0001_init": email_0001_init } },
+    {
+      database: "app",
+      namespace: "email",
+      order: EMAIL_MIGRATION_ORDER,
+      migrations: { "0001_init": email_0001_init },
+    },
     {
       database: "app",
       namespace: "controlplane",

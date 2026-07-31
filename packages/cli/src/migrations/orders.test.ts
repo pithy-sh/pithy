@@ -41,7 +41,7 @@ import { describe, expect, test } from "vitest";
  * prevent happened in a space that was 99% empty — the failure was uncoordinated allocation, not
  * capacity, which is why the procedure above routes every author through one file.
  */
-const NEXT_FREE_ORDER = 1200;
+const NEXT_FREE_ORDER = 1300;
 
 /** Every declared migration order, and the database it sorts within. */
 const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
@@ -62,6 +62,7 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   // but never on a sibling package. So core declares an order like any other capability — see the
   // scanner below, which no longer skips it.
   { constant: "CONTROLPLANE_MIGRATION_ORDER", database: "app" },
+  { constant: "SUPPORT_MIGRATION_ORDER", database: "app" },
   // Its own durable database, shared by every environment — so it does not compete with `app`.
   { constant: "EMAIL_SUPPRESSIONS_MIGRATION_ORDER", database: "emailSuppressions" },
   // The secrets manager's own database, likewise separate.

@@ -44,6 +44,24 @@ export interface EnqueueInput {
   clickTracking?: boolean;
   /** Override open-pixel injection (defaults on for marketing, off for transactional). */
   openTracking?: boolean;
+  /**
+   * The address a recipient's answer should go to, when it is not `fromAddress`.
+   *
+   * `@pithy-sh/support` is what this is for: a reply is sent as the adopter's onboarded sending
+   * identity (Cloudflare validates the `From` domain against exactly what was onboarded) while the
+   * conversation has to come back to the support inbox, which is usually a different subdomain.
+   */
+  replyTo?: string;
+  /**
+   * The `Message-ID` this job answers, angle brackets included — the `In-Reply-To` header.
+   *
+   * Set together with {@link references}. Threading on ids is what keeps a customer's client showing
+   * one conversation instead of one message per answer, and only the Worker holds the chain, which
+   * is why a reply is enqueued here rather than composed by whatever surface a human typed it into.
+   */
+  inReplyTo?: string;
+  /** The `References` chain, angle-bracketed and space-separated. Built by the caller from the parent. */
+  references?: string;
 }
 
 /** Dependencies enqueue needs: the database, the from identity, optional send-Workflow binding, time, ids. */
@@ -109,6 +127,9 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     error: null,
     bounceCode: null,
     bounceType: null,
+    replyTo: input.replyTo ?? null,
+    inReplyTo: input.inReplyTo ?? null,
+    references: input.references ?? null,
     createdAt: deps.now,
     updatedAt: deps.now,
     sentAt: null,
