@@ -11,6 +11,7 @@ import {
   messageOf,
 } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
+import { CfTokenVerification } from "../user/userManager";
 
 /**
  * One access policy to attach to a minted token: a set of permission groups (named, resolved to ids
@@ -100,6 +101,21 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Verify the **calling** token against this account — `GET /accounts/{id}/tokens/verify`.
+   *
+   * Distinct from {@link CloudflareUserManager.verifyToken}, which hits the *user*-scoped
+   * `/user/tokens/verify` and returns `Invalid API Token` for an account-owned (`cfat_*`) credential.
+   * Since `CLAUDE.md` prefers account-owned tokens over user-bound ones, the user endpoint is the wrong
+   * one for the common case, and using it reports a working token as invalid.
+   */
+  async verifyToken(): Promise<CfTokenVerification> {
+    const raw = await cloudflareRequest("verify account token", () =>
+      this.getClient().accounts.tokens.verify({ account_id: this.accountId }),
+    );
+    return decodeResponse(CfTokenVerification, raw, "account token verify");
   }
 
   /** Every permission group available to account-owned tokens in this account (SDK auto-paginates). */

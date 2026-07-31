@@ -19,10 +19,12 @@ import doctor, {
   buildDoctorReport,
   type DoctorReport,
   type DoctorReportOptions,
+  detectRuntime,
   doctorExitCode,
   installedCapabilityVersions,
   renderDoctorJson,
   renderDoctorText,
+  versionState,
 } from "./doctor";
 
 /** A `fetch` mapping each package's registry URL to a canned latest version. */
@@ -82,7 +84,10 @@ function baseOptions(overrides: Partial<DoctorReportOptions> = {}): DoctorReport
     env: {},
     homedir: "/home/u",
     os: { name: "macOS", version: "14.5" },
+    runtime: { name: "Node", version: "22.10.0", nodeCompat: null },
     node: "22.10.0",
+    // Injected so the unit suite never reaches Cloudflare; the live probe is exercised by its own module.
+    checkCloudflare: async () => ({ state: "ok" as const, missing: [], tokenStatus: "active" }),
     now: () => 1_000,
     fetch: registryFetch({ cli: "1.3.0" }),
     detectShell: async () => zsh,
@@ -184,9 +189,9 @@ describe("buildDoctorReport — project detection", () => {
       baseOptions({ fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }) }),
     );
     expect(report.project?.capabilities).toEqual([
-      { name: "@pithy-sh/core", installed: "1.2.0", latest: "1.2.0", upToDate: true },
-      { name: "@pithy-sh/auth", installed: "1.1.8", latest: "1.2.0", upToDate: false },
-      { name: "@pithy-sh/leaderboard", installed: "1.2.0", latest: "1.2.0", upToDate: true },
+      { name: "@pithy-sh/core", installed: "1.2.0", latest: "1.2.0", state: "current" },
+      { name: "@pithy-sh/auth", installed: "1.1.8", latest: "1.2.0", state: "outdated" },
+      { name: "@pithy-sh/leaderboard", installed: "1.2.0", latest: "1.2.0", state: "current" },
     ]);
   });
 });
@@ -244,8 +249,10 @@ describe("renderDoctorText", () => {
         "    migrations   2 pending — run: pithy migrate --env dev",
         "    entitlements no gated route without a provider ✓",
         "",
-        "OS:   macOS 14.5",
-        "Node: 22.10.0",
+        "Cloudflare: reachable (token active)",
+        "",
+        "OS:      macOS 14.5",
+        "Runtime: Node 22.10.0",
       ].join("\n"),
     );
   });
@@ -321,8 +328,8 @@ describe("renderDoctorText", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
-        "OS:   macOS 14.5",
-        "Node: 22.10.0",
+        "OS:      macOS 14.5",
+        "Runtime: Node 22.10.0",
       ].join("\n"),
     );
   });
@@ -437,7 +444,7 @@ describe("renderDoctorJson", () => {
       baseOptions({ fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }) }),
     );
     const json = renderDoctorJson(report);
-    expect(json.cli).toMatchObject({ installed: "1.2.0", latest: "1.3.0", installer: "bun", upToDate: false });
+    expect(json.cli).toMatchObject({ installed: "1.2.0", latest: "1.3.0", installer: "bun", state: "outdated" });
     expect(json.shell).toBe("zsh");
     expect(json.alias).toBe("installed");
     expect(json.notifier).toBe("enabled");
@@ -577,5 +584,122 @@ describe("shared engine", () => {
   test("the doctor command re-exports the same buildReconcilePlan upgrade uses", async () => {
     const { defaultBuildPlan } = await import("../doctor/health");
     expect(defaultBuildPlan).toBe(buildReconcilePlan);
+  });
+});
+
+describe("cloudflare credentials", () => {
+  test("a reachable account reports its token status and does not fail the exit", async () => {
+    const report = await buildDoctorReport(baseOptions());
+    expect(report.cloudflare).toEqual({ state: "ok", missing: [], tokenStatus: "active" });
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("unconfigured credentials never fail the exit — an unprovisioned project is legitimate", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkCloudflare: async () => ({
+          state: "unconfigured",
+          missing: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+          tokenStatus: null,
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("a rejected token fails the exit, so CI gates on it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkCloudflare: async () => ({ state: "token_invalid", missing: [], tokenStatus: null }) }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+  });
+
+  test("a live token pointed at the wrong account fails the exit", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkCloudflare: async () => ({ state: "account_unreachable", missing: [], tokenStatus: "active" }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+  });
+
+  test("the text report names only the missing key, not both", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkCloudflare: async () => ({ state: "unconfigured", missing: ["CLOUDFLARE_API_TOKEN"], tokenStatus: null }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Cloudflare: not configured (set CLOUDFLARE_API_TOKEN in .dev.vars)");
+    expect(text).not.toContain("CLOUDFLARE_ACCOUNT_ID");
+  });
+
+  test("--json carries the state and a human detail line", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkCloudflare: async () => ({ state: "token_invalid", missing: [], tokenStatus: null }) }),
+    );
+    const json = renderDoctorJson(report) as { cloudflare: { state: string; detail: string } };
+    expect(json.cloudflare.state).toBe("token_invalid");
+    expect(json.cloudflare.detail).toContain("CLOUDFLARE_API_TOKEN rejected");
+  });
+});
+
+describe("runtime reporting", () => {
+  test("Bun is named as the runtime, with the Node level it emulates", () => {
+    expect(detectRuntime({ bun: "1.1.38", node: "22.6.0" } as unknown as NodeJS.ProcessVersions)).toEqual({
+      name: "Bun",
+      version: "1.1.38",
+      nodeCompat: "22.6.0",
+    });
+  });
+
+  test("plain Node reports itself with no compat level", () => {
+    expect(detectRuntime({ node: "22.10.0" } as unknown as NodeJS.ProcessVersions)).toEqual({
+      name: "Node",
+      version: "22.10.0",
+      nodeCompat: null,
+    });
+  });
+
+  test("the report names the interpreter rather than the emulated Node version", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ runtime: { name: "Bun", version: "1.1.38", nodeCompat: "22.6.0" } }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain("Runtime: Bun 1.1.38 (Node 22.6.0 compat)");
+  });
+});
+
+describe("version checks that could not run", () => {
+  /** A registry that answers nothing — offline, an outage, or a package not published yet. */
+  const silentRegistry: FetchLike = vi.fn(async () => ({
+    ok: false,
+    status: 404,
+    json: async () => ({}),
+  })) as FetchLike;
+
+  test("an unreachable registry is unknown, never current", async () => {
+    const report = await buildDoctorReport(baseOptions({ fetch: silentRegistry }));
+    expect(report.cli.state).toBe("unknown");
+    expect(report.project?.capabilities.every((cap) => cap.state === "unknown")).toBe(true);
+  });
+
+  test("the report says the check was unavailable rather than claiming currency", async () => {
+    const report = await buildDoctorReport(baseOptions({ fetch: silentRegistry }));
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Version check unavailable (registry unreachable).");
+    expect(text).toContain("Project capabilities: version check unavailable (registry unreachable)");
+    expect(text).not.toContain("Up to date.");
+    expect(text).not.toContain("all up to date");
+  });
+
+  test("not knowing never fails the exit — it is absence of information, not drift", async () => {
+    const report = await buildDoctorReport(baseOptions({ fetch: silentRegistry }));
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("versionState classifies each case", () => {
+    expect(versionState("1.2.0", null)).toBe("unknown");
+    expect(versionState("1.2.0", "1.2.0")).toBe("current");
+    expect(versionState("1.2.0", "1.3.0")).toBe("outdated");
   });
 });

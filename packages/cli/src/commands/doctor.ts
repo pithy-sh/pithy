@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
+import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
@@ -39,12 +40,22 @@ const VERSION = (
   JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }
 ).version;
 
+/**
+ * Whether a version could be compared against the registry at all.
+ *
+ * **`unknown` exists because a boolean cannot say "I did not find out".** The registry lookup fails for
+ * ordinary reasons — offline, an outage, a package not published yet — and collapsing that into
+ * `upToDate: true` made `doctor` report currency it had never established. A diagnostic that answers
+ * confidently when it could not check is worse than one that says nothing.
+ */
+export type VersionState = "current" | "outdated" | "unknown";
+
 /** The CLI-version block of the report. */
 export interface CliStatus {
   installed: string;
   latest: string | null;
   installer: Installer;
-  upToDate: boolean;
+  state: VersionState;
   upgradeCommand: string;
 }
 
@@ -53,7 +64,7 @@ export interface CapabilityStatus {
   name: string;
   installed: string;
   latest: string | null;
-  upToDate: boolean;
+  state: VersionState;
 }
 
 /** The project-scoped portion of the report; `null` outside a Pithy project. */
@@ -74,8 +85,41 @@ export interface DoctorReport {
   project: ProjectStatus | null;
   /** Set when a `pithy.config.ts` is present but could not be loaded (e.g. dependencies not installed). */
   projectLoadError: string | null;
+  /** Whether the configured Cloudflare credentials actually reach the account. */
+  cloudflare: CloudflareAccess;
   os: { name: string; version: string };
+  /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
+  runtime: RuntimeInfo;
   node: string;
+}
+
+/**
+ * The interpreter running the CLI.
+ *
+ * Reporting `process.versions.node` alone is actively wrong under Bun: Bun sets it to the Node version it
+ * emulates, so `doctor` would name a runtime that is not executing — the one thing a diagnostic must not do.
+ * Both are kept, because the emulated level is what the `engines.node >= 22` floor is judged against.
+ */
+export interface RuntimeInfo {
+  /** `Bun` or `Node`. */
+  name: string;
+  /** The runtime's own version. */
+  version: string;
+  /** The Node version being emulated, when the runtime is not Node itself. */
+  nodeCompat: string | null;
+}
+
+/** Detect the executing runtime. `process.versions.bun` is Bun-only and absent from Node's typings. */
+export function detectRuntime(versions: NodeJS.ProcessVersions = process.versions): RuntimeInfo {
+  const bun = (versions as { bun?: string }).bun;
+  if (bun) return { name: "Bun", version: bun, nodeCompat: versions.node };
+  return { name: "Node", version: versions.node, nodeCompat: null };
+}
+
+/** Classify an installed version against what the registry returned — `unknown` when it returned nothing. */
+export function versionState(installed: string, latest: string | null): VersionState {
+  if (latest === null) return "unknown";
+  return classifyBump(installed, latest) === "none" ? "current" : "outdated";
 }
 
 /** Map a Node platform id to a human OS name. */
@@ -99,6 +143,8 @@ export interface DoctorReportOptions {
   env?: NodeJS.ProcessEnv;
   homedir?: string;
   os?: { name: string; version: string };
+  /** Runtime seam; defaults to {@link detectRuntime}. */
+  runtime?: RuntimeInfo;
   node?: string;
   /** Shell detection seam; defaults to {@link detectShell}. */
   detectShell?: () => Promise<ShellInfo | null>;
@@ -114,6 +160,8 @@ export interface DoctorReportOptions {
   buildPlan?: (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
   /** Migration-count seam for the health plan. */
   countPending?: BuildReconcilePlanOptions["countPending"];
+  /** Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests never call out. */
+  checkCloudflare?: (projectDir: string) => Promise<CloudflareAccess>;
 }
 
 /** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
@@ -151,6 +199,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const detect = options.detectShell ?? (() => detectShell());
   const readRc = options.readRc ?? readRcFile;
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
+  const probeCloudflare = options.checkCloudflare ?? checkCloudflareAccess;
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
@@ -167,7 +216,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     installed,
     latest: cliLatest?.version ?? null,
     installer,
-    upToDate: cliLatest ? classifyBump(installed, cliLatest.version) === "none" : true,
+    state: versionState(installed, cliLatest?.version ?? null),
     upgradeCommand: upgradeCommandFor(installer),
   };
 
@@ -201,7 +250,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         name: cap.name,
         installed: cap.version,
         latest: latest?.version ?? null,
-        upToDate: latest ? classifyBump(cap.version, latest.version) === "none" : true,
+        state: versionState(cap.version, latest?.version ?? null),
       });
     }
     const workers = await resolve({
@@ -230,6 +279,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     }
   }
 
+  // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
+  // "are my credentials right" is a question worth answering before `pithy init` as much as after.
+  const cloudflare = await probeCloudflare(options.projectDir);
+
   return {
     cli,
     shell,
@@ -240,7 +293,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     notifierDisabledBy,
     project,
     projectLoadError,
+    cloudflare,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
+    runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
   };
 }
@@ -248,6 +303,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
 /** Non-zero exit when a health check fails or the project could not load (the CI gate). Toolchain state never fails it. */
 export function doctorExitCode(report: DoctorReport): number {
   if (report.projectLoadError) return 1;
+  // Configured-but-broken credentials are drift worth gating CI on. Absent ones are not: a project that has
+  // not been provisioned yet is a legitimate state, and failing it would make `doctor` useless before setup.
+  if (report.cloudflare.state !== "ok" && report.cloudflare.state !== "unconfigured") return 1;
   return report.project && !report.project.health.ok ? 1 : 0;
 }
 
@@ -331,12 +389,21 @@ function healthBlock(health: ProjectHealth): string {
 
 /** The `Project capabilities` lines — collapsed to one line when everything is current. */
 function capabilitiesBlock(capabilities: CapabilityStatus[]): string {
-  if (capabilities.length === 0 || capabilities.every((cap) => cap.upToDate)) {
+  if (capabilities.length === 0 || capabilities.every((cap) => cap.state === "current")) {
     return "Project capabilities: all up to date";
+  }
+  // Nothing is behind, but nothing was confirmed either — say which, rather than implying currency.
+  if (capabilities.every((cap) => cap.state !== "outdated")) {
+    return "Project capabilities: version check unavailable (registry unreachable)";
   }
   const width = Math.max(...capabilities.map((cap) => cap.name.length));
   const rows = capabilities.map((cap) => {
-    const suffix = cap.upToDate || !cap.latest ? " ✓" : ` (${cap.latest} available — run \`pithy upgrade\`)`;
+    const suffix =
+      cap.state === "current"
+        ? " ✓"
+        : cap.state === "unknown"
+          ? " (not checked)"
+          : ` (${cap.latest} available — run \`pithy upgrade\`)`;
     return `  ${cap.name.padEnd(width)}  ${cap.installed}${suffix}`;
   });
   return ["Project capabilities:", ...rows].join("\n");
@@ -344,17 +411,21 @@ function capabilitiesBlock(capabilities: CapabilityStatus[]): string {
 
 /** Render the report as the aligned, blocked text of docs/CLI.md §5.6. Verbose vs. terse driven by overall health. */
 export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?? ""): string {
-  const capsUpToDate = !report.project || report.project.capabilities.every((cap) => cap.upToDate);
+  const capsUpToDate = !report.project || report.project.capabilities.every((cap) => cap.state === "current");
   const healthOk = !report.project || report.project.health.ok;
-  const terse = report.cli.upToDate && capsUpToDate && healthOk && !report.projectLoadError;
+  const cloudflareOk = report.cloudflare.state === "ok";
+  // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
+  const terse = report.cli.state === "current" && capsUpToDate && healthOk && cloudflareOk && !report.projectLoadError;
 
   const blocks: string[] = [];
 
   // CLI version.
   const cliLines = [`pithy ${report.cli.installed} (installed via ${report.cli.installer})`];
-  if (!report.cli.upToDate && report.cli.latest) {
+  if (report.cli.state === "outdated" && report.cli.latest) {
     cliLines.push(`Update available: ${report.cli.latest}`);
     cliLines.push(`Run: ${report.cli.upgradeCommand}`);
+  } else if (report.cli.state === "unknown") {
+    cliLines.push("Version check unavailable (registry unreachable).");
   } else {
     cliLines.push("Up to date.");
   }
@@ -400,8 +471,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     if (!report.project.health.ok) blocks.push(healthBlock(report.project.health));
   }
 
-  // OS / Node.
-  blocks.push([`OS:   ${report.os.name} ${report.os.version}`, `Node: ${report.node}`].join("\n"));
+  // Cloudflare credentials. Shown whenever it is not a clean pass, and in the verbose report either way —
+  // a reachable account is worth confirming explicitly when something else is already being explained.
+  if (!terse) blocks.push(`Cloudflare: ${describeCloudflareAccess(report.cloudflare)}`);
+
+  // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
+  // rather than the interpreter — reporting it alone would name a runtime that is not running.
+  const runtime =
+    report.runtime.nodeCompat === null
+      ? `${report.runtime.name} ${report.runtime.version}`
+      : `${report.runtime.name} ${report.runtime.version} (Node ${report.runtime.nodeCompat} compat)`;
+  blocks.push([`OS:      ${report.os.name} ${report.os.version}`, `Runtime: ${runtime}`].join("\n"));
 
   return `\n${blocks.join("\n\n")}`;
 }
@@ -424,7 +504,14 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             health: report.project.health,
           }
         : null,
+    cloudflare: {
+      state: report.cloudflare.state,
+      missing: report.cloudflare.missing,
+      tokenStatus: report.cloudflare.tokenStatus,
+      detail: describeCloudflareAccess(report.cloudflare),
+    },
     os: `${report.os.name} ${report.os.version}`,
+    runtime: report.runtime,
     node: report.node,
   };
 }
