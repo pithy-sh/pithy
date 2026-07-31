@@ -1127,6 +1127,123 @@ const SupportReplyFailedPublic = z
     ...publicFields,
   })
   .describe("A support reply could not be enqueued (502).");
+// --- @pithy-sh/testers: cohort, roster, opt-in, and nudge codes ---
+
+const TestersCohortNotFoundPublic = z
+  .object({
+    code: z
+      .literal("testers/cohort_not_found")
+      .describe(
+        "No cohort answers to that id. Cohort ids are opaque and server-generated, so a miss is a typo or a deleted cohort.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No cohort answers to that id (404).");
+
+const TestersMemberNotFoundPublic = z
+  .object({
+    code: z.literal("testers/member_not_found").describe("No member of that cohort answers to that id or address."),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No roster member answers to that id or address (404).");
+
+const TestersInvalidTokenPublic = z
+  .object({
+    code: z
+      .literal("testers/invalid_token")
+      .describe(
+        "The opt-in link could not be honoured. Deliberately one code for every failing step — malformed shape, a token matching no member, a member who has withdrawn or been removed, or an invitation older than the configured link lifetime — so someone holding a guess cannot use the response to learn which check it tripped, nor whether the tester they named exists. `detail` names the step for the log, and the HTTP codec strips it.",
+      ),
+    status: z.literal(400).describe("Bad Request — the link could not be honoured."),
+    ...publicFields,
+  })
+  .describe("An opt-in link failed verification (400).");
+
+const TestersRosterFullPublic = z
+  .object({
+    code: z
+      .literal("testers/roster_full")
+      .describe(
+        "The cohort is at its roster cap. Raise `maxRosterSize` on the cohort, or remove a lapsed member first.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("The cohort's roster is at its cap (409).");
+
+const TestersAlreadyOnRosterPublic = z
+  .object({
+    code: z
+      .literal("testers/already_on_roster")
+      .describe(
+        "That address is already on the cohort's roster in a live state. Re-inviting is not an error worth swallowing: the caller either meant `resend`, which preserves the existing member's history, or is about to lose the opt-in date that the whole streak rests on.",
+      ),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("That address is already on the roster (409).");
+
+const TestersNudgeCooldownPublic = z
+  .object({
+    code: z
+      .literal("testers/nudge_cooldown")
+      .describe(
+        "Every selected tester is inside the per-tester nudge cooldown, so nothing was sent. Not a partial success: a request that mails none of its targets should say so rather than return an empty success a dashboard renders as 'sent'.",
+      ),
+    status: z.literal(429).describe("Too Many Requests."),
+    ...publicFields,
+  })
+  .describe("Every selected tester is inside the nudge cooldown (429).");
+
+const TestersCopyNotAllowedPublic = z
+  .object({
+    code: z
+      .literal("testers/copy_not_allowed")
+      .describe(
+        "The caller supplied nudge copy, but this deployment pins the shipped defaults. Copy override is a deliberate per-project decision, because supplied words go out over the adopter's own DKIM signature.",
+      ),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("Caller-supplied nudge copy is disabled for this deployment (403).");
+
+const TestersWithdrawnPublic = z
+  .object({
+    code: z
+      .literal("testers/withdrawn")
+      .describe(
+        "That address withdrew from this cohort itself, and a withdrawal is the tester's own decision rather than a roster state the developer may reverse. Re-inviting them would restart the chase against somebody who asked to be left alone, so it is refused. Removing a tester is the developer's own act and stays reversible; this is not.",
+      ),
+    status: z.literal(409).describe("Conflict — the tester's own decision forbids this, not the request."),
+    ...publicFields,
+  })
+  .describe("An invitation to an address that withdrew from this cohort (409).");
+
+const TestersCohortClosedPublic = z
+  .object({
+    code: z
+      .literal("testers/cohort_closed")
+      .describe(
+        "The cohort is closed. A closed cohort keeps its history and stays readable, but stops accruing snapshots and stops sending — so inviting onto it, chasing it, or running a pass over it are all refused rather than quietly honoured.",
+      ),
+    status: z.literal(409).describe("Conflict — the cohort's state forbids this, not the request."),
+    ...publicFields,
+  })
+  .describe("An operation that would write to or send from a closed cohort (409).");
+
+const TestersNotConfiguredPublic = z
+  .object({
+    code: z
+      .literal("testers/not_configured")
+      .describe(
+        "The capability is composed but cannot complete this operation: no `baseUrl` to build an opt-in link from, or a required binding is absent. An adopter-fixable wiring gap rather than a bug, so it names the missing piece in its action line.",
+      ),
+    status: z.literal(500).describe("Internal Server Error — the deployment is incomplete."),
+    ...publicFields,
+  })
+  .describe("The testers capability is composed but incompletely configured (500).");
 
 /**
  * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
@@ -1235,6 +1352,16 @@ export const PublicErrorPayload = z
     SupportRejectedPublic,
     SupportClassificationFailedPublic,
     SupportReplyFailedPublic,
+    TestersCohortNotFoundPublic,
+    TestersMemberNotFoundPublic,
+    TestersInvalidTokenPublic,
+    TestersRosterFullPublic,
+    TestersAlreadyOnRosterPublic,
+    TestersNudgeCooldownPublic,
+    TestersCopyNotAllowedPublic,
+    TestersCohortClosedPublic,
+    TestersWithdrawnPublic,
+    TestersNotConfiguredPublic,
   ])
   .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
@@ -1485,6 +1612,36 @@ const ControlPlaneKeyNotFound = ControlPlaneKeyNotFoundPublic.extend(detailField
 const ControlPlaneKeyConflict = ControlPlaneKeyConflictPublic.extend(detailField).describe(
   ControlPlaneKeyConflictPublic.description ?? "",
 );
+const TestersCohortNotFound = TestersCohortNotFoundPublic.extend(detailField).describe(
+  TestersCohortNotFoundPublic.description ?? "",
+);
+const TestersMemberNotFound = TestersMemberNotFoundPublic.extend(detailField).describe(
+  TestersMemberNotFoundPublic.description ?? "",
+);
+const TestersInvalidToken = TestersInvalidTokenPublic.extend(detailField).describe(
+  TestersInvalidTokenPublic.description ?? "",
+);
+const TestersRosterFull = TestersRosterFullPublic.extend(detailField).describe(
+  TestersRosterFullPublic.description ?? "",
+);
+const TestersWithdrawn = TestersWithdrawnPublic.extend(detailField).describe(TestersWithdrawnPublic.description ?? "");
+
+const TestersCohortClosed = TestersCohortClosedPublic.extend(detailField).describe(
+  TestersCohortClosedPublic.description ?? "",
+);
+
+const TestersAlreadyOnRoster = TestersAlreadyOnRosterPublic.extend(detailField).describe(
+  TestersAlreadyOnRosterPublic.description ?? "",
+);
+const TestersNudgeCooldown = TestersNudgeCooldownPublic.extend(detailField).describe(
+  TestersNudgeCooldownPublic.description ?? "",
+);
+const TestersCopyNotAllowed = TestersCopyNotAllowedPublic.extend(detailField).describe(
+  TestersCopyNotAllowedPublic.description ?? "",
+);
+const TestersNotConfigured = TestersNotConfiguredPublic.extend(detailField).describe(
+  TestersNotConfiguredPublic.description ?? "",
+);
 
 const SupportNotFound = SupportNotFoundPublic.extend(detailField).describe(SupportNotFoundPublic.description ?? "");
 const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(detailField).describe(
@@ -1607,6 +1764,16 @@ export const ErrorPayload = z
     SupportRejected,
     SupportClassificationFailed,
     SupportReplyFailed,
+    TestersCohortNotFound,
+    TestersMemberNotFound,
+    TestersInvalidToken,
+    TestersRosterFull,
+    TestersAlreadyOnRoster,
+    TestersCohortClosed,
+    TestersWithdrawn,
+    TestersNudgeCooldown,
+    TestersCopyNotAllowed,
+    TestersNotConfigured,
   ])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;

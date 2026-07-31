@@ -107,6 +107,61 @@ const InvitePayload = z
   })
   .describe("Inputs for a team/organization invitation email.");
 
+/**
+ * The one template `@pithy-sh/testers` sends everything through — invitations, confirmations, and every
+ * nudge kind.
+ *
+ * **`paragraphs` is an array of plain strings, and that is the security boundary.** A control-plane
+ * caller may supply the words of a nudge, and those words go out over the adopter's own DKIM signature
+ * to the adopter's own users. Rendering them through `{{this}}` means Handlebars escapes every one of
+ * them, so supplied markup arrives as visible text rather than as markup — structurally, not because a
+ * filter guessed right about what to strip. A single `body` string with `{{{triple}}}` interpolation
+ * would turn a leaked dashboard credential into a phishing platform running from a trusted domain.
+ *
+ * One template rather than one per nudge kind, because the kinds differ only in their words, and the
+ * words are the half this template deliberately does not own.
+ */
+const TesterNudgePayload = z
+  .object({
+    subject: z
+      .string()
+      .describe(
+        "The subject line. Bounded and stripped of control characters by the testers capability before it arrives.",
+      ),
+    heading: z.string().describe("The email's heading. Always supplied by the testers capability, never by a caller."),
+    paragraphs: z
+      .array(z.string())
+      .describe(
+        "The body, as one plain string per paragraph. Each renders HTML-escaped, which is what makes caller-supplied copy safe to send over the adopter's own sending domain.",
+      ),
+    ctaUrl: z
+      .string()
+      .optional()
+      .describe("The confirmation link, when the message carries one. Tracked when click tracking is on."),
+    ctaLabel: z.string().optional().describe("The button label. Only rendered when `ctaUrl` is present."),
+    footnote: z
+      .string()
+      .optional()
+      .describe(
+        "A closing line in muted type — used for the honesty note about who actually decides the test's outcome.",
+      ),
+    optOutUrl: z
+      .string()
+      .optional()
+      .describe(
+        "The tester's own way out, rendered as a footer link. Transactional mail carries no unsubscribe by default, but a testing programme asks one person for something repeatedly over a fortnight, so someone being chased must be able to stop it.",
+      ),
+    optOutLabel: z
+      .string()
+      .optional()
+      .describe(
+        "The wording of that link. Supplied by the capability, never by a caller. Only rendered with `optOutUrl`.",
+      ),
+  })
+  .describe(
+    "Inputs for a testing-cohort invitation, confirmation, or nudge. The words may be supplied; the shell never is.",
+  );
+
 const PasswordChangedPayload = z
   .object({
     name: z.string().optional().describe("The recipient's name, for a personal greeting. Optional."),
@@ -243,6 +298,18 @@ export const templates: Record<string, EmailTemplate> = {
     ),
     text: "{{inviterName}} invited you to join {{organizationName}} on {{theme.appName}}.\n\nAccept: {{acceptUrl}}",
     links: [{ path: "acceptUrl", label: "invite-accept" }],
+  },
+  testerNudge: {
+    id: "testerNudge",
+    category: "transactional",
+    width: "narrow",
+    payload: TesterNudgePayload,
+    subject: "{{subject}}",
+    html: layout(
+      `{{#if heading}}<h1 class="t-ink" style="margin:0 0 16px; font-size:22px; font-weight:600; letter-spacing:-0.02em; color:{{theme.light.text}}">{{heading}}</h1>{{/if}}{{#each paragraphs}}<p style="margin:0 0 16px">{{this}}</p>{{/each}}{{#if ctaUrl}}${button("ctaUrl", "{{ctaLabel}}")}{{/if}}{{#if footnote}}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{footnote}}</p>{{/if}}{{#if optOutUrl}}<p class="t-subtle" style="margin:20px 0 0; font-size:13px; color:{{theme.light.textSubtle}}"><a href="{{optOutUrl}}" class="hover-underline t-subtle" style="color:{{theme.light.textSubtle}}; text-decoration:underline">{{optOutLabel}}</a></p>{{/if}}`,
+    ),
+    text: "{{heading}}\n\n{{#each paragraphs}}{{this}}\n\n{{/each}}{{#if ctaUrl}}{{ctaLabel}}: {{ctaUrl}}\n\n{{/if}}{{#if footnote}}{{footnote}}\n\n{{/if}}{{#if optOutUrl}}{{optOutLabel}}: {{optOutUrl}}{{/if}}",
+    links: [{ path: "ctaUrl", label: "tester-confirm" }],
   },
   passwordChanged: {
     id: "passwordChanged",

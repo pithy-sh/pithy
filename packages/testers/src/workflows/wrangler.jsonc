@@ -1,0 +1,59 @@
+{
+  // The prebuilt testers daily-pass worker. Like the email, media, storage and payments workers, this is
+  // a TEMPLATE rather than a wrangler env-stanza file: staging and production are genuinely separate
+  // workers. `pithy testers provision` resolves it into one complete config per environment — filling
+  // the `<...>` placeholders and deriving the `workflows` array and the cron from the capability's
+  // specs — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
+  "name": "pithy-testers", // resolved per env → pithy-testers-staging / pithy-testers-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. Every testers route lives in the app worker; this one is reached only by its cron and
+  // by Workflow dispatch. It can mail every tester on every roster, so it stays off workers.dev.
+  "workers_dev": false,
+
+  // Two databases and no more. The app database holds the pithy_testers_* tables, the pithy_auth_*
+  // tables the activity reader joins against, and the pithy_email_jobs rows a nudge becomes. The
+  // suppression database is global rather than per environment — an unsubscribe in production must
+  // stop staging too — and the daily pass reads it to reconcile which addresses have bounced.
+  //
+  // No SECRETS binding and no master key: the confirmation token is a random value on the tester's own
+  // row rather than a signature, so this worker reads no secret at all. That is the whole reason
+  // `pithy testers invite` works against any environment.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
+    {
+      "binding": "EMAIL_SUPPRESSIONS",
+      "database_name": "pithy-email-suppressions",
+      "database_id": "<filled-at-provision>"
+    }
+  ],
+
+  // The one Workflow this worker hosts. Rewritten at provision from `workflows/specs.ts`, so the binding,
+  // the class name, and the per-environment deployed name come from the spec rather than from this block —
+  // it is here so the template reads as a complete config.
+  "workflows": [{ "binding": "TESTERS_DAILY", "name": "pithy-testers-daily", "class_name": "TestersDailyWorkflow" }],
+
+  // The daily pass, at 05:00 UTC. Also rewritten at provision from the spec's `schedule`. Offset from
+  // storage's 03:00 sweep, the secrets rotation at 03:00, and payments' 04:00 reconciliation, so four
+  // hosts in one account do not contend for the same minute.
+  "triggers": { "crons": ["0 5 * * *"] },
+
+  "vars": {
+    // The resolved TestersConfig as one JSON blob, filled at provision from the app's testers() config.
+    // The pass reads the cooldown, the survival priors, the health weights, and the base URL from it.
+    "TESTERS_CONFIG": "<filled-at-provision>",
+
+    // The sending identity, copied from the email capability's resolved config. Carried as vars because
+    // this worker is standalone — it is not assembled by `createBackend`, so email's `compose` hook
+    // never runs here and there is no bound `enqueue` seam to borrow. Absent means the pass advances
+    // state and records the day but sends nothing, which is better than mailing an adopter's testers
+    // from a domain their DKIM does not cover.
+    "EMAIL_FROM_ADDRESS": "<filled-at-provision>",
+    "EMAIL_FROM_NAME": "<filled-at-provision>",
+    "EMAIL_THEME": "<filled-at-provision>",
+
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

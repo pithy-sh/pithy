@@ -85,6 +85,45 @@ describe("main", () => {
     );
   });
 
+  test("testers exposes the whole roster flow, every subcommand --json", async () => {
+    // The definition of done is that a developer can run a closed test without the dashboard, so every
+    // operation the control-plane routes expose has a command here — and every one of them is
+    // agent-drivable, because the dashboard is not the only client that matters.
+    const testers = await subcommand("testers");
+    expect(Object.keys(testers.subCommands ?? {})).toEqual([
+      "provision",
+      "deprovision",
+      "create",
+      "list",
+      "invite",
+      "pending",
+      "roster",
+      "status",
+      "remove",
+      "close",
+      "run",
+    ]);
+    for (const name of [
+      "provision",
+      "deprovision",
+      "create",
+      "list",
+      "invite",
+      "pending",
+      "roster",
+      "status",
+      "remove",
+      "close",
+      "run",
+    ] as const) {
+      const sub = (testers.subCommands as Record<string, CommandDef>)[name];
+      expect(Object.keys(sub?.args ?? {})).toContain("json");
+      // And every one names an environment, so a CI run can never mean "whichever". Provisioning fans
+      // out across all of them by default, so there `--env` narrows rather than selects.
+      expect(Object.keys(sub?.args ?? {})).toContain("env");
+    }
+  });
+
   test("payments reconcile can be driven headlessly — every narrowing is a flag", async () => {
     // The support path is "reconcile one user in production and tell me what changed", and an agent has to be
     // able to run it with no prompt. Every field of the pass's params that a human would want is a flag here.

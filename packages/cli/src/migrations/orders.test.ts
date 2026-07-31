@@ -37,11 +37,11 @@ import { describe, expect, test } from "vitest";
  * which makes Kysely treat applied migrations as unapplied and re-run them.
  *
  * There is no shortage of numbers. The ceiling is 9999 per database and the `app` database currently
- * reaches 1100, so ~88 more capabilities fit at this spacing. Both collisions this test exists to
+ * reaches 1200, so ~87 more capabilities fit at this spacing. Both collisions this test exists to
  * prevent happened in a space that was 99% empty — the failure was uncoordinated allocation, not
  * capacity, which is why the procedure above routes every author through one file.
  */
-const NEXT_FREE_ORDER = 1300;
+const NEXT_FREE_ORDER = 1400;
 
 /** Every declared migration order, and the database it sorts within. */
 const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
@@ -57,6 +57,7 @@ const DECLARED: ReadonlyArray<{ constant: string; database: string }> = [
   { constant: "STORAGE_MIGRATION_ORDER", database: "app" },
   { constant: "VECTOR_MIGRATION_ORDER", database: "app" },
   { constant: "PAYMENTS_MIGRATION_ORDER", database: "app" },
+  { constant: "TESTERS_MIGRATION_ORDER", database: "app" },
   // The `control-plane` seam. Ships inside `@pithy-sh/core` rather than its own package, because every
   // capability contributing admin routes imports its guard, and a capability may depend on a core seam
   // but never on a sibling package. So core declares an order like any other capability — see the
