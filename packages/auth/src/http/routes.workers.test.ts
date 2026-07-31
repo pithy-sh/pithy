@@ -130,7 +130,12 @@ beforeEach(async () => {
   }
   const provider = createMigrationRegistry([
     { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
-    { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
+    {
+      database: "app",
+      namespace: "email",
+      order: 200,
+      migrations: { "0001_init": email_0001_init },
+    },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);

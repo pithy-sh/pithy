@@ -74,6 +74,24 @@ export const EmailJob = z
       .describe(
         "The classification of a bounce (`hard`/`soft`/`complaint`/`auto_reply`); null unless the job bounced.",
       ),
+    replyTo: z
+      .string()
+      .nullish()
+      .describe(
+        "The `Reply-To` address, when this job should be answered somewhere other than `fromAddress` — a support inbox replying from a no-reply sender is the case this exists for. Null for an ordinary send.",
+      ),
+    inReplyTo: z
+      .string()
+      .nullish()
+      .describe(
+        "The `In-Reply-To` header value, angle brackets included — the message this one answers. Null unless this job is a reply.",
+      ),
+    references: z
+      .string()
+      .nullish()
+      .describe(
+        "The `References` header value, angle-bracketed and space-separated. Stored as the wire string rather than a JSON array because that is exactly what goes on the header, and re-deriving it at send time is a second chance to get threading wrong. Null unless this job is a reply.",
+      ),
     createdAt: SQLiteDate.describe("When the job row was created."),
     updatedAt: SQLiteDate.describe("When the job row was last written."),
     sentAt: SQLiteDate.nullish().describe("When the send succeeded; null until then."),

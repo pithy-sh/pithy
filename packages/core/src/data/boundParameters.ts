@@ -58,3 +58,32 @@ export function chunkByBoundParameters<T>(values: readonly T[], fixed: number): 
   for (let start = 0; start < values.length; start += size) chunks.push(values.slice(start, start + size));
   return chunks;
 }
+
+/**
+ * Split `rows` into chunks small enough that one multi-row `insert` stays under D1's cap.
+ *
+ * The sibling of {@link chunkByBoundParameters}, and a separate function because the arithmetic is
+ * genuinely different: an `in (…)` list binds **one** parameter per value, while an insert binds one
+ * per *column* per row. Reusing the list chunker for an insert silently allows `columns` times too
+ * many rows, which is a bug that passes every small test and only appears once real data arrives —
+ * `@pithy-sh/support` shipped exactly that, capping attachments at 10 rows of 11 columns and losing
+ * every one of them to `too many SQL variables`.
+ */
+export function chunkRowsByBoundParameters<T>(rows: readonly T[], columnsPerRow: number, fixed = 0): T[][] {
+  if (!Number.isInteger(columnsPerRow) || columnsPerRow < 1) {
+    throw new InternalError({
+      message: "Something unexpected happened.",
+      detail: `chunkRowsByBoundParameters requires a positive column count; got ${columnsPerRow}.`,
+    });
+  }
+  const size = Math.floor(boundParameterBudget(fixed) / columnsPerRow);
+  if (size < 1) {
+    throw new InternalError({
+      message: "Something unexpected happened.",
+      detail: `A row of ${columnsPerRow} columns cannot fit under D1's cap of ${MAX_BOUND_PARAMETERS}.`,
+    });
+  }
+  const chunks: T[][] = [];
+  for (let start = 0; start < rows.length; start += size) chunks.push(rows.slice(start, start + size));
+  return chunks;
+}

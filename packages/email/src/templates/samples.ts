@@ -8,6 +8,11 @@
  */
 export const samplePayloads: Record<string, unknown> = {
   magicLink: { name: "Sam", url: "https://example.com/signin?token=demo", expiresMinutes: 15 },
+  supportReply: {
+    subject: "Re: I was charged twice this month",
+    body: "Hi Sam,\n\nI have refunded the duplicate charge — it should be back on your card within three working days.\n\nSorry for the trouble.",
+    agentName: "Alex",
+  },
   otp: { name: "Sam", code: "123456", expiresMinutes: 10 },
   welcome: { name: "Sam", ctaUrl: "https://example.com/start", ctaLabel: "Open your dashboard" },
   securityAlert: {

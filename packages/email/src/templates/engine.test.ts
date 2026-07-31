@@ -44,10 +44,15 @@ const validPayloads: Record<string, unknown> = {
     ctaUrl: "https://acme.test/go",
     ctaLabel: "See it",
   },
+  supportReply: {
+    subject: "Re: I was charged twice",
+    body: "Hi Ada,\n\nI have refunded the duplicate charge.",
+    agentName: "Jim",
+  },
 };
 
 describe("template registry", () => {
-  test("ships all nine templates from the acceptance criteria", () => {
+  test("ships all ten templates — the nine from the acceptance criteria, plus the support reply shell", () => {
     expect(
       listTemplates()
         .map((t) => t.id)
@@ -62,6 +67,7 @@ describe("template registry", () => {
         "otp",
         "passwordChanged",
         "securityAlert",
+        "supportReply",
         "welcome",
       ].sort(),
     );

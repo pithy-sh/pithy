@@ -1,0 +1,459 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { parse } from "comment-json";
+import type { CliAuditEmit } from "../audit/cliAudit";
+import { runWrangler } from "../project/wrangler";
+import { deleteR2BucketWithContents } from "./r2Bucket";
+
+/**
+ * The live support provisioner — the Cloudflare + wrangler implementation behind `@pithy-sh/support`'s
+ * `SupportProvisioner` seam. Control-plane steps go through `@pithy-sh/cloudflare` (CLAUDE.md: the CF API
+ * only via that client) and are each idempotent; the classification worker's deploy shells out to wrangler
+ * with the bootstrap token.
+ *
+ * `@pithy-sh/support` is an **optional** capability, so the CLI must not hard-depend on it. Types come in
+ * through type-only imports (erased at build), and every runtime value comes through {@link loadSupport} —
+ * a guarded dynamic import that turns "the package isn't installed" into an actionable error rather than an
+ * unresolved-module crash.
+ *
+ * **No secret is written here, and that is the whole shape of this file.** The classification worker reads
+ * a message and writes a label over the `AI` binding, so it holds no credential at all — which is why
+ * provisioning support is three steps (a bucket, a worker per environment, a routing rule) where media is
+ * five. The one credential support does use, the R2 key pair its attachment presigning needs, belongs to
+ * `@pithy-sh/storage`'s `ObjectStore` and is written by `pithy storage provision`.
+ */
+
+/** The support runtime surface provisioning needs, loaded from the project's own install. */
+type SupportProvisionModule = typeof import("@pithy-sh/support/src/provision/provisionSupport");
+type SupportResolveModule = typeof import("@pithy-sh/support/src/provision/resolveSupportConfig");
+type SupportCapabilityModule = typeof import("@pithy-sh/support/src/capability");
+
+/** The provisioner seams, referenced by type only so the CLI gains no dependency on the package. */
+type SupportProvisioner = import("@pithy-sh/support/src/provision/provisionSupport").SupportProvisioner;
+type SupportDeprovisioner = import("@pithy-sh/support/src/provision/provisionSupport").SupportDeprovisioner;
+type SupportConfig = import("@pithy-sh/support/src/config/config").SupportConfig;
+
+/** Everything `pithy support` loads out of the optional package, in one guarded import. */
+export type SupportModule = SupportProvisionModule & SupportResolveModule & SupportCapabilityModule;
+
+/**
+ * Load `@pithy-sh/support` from the project's own install. The one place the optional dependency is
+ * resolved, so a project that has not added support gets one clear instruction instead of a module error
+ * from whichever call site happened to run first.
+ */
+export async function loadSupport(): Promise<SupportModule> {
+  try {
+    const [provision, resolve, capability] = await Promise.all([
+      import("@pithy-sh/support/src/provision/provisionSupport"),
+      import("@pithy-sh/support/src/provision/resolveSupportConfig"),
+      import("@pithy-sh/support/src/capability"),
+    ]);
+    return { ...provision, ...resolve, ...capability };
+  } catch (error) {
+    throw new ValidationError(
+      {
+        message: "The support capability is not installed.",
+        action: "Run `pithy add support`, then re-run this command.",
+        detail: "@pithy-sh/support could not be resolved from the project's install.",
+      },
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * The search-index lifecycle and the typed database it runs against, from the optional package.
+ *
+ * A second guarded import beside {@link loadSupport} rather than an addition to it, because these two
+ * modules are only needed by `ensureSearchIndex` — and `loadSupport` is already on the hot path of
+ * every other step, where paying for two more dynamic imports buys nothing.
+ */
+async function loadSupportSearch(): Promise<
+  typeof import("@pithy-sh/support/src/store/searchIndex") &
+    typeof import("@pithy-sh/support/src/data/tables") &
+    typeof import("@pithy-sh/support/src/store/search")
+> {
+  try {
+    const [searchIndex, tables, search] = await Promise.all([
+      import("@pithy-sh/support/src/store/searchIndex"),
+      import("@pithy-sh/support/src/data/tables"),
+      import("@pithy-sh/support/src/store/search"),
+    ]);
+    return { ...searchIndex, ...tables, ...search };
+  } catch (error) {
+    throw new ValidationError(
+      {
+        message: "The support capability is not installed.",
+        action: "Run `pithy add support`, then re-run this command.",
+        detail: "@pithy-sh/support could not be resolved from the project's install.",
+      },
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * The R2 bucket attachments and raw messages live in — `pithy-support`.
+ *
+ * **One bucket for the project, not one per environment**, which is the opposite of what `pithy media` and
+ * `pithy storage` do and is the seam's own shape (`ensureBucket()` takes no environment). It follows from
+ * where the bytes are written from: the `SUPPORT_BUCKET` binding hangs off the *app* worker that receives
+ * the mail, and a Worker addresses a bucket by the name its own `wrangler.jsonc` gives, per environment. So
+ * the environments are separated by the binding an operator points at a bucket, and this command's job is
+ * to make sure one exists to point at. The name otherwise follows media's convention — `pithy-<capability>`
+ * — minus the environment segment media appends.
+ */
+export const SUPPORT_BUCKET_NAME = "pithy-support";
+
+/** The per-environment resource ids the support classification worker binds, resolved by the caller. */
+export interface SupportEnvResources {
+  /** The app database id for this environment — where the support tables live. */
+  appDatabaseId: string;
+}
+
+/** Resolve the per-environment resources for the support worker (from the app Worker's wrangler config). */
+export type ResolveSupportEnv = (env: ManagedEnvironment) => Promise<SupportEnvResources>;
+
+/** The inbound routing a rule is created for: the zone, the address it matches, and the Worker it feeds. */
+export interface SupportRouting {
+  /** Zone the rule lives on. Email Routing must already be enabled on it — enabling it moves the zone's MX. */
+  zoneId: string;
+  /** The exact recipient address the rule matches. */
+  address: string;
+  /** The deployed app worker the matched mail is delivered to — the one running the `email()` handler. */
+  appWorkerName: string;
+}
+
+export interface CloudflareSupportProvisionerOptions {
+  cf: CloudflareClients;
+  accountId: string;
+  /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
+  apiToken: string;
+  /**
+   * The app's resolved support config. Decides whether a bucket is needed at all, and travels into the
+   * worker's `SUPPORT_CONFIG` var so an adopter's own categories reach the prompt as data.
+   */
+  supportConfig: SupportConfig;
+  /** Resolve the per-env app DB id — injected so it is testable + decoupled from where the config lives. */
+  resolveEnv: ResolveSupportEnv;
+  /**
+   * Optional inbound routing. Absent → the routing step is skipped, because **enabling Email Routing points
+   * a zone's MX at Cloudflare**: a rule on the wrong zone moves an adopter's real mail off their provider,
+   * which is not a mistake a provisioning command gets to make on their behalf.
+   */
+  routing?: SupportRouting;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
+}
+
+/** The live {@link SupportProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
+export class CloudflareSupportProvisioner implements SupportProvisioner {
+  readonly #cf: CloudflareClients;
+  readonly #accountId: string;
+  readonly #apiToken: string;
+  readonly #supportConfig: SupportConfig;
+  readonly #resolveEnv: ResolveSupportEnv;
+  readonly #routing: SupportRouting | undefined;
+  readonly #audit: CliAuditEmit;
+
+  constructor(options: CloudflareSupportProvisionerOptions) {
+    this.#cf = options.cf;
+    this.#accountId = options.accountId;
+    this.#apiToken = options.apiToken;
+    this.#supportConfig = options.supportConfig;
+    this.#resolveEnv = options.resolveEnv;
+    this.#routing = options.routing;
+    this.#audit = options.audit ?? (async () => {});
+  }
+
+  /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting worker. */
+  async preflight(): Promise<void> {
+    if (!(await this.#cf.workers().accountSubdomain())) {
+      throw new ValidationError({
+        message: "This Cloudflare account has no workers.dev subdomain, which Workflows require.",
+        action: "Open Workers & Pages in the dashboard once to create one, then re-run.",
+      });
+    }
+  }
+
+  /**
+   * Reuse the bucket if it exists, otherwise create it — unless nothing will be written to it.
+   *
+   * Gated on attachments **or** raw retention, not attachments alone. The bucket holds both, so
+   * keying only on `attachments.enabled` meant an adopter who turned off attachment storage also,
+   * silently, lost the immutable raw MIME that makes re-parsing and re-sanitising possible — a
+   * property the message schema documents as load-bearing. Two settings, two reasons to need it.
+   */
+  async ensureBucket(): Promise<{ bucket: string; created: boolean; skipped: boolean }> {
+    const { attachments } = this.#supportConfig;
+    if (!attachments.enabled && !attachments.retainRaw) {
+      return { bucket: SUPPORT_BUCKET_NAME, created: false, skipped: true };
+    }
+    const existing = await this.#cf.r2Provisioner().findBucketByName(SUPPORT_BUCKET_NAME);
+    if (existing) return { bucket: existing.name, created: false, skipped: false };
+    const created = await this.#cf.r2Provisioner().createBucket(SUPPORT_BUCKET_NAME);
+    await this.#audit({
+      action: "support/bucket_created",
+      outcome: "success",
+      severity: "info",
+      resourceType: "cf_r2_bucket",
+      resourceId: created.name,
+      metadata: { name: created.name },
+    });
+    return { bucket: created.name, created: true, skipped: false };
+  }
+
+  /** Resolve the env's wrangler config from the committed template + the app DB id, then `wrangler deploy`. */
+  async deployWorker(env: ManagedEnvironment): Promise<void> {
+    const { supportWorkerName, resolveSupportConfig } = await loadSupport();
+    const { appDatabaseId } = await this.#resolveEnv(env);
+    const dir = supportWorkerDir();
+    const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
+    const config = resolveSupportConfig(template, { env, appDatabaseId, supportConfig: this.#supportConfig });
+    const configPath = join(dir, `.wrangler.${env}.json`);
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    try {
+      await runWrangler(["deploy", "--config", configPath], {
+        cwd: dir,
+        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+      });
+      await this.#audit({
+        action: "support/worker_deployed",
+        outcome: "success",
+        severity: "info",
+        resourceType: "cf_worker",
+        resourceId: supportWorkerName(env),
+        metadata: { env },
+      });
+    } catch (error) {
+      await this.#audit({
+        action: "support/worker_deployed",
+        outcome: "failure",
+        severity: "info",
+        resourceType: "cf_worker",
+        resourceId: supportWorkerName(env),
+        metadata: { env },
+      });
+      throw error;
+    } finally {
+      // The resolved config carries provisioned resource ids and is written inside an installed package.
+      // It exists for the length of one deploy and is removed whether that deploy worked or not.
+      await unlink(configPath).catch(() => {});
+    }
+  }
+
+  /**
+   * Bring the full-text index in this environment's app database into line with `search.fts`.
+   *
+   * Deliberately **not** a migration. The index is derived — every row comes from
+   * `pithy_support_messages`, and `reindexThread` rebuilds it on demand — so it is a provisioned
+   * resource like the bucket and the routing rule, not schema whose loss loses data. It also has to
+   * live here for a second reason: composing it conditionally into the migration set meant turning
+   * the flag off removed an already-applied migration, which Kysely reads as corruption and which
+   * blocked `pithy migrate` for **every** capability sharing that database, not just support.
+   *
+   * Both statements are `IF [NOT] EXISTS`, so this is safe to re-run — and the current state is read
+   * rather than assumed, so the result reports what actually changed instead of what was attempted.
+   */
+  async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean }> {
+    const { supportDatabase, createSearchIndex, dropSearchIndex, reindexAll, SEARCH_TABLE } = await loadSupportSearch();
+    const { appDatabaseId } = await this.#resolveEnv(env);
+    const database = this.#cf.d1(appDatabaseId);
+
+    const listed = await database
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .bind(SEARCH_TABLE)
+      .all<{ name: string }>();
+    const present = (listed.results ?? []).length > 0;
+    const wanted = this.#supportConfig.search.fts;
+
+    if (wanted === present) return { created: false, dropped: false };
+
+    const db = supportDatabase(database);
+    if (wanted) {
+      await createSearchIndex(db);
+      // **Backfilled immediately.** An index created over messages that already exist is empty, and
+      // because the table now exists the runtime's `LIKE` fallback stops firing — so the inbox would
+      // answer "no matches" for a term plainly in the body. Creating without populating turns the
+      // feature on and the results off, which is the one direction a filter must never fail in.
+      await reindexAll(db);
+    } else {
+      await dropSearchIndex(db);
+    }
+    await this.#audit({
+      action: wanted ? "support/search_index_created" : "support/search_index_dropped",
+      outcome: "success",
+      severity: "info",
+      resourceType: "d1_table",
+      resourceId: SEARCH_TABLE,
+      metadata: { env },
+    });
+    return { created: wanted, dropped: !wanted };
+  }
+
+  /**
+   * Create the inbound routing rule that actually delivers the support address to the app worker, when
+   * routing was supplied; otherwise skip.
+   *
+   * The rule name is support's own (`pithy-support-inbound`), never `@pithy-sh/email`'s. Idempotency keys
+   * on the name, so a shared one would make whichever capability provisioned second silently believe its
+   * rule already existed — and its mail would go to the other capability's Worker.
+   */
+  async ensureRoutingRule(): Promise<{ created: boolean; skipped: boolean }> {
+    if (!this.#routing) return { created: false, skipped: true };
+    const { SUPPORT_ROUTING_RULE_NAME } = await loadSupport();
+    const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
+      zoneId: this.#routing.zoneId,
+      address: this.#routing.address,
+      workerName: this.#routing.appWorkerName,
+      ruleName: SUPPORT_ROUTING_RULE_NAME,
+    });
+    if (created) {
+      await this.#audit({
+        action: "support/routing_rule_created",
+        outcome: "success",
+        severity: "info",
+        resourceType: "cf_email_routing_rule",
+        resourceId: this.#routing.address,
+        metadata: {
+          zoneId: this.#routing.zoneId,
+          address: this.#routing.address,
+          workerName: this.#routing.appWorkerName,
+          ruleName: SUPPORT_ROUTING_RULE_NAME,
+        },
+      });
+    }
+    return { created, skipped: false };
+  }
+}
+
+/** The directory of the prebuilt support worker inside the installed `@pithy-sh/support` package (holds wrangler.jsonc). */
+function supportWorkerDir(): string {
+  try {
+    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/support/src/workflows/worker")));
+  } catch (error) {
+    throw new ValidationError(
+      {
+        message: "The support capability is not installed.",
+        action: "Run `pithy add support`, then re-run this command.",
+        detail: "@pithy-sh/support/src/workflows/worker could not be resolved from the project's install.",
+      },
+      { cause: error },
+    );
+  }
+}
+
+export interface CloudflareSupportDeprovisionerOptions {
+  cf: CloudflareClients;
+  /**
+   * The zone the inbound rule lives on. Needed to remove it, and there is no honest way to derive it: a
+   * rule is addressed through its zone, and sweeping every zone on the account looking for a name is a
+   * search this command should not be making across an adopter's domains. Omitted → the rule is left, and
+   * the command says so rather than reporting mail stopped when it has not.
+   */
+  routingZoneId?: string;
+  /**
+   * The R2 S3 key pair, needed only when the bucket comes down. Emptying a bucket is an S3-protocol
+   * operation and R2 refuses to delete a non-empty one, so a bucket teardown cannot run on the API token
+   * alone. Omitted when `deleteStorage` is off and no bucket is touched.
+   */
+  r2Credentials?: R2Credentials;
+  /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
+  audit?: CliAuditEmit;
+}
+
+/**
+ * The live {@link SupportDeprovisioner} — removes the inbound rule and each environment's classification
+ * worker and, when asked, the bucket with every attachment and raw message in it. Every step is guarded so
+ * a missing resource is a no-op: teardown is idempotent.
+ */
+export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
+  readonly #cf: CloudflareClients;
+  readonly #routingZoneId: string | undefined;
+  readonly #r2Credentials: R2Credentials | undefined;
+  readonly #audit: CliAuditEmit;
+
+  constructor(options: CloudflareSupportDeprovisionerOptions) {
+    this.#cf = options.cf;
+    this.#routingZoneId = options.routingZoneId;
+    this.#r2Credentials = options.r2Credentials;
+    this.#audit = options.audit ?? (async () => {});
+  }
+
+  /** Delete the env's classification worker if it is deployed. */
+  async deleteWorker(env: ManagedEnvironment): Promise<void> {
+    const { supportWorkerName } = await loadSupport();
+    const name = supportWorkerName(env);
+    if (await this.#cf.workers().getWorker(name)) {
+      await this.#cf.workers().deleteWorker(name);
+      await this.#audit({
+        action: "support/worker_removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "cf_worker",
+        resourceId: name,
+        metadata: { env },
+      });
+    }
+  }
+
+  /**
+   * Remove the inbound rule, so mail stops being delivered here. Matched on support's own rule name, so a
+   * teardown can never take the bounce handler's rule — or an operator's hand-written one — with it.
+   */
+  async removeRoutingRule(): Promise<{ removed: boolean }> {
+    if (!this.#routingZoneId) return { removed: false };
+    const { SUPPORT_ROUTING_RULE_NAME } = await loadSupport();
+    const { removed } = await this.#cf.emailRouting().removeWorkerRoute({
+      zoneId: this.#routingZoneId,
+      ruleName: SUPPORT_ROUTING_RULE_NAME,
+    });
+    if (removed) {
+      await this.#audit({
+        action: "support/routing_rule_removed",
+        outcome: "success",
+        severity: "warning",
+        resourceType: "cf_email_routing_rule",
+        resourceId: SUPPORT_ROUTING_RULE_NAME,
+        metadata: { zoneId: this.#routingZoneId, ruleName: SUPPORT_ROUTING_RULE_NAME },
+      });
+    }
+    return { removed };
+  }
+
+  /**
+   * Delete the bucket and every object in it, if it exists — every attachment and every raw message an
+   * adopter's customers ever sent, which is why nothing calls this without an explicit `--storage`. The
+   * drain is not optional: R2 refuses to delete a bucket still holding an object or a dangling multipart
+   * upload. What went is audited, not just that it went.
+   */
+  async deleteBucket(): Promise<void> {
+    const teardown = await deleteR2BucketWithContents({
+      cf: this.#cf,
+      credentials: this.#r2Credentials,
+      bucketName: SUPPORT_BUCKET_NAME,
+    });
+    if (!teardown.deleted) return;
+    await this.#audit({
+      action: "support/bucket_deleted",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "cf_r2_bucket",
+      resourceId: SUPPORT_BUCKET_NAME,
+      metadata: {
+        name: SUPPORT_BUCKET_NAME,
+        objectsDeleted: teardown.objectsDeleted,
+        uploadsAborted: teardown.uploadsAborted,
+      },
+    });
+  }
+}

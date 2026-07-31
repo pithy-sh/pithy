@@ -38,6 +38,13 @@ export const email_0001_init: Migration = {
       .addColumn("error", "text")
       .addColumn("bounceCode", "text")
       .addColumn("bounceType", "text")
+      // Threading, for a reply that answers an existing conversation — `@pithy-sh/support` is what
+      // needs them. A column per field rather than a generic headers bag (CLAUDE.md §Email): a bag
+      // would let any caller set `Bcc` or `From` on a message the adopter's domain signs, which turns
+      // an enqueue into a header-injection surface. Three named columns can only mean three things.
+      .addColumn("replyTo", "text")
+      .addColumn("inReplyTo", "text")
+      .addColumn("references", "text")
       .addColumn("createdAt", "integer", (c) => c.notNull())
       .addColumn("updatedAt", "integer", (c) => c.notNull())
       .addColumn("sentAt", "integer")

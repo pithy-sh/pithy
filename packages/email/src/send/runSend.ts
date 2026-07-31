@@ -123,9 +123,15 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // regardless; these headers carry the per-job/per-env context the platform send response cannot.
   const headers: Record<string, string> = { "X-Pithy-Job": jobId };
   if (deps.environment) headers["X-Pithy-Env"] = deps.environment;
+  // Threading, when the job carries it. Both headers or neither: a client threads on `In-Reply-To`
+  // and falls back to `References`, so sending one without the other is how a conversation stays
+  // together in some mail clients and splits in others.
+  if (job.inReplyTo) headers["In-Reply-To"] = job.inReplyTo;
+  if (job.references) headers.References = job.references;
   const message = {
     to: recipient,
     from: { email: job.fromAddress, name: job.fromName },
+    ...(job.replyTo ? { replyTo: job.replyTo } : {}),
     subject: rendered.subject,
     html: rendered.html,
     text: rendered.text,

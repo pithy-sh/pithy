@@ -1,0 +1,40 @@
+{
+  // The prebuilt support classification worker. Like the media and email workers, this is a TEMPLATE,
+  // not a wrangler env-stanza file: staging and production are separate workers. `pithy support
+  // provision` resolves it into one complete config per environment — filling the `<...>` placeholders
+  // — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
+  //
+  // It hosts the one classification Workflow. The app worker receives the mail, stores it, and starts
+  // an instance; this worker is what talks to the model. That split is the whole reason classification
+  // is durable: an inbound handler has a tight CPU budget and a model call does not fit in it.
+  "name": "pithy-support", // resolved per env → pithy-support-staging / pithy-support-production
+  "main": "./worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No public URL. The support routes live in the app worker; this one is reached only by Workflow
+  // dispatch.
+  "workers_dev": false,
+
+  // The app database the support tables live in. No secrets database: this worker reads a message and
+  // writes a classification, and neither needs a credential — the AI binding is the whole dependency.
+  "d1_databases": [{ "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" }],
+
+  // The Workers AI binding — classification runs on the adopter's own inference, on their own bill,
+  // and their customers' support mail never leaves their account.
+  "ai": { "binding": "AI" },
+
+  // The classification Workflow this worker hosts. `class_name` matches the exported
+  // WorkflowEntrypoint subclass; `binding` is what the app worker dispatches to after storing a message.
+  "workflows": [
+    { "binding": "SUPPORT_CLASSIFY", "name": "pithy-support-classify", "class_name": "SupportClassifyWorkflow" }
+  ],
+
+  "vars": {
+    // The resolved SupportConfig as one JSON blob, filled at provision from the app's support() config.
+    // The worker parses and validates it; absent falls back to the defaults. It carries the effective
+    // taxonomy, so an adopter's own categories reach the prompt without this worker importing their code.
+    "SUPPORT_CONFIG": "<filled-at-provision>",
+    "ENVIRONMENT": "<filled-at-provision>"
+  }
+}

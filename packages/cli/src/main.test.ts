@@ -65,6 +65,26 @@ describe("main", () => {
     }
   });
 
+  test("support exposes provision and deprovision, both --json", async () => {
+    const support = await subcommand("support");
+    expect(Object.keys(support.subCommands ?? {})).toEqual(["provision", "deprovision"]);
+    for (const name of ["provision", "deprovision"] as const) {
+      const sub = (support.subCommands as Record<string, CommandDef>)[name];
+      expect(Object.keys(sub?.args ?? {})).toContain("json");
+    }
+  });
+
+  test("support provision carries all three routing flags — a rule cannot be half-declared", async () => {
+    // Creating an Email Routing rule takes over the zone's MX, so the zone, the address, and the target
+    // worker are each named explicitly or no rule is made. All three have to be flags for that choice to
+    // be drivable without a prompt.
+    const support = await subcommand("support");
+    const provision = (support.subCommands as Record<string, CommandDef>).provision;
+    expect(Object.keys(provision?.args ?? {})).toEqual(
+      expect.arrayContaining(["routing-zone", "inbound-address", "app-worker", "worker", "json"]),
+    );
+  });
+
   test("payments reconcile can be driven headlessly — every narrowing is a flag", async () => {
     // The support path is "reconcile one user in production and tell me what changed", and an agent has to be
     // able to run it with no prompt. Every field of the pass's params that a human would want is a flag here.
