@@ -58,11 +58,11 @@ describe("deleteR2BucketWithContents", () => {
   test("refuses without the key pair, and deletes nothing", async () => {
     const { cf, calls } = fakeCf();
 
-    await expect(deleteR2BucketWithContents({ cf, bucketName: "pithy-media-production" })).rejects.toThrowError(
+    await expect(deleteR2BucketWithContents({ cf, bucketName: "pithy-media-prod" })).rejects.toThrowError(
       expect.objectContaining({
         payload: expect.objectContaining({
           code: "validation/invalid_input",
-          message: "The R2 access-key pair is needed to delete the pithy-media-production bucket.",
+          message: "The R2 access-key pair is needed to delete the pithy-media-prod bucket.",
         }),
       }),
     );

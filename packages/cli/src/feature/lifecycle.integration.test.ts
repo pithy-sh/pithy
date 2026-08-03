@@ -7,12 +7,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
 import { buildEnvInventory } from "../project/envInventory";
 import { destroyFeature } from "./destroy";
-import { featureResourceName, featureWorkerName } from "./naming";
 import { cloudflareProvisioners, provisionFeature } from "./provision";
 
 /**
@@ -46,7 +47,17 @@ const ENV = "feature";
  * runs can overlap safely. Kept short — it is a segment of every resource name.
  */
 const SLUG = `it${Date.now().toString(36).slice(-6)}`;
-const IDENTITY = { project: "pithyit", issue: "73", slug: SLUG } as const;
+
+/**
+ * Provisioned under the **reserved test project**, not an invented one.
+ *
+ * These names are the thing under test, so they cannot route through `uniqueName` — `featureResourceName`
+ * has to compose them. But the project segment comes first and verbatim, so naming the project
+ * `pithy-int-test` puts every resource this suite creates inside the reserved namespace anyway. The old
+ * `pithyit` was a name a real adopter could legitimately choose, which is exactly the collision the
+ * reservation exists to make impossible.
+ */
+const IDENTITY = { project: RESERVED_TEST_PROJECT, issue: "73", slug: SLUG } as const;
 
 /** Both Workers declare `DB`; only collab declares `ROOMS`. That asymmetry is what the test proves. */
 const shared = defineCapability({
@@ -79,6 +90,16 @@ function wranglerFor(name: string): string {
 /** Build a two-Worker project on disk: apps/api and apps/collab, each with its own wrangler.jsonc. */
 async function buildProject(): Promise<{ dir: string }> {
   const dir = await mkdtemp(path.join(tmpdir(), "pithy-lifecycle-"));
+  // A project root carries its credentials, and here that is load-bearing rather than decoration:
+  // `buildEnvInventory` resolves the account from the *project directory* it is given, while provisioning
+  // and teardown use the clients built above. Without this file the loader falls through to `process.env`,
+  // so a shell exporting another CLOUDFLARE_ACCOUNT_ID makes `pithy env` report an account nothing in this
+  // run touched — one suite, two accounts. One source, written once, governs the whole run.
+  await writeFile(
+    path.join(dir, ".dev.vars"),
+    `CLOUDFLARE_ACCOUNT_ID="${accountId}"\nCLOUDFLARE_API_TOKEN="${apiToken}"\n`,
+    { mode: 0o600 },
+  );
   for (const name of ["api", "collab"]) {
     const workerDir = path.join(dir, "apps", name);
     await mkdir(path.join(workerDir, "src"), { recursive: true });
@@ -204,6 +225,8 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
 
     const inventory = await buildEnvInventory({ projectDir });
 
+    // The account it reports is the account this run actually provisioned in — the fixture's own
+    // `.dev.vars`, not whatever the ambient environment says.
     expect(inventory.accountId).toBe(accountId);
     // Both Workers appear, each read from its own wrangler.jsonc.
     expect(inventory.workers.map((worker) => worker.worker).sort()).toEqual(["api", "collab"]);

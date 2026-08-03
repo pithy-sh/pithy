@@ -12,6 +12,8 @@ import { parse } from "comment-json";
 import { createRemoteCliAudit } from "../audit/cliAudit";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { loadProject, requireProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { assertResetConfirmed, resetConfirmPhrase } from "../seed/safety";
@@ -84,15 +86,24 @@ function buildResolveEnv(projectDir: string): (env: string) => Promise<{ appData
   };
 }
 
-/** Build the live provisioner for one environment. */
+/**
+ * Build the live provisioner for one environment, and resolve the project name every one of these
+ * commands needs. An index is *found by name and reused*, so the name must be the same on every run:
+ * `requireProjectName` refuses to guess where `resolveProjectName` would differ between checkouts.
+ */
 async function buildProvisioner(projectDir: string, env: string) {
+  // The name first, before the credentials: both are local checks, and a config that cannot name the
+  // project is not a Cloudflare problem to report as one.
+  const project = requireProjectName(await loadProject(projectDir));
   const { accountId, apiToken } = loadCloudflareCreds(projectDir);
   const config = await loadVectorConfig(projectDir);
   return {
+    project,
     config,
     env,
     provisioner: new CloudflareVectorProvisioner({
       cf: new CloudflareClients({ accountId, apiToken }),
+      project,
       accountId,
       apiToken,
       config,
@@ -154,6 +165,7 @@ async function recordProvisioned(
  */
 async function recordBindings(
   projectDir: string,
+  project: string,
   env: string,
   config: Awaited<ReturnType<typeof loadVectorConfig>>,
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
@@ -167,7 +179,7 @@ async function recordBindings(
 
   await applyAppBindings(projectDir, env, {
     vectorize,
-    workflows: appWorkflowBindings(vectorWorkflowRegistry, VECTOR_CAPABILITY, env),
+    workflows: appWorkflowBindings(vectorWorkflowRegistry, { project, capability: VECTOR_CAPABILITY, env }),
   });
 }
 
@@ -198,20 +210,21 @@ const provision = defineCommand({
     description: "Create each configured index and its metadata indexes, then deploy the reprocess worker",
   },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
       const { provisionVector } = await loadVector();
-      const { provisioner, config } = await buildProvisioner(projectDir, args.env);
+      const { provisioner, project, config } = await buildProvisioner(projectDir, env);
 
-      const result = await provisionVector(provisioner, { config, env: args.env });
+      const result = await provisionVector(provisioner, { project, config, env });
       // Last, and only on success: the record is the Worker's evidence that these metadata indexes exist,
       // so it must never claim more than provisioning actually got done.
-      await recordProvisioned(projectDir, args.env, result);
-      await recordBindings(projectDir, args.env, config, result);
+      await recordProvisioned(projectDir, env, result);
+      await recordBindings(projectDir, project, env, config, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector provision", ...result })}\n`);
@@ -234,7 +247,7 @@ const reset = defineCommand({
     description: "DESTRUCTIVE: delete each index, rebuild it, and re-embed the corpus from D1",
   },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     "confirm-reset": {
       type: "string",
       description: 'Unlock a non-dev reset non-interactively: "yes, i really want to reset <env>"',
@@ -243,25 +256,26 @@ const reset = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 
       // The gate first, before a single Cloudflare call. `--yes` deliberately does not appear here.
       await assertResetConfirmed({
-        env: args.env,
+        env,
         json: args.json,
         ...(args["confirm-reset"] !== undefined ? { confirmReset: args["confirm-reset"] } : {}),
-        ...(interactive ? { prompt: resetPrompt(args.env) } : {}),
+        ...(interactive ? { prompt: resetPrompt(env) } : {}),
       });
 
       const { resetVector } = await loadVector();
-      const { provisioner, config, accountId, apiToken } = await buildProvisioner(projectDir, args.env);
+      const { provisioner, project, config, accountId, apiToken } = await buildProvisioner(projectDir, env);
 
       // A reset destroys an environment's entire search index, so it is audited at `critical` — and on `dev`
       // it is audited not at all, because a dev reset changes nothing shared.
       const audit = await createRemoteCliAudit({
         projectDir,
-        env: args.env,
+        env,
         capabilities: await resolveWorkers({ projectDir }).then(projectCapabilities),
         clients: new CloudflareClients({ accountId, apiToken }),
         apiToken,
@@ -270,13 +284,13 @@ const reset = defineCommand({
         action: "vector/index_reset" as const,
         severity: "critical" as const,
         resourceType: "cf_vectorize_index" as const,
-        resourceId: args.env,
+        resourceId: env,
         metadata: { indexes: Object.keys(config.indexes) },
       };
 
       let result: Awaited<ReturnType<typeof resetVector>>;
       try {
-        result = await resetVector(provisioner, { config, env: args.env });
+        result = await resetVector(provisioner, { project, config, env });
       } catch (error) {
         // Truthful: recorded as it happened, never as it was intended.
         await audit({ ...event, outcome: "failure" });
@@ -284,13 +298,13 @@ const reset = defineCommand({
       }
       await audit({ ...event, outcome: "success" });
       // A reset rebuilds every index, so the record it left behind is stale by definition. Rewrite it.
-      await recordProvisioned(projectDir, args.env, result);
+      await recordProvisioned(projectDir, env, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector reset", ...result })}\n`);
         return;
       }
-      process.stdout.write(`DESTRUCTIVE. Every vector in ${args.env} was deleted and rebuilt from the corpus.\n`);
+      process.stdout.write(`DESTRUCTIVE. Every vector in ${env} was deleted and rebuilt from the corpus.\n`);
       for (const entry of result.indexes) {
         process.stdout.write(`${entry.index}: ${entry.indexName} rebuilt and re-embedded.\n`);
       }
@@ -301,7 +315,7 @@ const reset = defineCommand({
 const reprocess = defineCommand({
   meta: { name: "reprocess", description: "Re-embed an index's documents through the reprocess Workflow" },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     index: { type: "string", description: "The index to re-embed, as named in pithy.config.ts" },
     all: {
       type: "boolean",
@@ -313,8 +327,9 @@ const reprocess = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
-      const { provisioner, config } = await buildProvisioner(projectDir, args.env);
+      const { provisioner, config } = await buildProvisioner(projectDir, env);
       const filter = parseFilter(args.filter);
 
       // No `--index` means every configured index, which is what "re-embed after a model change" usually is.
@@ -332,7 +347,7 @@ const reprocess = defineCommand({
       for (const index of indexes) {
         runs.push({
           index,
-          report: await provisioner.reprocess(args.env, index, {
+          report: await provisioner.reprocess(env, index, {
             all: args.all,
             ...(filter ? { filter } : {}),
           }),
@@ -340,7 +355,7 @@ const reprocess = defineCommand({
       }
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "vector reprocess", env: args.env, runs })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "vector reprocess", env, runs })}\n`);
         return;
       }
       for (const run of runs) {

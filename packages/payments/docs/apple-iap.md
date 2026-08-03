@@ -134,7 +134,7 @@ Create sandbox testers under **Users and Access** → **Sandbox** → **Test Acc
 
 Payments treats **anything that is not literally `Production` as sandbox**, and a sandbox transaction reaching a production deployment is refused with `payments/environment_mismatch` and grants nothing. That default is deliberate and it is the single most common in-app-purchase defect there is: the failure directions are not symmetric. Treating production as sandbox loses a purchase the reconciliation pass repairs; treating sandbox as production hands out real entitlements for test transactions.
 
-A deployment is production only when its `ENVIRONMENT` var says `production`. Everything else — `staging`, `dev`, a var nobody set — is sandbox, so point the Sandbox Server URL at staging and sandbox purchases project there.
+A deployment is production only when its `ENVIRONMENT` var says `prod`. Everything else — `staging`, `dev`, a var nobody set — is sandbox, so point the Sandbox Server URL at staging and sandbox purchases project there.
 
 **Xcode's local StoreKit testing will not verify against a deployed Worker.** Transactions from a `.storekit` configuration file are signed by a per-machine root that exists only on that Mac, and the trust set here is Apple's pinned roots — additive for the test suite, and not reachable from `pithy.config.ts` by design, because a config key that widened a production trust boundary is a key somebody eventually sets. Use a sandbox Apple Account against a real sandbox purchase.
 

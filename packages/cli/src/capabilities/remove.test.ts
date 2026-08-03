@@ -582,6 +582,7 @@ describe("removeCapability", () => {
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],
+      project: "acme",
     });
 
     const result = await removeCapability({
@@ -611,6 +612,7 @@ describe("removeCapability", () => {
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],
+      project: "acme",
     });
 
     const result = await removeCapability({
@@ -638,6 +640,7 @@ describe("removeCapability", () => {
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],
+      project: "acme",
     });
 
     expect(await real.workersUsingPackage("@pithy-sh/turnstile")).toEqual([]);

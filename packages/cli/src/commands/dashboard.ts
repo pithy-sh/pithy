@@ -23,6 +23,7 @@ import {
 } from "../dashboard/connect";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { loadProject, resolveProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -232,9 +233,10 @@ async function withRegistry<T>(
   options: { env: string; worker?: string },
   work: (registry: ConnectionRegistry) => Promise<T>,
 ): Promise<T> {
+  // Every subcommand opens the registry, so this is the one door the `--env` check belongs behind.
   const registry = await openConnectionRegistry({
     projectDir: process.cwd(),
-    env: options.env,
+    env: requireEnvironment(options.env),
     ...(options.worker === undefined ? {} : { worker: options.worker }),
   });
   try {
@@ -246,7 +248,7 @@ async function withRegistry<T>(
 
 /** The flags every subcommand shares. */
 const commonArgs = {
-  env: { type: "string", default: "dev", description: "Target environment" },
+  env: ENV_ARG,
   worker: { type: "string", description: "Which worker's wrangler.jsonc resolves the app database (apps/<name>)" },
   origin: { type: "string", description: "The management client's origin (default https://app.pithy.sh)" },
   json: { type: "boolean", default: false, description: "Machine-readable output" },

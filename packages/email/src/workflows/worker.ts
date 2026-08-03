@@ -15,7 +15,7 @@ import { runScheduler, type SchedulerDeps } from "./scheduler";
 
 /**
  * The prebuilt email worker. `pithy add email` deploys one per environment (`pithy-email-staging`,
- * `pithy-email-production`); the user authors no code for it. It hosts:
+ * `pithy-email-prod`); the user authors no code for it. It hosts:
  *
  *   - `EmailSendWorkflow` — sends a batch of jobs durably (dispatch target for immediate sends and
  *     the scheduler's fan-out).

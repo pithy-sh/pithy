@@ -68,7 +68,7 @@ So non-production environments get their full open/click/unsubscribe funnel (tho
 
 **Suppression is global.** `pithy_email_suppressions` lives in a dedicated, durable `EMAIL_SUPPRESSIONS` database — one per account, bound the same in every environment. An address that hard-bounced, complained, or unsubscribed must never be emailed from *any* environment, so this is the one resource shared across all of them. It mirrors the shared-DB pattern `@pithy-sh/secrets` uses for `SECRETS` (where the link-signing key lives).
 
-## Feature / staging / production
+## Feature / staging / prod
 
 Each environment sends its own jobs, recorded in its own app DB. They all read and write **one** shared `EMAIL_SUPPRESSIONS` database, so an unsubscribe collected in production also stops staging and feature builds from emailing that person.
 
@@ -95,7 +95,7 @@ A delivered apex message shows exactly this: `From: noreply@example.com`, `maile
 
 1. In the Cloudflare dashboard, open **Email** → **Email Sending**, **Add a domain**, enter `example.com` (or run `wrangler email sending enable example.com`). For a zone already on Cloudflare, Cloudflare adds the DKIM CNAMEs and the return-path subdomain automatically; for a zone elsewhere, it shows the records to add. Your apex SPF and MX are left alone.
 2. Wait for the domain to show **Verified** in the Email Sending dashboard. Until then, `From: @example.com` is rejected.
-3. To classify bounces/complaints in your own worker, add **Email Routing** on a dedicated **subdomain** (e.g. `bounce.example.com`, never the apex, so your provider keeps the apex MX) pointing at the production app worker — or skip it and rely on Cloudflare's account-wide auto-suppression plus the synchronous permanent-bounces this package already captures (one inbound worker per domain — see "Feature / staging / production").
+3. To classify bounces/complaints in your own worker, add **Email Routing** on a dedicated **subdomain** (e.g. `bounce.example.com`, never the apex, so your provider keeps the apex MX) pointing at the production app worker — or skip it and rely on Cloudflare's account-wide auto-suppression plus the synchronous permanent-bounces this package already captures (one inbound worker per domain — see "Feature / staging / prod").
 
 ## The suppression database, and provisioning
 
@@ -109,7 +109,7 @@ A dedicated `EMAIL_SUPPRESSIONS` database is the default and the recommendation.
 
 - **`--routing-zone`** — the Cloudflare **Zone ID** (the 32-char id on the zone's Overview page, *not* the domain name) of the zone whose inbound mail is routed. **Email Routing must already be enabled on this zone**, which points its MX at Cloudflare — so use a **subdomain** zone (e.g. the zone for `bounce.example.com`), never your apex, or you'd move your real inbound mail off your provider.
 - **`--inbound-address`** — the exact recipient address the rule matches, on that routed zone (e.g. `bounce@bounce.example.com`). Any mail addressed to it is handed to the app worker's `email()` handler, which classifies it (bounce / complaint / auto-reply) and updates suppression + events.
-- **`--app-worker`** — the deployed name of your **production** app worker — the one running `createEntrypoint`, which exports the `email()` bounce handler (e.g. `pithy-app-production`). This is your app worker, not the prebuilt email/workflow worker.
+- **`--app-worker`** — the deployed name of your **production** app worker — the one running `createEntrypoint`, which exports the `email()` bounce handler (e.g. `pithy-app-prod`). This is your app worker, not the prebuilt email/workflow worker.
 
 Note that Cloudflare already auto-suppresses hard bounces account-wide and reports `permanent_bounces` synchronously on send (which this package captures), so the routing rule is for when you want DSNs/complaints **classified in your own worker** — e.g. to record per-campaign bounce events for analytics. Verifying the rule end to end is tracked in [#47](https://github.com/pithy-sh/pithy/issues/47).
 

@@ -15,8 +15,11 @@ import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareStorageDeprovisioner, CloudflareStorageProvisioner } from "./storageProvisioner";
 
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /** Resources are per environment; staging stands in for both in these tests. */
-const STAGING_BUCKET = storageBucketName("staging");
+const STAGING_BUCKET = storageBucketName(PROJECT, "staging");
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
@@ -56,6 +59,7 @@ function provisioner(
   dispatch: (request: { mode: string }) => Promise<void> = async () => {},
 ) {
   return new CloudflareStorageProvisioner({
+    project: PROJECT,
     cf,
     accountId: "acct-1",
     apiToken: "tok",
@@ -153,8 +157,8 @@ describe("CloudflareStorageProvisioner", () => {
       throw new Error(`${request.mode} refused`);
     });
 
-    await expect(storage.writeCredentials("production", { bucketName: STAGING_BUCKET })).rejects.toThrow(
-      /Could not write the storage R2 credentials to production/,
+    await expect(storage.writeCredentials("prod", { bucketName: STAGING_BUCKET })).rejects.toThrow(
+      /Could not write the storage R2 credentials to prod/,
     );
   });
 });
@@ -167,6 +171,7 @@ describe("CloudflareStorageDeprovisioner", () => {
     const { cf, calls, getWorker, deleteWorker, findBucketByName, deleteBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     const storage = new CloudflareStorageDeprovisioner({
+      project: PROJECT,
       cf,
       r2Credentials: R2,
       audit: async (event) => void events.push(event),
@@ -180,11 +185,11 @@ describe("CloudflareStorageDeprovisioner", () => {
     expect(deleteBucket).not.toHaveBeenCalled();
     expect(events).toEqual([]);
 
-    getWorker.mockResolvedValue({ id: storageWorkerName("staging") });
+    getWorker.mockResolvedValue({ id: storageWorkerName(PROJECT, "staging") });
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     await storage.deleteWorker("staging");
     await storage.deleteBucket("staging");
-    expect(deleteWorker).toHaveBeenCalledWith(storageWorkerName("staging"));
+    expect(deleteWorker).toHaveBeenCalledWith(storageWorkerName(PROJECT, "staging"));
     // The bucket is emptied before it is deleted. R2 refuses to delete one that still holds an object or
     // a dangling multipart upload, so a delete-only teardown fails on every bucket that was ever used.
     expect(calls).toEqual(["emptyBucket", `deleteBucket:${STAGING_BUCKET}`]);
@@ -196,7 +201,7 @@ describe("CloudflareStorageDeprovisioner", () => {
 
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
-    const storage = new CloudflareStorageDeprovisioner({ cf });
+    const storage = new CloudflareStorageDeprovisioner({ cf, project: PROJECT });
 
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     await expect(storage.deleteBucket("staging")).rejects.toThrowError(/R2 access-key pair is needed/);
@@ -213,6 +218,7 @@ describe("the committed sweep worker template", () => {
 
   test("resolves into a config with no placeholder left", async () => {
     const resolved = resolveStorageConfig(await committedTemplate(), {
+      project: PROJECT,
       env: "staging",
       appDatabaseId: "app-db",
       secretsDatabaseId: "secrets-db",
@@ -221,22 +227,23 @@ describe("the committed sweep worker template", () => {
       storageConfig: StorageConfig.parse({}),
     });
     expect(JSON.stringify(resolved)).not.toContain("filled-at-provision");
-    expect(resolved.name).toBe(storageWorkerName("staging"));
+    expect(resolved.name).toBe(storageWorkerName(PROJECT, "staging"));
     expect(resolved.r2_buckets?.[0]?.bucket_name).toBe(STAGING_BUCKET);
   });
 
   test("the template's own workflows block is replaced by the one the specs derive", async () => {
     const template = await committedTemplate();
     const resolved = resolveStorageConfig(template, {
-      env: "production",
+      project: PROJECT,
+      env: "prod",
       appDatabaseId: "app-db",
       secretsDatabaseId: "secrets-db",
       storeId: "store-1",
-      resources: { bucketName: storageBucketName("production") },
+      resources: { bucketName: storageBucketName(PROJECT, "prod") },
       storageConfig: StorageConfig.parse({}),
     });
     expect(resolved.workflows).toEqual([
-      { binding: "STORAGE_SWEEP", name: "pithy-storage-sweep-production", class_name: "StorageSweepWorkflow" },
+      { binding: "STORAGE_SWEEP", name: "acme-prod-storage-sweep", class_name: "StorageSweepWorkflow" },
     ]);
     expect(resolved.triggers).toEqual({ crons: ["0 3 * * *"] });
   });

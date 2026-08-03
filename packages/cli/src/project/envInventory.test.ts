@@ -56,13 +56,13 @@ describe("buildEnvInventory", () => {
     await writeWrangler({
       name: "pithy-app",
       d1_databases: [],
-      env: { staging: {}, production: {} },
+      env: { staging: {}, prod: {} },
     });
     const inv = await buildEnvInventory({ projectDir: dir });
     expect(inv.workers).toHaveLength(1);
     expect(inv.workers[0]).toMatchObject({ worker: "pithy-app", dir: join("apps", "api") });
     const environments = inv.workers[0]?.environments ?? [];
-    expect(environments.map((e) => e.name)).toEqual(["dev", "staging", "production"]);
+    expect(environments.map((e) => e.name)).toEqual(["dev", "staging", "prod"]);
     expect(environments[0]?.baseUrl).toBe("local");
     expect(environments[0]?.scriptName).toBe("pithy-app");
   });
@@ -160,11 +160,11 @@ describe("buildEnvInventory", () => {
   test("derives a base URL from the first route pattern of a named env", async () => {
     await writeWrangler({
       name: "pithy-app",
-      env: { production: { name: "pithy-app-production", routes: [{ pattern: "api.example.com/*" }] } },
+      env: { prod: { name: "pithy-app-prod", routes: [{ pattern: "api.example.com/*" }] } },
     });
-    const prod = (await environmentsOf()).find((e) => e.name === "production");
+    const prod = (await environmentsOf()).find((e) => e.name === "prod");
     expect(prod?.baseUrl).toBe("https://api.example.com");
-    expect(prod?.scriptName).toBe("pithy-app-production");
+    expect(prod?.scriptName).toBe("pithy-app-prod");
   });
 
   test("a named env with no route has a null base URL", async () => {
@@ -179,7 +179,7 @@ describe("buildEnvInventory — per Worker", () => {
     await writeWorker("api", {
       name: "acme-api",
       d1_databases: [{ binding: "DB", database_id: "db-uuid" }],
-      env: { production: { name: "acme-api-production" } },
+      env: { prod: { name: "acme-api-prod" } },
     });
     await writeWorker("collab", {
       name: "acme-collab",
@@ -188,7 +188,7 @@ describe("buildEnvInventory — per Worker", () => {
 
     const inv = await buildEnvInventory({ projectDir: dir });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api", "acme-collab"]);
-    expect(inv.workers[0]?.environments.map((e) => e.name)).toEqual(["dev", "production"]);
+    expect(inv.workers[0]?.environments.map((e) => e.name)).toEqual(["dev", "prod"]);
     expect(inv.workers[1]?.environments.map((e) => e.name)).toEqual(["dev"]);
     expect(inv.workers[1]?.environments[0]?.resources[0]).toMatchObject({ kind: "kv", binding: "PRESENCE" });
     // Each worker's directory is reported project-relative, so the report reads the same anywhere.

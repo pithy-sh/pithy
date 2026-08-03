@@ -27,14 +27,24 @@ function supportsTruecolor(): boolean {
  * would bleed ANSI into our `--json` and `Done.` output the moment a CI runner
  * (or a piped consumer) reads it. Our output is parsed; a TTY is the real signal.
  */
-function colorEnabled(): boolean {
+function detectColor(): boolean {
   if (process.env.NO_COLOR) return false;
   if (process.env.FORCE_COLOR) return true;
   return Boolean(process.stdout.isTTY);
 }
 
 // Decided once at import, the way picocolors itself latches its detection.
-const enabled = colorEnabled();
+const enabled = detectColor();
+
+/**
+ * The latched decision, for the one caller that needs the rule rather than a colored string: `bin.ts`
+ * hands it to citty, which renders its own help and consults none of the above. Exported so the rule
+ * lives in exactly one place — a second copy of it is how the help output came to disagree with every
+ * other surface in the first place.
+ */
+export function colorEnabled(): boolean {
+  return enabled;
+}
 
 /** The brand mark in terminal form. Truecolor → 256-color 178 → no color. */
 export function saffron(text: string): string {
@@ -102,5 +112,5 @@ function safe(value: string): string {
  * Callers branch on it to choose the clickable id or the plain-URL fallback.
  */
 export function supportsHyperlinks(): boolean {
-  return enabled;
+  return colorEnabled();
 }

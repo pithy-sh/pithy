@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
+
 /**
  * Vectorize's published ceilings, in one place, verified against
  * https://developers.cloudflare.com/vectorize/platform/limits/ and
@@ -18,8 +20,20 @@
 /** Components per vector, float32. An index's `dimensions` is fixed at creation and cannot be changed. */
 export const MAX_DIMENSIONS = 1536;
 
-/** Bytes in an index name, a namespace name, or any other Vectorize identifier. */
-export const MAX_NAME_BYTES = 64;
+/**
+ * Bytes in an index name, a namespace name, or any other Vectorize identifier.
+ *
+ * The index-name half of this is the same number the naming facade holds
+ * (`NAMESPACE_LIMITS.vectorizeIndex` in `@pithy-sh/core/src/naming/limits`), so it is read from there
+ * rather than typed twice — a limit written in two files eventually disagrees with itself. The rest of
+ * Vectorize's identifiers share the ceiling but are not composed by the facade, which is why this
+ * package still owns the constant they are checked against.
+ *
+ * Vectorize also constrains the charset: `^([a-z]+[a-z0-9_-]*[a-z0-9]+)$` — an index name must **start
+ * with a letter** and end alphanumeric. Pithy's project rule already requires a letter-leading project,
+ * and every composed name leads with the project, so the two agree by construction.
+ */
+export const MAX_NAME_BYTES = NAMESPACE_LIMITS.vectorizeIndex.maxLength;
 
 /** Bytes in a vector id. A document whose id exceeds this can be stored but never addressed in the index. */
 export const MAX_VECTOR_ID_BYTES = 64;

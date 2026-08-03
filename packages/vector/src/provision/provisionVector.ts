@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { VectorConfig } from "../config/config";
 import type { MetadataIndexReport } from "../index/drift";
-import { byteLength, MAX_NAME_BYTES } from "../index/limits";
 import { type MetadataIndexDescriptor, metadataIndexes } from "../index/metadata";
 import type { ObservedMetadataIndex, ProvisionedIndex, VectorProvisionRecord } from "../index/provisioned";
 import { VECTOR_CAPABILITY } from "../workflows/specs";
@@ -34,23 +34,42 @@ import { VECTOR_CAPABILITY } from "../workflows/specs";
  */
 
 /**
- * The Vectorize index name for one configured index in one environment — `pithy-vector-<index>-<env>`.
+ * The Vectorize index name for one configured index in one environment —
+ * `<project>-<env>-vector-<index>`.
  *
- * Per environment, never shared: a staging index and a production index that share vectors mean staging's
- * test corpus answers production's searches, and a staging teardown deletes production's embeddings.
+ * Per environment, never shared: a staging index and a prod index that share vectors mean staging's
+ * test corpus answers prod's searches, and a staging teardown deletes prod's embeddings.
+ *
+ * Per **project** for a sharper reason. Vectorize's index namespace is account-wide, and provisioning
+ * reuses an index it finds by name — so an unscoped `pithy-vector-docs-prod` would let a second Pithy
+ * project adopt this one's index, mix two corpora into one search, and delete both on either teardown.
+ * Dimensions and metric are fixed at creation, so the adoption would also silently pin the second
+ * project to the first's embedding model.
+ *
+ * **Composed through the naming facade**, which carries Vectorize's own rule: 64 bytes — not the 63
+ * every namespace was once held to — refused rather than truncated, because a shortened index name is
+ * a *different, empty* index and re-embedding a corpus is neither free nor quick. The facade also
+ * validates the project once and the environment once, so `production` is refused here rather than
+ * standing up a fourth environment nothing else knows about.
  */
-export function vectorIndexName(index: string, env: string): string {
-  const name = `pithy-${VECTOR_CAPABILITY}-${index}-${env}`;
-  // Config validates the *config* name at 64 bytes; this is the name Cloudflare actually sees, and the
-  // prefix and environment suffix can push a legal config name over the line.
-  if (byteLength(name) > MAX_NAME_BYTES) {
+export function vectorIndexName(project: string, index: string, env: string): string {
+  const scope = resourceNames(project).env(env);
+  try {
+    return scope.vectorizeIndex(`${VECTOR_CAPABILITY}-${index}`);
+  } catch (error) {
+    // The facade refuses an over-long Vectorize name as an `InternalError`, on the reasoning that the
+    // project and the environment are already validated so only author code can overflow it. That
+    // reasoning does not hold here: the trailing segment is a key out of the adopter's
+    // `pithy.config.ts`, and config validates it against Vectorize's 64 without knowing what the
+    // project and environment will spend of it. So the refusal is restated in the adopter's terms —
+    // same limit, same number, named as the fixable thing it is.
+    if (!(error instanceof PithyError)) throw error;
     throw new ValidationError({
-      message: `The index name \`${name}\` is longer than Vectorize allows.`,
-      action: `Shorten the \`${index}\` index's name in pithy.config.ts — the deployed name is pithy-vector-<index>-<env> and must stay under ${MAX_NAME_BYTES} bytes.`,
-      detail: `${byteLength(name)} bytes`,
+      message: `The \`${index}\` index cannot be named: ${error.payload.message}`,
+      action: `Shorten the \`${index}\` index's key in pithy.config.ts, or the project name — the deployed name is <project>-<env>-${VECTOR_CAPABILITY}-<index>.`,
+      detail: error.payload.detail ?? error.payload.message,
     });
   }
-  return name;
 }
 
 /** The shape an index is created with. Fixed at creation — neither value can be changed afterwards. */
@@ -111,8 +130,14 @@ export interface VectorProvisionResult {
   indexes: VectorIndexResult[];
 }
 
-/** Provisioning inputs: the resolved config and the environment to stand it up in. */
+/** Provisioning inputs: the resolved config, the project that owns it, and the environment to stand it up in. */
 export interface VectorProvisionOptions {
+  /**
+   * The project name — the `<project>` segment every index name leads with. The root
+   * `pithy.config.ts` `name`, resolved by `requireProjectName` and never guessed: an index found by
+   * name is *reused*, so a wrong value adopts another project's corpus.
+   */
+  project: string;
   /** The app's resolved vector config. */
   config: VectorConfig;
   /** The environment to provision. Vectorize has no local emulation, so `dev` is a real remote index too. */
@@ -139,7 +164,7 @@ export async function provisionVector(
   const indexes: VectorIndexResult[] = [];
 
   for (const [index, indexConfig] of Object.entries(options.config.indexes)) {
-    const indexName = vectorIndexName(index, options.env);
+    const indexName = vectorIndexName(options.project, index, options.env);
     await provisioner.ensureIndex(indexName, { dimensions: indexConfig.dimensions, metric: indexConfig.metric });
 
     // Immediately after the index, and before any worker that could write to it exists.
@@ -206,7 +231,7 @@ export async function resetVector(
 
   const deleted: string[] = [];
   for (const index of Object.keys(options.config.indexes)) {
-    const indexName = vectorIndexName(index, options.env);
+    const indexName = vectorIndexName(options.project, index, options.env);
     await provisioner.deleteIndex(indexName);
     deleted.push(indexName);
   }

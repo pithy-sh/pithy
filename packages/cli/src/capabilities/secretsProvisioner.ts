@@ -16,8 +16,8 @@ import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/s
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import {
   initialMasterKeyConfig,
-  MANAGER_CF_API_TOKEN_NAME,
-  MANAGER_CF_API_TOKEN_SECRET_NAME,
+  managerCfApiTokenName,
+  managerCfApiTokenSecretName,
   masterKeySecretName,
   type SecretsDeprovisioner,
   type SecretsProvisioner,
@@ -53,6 +53,14 @@ export interface CloudflareSecretsProvisionerOptions {
   cf: CloudflareClients;
   /** The CF account id, used to scope the minted manager token to this account's resources. */
   accountId: string;
+  /**
+   * The project name (root `pithy.config.ts` `name`, via `requireProjectName`). **Every** name this
+   * provisioner creates leads with it: the manager Worker, its D1, both of its Workflows, each Secrets
+   * Store entry, and the minted CF API token. All five namespaces are flat and account-wide, so this
+   * segment is the only thing stopping a second project from provisioning over this one — and a Worker
+   * deploy does not collide, it overwrites.
+   */
+  project: string;
   /** The CF Secrets Store id holding the per-env master keys and the manager token. */
   storeId: string;
   /** Deploys the manager worker. Injected so the control-plane steps are testable without wrangler. */
@@ -81,6 +89,7 @@ export function managerTokenPermissions(accountId: string): TokenPermission[] {
 export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #storeId: string;
   readonly #deploy: DeployManager;
   readonly #audit: CliAuditEmit;
@@ -88,6 +97,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#storeId = options.storeId;
     this.#deploy = options.deploy;
     this.#audit = options.audit ?? (async () => {});
@@ -111,34 +121,48 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * mint fails here, before any resource is created, with an actionable error.
    */
   async ensureManagerToken(): Promise<void> {
+    const entry = managerCfApiTokenSecretName(this.#project);
     const store = this.#cf.secrets(this.#storeId);
-    if (await store.exists(MANAGER_CF_API_TOKEN_SECRET_NAME)) return;
+    if (await store.exists(entry)) return;
     const minted = await this.#cf
       .accountTokens()
-      .rollToken(MANAGER_CF_API_TOKEN_NAME, managerTokenPermissions(this.#accountId));
-    await writeManagerCfApiToken(this.#cf, this.#storeId, minted.value);
+      .rollToken(managerCfApiTokenName(this.#project), managerTokenPermissions(this.#accountId));
+    await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
       action: "secrets/set",
       outcome: "success",
       severity: "warning",
       resourceType: "secret",
-      resourceId: MANAGER_CF_API_TOKEN_SECRET_NAME,
-      metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+      resourceId: entry,
+      metadata: { name: entry, kind: "manager_token" },
     });
   }
 
-  /** Reuse the env's secrets D1 if it exists, otherwise create it. */
+  /**
+   * Reuse the env's secrets D1 if it exists, otherwise create it.
+   *
+   * "Exists" means *this project's* database: the name is `<project>-<env>-secrets`. Unscoped, the
+   * second project in an account would find the first's database by name and adopt it — two projects
+   * sharing one secrets store, each able to read and overwrite the other's rows.
+   */
   async ensureDatabase(env: ManagedEnvironment): Promise<{ databaseId: string }> {
-    const name = managerWorkerName(env);
+    const name = managerWorkerName(this.#project, env);
     const existing = await this.#cf.d1Provisioner().findDatabaseByName(name);
     const db = existing ?? (await this.#cf.d1Provisioner().createDatabase(name));
     return { databaseId: db.uuid };
   }
 
-  /** Mint the env's master key only if absent — replacing it would orphan every stored secret. */
+  /**
+   * Mint the env's master key only if absent — replacing it would orphan every stored secret.
+   *
+   * The entry name is project-scoped, and that is what makes "absent" mean *this project's* key is
+   * absent. Under the old flat name, a second project provisioning into the same account would find
+   * the first project's key already there, skip the mint, and encrypt its own rows under a key it does
+   * not own — silently coupling two projects until one of them tears down and orphans both.
+   */
   async ensureMasterKey(env: ManagedEnvironment): Promise<{ storeId: string }> {
-    const name = masterKeySecretName(env);
+    const name = masterKeySecretName(this.#project, env);
     const store = this.#cf.secrets(this.#storeId);
     if (!(await store.exists(name))) {
       await store.putSecret(name, JSON.stringify(await initialMasterKeyConfig()));
@@ -176,13 +200,17 @@ function managerDir(): string {
  * Write the scoped CF API token into the Secrets Store as the entry the manager binds at runtime.
  * The value is the uniform versioned-value envelope (a one-entry envelope on first write), so the
  * manager's `secretsStore` read decodes it exactly like every other secret. The token is `global` —
- * one fixed entry written once, bound the same way by every manager — so this is idempotent and
- * re-runnable: `putSecret` upserts, and a re-deploy rewrites the same entry with the same value.
+ * one entry per project, written once and bound the same way by every one of that project's managers —
+ * so this is idempotent and re-runnable: `putSecret` upserts, and a re-deploy rewrites the same entry.
  */
-export async function writeManagerCfApiToken(cf: CloudflareClients, storeId: string, apiToken: string): Promise<void> {
+export async function writeManagerCfApiToken(
+  cf: CloudflareClients,
+  target: { storeId: string; project: string },
+  apiToken: string,
+): Promise<void> {
   await cf
-    .secrets(storeId)
-    .putSecret(MANAGER_CF_API_TOKEN_SECRET_NAME, encodeVersionedValue(initialVersionedValue(apiToken)));
+    .secrets(target.storeId)
+    .putSecret(managerCfApiTokenSecretName(target.project), encodeVersionedValue(initialVersionedValue(apiToken)));
 }
 
 /**
@@ -197,12 +225,12 @@ export async function writeManagerCfApiToken(cf: CloudflareClients, storeId: str
  * binding already resolves by deploy time. The broad token never reaches the worker; the minted token
  * never deploys. Auth flows through env vars, not `wrangler login` (CLAUDE.md §CF token bootstrap).
  */
-export function buildManagerDeploy(options: { accountId: string; apiToken: string }): DeployManager {
-  const { accountId, apiToken } = options;
+export function buildManagerDeploy(options: { accountId: string; apiToken: string; project: string }): DeployManager {
+  const { accountId, apiToken, project } = options;
   return async (env, resolved) => {
     const dir = managerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
-    const config = resolveManagerConfig(template, { env, accountId, ...resolved });
+    const config = resolveManagerConfig(template, { env, accountId, project, ...resolved });
     const configPath = join(dir, `.wrangler.${env}.json`);
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     try {
@@ -218,6 +246,12 @@ export function buildManagerDeploy(options: { accountId: string; apiToken: strin
 
 export interface CloudflareSecretsDeprovisionerOptions {
   cf: CloudflareClients;
+  /**
+   * The project name (root `pithy.config.ts` `name`, via `requireProjectName`). Teardown recomputes
+   * every name it deletes, so this must be the same value provisioning used — a guessed one would
+   * either match nothing (a silent leak) or, worse, match another project's entries.
+   */
+  project: string;
   /** The CF Secrets Store id holding the per-env master keys. */
   storeId: string;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -232,26 +266,36 @@ export interface CloudflareSecretsDeprovisionerOptions {
  */
 export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #storeId: string;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSecretsDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#storeId = options.storeId;
     this.#audit = options.audit ?? (async () => {});
   }
 
-  /** Delete the env's manager worker if it is deployed. */
+  /**
+   * Delete the env's manager worker if it is deployed. Guarded, so teardown is idempotent — which is
+   * also why `project` must be the value provisioning used: a mismatch finds nothing, deletes nothing,
+   * and exits 0 while the real manager keeps running.
+   */
   async deleteManager(env: ManagedEnvironment): Promise<void> {
-    const name = managerWorkerName(env);
+    const name = managerWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
     }
   }
 
-  /** Delete the env's master key if it is present — destructive, called only on a full destroy. */
+  /**
+   * Delete the env's master key if it is present — destructive, called only on a full destroy. The
+   * name is project-scoped, so this can only ever reach this project's key: another project's key in
+   * the same account-wide store is a different entry and is left readable.
+   */
   async deleteMasterKey(env: ManagedEnvironment): Promise<void> {
-    const name = masterKeySecretName(env);
+    const name = masterKeySecretName(this.#project, env);
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(name)) {
       await store.deleteSecret(name);
@@ -267,31 +311,37 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     }
   }
 
-  /** Delete the env's secrets D1 if it exists. */
+  /** Delete the env's secrets D1 if it exists. Project-scoped by name, like the manager above. */
   async deleteDatabase(env: ManagedEnvironment): Promise<void> {
-    const db = await this.#cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
+    const db = await this.#cf.d1Provisioner().findDatabaseByName(managerWorkerName(this.#project, env));
     if (db) {
       await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
     }
   }
 
   /**
-   * Remove the shared manager token entirely — the inverse of `ensureManagerToken`. Delete the minted
-   * account token from Cloudflare (every same-named token, so a re-minted duplicate is swept too), then
-   * its Secrets Store entry. Both guarded: a missing token or entry is a no-op, so teardown is idempotent.
+   * Remove this project's manager token entirely — the inverse of `ensureManagerToken`. Delete the
+   * minted account token from Cloudflare (every same-named token, so a re-minted duplicate is swept
+   * too), then its Secrets Store entry. Both guarded: a missing token or entry is a no-op, so teardown
+   * is idempotent.
+   *
+   * `deleteTokensByName` is a name sweep over the whole account, so the project scope on the name is
+   * the containment: unscoped, one project's `pithy secrets deprovision` would revoke every other
+   * project's manager credential in the account and break all of their rotations at once.
    */
   async deleteManagerToken(): Promise<void> {
-    await this.#cf.accountTokens().deleteTokensByName(MANAGER_CF_API_TOKEN_NAME);
+    await this.#cf.accountTokens().deleteTokensByName(managerCfApiTokenName(this.#project));
+    const entry = managerCfApiTokenSecretName(this.#project);
     const store = this.#cf.secrets(this.#storeId);
-    if (await store.exists(MANAGER_CF_API_TOKEN_SECRET_NAME)) {
-      await store.deleteSecret(MANAGER_CF_API_TOKEN_SECRET_NAME);
+    if (await store.exists(entry)) {
+      await store.deleteSecret(entry);
       await this.#audit({
         action: "secrets/removed",
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
-        resourceId: MANAGER_CF_API_TOKEN_SECRET_NAME,
-        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+        resourceId: entry,
+        metadata: { name: entry, kind: "manager_token" },
       });
     }
   }

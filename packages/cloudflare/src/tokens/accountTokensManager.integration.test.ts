@@ -24,7 +24,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareAccountTokensManager — LIVE mint +
   }, 30_000);
 
   test("mints a scoped token, finds it by name, then deletes it", async () => {
-    const name = uniqueName("pithy-int-token");
+    const name = uniqueName("token");
 
     await withThrowawayResource(
       () =>
@@ -48,7 +48,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareAccountTokensManager — LIVE mint +
   }, 30_000);
 
   test("rollToken rolls an existing token's value in place (same id, fresh secret)", async () => {
-    const name = uniqueName("pithy-int-roll");
+    const name = uniqueName("roll");
     const permissions = [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource(creds.accountId) }];
     try {
       const first = await manager.mintToken(name, permissions);

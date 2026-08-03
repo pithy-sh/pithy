@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { parse } from "comment-json";
 import { describe, expect, it } from "vitest";
 import { VECTOR_CAPABILITY, VectorReprocessParams, vectorWorkflowRegistry, vectorWorkflows } from "./specs";
@@ -38,7 +38,11 @@ describe("vectorWorkflows", () => {
   });
 
   it("composes the deployed name core would derive for it", () => {
-    expect(workflowScriptName(VECTOR_CAPABILITY, "reprocess", "staging")).toBe("pithy-vector-reprocess-staging");
+    // Through the facade: a Workflow gets the Workflow namespace's 64 characters, and a name past it
+    // is refused rather than truncated, because every running instance is addressed by it.
+    expect(resourceNames("acme").env("staging").workflow(VECTOR_CAPABILITY, "reprocess")).toBe(
+      "acme-staging-vector-reprocess",
+    );
   });
 
   it("registers under the `vector/reprocess` dispatch key", () => {

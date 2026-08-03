@@ -14,12 +14,29 @@ export interface SinkTarget {
   location: string;
 }
 
-/** What a sink write needs: the project + env to target, the secret name (the key), and a Secrets Store writer. */
+/**
+ * What a sink write needs: the project dir + env to target, the two names a value can be stored under,
+ * and a Secrets Store writer.
+ *
+ * The two names are deliberately separate. They were one string, and that string was doing two jobs
+ * with opposite requirements: a **variable key** in a file this checkout owns, and an **entry name** in
+ * one flat namespace shared by every project in the Cloudflare account. Only the second needs a project
+ * scope — and scoping the first would rename `CF_TOKEN_CI_SYSTEM` and break every pipeline reading it.
+ */
 export interface SinkContext {
   projectDir: string;
   env: string;
-  /** The secret name the value is stored under — the `.dev.vars` key or the CF Secrets Store entry name. */
+  /**
+   * The `.dev.vars` variable key — a local environment-variable name, never project-scoped. This is
+   * what CI reads, so it stays exactly as the profile declares it.
+   */
   secretName: string;
+  /**
+   * The CF Secrets Store entry name — project-scoped (`tokenStoreEntryName`). The store is one flat
+   * account-wide namespace, so this name is the only partition between two projects' entries: an
+   * unscoped one would silently overwrite another project's live credential.
+   */
+  storeEntryName: string;
   /** Writes a value to the CF Secrets Store; required for the `secrets-store` sink. */
   putSecret?: (name: string, value: string) => Promise<void>;
 }
@@ -50,9 +67,9 @@ async function upsertDevVar(file: string, key: string, value: string): Promise<v
 
 /**
  * Write a minted token value to its store and report where it landed — never the value. `ephemeral`
- * persists nothing (the caller uses the value in-process); `dev-vars` upserts the token's secret name
- * in the env's git-ignored `.dev.vars` file, readable by a later CLI run; `secrets-store` writes it to
- * the CF Secrets Store under the same name, for a Worker to read via its binding.
+ * persists nothing (the caller uses the value in-process); `dev-vars` upserts the token's **variable
+ * key** in the env's git-ignored `.dev.vars` file, readable by a later CLI run; `secrets-store` writes
+ * it to the CF Secrets Store under the project-scoped **entry name**, for a Worker to read via its binding.
  */
 export async function writeTokenToSink(store: TokenStore, value: string, context: SinkContext): Promise<SinkTarget> {
   switch (store) {
@@ -70,7 +87,7 @@ export async function writeTokenToSink(store: TokenStore, value: string, context
           action: "Set SECRETS_STORE_ID in .dev.vars, or mint with --store dev-vars.",
         });
       }
-      await context.putSecret(context.secretName, value);
+      await context.putSecret(context.storeEntryName, value);
       return { sink: store, location: "CF Secrets Store" };
     }
   }

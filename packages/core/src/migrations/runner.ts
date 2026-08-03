@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import type { DatabaseIntrospector, DatabaseMetadataOptions, SchemaMetadata, TableMetadata } from "kysely";
-import { CamelCasePlugin, Kysely, sql } from "kysely";
+import { type Kysely, sql } from "kysely";
 import { type MigrationProvider, type MigrationResult, Migrator, NO_MIGRATIONS } from "kysely/migration";
-import { D1Dialect } from "kysely-d1";
 import { InternalError } from "../error/pithyError";
+import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookkeeping";
 
 /**
  * The per-database migration runner. The registry yields one `MigrationProvider` per database
@@ -14,17 +13,10 @@ import { InternalError } from "../error/pithyError";
  * runs them independently — there is no global run across databases. `pithy migrate` is a thin
  * wrapper over these two functions.
  *
- * Both take the raw binding, not a Kysely instance: Kysely's `Migrator` checks for its bookkeeping
- * tables through the dialect's introspector, and the stock `SqliteIntrospector` joins
- * `pragma_table_info(...)` — a table-valued pragma D1 rejects with `SQLITE_AUTH`. So the runner
- * builds its own Kysely over a dialect whose introspector reads `sqlite_master` alone, which is all
- * the `Migrator` needs (table names). Migration `up`/`down` functions receive that instance, with
- * `CamelCasePlugin` installed like every Pithy database — write camelCase, store snake_case.
- *
- * The bookkeeping ledger and lock are renamed off Kysely's `kysely_migration` defaults to
- * `pithy_migrations` / `pithy_migrations_lock` — an adopter running their own Kysely migrations on
- * the same D1 would otherwise collide on those default names (principle 1). The introspector's
- * internal-table filter tracks the rename so `getTables` still hides them.
+ * Both take the raw binding, not a Kysely instance: the dialect, the `CamelCasePlugin`, and the
+ * renamed bookkeeping tables all live in `./bookkeeping`, and the runner builds its Kysely from
+ * there (`owner.ts` builds the same one to stamp the owning project). Migration `up`/`down`
+ * functions receive that instance — write camelCase, store snake_case, like every Pithy database.
  *
  * One runner at a time per database. D1 has no transactional DDL and its adapter's migration lock
  * is a no-op, so concurrent runs can interleave. That fits the deployment model — migrations run
@@ -33,56 +25,9 @@ import { InternalError } from "../error/pithyError";
  * migrations applied before the failure in `detail`, since those stay applied.
  */
 
-/** The `sqlite_master` rows the introspector reads; D1 permits plain selects against it. */
-interface SqliteMasterDatabase {
-  sqlite_master: { name: string; type: string };
-}
-
-/** Pithy's renamed bookkeeping tables — hidden by the introspector like Kysely's defaults are. */
-const MIGRATION_TABLE = "pithy_migrations";
-const MIGRATION_LOCK_TABLE = "pithy_migrations_lock";
-const INTERNAL_TABLES = [MIGRATION_TABLE, MIGRATION_LOCK_TABLE];
-
-/** Table names from `sqlite_master` only — no pragma joins, no column metadata. */
-class D1Introspector implements DatabaseIntrospector {
-  readonly #db: Kysely<SqliteMasterDatabase>;
-
-  constructor(db: Kysely<SqliteMasterDatabase>) {
-    this.#db = db;
-  }
-
-  async getSchemas(): Promise<SchemaMetadata[]> {
-    return [];
-  }
-
-  async getTables(options: DatabaseMetadataOptions = { withInternalKyselyTables: false }): Promise<TableMetadata[]> {
-    let query = this.#db
-      .selectFrom("sqlite_master")
-      .where("type", "in", ["table", "view"])
-      .where("name", "not like", "sqlite_%")
-      .select(["name", "type"])
-      .orderBy("name");
-    if (!options.withInternalKyselyTables) {
-      query = query.where("name", "not in", INTERNAL_TABLES);
-    }
-    const rows = await query.execute();
-    return rows.map((row) => ({ name: row.name, isView: row.type === "view", isForeign: false, columns: [] }));
-  }
-}
-
-class D1MigrationDialect extends D1Dialect {
-  override createIntrospector(db: Kysely<unknown>): DatabaseIntrospector {
-    return new D1Introspector(db as Kysely<SqliteMasterDatabase>);
-  }
-}
-
 function migrator(database: D1Database, provider: MigrationProvider): Migrator {
-  const db = new Kysely<unknown>({
-    dialect: new D1MigrationDialect({ database }),
-    plugins: [new CamelCasePlugin()],
-  });
   return new Migrator({
-    db,
+    db: migrationKysely(database),
     provider,
     migrationTableName: MIGRATION_TABLE,
     migrationLockTableName: MIGRATION_LOCK_TABLE,
@@ -151,7 +96,7 @@ async function appliedMigrationNames(db: Kysely<unknown>): Promise<Set<string>> 
  * Only migrations recorded in the ledger are reversed; an absent ledger drops nothing.
  */
 export async function dropMigrations(database: D1Database, provider: MigrationProvider): Promise<MigrationResult[]> {
-  const db = new Kysely<unknown>({ dialect: new D1MigrationDialect({ database }), plugins: [new CamelCasePlugin()] });
+  const db = migrationKysely(database);
   const migrations = await provider.getMigrations();
   const applied = await appliedMigrationNames(db);
 

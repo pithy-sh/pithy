@@ -1,35 +1,72 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
 
 /**
- * The CF Secrets Store entry name holding an environment's master key. Staging and production share
- * one Secrets Store, so each env's key is a distinct, env-prefixed entry; the worker still binds it
- * under the fixed `SECRETS_ENCRYPTION_KEYS` name (see the manager's resolved `wrangler.jsonc`).
+ * The CF Secrets Store entry name holding an environment's master key — `<project>-<env>-secrets-encryption-keys`.
+ *
+ * A Cloudflare account has **one** Secrets Store, flat and unpartitionable, so the entry name is the
+ * only partition there is. Without the project segment, two Pithy projects in one account would both
+ * resolve to the same entry: the second `pithy secrets provision` would find the first's key already
+ * there, adopt it, and encrypt its rows under another project's key — and either project's teardown
+ * would then orphan both. The environment segment keeps staging and prod distinct within a project.
+ *
+ * Composed through core's naming facade as a **Secrets Store entry**, not through the generic composer.
+ * The kind is what carries the limit: a store entry has no documented Cloudflare cap, so it is held to
+ * Pithy's own ceiling rather than to R2's 63 — which is why this reads `…-secrets-encryption-keys`
+ * rather than the hashed `…-secrets-encryp-91c2e9` a 63-character budget once produced. The facade also
+ * validates the environment, so a stale spelling fails here rather than naming an entry nothing binds.
+ *
+ * The worker still binds this entry under the fixed `SECRETS_ENCRYPTION_KEYS` **binding** name; only the
+ * store entry is scoped (see the manager's resolved `wrangler.jsonc`).
  */
-export function masterKeySecretName(env: ManagedEnvironment): string {
-  return `${env.toUpperCase()}_SECRETS_ENCRYPTION_KEYS`;
+export function masterKeySecretName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).secretEntry("secrets-encryption-keys");
 }
 
 /**
- * The CF Secrets Store entry name holding the scoped CF API token, bound into each manager as
- * `CLOUDFLARE_API_TOKEN`. The token is `global` — one value, written once canonically and bound the
- * same way by both managers — so the entry name is fixed (no env prefix). Provisioning owns this
- * store-entry-name → binding-var mapping out of band; the manager registry stays keyed by the
- * binding var (see `manager/managerRegistry`).
+ * The profile/`.dev.vars` **secret name** the manager's CF API token is known by — the registry join
+ * key, not a Secrets Store entry name. Deliberately unscoped: it is a variable key, and scoping it
+ * would rename an environment variable rather than partition an account-wide namespace.
  */
-export const MANAGER_CF_API_TOKEN_SECRET_NAME = "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN";
+export const MANAGER_CF_API_TOKEN_SECRET = "SECRETS_MANAGER_CF_API_TOKEN";
+
+/**
+ * The CF Secrets Store entry name holding the scoped CF API token, bound into each manager as
+ * `CLOUDFLARE_API_TOKEN` — `<project>-global-secrets-manager-cf-api-token`.
+ *
+ * The token is `global` (one value, written once canonically and bound the same way by every manager
+ * of this project), so the literal `global` fills the environment slot rather than being omitted — the
+ * naming rule has no exception to remember. The facade makes that a property rather than a string:
+ * `names.global` is the same interface an environment gets, so no call site can typo the scope into a
+ * near-miss of a real environment. Provisioning owns this store-entry-name → binding-var mapping out of
+ * band; the manager registry stays keyed by the binding var (see `manager/managerRegistry`).
+ */
+export function managerCfApiTokenSecretName(project: string): string {
+  return resourceNames(project).global.secretEntry(MANAGER_CF_API_TOKEN_SECRET);
+}
 
 /**
  * The Cloudflare account-token **name** under which provisioning mints the manager's runtime
- * credential. Distinct from {@link MANAGER_CF_API_TOKEN_SECRET_NAME}, the Secrets Store entry name
- * that holds the token's value: this is the token's identity in the account's API-token list, the
- * key idempotent re-mint and teardown match on. One global token, so one fixed name (no env prefix).
+ * credential — `<project>-global-secrets-manager`. Distinct from
+ * {@link managerCfApiTokenSecretName}, the Secrets Store entry name that holds the token's value:
+ * this is the token's identity in the account's API-token list, the key idempotent re-mint and
+ * teardown match on.
+ *
+ * The account's token list is flat too, and teardown deletes **every** token of this name. An
+ * unscoped name would therefore make one project's `pithy secrets deprovision` revoke every other
+ * project's manager credential in the same account — every one of their rotations failing at once.
+ *
+ * Named as an **API token** through the facade, which is the only reason the two functions can differ
+ * in budget as well as in suffix: a token label is a free-text field Cloudflare puts no cap on.
  */
-export const MANAGER_CF_API_TOKEN_NAME = "pithy-secrets-manager";
+export function managerCfApiTokenName(project: string): string {
+  return resourceNames(project).global.apiToken("secrets-manager");
+}
 
 /**
  * Mint a fresh master key and build the initial encryption config to store as the env's
@@ -125,7 +162,8 @@ export interface SecretsDeprovisioner {
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
   /**
    * Remove the manager's CF API token entirely: delete the minted account token from Cloudflare
-   * **and** its `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN` entry from the Secrets Store. It is `global` —
+   * **and** its `<project>-global-secrets-manager-cf-api-token` entry from the Secrets Store. Both
+   * names are project-scoped, so this never reaches another project's credential. It is `global` —
    * one token shared by both managers — so it is removed once, after every manager is gone. Safe and
    * ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
    * secrets. Idempotent (a missing token or entry is a no-op).

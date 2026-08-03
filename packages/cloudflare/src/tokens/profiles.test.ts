@@ -11,6 +11,7 @@ import {
   profilePermissions,
   resolveProfile,
   resolveTokenProfiles,
+  type TokenProfileSeamInput,
   tokenSecretName,
 } from "./profiles";
 
@@ -44,24 +45,42 @@ describe("resolveTokenProfiles — ci-system aggregation", () => {
 
 describe("resolveTokenProfiles — worker-consumer federation", () => {
   test("merges a capability's tokenProfiles slice alongside ci-system", () => {
+    // Declared as its own const, the way a capability declares it — `secretScope` is additive on top
+    // of core's structural seam, so an inline literal would trip the excess-property check.
+    const managerProfile = {
+      permissions: ["secrets:read", "secrets:write"],
+      secret: "SECRETS_MANAGER_CF_API_TOKEN",
+      secretScope: "global",
+      defaultStore: "secrets-store",
+      description: "The secrets manager runtime credential.",
+    } as const satisfies TokenProfileSeamInput;
     const secrets = defineCapability({
       name: "secrets",
       requiredBindings: [],
-      tokenProfiles: {
-        secrets: {
-          permissions: ["secrets:read", "secrets:write"],
-          secret: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",
-          defaultStore: "secrets-store",
-          description: "The secrets manager runtime credential.",
-        },
-      },
+      tokenProfiles: { secrets: managerProfile },
     });
     const profiles = resolveTokenProfiles([secrets]);
     expect(Object.keys(profiles).sort()).toEqual(["ci-system", "secrets"]);
     expect(profiles.secrets).toMatchObject({
-      secret: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",
+      secret: "SECRETS_MANAGER_CF_API_TOKEN",
+      // Carried through from the seam: it decides the environment segment of the Secrets Store entry
+      // the minted value lands in, so losing it here would silently write to an entry nothing binds.
+      secretScope: "global",
       defaultStore: "secrets-store",
     });
+  });
+
+  test("defaults secretScope to undefined (per-environment) and rejects an unknown one", () => {
+    const plain = defineCapability({
+      name: "widgets",
+      requiredBindings: [],
+      tokenProfiles: { widgets: { permissions: ["d1:read"] } },
+    });
+    expect(resolveTokenProfiles([plain]).widgets?.secretScope).toBeUndefined();
+
+    const rogue = { permissions: ["d1:read"], secretScope: "worldwide" } as const satisfies TokenProfileSeamInput;
+    const bad = defineCapability({ name: "bad", requiredBindings: [], tokenProfiles: { bad: rogue } });
+    expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);
   });
 
   test("a capability profile clashing with ci-system fails loudly", () => {

@@ -3,6 +3,7 @@
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { defineSecretRegistry, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { SecretsAccessor } from "@pithy-sh/secrets/src/secretsStore";
 import {
   aggregateSecretRegistries,
@@ -87,6 +88,23 @@ describe("r2CredentialsRegistry (the reason objectStore takes a factory, not a b
       }),
     });
     expect(() => aggregateSecretRegistries([storage, drifted])).toThrowError(/declared incompatibly/);
+  });
+});
+
+describe("the R2 credential entry's declared storage", () => {
+  test("is the encrypted D1 row provisioning actually writes, not a Secrets Store binding", () => {
+    // No wrangler template binds an R2 bundle from the Cloudflare Secrets Store — `pithy storage
+    // provision` and `pithy media provision` write it through the manager Workflow into the secrets D1.
+    // The read seam routes strictly on `backend`, so declaring the other one sends every deployed read
+    // to a binding that does not exist.
+    expect(storageSecretsRegistry[STORAGE_R2_SECRET]?.backend).toBe("d1");
+  });
+
+  test("a write still targets exactly the requested environment", () => {
+    const entry = storageSecretsRegistry[STORAGE_R2_SECRET];
+    if (!entry) throw new Error("the registry entry must exist");
+    expect(resolveWriteTargets(entry.backend, entry.scope, "staging")).toEqual(["staging"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "prod")).toEqual(["prod"]);
   });
 });
 

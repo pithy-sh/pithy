@@ -42,10 +42,10 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   const wrangler = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
     compatibility_date: string;
     compatibility_flags: string[];
-    env: { staging: unknown; production: unknown };
+    env: { staging: unknown; prod: unknown };
   };
   expect(wrangler.env.staging).toBeDefined();
-  expect(wrangler.env.production).toBeDefined();
+  expect(wrangler.env.prod).toBeDefined();
 
   // 3. Bundle the Worker entry — resolving `@pithy-sh/core` and `hono` — and boot
   //    it under Miniflare, the same workerd runtime `wrangler dev` runs locally,
@@ -71,6 +71,7 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   expect(JSON.parse(stdout.trim())).toEqual({
     command: "migrate",
     env: "dev",
+    project: "smoke-app",
     rollback: false,
     workers: [{ worker: "smoke-app-api", databases: [] }],
   });

@@ -1,10 +1,13 @@
 {
   // The prebuilt media enrichment worker. Like the email worker, this is a TEMPLATE, not a wrangler
-  // env-stanza file: staging and production are separate workers. `pithy media provision` resolves this
+  // env-stanza file: staging and prod are separate workers. `pithy media provision` resolves this
   // into one complete config per environment — filling the `<...>` placeholders — and deploys each with
   // `wrangler deploy --config <resolved>`. The adopter authors none of it. It hosts the four enrichment
   // Workflows; the app worker holds their bindings and starts an instance on finalize.
-  "name": "pithy-media", // resolved per env → pithy-media-staging / pithy-media-production
+  // Resolved per project and env → <project>-staging-media / <project>-prod-media. Worker script
+  // names are account-scoped, so the project segment is what stops a second Pithy project's deploy
+  // overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-media",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -31,12 +34,14 @@
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
       "store_id": "<filled-at-provision>",
-      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+      "secret_name": "<filled-at-provision>"
     }
   ],
 
   // The four enrichment Workflows this worker hosts. Each `class_name` matches an exported
   // WorkflowEntrypoint subclass; each `binding` is what the app worker dispatches to on finalize.
+  // Rewritten at provision from `workflows/specs.ts`, so the deployed names carry the project and the
+  // environment — the names below are the template reading as a complete config, nothing more.
   "workflows": [
     { "binding": "MEDIA_IMAGE_TO_TEXT", "name": "pithy-media-image-to-text", "class_name": "MediaImageToTextWorkflow" },
     {
@@ -56,6 +61,10 @@
     // The resolved MediaConfig as one JSON blob, filled at provision from the app's media() config. The
     // worker parses and validates it; absent falls back to the defaults.
     "MEDIA_CONFIG": "<filled-at-provision>",
-    "ENVIRONMENT": "<filled-at-provision>"
+    "ENVIRONMENT": "<filled-at-provision>",
+    // Who this worker is. Cloudflare Images and Stream are account-flat and key an asset by a
+    // Cloudflare-minted id, so no name can scope them — the ownership metadata stamped on each asset
+    // is the only thing that says which project owns it, and it is read from here.
+    "PROJECT": "<filled-at-provision>"
   }
 }

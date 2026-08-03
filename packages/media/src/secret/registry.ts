@@ -51,7 +51,11 @@ export const mediaR2Registry = r2CredentialsRegistry(MEDIA_R2_SECRET);
 /** The media capability's secret-registry slice — aggregated into the shared accessor at startup. */
 export const mediaSecretsRegistry = defineSecretRegistry({
   [MEDIA_STORAGE_SECRET]: {
-    backend: "cf-secrets-store",
+    // An encrypted row in the per-environment secrets D1 — where this value actually lives. No
+    // wrangler template binds it from the Cloudflare Secrets Store; `pithy media provision` writes it
+    // through `dispatchSecretWrite` → the manager Workflow → `SystemSecretsStore`, the D1 path. The
+    // read seam routes strictly on this field, so it has to say where the value really is.
+    backend: "d1",
     scope: "environment",
     rotatable: false,
     valueType: "json",

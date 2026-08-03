@@ -32,7 +32,7 @@ const now = () => new Date();
  * is the shortest honest demonstration of the whole capability.
  *
  * Composed in only when the project turns on `seed.includeExamples`, and only for `dev` and `staging` — an
- * example fixture never targets production.
+ * example fixture never targets `prod`.
  */
 export const vectorExampleSeed: SeedSet = defineSeed({
   name: "example",

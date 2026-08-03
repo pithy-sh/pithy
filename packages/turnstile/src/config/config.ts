@@ -24,8 +24,11 @@ export type TurnstileMode = z.infer<typeof TurnstileMode>;
 /**
  * The public sitekey for one widget, per environment. The sitekey is public — the front-end renders
  * the widget with it — so it lives in config, not in secrets. dev and staging carry Cloudflare's
- * documented test keys (wired automatically, no real widget); production carries the real widget's
+ * documented test keys (wired automatically, no real widget); `prod` carries the real widget's
  * sitekey, written by `pithy turnstile provision`.
+ *
+ * The keys are Pithy's environment names verbatim, because that is what the client projection indexes
+ * them by — a bundle built for `prod` reads `sitekeys.prod`. They are not free-form labels.
  */
 export const TurnstileSitekeys = z
   .object({
@@ -33,9 +36,7 @@ export const TurnstileSitekeys = z
     staging: z
       .string()
       .describe("Staging sitekey — a Cloudflare test key, wired automatically (no real widget is created)."),
-    production: z
-      .string()
-      .describe("Production sitekey — the real widget's public key, set by `pithy turnstile provision`."),
+    prod: z.string().describe("Prod sitekey — the real widget's public key, set by `pithy turnstile provision`."),
   })
   .describe("Per-environment public sitekeys the front-end renders the widget with.");
 export type TurnstileSitekeys = z.infer<typeof TurnstileSitekeys>;

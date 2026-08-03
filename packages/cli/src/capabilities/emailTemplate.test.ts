@@ -3,10 +3,16 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { email } from "@pithy-sh/email/src/capability";
-import { type EmailWorkerWranglerTemplate, resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
+import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import {
+  type EmailWorkerWranglerTemplate,
+  emailWorkflowRegistry,
+  resolveEmailConfig,
+} from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
+import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import { emailWorkerDir } from "./emailProvisioner";
@@ -31,6 +37,7 @@ async function readTemplate(): Promise<EmailWorkerWranglerTemplate> {
 }
 
 const params = {
+  project: "acme",
   appDatabaseId: "app-123",
   suppressionDatabaseId: "sup-456",
   secretsDatabaseId: "sec-789",
@@ -47,31 +54,33 @@ describe("the committed email worker template", () => {
 
   test("resolves with no placeholder left, in every managed environment", async () => {
     const template = await readTemplate();
-    for (const env of ["staging", "production"] as const) {
+    for (const env of ["staging", "prod"] as const) {
       const config = resolveEmailConfig(template, { ...params, env });
       expect(JSON.stringify(config)).not.toContain(PLACEHOLDER);
-      expect(config.name).toBe(`pithy-email-${env}`);
+      expect(config.name).toBe(`acme-${env}-email`);
     }
   });
 
-  test("fills the three database ids, the store id, and the env-scoped master key", async () => {
+  test("fills the three database ids, the store id, and the scoped master key", async () => {
     const config = resolveEmailConfig(await readTemplate(), { ...params, env: "staging" });
     expect(config.d1_databases).toEqual([
       { binding: "DB", database_name: "pithy-app", database_id: "app-123" },
-      { binding: "EMAIL_SUPPRESSIONS", database_name: "pithy-email-suppressions", database_id: "sup-456" },
+      // Only email's own database name is rewritten: it is project-scoped now, so leaving the
+      // template's `pithy-email-suppressions` would print a name no account holds.
+      { binding: "EMAIL_SUPPRESSIONS", database_name: suppressionDatabaseName("acme"), database_id: "sup-456" },
       { binding: "SECRETS", database_name: "pithy-secrets", database_id: "sec-789" },
     ]);
     expect(config.secrets_store_secrets).toEqual([
       {
         binding: "SECRETS_ENCRYPTION_KEYS",
         store_id: "store-abc",
-        secret_name: "STAGING_SECRETS_ENCRYPTION_KEYS",
+        secret_name: masterKeySecretName("acme", "staging"),
       },
     ]);
   });
 
   test("keeps the static fields the template owns", async () => {
-    const config = resolveEmailConfig(await readTemplate(), { ...params, env: "production" });
+    const config = resolveEmailConfig(await readTemplate(), { ...params, env: "prod" });
     expect(config.triggers.crons).toEqual(["* * * * *"]);
     expect(config.send_email).toEqual([{ name: "EMAIL", remote: true }]);
     expect(config.workers_dev).toBe(false);
@@ -88,15 +97,15 @@ describe("the committed email worker template", () => {
       template.workflows.map((workflow) => ({ binding: workflow.binding, class_name: workflow.class_name })),
     ).toEqual(Object.values(specs).map((spec) => ({ binding: spec.binding, class_name: spec.className })));
 
-    // And the deployed names the resolver produces are the ones `workflowScriptName` computes from the
+    // And the deployed names the resolver produces are the ones the naming facade computes from the
     // job keys — the guarantee that formalizing the convention renamed nothing.
     const config = resolveEmailConfig(template, { ...params, env: "staging" });
     expect(config.workflows.map((workflow) => workflow.name)).toEqual(
-      Object.keys(specs).map((job) => workflowScriptName("email", job, "staging")),
+      Object.keys(specs).map((job) => resourceNames("acme").env("staging").workflow("email", job)),
     );
     expect(config.workflows.map((workflow) => workflow.name)).toEqual([
-      "pithy-email-send-staging",
-      "pithy-email-schedule-staging",
+      "acme-staging-email-send",
+      "acme-staging-email-schedule",
     ]);
   });
 
@@ -107,6 +116,28 @@ describe("the committed email worker template", () => {
     // every app is missing, and `validateBindings` would 500 the first request.
     expect(specs.send?.optional).toBeUndefined();
     expect(specs.schedule?.optional).toBe(true);
+  });
+
+  /**
+   * Email declares its jobs on its `Capability` rather than in a `workflows/specs.ts` the way every
+   * later capability does, so `resolveEmailConfig` mirrors them in a local registry to derive
+   * project-scoped Workflow names. This is the guard on that copy: three declarations, one truth.
+   */
+  test("the resolver's mirrored registry matches both the capability's specs and the template", async () => {
+    const template = await readTemplate();
+    const specs = email({ fromAddress: "noreply@pithy.sh", baseUrl: "https://api.example.com" }).workflows ?? {};
+    const shape = (entry: { binding: string; className?: string }) => ({
+      binding: entry.binding,
+      class_name: entry.className,
+    });
+
+    expect(Object.values(emailWorkflowRegistry).map((entry) => shape(entry.spec))).toEqual(
+      Object.values(specs).map(shape),
+    );
+    expect(Object.values(emailWorkflowRegistry).map((entry) => entry.job)).toEqual(Object.keys(specs));
+    expect(Object.values(emailWorkflowRegistry).map((entry) => shape(entry.spec))).toEqual(
+      template.workflows.map((workflow) => ({ binding: workflow.binding, class_name: workflow.class_name })),
+    );
   });
 
   test("the cron the template declares is the one the scheduler spec carries", async () => {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { STORAGE_CAPABILITY } from "../workflows/specs";
 
@@ -34,20 +34,36 @@ import { STORAGE_CAPABILITY } from "../workflows/specs";
  */
 
 /**
- * The bucket objects live in, **per environment** — `pithy-storage-staging`, `pithy-storage-production`.
+ * The bucket objects live in, **per project and per environment** — `acme-staging-storage`,
+ * `acme-prod-storage`.
  *
- * One bucket per account would mean staging writes objects into the bucket production reads, and a
- * staging teardown deletes production's files. Buckets are free — the cost is bytes and operations —
- * so a shared one buys nothing and risks everything. The same posture `@pithy-sh/media` takes, and
- * the opposite of `@pithy-sh/email`'s deliberately shared suppression database.
+ * One bucket per account would mean staging writes objects into the bucket prod reads, and a staging
+ * teardown deletes prod's files. Buckets are free — the cost is bytes and operations — so a shared one
+ * buys nothing and risks everything. The same posture `@pithy-sh/media` takes, and the opposite of
+ * `@pithy-sh/email`'s deliberately project-shared suppression database.
+ *
+ * The project segment is what makes provisioning's find-then-create safe. R2's namespace is flat and
+ * account-wide, so an unprefixed `pithy-storage-prod` would be *found* by a second Pithy project in the
+ * same account and silently adopted — two apps writing objects into one bucket, and either teardown
+ * deleting both. The name is the only partition R2 offers, so the name carries the owner.
+ *
+ * Named as an **R2 bucket** through core's naming facade, which is the one namespace whose rule is
+ * genuinely 3–63 lowercase characters, starting and ending alphanumeric. Every other namespace Pithy
+ * writes into was once held to that same 63 for no reason; asking for a bucket by name is how this one
+ * keeps it on purpose.
  */
-export function storageBucketName(env: ManagedEnvironment): string {
-  return `pithy-${STORAGE_CAPABILITY}-${env}`;
+export function storageBucketName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).r2(STORAGE_CAPABILITY);
 }
 
-/** The deployed sweep-worker name for an environment — also its resolved config's basename. */
-export function storageWorkerName(env: ManagedEnvironment): string {
-  return workflowHostName(STORAGE_CAPABILITY, env);
+/**
+ * The deployed sweep-worker name for a project's environment — also its resolved config's basename.
+ *
+ * A **Worker script**, so 63 rather than the Workflow's 64, and refused rather than truncated: a script
+ * cannot be renamed once a deploy or a `service` binding points at it.
+ */
+export function storageWorkerName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).worker(STORAGE_CAPABILITY);
 }
 
 /** The provisioned resources an environment's worker and secret are wired to. */
@@ -89,9 +105,8 @@ export interface StorageProvisionResult {
  *
  * The phase order is the contract. A secret must not name a bucket that does not exist, and a worker
  * must not boot before the secret it reads. Fanning each phase across all environments — rather than
- * completing one environment end to end before starting the next — means a failure creating
- * production's bucket stops the run before staging's worker is deployed against a half-provisioned
- * account.
+ * completing one environment end to end before starting the next — means a failure creating prod's
+ * bucket stops the run before staging's worker is deployed against a half-provisioned account.
  */
 export async function provisionStorage(provisioner: StorageProvisioner): Promise<StorageProvisionResult> {
   await provisioner.preflight();

@@ -41,7 +41,7 @@ describe("buildSeedPlan", () => {
       defineSeed({ name: "staging_only", order: 100, environments: ["staging"] }),
     ]);
 
-    const composed = buildSeedPlan([cap], { env: "production", includeExamples: false });
+    const composed = buildSeedPlan([cap], { env: "prod", includeExamples: false });
     expect(composed.sets).toEqual([]);
     expect(composed.skippedByEnv).toEqual(["0100_leaderboard_staging_only"]);
   });

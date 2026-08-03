@@ -8,12 +8,14 @@ import { backendForType, mediaR2Key } from "./backend";
 import type { ImageMinter, R2Minter, VideoMinter } from "./minter";
 import { mediaStorage } from "./storage";
 
-/** Fake minters recording their calls. */
+/** Fake minters recording their calls and the metadata bag each was handed. */
 function fakes() {
   const calls: string[] = [];
+  const metadata: Record<string, Record<string, string> | undefined> = {};
   const image: ImageMinter = {
-    mintDirectUpload: async () => {
+    mintDirectUpload: async (bag) => {
       calls.push("image");
+      metadata.image = bag;
       return { id: "img-1", uploadUrl: "https://images/upload" };
     },
     delete: async (id) => {
@@ -21,8 +23,9 @@ function fakes() {
     },
   };
   const video: VideoMinter = {
-    mintDirectUpload: async () => {
+    mintDirectUpload: async (bag) => {
       calls.push("video");
+      metadata.video = bag;
       return { uid: "vid-1", uploadUrl: "https://stream/upload" };
     },
     delete: async (uid) => {
@@ -36,7 +39,7 @@ function fakes() {
     },
     mintDownload: async (key) => `https://r2/download/${key}`,
   };
-  return { calls, image, video, r2 };
+  return { calls, metadata, image, video, r2 };
 }
 
 const bucket = {
@@ -73,6 +76,19 @@ describe("mediaStorage.mintUpload", () => {
     const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
     const target = await storage.mintUpload({ type: "video", id: "m1", contentType: "video/mp4", size: 1 });
     expect(target).toEqual({ uploadUrl: "https://stream/upload", storageBackend: "cf-stream", storageKey: "vid-1" });
+  });
+
+  test("hands the caller's metadata to both CF stores, so Stream is stamped like Images", async () => {
+    const { metadata, image, video, r2 } = fakes();
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    const bag = { userId: "u-1" };
+
+    await storage.mintUpload({ type: "image", id: "m1", contentType: "image/png", metadata: bag });
+    await storage.mintUpload({ type: "video", id: "m2", contentType: "video/mp4", metadata: bag });
+
+    expect(metadata.image).toEqual(bag);
+    // Stream used to be handed nothing at all — an asset no query could attribute to a project.
+    expect(metadata.video).toEqual(bag);
   });
 
   test("mints a presigned R2 PUT for audio, keyed media/<type>/<id>", async () => {

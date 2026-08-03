@@ -79,9 +79,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The routing facts the storage credential secret carries — a Secrets Store, per-environment JSON value. */
+/**
+ * The routing facts the storage credential secret carries — an encrypted D1 row, per-environment JSON.
+ *
+ * `d1` is where this value has always physically gone: the write below dispatches to the secrets
+ * manager Workflow, which stores it in `pithy_secrets_system_secrets`. No wrangler template ever bound
+ * it from the Cloudflare Secrets Store. These facts must agree with `storageSecretsRegistry`'s
+ * declaration, because the read seam routes strictly on `backend` — a disagreement sends a deployed
+ * read to a binding that does not exist.
+ */
 const SECRET_FACTS = {
-  backend: "cf-secrets-store",
+  backend: "d1",
   scope: "environment",
   rotatable: false,
   valueType: "json",
@@ -91,7 +99,7 @@ const SECRET_FACTS = {
 export interface StorageEnvResources {
   /** The app database id for this environment — where the `pithy_storage_*` tables live. */
   appDatabaseId: string;
-  /** This environment's secrets database id (`pithy-secrets-<env>`) — holds the R2 credentials. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the R2 credentials. */
   secretsDatabaseId: string;
 }
 
@@ -101,6 +109,12 @@ export type ResolveStorageEnv = (env: ManagedEnvironment) => Promise<StorageEnvR
 export interface CloudflareStorageProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. Every name this provisioner creates, finds, and deletes leads with it, so a
+   * guessed value would create a second set of resources beside the real ones and tear down neither.
+   */
+  project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /** The CF Secrets Store id holding the per-env master keys (the sweep worker decrypts its credentials). */
@@ -129,6 +143,7 @@ export interface CloudflareStorageProvisionerOptions {
 export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #storageApiToken: string;
@@ -141,6 +156,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
   constructor(options: CloudflareStorageProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#storageApiToken = options.storageApiToken;
@@ -161,10 +177,18 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     }
   }
 
-  /** Reuse this environment's R2 bucket if it exists, otherwise create it. */
+  /**
+   * Reuse this environment's R2 bucket if it exists, otherwise create it.
+   *
+   * Find-then-create is only safe because the name carries the project: R2's namespace is flat and
+   * account-wide, so an unscoped name would make "reuse" mean "adopt whatever another Pithy project
+   * left here". Cloudflare offers no tags on an R2 bucket, so the name is the whole ownership record —
+   * and the audit event writes the project down beside it, which is the only place a human can later
+   * read who this bucket belongs to.
+   */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
     const { storageBucketName } = await loadStorage();
-    const name = storageBucketName(env);
+    const name = storageBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
@@ -174,7 +198,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
       severity: "info",
       resourceType: "cf_r2_bucket",
       resourceId: created.name,
-      metadata: { name, environment: env },
+      metadata: { name, project: this.#project, environment: env },
     });
     return { bucketName: created.name };
   }
@@ -233,6 +257,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     const dir = await storageWorkerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveStorageConfig(template, {
+      project: this.#project,
       env,
       appDatabaseId,
       secretsDatabaseId,
@@ -252,7 +277,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: storageWorkerName(env),
+        resourceId: storageWorkerName(this.#project, env),
         metadata: { env },
       });
     } catch (error) {
@@ -261,7 +286,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: storageWorkerName(env),
+        resourceId: storageWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -289,6 +314,8 @@ async function storageWorkerDir(): Promise<string> {
 
 export interface CloudflareStorageDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
+  project: string;
   /**
    * The R2 S3 key pair, needed only when the buckets come down. Emptying a bucket is an S3-protocol
    * operation and R2 refuses to delete a non-empty one, so a bucket teardown cannot run on the API token
@@ -306,11 +333,13 @@ export interface CloudflareStorageDeprovisionerOptions {
  */
 export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareStorageDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -318,7 +347,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   /** Delete the env's sweep worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { storageWorkerName } = await loadStorage();
-    const name = storageWorkerName(env);
+    const name = storageWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
@@ -339,7 +368,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
    */
   async deleteBucket(env: ManagedEnvironment): Promise<void> {
     const { storageBucketName } = await loadStorage();
-    const name = storageBucketName(env);
+    const name = storageBucketName(this.#project, env);
     const teardown = await deleteR2BucketWithContents({
       cf: this.#cf,
       credentials: this.#r2Credentials,
@@ -354,6 +383,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
       resourceId: name,
       metadata: {
         name,
+        project: this.#project,
         environment: env,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,

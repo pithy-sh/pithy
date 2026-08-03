@@ -10,8 +10,9 @@ import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imag
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { openSeedDriver } from "./drivers";
+import { openSeedDriver, resolveStoreIds } from "./drivers";
 
 describe("openSeedDriver", () => {
   let dir: string;
@@ -92,6 +93,37 @@ describe("openSeedDriver", () => {
         if (kv.kind === "local") expect(await kv.namespace.get("k")).toBe("from-api");
       } finally {
         await second.dispose();
+      }
+    });
+
+    test("a database_name with no id resolves to the store wrangler keys on — the binding", async () => {
+      // `pithy add` writes `database_name: "<project>-<env>-<binding>"` and no `database_id`, and
+      // wrangler's `d1DatabaseEntry` computes the Miniflare id as `preview_database_id ?? database_id`
+      // else the binding — it never reads `database_name`. Resolving the name here would seed a store
+      // `pithy dev` never opens, so the driver must land on the same file wrangler serves: `DB`.
+      await writeWrangler({ d1_databases: [{ binding: "DB", database_name: "acme-dev-db" }] });
+
+      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      try {
+        await driver.d1("DB").prepare("CREATE TABLE seeded (id integer primary key)").run();
+      } finally {
+        await driver.dispose();
+      }
+
+      // Reopen the store exactly as wrangler binds it — id `DB` — and the table is there.
+      const wranglerView = new Miniflare({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { DB: "DB" },
+        d1Persist: join(dir, ".wrangler", "state", "v3", "d1"),
+      });
+      try {
+        const row = await (await wranglerView.getD1Database("DB"))
+          .prepare("SELECT count(*) AS n FROM seeded")
+          .first<{ n: number }>();
+        expect(row?.n).toBe(0);
+      } finally {
+        await wranglerView.dispose();
       }
     });
 
@@ -198,6 +230,31 @@ describe("openSeedDriver", () => {
 
       const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "staging" });
       expect(() => driver.d1("DB")).toThrow(/credentials/i);
+    });
+  });
+
+  describe("resolveStoreIds", () => {
+    test("dev keys a D1 on database_id else the binding — never database_name", async () => {
+      // The dedupe key must be the same identity the local driver opens, which is wrangler's:
+      // `d1DatabaseEntry` reads `preview_database_id ?? database_id` else the binding. A stanza from
+      // `pithy add` carries only `database_name`, so it must resolve to `DB`, not to `acme-dev-db`.
+      await writeWrangler({
+        d1_databases: [
+          { binding: "DB", database_name: "acme-dev-db" },
+          { binding: "COLLAB_DB", database_name: "acme-dev-collab", database_id: "collab-id" },
+        ],
+      });
+
+      const ids = await resolveStoreIds({ workerDir, env: "dev" });
+      expect(ids.d1.get("DB")).toBe("DB");
+      expect(ids.d1.get("COLLAB_DB")).toBe("collab-id");
+    });
+
+    test("a remote env still keys on database_id alone", async () => {
+      await writeWrangler({
+        env: { staging: { d1_databases: [{ binding: "DB", database_name: "acme-staging-db", database_id: "sid" }] } },
+      });
+      expect((await resolveStoreIds({ workerDir, env: "staging" })).d1.get("DB")).toBe("sid");
     });
   });
 });

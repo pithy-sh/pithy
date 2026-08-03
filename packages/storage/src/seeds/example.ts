@@ -30,7 +30,7 @@ const STORAGE_EXAMPLE_SEED_ORDER = 230;
  * data rather than only by the tests.
  *
  * Composed in only when the project turns on `seed.includeExamples` (`pithy.config.ts`), and only for
- * `dev` and `staging` — an example fixture never targets production, regardless of that setting.
+ * `dev` and `staging` — an example fixture never targets `prod`, regardless of that setting.
  */
 
 /** Fixed ids, so the fixture is idempotent and the D1 rows and R2 objects cannot drift apart. */

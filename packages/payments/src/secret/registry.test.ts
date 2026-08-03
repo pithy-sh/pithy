@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
 import {
@@ -28,7 +29,9 @@ describe("paymentsSecretsRegistry", () => {
   test("declares the axes the reader routes on", () => {
     const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
     expect(entry).toMatchObject({
-      backend: "cf-secrets-store",
+      // An encrypted D1 row — no wrangler template binds this bundle from the Cloudflare Secrets
+      // Store, and the read seam routes strictly on this field.
+      backend: "d1",
       scope: "environment",
       rotatable: true,
       valueType: "json",
@@ -36,6 +39,15 @@ describe("paymentsSecretsRegistry", () => {
     // The schema is what the reader validates the decrypted value against, so a `json` entry without one
     // would resolve unvalidated credentials.
     expect(entry?.valueType === "json" && entry.schema).toBe(PaymentsProviderCredentials);
+  });
+
+  test("a write still targets exactly the requested environment", () => {
+    // The backend correction (`cf-secrets-store` → `d1`) is a declaration fix, not a routing change:
+    // `environment` scope means one target either way. It would only fan out if the scope changed too.
+    const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
+    if (!entry) throw new Error("the registry entry must exist");
+    expect(resolveWriteTargets(entry.backend, entry.scope, "staging")).toEqual(["staging"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "prod")).toEqual(["prod"]);
   });
 });
 

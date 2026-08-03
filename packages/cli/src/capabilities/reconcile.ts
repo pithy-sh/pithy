@@ -6,6 +6,9 @@ import { basename, join } from "node:path";
 import { type BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { z } from "zod";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
@@ -118,11 +121,22 @@ export interface MigrationScope {
   capabilities: Capability[];
 }
 
+/**
+ * A scope that will **write**: the same Worker, plus the project every database it touches is claimed
+ * for. Separate from {@link MigrationScope} because the read side is not the write side — `pithy doctor`
+ * counts pending migrations on a project that may have no `name` yet, while `pithy upgrade --migrate`
+ * must name itself or leave a database unowned for the next project to adopt.
+ */
+export interface MigrateScope extends MigrationScope {
+  /** The project name (root `pithy.config.ts` `name`, via `requireProjectName`) each database is claimed for. */
+  project: string;
+}
+
 /** Count one Worker's pending migrations for an environment — the migration seam, injectable for tests. */
 export type CountPending = (options: MigrationScope) => Promise<number>;
 
 /** Run one Worker's migrations for an environment — the apply-time migration seam, injectable for tests. */
-export type RunMigrate = (options: MigrationScope) => Promise<DatabaseRun[]>;
+export type RunMigrate = (options: MigrateScope) => Promise<DatabaseRun[]>;
 
 // The migration entry points fan out over `apps/` themselves; reconcile is already inside that fan-out, so it
 // hands them the single pre-resolved Worker it is reconciling. `projectDir` stays the project root — the local
@@ -134,7 +148,7 @@ function scopeFor({ projectDir, workerDir, worker, env, capabilities }: Migratio
 const defaultCountPending: CountPending = (scope) => countPendingMigrations(scopeFor(scope));
 
 const defaultRunMigrate: RunMigrate = async (scope) =>
-  (await migrateProject(scopeFor(scope))).flatMap((run) => run.databases);
+  (await migrateProject({ ...scopeFor(scope), project: scope.project })).flatMap((run) => run.databases);
 
 /** Options for {@link buildReconcilePlan}. `capabilities` may be passed to skip loading (and executing) pithy.config.ts. */
 export interface BuildReconcilePlanOptions {
@@ -162,7 +176,7 @@ export interface BuildReconcilePlanOptions {
  * class `migrations` tag is top-level only.
  */
 interface WranglerBindings {
-  d1_databases?: { binding: string }[];
+  d1_databases?: { binding: string; database_name?: string }[];
   kv_namespaces?: { binding: string }[];
   r2_buckets?: { binding: string }[];
   durable_objects?: { bindings: { name: string; class_name: string }[] };
@@ -176,6 +190,28 @@ const DO_MIGRATION_TAG = "v1";
 /** Escape a capability name for use inside a `RegExp`. */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Which project and which environment a stanza's proposed names are composed for. Mirrors `pithy add`. */
+interface NameScope {
+  /** The project name, or absent when the caller could not resolve one — in which case nothing is proposed. */
+  project?: string;
+  /** The environment this stanza *is* — `dev` for the top-level one, else the `env.<name>` key. */
+  env: string;
+}
+
+/**
+ * The `<project>-<env>-<binding>` name to propose for a binding, or `undefined` when there is nothing
+ * safe to propose. The naming facade owns the one rule *and* the per-namespace budget, so this proposal
+ * is byte-identical to `pithy add`'s — see `add.ts:proposeName` for why the two skips exist.
+ *
+ * The skip on an unaccepted environment matters more here than it does in `add`: `buildReconcilePlan`
+ * is what `pithy doctor` runs, and a diagnostic that throws on an adopter's own `env.<key>` reports
+ * nothing at all about the environments it could have checked.
+ */
+function proposeName(scope: NameScope, binding: string, kind: "d1" | "kv"): string | undefined {
+  if (scope.project === undefined || !isValidEnvironment(scope.env)) return undefined;
+  return resourceNames(scope.project).env(scope.env)[kind](binding);
 }
 
 /** Every environment's binding stanza: the top-level one (reported as "dev") plus each `env.<name>`. */
@@ -422,13 +458,24 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap };
 }
 
-/** Append a binding entry to a stanza if its name isn't already bound. Mirrors `pithy add`, plus r2. */
-function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest): void {
+/**
+ * Append a binding entry to a stanza if its name isn't already bound. Mirrors `pithy add`, plus r2 — the
+ * two writers produce the same arrays through two implementations kept in lockstep by intent, so a change
+ * to one is a change to the other. That includes the proposed `database_name`: if only `add` wrote it, a
+ * capability wired by `pithy upgrade` would get a nameless D1 while a capability wired by `pithy add` got
+ * a project-scoped one, from the same manifest.
+ *
+ * The presence check keys on `binding` **alone**, deliberately. Comparing the name too would read an
+ * adopter's renamed database as a missing binding, and `upgrade` would append a second entry for a
+ * binding wrangler already has.
+ */
+function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest, scope: NameScope): void {
   for (const binding of manifest.requiredBindings) {
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
-        stanza.d1_databases.push({ binding: binding.name });
+        const name = proposeName(scope, binding.name, "d1");
+        stanza.d1_databases.push({ binding: binding.name, ...(name ? { database_name: name } : {}) });
       }
     }
     if (binding.type === "kv") {
@@ -531,6 +578,17 @@ export interface ApplyReconcilePlanOptions {
   migrate: boolean;
   /** The environment migrations run against when `migrate` is set. */
   env: string;
+  /**
+   * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`) and
+   * passed as a plain string — the first segment of every `database_name` this proposes, and the owner
+   * stamped on every database a `migrate` run touches.
+   *
+   * Optional, because the two uses have different stakes. A missing name costs the *proposal* nothing
+   * worse than a binding-only entry, exactly as before, and `pithy doctor` says why. A missing name on a
+   * **write** is not survivable the same way — an unstamped database is one any project can later claim
+   * — so `migrate` without a project is refused below, before a single file is touched.
+   */
+  project?: string;
   /** The Worker's composed capabilities (libraries + app) — passed to the migration run. */
   capabilities: Capability[];
   /** Test seam: run migrations without a real Miniflare/D1 run. */
@@ -566,6 +624,7 @@ async function applyBindings(
   projectDir: string,
   workerDir: string,
   plan: ReconcilePlan,
+  project: string | undefined,
 ): Promise<Map<string, MissingBinding[]>> {
   const added = new Map<string, MissingBinding[]>();
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
@@ -573,13 +632,15 @@ async function applyBindings(
 
   const byName = new Map((await availableManifests(projectDir)).map((manifest) => [manifest.name, manifest]));
   const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
+  const stanzas = envStanzas(config);
   let touched = false;
   for (const cap of caps) {
     const manifest = byName.get(cap.name);
     if (!manifest) continue; // installed manifest vanished — nothing to wire
-    appendBindings(config, manifest);
-    for (const stanza of Object.values(config.env ?? {})) {
-      if (stanza) appendBindings(stanza, manifest);
+    // Each stanza is written for the environment it *is*, so the name it proposes has that environment
+    // in it. `envStanzas` already pairs them on the read side; the write side uses the same pairing.
+    for (const { env, stanza } of stanzas) {
+      appendBindings(stanza, manifest, { ...(project === undefined ? {} : { project }), env });
     }
     appendDurableObjectMigrations(config, manifest);
     added.set(cap.name, cap.missingBindings);
@@ -620,6 +681,23 @@ async function applyConfigKeys(workerDir: string, plan: ReconcilePlan): Promise<
 }
 
 /**
+ * The project a `--migrate` run claims each database for, or a refusal. `pithy upgrade` reconciles wiring
+ * happily without a project name — the proposals just carry their binding — but the moment it is asked to
+ * migrate, the name stops being cosmetic: it is the owner stamped on every database the run touches, and a
+ * database left unstamped is one any other project can later claim.
+ */
+function requireMigrationProject(project: string | undefined): string {
+  if (project === undefined) {
+    throw new ValidationError({
+      message: "pithy upgrade --migrate needs a project name.",
+      action:
+        "Set `name` in pithy.config.ts, then run pithy upgrade --migrate again. It stamps each database as this project's, so another project's database is refused instead of silently merged.",
+    });
+  }
+  return project;
+}
+
+/**
  * Apply a reconcile plan — the write step behind `pithy upgrade`, never called by `doctor`. Adds the
  * missing bindings to the Worker's `wrangler.jsonc` and the missing config keys to its `pithy.config.ts`
  * (a one-liner call becomes block form; an existing block gains only the absent keys — an adopter-changed
@@ -627,10 +705,15 @@ async function applyConfigKeys(workerDir: string, plan: ReconcilePlan): Promise<
  * inside `workerDir`. Idempotent: re-running after a build finds nothing missing and writes nothing.
  */
 export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Promise<ReconcileApplied> {
-  const { projectDir, workerDir, plan, migrate, env, capabilities } = options;
+  const { projectDir, workerDir, plan, env, capabilities } = options;
   const runMigrate = options.runMigrate ?? defaultRunMigrate;
 
-  const addedBindings = await applyBindings(projectDir, workerDir, plan);
+  // The project to migrate as, or null for "don't migrate" — resolved first, so a nameless project fails
+  // having written nothing rather than mid-fan-out with one Worker already reconciled. Reconciling wiring
+  // is survivable without a name; writing to a database is not.
+  const migrateAs = options.migrate ? requireMigrationProject(options.project) : null;
+
+  const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project);
   const addedConfigKeys = await applyConfigKeys(workerDir, plan);
 
   const perCapability: CapabilityApplied[] = [];
@@ -643,8 +726,15 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
 
   let migrated = false;
   let migrations: DatabaseRun[] = [];
-  if (migrate) {
-    migrations = await runMigrate({ projectDir, workerDir, worker: plan.worker, env, capabilities });
+  if (migrateAs !== null) {
+    migrations = await runMigrate({
+      projectDir,
+      workerDir,
+      worker: plan.worker,
+      env,
+      capabilities,
+      project: migrateAs,
+    });
     migrated = true;
   }
 

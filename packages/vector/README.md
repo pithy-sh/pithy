@@ -13,7 +13,9 @@ pithy vector provision --env dev     # creates the index, its metadata indexes, 
 
 `add` touches no Cloudflare account: it installs the package, writes the `vector({ ... })` block into `pithy.config.ts`, wires the `AI` and `DB` bindings into `wrangler.jsonc`, and runs the migration that creates `pithy_vector_documents`. `provision` is the step that needs credentials. They are separate on purpose — adding a capability should work offline and in CI.
 
-The `VECTORIZE` and `VECTOR_REPROCESS` bindings arrive with `provision`, not with `add`, and that is deliberate. Wrangler requires an `index_name` on every `vectorize` entry and a `name` plus `class_name` on every `workflows` entry; both values are provisioning outputs (`pithy-vector-<index>-<env>`, `pithy-vector-reprocess-<env>`). An entry short of either field does not degrade — wrangler refuses to load the config at all. So `add` writes neither, and `provision` writes each complete, per environment.
+The `VECTORIZE` and `VECTOR_REPROCESS` bindings arrive with `provision`, not with `add`, and that is deliberate. Wrangler requires an `index_name` on every `vectorize` entry and a `name` plus `class_name` on every `workflows` entry; both values are provisioning outputs (`<project>-<env>-vector-<index>`, `<project>-<env>-vector-reprocess`). An entry short of either field does not degrade — wrangler refuses to load the config at all. So `add` writes neither, and `provision` writes each complete, per environment.
+
+`<project>` is the `name` in your root `pithy.config.ts`, and it is what keeps a second project in the same account from adopting this one's index — Vectorize's namespace is flat and account-wide, and dimensions are fixed at creation, so an adopted index silently pins you to another project's embedding model. See [`docs/NAMING.md`](../../docs/NAMING.md). An index name is refused rather than truncated when it exceeds 64 bytes: it is a permanent address, and a shortened one is a different index teardown could never find again.
 
 Every other environment is `pithy migrate --env <env>` then `pithy vector provision --env <env>`.
 
@@ -141,9 +143,9 @@ On success it writes what it observed into `wrangler.jsonc` as the `VECTOR_PROVI
 ### reprocess
 
 ```
-pithy vector reprocess --env production --index docs --json
-pithy vector reprocess --env production --all --json
-pithy vector reprocess --env production --filter '{"tenantId":"acme"}' --json
+pithy vector reprocess --env prod --index docs --json
+pithy vector reprocess --env prod --all --json
+pithy vector reprocess --env prod --filter '{"tenantId":"acme"}' --json
 ```
 
 Re-embeds an index's documents through a Cloudflare Workflow, so it survives a corpus of any size. By default it re-embeds only the rows whose stored `model` differs from the configured one — which includes rows never embedded at all. `--all` forces a full pass. `--filter` narrows the run to documents whose metadata matches, using the same operators a query filter does.

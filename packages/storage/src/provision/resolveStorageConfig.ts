@@ -26,11 +26,17 @@ import type { StorageResources } from "./provisionStorage";
 
 /** The resolved ids and per-env values for one environment's sweep-worker deploy. */
 export interface StorageConfigParams {
+  /**
+   * The project name — the `<project>` segment the deployed worker and Workflow names lead with. The
+   * root `pithy.config.ts` `name`, resolved by `requireProjectName` and never guessed: a Worker script
+   * name is account-scoped, so a wrong value here overwrites another project's running host.
+   */
+  project: string;
   /** The target environment. */
   env: ManagedEnvironment;
   /** The app database id for this environment — where the `pithy_storage_*` tables live. */
   appDatabaseId: string;
-  /** This environment's secrets database id (`pithy-secrets-<env>`) — holds the R2 credentials. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the R2 credentials. */
   secretsDatabaseId: string;
   /** The CF Secrets Store id holding the per-env master key. */
   storeId: string;
@@ -45,21 +51,26 @@ export function resolveStorageConfig(
   template: WorkflowHostTemplate,
   params: StorageConfigParams,
 ): WorkflowHostTemplate {
-  const { env, appDatabaseId, secretsDatabaseId, storeId, resources, storageConfig } = params;
+  const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, storageConfig } = params;
+
+  // Derived before the resolve rather than assigned after it: `resolveWorkflowHost` refuses to fill a
+  // template that declares `workflows` without them, because the only unscoped name it could invent is
+  // one a second project in the same account would collide with.
+  const derived = hostWorkflowsFor(storageWorkflowRegistry, { project, capability: STORAGE_CAPABILITY, env });
 
   const resolved = resolveWorkflowHost(template, {
+    project,
     capability: STORAGE_CAPABILITY,
     env,
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     r2BucketNames: { STORAGE_BUCKET: resources.bucketName },
     secretsStoreId: storeId,
-    // The master key entry is env-scoped — its name is env-prefixed, matching what the secrets manager wrote.
-    masterKeySecretName: masterKeySecretName(env),
+    // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
+    masterKeySecretName: masterKeySecretName(project, env),
     vars: { STORAGE_CONFIG: JSON.stringify(storageConfig) },
+    workflows: derived.workflows,
   });
 
-  const derived = hostWorkflowsFor(storageWorkflowRegistry, STORAGE_CAPABILITY, env);
-  resolved.workflows = derived.workflows;
   // Only declare a cron block when a spec actually carries one. An empty `crons` array is a
   // declaration wrangler honours, and a worker that advertises a schedule it does not have is a
   // deployment nobody can reason about.

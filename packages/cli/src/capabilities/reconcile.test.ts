@@ -8,7 +8,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
-import { applyReconcilePlan, buildReconcilePlan, type ReconcilePlan } from "./reconcile";
+import { applyReconcilePlan, buildReconcilePlan, type ReconcilePlan, type RunMigrate } from "./reconcile";
 
 /**
  * The Worker's composed set, as its `pithy.config.ts` supplies it — the scope of every plan. A capability
@@ -34,7 +34,7 @@ let workerDir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-reconcile-"));
-  // scaffoldProject gives a real apps/api with a wrangler.jsonc (dev top-level + env.staging + env.production)
+  // scaffoldProject gives a real apps/api with a wrangler.jsonc (dev top-level + env.staging + env.prod)
   // and a pithy.config.ts carrying the managed-region marker — the surfaces reconcile reads.
   await scaffoldProject({ targetDir: dir, appName: "reconcile-test" });
   workerDir = join(dir, "apps", "api");
@@ -86,7 +86,7 @@ describe("buildReconcilePlan — bindings", () => {
     expect(auth).toBeDefined();
     // starter wrangler has empty binding arrays in dev + staging + production → 2 bindings × 3 envs.
     expect(auth?.missingBindings).toHaveLength(6);
-    for (const env of ["dev", "staging", "production"]) {
+    for (const env of ["dev", "staging", "prod"]) {
       expect(auth?.missingBindings).toContainEqual({ env, name: "DB", type: "d1" });
       expect(auth?.missingBindings).toContainEqual({ env, name: "SESSIONS", type: "kv" });
     }
@@ -109,7 +109,7 @@ describe("buildReconcilePlan — bindings", () => {
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingBindings).toEqual([
       { env: "staging", name: "DB", type: "d1" },
-      { env: "production", name: "DB", type: "d1" },
+      { env: "prod", name: "DB", type: "d1" },
     ]);
   });
 
@@ -395,7 +395,7 @@ describe("applyReconcilePlan — bindings", () => {
     });
 
     const wrangler = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerBindings;
-    for (const stanza of [wrangler, wrangler.env?.staging, wrangler.env?.production]) {
+    for (const stanza of [wrangler, wrangler.env?.staging, wrangler.env?.prod]) {
       expect(stanza?.d1_databases).toContainEqual({ binding: "DB" });
       expect(stanza?.kv_namespaces).toContainEqual({ binding: "SESSIONS" });
     }
@@ -443,6 +443,79 @@ describe("applyReconcilePlan — bindings", () => {
     });
     expect(wrangler.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["MultiplayerSession"] }]);
     expect(wrangler.env?.staging?.migrations).toBeUndefined();
+  });
+});
+
+describe("applyReconcilePlan — proposed resource names", () => {
+  /** The stanza shape these read back. */
+  interface NamedWrangler {
+    d1_databases?: { binding: string; database_name?: string }[];
+    kv_namespaces?: { binding: string }[];
+    env?: Record<string, NamedWrangler | undefined>;
+  }
+  const read = async (): Promise<NamedWrangler> =>
+    parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as NamedWrangler;
+
+  test("proposes the same <project>-<env>-<binding> database name `pithy add` would", async () => {
+    await writeManifest(dir, authManifest);
+    await applyReconcilePlan({
+      projectDir: dir,
+      workerDir,
+      plan: await planFor("dev"),
+      migrate: false,
+      env: "dev",
+      project: "acme",
+      capabilities: [],
+    });
+
+    const wrangler = await read();
+    expect(wrangler.d1_databases).toContainEqual({ binding: "DB", database_name: "acme-dev-db" });
+    expect(wrangler.env?.staging?.d1_databases).toContainEqual({ binding: "DB", database_name: "acme-staging-db" });
+    expect(wrangler.env?.prod?.d1_databases).toContainEqual({
+      binding: "DB",
+      database_name: "acme-prod-db",
+    });
+    // KV has no name field, so upgrade writes the binding and nothing else — same as `pithy add`.
+    expect(wrangler.kv_namespaces).toContainEqual({ binding: "SESSIONS" });
+  });
+
+  test("no project name proposes nothing — the entries carry only their binding", async () => {
+    await writeManifest(dir, authManifest);
+    await applyReconcilePlan({
+      projectDir: dir,
+      workerDir,
+      plan: await planFor("dev"),
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
+    expect((await read()).d1_databases).toContainEqual({ binding: "DB" });
+  });
+
+  test("a renamed database is not read as a missing binding, so no duplicate entry is appended", async () => {
+    await writeManifest(dir, authManifest);
+    // Captured once, then re-applied after the rename — the stale plan still believes DB is missing.
+    const stale = await planFor("dev");
+    const apply = () =>
+      applyReconcilePlan({
+        projectDir: dir,
+        workerDir,
+        plan: stale,
+        migrate: false,
+        env: "dev",
+        project: "acme",
+        capabilities: [],
+      });
+    await apply();
+
+    const wrangler = await read();
+    const [entry] = wrangler.d1_databases ?? [];
+    if (entry) entry.database_name = "the-one-we-already-had";
+    await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify(wrangler, null, 2));
+
+    // A stale plan re-applied: the binding is present under another name, so nothing is appended.
+    await apply();
+    expect((await read()).d1_databases).toEqual([{ binding: "DB", database_name: "the-one-we-already-had" }]);
   });
 });
 
@@ -525,15 +598,20 @@ describe("applyReconcilePlan — config keys", () => {
 });
 
 describe("applyReconcilePlan — migrations", () => {
-  test("runs migrations only when migrate is true, against the Worker's directory", async () => {
-    await writeManifest(dir, authManifest);
-    const plan = await planFor("dev");
-
-    const calls: { projectDir: string; workerDir: string }[] = [];
-    const runMigrate = async ({ projectDir, workerDir: wd }: { projectDir: string; workerDir: string }) => {
-      calls.push({ projectDir, workerDir: wd });
+  /** Record what the migration seam was handed, so the project reaching it is observable. */
+  function recorder() {
+    const calls: { projectDir: string; workerDir: string; project: string }[] = [];
+    const runMigrate: RunMigrate = async ({ projectDir, workerDir: wd, project }) => {
+      calls.push({ projectDir, workerDir: wd, project });
       return [];
     };
+    return { calls, runMigrate };
+  }
+
+  test("runs migrations only when migrate is true, against the Worker's directory, as the project", async () => {
+    await writeManifest(dir, authManifest);
+    const plan = await planFor("dev");
+    const { calls, runMigrate } = recorder();
 
     const notMigrated = await applyReconcilePlan({
       projectDir: dir,
@@ -541,6 +619,7 @@ describe("applyReconcilePlan — migrations", () => {
       plan,
       migrate: false,
       env: "dev",
+      project: "acme",
       capabilities: [],
       runMigrate,
     });
@@ -553,11 +632,31 @@ describe("applyReconcilePlan — migrations", () => {
       plan,
       migrate: true,
       env: "dev",
+      project: "acme",
       capabilities: [],
       runMigrate,
     });
-    expect(calls).toEqual([{ projectDir: dir, workerDir }]);
+    // The project reaches the run: `upgrade --migrate` claims each database it touches, exactly as
+    // `pithy migrate` does. It used to be held on the options and dropped at this call.
+    expect(calls).toEqual([{ projectDir: dir, workerDir, project: "acme" }]);
     expect(migrated.migrated).toBe(true);
+  });
+
+  test("--migrate on a nameless project is refused, and nothing is written", async () => {
+    await writeManifest(dir, authManifest);
+    const plan = await planFor("dev");
+    const { calls, runMigrate } = recorder();
+    const before = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+
+    // Reconciling wiring without a project name is fine — the entries just carry their binding. Writing
+    // to a database is not: an unstamped database is one any other project can later claim.
+    await expect(
+      applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: true, env: "dev", capabilities: [], runMigrate }),
+    ).rejects.toThrow(/project name/i);
+
+    expect(calls).toHaveLength(0);
+    // Refused before the reconcile wrote anything, not halfway through it.
+    expect(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")).toBe(before);
   });
 });
 

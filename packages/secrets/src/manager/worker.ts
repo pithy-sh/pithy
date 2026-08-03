@@ -14,7 +14,7 @@ import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult }
 
 /**
  * The prebuilt per-environment secrets manager worker. `pithy add secrets` deploys one per managed
- * environment (`pithy-secrets-staging`, `pithy-secrets-production`); the user authors no code for it.
+ * environment (`<project>-staging-secrets`, `<project>-prod-secrets`); the user authors no code for it.
  * It hosts two Workflows and a cron:
  *
  *   - `SecretsWriteWorkflow` — the CLI's dispatch target for create/update/remove.
@@ -46,12 +46,20 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
   CLOUDFLARE_ACCOUNT_ID: string;
   SECRETS_STORE_ID: string;
   /**
-   * This manager's environment. The rotation write-back uses it to target the env-prefixed master-key
-   * store entry — the same entry the `SECRETS_ENCRYPTION_KEYS` binding reads — so a rotation persists
-   * to the entry the worker actually binds. Filled at provision from `managedEnvironments()`; still
-   * `ManagedEnvironment.parse`d at the read site, since a wrangler var is external config.
+   * This manager's environment. The rotation write-back uses it to target the project- and env-scoped
+   * master-key store entry — the same entry the `SECRETS_ENCRYPTION_KEYS` binding reads — so a rotation
+   * persists to the entry the worker actually binds. Filled at provision from `managedEnvironments()`;
+   * still `ManagedEnvironment.parse`d at the read site, since a wrangler var is external config.
    */
   ENVIRONMENT: ManagedEnvironment;
+  /**
+   * This manager's project — the other half of the master-key entry name
+   * (`<project>-<env>-secrets-encryption-keys`). Stamped at provision from the root `pithy.config.ts`
+   * `name`. It is here because the account's Secrets Store is flat: the entry name is the only thing
+   * separating this project's key from another project's in the same account, and the rotation has to
+   * reproduce that name inside the Worker to write the new key set back where the binding reads it.
+   */
+  PROJECT: string;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
 }
@@ -75,9 +83,10 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
       apiToken: secrets.get("CLOUDFLARE_API_TOKEN"),
       storeId: this.env.SECRETS_STORE_ID,
     });
-    // The writer targets the env-prefixed master-key entry this worker actually binds (see
-    // rotationConfigWriter) — not the unprefixed default — so the rotation persists where it's read.
-    await runRotationWorkflow(this.env, rotationConfigWriter(manager, this.env.ENVIRONMENT), step);
+    // The writer targets the project- and env-scoped master-key entry this worker actually binds
+    // (see rotationConfigWriter), so the rotation persists exactly where it is read — and never into
+    // another project's key entry in the same account-wide Secrets Store.
+    await runRotationWorkflow(this.env, rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT), step);
   }
 }
 

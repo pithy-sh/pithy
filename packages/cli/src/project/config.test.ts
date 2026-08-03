@@ -4,7 +4,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName, resolveProjectName } from "./config";
 
@@ -119,5 +119,22 @@ describe("requireProjectName", () => {
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.message).toContain("name");
     expect((error as PithyError).payload.action).toContain("name");
+  });
+
+  test("refuses a name the deploy-time namer would reject, so no command half-provisions under it", () => {
+    // `1password-clone` used to sail through here: D1, KV, and R2 were created for real, `pithy migrate`
+    // ran, and only then did the first host-worker deploy throw `core/internal`. It fails on the first
+    // command instead, as a 400 the adopter can act on.
+    const error = ((): unknown => {
+      try {
+        requireProjectName({ name: "1password-clone" });
+        return undefined;
+      } catch (thrown) {
+        return thrown;
+      }
+    })();
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as PithyError).payload.status).toBe(400);
+    expect((error as PithyError).payload.action).toContain("starting with a letter");
   });
 });

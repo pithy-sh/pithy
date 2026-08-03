@@ -3,7 +3,10 @@
   // env-stanza file: each environment is a separate worker. `pithy vector provision` resolves it into one
   // complete config per environment — filling the `<...>` placeholders and the per-index Vectorize bindings
   // — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
-  "name": "pithy-vector", // resolved per env → pithy-vector-staging / pithy-vector-production
+  // Resolved per project and env → <project>-staging-vector / <project>-prod-vector. Worker
+  // script names are account-scoped, so the project segment is what stops a second Pithy project's
+  // deploy overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-vector",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],

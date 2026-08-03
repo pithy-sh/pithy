@@ -3,7 +3,9 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
@@ -40,20 +42,23 @@ function fake(overrides: { failPreflight?: boolean; failOn?: ManagedEnvironment 
   return { calls, provisioner };
 }
 
-const ENVIRONMENTS: ManagedEnvironment[] = ["staging", "production"];
+const ENVIRONMENTS: ManagedEnvironment[] = ["staging", "prod"];
+
+/** The project every name in this suite leads with — the root `pithy.config.ts` `name`. */
+const PROJECT = "acme";
 
 describe("provisioning the daily-pass host", () => {
   test("checks the account once, before any deploy", async () => {
     // Failing at the account level after one environment is already deployed leaves exactly the
     // half-provisioned state that is hardest to reason about and hardest to recover from.
     const { calls, provisioner } = fake();
-    await provisionTesters(provisioner, ENVIRONMENTS);
-    expect(calls).toEqual(["preflight", "deploy:staging", "deploy:production"]);
+    await provisionTesters(provisioner, PROJECT, ENVIRONMENTS);
+    expect(calls).toEqual(["preflight", "deploy:staging", "deploy:prod"]);
   });
 
   test("a failing preflight deploys nothing at all", async () => {
     const { calls, provisioner } = fake({ failPreflight: true });
-    await expect(provisionTesters(provisioner, ENVIRONMENTS)).rejects.toThrow(/workers\.dev/);
+    await expect(provisionTesters(provisioner, PROJECT, ENVIRONMENTS)).rejects.toThrow(/workers\.dev/);
     expect(calls).toEqual(["preflight"]);
   });
 
@@ -61,34 +66,34 @@ describe("provisioning the daily-pass host", () => {
     // Continuing would report a partial success as a success, and the environment that failed is the
     // one the operator most needs told about.
     const { calls, provisioner } = fake({ failOn: "staging" });
-    await expect(provisionTesters(provisioner, ENVIRONMENTS)).rejects.toThrow(/staging/);
+    await expect(provisionTesters(provisioner, PROJECT, ENVIRONMENTS)).rejects.toThrow(/staging/);
     expect(calls).toEqual(["preflight", "deploy:staging"]);
   });
 
   test("reports the deployed worker name per environment", async () => {
     const { provisioner } = fake();
-    const results = await provisionTesters(provisioner, ENVIRONMENTS);
+    const results = await provisionTesters(provisioner, PROJECT, ENVIRONMENTS);
     expect(results).toEqual([
-      { env: "staging", worker: "pithy-testers-staging" },
-      { env: "production", worker: "pithy-testers-production" },
+      { env: "staging", worker: "acme-staging-testers" },
+      { env: "prod", worker: "acme-prod-testers" },
     ]);
   });
 
   test("provisioning one environment leaves the others alone", async () => {
     const { calls, provisioner } = fake();
-    await provisionTesters(provisioner, ["production"]);
-    expect(calls).toEqual(["preflight", "deploy:production"]);
+    await provisionTesters(provisioner, PROJECT, ["prod"]);
+    expect(calls).toEqual(["preflight", "deploy:prod"]);
   });
 
   test("re-running is a no-op, because every step overwrites", async () => {
     const { calls, provisioner } = fake();
-    await provisionTesters(provisioner, ENVIRONMENTS);
-    await provisionTesters(provisioner, ENVIRONMENTS);
+    await provisionTesters(provisioner, PROJECT, ENVIRONMENTS);
+    await provisionTesters(provisioner, PROJECT, ENVIRONMENTS);
     expect(calls.filter((call) => call.startsWith("deploy:"))).toEqual([
       "deploy:staging",
-      "deploy:production",
+      "deploy:prod",
       "deploy:staging",
-      "deploy:production",
+      "deploy:prod",
     ]);
   });
 });
@@ -96,22 +101,34 @@ describe("provisioning the daily-pass host", () => {
 describe("deprovisioning", () => {
   test("deletes each environment's worker and reports it", async () => {
     const { calls, provisioner } = fake();
-    const results = await deprovisionTesters(provisioner, ENVIRONMENTS);
-    expect(calls).toEqual(["delete:staging", "delete:production"]);
-    expect(results.map((r) => r.worker)).toEqual(["pithy-testers-staging", "pithy-testers-production"]);
+    const results = await deprovisionTesters(provisioner, PROJECT, ENVIRONMENTS);
+    expect(calls).toEqual(["delete:staging", "delete:prod"]);
+    expect(results.map((r) => r.worker)).toEqual(["acme-staging-testers", "acme-prod-testers"]);
   });
 
   test("runs no preflight — tearing down does not need the account to be able to host anything", async () => {
     const { calls, provisioner } = fake({ failPreflight: true });
-    await expect(deprovisionTesters(provisioner, ENVIRONMENTS)).resolves.toBeDefined();
+    await expect(deprovisionTesters(provisioner, PROJECT, ENVIRONMENTS)).resolves.toBeDefined();
     expect(calls).not.toContain("preflight");
   });
 });
 
 describe("the worker name", () => {
   test("is derived, so the deployed name cannot drift from what the dispatcher computes", () => {
-    expect(testersWorkerName("staging")).toBe("pithy-testers-staging");
-    expect(testersWorkerName("production")).toBe("pithy-testers-production");
+    expect(testersWorkerName(PROJECT, "staging")).toBe("acme-staging-testers");
+    expect(testersWorkerName(PROJECT, "prod")).toBe("acme-prod-testers");
+  });
+
+  test("carries the project, so a second project's deploy cannot overwrite this host", () => {
+    expect(testersWorkerName("acme", "prod")).not.toBe(testersWorkerName("globex", "prod"));
+  });
+
+  test("comes off core's facade, so it is measured against a Worker script's own limit", () => {
+    expect(testersWorkerName(PROJECT, "prod")).toBe(resourceNames(PROJECT).env("prod").worker("testers"));
+  });
+
+  test("refuses `production` — the spelling that would deploy a second host beside the real one", () => {
+    expect(() => testersWorkerName(PROJECT, "production" as never)).toThrowError(/not an environment name/);
   });
 });
 
@@ -134,10 +151,11 @@ describe("resolving the host template", () => {
   const CONFIG = TestersConfig.parse({ baseUrl: "https://api.example.test" });
 
   function resolve(
-    env: ManagedEnvironment = "production",
+    env: ManagedEnvironment = "prod",
     email?: { fromAddress: string; fromName: string; theme: unknown },
   ) {
     return resolveTestersConfig(TEMPLATE, {
+      project: PROJECT,
       env,
       appDatabaseId: "app-db-id",
       suppressionDatabaseId: "suppression-db-id",
@@ -148,7 +166,7 @@ describe("resolving the host template", () => {
 
   test("names the worker per environment and fills both database ids", () => {
     const resolved = resolve();
-    expect(resolved.name).toBe("pithy-testers-production");
+    expect(resolved.name).toBe("acme-prod-testers");
     expect(resolved.d1_databases?.find((d) => d.binding === "DB")?.database_id).toBe("app-db-id");
     expect(resolved.d1_databases?.find((d) => d.binding === "EMAIL_SUPPRESSIONS")?.database_id).toBe(
       "suppression-db-id",
@@ -160,9 +178,21 @@ describe("resolving the host template", () => {
     // so moving the pass off 05:00 is a one-line edit rather than two that nothing checks agree.
     const resolved = resolve();
     expect(resolved.workflows).toEqual([
-      { binding: "TESTERS_DAILY", name: "pithy-testers-daily-production", class_name: "TestersDailyWorkflow" },
+      { binding: "TESTERS_DAILY", name: "acme-prod-testers-daily", class_name: "TestersDailyWorkflow" },
     ]);
     expect(resolved.triggers).toEqual({ crons: ["0 5 * * *"] });
+  });
+
+  test("rewrites the suppression database name, which is email's and now carries the project", () => {
+    // Left alone, the deployed config would print `pithy-email-suppressions` — a name no account holds
+    // once the database is project-scoped. The id is what binds, but a config that names a resource
+    // that does not exist is one nobody can debug from.
+    const resolved = resolve();
+    expect(resolved.d1_databases?.find((d) => d.binding === "EMAIL_SUPPRESSIONS")?.database_name).toBe(
+      suppressionDatabaseName(PROJECT),
+    );
+    // The app database is owned elsewhere and passes through untouched.
+    expect(resolved.d1_databases?.find((d) => d.binding === "DB")?.database_name).toBe("pithy-app");
   });
 
   test("serializes the resolved config, so the host reads the adopter's own constants", () => {
@@ -171,7 +201,7 @@ describe("resolving the host template", () => {
       baseUrl: "https://api.example.test",
       nudges: { cooldownHours: 72 },
     });
-    expect(resolved.vars?.ENVIRONMENT).toBe("production");
+    expect(resolved.vars?.ENVIRONMENT).toBe("prod");
   });
 
   test("carries the sending identity when email is composed", () => {
@@ -213,7 +243,8 @@ describe("the configured snapshot hour", () => {
 
   function cronFor(hour: number): string | undefined {
     return resolveTestersConfig(template, {
-      env: "production",
+      project: "acme",
+      env: "prod",
       appDatabaseId: "app-db-id",
       suppressionDatabaseId: "suppression-db-id",
       testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test", snapshotHourUtc: hour }),

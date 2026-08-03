@@ -7,7 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
@@ -17,6 +17,8 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
+import { loadProject, requireProjectName } from "../project/config";
+import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
@@ -67,10 +69,17 @@ async function buildAudit(projectDir: string, env: string) {
   });
 }
 
-/** Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`). */
-function buildDispatcher(projectDir: string): SecretDispatcher {
+/**
+ * Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`) and the project name.
+ *
+ * `requireProjectName`, never `resolveProjectName`: the target Workflow is `<project>-<env>-secrets-write`
+ * and Workflow names are account-scoped, so a fallback-derived name would either dispatch nowhere or
+ * dispatch this project's values into another project's manager.
+ */
+async function buildDispatcher(projectDir: string): Promise<SecretDispatcher> {
   const { accountId, apiToken } = loadCloudflareCreds(projectDir);
-  return buildSecretDispatcher(accountId, apiToken);
+  const project = requireProjectName(await loadProject(projectDir));
+  return buildSecretDispatcher(accountId, apiToken, project);
 }
 
 /** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
@@ -118,16 +127,16 @@ async function readValue(name: string): Promise<string> {
 
 /** Resolve the target env for a write: required for an environment-scoped secret, ignored for a global one. */
 function resolveEnv(registry: SecretRegistry, name: string, requested: string | undefined): ManagedEnvironment {
-  if (requested) return ManagedEnvironment.parse(requested);
+  if (requested) return requireManagedEnvironment(requested);
   const entry = registry[name];
   if (entry && entry.scope === "environment") {
     throw new ValidationError({
       message: `Secret '${name}' is environment-scoped — choose an environment.`,
-      action: "Pass --env staging or --env production.",
+      action: "Pass --env staging or --env prod.",
     });
   }
   // A global write reaches both environments regardless; the requested env is unused.
-  return "production";
+  return "prod";
 }
 
 /** Shared body for create/update/rm: discover the registry, dispatch, and report the envs written. */
@@ -139,7 +148,7 @@ async function write(
   const registry = await projectSecretRegistry(projectDir);
   const env = resolveEnv(registry, args.name, args.env);
   const value = mode === "delete" ? undefined : await readValue(args.name);
-  const dispatcher = buildDispatcher(projectDir);
+  const dispatcher = await buildDispatcher(projectDir);
   const audit = await buildAudit(projectDir, env);
 
   const targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env }, audit);
@@ -156,7 +165,10 @@ const nameArg = {
   name: { type: "positional", required: true, description: "Secret name (a registry entry)." },
 } as const;
 const sharedArgs = {
-  env: { type: "string", description: "Target environment for an environment-scoped secret: staging | production" },
+  env: {
+    type: "string",
+    description: `Target environment for an environment-scoped secret: ${managedEnvironments().join(" | ")}`,
+  },
   json: { type: "boolean", default: false, description: "Machine-readable output" },
 } as const;
 
@@ -205,14 +217,19 @@ const provision = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir, { requireStore: true });
+      // Never `resolveProjectName`: every Secrets Store entry and the manager's token name derive from
+      // this, and deprovision has to recompute them exactly. A guessed name would name resources
+      // teardown can never find again.
+      const project = requireProjectName(await loadProject(projectDir));
       const cf = new CloudflareClients({ accountId, apiToken });
       // Provisioning spans every managed environment, not one — "dev" is the fallback the audit
       // database resolves against when a command has no single target env (mirrors `pithy feature`).
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
         accountId,
+        project,
         storeId,
-        deploy: buildManagerDeploy({ accountId, apiToken }),
+        deploy: buildManagerDeploy({ accountId, apiToken, project }),
         audit: await buildAudit(projectDir, "dev"),
       });
 
@@ -242,6 +259,7 @@ const deprovision = defineCommand({
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareSecretsDeprovisioner({
         cf,
+        project: requireProjectName(await loadProject(projectDir)),
         storeId,
         audit: await buildAudit(projectDir, "dev"),
       });

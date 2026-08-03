@@ -86,23 +86,30 @@ The `Capability` contract and the `compose` startup hook live in `@pithy-sh/core
 
 ## Per-environment manager
 
-`pithy add secrets` deploys one prebuilt manager worker per environment (`pithy-secrets-staging`, `pithy-secrets-production`). The user authors no code for it. Each manager hosts:
+`pithy add secrets` deploys one prebuilt manager worker per environment (`<project>-staging-secrets`, `<project>-prod-secrets`). The user authors no code for it. Each manager hosts:
 
 - the **write Workflow** — the CLI's dispatch target for create/update/remove;
 - the **at-rest key-rotation Workflow + cron** — generates a fresh master key, re-encrypts every row, prunes the old key once none remain, and records the rotation. Runs once per environment, never in a feature branch.
 
 ## Provisioned resources
 
-`pithy secrets provision` creates these per environment (and `pithy secrets deprovision` removes them). The D1 database shares the worker's name; the master-key entries are env-prefixed because both environments share one Secrets Store, though in-worker the key always binds as the fixed name `SECRETS_ENCRYPTION_KEYS`. The Secrets Store itself is not created here — its id comes from `SECRETS_STORE_ID`.
+`pithy secrets provision` creates these per environment (and `pithy secrets deprovision` removes them). The D1 database shares the worker's name. The Secrets Store itself is not created here — its id comes from `SECRETS_STORE_ID`.
 
-| Resource | staging | production |
+`<project>` below is the `name` in your root `pithy.config.ts`, and the rule is [`docs/NAMING.md`](../../docs/NAMING.md)'s `<project>-<env>-<thing>`. It matters most here, and in two directions. An account has **one** Secrets Store, flat and unpartitionable, so the entry name is the only partition there is: without the project segment a second Pithy project's `provision` would find this one's master key already there, adopt it, and encrypt its rows under a key it does not own — and either project's teardown would orphan both. The Worker script namespace is just as flat and worse behaved, because `wrangler deploy` upserts rather than refusing: an unscoped manager would not collide with the first project's, it would silently **replace** it, repointing it at the second project's database and master key. The minted manager token is scoped for the mirror-image reason: teardown deletes every token of that name, and an unscoped one would revoke every other project's manager credential in the account.
+
+The token is `global` — one value, written once and bound by every manager of the project — so the literal `global` fills the environment slot rather than being omitted. In-worker the master key always binds as the fixed name `SECRETS_ENCRYPTION_KEYS`; only the store entry is scoped.
+
+| Resource | staging | prod |
 |---|---|---|
-| Manager Worker | `pithy-secrets-staging` | `pithy-secrets-production` |
-| D1 database | `pithy-secrets-staging` | `pithy-secrets-production` |
-| Secrets Store entry (master key) | `STAGING_SECRETS_ENCRYPTION_KEYS` | `PRODUCTION_SECRETS_ENCRYPTION_KEYS` |
-| Secrets Store entry (manager CF token) | `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN` — one global entry, bound by both | ↩ |
-| Write Workflow | `pithy-secrets-write-staging` | `pithy-secrets-write-production` |
-| Rotation Workflow | `pithy-secrets-rotate-staging` | `pithy-secrets-rotate-production` |
+| Manager Worker | `<project>-staging-secrets` | `<project>-prod-secrets` |
+| D1 database | `<project>-staging-secrets` | `<project>-prod-secrets` |
+| Secrets Store entry (master key) | `<project>-staging-secrets-encryption-keys` | `<project>-prod-secrets-encryption-keys` |
+| Secrets Store entry (manager CF token) | `<project>-global-secrets-manager-cf-api-token` — one global entry, bound by both | ↩ |
+| CF API token (the manager's runtime credential) | `<project>-global-secrets-manager` — one global token, minted once | ↩ |
+| Write Workflow | `<project>-staging-secrets-write` | `<project>-prod-secrets-write` |
+| Rotation Workflow | `<project>-staging-secrets-rotate` | `<project>-prod-secrets-rotate` |
+
+Every name in that table survives whole at the longest legal project name. Cloudflare publishes no length limit for a Secrets Store entry, so Pithy's own ceiling of 128 characters applies — not the 63 these were once held to, which hashed `<project>-prod-secrets-encryption-keys` down to `secrets-encryp-91c2e9` on a long project, for nothing. The full table of limits, and which of them are ours rather than Cloudflare's, is in [`docs/NAMING.md`](../../docs/NAMING.md).
 
 ## Credentials (`.dev.vars`)
 
@@ -112,7 +119,7 @@ Provisioning reads **one** Cloudflare API token from `.dev.vars` (or `process.en
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | The broad bootstrap token — authenticates the deploy and the provisioning REST calls (create D1, write the store, deploy the manager Worker), **and mints the manager's own runtime token**. | Workers Scripts, D1, Secrets Store, Workflows — plus **Account API Tokens Write**, the permission that lets it mint the manager token. |
 
-`pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
+`pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `<project>-global-secrets-manager-cf-api-token`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
 
 ## The CLI
 
@@ -125,12 +132,12 @@ pithy secrets rm <name>       # remove
 pithy secrets ls [--check]    # list state; --check runs the audit (the promote gate)
 ```
 
-The CLI is the **cross-environment actor**: a `global` write reaches both environments (a D1 secret fans out; a CF-Secrets-Store secret is written once, canonically, via production); an `environment` secret takes `--env` and touches one. Because the master key is worker-only, every value-touching command **dispatches the manager's Workflow** and polls — the CLI never encrypts or stores locally. It is also the **authoritative validator**: a not-yet-deployed secret's schema is in no worker yet, so the CLI validates the value against the registry before dispatching. Values come from a prompt or secure stdin, never a flag; `--json` throughout.
+The CLI is the **cross-environment actor**: a `global` write reaches both environments (a D1 secret fans out; a CF-Secrets-Store secret is written once, canonically, via prod); an `environment` secret takes `--env` and touches one. Because the master key is worker-only, every value-touching command **dispatches the manager's Workflow** and polls — the CLI never encrypts or stores locally. It is also the **authoritative validator**: a not-yet-deployed secret's schema is in no worker yet, so the CLI validates the value against the registry before dispatching. Values come from a prompt or secure stdin, never a flag; `--json` throughout.
 
 ## Security
 
 - The master key lives in CF Secrets Store, bound only to that env's workers, and is read only inside a worker.
-- Each env's workers bind only their own env's store and key — a staging worker can't reach production ciphertext.
+- Each env's workers bind only their own env's store and key — a staging worker can't reach prod ciphertext.
 - The manager's CF API token is a Secrets Store binding (never a plaintext env var) scoped to **Secrets Store Read + Write only** — least privilege for its sole job, the rotation write-back. The broad bootstrap token never reaches the worker.
 - JSON validation errors are redacted (`path:code`, never the value).
 

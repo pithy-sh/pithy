@@ -100,7 +100,7 @@ describe("createCliAudit", () => {
 
   test("isRemoteEnv marks only dev as local", () => {
     expect(isRemoteEnv("dev")).toBe(false);
-    for (const env of ["staging", "production", "feature", "prod-eu"]) {
+    for (const env of ["staging", "prod", "feature", "prod-eu"]) {
       expect(isRemoteEnv(env)).toBe(true);
     }
   });

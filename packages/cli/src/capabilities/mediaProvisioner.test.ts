@@ -7,16 +7,19 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { MediaConfig } from "@pithy-sh/media/src/config/config";
-import { mediaBucketName, mediaKvTitle } from "@pithy-sh/media/src/provision/provisionMedia";
+import { mediaBucketName, mediaKvTitle, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
 import { resolveMediaConfig } from "@pithy-sh/media/src/provision/resolveMediaConfig";
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareMediaDeprovisioner, CloudflareMediaProvisioner } from "./mediaProvisioner";
 
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /** Resources are per environment; staging stands in for both in these tests. */
-const STAGING_BUCKET = mediaBucketName("staging");
-const STAGING_KV = mediaKvTitle("staging");
+const STAGING_BUCKET = mediaBucketName(PROJECT, "staging");
+const STAGING_KV = mediaKvTitle(PROJECT, "staging");
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
@@ -59,6 +62,7 @@ function fakeCf() {
 /** A provisioner over the fake clients. `deployWorker` is never reached by these tests. */
 function provisioner(cf: CloudflareClients, config: MediaConfig, events: CliAuditEvent[]) {
   return new CloudflareMediaProvisioner({
+    project: PROJECT,
     cf,
     accountId: "acct-1",
     apiToken: "tok",
@@ -144,6 +148,7 @@ describe("CloudflareMediaProvisioner", () => {
     const events: CliAuditEvent[] = [];
     const writes: string[] = [];
     const media = new CloudflareMediaProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "tok",
@@ -178,6 +183,7 @@ describe("CloudflareMediaProvisioner", () => {
   test("writeCredentials surfaces both legs when the update fails too", async () => {
     const { cf } = fakeCf();
     const media = new CloudflareMediaProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "tok",
@@ -195,9 +201,9 @@ describe("CloudflareMediaProvisioner", () => {
       },
     });
 
-    await expect(
-      media.writeCredentials("production", { bucketName: STAGING_BUCKET, kvNamespaceId: null }),
-    ).rejects.toThrow(/Could not write the media storage credentials to production/);
+    await expect(media.writeCredentials("prod", { bucketName: STAGING_BUCKET, kvNamespaceId: null })).rejects.toThrow(
+      /Could not write the media storage credentials to prod/,
+    );
   });
 });
 
@@ -218,6 +224,7 @@ describe("CloudflareMediaDeprovisioner", () => {
     } = fakeCf();
     const events: CliAuditEvent[] = [];
     const media = new CloudflareMediaDeprovisioner({
+      project: PROJECT,
       cf,
       r2Credentials: R2,
       audit: async (event) => void events.push(event),
@@ -234,13 +241,13 @@ describe("CloudflareMediaDeprovisioner", () => {
     expect(deleteNamespace).not.toHaveBeenCalled();
     expect(events).toEqual([]);
 
-    getWorker.mockResolvedValue({ id: "pithy-media-staging" });
+    getWorker.mockResolvedValue({ id: mediaWorkerName(PROJECT, "staging") });
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     findNamespaceByTitle.mockResolvedValue({ id: "kv-1", title: STAGING_KV });
     await media.deleteWorker("staging");
     await media.deleteBucket("staging");
     await media.deleteKvNamespace("staging");
-    expect(deleteWorker).toHaveBeenCalledWith("pithy-media-staging");
+    expect(deleteWorker).toHaveBeenCalledWith(mediaWorkerName(PROJECT, "staging"));
     expect(deleteNamespace).toHaveBeenCalledWith("kv-1");
     // The bucket is emptied before it is deleted. R2 refuses to delete one that still holds an object or
     // a dangling multipart upload, so a delete-only teardown fails on every bucket that was ever used.
@@ -257,7 +264,7 @@ describe("CloudflareMediaDeprovisioner", () => {
 
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
-    const media = new CloudflareMediaDeprovisioner({ cf });
+    const media = new CloudflareMediaDeprovisioner({ cf, project: PROJECT });
 
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     await expect(media.deleteBucket("staging")).rejects.toThrowError(/R2 access-key pair is needed/);
@@ -274,6 +281,7 @@ describe("the committed media worker template", () => {
 
   test("resolves into a config with no placeholder left, in D1 mode", async () => {
     const resolved = resolveMediaConfig(await committedTemplate(), {
+      project: PROJECT,
       env: "staging",
       appDatabaseId: "app-1",
       secretsDatabaseId: "sec-1",
@@ -282,21 +290,22 @@ describe("the committed media worker template", () => {
       mediaConfig: MediaConfig.parse({}),
     });
 
-    expect(resolved.name).toBe("pithy-media-staging");
+    expect(resolved.name).toBe("acme-staging-media");
     expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
     // The template always declares MEDIA; D1 mode never creates a namespace, so the binding must go.
     expect(resolved.kv_namespaces).toBeUndefined();
     expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual([
-      "pithy-media-image-to-text-staging",
-      "pithy-media-audio-transcribe-staging",
-      "pithy-media-video-transcribe-staging",
-      "pithy-media-doc-extract-staging",
+      "acme-staging-media-image-to-text",
+      "acme-staging-media-audio-transcribe",
+      "acme-staging-media-video-transcribe",
+      "acme-staging-media-doc-extract",
     ]);
   });
 
   test("keeps the MEDIA binding, filled, in KV mode", async () => {
     const resolved = resolveMediaConfig(await committedTemplate(), {
-      env: "production",
+      project: PROJECT,
+      env: "prod",
       appDatabaseId: "app-1",
       secretsDatabaseId: "sec-1",
       storeId: "store-1",

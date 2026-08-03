@@ -33,9 +33,10 @@ const config = VectorConfig.parse({
   },
 });
 
-const indexNames = { docs: "pithy-vector-docs-staging", notes: "pithy-vector-notes-staging" };
+const indexNames = { docs: "acme-staging-vector-docs", notes: "acme-staging-vector-notes" };
 
 const resolved = resolveVectorConfig(template, {
+  project: "acme",
   env: "staging",
   appDatabaseId: "db-1",
   indexNames,
@@ -43,13 +44,25 @@ const resolved = resolveVectorConfig(template, {
 });
 
 describe("resolveVectorConfig", () => {
-  it("names the worker and its Workflow for the environment", () => {
-    expect(resolved.name).toBe("pithy-vector-staging");
+  it("names the worker and its Workflow for the project and the environment", () => {
+    expect(resolved.name).toBe("acme-staging-vector");
     expect(resolved.workflows?.[0]).toEqual({
       binding: "VECTOR_REPROCESS",
-      name: "pithy-vector-reprocess-staging",
+      name: "acme-staging-vector-reprocess",
       class_name: "VectorReprocessWorkflow",
     });
+  });
+
+  it("a second project resolves to entirely different worker and Workflow names", () => {
+    const other = resolveVectorConfig(template, {
+      project: "globex",
+      env: "staging",
+      appDatabaseId: "db-1",
+      indexNames,
+      config,
+    });
+    expect(other.name).toBe("globex-staging-vector");
+    expect(other.workflows?.[0]?.name).toBe("globex-staging-vector-reprocess");
   });
 
   it("binds the app database the corpus lives in", () => {
@@ -58,8 +71,8 @@ describe("resolveVectorConfig", () => {
 
   it("rebuilds the vectorize array from the config — one binding per index, all remote", () => {
     expect(resolved.vectorize).toEqual([
-      { binding: "VECTORIZE", index_name: "pithy-vector-docs-staging", remote: true },
-      { binding: "VECTORIZE_NOTES", index_name: "pithy-vector-notes-staging", remote: true },
+      { binding: "VECTORIZE", index_name: "acme-staging-vector-docs", remote: true },
+      { binding: "VECTORIZE_NOTES", index_name: "acme-staging-vector-notes", remote: true },
     ]);
   });
 
@@ -71,7 +84,7 @@ describe("resolveVectorConfig", () => {
     const raw = resolved.vars?.VECTOR_CONFIG;
     expect(raw).toBeTypeOf("string");
     const parsed = VectorWorkerConfig.parse(JSON.parse(raw as string));
-    expect(parsed.indexes.docs?.indexName).toBe("pithy-vector-docs-staging");
+    expect(parsed.indexes.docs?.indexName).toBe("acme-staging-vector-docs");
     expect(parsed.indexes.docs?.filterable).toEqual([{ propertyName: "ownerId", indexType: "string" }]);
   });
 

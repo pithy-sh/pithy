@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
@@ -102,17 +103,24 @@ async function loadSupportSearch(): Promise<
 }
 
 /**
- * The R2 bucket attachments and raw messages live in — `pithy-support`.
+ * The R2 bucket attachments and raw messages live in — `<project>-global-support`.
  *
  * **One bucket for the project, not one per environment**, which is the opposite of what `pithy media` and
  * `pithy storage` do and is the seam's own shape (`ensureBucket()` takes no environment). It follows from
  * where the bytes are written from: the `SUPPORT_BUCKET` binding hangs off the *app* worker that receives
  * the mail, and a Worker addresses a bucket by the name its own `wrangler.jsonc` gives, per environment. So
  * the environments are separated by the binding an operator points at a bucket, and this command's job is
- * to make sure one exists to point at. The name otherwise follows media's convention — `pithy-<capability>`
- * — minus the environment segment media appends.
+ * to make sure one exists to point at. `global` sits in the environment slot to say that out loud rather
+ * than by omission.
+ *
+ * A function rather than a constant, because the project segment is not a constant — and it is what makes
+ * `ensureBucket`'s find-then-create safe. R2's namespace is flat and account-wide, so the old fixed
+ * `pithy-support` meant a second Pithy project in the same account adopted this one's bucket: two products'
+ * customer correspondence in one place, and either teardown deleting both.
  */
-export const SUPPORT_BUCKET_NAME = "pithy-support";
+export function supportBucketName(project: string): string {
+  return resourceNames(project).global.r2("support");
+}
 
 /** The per-environment resource ids the support classification worker binds, resolved by the caller. */
 export interface SupportEnvResources {
@@ -136,6 +144,13 @@ export interface SupportRouting {
 export interface CloudflareSupportProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. The bucket, every environment's worker, and the inbound routing rule all lead
+   * with it, and the bucket is *found by name and reused*: a guessed value adopts another project's
+   * correspondence.
+   */
+  project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /**
@@ -159,6 +174,7 @@ export interface CloudflareSupportProvisionerOptions {
 export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #supportConfig: SupportConfig;
   readonly #resolveEnv: ResolveSupportEnv;
@@ -168,6 +184,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   constructor(options: CloudflareSupportProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#supportConfig = options.supportConfig;
     this.#resolveEnv = options.resolveEnv;
@@ -195,19 +212,22 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    */
   async ensureBucket(): Promise<{ bucket: string; created: boolean; skipped: boolean }> {
     const { attachments } = this.#supportConfig;
+    const name = supportBucketName(this.#project);
     if (!attachments.enabled && !attachments.retainRaw) {
-      return { bucket: SUPPORT_BUCKET_NAME, created: false, skipped: true };
+      return { bucket: name, created: false, skipped: true };
     }
-    const existing = await this.#cf.r2Provisioner().findBucketByName(SUPPORT_BUCKET_NAME);
+    const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucket: existing.name, created: false, skipped: false };
-    const created = await this.#cf.r2Provisioner().createBucket(SUPPORT_BUCKET_NAME);
+    const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
       action: "support/bucket_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_r2_bucket",
       resourceId: created.name,
-      metadata: { name: created.name },
+      // R2 exposes no tags through the API, so the name is the whole ownership record on the bucket
+      // itself; this is the only place a human can later read which project it belongs to.
+      metadata: { name: created.name, project: this.#project },
     });
     return { bucket: created.name, created: true, skipped: false };
   }
@@ -218,7 +238,12 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     const { appDatabaseId } = await this.#resolveEnv(env);
     const dir = supportWorkerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
-    const config = resolveSupportConfig(template, { env, appDatabaseId, supportConfig: this.#supportConfig });
+    const config = resolveSupportConfig(template, {
+      project: this.#project,
+      env,
+      appDatabaseId,
+      supportConfig: this.#supportConfig,
+    });
     const configPath = join(dir, `.wrangler.${env}.json`);
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     try {
@@ -231,7 +256,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: supportWorkerName(env),
+        resourceId: supportWorkerName(this.#project, env),
         metadata: { env },
       });
     } catch (error) {
@@ -240,7 +265,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: supportWorkerName(env),
+        resourceId: supportWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -304,18 +329,20 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    * Create the inbound routing rule that actually delivers the support address to the app worker, when
    * routing was supplied; otherwise skip.
    *
-   * The rule name is support's own (`pithy-support-inbound`), never `@pithy-sh/email`'s. Idempotency keys
-   * on the name, so a shared one would make whichever capability provisioned second silently believe its
-   * rule already existed — and its mail would go to the other capability's Worker.
+   * The rule name is support's own (`<project>-global-support-inbound`), never `@pithy-sh/email`'s, and it
+   * carries the project. Idempotency keys on the name, so a shared one would make whichever capability —
+   * or whichever project on the same zone — provisioned second silently believe its rule already existed,
+   * and its mail would go to the other one's Worker.
    */
   async ensureRoutingRule(): Promise<{ created: boolean; skipped: boolean }> {
     if (!this.#routing) return { created: false, skipped: true };
-    const { SUPPORT_ROUTING_RULE_NAME } = await loadSupport();
+    const { supportRoutingRuleName } = await loadSupport();
+    const ruleName = supportRoutingRuleName(this.#project);
     const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
       zoneId: this.#routing.zoneId,
       address: this.#routing.address,
       workerName: this.#routing.appWorkerName,
-      ruleName: SUPPORT_ROUTING_RULE_NAME,
+      ruleName,
     });
     if (created) {
       await this.#audit({
@@ -328,7 +355,8 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
           zoneId: this.#routing.zoneId,
           address: this.#routing.address,
           workerName: this.#routing.appWorkerName,
-          ruleName: SUPPORT_ROUTING_RULE_NAME,
+          project: this.#project,
+          ruleName,
         },
       });
     }
@@ -354,6 +382,8 @@ function supportWorkerDir(): string {
 
 export interface CloudflareSupportDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
+  project: string;
   /**
    * The zone the inbound rule lives on. Needed to remove it, and there is no honest way to derive it: a
    * rule is addressed through its zone, and sweeping every zone on the account looking for a name is a
@@ -378,12 +408,14 @@ export interface CloudflareSupportDeprovisionerOptions {
  */
 export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #routingZoneId: string | undefined;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSupportDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#routingZoneId = options.routingZoneId;
     this.#r2Credentials = options.r2Credentials;
     this.#audit = options.audit ?? (async () => {});
@@ -392,7 +424,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   /** Delete the env's classification worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { supportWorkerName } = await loadSupport();
-    const name = supportWorkerName(env);
+    const name = supportWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
@@ -412,10 +444,11 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
    */
   async removeRoutingRule(): Promise<{ removed: boolean }> {
     if (!this.#routingZoneId) return { removed: false };
-    const { SUPPORT_ROUTING_RULE_NAME } = await loadSupport();
+    const { supportRoutingRuleName } = await loadSupport();
+    const ruleName = supportRoutingRuleName(this.#project);
     const { removed } = await this.#cf.emailRouting().removeWorkerRoute({
       zoneId: this.#routingZoneId,
-      ruleName: SUPPORT_ROUTING_RULE_NAME,
+      ruleName,
     });
     if (removed) {
       await this.#audit({
@@ -423,8 +456,8 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
         outcome: "success",
         severity: "warning",
         resourceType: "cf_email_routing_rule",
-        resourceId: SUPPORT_ROUTING_RULE_NAME,
-        metadata: { zoneId: this.#routingZoneId, ruleName: SUPPORT_ROUTING_RULE_NAME },
+        resourceId: ruleName,
+        metadata: { zoneId: this.#routingZoneId, ruleName, project: this.#project },
       });
     }
     return { removed };
@@ -437,10 +470,11 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
    * upload. What went is audited, not just that it went.
    */
   async deleteBucket(): Promise<void> {
+    const name = supportBucketName(this.#project);
     const teardown = await deleteR2BucketWithContents({
       cf: this.#cf,
       credentials: this.#r2Credentials,
-      bucketName: SUPPORT_BUCKET_NAME,
+      bucketName: name,
     });
     if (!teardown.deleted) return;
     await this.#audit({
@@ -448,9 +482,10 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
       outcome: "success",
       severity: "warning",
       resourceType: "cf_r2_bucket",
-      resourceId: SUPPORT_BUCKET_NAME,
+      resourceId: name,
       metadata: {
-        name: SUPPORT_BUCKET_NAME,
+        name,
+        project: this.#project,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
       },

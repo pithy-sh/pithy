@@ -4,7 +4,7 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { secretsTables } from "./data/tables";
 import { secrets_0001_init } from "./migrations/0001_init";
-import { MANAGER_CF_API_TOKEN_SECRET_NAME } from "./provision/provisionSecrets";
+import { MANAGER_CF_API_TOKEN_SECRET } from "./provision/provisionSecrets";
 import type { SecretRegistry } from "./registry";
 import {
   aggregateSecretRegistries,
@@ -15,12 +15,19 @@ import {
 /**
  * The secrets manager's own token profile — the standard default for its least-privilege runtime
  * credential. Declared here, next to the capability, and consumed as the single source of that scope
- * (the CLI provisioner mints the manager token from it). Its value lands in the CF Secrets Store entry
- * the manager binds (`GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`); Secrets Store read + write, nothing else.
+ * (the CLI provisioner mints the manager token from it). Secrets Store read + write, nothing else.
+ *
+ * `secretScope: "global"` is load-bearing, not documentation. It puts the literal `global` in the
+ * environment slot of the store entry the minted value is written to, so `pithy token mint secrets`
+ * lands on `<project>-global-secrets-manager-cf-api-token` — byte-identical to what
+ * `managerCfApiTokenSecretName` provisions and what the manager's `CLOUDFLARE_API_TOKEN` binding
+ * reads. Drop it and a mint writes a per-environment entry nothing binds, leaving the manager on a
+ * credential the operator believes they just rolled.
  */
 export const secretsTokenProfile = {
   permissions: ["secrets:read", "secrets:write"],
-  secret: MANAGER_CF_API_TOKEN_SECRET_NAME,
+  secret: MANAGER_CF_API_TOKEN_SECRET,
+  secretScope: "global",
   defaultStore: "secrets-store",
   description: "The secrets manager's runtime credential — reads and writes CF Secrets Store from its Worker.",
 } as const;

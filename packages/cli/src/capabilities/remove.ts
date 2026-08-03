@@ -264,6 +264,13 @@ export interface DefaultRemoveStepsOptions {
   workerDir: string;
   /** Every capability wired into the target Worker. */
   loadCapabilities: () => Promise<Capability[]>;
+  /**
+   * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`,
+   * never `resolveProjectName`) and handed over as a plain string. A `--drop` reverses migrations and
+   * drops tables, so it is checked against the database's recorded owner first: without it, `pithy
+   * remove --drop` reversed another project's migrations on a shared D1 and exited 0.
+   */
+  project: string;
 }
 
 /**
@@ -276,7 +283,8 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
   const { projectDir, workerDir } = options;
   return {
     loadCapabilities: options.loadCapabilities,
-    dropTables: (capability, env) => dropCapabilityTables({ capability, workerDir, persistRoot: projectDir, env }),
+    dropTables: (capability, env) =>
+      dropCapabilityTables({ capability, workerDir, persistRoot: projectDir, env, project: options.project }),
     uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
     // fs.rm (recursive) unlinks contents then removes the dir — the node API, not shell `rm -rf`.
     deleteSource: (dir) => rm(dir, { recursive: true, force: true }),

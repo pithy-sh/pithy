@@ -28,6 +28,7 @@ dist/
 .smoke-*/
 .e2e-*/
 .migrate-*/
+.deploy-it-*/
 
 # editor / os
 .DS_Store

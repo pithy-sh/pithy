@@ -25,7 +25,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeManager — LIVE", () => {
       () =>
         client.vectorize.indexes.create({
           account_id: creds.accountId,
-          name: uniqueName("pithy-int-vec"),
+          name: uniqueName("vec"),
           config: { dimensions: DIMENSIONS, metric: "cosine" },
         }),
       async (index) => {

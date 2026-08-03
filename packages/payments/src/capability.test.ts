@@ -274,7 +274,7 @@ const NEVER_IN_A_BUNDLE = [
 ];
 
 describe("payments().client — virtual:pithy/payments", () => {
-  const projection = resolveClientProjection(payments(CLIENT_CATALOG), { environment: "production" });
+  const projection = resolveClientProjection(payments(CLIENT_CATALOG), { environment: "prod" });
 
   test("projects exactly five keys, and per product exactly five more", () => {
     expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "environment", "products", "rails"]);
@@ -330,7 +330,7 @@ describe("payments().client — virtual:pithy/payments", () => {
   });
 
   test("names the environment the bundle was built for", () => {
-    expect(projection.environment).toBe("production");
+    expect(projection.environment).toBe("prod");
     expect(resolveClientProjection(payments(CLIENT_CATALOG), { environment: "staging" }).environment).toBe("staging");
   });
 

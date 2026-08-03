@@ -139,14 +139,14 @@ function database(c: Context<PithyHonoEnv>): D1Database {
 /**
  * This deployment's store environment, from the `ENVIRONMENT` var.
  *
- * Only a Worker that says it is production is production. Every other value — `staging`, `dev`, a var nobody
+ * Only a Worker deployed to `prod` is production. Every other value — `staging`, `dev`, a var nobody
  * set — is sandbox, because the failure directions are not symmetric: treating production as sandbox loses a
  * purchase that reconciliation repairs, while treating sandbox as production hands out real entitlements for
  * test transactions. That is the single most common in-app-purchase security defect there is, and the default
  * is what decides it.
  */
 function deploymentEnvironment(c: Context<PithyHonoEnv>): PurchaseEnvironment {
-  return (c.env as Record<string, unknown>).ENVIRONMENT === "production" ? "production" : "sandbox";
+  return (c.env as Record<string, unknown>).ENVIRONMENT === "prod" ? "production" : "sandbox";
 }
 
 /**

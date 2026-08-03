@@ -54,13 +54,14 @@ describe("the command surface", () => {
 
 describe("collectScopeFlags", () => {
   test("collects every --scope, in both spellings — citty keeps only the last", () => {
-    expect(
-      collectScopeFlags(["connect", "--scope", "manifest:read", "--scope=keys:rotate", "--env", "production"]),
-    ).toEqual(["manifest:read", "keys:rotate"]);
+    expect(collectScopeFlags(["connect", "--scope", "manifest:read", "--scope=keys:rotate", "--env", "prod"])).toEqual([
+      "manifest:read",
+      "keys:rotate",
+    ]);
   });
 
   test("no --scope is an empty list, not a default — the caller decides what absent means", () => {
-    expect(collectScopeFlags(["connect", "--env", "production"])).toEqual([]);
+    expect(collectScopeFlags(["connect", "--env", "prod"])).toEqual([]);
   });
 });
 
@@ -112,7 +113,7 @@ describe("parsePublicKey", () => {
 
 describe("formatConnectReport", () => {
   const connected = {
-    environment: "production",
+    environment: "prod",
     connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
@@ -127,14 +128,14 @@ describe("formatConnectReport", () => {
     expect(line.endsWith("\n")).toBe(true);
     expect(JSON.parse(line)).toMatchObject({
       command: "dashboard.connect",
-      environment: "production",
+      environment: "prod",
       status: "connected",
     });
   });
 
   test("connected ends with Done.", () => {
     const out = formatConnectReport(connected, { json: false });
-    expect(out).toContain("Connected production.");
+    expect(out).toContain("Connected prod.");
     expect(out).toContain("key_1");
     expect(out.trimEnd().endsWith("Done.")).toBe(true);
   });
@@ -150,19 +151,19 @@ describe("formatConnectReport", () => {
 
   test("the offline path says plainly that nothing proved the key", () => {
     const out = formatConnectReport({ ...connected, status: "registered", keyId: "own_1" }, { json: false });
-    expect(out).toContain("Registered production.");
+    expect(out).toContain("Registered prod.");
     expect(out.toLowerCase()).toContain("prove");
   });
 
   test("--update reads as a re-point, not a fresh connection", () => {
     const out = formatConnectReport({ ...connected, updated: true, keyId: null }, { json: false });
-    expect(out).toContain("Re-pointed production.");
+    expect(out).toContain("Re-pointed prod.");
   });
 });
 
 describe("formatRotateReport", () => {
   const rotated = {
-    environment: "production",
+    environment: "prod",
     connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
     keyId: "key_2",
     previousKeyIds: ["key_1"],
@@ -196,7 +197,7 @@ describe("formatDisconnectReport", () => {
     expect(
       JSON.parse(
         formatDisconnectReport(
-          { environment: "production", connectionId: "c1", removed: true, dashboardNotified: true },
+          { environment: "prod", connectionId: "c1", removed: true, dashboardNotified: true },
           { json: true },
         ),
       ),
@@ -206,7 +207,7 @@ describe("formatDisconnectReport", () => {
   test("a dashboard that could not be told does not weaken the revocation", () => {
     const out = formatDisconnectReport(
       {
-        environment: "production",
+        environment: "prod",
         connectionId: "c1",
         removed: true,
         dashboardNotified: false,
@@ -214,7 +215,7 @@ describe("formatDisconnectReport", () => {
       },
       { json: false },
     );
-    expect(out).toContain("Disconnected production.");
+    expect(out).toContain("Disconnected prod.");
     expect(out).toContain("Couldn't reach the management client.");
     expect(out.trimEnd().endsWith("Done.")).toBe(true);
   });
@@ -230,7 +231,7 @@ describe("formatDisconnectReport", () => {
 
 describe("formatStatusReport", () => {
   const report = {
-    environment: "production",
+    environment: "prod",
     connected: true,
     connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
     issuer: "https://app.pithy.sh",

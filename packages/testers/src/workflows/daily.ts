@@ -63,7 +63,7 @@ export interface DailyPassDeps {
    * The global email-suppression database, for reconciling deliverability.
    *
    * A separate binding because suppression is global rather than per environment — an unsubscribe in
-   * production must stop staging too. Absent means the flag is left alone rather than guessed at.
+   * prod must stop staging too. Absent means the flag is left alone rather than guessed at.
    */
   readonly suppressionD1: D1Database | undefined;
   /**

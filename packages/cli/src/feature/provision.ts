@@ -5,8 +5,15 @@ import { rm } from "node:fs/promises";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  type FeatureIdentity,
+  type FeatureResourceKind,
+  featureResourceName,
+  featureWorkerName,
+} from "@pithy-sh/core/src/naming/feature";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { migrateProject } from "../migrations/run";
+import { loadProject, requireProjectName } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { provisionableBindings, serviceBindings } from "./bindings";
@@ -19,7 +26,6 @@ import {
   upsertResource,
   writeManifest,
 } from "./manifest";
-import { type FeatureIdentity, type FeatureResourceKind, featureResourceName, featureWorkerName } from "./naming";
 import { applyProvisionedIds, applyWorkerEnv } from "./wranglerEnv";
 
 /**
@@ -142,12 +148,20 @@ function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManif
 /** A migrate/seed seam so provision's orchestration is testable without a live backend. */
 export type BackendRunner = (args: { env: string; projectDir: string }) => Promise<void>;
 
+// The migrate names its project for the same reason the seed below does, and one more: the stamp it
+// writes is what refuses a later run from another project. A feature environment's D1 is brand new, so
+// this run is the one that adopts it — skip the name here and the database stays unowned for good.
 const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
-  await migrateProject({ env, projectDir });
+  const project = requireProjectName(await loadProject(projectDir));
+  await migrateProject({ env, projectDir, project });
 };
 
+// The seed names its project because a fixture can mint Cloudflare Images/Stream assets, and those two
+// account-flat stores carry no name we chose — only the owner in their metadata. `requireProjectName`,
+// the same resolver every feature resource name already leads with.
 const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
-  await seedProject({ env, projectDir, yes: true, json: true });
+  const project = requireProjectName(await loadProject(projectDir));
+  await seedProject({ env, projectDir, project, yes: true, json: true });
 };
 
 /** One provisioned resource in the report: what it is, and whether this run created it or reused it. */

@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
+import { resourceName } from "@pithy-sh/core/src/naming/resource";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { SUPPORT_CAPABILITY } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the support capability — the live counterpart to
@@ -26,21 +29,35 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
  * the address, and the target worker are all explicit flags, and a project that has not decided yet
  * provisions everything else and adds the rule later.
  *
- * The rule name is `pithy-support-inbound`, deliberately distinct from `@pithy-sh/email`'s
- * `pithy-email-bounce`. Idempotency in `ensureWorkerRoute` keys on the rule *name*, so sharing one
- * would make whichever capability provisioned second silently believe its rule already existed.
+ * The rule name is `<project>-global-support-inbound`, deliberately distinct from `@pithy-sh/email`'s
+ * `<project>-global-email-bounce`. Idempotency in `ensureWorkerRoute` keys on the rule *name*, so
+ * sharing one would make whichever capability provisioned second silently believe its rule already
+ * existed — and the project segment is what stops two Pithy projects on one zone doing the same to
+ * each other, with the loser's customer mail delivered to the winner's Worker.
  */
-
-/** The name of the Email Routing rule this capability creates. Distinct from the bounce handler's. */
-export const SUPPORT_ROUTING_RULE_NAME = "pithy-support-inbound";
 
 /**
- * The deployed Worker name for an environment — also its resolved config basename. Delegates to core's
- * {@link workflowHostName}, so the name the CLI audits and deletes under cannot drift from the name it
- * deploys under.
+ * The name of the Email Routing rule this capability creates, for one project. Distinct from the
+ * bounce handler's, and `global` in the environment slot because there is one rule per zone: the
+ * environments are separated by which app Worker the rule is pointed at, not by the rule.
+ *
+ * **Still on the generic composer**, and deliberately: an Email Routing rule is not a namespace
+ * `@pithy-sh/core/src/naming/limits` carries a verified Cloudflare cap for, and the facade exists so a
+ * kind of thing brings its own number rather than borrowing one. It takes the conservative default
+ * until that namespace lands — the same call `@pithy-sh/email`'s bounce rule makes.
  */
-export function supportWorkerName(env: ManagedEnvironment): string {
-  return workflowHostName("support", env);
+export function supportRoutingRuleName(project: string): string {
+  return resourceName({ project, env: GLOBAL_SCOPE, thing: `${SUPPORT_CAPABILITY}-inbound` });
+}
+
+/**
+ * The deployed Worker name for a project's environment — also its resolved config basename. Composed
+ * through core's naming facade under the **`worker`** namespace, so it is measured against a Worker
+ * script's 63 and the environment is validated on the way through. One source, so the name the CLI
+ * audits and deletes under cannot drift from the name it deploys under.
+ */
+export function supportWorkerName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).worker(SUPPORT_CAPABILITY);
 }
 
 /** The live Cloudflare/wrangler seam. Each step must be idempotent. */

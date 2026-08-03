@@ -25,7 +25,7 @@ pithy payments provision          # deploys the reconciliation Workflow and writ
 
 `add` touches no Cloudflare account: it installs the package, writes the `payments({ ... })` block into `pithy.config.ts`, wires the `DB` binding into `wrangler.jsonc`, and runs the migration that creates `pithy_payments_purchases`, `pithy_payments_entitlements`, `pithy_payments_provider_accounts`, and `pithy_payments_webhook_events`. It works offline and in CI.
 
-`provision` is the step that needs credentials. The `PAYMENTS_RECONCILE` binding arrives with it rather than with `add`, because wrangler requires a `name` and a `class_name` on every `workflows` entry and the deployed name is per environment (`pithy-payments-reconcile-<env>`) — an entry short of either field does not degrade, wrangler refuses to load the config at all. The binding is **optional**: an unprovisioned project still verifies receipts, accepts webhooks, and resolves entitlements.
+`provision` is the step that needs credentials. The `PAYMENTS_RECONCILE` binding arrives with it rather than with `add`, because wrangler requires a `name` and a `class_name` on every `workflows` entry and the deployed name is per project and environment (`<project>-<env>-payments-reconcile`) — an entry short of either field does not degrade, wrangler refuses to load the config at all. The binding is **optional**: an unprovisioned project still verifies receipts, accepts webhooks, and resolves entitlements.
 
 `@pithy-sh/secrets` is **required** — every rail's credentials are read through it, so payments will not compose without it. `@pithy-sh/auth` is optional and strongly implied: purchases scope to the caller from the core `AuthContext` seam, so with no auth capability composed `c.var.auth` is null and every route denies. That is the right default and not a useful one. `@pithy-sh/ledger` is optional and only reached by products whose catalog entry declares `grants`.
 
@@ -142,7 +142,7 @@ Every rail's vocabulary maps into nine normalized statuses. Each answers two que
 
 **Every purchase carries its store environment, and a mismatch is refused outright.**
 
-A sandbox StoreKit transaction granting a real entitlement is the most common in-app-purchase security defect there is, so no such row is ever created. The environment is an input from this deployment's own `ENVIRONMENT` var, never inferred from the payload — inferring it from what the store said is exactly the hole. Only a Worker that says `production` is production; `staging`, `dev`, and a var nobody set are all sandbox, because the failure directions are not symmetric. Treating production as sandbox loses a purchase reconciliation repairs; the other way round hands out entitlements for test transactions.
+A sandbox StoreKit transaction granting a real entitlement is the most common in-app-purchase security defect there is, so no such row is ever created. The environment is an input from this deployment's own `ENVIRONMENT` var, never inferred from the payload — inferring it from what the store said is exactly the hole. Only a Worker deployed to `prod` is production; `staging`, `dev`, and a var nobody set are all sandbox, because the failure directions are not symmetric. Treating production as sandbox loses a purchase reconciliation repairs; the other way round hands out entitlements for test transactions.
 
 ## Routes
 

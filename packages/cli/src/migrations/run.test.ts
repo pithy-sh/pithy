@@ -21,14 +21,14 @@ describe("migrateProject", () => {
   const h = migrateHarness();
 
   test("an empty registry reports the worker with no databases", async () => {
-    const runs = await migrateProject({ projectDir: h.projectDir, workers: [h.api([])], env: "dev" });
+    const runs = await migrateProject({ projectDir: h.projectDir, workers: [h.api([])], env: "dev", project: "acme" });
     expect(runs).toEqual([{ worker: "api", databases: [] }]);
   });
 
   test("runs, persists, and rolls back against local D1", async () => {
     const workers = [h.api([appCapability()])];
 
-    const first = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+    const first = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
     expect(first).toHaveLength(1);
     expect(first[0]?.worker).toBe("api");
     expect(first[0]?.databases[0]?.database).toBe("app");
@@ -38,26 +38,72 @@ describe("migrateProject", () => {
     ]);
 
     // State persisted under the project root's .wrangler/state: a second run is a no-op.
-    const second = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+    const second = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
     expect(second[0]?.databases[0]?.results).toEqual([]);
 
     // --rollback steps the latest back.
-    const rolledBack = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", rollback: true });
+    const rolledBack = await migrateProject({
+      projectDir: h.projectDir,
+      workers,
+      env: "dev",
+      project: "acme",
+      rollback: true,
+    });
     expect(rolledBack[0]?.databases[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["1000_app_0001_things", "Down", "Success"],
     ]);
   });
 
+  test("migrates the store wrangler serves when the stanza carries only a database_name", async () => {
+    // `pithy add` writes `database_name: "<project>-<env>-<binding>"` with no `database_id`. Wrangler's
+    // `d1DatabaseEntry` derives the Miniflare id from `preview_database_id ?? database_id` else the
+    // binding — `database_name` is never read. Resolving the name here would put the tables in a file
+    // `pithy dev` never opens, and every request would fail `D1_ERROR: no such table`.
+    await writeFile(
+      join(h.projectDir, "apps", "api", "wrangler.jsonc"),
+      JSON.stringify({ d1_databases: [{ binding: "DB", database_name: "acme-dev-db" }] }),
+    );
+
+    await migrateProject({
+      projectDir: h.projectDir,
+      workers: [h.api([appCapability()])],
+      env: "dev",
+      project: "acme",
+    });
+
+    // Open the store exactly as wrangler binds it — id `DB` — and the migrated table is there.
+    const mf = new Miniflare({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { DB: "DB" },
+      d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
+    });
+    try {
+      const count = await (await mf.getD1Database("DB"))
+        .prepare("SELECT count(*) AS n FROM things")
+        .first<{ n: number }>();
+      expect(count?.n).toBe(0);
+    } finally {
+      await mf.dispose();
+    }
+  });
+
   describe("dropCapabilityTables", () => {
     test("reverses just the capability's migrations against local D1, and is idempotent", async () => {
       const workerDir = join(h.projectDir, "apps", "api");
-      await migrateProject({ projectDir: h.projectDir, workers: [h.api([appCapability()])], env: "dev" });
+      await migrateProject({
+        projectDir: h.projectDir,
+        workers: [h.api([appCapability()])],
+        env: "dev",
+        project: "acme",
+      });
 
       const runs = await dropCapabilityTables({
         capability: appCapability(),
         workerDir,
         persistRoot: h.projectDir,
         env: "dev",
+        project: "acme",
       });
       expect(runs[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
         ["1000_app_0001_things", "Down", "Success"],
@@ -69,6 +115,7 @@ describe("migrateProject", () => {
         workerDir,
         persistRoot: h.projectDir,
         env: "dev",
+        project: "acme",
       });
       expect(again[0]?.results).toEqual([]);
     });
@@ -77,10 +124,10 @@ describe("migrateProject", () => {
   describe("resetProject", () => {
     test("rolls every migration back then forward, leaving the ledger consistent", async () => {
       const workers = [h.api([appCapability()])];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
       expect(await countPendingMigrations({ projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
 
-      const runs = await resetProject({ projectDir: h.projectDir, workers, env: "dev" });
+      const runs = await resetProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
       expect(runs).toHaveLength(1);
       expect(runs[0]?.databases[0]?.database).toBe("app");
       expect(runs[0]?.databases[0]?.binding).toBe("DB");
@@ -91,13 +138,13 @@ describe("migrateProject", () => {
 
       // The ledger is consistent afterwards: nothing pending, and a following plain migrate is a no-op.
       expect(await countPendingMigrations({ projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
-      const again = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      const again = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
       expect(again[0]?.databases[0]?.results).toEqual([]);
     });
 
     test("destroys existing rows — a full reset, not a per-row merge", async () => {
       const workers = [h.api([appCapability()])];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
       const d1Persist = join(h.projectDir, ".wrangler", "state", "v3", "d1");
       let mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
@@ -107,7 +154,7 @@ describe("migrateProject", () => {
         await mf.dispose();
       }
 
-      await resetProject({ projectDir: h.projectDir, workers, env: "dev" });
+      await resetProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
       mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
       try {
@@ -121,9 +168,9 @@ describe("migrateProject", () => {
     });
 
     test("an empty registry is a no-op", async () => {
-      expect(await resetProject({ projectDir: h.projectDir, workers: [h.api([])], env: "dev" })).toEqual([
-        { worker: "api", databases: [] },
-      ]);
+      expect(
+        await resetProject({ projectDir: h.projectDir, workers: [h.api([])], env: "dev", project: "acme" }),
+      ).toEqual([{ worker: "api", databases: [] }]);
     });
   });
 
@@ -151,7 +198,7 @@ describe("migrateProject", () => {
 
       expect(await countPendingMigrations({ projectDir: h.projectDir, workers, env: "dev" })).toBe(1);
 
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
       expect(await countPendingMigrations({ projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
     });
 
@@ -195,6 +242,7 @@ describe("migrateProject", () => {
         projectDir: h.projectDir,
         workers: [h.api([appCapability()])],
         env: "staging",
+        project: "acme",
         remoteD1: (args: { binding: string; databaseId: string }): D1Database => {
           resolved.push(args);
           return remote;
@@ -242,6 +290,7 @@ describe("migrateProject", () => {
           projectDir: h.projectDir,
           workers: [h.api([appCapability()]), collab],
           env: "staging",
+          project: "acme",
           remoteD1: (args): D1Database => {
             resolved.push(args);
             return remote;
@@ -256,7 +305,12 @@ describe("migrateProject", () => {
     });
 
     test("an empty registry is a no-op even remotely — no creds required", async () => {
-      const runs = await migrateProject({ projectDir: h.projectDir, workers: [h.api([])], env: "production" });
+      const runs = await migrateProject({
+        projectDir: h.projectDir,
+        workers: [h.api([])],
+        env: "prod",
+        project: "acme",
+      });
       expect(runs).toEqual([{ worker: "api", databases: [] }]);
     });
 
@@ -266,6 +320,7 @@ describe("migrateProject", () => {
         projectDir: h.projectDir,
         workers: [h.api([appCapability()])],
         env: "staging",
+        project: "acme",
       }).catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(PithyError);
@@ -281,6 +336,7 @@ describe("migrateProject", () => {
         projectDir: h.projectDir,
         workers: [h.api([appCapability()])],
         env: "staging",
+        project: "acme",
       }).catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(PithyError);
@@ -305,6 +361,7 @@ describe("migrateProject", () => {
           projectDir: h.projectDir,
           workers: [h.api([appCapability()])],
           env: "staging",
+          project: "acme",
           remoteD1: () => remote,
         });
         expect(runs[0]?.databases[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
@@ -323,6 +380,7 @@ describe("migrateProject", () => {
         projectDir: h.projectDir,
         workers: [h.api([appCapability()])],
         env: "staging",
+        project: "acme",
         remoteD1: (): D1Database => {
           throw new Error("must not resolve a D1 when the id is missing");
         },
@@ -350,8 +408,8 @@ describe("migrateProject", () => {
         },
       },
     });
-    await expect(migrateProject({ projectDir: h.projectDir, workers: [h.api([cap])], env: "dev" })).rejects.toThrow(
-      /share|bound to/i,
-    );
+    await expect(
+      migrateProject({ projectDir: h.projectDir, workers: [h.api([cap])], env: "dev", project: "acme" }),
+    ).rejects.toThrow(/share|bound to/i);
   });
 });

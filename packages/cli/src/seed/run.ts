@@ -3,6 +3,7 @@
 
 import type { KVNamespace } from "@cloudflare/workers-types";
 import { uploadImageBytes, uploadStreamBytes } from "@pithy-sh/cloudflare/src/media/assetSeeder";
+import type { AssetOwner } from "@pithy-sh/cloudflare/src/media/ownership";
 import { composeDatabases, type MergedDatabases } from "@pithy-sh/core/src/data/databases";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -57,6 +58,15 @@ export interface SeedProjectOptions {
    * local backends live in, and the fallback base directory for a fixture's relative media paths.
    */
   projectDir: string;
+  /**
+   * The project this run seeds — the root `pithy.config.ts` `name`, resolved by `requireProjectName` and
+   * never guessed (CLAUDE.md §Resource naming). Required, because a seed can mint Cloudflare Images and
+   * Stream assets, and those two stores are account-flat: an asset is keyed by a Cloudflare-minted id, so
+   * the ownership metadata this name goes into is the only thing that says which project created it.
+   * Neither store has a local emulation either, so even a `dev` seed writes into the store production
+   * shares. A run that cannot name its project must not upload.
+   */
+  project: string;
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
   /**
@@ -230,11 +240,18 @@ async function writeR2Object(target: R2SeedTarget, item: R2SeedItem): Promise<vo
   }
 }
 
-/** The default media uploader: wrap the driver's Images/Stream managers with the seed byte helpers. */
-function driverUploader(driver: SeedDriver): MediaUploader {
+/**
+ * The default media uploader: wrap the driver's Images/Stream managers with the seed byte helpers.
+ *
+ * `owner` is threaded through, not defaulted. Both helpers require it, and `withAssetOwnership` merges it
+ * **over** the fixture's own metadata, so a fixture can never claim another project's assets.
+ */
+function driverUploader(driver: SeedDriver, owner: AssetOwner): MediaUploader {
   return {
-    images: (bytes, metadata) => uploadImageBytes(driver.images(), bytes, { metadata }),
-    stream: async (bytes, metadata) => ({ id: (await uploadStreamBytes(driver.stream(), bytes, { metadata })).uid }),
+    images: (bytes, metadata) => uploadImageBytes(driver.images(), bytes, { owner, metadata }),
+    stream: async (bytes, metadata) => ({
+      id: (await uploadStreamBytes(driver.stream(), bytes, { owner, metadata })).uid,
+    }),
   };
 }
 
@@ -452,8 +469,13 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
   for (const entry of composed) assertMediaRecordsSupported(entry.sets);
 
   // The reset preview and the reset itself both fan out over exactly the Workers this run targets.
+  // `project` rides along: a reset is the most destructive thing the CLI does, so it goes through the
+  // same ownership claim `pithy migrate` does — a database another project owns is refused by name,
+  // never rolled down. It is required here and non-empty by construction (`requireProjectName`), so it
+  // is spread unconditionally; `previewReset` reads no backend and ignores it.
   const resetScope = {
     projectDir: options.projectDir,
+    project: options.project,
     env: options.env,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     ...(options.workers !== undefined ? { workers: options.workers } : {}),
@@ -569,7 +591,7 @@ async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): 
   try {
     const databases = composeDatabases(entry.worker.capabilities);
     const namespaces = composeKv(entry.worker.capabilities);
-    const uploader = options.mediaUploader ?? driverUploader(driver);
+    const uploader = options.mediaUploader ?? driverUploader(driver, { project: options.project, env: options.env });
     const reportSets: SeedPlanSet[] = [];
 
     for (const resolved of entry.sets) {

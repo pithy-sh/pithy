@@ -32,7 +32,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
   });
 
   test("creates a widget, finds it, verifies against its real secret, updates/rotates, then deletes it", async () => {
-    const name = uniqueName("pithy-int-turnstile");
+    const name = uniqueName("turnstile");
 
     await withThrowawayResource(
       () => manager.addTurnstile(name, ["example.com"]),
@@ -43,6 +43,11 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
         // Found by name in the listing (decoded widget shape).
         const found = await manager.getTurnstile(name);
         expect(found?.sitekey).toBe(widget.sitekey);
+
+        // And found by the domain it claims — the lookup the provisioning domain guard runs.
+        const claimants = await manager.listTurnstilesByDomain("example.com");
+        expect(claimants.map((each) => each.sitekey)).toContain(widget.sitekey);
+        expect(await manager.listTurnstilesByDomain("nothing-claims-this.example")).toEqual([]);
 
         // Verify against the REAL widget's secret: a non-solved token can't pass a real widget, so
         // siteverify returns a well-formed denial — proof the freshly-minted secret is recognized.
@@ -65,7 +70,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareTurnstileManager — LIVE", () => {
   });
 
   test("creates a managed (visible) widget in the requested mode, then deletes it", async () => {
-    const name = uniqueName("pithy-int-turnstile-managed");
+    const name = uniqueName("turnstile-managed");
 
     await withThrowawayResource(
       () => manager.addTurnstile(name, ["example.com"], "managed"),

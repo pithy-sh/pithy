@@ -83,7 +83,13 @@ export function widgets() {
 }
 
 test("add runs the capability's dev migrations and reports what moved", async () => {
-  const result = await runAdd({ projectDir: dir, workerDir: worker, capability: "widgets", install: installWidgets });
+  const result = await runAdd({
+    projectDir: dir,
+    workerDir: worker,
+    project: "acme",
+    capability: "widgets",
+    install: installWidgets,
+  });
 
   expect(result.databases).toHaveLength(1);
   const run = result.databases[0];
@@ -98,6 +104,7 @@ test("add --eject copies the source, repoints the import, and still migrates via
   const result = await runAdd({
     projectDir: dir,
     workerDir: worker,
+    project: "acme",
     capability: "widgets",
     install: installWidgets,
     eject: true,

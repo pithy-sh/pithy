@@ -23,6 +23,69 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/**
+ * A child environment with every color signal scrubbed, so the child decides color on its own terms.
+ * Vitest sets `TEST` and CI sets `CI` — citty reads both as "no color", which would make a piped-output
+ * assertion pass for a reason that has nothing to do with the code under test. `TERM` is set to an
+ * ordinary color terminal for the same reason: citty treats `dumb` as no color.
+ */
+function colorCapableEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, TERM: "xterm-256color", PITHY_NO_UPDATE_NOTIFIER: "1" };
+  for (const key of ["NO_COLOR", "FORCE_COLOR", "TEST", "CI"]) delete env[key];
+  return env;
+}
+
+/** The escape byte every ANSI sequence opens with. */
+const ESC = "\u001b";
+
+describe("root flags", () => {
+  /**
+   * `execFile` pipes stdout, so `process.stdout.isTTY` is false in the child and Pithy's one color
+   * authority (`terminal/style`) says color is off. citty renders help itself and consults none of that —
+   * it reads only `NO_COLOR === "1"`, `TERM=dumb`, `TEST` and `CI` — so without the bin handing it that
+   * one lever, `pithy --help | cat` writes escape codes into a pipe while every other surface goes plain.
+   */
+  test("help into a pipe carries no ANSI, like every other surface", async () => {
+    for (const args of [["--help"], ["add", "--help"]]) {
+      const { stdout } = await run("bun", [bin, ...args], { env: colorCapableEnv() });
+      expect(stdout).toContain("USAGE");
+      expect(stdout).not.toContain(ESC);
+    }
+  });
+
+  /** The reverse direction is deliberate: `FORCE_COLOR` is Pithy's override, so citty must honor it too. */
+  test("FORCE_COLOR still colors help", async () => {
+    const { stdout } = await run("bun", [bin, "--help"], { env: { ...colorCapableEnv(), FORCE_COLOR: "1" } });
+    expect(stdout).toContain(ESC);
+  });
+
+  /**
+   * citty answers its version builtin only when it is the sole argument, so `pithy add --version` used to
+   * run `add` and fail asking for a capability. docs/CLI.md §1.2 promises the flag works on any command.
+   */
+  test("--version and -v print the bare version on any command", async () => {
+    const { version } = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8")) as {
+      version: string;
+    };
+    for (const args of [["--version"], ["-v"], ["add", "--version"], ["add", "-v"], ["token", "create", "-v"]]) {
+      const { stdout, stderr } = await run("bun", [bin, ...args], { cwd: dir, env: colorCapableEnv() });
+      expect(stdout.trim()).toBe(version);
+      expect(stderr).toBe("");
+    }
+  });
+
+  /** Everything after `--` is payload for a child process, never a Pithy flag. */
+  test("a `--version` after `--` is not the version flag", async () => {
+    const error = (await run("bun", [bin, "add", "--", "--version"], { cwd: dir, env: colorCapableEnv() }).catch(
+      (e: unknown) => e,
+    )) as { code: number; stdout: string };
+    // citty reads it as `add`'s capability argument, and `add` runs — the point is that the bin did not
+    // intercept it. Outside a project that run fails, which is `add`'s business, not the flag's.
+    expect(error.code).toBe(1);
+    expect(error.stdout).toBe("");
+  });
+});
+
 describe("pithy init", () => {
   test("scaffolds non-interactively and prints one JSON line", async () => {
     const target = join(dir, "smoke");
@@ -111,6 +174,7 @@ describe("pithy migrate", () => {
     expect(JSON.parse(stdout.trim())).toEqual({
       command: "migrate",
       env: "dev",
+      project: "app",
       rollback: false,
       workers: [{ worker: "app-api", databases: [] }],
     });
@@ -119,6 +183,7 @@ describe("pithy migrate", () => {
     expect(JSON.parse(rollback.stdout.trim())).toEqual({
       command: "migrate",
       env: "dev",
+      project: "app",
       rollback: true,
       workers: [{ worker: "app-api", databases: [] }],
     });

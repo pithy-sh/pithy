@@ -18,7 +18,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareD1Manager — LIVE", () => {
 
   test("creates a database, runs DDL/DML/SELECT, introspects, then deletes it", async () => {
     await withThrowawayResource(
-      () => provisioner.createDatabase(uniqueName("pithy-int-d1")),
+      () => provisioner.createDatabase(uniqueName("d1")),
       async (db) => {
         const d1 = new CloudflareD1Manager({
           accountId: creds.accountId,

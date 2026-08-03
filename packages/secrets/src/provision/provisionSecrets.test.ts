@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { describe, expect, test, vi } from "vitest";
 import { EncryptionConfig } from "../crypto/envelope";
 import type { ManagedEnvironment } from "../scope";
@@ -8,6 +9,8 @@ import {
   type DeprovisionOptions,
   deprovisionSecrets,
   initialMasterKeyConfig,
+  managerCfApiTokenName,
+  managerCfApiTokenSecretName,
   masterKeySecretName,
   provisionSecrets,
   type SecretsDeprovisioner,
@@ -52,14 +55,14 @@ describe("provisionSecrets", () => {
       "key:staging",
       "migrate:staging:d1-staging",
       "deploy:staging:d1-staging:store-staging",
-      "db:production",
-      "key:production",
-      "migrate:production:d1-production",
-      "deploy:production:d1-production:store-production",
+      "db:prod",
+      "key:prod",
+      "migrate:prod:d1-prod",
+      "deploy:prod:d1-prod:store-prod",
     ]);
     expect(result.perEnv).toEqual([
       { env: "staging", databaseId: "d1-staging", storeId: "store-staging" },
-      { env: "production", databaseId: "d1-production", storeId: "store-production" },
+      { env: "prod", databaseId: "d1-prod", storeId: "store-prod" },
     ]);
   });
 
@@ -99,9 +102,52 @@ describe("initialMasterKeyConfig", () => {
 });
 
 describe("masterKeySecretName", () => {
-  test("env-prefixes the shared-store entry name", () => {
-    expect(masterKeySecretName("staging")).toBe("STAGING_SECRETS_ENCRYPTION_KEYS");
-    expect(masterKeySecretName("production")).toBe("PRODUCTION_SECRETS_ENCRYPTION_KEYS");
+  test("is <project>-<env>-secrets-encryption-keys", () => {
+    expect(masterKeySecretName("acme", "staging")).toBe("acme-staging-secrets-encryption-keys");
+    expect(masterKeySecretName("acme", "prod")).toBe("acme-prod-secrets-encryption-keys");
+  });
+
+  test("two projects in one account never resolve to the same entry", () => {
+    // The account has one flat Secrets Store. If these collided, the second project to provision would
+    // adopt the first's master key — and either project's teardown would orphan both stores.
+    expect(masterKeySecretName("acme", "prod")).not.toBe(masterKeySecretName("globex", "prod"));
+  });
+
+  test("stays verbatim at the longest legal project name — a Secrets Store entry is not truncated at 63", () => {
+    // Held to the Secrets Store's own ceiling through the naming facade, not to R2's 63. Truncation here
+    // would hash the tail (`…-secrets-encryp-91c2e9`) and the manager's binding would name an entry the
+    // rotation never writes back to.
+    const longest = "a".repeat(MAX_PROJECT_NAME);
+    expect(masterKeySecretName(longest, "staging")).toBe(`${longest}-staging-secrets-encryption-keys`);
+  });
+
+  test("refuses an environment this project scheme does not accept", () => {
+    // The old spelling is the live hazard of the rename: a stale `production` composes a perfectly legal
+    // name for an entry nothing binds, so it must fail loudly rather than resolve.
+    expect(() => masterKeySecretName("acme", "production" as ManagedEnvironment)).toThrow(/prod/);
+  });
+});
+
+describe("managerCfApiTokenSecretName", () => {
+  test("puts the literal global in the environment slot — one entry per project, not per env", () => {
+    expect(managerCfApiTokenSecretName("acme")).toBe("acme-global-secrets-manager-cf-api-token");
+    expect(managerCfApiTokenSecretName("acme")).not.toBe(managerCfApiTokenSecretName("globex"));
+  });
+
+  test("stays verbatim at the longest legal project name", () => {
+    const longest = "a".repeat(MAX_PROJECT_NAME);
+    expect(managerCfApiTokenSecretName(longest)).toBe(`${longest}-global-secrets-manager-cf-api-token`);
+  });
+});
+
+describe("managerCfApiTokenName", () => {
+  test("is <project>-global-secrets-manager, distinct from the entry holding its value", () => {
+    expect(managerCfApiTokenName("acme")).toBe("acme-global-secrets-manager");
+    expect(managerCfApiTokenName("acme")).not.toBe(managerCfApiTokenSecretName("acme"));
+  });
+
+  test("two projects mint distinctly named tokens — teardown deletes by name, account-wide", () => {
+    expect(managerCfApiTokenName("acme")).not.toBe(managerCfApiTokenName("globex"));
   });
 });
 
@@ -126,7 +172,7 @@ describe("deprovisionSecrets", () => {
   test("keeps master keys by default — manager then database per env, then the shared token", async () => {
     const calls: string[] = [];
     await deprovisionSecrets(recordingDeprovisioner(calls));
-    expect(calls).toEqual(["manager:staging", "db:staging", "manager:production", "db:production", "token"]);
+    expect(calls).toEqual(["manager:staging", "db:staging", "manager:prod", "db:prod", "token"]);
   });
 
   test("deletes master keys only when asked", async () => {
@@ -137,9 +183,9 @@ describe("deprovisionSecrets", () => {
       "manager:staging",
       "key:staging",
       "db:staging",
-      "manager:production",
-      "key:production",
-      "db:production",
+      "manager:prod",
+      "key:prod",
+      "db:prod",
       "token",
     ]);
   });

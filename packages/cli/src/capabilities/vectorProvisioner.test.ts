@@ -9,6 +9,9 @@ import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { CloudflareVectorProvisioner } from "./vectorProvisioner";
 
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /**
  * The live provisioner against fake Cloudflare clients. The behaviour worth pinning is the eventual
  * consistency handling: a created metadata index is *accepted*, not live, so `ensureMetadataIndexes` polls
@@ -64,6 +67,7 @@ function fakeWorkflows() {
 
 function provisioner(cf: CloudflareClients, workflows: CloudflareWorkflowsClient) {
   return new CloudflareVectorProvisioner({
+    project: PROJECT,
     cf,
     accountId: "acct-1",
     apiToken: "tok",
@@ -216,7 +220,7 @@ describe("reprocess", () => {
 
     const report = await provisioner(fake.cf, workflows.client).reprocess("staging", "docs", { all: true });
 
-    expect(workflows.dispatchAndPoll).toHaveBeenCalledWith("pithy-vector-reprocess-staging", {
+    expect(workflows.dispatchAndPoll).toHaveBeenCalledWith("acme-staging-vector-reprocess", {
       index: "docs",
       all: true,
     });
@@ -227,7 +231,7 @@ describe("reprocess", () => {
     const fake = fakeCf();
     const workflows = fakeWorkflows();
     await provisioner(fake.cf, workflows.client).reprocess("dev", "docs", { filter: { ownerId: "ada" } });
-    expect(workflows.dispatchAndPoll).toHaveBeenCalledWith("pithy-vector-reprocess-dev", {
+    expect(workflows.dispatchAndPoll).toHaveBeenCalledWith("acme-dev-vector-reprocess", {
       index: "docs",
       filter: { ownerId: "ada" },
     });

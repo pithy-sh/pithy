@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFile } from "node:fs/promises";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test } from "vitest";
@@ -43,11 +44,16 @@ function template(): WorkflowHostTemplate {
       },
       { binding: "MEDIA_DOC_EXTRACT", name: "pithy-media-doc-extract", class_name: "MediaDocExtractWorkflow" },
     ],
-    vars: { MEDIA_CONFIG: "<filled-at-provision>", ENVIRONMENT: "<filled-at-provision>" },
+    vars: {
+      MEDIA_CONFIG: "<filled-at-provision>",
+      ENVIRONMENT: "<filled-at-provision>",
+      PROJECT: "<filled-at-provision>",
+    },
   };
 }
 
 const BASE = {
+  project: "acme",
   appDatabaseId: "app-1",
   secretsDatabaseId: "sec-1",
   storeId: "store-1",
@@ -59,30 +65,30 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "pithy-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
     });
 
-    expect(resolved.name).toBe("pithy-media-staging");
+    expect(resolved.name).toBe("acme-staging-media");
     expect(resolved.d1_databases).toEqual([
       { binding: "DB", database_name: "pithy-app", database_id: "app-1" },
       { binding: "SECRETS", database_name: "pithy-secrets", database_id: "sec-1" },
     ]);
-    expect(resolved.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET", bucket_name: "pithy-media" }]);
+    expect(resolved.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET", bucket_name: "acme-staging-media" }]);
     expect(resolved.secrets_store_secrets?.[0]?.store_id).toBe("store-1");
   });
 
-  test("suffixes every Workflow name with the environment, matching the deployed names", () => {
+  test("names every Workflow for the project and the environment, matching the deployed names", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
-      env: "production",
-      resources: { bucketName: "pithy-media", kvNamespaceId: null },
+      env: "prod",
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
     });
 
     expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual([
-      "pithy-media-image-to-text-production",
-      "pithy-media-audio-transcribe-production",
-      "pithy-media-video-transcribe-production",
-      "pithy-media-doc-extract-production",
+      "acme-prod-media-image-to-text",
+      "acme-prod-media-audio-transcribe",
+      "acme-prod-media-video-transcribe",
+      "acme-prod-media-doc-extract",
     ]);
     // Code references, never deployment identities — neither is rewritten.
     expect(resolved.workflows?.map((workflow) => workflow.class_name)).toEqual([
@@ -97,7 +103,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "pithy-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
     });
     expect(resolved.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-1" }]);
   });
@@ -106,7 +112,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "pithy-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
     });
     expect(resolved.kv_namespaces).toBeUndefined();
   });
@@ -116,28 +122,54 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       mediaConfig,
-      env: "production",
-      resources: { bucketName: "pithy-media", kvNamespaceId: "kv-1" },
+      env: "prod",
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
     });
 
-    expect(resolved.vars?.ENVIRONMENT).toBe("production");
+    expect(resolved.vars?.ENVIRONMENT).toBe("prod");
     expect(MediaConfig.parse(JSON.parse(resolved.vars?.MEDIA_CONFIG ?? "{}"))).toEqual(mediaConfig);
+  });
+
+  test("stamps PROJECT, so an asset the worker mints carries an owner Images and Stream can be swept by", async () => {
+    // Images and Stream are account-flat and keyed by a CF-minted id, so nothing but this var tells the
+    // runtime which project owns the asset it is about to create.
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      env: "staging",
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
+    });
+    expect(resolved.vars?.PROJECT).toBe("acme");
+
+    // And the committed template declares the var the resolver fills, so the file reads as a complete config.
+    const source = await readFile(new URL("../workflows/wrangler.jsonc", import.meta.url), "utf8");
+    expect(source).toContain('"PROJECT"');
   });
 
   test("names the environment's master key, matching what the secrets manager wrote", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "pithy-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
     });
-    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("staging"));
+    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
+  });
+
+  test("a second project resolves to entirely different worker and Workflow names", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      project: "globex",
+      env: "prod",
+      resources: { bucketName: "globex-prod-media", kvNamespaceId: null },
+    });
+    expect(resolved.name).toBe("globex-prod-media");
+    expect(resolved.workflows?.[0]?.name).toBe("globex-prod-media-image-to-text");
   });
 
   test("leaves no placeholder behind in any resolved field", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "pithy-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
     });
     expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
   });

@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { CloudflareKVManager } from "@pithy-sh/cloudflare/src/kv/kvManager";
+import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { defineSeed, type MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
@@ -21,9 +22,14 @@ describe("seedProject", () => {
   test("writes D1 rows and KV entries locally, idempotently", async () => {
     await h.writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
 
-    const report = await seedProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+    const report = await seedProject({
+      project: "acme",
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+    });
     expect(report.dryRun).toBe(false);
     expect(report.workers[0]?.sets).toEqual([
       {
@@ -42,7 +48,7 @@ describe("seedProject", () => {
       expect(await store.kv.get("notes:a")).toBe(JSON.stringify({ body: "hello" }));
 
       // Re-running seeds nothing new: INSERT OR IGNORE keeps the row count at 2.
-      await seedProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
       const again = await store.d1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
       expect(again?.n).toBe(2);
     } finally {
@@ -53,9 +59,10 @@ describe("seedProject", () => {
   test("a dry run computes the plan and writes nothing", async () => {
     await h.writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
 
     const report = await seedProject({
+      project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
       env: "dev",
@@ -79,9 +86,10 @@ describe("seedProject", () => {
       await h.writeWrangler(localWrangler);
       // The set lists only dev/staging; a production run composes it into skippedByEnv, not the plan.
       const report = await seedProject({
+        project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
-        env: "production",
+        env: "prod",
         yes: true,
         confirmProduction: "yes, i really want to seed production",
       });
@@ -92,6 +100,7 @@ describe("seedProject", () => {
     test("staging refuses to run without --yes", async () => {
       await h.writeWrangler(localWrangler);
       const failure = await seedProject({
+        project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
         env: "staging",
@@ -102,21 +111,23 @@ describe("seedProject", () => {
 
     test("production refuses without the exact confirm phrase, even with --yes", async () => {
       await h.writeWrangler(localWrangler);
-      const capabilities = [dataCapability(["dev", "production"])];
+      const capabilities = [dataCapability(["dev", "prod"])];
 
       const noPhrase = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
-        env: "production",
+        env: "prod",
         yes: true,
         json: true,
       }).catch((error: unknown) => error);
       expect(noPhrase).toBeInstanceOf(PithyError);
 
       const wrongPhrase = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
-        env: "production",
+        env: "prod",
         yes: true,
         confirmProduction: "seed it",
       }).catch((error: unknown) => error);
@@ -127,6 +138,7 @@ describe("seedProject", () => {
     test("a dry run needs no confirmation for a non-dev env", async () => {
       await h.writeWrangler(localWrangler);
       const report = await seedProject({
+        project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
         env: "staging",
@@ -168,10 +180,12 @@ describe("seedProject", () => {
           workers: [h.api(capabilities)],
           projectDir: h.projectDir,
           env: "staging",
+          project: "acme",
           remoteD1: () => remoteD1,
         });
 
         const report = await seedProject({
+          project: "acme",
           workers: [h.api(capabilities)],
           projectDir: h.projectDir,
           env: "staging",
@@ -225,7 +239,7 @@ describe("seedProject", () => {
       const capabilities = [r2Capability()];
 
       // First run writes the object.
-      await seedProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
       let store = await openLocalR2();
       try {
         expect(await (await store.bucket.get("logo.png"))?.text()).toBe("NEWBYTES");
@@ -235,7 +249,7 @@ describe("seedProject", () => {
         await store.dispose();
       }
 
-      await seedProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
       store = await openLocalR2();
       try {
         // The existing object is untouched — seeding is non-destructive, like INSERT OR IGNORE.
@@ -301,6 +315,7 @@ describe("seedProject", () => {
 
       const first = fakeUploader();
       const firstReport = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -316,6 +331,7 @@ describe("seedProject", () => {
       // A second run reads the sidecar, skips the upload, and reuses the recorded id.
       const second = fakeUploader();
       const secondReport = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -336,6 +352,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const first = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -346,6 +363,7 @@ describe("seedProject", () => {
       ]);
 
       const second = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -369,6 +387,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const report = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -394,6 +413,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const failure = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
@@ -402,6 +422,39 @@ describe("seedProject", () => {
       expect(failure).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.message).toMatch(/always/i);
       expect(calls).toEqual([]); // fail-fast: no upload happened
+    });
+
+    test("the real uploader stamps the owning project on every asset it mints", async () => {
+      // Images and Stream are account-flat and keyed by a Cloudflare-minted id, so metadata is the only
+      // thing that says who owns an asset. Seed fixtures are the likeliest source of debris, and this run
+      // goes through the *default* uploader — no `mediaUploader` seam — so the stamp is proven on the path
+      // a real `pithy seed` takes, not on a fake that could quietly drop it.
+      await h.writeWrangler({});
+      const file = join(h.projectDir, "asset.bin");
+      const ref = join(h.projectDir, "asset.ref.json");
+      await writeFile(file, "PNGBYTES");
+      const capabilities = [mediaCapability("once", file, ref)];
+
+      const uploads: Record<string, string>[] = [];
+      const images = {
+        uploadImage: async ({ metadata }: { metadata: Record<string, string> }) => {
+          uploads.push(metadata);
+          return { id: "img-1" };
+        },
+      } as unknown as CloudflareImageManager;
+
+      const report = await seedProject({
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        project: "acme",
+        env: "dev",
+        images: () => images,
+      });
+      expect(report.workers[0]?.sets[0]?.media).toEqual([
+        { store: "images", mode: "once", action: "upload", id: "img-1" },
+      ]);
+      // The fixture's own metadata rides along; the ownership keys are merged last and cannot be displaced.
+      expect(uploads).toEqual([{ userId: "u1", pithyEnv: "dev", pithyProject: "acme" }]);
     });
 
     test("a dry run reports the media action without uploading", async () => {
@@ -413,6 +466,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const report = await seedProject({
+        project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",

@@ -152,8 +152,11 @@ Most managers need only `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`. A few 
 `src/test-utils/harness.ts` carries the shared scaffolding so each test does not re-derive it:
 
 - `loadIntegrationCreds()` — reads `CLOUDFLARE_*` from `.dev.vars` (or `process.env`) and returns `hasCreds`. Gate the suite with `describe.skipIf(!creds.hasCreds)`.
-- `uniqueName(prefix?)` — a collision-proof, lowercase `a-z0-9-` name for the throwaway resource.
+- `uniqueName(label)` — a collision-proof, lowercase `a-z0-9-` name for the throwaway resource. The label is the distinguishing part only (`"kv"`, `"d1"`); the harness composes the reserved `pithy-int-` prefix and the timestamp the reaper reads. A label that already carries the prefix is **refused**, so pass `uniqueName("kv")`, never `uniqueName("pithy-int-kv")`.
 - `withThrowawayResource(create, exercise, teardown)` — runs `exercise`, then **guarantees `teardown` in a `finally`** so a failed assertion never orphans a real resource. `create` runs outside the `try`, so a creation failure never tears down something that was never created.
+- `reapStaleTestResources(kind)` — deletes debris an earlier crashed run left behind. Call it in `beforeAll`.
+
+`pithy-int-` is reserved on any account: everything a live test creates is inside it, `pithy init` refuses a project name that would land in it, and the reaper deletes nothing outside it. See [`docs/NAMING.md`](../../docs/NAMING.md). When the resource names are themselves under test, provision under the reserved project `RESERVED_TEST_PROJECT` rather than inventing a name — the project segment comes first and verbatim, so every name the product composes lands in the namespace too.
 
 Each test asserts the three things mocks cannot: a happy-path request succeeds, the response decodes to the expected shape, and at least one error/absent path behaves correctly (surfaced as our typed result or a `PithyError`).
 
@@ -167,7 +170,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareKVManager — LIVE", () => {
 
   test("round-trips a key, then reads an absent key as null", async () => {
     await withThrowawayResource(
-      () => client.kv.namespaces.create({ account_id: creds.accountId, title: uniqueName("pithy-int-kv") }),
+      () => client.kv.namespaces.create({ account_id: creds.accountId, title: uniqueName("kv") }),
       async (namespace) => {
         const kv = new CloudflareKVManager({ accountId: creds.accountId, apiToken: creds.apiToken, namespaceId: namespace.id });
         expect(await kv.validateServiceAccess()).toBe(true);     // happy path

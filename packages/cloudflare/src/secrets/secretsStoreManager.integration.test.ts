@@ -22,7 +22,7 @@ describe.skipIf(!hasStore)("CloudflareSecretsStoreManager — LIVE", () => {
   });
 
   test("creates, updates, lists, and deletes a secret; reports a missing delete", async () => {
-    const name = uniqueName("pithy-int-secret");
+    const name = uniqueName("secret");
 
     await withThrowawayResource(
       async () => {
@@ -43,7 +43,7 @@ describe.skipIf(!hasStore)("CloudflareSecretsStoreManager — LIVE", () => {
         expect(await manager.exists(secretName)).toBe(true);
 
         // Error path: deleting an unknown secret is a typed not-found.
-        await expect(manager.deleteSecret(uniqueName("pithy-int-absent"))).rejects.toThrowError(
+        await expect(manager.deleteSecret(uniqueName("absent"))).rejects.toThrowError(
           expect.objectContaining({ payload: expect.objectContaining({ code: "core/not_found" }) }),
         );
       },

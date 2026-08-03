@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
 import { STORAGE_CAPABILITY, StorageSweepParams, storageWorkflowRegistry, storageWorkflows } from "./specs";
 
@@ -26,7 +26,9 @@ describe("storage workflow specs", () => {
   });
 
   test("the deployed name is the shape already on the wire for email and media", () => {
-    expect(workflowScriptName(STORAGE_CAPABILITY, "sweep", "staging")).toBe("pithy-storage-sweep-staging");
+    expect(resourceNames("acme").env("staging").workflow(STORAGE_CAPABILITY, "sweep")).toBe(
+      "acme-staging-storage-sweep",
+    );
   });
 
   test("empty params are valid — a cron supplies none, so a required field could never run", () => {

@@ -27,7 +27,7 @@ curl localhost:8787/health
 pithy migrate         # run the migration registry (empty until you add a capability)
 ```
 
-That's Phase 0: `pithy init` takes an empty directory to a Worker that boots, validates its per-environment config, runs migrations, and serves `GET /health`. The scaffold ships `dev`, `staging`, and `production` config paths from the start.
+That's Phase 0: `pithy init` takes an empty directory to a Worker that boots, validates its per-environment config, runs migrations, and serves `GET /health`. The scaffold ships `dev`, `staging`, and `prod` config paths from the start.
 
 ## What you get
 
@@ -38,6 +38,14 @@ That's Phase 0: `pithy init` takes an empty directory to a Worker that boots, va
 
 Every command is agent-drivable: full flags, no required prompt, `--json` everywhere. Humans and agents drive the same CLI.
 
+## One project, or two?
+
+The first question `pithy init` really asks. **Do these apps share users or data? Then it is one project with more Workers, not two projects.**
+
+Two apps often should share. Two projects never can — they carry two migration registries and two upgrade cadences, so one project's `pithy migrate` applies schema the other has never heard of. Within a project, Workers share a resource by declaring the **same binding name**: two Workers that both declare `DB` are backed by one D1, and a Worker that wants its own declares `COLLAB_DB` instead.
+
+Two genuinely separate products can still live in one Cloudflare account. Every resource Pithy provisions is named `<project>-<env>-<thing>`, so the project segment keeps them apart. That name comes from `name` in the root `pithy.config.ts`, it stops at 26 characters, and it is effectively permanent once anything is provisioned. Every name limit — Cloudflare's real ones, per namespace, and the three ceilings that are ours — is in [`docs/NAMING.md`](docs/NAMING.md).
+
 ## Status
 
 Phase 0 — the foundation. `init`, the Worker contract, the migration runner, and `migrate` are in. Capabilities (`pithy add auth`, storage, vector, leaderboard, jobs) and remote `migrate`/`deploy` land in Phase 1+.
@@ -45,6 +53,7 @@ Phase 0 — the foundation. `init`, the Worker contract, the migration runner, a
 ## Docs
 
 - [`docs/CLI.md`](docs/CLI.md) — command behavior, flags, output.
+- [`docs/NAMING.md`](docs/NAMING.md) — how every provisioned resource is named, and what a project is.
 - [`docs/UI.md`](docs/UI.md) — front ends: `pithy ui`, the React stub, one origin.
 - [`docs/STACK.md`](docs/STACK.md) — the toolchain.
 - [`docs/BRAND.md`](docs/BRAND.md) — identity and voice.

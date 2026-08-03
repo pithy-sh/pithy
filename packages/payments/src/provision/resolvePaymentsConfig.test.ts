@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
 import { paymentsWorkerName, resolvePaymentsConfig } from "./resolvePaymentsConfig";
@@ -48,6 +49,7 @@ const CATALOG = PaymentsConfig.parse({
 });
 
 const params = {
+  project: "acme",
   env: "staging" as const,
   appDatabaseId: "app-db-id",
   secretsDatabaseId: "secrets-db-id",
@@ -58,14 +60,16 @@ const params = {
 describe("resolvePaymentsConfig", () => {
   test("names the worker per environment and fills every provisioned id", () => {
     const resolved = resolvePaymentsConfig(template(), params);
-    expect(resolved.name).toBe("pithy-payments-staging");
+    expect(resolved.name).toBe("acme-staging-payments");
     expect(resolved.d1_databases?.map((entry) => entry.database_id)).toEqual(["app-db-id", "secrets-db-id"]);
     expect(resolved.secrets_store_secrets?.[0]?.store_id).toBe("store-id");
   });
 
-  test("the master key is environment-scoped; the template's other names are not rewritten", () => {
+  test("the master key entry is the project's and the environment's, as the secrets manager named it", () => {
     const resolved = resolvePaymentsConfig(template(), params);
-    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe("STAGING_SECRETS_ENCRYPTION_KEYS");
+    // Through the secrets package's own function: it owns that naming, and a literal here would be a
+    // second declaration free to drift from the value actually written.
+    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
   });
 
   test("the workflows array comes from the specs, not from the template's own block", () => {
@@ -73,7 +77,7 @@ describe("resolvePaymentsConfig", () => {
     expect(resolved.workflows).toEqual([
       {
         binding: "PAYMENTS_RECONCILE",
-        name: "pithy-payments-reconcile-staging",
+        name: "acme-staging-payments-reconcile",
         class_name: "PaymentsReconcileWorkflow",
       },
     ]);
@@ -112,14 +116,20 @@ describe("resolvePaymentsConfig", () => {
     expect(original.triggers).toEqual({ crons: ["@stale"] });
   });
 
-  test("production resolves to its own worker and workflow names", () => {
-    const resolved = resolvePaymentsConfig(template(), { ...params, env: "production" });
-    expect(resolved.name).toBe("pithy-payments-production");
-    expect(resolved.workflows?.[0]?.name).toBe("pithy-payments-reconcile-production");
+  test("prod resolves to its own worker and workflow names", () => {
+    const resolved = resolvePaymentsConfig(template(), { ...params, env: "prod" });
+    expect(resolved.name).toBe("acme-prod-payments");
+    expect(resolved.workflows?.[0]?.name).toBe("acme-prod-payments-reconcile");
+  });
+
+  test("a second project in the same account resolves to entirely different names", () => {
+    const resolved = resolvePaymentsConfig(template(), { ...params, project: "globex" });
+    expect(resolved.name).toBe("globex-staging-payments");
+    expect(resolved.workflows?.[0]?.name).toBe("globex-staging-payments-reconcile");
   });
 
   test("the deployed worker name is the one the provisioner and the resolver both derive", () => {
-    expect(paymentsWorkerName("staging")).toBe("pithy-payments-staging");
-    expect(paymentsWorkerName("production")).toBe("pithy-payments-production");
+    expect(paymentsWorkerName("acme", "staging")).toBe("acme-staging-payments");
+    expect(paymentsWorkerName("acme", "prod")).toBe("acme-prod-payments");
   });
 });

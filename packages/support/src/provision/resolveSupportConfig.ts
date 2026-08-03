@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { SupportConfig } from "../config/config";
-import { SUPPORT_CAPABILITY } from "../workflows/specs";
+import { SUPPORT_CAPABILITY, supportWorkflowRegistry } from "../workflows/specs";
 
 /**
  * Resolve the support worker's committed `wrangler.jsonc` template into one environment's standalone
@@ -12,8 +12,8 @@ import { SUPPORT_CAPABILITY } from "../workflows/specs";
  * AI binding, the Workflow class name — stays as the template committed it.
  *
  * Thin over core's {@link resolveWorkflowHost}, which owns the mechanics (clone, fill by binding name,
- * suffix every Workflow name with the environment, stamp `ENVIRONMENT`). This file owns only what is
- * support's: which binding maps to which provisioned resource, and the serialized config the worker
+ * stamp `ENVIRONMENT`). This file owns only what is support's: which binding maps to which provisioned
+ * resource, the Workflow name derived from support's own specs, and the serialized config the worker
  * parses.
  *
  * **`AI` is marked remote.** Workflows cannot use remote bindings in general, so a host always runs
@@ -28,6 +28,11 @@ import { SUPPORT_CAPABILITY } from "../workflows/specs";
 
 /** The resolved resource ids + per-env values for one environment's support-worker deploy. */
 export interface SupportConfigParams {
+  /**
+   * The project name — the `<project>` segment the deployed worker and its classification Workflow
+   * lead with. The root `pithy.config.ts` `name`, resolved by `requireProjectName` and never guessed.
+   */
+  project: string;
   /** The target environment. */
   env: ManagedEnvironment;
   /** The app database id for this environment — where the support tables live. */
@@ -47,11 +52,16 @@ export function resolveSupportConfig(
   template: WorkflowHostTemplate,
   params: SupportConfigParams,
 ): WorkflowHostTemplate {
+  const { project, env } = params;
   return resolveWorkflowHost(template, {
+    project,
     capability: SUPPORT_CAPABILITY,
-    env: params.env,
+    env,
     databaseIds: { DB: params.appDatabaseId },
     remoteBindings: ["AI"],
     vars: { SUPPORT_CONFIG: JSON.stringify(params.supportConfig) },
+    // The classification Workflow, derived from support's own specs. A Workflow name is
+    // account-scoped, so it has to carry the project, and only the registry knows the job.
+    workflows: hostWorkflowsFor(supportWorkflowRegistry, { project, capability: SUPPORT_CAPABILITY, env }).workflows,
   });
 }

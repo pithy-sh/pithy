@@ -3,7 +3,7 @@
 
 import type { BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import type { FeatureResourceKind } from "./naming";
+import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 
 /**
  * A single Cloudflare resource `pithy feature provision` stands up: the Worker binding it backs and the

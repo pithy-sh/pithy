@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "vitest";
+import { MAX_RESOURCE_NAME, RESERVED_TEST_PREFIX } from "@pithy-sh/core/src/naming/resource";
+import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_STALE_AFTER_MS,
+  emptyTestBucket,
+  type IntegrationCreds,
   loadIntegrationCreds,
   parseR2Creds,
+  RESERVED_TEST_PROJECT,
+  reapStaleTestBuckets,
   reapStaleTestResources,
   staleTestResourceNames,
   testResourceAge,
@@ -12,22 +18,57 @@ import {
   withThrowawayResource,
 } from "./harness";
 
+/**
+ * The reservation is the whole point of this module: `pithy-int-` belongs to the live test suites and to
+ * nothing else, so a name that carries it is debris by definition and a name that does not is somebody's
+ * real resource. Every test below is really about one of those two directions.
+ */
+describe("the reserved namespace", () => {
+  it("is the prefix the reaper recognises, and the head of the reserved project name", () => {
+    expect(RESERVED_TEST_PREFIX).toBe("pithy-int-");
+    expect(RESERVED_TEST_PROJECT.startsWith(RESERVED_TEST_PREFIX)).toBe(true);
+  });
+});
+
 describe("uniqueName", () => {
-  it("uses the default prefix", () => {
-    expect(uniqueName()).toMatch(/^pithy-int-test-/);
+  it("composes the reserved prefix — the caller supplies only the distinguishing part", () => {
+    expect(uniqueName("kv")).toMatch(/^pithy-int-kv-/);
   });
 
-  it("honors a custom prefix", () => {
-    expect(uniqueName("pithy-int-kv")).toMatch(/^pithy-int-kv-/);
+  it("produces a name the reaper can age, whatever the label", () => {
+    // The contract that makes reservation worth anything: every name this mints is reapable.
+    for (const label of ["kv", "d1", "some-long-label", "r2"]) {
+      expect(testResourceAge(uniqueName(label), Date.now() + 1_000)).not.toBeNull();
+    }
+  });
+
+  it("refuses a label that already carries the prefix — no `pithy-int-pithy-int-` names", () => {
+    expect(() => uniqueName(`${RESERVED_TEST_PREFIX}kv`)).toThrow(/reserved/i);
+  });
+
+  it("refuses a label with nothing in it", () => {
+    expect(() => uniqueName("")).toThrow();
+    expect(() => uniqueName("---")).toThrow();
+  });
+
+  it("kebabs a label rather than emitting a name Cloudflare would reject", () => {
+    expect(uniqueName("KV Namespace")).toMatch(/^pithy-int-kv-namespace-/);
   });
 
   it("never repeats across rapid calls", () => {
-    const names = new Set(Array.from({ length: 100 }, () => uniqueName()));
+    const names = new Set(Array.from({ length: 100 }, () => uniqueName("dup")));
     expect(names.size).toBe(100);
   });
 
   it("stays in the lowercase a-z0-9- charset every CF resource name accepts", () => {
-    expect(uniqueName("pithy-int-r2")).toMatch(/^[a-z0-9-]+$/);
+    expect(uniqueName("r2")).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
+  });
+
+  it("fits R2's 63-character cap even when the label is absurd", () => {
+    const name = uniqueName("a-really-very-extremely-long-label-nobody-should-ever-write");
+    expect(name.length).toBeLessThanOrEqual(MAX_RESOURCE_NAME);
+    expect(name.startsWith(RESERVED_TEST_PREFIX)).toBe(true);
+    expect(testResourceAge(name, Date.now() + 1_000)).not.toBeNull();
   });
 });
 
@@ -134,7 +175,7 @@ const HOUR = 60 * 60 * 1000;
 
 describe("testResourceAge", () => {
   it("reads the age out of a name uniqueName actually produced", () => {
-    const age = testResourceAge(uniqueName("pithy-int-vec"), Date.now() + 5_000);
+    const age = testResourceAge(uniqueName("vec"), Date.now() + 5_000);
     expect(age).not.toBeNull();
     expect(age ?? -1).toBeGreaterThanOrEqual(0);
   });
@@ -159,9 +200,18 @@ describe("testResourceAge", () => {
   });
 });
 
+describe("the staleness window", () => {
+  it("is hours past any plausible suite, so a slow run is never reaped mid-flight", () => {
+    // A single live test is capped at 120s and a hook at 120s (`vitest.integration.config.ts`), so a whole
+    // package's suite is minutes. The window has to clear that by an order of magnitude it can never
+    // accidentally cross — a run reaped out from under itself fails as a mystery 404, not as a timeout.
+    expect(DEFAULT_STALE_AFTER_MS).toBeGreaterThanOrEqual(6 * 60 * 60 * 1000);
+  });
+});
+
 describe("staleTestResourceNames", () => {
   const fresh = `pithy-int-vec-${NOW - 60_000}-1-aaaaaa`;
-  const old = `pithy-int-vec-${NOW - 3 * HOUR}-1-bbbbbb`;
+  const old = `pithy-int-vec-${NOW - DEFAULT_STALE_AFTER_MS - HOUR}-1-bbbbbb`;
   const foreign = "customer-production-index";
 
   it("selects only our own names, and only the old ones", () => {
@@ -169,12 +219,14 @@ describe("staleTestResourceNames", () => {
   });
 
   it("leaves a resource a concurrent run could still be using", () => {
-    // The hour threshold exists so a suite that takes minutes is never reaped out from under itself.
+    // The window exists so a suite that takes minutes — or hours — is never reaped out from under itself.
     expect(staleTestResourceNames([fresh], { now: NOW })).toEqual([]);
+    expect(staleTestResourceNames([`pithy-int-vec-${NOW - 3 * HOUR}-1-dddddd`], { now: NOW })).toEqual([]);
   });
 
   it("reaps at exactly the threshold, so the boundary is not ambiguous", () => {
-    expect(staleTestResourceNames([`pithy-int-x-${NOW - HOUR}-1-cccccc`], { now: NOW })).toHaveLength(1);
+    const atThreshold = `pithy-int-x-${NOW - DEFAULT_STALE_AFTER_MS}-1-cccccc`;
+    expect(staleTestResourceNames([atThreshold], { now: NOW })).toHaveLength(1);
   });
 
   it("never selects a name it could not age, whatever the threshold", () => {
@@ -196,7 +248,7 @@ describe("staleTestResourceNames", () => {
 describe("reapStaleTestResources", () => {
   const NOW_ = 1_800_000_000_000;
   const HOUR_ = 60 * 60 * 1000;
-  const stale = `pithy-int-vec-${NOW_ - 3 * HOUR_}-1-aaaaaa`;
+  const stale = `pithy-int-vec-${NOW_ - DEFAULT_STALE_AFTER_MS - HOUR_}-1-aaaaaa`;
   const fresh = `pithy-int-vec-${NOW_ - 60_000}-1-bbbbbb`;
   const foreign = "customer-production-index";
 
@@ -231,7 +283,7 @@ describe("reapStaleTestResources", () => {
   });
 
   it("reports a failed removal instead of throwing — a reaper must not fail the suite it helps", async () => {
-    const other = `pithy-int-vec-${NOW_ - 4 * HOUR_}-2-cccccc`;
+    const other = `pithy-int-vec-${NOW_ - DEFAULT_STALE_AFTER_MS - 2 * HOUR_}-2-cccccc`;
     const { kind, removed } = fakeKind([stale, other], stale);
     const result = await reapStaleTestResources(kind, { now: NOW_ });
     expect(result.failed).toEqual([stale]);
@@ -263,5 +315,38 @@ describe("reapStaleTestResources", () => {
     const { kind, removed } = fakeKind([foreign, "pithy-int-malformed"]);
     await reapStaleTestResources(kind, { now: NOW_, staleAfterMs: 0 });
     expect(removed).toEqual([]);
+  });
+});
+
+/**
+ * R2 is the kind that can become *un*reapable, so its credential gate is worth pinning.
+ *
+ * Deleting a bucket needs it empty, emptying it is an S3 operation, and S3 needs the key pair the API
+ * token cannot substitute for. The failure to avoid is a silent one: a run with no `R2_CREDENTIALS`
+ * quietly reaping nothing while buckets accumulate.
+ */
+describe("the R2 credential gate", () => {
+  const withoutR2: IntegrationCreds = {
+    accountId: "acct",
+    apiToken: "token",
+    secretsStoreId: "",
+    r2: null,
+    hasCreds: true,
+  };
+
+  it("refuses to empty a bucket without the S3 key pair, naming what is missing", async () => {
+    const failure = emptyTestBucket(withoutR2, "pithy-int-r2-1800000000000-1-aaaaaa");
+    await expect(failure).rejects.toThrow(/S3 key pair/);
+    await expect(failure).rejects.toMatchObject({ payload: { action: expect.stringContaining("R2_CREDENTIALS") } });
+  });
+
+  it("reaps no buckets without the key pair, and says so rather than reporting a clean sweep", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await reapStaleTestBuckets(withoutR2)).toEqual({ reaped: [], failed: [] });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("R2_CREDENTIALS"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

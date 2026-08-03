@@ -13,8 +13,9 @@ export default defineConfig({
     testTimeout: 120_000,
     // Hooks are not covered by `testTimeout`, and these suites reap stale resources in `beforeAll` —
     // draining several orphaned buckets would blow vitest's 10s hook default and fail the run before a
-    // single test executed.
-    hookTimeout: 120_000,
+    // single test executed. Generous, because the staleness window is twelve hours: a busy day of
+    // aborted runs can leave a lot to reclaim at once, and a reaper that times out leaves it forever.
+    hookTimeout: 300_000,
     pool: "forks",
     passWithNoTests: true,
   },

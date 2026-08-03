@@ -71,7 +71,12 @@ function parseDownloadStatus(response: unknown): StreamDownloadStatus {
 /**
  * Out-of-Worker Cloudflare Stream access over the REST API: delete, fetch, edit, direct uploads,
  * and download (MP4 + audio-only) management from a CLI/CI/provisioning context. Video metadata is
- * the SDK's own `Video` shape — no Pithy-specific metadata is imposed.
+ * the SDK's own `Video` shape — this class imposes none of its own.
+ *
+ * The ownership stamp is imposed one layer up, by `withAssetOwnership` in `ownership.ts`, which every
+ * Pithy path that *creates* a video goes through (the seeder here, and media's `videoMinter`). Stream
+ * is account-flat and keys a video by a Cloudflare-minted uid, so `meta.pithyProject` is the only
+ * thing that says which project owns it.
  */
 export class CloudflareStreamManager extends CloudflareManager {
   /** Delete a video by its Stream UID. */

@@ -14,6 +14,9 @@ import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflarePaymentsProvisioner, loadPayments } from "./paymentsProvisioner";
 
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /**
  * The payments provisioner. It does less than the others by design — no bucket, no namespace, and no secret
  * written — so what is worth testing is the guard rail and the template, not a fan-out of resource creation.
@@ -58,6 +61,7 @@ function provisioner(
   workflows: CloudflareWorkflowsClient = fakeWorkflows([]),
 ) {
   return new CloudflarePaymentsProvisioner({
+    project: PROJECT,
     cf,
     accountId: "acct-1",
     apiToken: "tok",
@@ -86,9 +90,9 @@ describe("CloudflarePaymentsProvisioner", () => {
     // the spec derives, or the command reports success against a Workflow that does not exist.
     const calls: { name: string; params: unknown }[] = [];
     const { cf } = fakeCf();
-    const report = await provisioner(cf, [], fakeWorkflows(calls)).reconcile("production", { userId: "ada" });
+    const report = await provisioner(cf, [], fakeWorkflows(calls)).reconcile("prod", { userId: "ada" });
 
-    expect(calls).toEqual([{ name: "pithy-payments-reconcile-production", params: { userId: "ada" } }]);
+    expect(calls).toEqual([{ name: "acme-prod-payments-reconcile", params: { userId: "ada" } }]);
     expect(report).toEqual({ scanned: 3, drifted: 1 });
   });
 });
@@ -115,14 +119,15 @@ describe("the committed reconcile-worker template", () => {
 
   test("resolves into a complete config for one environment", async () => {
     const resolved = resolvePaymentsConfig(await template(), {
-      env: "production",
+      project: PROJECT,
+      env: "prod",
       appDatabaseId: "app-db",
       secretsDatabaseId: "secrets-db",
       storeId: "store-1",
       paymentsConfig: CATALOG,
     });
 
-    expect(resolved.name).toBe(paymentsWorkerName("production"));
+    expect(resolved.name).toBe(paymentsWorkerName(PROJECT, "prod"));
     expect(resolved.d1_databases?.map((entry) => `${entry.binding}:${entry.database_id}`)).toEqual([
       "DB:app-db",
       "SECRETS:secrets-db",
@@ -135,7 +140,7 @@ describe("the committed reconcile-worker template", () => {
     expect(resolved.workflows).toEqual([
       {
         binding: "PAYMENTS_RECONCILE",
-        name: "pithy-payments-reconcile-production",
+        name: "acme-prod-payments-reconcile",
         class_name: "PaymentsReconcileWorkflow",
       },
     ]);

@@ -7,6 +7,7 @@ import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { countPendingMigrations } from "../migrations/run";
 import { deployProject, pendingWarning, summarizeDeploy } from "../project/deploy";
+import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -54,26 +55,29 @@ async function buildAudit(projectDir: string, env: string) {
 export default defineCommand({
   meta: { name: "deploy", description: "Deploy to Cloudflare Workers" },
   args: {
-    env: { type: "string", description: "Target environment (omit for each worker's top-level config)" },
+    env: optionalEnvArg("Target environment (omit for each worker's top-level config)"),
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      // Optional here, and only here: a bare `pithy deploy` ships each worker's top-level stanza, which
+      // is not an environment at all. A value that *is* given is held to the same rule as everywhere else.
+      const env = args.env === undefined ? undefined : requireEnvironment(args.env);
       const projectDir = process.cwd();
 
       // The migration warning only makes sense against a concrete remote target. A bare `pithy deploy`
       // ships each worker's top-level config, whose deployed schema is not the local dev D1 — so skip the
       // check (and its REST round trip) unless an `--env` names the environment being deployed.
-      const pending = args.env ? await pendingFor(projectDir, args.env) : undefined;
-      const audit = await buildAudit(projectDir, args.env ?? "dev");
-      const deploys = await deployProject({ projectDir, env: args.env, audit });
+      const pending = env ? await pendingFor(projectDir, env) : undefined;
+      const audit = await buildAudit(projectDir, env ?? "dev");
+      const deploys = await deployProject({ projectDir, env, audit });
       const failed = deploys.some((deploy) => !deploy.ok);
 
       if (args.json) {
         process.stdout.write(
           `${formatJsonLine({
             command: "deploy",
-            env: args.env ?? null,
+            env: env ?? null,
             pendingMigrations: pending ?? null,
             workers: deploys,
           })}\n`,
@@ -82,7 +86,7 @@ export default defineCommand({
         return;
       }
 
-      const warning = args.env ? pendingWarning(pending, args.env) : undefined;
+      const warning = env ? pendingWarning(pending, env) : undefined;
       if (warning) process.stdout.write(`${warning}\n`);
       for (const deploy of deploys) process.stdout.write(`${summarizeDeploy(deploy)}\n`);
       if (failed) {

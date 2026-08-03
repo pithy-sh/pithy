@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
@@ -22,6 +24,47 @@ export interface AddCapabilityOptions {
   manifest: CapabilityManifest;
   /** Per-option overrides; an unset option renders its manifest default. */
   configValues?: Record<string, ConfigValue>;
+  /**
+   * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`) and
+   * passed as a plain string. It is the first segment of every name proposed here.
+   *
+   * **A string, never a loader.** Resolving it in here would mean importing the root config live, and a
+   * live import only works under the project root — the wiring tests scaffold into the OS tmpdir, where
+   * it fails with an error about the config rather than about the test. The caller already has the
+   * config; it hands over the answer.
+   *
+   * Omitted when no project name could be resolved: nothing is proposed and the entries carry only their
+   * binding, which is exactly what `pithy add` wrote before. A guessed prefix would be worse than none —
+   * every command that later recomputes the name would compute a different one.
+   */
+  project?: string;
+}
+
+/** A `<project>-<env>-<binding>` name `pithy add` proposes for a resource the adopter creates themselves. */
+export interface ProposedName {
+  /** The Worker env binding the name is proposed for (e.g. `SESSIONS`). */
+  binding: string;
+  /** The environment whose stanza declares it — `dev` for the top-level one. */
+  env: string;
+  /** The proposed resource name, composed by the one naming rule: `<project>-<env>-<binding>`. */
+  name: string;
+}
+
+/** What {@link addCapability} wired that the config file itself cannot carry. */
+export interface AddCapabilityResult {
+  /**
+   * The KV namespace titles to give the namespaces this capability needs.
+   *
+   * **KV is reported rather than written, because wrangler has nowhere to write it.** A `kv_namespaces`
+   * entry takes `binding`, `id`, `preview_id`, and `remote` — there is no title field, so the name lives
+   * only in the account. D1 is different (`database_name` is a real key) and is written into the file.
+   * R2 is deliberately absent from both: `pithy storage provision` and `pithy media provision` write
+   * `bucket_name` themselves, and a second writer would collide with them.
+   *
+   * Empty when no project name was resolved, and empty on a re-run — a binding already present is left
+   * exactly as the adopter has it.
+   */
+  kvNamespaces: ProposedName[];
 }
 
 /** The managed-region marker each Worker's `pithy.config.ts` plants inside `capabilities: [...]`. */
@@ -31,9 +74,14 @@ const MARKER = "// pithy:capabilities";
  * One binding entry, as wrangler writes it. `remote` rides along when the spec sets it; the
  * resource's identity (`database_id`, `id`, `bucket_name`) is provision-time and is filled later by
  * `pithy feature provision` or the capability's own provisioner.
+ *
+ * `database_name` is the exception, and it is a *proposal*, not an identity: wrangler accepts a D1
+ * entry naming a database that does not exist yet, and an adopter who leaves the field alone gets a
+ * project-scoped name instead of inventing `db` or `my-db`.
  */
 interface BindingEntry {
   binding: string;
+  database_name?: string;
   remote?: boolean;
 }
 
@@ -77,9 +125,9 @@ const DO_MIGRATION_TAG = "v1";
  * bindings to every environment of that Worker's `wrangler.jsonc`, comment-preserving. Idempotent: a
  * second run changes nothing. A sibling Worker is never touched.
  */
-export async function addCapability(options: AddCapabilityOptions): Promise<void> {
+export async function addCapability(options: AddCapabilityOptions): Promise<AddCapabilityResult> {
   await updateConfig(options);
-  await updateWrangler(options);
+  return { kvNamespaces: await updateWrangler(options) };
 }
 
 /** Escape a capability name for use inside a `RegExp` (names are simple, but be safe). */
@@ -152,6 +200,52 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
   return binding.remote === undefined ? entry : { ...entry, remote: binding.remote };
 }
 
+/** Which project and which environment a stanza's names are composed for. */
+interface NameScope {
+  /** The project name, or absent when none was resolved — in which case nothing is proposed. */
+  project?: string;
+  /** The environment this stanza *is* — `dev` for the top-level one, else the `env.<name>` key. */
+  env: string;
+}
+
+/**
+ * The `<project>-<env>-<binding>` name to propose for a binding, or `undefined` when there is nothing
+ * safe to propose.
+ *
+ * **Through the facade, per namespace.** A D1 database and a KV namespace are different Cloudflare
+ * namespaces with different limits — no published cap and 512 respectively — and calling the generic
+ * composer held both to 63, which is R2's number and only R2's. `resourceNames(project).env(env)` picks
+ * the budget from the kind of thing being named, so `add`'s proposal is byte-identical to the name every
+ * other command computes for the same resource *and* correct for the namespace it lands in.
+ *
+ * Two cases propose nothing rather than guessing. No project name: a guessed prefix is worse than none,
+ * since every command that later recomputes the name would compute a different one. And an `env.<key>`
+ * the naming scheme does not accept — an eleven-character environment eats the room every project name
+ * was already accepted against, so no name for it is honest. The binding is still wired either way:
+ * refusing to add a capability because of a stanza key would be the worse answer.
+ */
+function proposeName(scope: NameScope, binding: string, kind: "d1" | "kv"): string | undefined {
+  if (scope.project === undefined || !isValidEnvironment(scope.env)) return undefined;
+  return resourceNames(scope.project).env(scope.env)[kind](binding);
+}
+
+/**
+ * Every environment's binding stanza, paired with the environment it *is*: the top-level one (the dev
+ * environment) plus each `env.<name>`.
+ *
+ * The pairing is the point. Both writers used to walk `Object.values(config.env)` and drop the key, which
+ * was harmless while an entry carried nothing but its binding — and wrong the moment a name has the
+ * environment in it. Mirrors `reconcile.ts`'s `envStanzas` on the read side; the two are kept in lockstep
+ * by intent, so a change here is a change there.
+ */
+function envStanzas(config: WranglerBindings): { env: string; stanza: WranglerBindings }[] {
+  const list: { env: string; stanza: WranglerBindings }[] = [{ env: "dev", stanza: config }];
+  for (const [env, stanza] of Object.entries(config.env ?? {})) {
+    if (stanza) list.push({ env, stanza });
+  }
+  return list;
+}
+
 /**
  * Append a binding entry if its name isn't already bound. Mutates in place.
  *
@@ -165,24 +259,32 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
  * validator *requires* `index_name` on every `vectorize` entry and `name` + `class_name` on every
  * `workflows` entry — an entry carrying only `binding` fails the config, so `wrangler dev` and
  * `wrangler deploy` both stop. Neither missing value is knowable here: a Vectorize index name is a
- * provisioning output (`pithy-vector-<index>-<env>`) and a Workflow's script name is per environment
- * (`pithy-<capability>-<job>-<env>`), while `add` is offline by design. So the whole entry is left to
+ * provisioning output (`<project>-<env>-vector-<index>`) and a Workflow's script name is per project and
+ * environment (`<project>-<env>-<capability>-<job>`), while `add` is offline by design. So the whole entry
+ * is left to
  * the capability's own provisioner — `pithy vector provision` and `pithy storage provision` write
  * complete, per-environment entries through `project/appBindings.ts` once the resources exist. Same
  * precedent as `service` below, and the same reason: an entry we cannot complete is worse than none.
  */
-function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest): void {
+function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest, scope: NameScope): ProposedName[] {
+  const proposed: ProposedName[] = [];
   for (const binding of manifest.requiredBindings) {
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
-        stanza.d1_databases.push(withRemote({ binding: binding.name }, binding));
+        const name = proposeName(scope, binding.name, "d1");
+        stanza.d1_databases.push(
+          withRemote({ binding: binding.name, ...(name ? { database_name: name } : {}) }, binding),
+        );
       }
     }
     if (binding.type === "kv") {
       stanza.kv_namespaces ??= [];
       if (!stanza.kv_namespaces.some((entry) => entry.binding === binding.name)) {
         stanza.kv_namespaces.push(withRemote({ binding: binding.name }, binding));
+        // No title field exists on a `kv_namespaces` entry, so the proposal is reported, not written.
+        const name = proposeName(scope, binding.name, "kv");
+        if (name) proposed.push({ binding: binding.name, env: scope.env, name });
       }
     }
     if (binding.type === "r2") {
@@ -211,6 +313,7 @@ function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest):
     // the target Worker's environment-scoped script name (feature/wranglerEnv.ts:applyWorkerEnv), and
     // `vectorize`/`workflow`, which the capability's own provisioner owns (project/appBindings.ts).
   }
+  return proposed;
 }
 
 /**
@@ -241,15 +344,16 @@ function appendDurableObjectMigrations(config: WranglerBindings, manifest: Capab
   }
 }
 
-async function updateWrangler({ workerDir, manifest }: AddCapabilityOptions): Promise<void> {
+async function updateWrangler({ workerDir, manifest, project }: AddCapabilityOptions): Promise<ProposedName[]> {
   const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
 
-  appendBindings(config, manifest);
-  for (const stanza of Object.values(config.env ?? {})) {
-    if (stanza) appendBindings(stanza, manifest);
+  const kvNamespaces: ProposedName[] = [];
+  for (const { env, stanza } of envStanzas(config)) {
+    kvNamespaces.push(...appendBindings(stanza, manifest, { ...(project === undefined ? {} : { project }), env }));
   }
   // DO class migrations are top-level only — they register the class against the script, not per-env.
   appendDurableObjectMigrations(config, manifest);
 
   await writeWranglerConfig(workerDir, config);
+  return kvNamespaces;
 }

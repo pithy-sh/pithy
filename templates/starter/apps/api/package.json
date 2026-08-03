@@ -9,7 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "deploy:staging": "wrangler deploy --env staging",
-    "deploy:production": "wrangler deploy --env production"
+    "deploy:prod": "wrangler deploy --env prod"
   },
   "dependencies": {
     "@pithy-sh/core": "^0.0.0",

@@ -34,11 +34,11 @@ describe("dispatchSecretWrite", () => {
     const dispatcher = new StubDispatcher();
     const targets = await dispatchSecretWrite(dispatcher, { ...base, backend: "d1", scope: "global" });
 
-    expect(targets).toEqual(["staging", "production"]);
-    expect(dispatcher.calls.map((c) => c.env)).toEqual(["staging", "production"]);
+    expect(targets).toEqual(["staging", "prod"]);
+    expect(dispatcher.calls.map((c) => c.env)).toEqual(["staging", "prod"]);
   });
 
-  test("a global cf-secrets-store write goes to production only", async () => {
+  test("a global cf-secrets-store write goes to prod only", async () => {
     const dispatcher = new StubDispatcher();
     const targets = await dispatchSecretWrite(dispatcher, {
       ...base,
@@ -46,8 +46,8 @@ describe("dispatchSecretWrite", () => {
       scope: "global",
     });
 
-    expect(targets).toEqual(["production"]);
-    expect(dispatcher.calls.map((c) => c.env)).toEqual(["production"]);
+    expect(targets).toEqual(["prod"]);
+    expect(dispatcher.calls.map((c) => c.env)).toEqual(["prod"]);
   });
 
   test("a delete dispatches with no value", async () => {
@@ -59,11 +59,11 @@ describe("dispatchSecretWrite", () => {
       scope: "environment",
       rotatable: false,
       valueType: "text",
-      requested: "production",
+      requested: "prod",
     });
 
     expect(dispatcher.calls).toHaveLength(1);
-    expect(dispatcher.calls[0]).toMatchObject({ env: "production", mode: "delete", name: "api-token" });
+    expect(dispatcher.calls[0]).toMatchObject({ env: "prod", mode: "delete", name: "api-token" });
     expect(dispatcher.calls[0]?.value).toBeUndefined();
   });
 });

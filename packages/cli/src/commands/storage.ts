@@ -20,6 +20,7 @@ import {
   type StorageEnvResources,
 } from "../capabilities/storageProvisioner";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -109,6 +110,12 @@ interface WranglerStanza {
 function buildResolveEnv(
   projectDir: string,
   cf: CloudflareClients,
+  /**
+   * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
+   * caller via `requireProjectName`, never guessed: the lookup is by name, so a wrong one either reports
+   * a database that "does not exist" or binds another project's secrets store.
+   */
+  project: string,
 ): (env: ManagedEnvironment) => Promise<StorageEnvResources> {
   return async (env) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
@@ -126,10 +133,10 @@ function buildResolveEnv(
         action: `Provision the ${env} app database and set its id on the DB binding.`,
       });
     }
-    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
+    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
     if (!secretsDb) {
       throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(env)}) does not exist.`,
+        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
         action: "Run `pithy secrets provision` first — the sweep worker reads its credentials from it.",
       });
     }
@@ -163,6 +170,10 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // The leading segment of every name this run creates — the bucket, the sweep worker, the
+      // Workflow. `requireProjectName` refuses to guess, because `deprovision` recomputes these same
+      // names to find what to delete (docs/NAMING.md).
+      const project = requireProjectName(await loadProject(projectDir));
       const { provisionStorage } = await loadStorage();
       const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(projectDir);
       const storageConfig = await loadStorageConfig(projectDir);
@@ -170,14 +181,15 @@ const provision = defineCommand({
       const cf = new CloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareStorageProvisioner({
         cf,
+        project,
         accountId,
         apiToken,
         storeId,
         storageApiToken: args["api-token"] ?? apiToken,
         r2Credentials,
         storageConfig,
-        dispatcher: buildSecretDispatcher(accountId, apiToken),
-        resolveEnv: buildResolveEnv(projectDir, cf),
+        dispatcher: buildSecretDispatcher(accountId, apiToken, project),
+        resolveEnv: buildResolveEnv(projectDir, cf, project),
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
@@ -185,12 +197,16 @@ const provision = defineCommand({
 
       // Only now can the sweep's Workflow binding be written. `pithy add storage` cannot: wrangler
       // requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name
-      // is per environment (`pithy-storage-sweep-<env>`). An entry short of either field fails the whole
+      // is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole
       // config, so `add` emits none and this completes it — see capabilities/add.ts.
       const { storageWorkflowRegistry, STORAGE_CAPABILITY } = await loadStorage();
       for (const entry of result.environments) {
         await applyAppBindings(projectDir, entry.env, {
-          workflows: appWorkflowBindings(storageWorkflowRegistry, STORAGE_CAPABILITY, entry.env),
+          workflows: appWorkflowBindings(storageWorkflowRegistry, {
+            project,
+            capability: STORAGE_CAPABILITY,
+            env: entry.env,
+          }),
         });
       }
 
@@ -228,6 +244,9 @@ const deprovision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // Teardown finds resources by recomputing their names, so this must be the same name
+      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+      const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionStorage } = await loadStorage();
       const { accountId, apiToken, r2Raw } = loadCloudflareCreds(projectDir);
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -239,6 +258,7 @@ const deprovision = defineCommand({
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareStorageDeprovisioner({
         cf,
+        project,
         r2Credentials,
         audit: await buildAudit(projectDir, accountId, apiToken),
       });

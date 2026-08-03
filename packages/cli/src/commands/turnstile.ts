@@ -15,6 +15,7 @@ import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
+import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, type WranglerEnvVars } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -89,10 +90,10 @@ function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken:
  */
 async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> {
   const config = (await readWranglerConfig(worker.dir)) as WranglerEnvVars;
-  const baseUrl = config.env?.production?.vars?.BASE_URL;
+  const baseUrl = config.env?.prod?.vars?.BASE_URL;
   if (!baseUrl) {
     throw new ValidationError({
-      message: `${worker.name}'s wrangler.jsonc env.production has no BASE_URL var.`,
+      message: `${worker.name}'s wrangler.jsonc env.prod has no BASE_URL var.`,
       action: "Set vars.BASE_URL to the production app URL; the Turnstile widget binds to its domain.",
     });
   }
@@ -107,7 +108,7 @@ async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> 
   }
   if (!hostname) {
     throw new ValidationError({
-      message: `${worker.name}'s wrangler.jsonc env.production BASE_URL ("${baseUrl}") is not a valid URL or hostname.`,
+      message: `${worker.name}'s wrangler.jsonc env.prod BASE_URL ("${baseUrl}") is not a valid URL or hostname.`,
       action: "Set vars.BASE_URL to the production app URL, e.g. https://app.example.com.",
     });
   }
@@ -128,6 +129,11 @@ const provision = defineCommand({
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     worker: { ...workerArg },
+    "allow-shared-domain": {
+      type: "boolean",
+      default: false,
+      description: "Provision even though another Turnstile widget already covers the domain",
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
@@ -141,17 +147,26 @@ const provision = defineCommand({
       });
       const productionDomain = await resolveProductionDomain(worker);
       const cf = new CloudflareClients({ accountId, apiToken });
-      const dispatcher = buildSecretDispatcher(accountId, apiToken);
+      // The project name scopes both the widget names (`<project>-prod-turnstile-<mode>`) and the
+      // dispatcher's `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a
+      // guessed one reuses another project's widget and dispatches into its manager (docs/NAMING.md).
+      const project = requireProjectName(await loadProject(projectDir));
+      const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const provisioner = new CloudflareTurnstileProvisioner({
         cf,
+        project,
         projectDir,
         workerDir: worker.dir,
         dispatcher,
         audit,
       });
 
-      const result = await provisionTurnstile(provisioner, { modes, productionDomain });
+      const result = await provisionTurnstile(provisioner, {
+        modes,
+        productionDomain,
+        allowSharedDomain: args["allow-shared-domain"],
+      });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "turnstile provision", ...result })}\n`);
@@ -189,10 +204,15 @@ const deprovision = defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
       const cf = new CloudflareClients({ accountId, apiToken });
-      const dispatcher = buildSecretDispatcher(accountId, apiToken);
+      // The project name scopes both the widget names teardown recomputes and the dispatcher's
+      // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one
+      // would delete a neighbouring project's widget (docs/NAMING.md).
+      const project = requireProjectName(await loadProject(projectDir));
+      const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const deprovisioner = new CloudflareTurnstileDeprovisioner({
         cf,
+        project,
         projectDir,
         workerDir: worker.dir,
         dispatcher,

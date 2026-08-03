@@ -8,7 +8,7 @@ import { VECTOR_DOCUMENTS_TABLE } from "../data/tables";
 import { vectorExampleSeed } from "./example";
 
 describe("vectorExampleSeed", () => {
-  it("is an example set, never targeting production", () => {
+  it("is an example set, never targeting prod", () => {
     expect(vectorExampleSeed.example).toBe(true);
     expect(vectorExampleSeed.environments).toEqual(["dev", "staging"]);
   });

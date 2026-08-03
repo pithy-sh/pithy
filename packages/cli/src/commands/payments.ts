@@ -8,7 +8,7 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
-import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { createCliAudit } from "../audit/cliAudit";
@@ -18,6 +18,8 @@ import {
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { loadProject, requireProjectName } from "../project/config";
+import { envArg, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -107,6 +109,12 @@ interface WranglerStanza {
 function buildResolveEnv(
   projectDir: string,
   cf: CloudflareClients,
+  /**
+   * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
+   * caller via `requireProjectName`, never guessed: the lookup is by name, so a wrong one either reports
+   * a database that "does not exist" or binds another project's secrets store.
+   */
+  project: string,
 ): (env: ManagedEnvironment) => Promise<PaymentsEnvResources> {
   return async (env) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
@@ -124,10 +132,10 @@ function buildResolveEnv(
         action: `Provision the ${env} app database and set its id on the DB binding — the purchase rows live there.`,
       });
     }
-    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
+    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
     if (!secretsDb) {
       throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(env)}) does not exist.`,
+        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
         action: "Run `pithy secrets provision` first — the reconcile worker reads the rails' credentials from it.",
       });
     }
@@ -135,20 +143,29 @@ function buildResolveEnv(
   };
 }
 
-/** Build the live provisioner for a project. */
+/**
+ * Build the live provisioner for a project, and resolve the project name its worker and Workflow names
+ * lead with. `requireProjectName` refuses to guess: the deployed script name has to be the same one the
+ * app's `script_name` binding points at, and a guess would bind a Worker that does not exist.
+ */
 async function buildProvisioner(projectDir: string) {
+  // The name first, before the credentials: both are local checks, and a config that cannot name the
+  // project is not a Cloudflare problem to report as one.
+  const project = requireProjectName(await loadProject(projectDir));
   const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
   const paymentsConfig = await loadPaymentsConfig(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   return {
+    project,
     paymentsConfig,
     provisioner: new CloudflarePaymentsProvisioner({
       cf,
+      project,
       accountId,
       apiToken,
       storeId,
       paymentsConfig,
-      resolveEnv: buildResolveEnv(projectDir, cf),
+      resolveEnv: buildResolveEnv(projectDir, cf, project),
       workflows: new CloudflareWorkflowsClient({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
@@ -163,7 +180,7 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner } = await buildProvisioner(projectDir);
+      const { provisioner, project } = await buildProvisioner(projectDir);
       const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments();
 
       // The account check first, before a single deploy. Failing here means failing before one environment is
@@ -175,10 +192,10 @@ const provision = defineCommand({
         await provisioner.deployWorker(env);
         // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
         // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
-        // (`pithy-payments-reconcile-<env>`). An entry short of either field fails the whole config, so `add`
+        // (`<project>-<env>-payments-reconcile`). An entry short of either field fails the whole config, so `add`
         // emits none and this completes it — see capabilities/add.ts.
         await applyAppBindings(projectDir, env, {
-          workflows: appWorkflowBindings(paymentsWorkflowRegistry, PAYMENTS_CAPABILITY, env),
+          workflows: appWorkflowBindings(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env }),
         });
       }
 
@@ -199,7 +216,7 @@ const provision = defineCommand({
 const reconcile = defineCommand({
   meta: { name: "reconcile", description: "Run a reconciliation pass now and report the drift it found" },
   args: {
-    env: { type: "string", default: "staging", description: "Target environment" },
+    env: { ...envArg("Target environment"), default: "staging" },
     user: { type: "string", description: "Reconcile one user's purchases only — the support path" },
     rail: { type: "string", description: "Reconcile one rail only: apple, google, or stripe" },
     "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
@@ -207,6 +224,10 @@ const reconcile = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      // Checked, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
+      // one-line answer into a lookup for `<project>-dev-payments-reconcile` and a raw Cloudflare request
+      // error from a worker that was never deployed. Checked first, before any Cloudflare client is built.
+      const env = requireManagedEnvironment(args.env);
       const projectDir = process.cwd();
       const { provisioner } = await buildProvisioner(projectDir);
       const { PaymentsReconcileParams } = await loadPayments();
@@ -218,11 +239,6 @@ const reconcile = defineCommand({
         ...(args.rail === undefined ? {} : { rail: args.rail }),
         ...(args["dry-run"] ? { dryRun: true } : {}),
       });
-
-      // Parsed, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
-      // one-line answer into `pithy-payments-reconcile-dev` and a raw Cloudflare request error from a worker
-      // that was never deployed. The same reason `commands/secrets.ts` parses it.
-      const env = ManagedEnvironment.parse(args.env);
 
       const report = (await provisioner.reconcile(env, params)) as {
         scanned?: number;

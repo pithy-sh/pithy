@@ -3,18 +3,19 @@
 
 import {
   type HostVectorizeBinding,
+  hostWorkflowsFor,
   resolveWorkflowHost,
   type WorkflowHostTemplate,
 } from "@pithy-sh/core/src/workflow/host";
 import type { VectorConfig } from "../config/config";
 import { toWorkerConfig } from "../config/workerConfig";
-import { VECTOR_CAPABILITY } from "../workflows/specs";
+import { VECTOR_CAPABILITY, vectorWorkflowRegistry } from "../workflows/specs";
 
 /**
  * Resolve the vector worker's committed `wrangler.jsonc` template into one environment's standalone config.
  * Thin over core's {@link resolveWorkflowHost}: the generic resolver owns the mechanics (clone, fill by
- * binding name, suffix the Workflow name with the environment, stamp `ENVIRONMENT`), and this file owns only
- * what is vector's. Pure — the caller parses the template and writes the result.
+ * binding name, stamp `ENVIRONMENT`), and this file owns only what is vector's. Pure — the caller parses
+ * the template and writes the result.
  *
  * Two things are vector's own.
  *
@@ -30,6 +31,11 @@ import { VECTOR_CAPABILITY } from "../workflows/specs";
 
 /** The resolved ids and per-env values for one environment's vector-worker deploy. */
 export interface VectorConfigParams {
+  /**
+   * The project name — the `<project>` segment the deployed worker and Workflow names lead with. The
+   * root `pithy.config.ts` `name`, resolved by `requireProjectName` and never guessed.
+   */
+  project: string;
   /** The target environment. */
   env: string;
   /** The app database id for this environment — where the document corpus lives. */
@@ -42,7 +48,7 @@ export interface VectorConfigParams {
 
 /** Fill the template for one environment. */
 export function resolveVectorConfig(template: WorkflowHostTemplate, params: VectorConfigParams): WorkflowHostTemplate {
-  const { env, appDatabaseId, indexNames, config } = params;
+  const { project, env, appDatabaseId, indexNames, config } = params;
 
   // One Vectorize binding per configured index, in config order. `index_name` is a placeholder here; the
   // generic resolver fills it from `vectorizeIndexNames` below, so the mapping lives in exactly one place.
@@ -61,10 +67,14 @@ export function resolveVectorConfig(template: WorkflowHostTemplate, params: Vect
   return resolveWorkflowHost(
     { ...template, vectorize },
     {
+      project,
       capability: VECTOR_CAPABILITY,
       env,
       databaseIds: { DB: appDatabaseId },
       vectorizeIndexNames,
+      // The reprocess Workflow, derived from vector's own specs. A Workflow name is account-scoped, so
+      // the project has to reach it — and only the registry knows both the project and the job.
+      workflows: hostWorkflowsFor(vectorWorkflowRegistry, { project, capability: VECTOR_CAPABILITY, env }).workflows,
       // Neither Vectorize nor Workers AI has a local emulation, and a Workflow host always runs locally in
       // `wrangler dev` — without `remote` the bindings resolve to nothing and every re-embed fails locally
       // for a reason that reads like a code fault.

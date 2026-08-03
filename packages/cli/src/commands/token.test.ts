@@ -89,7 +89,7 @@ describe("resolveAppDatabaseId", () => {
     );
     expect(await resolveAppDatabaseId(dir, "dev")).toBe("dev-db");
     expect(await resolveAppDatabaseId(dir, "staging")).toBe("staging-db");
-    expect(await resolveAppDatabaseId(dir, "production")).toBeUndefined();
+    expect(await resolveAppDatabaseId(dir, "prod")).toBeUndefined();
   });
 
   test("returns undefined when the project has no workers", async () => {

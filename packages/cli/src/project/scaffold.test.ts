@@ -67,7 +67,33 @@ describe("scaffoldProject", () => {
     await scaffoldProject({ targetDir: dir, appName: "envs" });
     const wrangler = await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8");
     expect(wrangler).toContain('"staging"');
-    expect(wrangler).toContain('"production"');
+    expect(wrangler).toContain('"prod"');
+  });
+
+  test("stamps PROJECT in every vars stanza, so the first worker can mint attributable assets", async () => {
+    // Media mints Cloudflare Images/Stream uploads from this Worker, and those stores are account-flat —
+    // an asset carries no name we chose, only the owner in its metadata. `assetOwner` refuses to mint
+    // without `PROJECT`, so a scaffolded Worker that lacks it 500s on the first upload.
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+    const wrangler = parse(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")) as unknown as {
+      vars: Record<string, string>;
+      env: Record<string, { vars: Record<string, string> }>;
+    };
+
+    // `env.<name>.vars` replaces the top-level `vars` rather than merging, so all three stanzas carry it.
+    expect(wrangler.vars?.PROJECT).toBe("acme");
+    expect(wrangler.env.staging?.vars?.PROJECT).toBe("acme");
+    expect(wrangler.env.prod?.vars?.PROJECT).toBe("acme");
+  });
+
+  test("the stamped PROJECT is the name requireProjectName resolves, not the raw input", async () => {
+    // The Worker's stamp and the CLI's resource names must be the same string, or a sweep filtering on
+    // `<project>-` finds nothing the Worker minted. `requireProjectName` kebabs, so the scaffold does too.
+    await scaffoldProject({ targetDir: dir, appName: "Launch 2026" });
+    const wrangler = parse(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")) as unknown as {
+      vars: Record<string, string>;
+    };
+    expect(wrangler.vars?.PROJECT).toBe("launch-2026");
   });
 
   test("enables Workers Logs by default — Mode 2 structured logs are queryable with no adopter setup", async () => {
@@ -85,12 +111,77 @@ describe("scaffoldProject", () => {
     expect(pkg.name).toBe("empty-ok");
   });
 
-  test("writes a name containing $ literally, not as a replacement pattern", async () => {
-    // `$&`, `$1`, `$\`` are special in String.replace's replacement string.
+  test("normalizes a name with replacement-pattern characters instead of stamping it raw", async () => {
+    // `$&`, `$1`, `$\`` are special in String.replace's replacement string, and none of them is legal in a
+    // Cloudflare name. `assertValidProjectName` accepts this because it tests the kebabed form, so the
+    // scaffold must stamp that same form — writing the raw string produced a wrangler.jsonc wrangler
+    // refuses to parse ("alphanumeric and lowercase with dashes only").
     await scaffoldProject({ targetDir: dir, appName: "app-$&-$1-x" });
-    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("app-$&-$1-x");
-    expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toContain('name: "app-$&-$1-x"');
-    expect(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")).toContain('"name": "app-$&-$1-x-api"');
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("app-1-x");
+    expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toContain('name: "app-1-x"');
+    expect(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")).toContain('"name": "app-1-x-api"');
+  });
+
+  test("lowercases the name everywhere it is stamped, so the project can deploy", async () => {
+    // wrangler rejects `"name": "Acme-api"` at config-parse time, which broke every wrangler command in
+    // the worker — deploy and `wrangler dev` alike. The guard accepts `Acme` (it kebabs first), so the
+    // only thing that kept the scaffold honest was stamping the kebabed form.
+    await scaffoldProject({ targetDir: dir, appName: "Acme" });
+    const wrangler = await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8");
+    expect(wrangler).toContain('"name": "acme-api"');
+    expect(wrangler).toContain('"PROJECT": "acme"');
+    // Nothing uppercase survived into either stamped value — the assertions above would still pass if a
+    // second `"name"` or `"PROJECT"` carried the typed form.
+    expect(wrangler.match(/"(?:name|PROJECT)": "[^"]*"/g)).not.toContain('"name": "Acme-api"');
+    for (const stamp of wrangler.match(/"(?:name|PROJECT)": "([^"]*)"/g) ?? []) {
+      expect(stamp, stamp).not.toMatch(/: "[^"]*[A-Z]/);
+    }
+    // The config shows the adopter the exact string every resource name leads with — not what they typed.
+    expect(await readFile(join(dir, "pithy.config.ts"), "utf8")).toContain('name: "acme"');
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("acme");
+  });
+
+  test("refuses the reserved pithy-int- prefix, and leaves nothing behind", async () => {
+    const target = join(dir, "reserved");
+    await expect(scaffoldProject({ targetDir: target, appName: "pithy-int-test" })).rejects.toThrow(PithyError);
+    // The guard runs before the directory is even created — a refusal must not leave a half-scaffold.
+    await expect(readFile(join(target, "package.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("the reservation is read after kebabing, so a spaced or capitalised variant is caught too", async () => {
+    await expect(scaffoldProject({ targetDir: dir, appName: "Pithy Int Suite" })).rejects.toThrow(PithyError);
+  });
+
+  test("refuses the bare `pithy-int`, which composes `pithy-int-dev-db` and so is inside the namespace", async () => {
+    // The name is not itself prefixed by `pithy-int-`; the composer's trailing hyphen puts every name it
+    // generates in the reservation. A `startsWith` on the raw name would wave it through.
+    await expect(scaffoldProject({ targetDir: dir, appName: "pithy-int" })).rejects.toThrow(PithyError);
+  });
+
+  test("a name that merely mentions pithy is fine — only the reserved prefix is refused", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "pithy-internal-tools" });
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("pithy-internal-tools");
+  });
+
+  test("refuses a project name that doesn't start with a letter, and leaves nothing behind", async () => {
+    // `mkdir 1password-clone && pithy init` took the directory basename as the project name and scaffolded
+    // happily. Every Cloudflare name it then composed was legal right up to the first host-worker deploy,
+    // which refused it — after D1, KV, and R2 already existed. The refusal belongs here, before the copy.
+    const target = join(dir, "1password-clone");
+    await expect(scaffoldProject({ targetDir: target, appName: "1password-clone" })).rejects.toThrow(PithyError);
+    await expect(readFile(join(target, "package.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("the rule is read after kebabing, so a spaced or capitalised name is judged as Cloudflare sees it", async () => {
+    await expect(scaffoldProject({ targetDir: dir, appName: "2026 Launch" })).rejects.toThrow(PithyError);
+    // The same shape with a letter in front is fine — this refuses illegal names, not unusual ones. And
+    // since the rule was read after kebabing, the scaffold writes the kebabed form: `Launch 2026` is not a
+    // legal npm package name either, so stamping it raw broke `bun install` as well as `wrangler deploy`.
+    await scaffoldProject({ targetDir: dir, appName: "Launch 2026" });
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("launch-2026");
+    expect(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")).toContain('"name": "launch-2026-api"');
   });
 
   test("refuses a non-empty target directory", async () => {
