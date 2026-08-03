@@ -176,21 +176,22 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "testers/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: testersWorkerName(this.#project, env),
-        metadata: { env, sends: this.#email !== undefined },
+        metadata: { sends: this.#email !== undefined },
       });
     } catch (error) {
       await this.#audit({
+        environment: env,
         action: "testers/worker_deployed",
         outcome: "failure",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: testersWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {
@@ -216,12 +217,12 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
+        environment: env,
         action: "testers/worker_deleted",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: name,
-        metadata: { env },
       });
     }
   }

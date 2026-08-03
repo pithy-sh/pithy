@@ -207,7 +207,11 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         severity,
         resourceType: "cf_worker",
         resourceId: worker.name,
-        metadata: { worker: worker.name, env: options.env ?? null, versionId: deploy.versionId ?? null },
+        // Neither `worker` nor `env` belongs here any more. The environment is the `environment`
+        // column the recorder stamps, and the Worker deployed is already `resourceId` — which is
+        // also the truer home for it, since that Worker is what this action *targeted*, not where
+        // the action came from (a CLI deploy comes from no Worker at all).
+        metadata: { versionId: deploy.versionId ?? null },
       });
     } catch (error) {
       const reason = reasonOf(error);
@@ -219,9 +223,9 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         severity,
         resourceType: "cf_worker",
         resourceId: worker.name,
+        // Same as the success path: `worker` is `resourceId` and `env` is the `environment` column.
+        // What stays is what is genuinely per-event — which stage failed, and why.
         metadata: {
-          worker: worker.name,
-          env: options.env ?? null,
           stage: built === false ? "build" : "deploy",
           error: reason,
         },

@@ -20,11 +20,15 @@
   // and the value log records carry as their `env` correlation field.
   // `PROJECT` names the owning project (the root pithy.config.ts `name`). Cloudflare Images and
   // Stream are account-flat and key an asset by an id they mint, so this var is the only thing
-  // that says which project owns an upload this Worker makes. Every environment repeats both:
+  // that says which project owns an upload this Worker makes.
+  // `WORKER` names this Worker — its apps/<name> directory. The runtime tells a script nothing
+  // about itself, and two Workers that declare the same binding share one database, so this is
+  // what separates their audit events. Every environment repeats all three:
   // `env.<name>.vars` REPLACES this block rather than merging it.
   "vars": {
     "ENVIRONMENT": "dev",
-    "PROJECT": "pithy-app"
+    "PROJECT": "pithy-app",
+    "WORKER": "api"
   },
   "d1_databases": [],
   "kv_namespaces": [],
@@ -35,7 +39,8 @@
     "staging": {
       "vars": {
         "ENVIRONMENT": "staging",
-        "PROJECT": "pithy-app"
+        "PROJECT": "pithy-app",
+        "WORKER": "api"
       },
       "d1_databases": [],
       "kv_namespaces": []
@@ -43,7 +48,8 @@
     "prod": {
       "vars": {
         "ENVIRONMENT": "prod",
-        "PROJECT": "pithy-app"
+        "PROJECT": "pithy-app",
+        "WORKER": "api"
       },
       "d1_databases": [],
       "kv_namespaces": []

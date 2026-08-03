@@ -57,9 +57,10 @@ describe("CloudflareEmailProvisioner", () => {
         severity: "info",
         resourceType: "cf_d1",
         resourceId: "new-db",
-        // The project rides in the metadata: D1 exposes no tags, so the audit log is the only place a
-        // human can later read which project this database belongs to.
-        metadata: { name: suppressionDatabaseName(PROJECT), project: PROJECT },
+        // D1 exposes no tags, so the audit trail is still the only place a human can later read which
+        // project this database belongs to — but that now lives in the row's own `project` column,
+        // stamped by the recorder, rather than in a metadata key only this emitter remembered to set.
+        metadata: { name: suppressionDatabaseName(PROJECT) },
       }),
     ]);
 
@@ -148,7 +149,6 @@ describe("CloudflareEmailDeprovisioner", () => {
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: emailWorkerName(PROJECT, "staging"),
-        metadata: { env: "staging" },
       }),
     ]);
 

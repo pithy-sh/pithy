@@ -90,4 +90,45 @@ describe("queryAuditEvents", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.action).toBe("admin/config_changed");
   });
+
+  test("filters by origin — project, environment, and worker", async () => {
+    // The question these columns exist to answer: two Workers in one project share a database, so
+    // `worker` is the only thing separating their events.
+    const db = auditDatabase(env.DB);
+    const origin = { project: "acme", environment: "prod", worker: "api" };
+    await recordAuditEvent(
+      db,
+      { action: "auth/login", outcome: "success", actorType: "user", actorId: "o-api" },
+      { origin },
+    );
+    await recordAuditEvent(
+      db,
+      { action: "auth/login", outcome: "success", actorType: "user", actorId: "o-admin" },
+      { origin: { ...origin, worker: "admin" } },
+    );
+    await recordAuditEvent(
+      db,
+      { action: "auth/login", outcome: "success", actorType: "user", actorId: "o-staging" },
+      { origin: { ...origin, environment: "staging" } },
+    );
+    await recordAuditEvent(
+      db,
+      { action: "auth/login", outcome: "success", actorType: "user", actorId: "o-other" },
+      { origin: { ...origin, project: "other" } },
+    );
+
+    const inProject = await queryAuditEvents(db, { project: "acme" });
+    expect(inProject.map((e) => e.actorId).sort()).toEqual(["o-admin", "o-api", "o-staging"]);
+    const inProd = await queryAuditEvents(db, { project: "acme", environment: "prod" });
+    expect(inProd.map((e) => e.actorId).sort()).toEqual(["o-admin", "o-api"]);
+    const onApi = await queryAuditEvents(db, { project: "acme", environment: "prod", worker: "api" });
+    expect(onApi.map((e) => e.actorId)).toEqual(["o-api"]);
+  });
+
+  test("an origin filter excludes rows that recorded none", async () => {
+    // A null origin is not a wildcard. The seeded rows above carry none, so they must not answer a
+    // question about a specific project.
+    const events = await queryAuditEvents(auditDatabase(env.DB), { project: "acme" });
+    expect(events.every((event) => event.project === "acme")).toBe(true);
+  });
 });

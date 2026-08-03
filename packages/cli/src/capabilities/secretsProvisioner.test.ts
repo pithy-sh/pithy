@@ -217,7 +217,8 @@ describe("CloudflareSecretsProvisioner", () => {
       expect.objectContaining({
         action: "secrets/set",
         severity: "warning",
-        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key", env: "prod" },
+        environment: "prod",
+        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key" },
       }),
     ]);
 
@@ -436,7 +437,8 @@ describe("CloudflareSecretsDeprovisioner", () => {
         action: "secrets/removed",
         outcome: "success",
         severity: "warning",
-        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key", env: "prod" },
+        environment: "prod",
+        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key" },
       }),
     ]);
 

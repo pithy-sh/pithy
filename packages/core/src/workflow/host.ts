@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "../error/pithyError";
+import { ENVIRONMENT_VAR, PROJECT_VAR } from "../worker/identity";
 import { type WorkflowHostNameParts, workflowHostName, workflowScriptName } from "./naming";
 import type { WorkflowRegistry } from "./spec";
 
@@ -162,21 +163,6 @@ export interface WorkflowHostParams {
    */
   workflows?: readonly HostWorkflowBinding[];
 }
-
-/** The `ENVIRONMENT` var every deployed Pithy Worker carries, so a host can tell which env it is running as. */
-const ENVIRONMENT_VAR = "ENVIRONMENT";
-
-/**
- * The `PROJECT` var every deployed Pithy host carries — the other half of the same identity.
- *
- * A host already knows its project at provision (it is the leading segment of its own name), but the
- * *running* worker cannot recover it: `<project>-<env>-<capability>` is not parseable back into its
- * parts when a project name contains a hyphen. So it is stamped, exactly as `@pithy-sh/secrets`
- * stamps it for the at-rest rotation. Anything a host does at runtime that must name its owner —
- * writing the ownership metadata on a Cloudflare Images or Stream asset, whose store is account-flat
- * and keyed by a Cloudflare-minted id — reads it from here rather than guessing.
- */
-const PROJECT_VAR = "PROJECT";
 
 /** Apply `remote: true` to an entry whose binding the caller listed. */
 function withRemote<T extends { remote?: boolean }>(entry: T, name: string, remote: ReadonlySet<string>): T {

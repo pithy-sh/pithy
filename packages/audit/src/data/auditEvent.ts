@@ -81,6 +81,24 @@ export const AuditEventRow = z
     metadata: AuditMetadataColumn.nullable().describe(
       "Capability-specific structured detail as a JSON column, Zod-validated on write and read; null when there is none.",
     ),
+    project: z
+      .string()
+      .nullable()
+      .describe(
+        "The project this event was recorded in, stamped by the recorder from the Worker's `PROJECT` var — never by the emitter, so it cannot be forged or omitted. Null on rows written before this column existed, and on a Worker carrying no `PROJECT` var.",
+      ),
+    environment: z
+      .string()
+      .nullable()
+      .describe(
+        "The environment the recording Worker serves (`dev` | `staging` | `prod`), stamped by the recorder from the `ENVIRONMENT` var. Null on rows written before this column existed. Recorded on the row rather than inferred from the database, because an exported or aggregated trail no longer knows which database it came from.",
+      ),
+    worker: z
+      .string()
+      .nullable()
+      .describe(
+        "The `apps/<name>` directory name of the Worker that recorded the event, stamped from the `WORKER` var; null for a CLI-originated action, which came from no Worker. Two Workers in one project share a database when they declare the same binding, so this is the only column that separates their events.",
+      ),
   })
   .describe("One audit event in `pithy_audit_events` — the durable, queryable record of a security-relevant action.");
 export type AuditEventRow = z.output<typeof AuditEventRow>;

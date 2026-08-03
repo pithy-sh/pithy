@@ -24,8 +24,40 @@ import { AuditInvalidEventError, AuditWriteFailedError } from "./error/errors";
  * transport hiccup never double-writes.
  */
 
+/**
+ * Where the recording happened — the three origin columns, supplied to the **recorder**, never by an
+ * emitter.
+ *
+ * This is deliberately not a field on `AuditEvent`. Origin is a property of the *writer*, not of the
+ * action, and putting it on the event seam would make it caller-settable: any of the ~40 `c.var.emit`
+ * sites could then claim to be another Worker, another environment, or another project, and the column
+ * would be worth nothing precisely when it mattered. Binding it here means an emitter cannot set it,
+ * cannot omit it, and cannot get it wrong.
+ *
+ * Every field is nullable because every field is genuinely unknowable in some real case: a Worker
+ * scaffolded before the vars existed carries none of them, and `worker` is always null for a
+ * CLI-originated action, which came from no Worker at all.
+ */
+export interface AuditOrigin {
+  /** The owning project, from the Worker's `PROJECT` var or the CLI's resolved project name. */
+  project: string | null;
+  /** The environment served, from `ENVIRONMENT` or the command's `--env`. */
+  environment: string | null;
+  /** The recording Worker's `apps/<name>` directory name; null for a CLI action. */
+  worker: string | null;
+}
+
+/** No origin established — what an unstamped Worker and an un-migrated caller both record. */
+const NO_ORIGIN: AuditOrigin = { project: null, environment: null, worker: null };
+
 /** Options for the recorder. All optional; the defaults route failures to a sink and retry transient D1 faults. */
 export interface AuditRecorderOptions {
+  /**
+   * Where this recorder is writing from, stamped onto every event it records. Omitted, the three
+   * columns are `null` — the same shape as a row written before they existed, which is the truthful
+   * answer rather than a guess.
+   */
+  origin?: AuditOrigin;
   /**
    * Called with the namespaced failure when an event can't be validated or persisted. The audit write
    * is non-fatal, so this is the only signal a drop happened. The audit capability wires it to the core
@@ -56,6 +88,7 @@ export async function recordAuditEvent(
   options?: AuditRecorderOptions,
 ): Promise<void> {
   const onError = options?.onError ?? (() => {});
+  const origin = options?.origin ?? NO_ORIGIN;
   try {
     const event = AuditEvent.parse(input);
     const occurredAt = event.occurredAt ?? new Date();
@@ -82,6 +115,10 @@ export async function recordAuditEvent(
             userAgent: event.userAgent ?? null,
             requestId: event.requestId ?? null,
             metadata: event.metadata == null ? null : AuditMetadataColumn.encode(event.metadata),
+            // Last, and from `options` rather than `event` — the event cannot reach these columns.
+            project: origin.project,
+            environment: origin.environment,
+            worker: origin.worker,
           })
           .execute(),
       options?.retry,

@@ -74,7 +74,8 @@ describe("deleteWorker is idempotent", () => {
     expect(deleteWorker).toHaveBeenCalledWith(testersWorkerName(PROJECT, "staging"));
     expect(events.map((event) => event.action)).toEqual(["testers/worker_deleted"]);
     expect(events[0]?.severity).toBe("warning");
-    expect(events[0]?.metadata).toMatchObject({ env: "staging" });
+    // The environment is the row's own column now, not a key inside the opaque metadata bag.
+    expect(events[0]?.environment).toBe("staging");
   });
 
   test("does nothing when it is already gone", async () => {

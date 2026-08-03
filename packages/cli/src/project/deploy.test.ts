@@ -305,8 +305,10 @@ describe("deployProject", () => {
       outcome: "success",
       severity: "warning",
       resourceType: "cf_worker",
+      // The Worker deployed is `resourceId` — the thing acted on. Its origin (project, environment,
+      // worker) is stamped on the row by the recorder, so neither is duplicated into `metadata`.
       resourceId: "pithy-api",
-      metadata: { worker: "pithy-api", env: "prod" },
+      metadata: { versionId: "v1" },
     });
   });
 

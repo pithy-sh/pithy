@@ -7,6 +7,7 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
+import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
 import { ControlPlaneConnection } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
@@ -32,9 +33,6 @@ import { controlplane_0001_connections } from "./migrations/0001_connections";
  * composed key and make Kysely re-run an applied migration.
  */
 export const CONTROLPLANE_MIGRATION_ORDER = 1100;
-
-/** The environment variable every provisioned Pithy Worker carries; the value a credential is bound to. */
-const ENVIRONMENT_VAR = "ENVIRONMENT";
 
 export type ControlPlaneOptions = ControlPlaneConfigInput;
 

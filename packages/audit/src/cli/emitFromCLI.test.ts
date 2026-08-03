@@ -70,6 +70,40 @@ describe("emitFromCLI", () => {
     });
   });
 
+  test("an event's own environment becomes the origin, overriding the emitter's", async () => {
+    // The case the whole per-event field exists for: one `pithy storage provision` run loops every
+    // managed environment through one emitter, so the emitter-wide origin cannot be true for all of
+    // them. An earlier draft recorded the *audit destination* env instead, which meant a production
+    // credential write claimed to have happened in dev.
+    const { db, calls } = fakeD1();
+    await emitFromCLI(
+      db,
+      { action: "storage/credentials_written", outcome: "success", environment: "prod" },
+      serviceActor,
+      { origin: { project: "acme", environment: null, worker: null } },
+    );
+    expect(calls[0]?.params).toContain("prod");
+    expect(calls[0]?.params).toContain("acme");
+  });
+
+  test("the emitter's origin stands when the event states no environment", async () => {
+    const { db, calls } = fakeD1();
+    await emitFromCLI(db, { action: "deploy/started", outcome: "success" }, serviceActor, {
+      origin: { project: "acme", environment: "staging", worker: null },
+    });
+    expect(calls[0]?.params).toContain("staging");
+  });
+
+  test("`environment` never reaches the event body, only the origin", async () => {
+    // `AuditEvent` has no `environment` key, so leaving it on the event would drop it silently rather
+    // than record it. It is pulled off before the parse.
+    const { db, calls } = fakeD1();
+    await emitFromCLI(db, { action: "deploy/started", outcome: "success", environment: "prod" }, serviceActor);
+    const metadataParam = (calls[0]?.params ?? []).find((p): p is string => typeof p === "string" && p.startsWith("{"));
+    expect(JSON.parse(metadataParam ?? "{}")).not.toHaveProperty("environment");
+    expect(calls[0]?.params).toContain("prod");
+  });
+
   test("a write failure is non-fatal: it resolves and reports an audit/write_failed error", async () => {
     const { db } = fakeD1(async () => {
       throw new Error("D1_ERROR: no such table: pithy_audit_events");

@@ -174,22 +174,22 @@ export class CloudflarePaymentsProvisioner {
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "payments/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: paymentsWorkerName(this.#project, env),
-        metadata: { env },
       });
     } catch (error) {
       // Truthful: recorded as it happened, never as it was intended.
       await this.#audit({
+        environment: env,
         action: "payments/worker_deployed",
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: paymentsWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {

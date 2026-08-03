@@ -168,11 +168,17 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
     config.replace('name: "pithy-app"', () => `name: "${project}"`),
   );
 
-  // Two stamps into the worker's wrangler.jsonc. `name` is the deploy name (project + worker); `PROJECT`
-  // is the project alone. Both are the kebabed form — the string `requireProjectName` hands every command
-  // that composes a `<project>-<env>-<thing>` name. A `PROJECT` that differed would attribute the Worker's
+  // Three stamps into the worker's wrangler.jsonc. `name` is the deploy name (project + worker);
+  // `PROJECT` is the project alone; `WORKER` is this Worker's own directory name. `PROJECT` and the
+  // deploy name are the kebabed form — the string `requireProjectName` hands every command that composes
+  // a `<project>-<env>-<thing>` name. A `PROJECT` that differed would attribute the Worker's
   // Images/Stream assets to a project no sweep filters on, and a `name` that differed would not deploy.
-  // `replaceAll`, because `env.<name>.vars` replaces rather than merges, so the placeholder appears once
+  //
+  // `WORKER` is keyed off `DEFAULT_WORKER` rather than a literal, because the template ships that name
+  // and the directory has just been renamed to `worker` above — a literal here would be two places to
+  // change and one of them would be forgotten.
+  //
+  // `replaceAll`, because `env.<name>.vars` replaces rather than merges, so each placeholder appears once
   // per environment stanza and a first-occurrence replace would leave staging and prod owned by `pithy-app`.
   const wranglerPath = join(workerDir, "wrangler.jsonc");
   const wrangler = await readFile(wranglerPath, "utf8");
@@ -180,6 +186,7 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
     wranglerPath,
     wrangler
       .replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`)
-      .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`),
+      .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
+      .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`),
   );
 }

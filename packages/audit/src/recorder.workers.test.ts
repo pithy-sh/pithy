@@ -123,3 +123,59 @@ describe("recordAuditEvent", () => {
     expect(await rowCount()).toBe(1);
   });
 });
+
+/** Reads the three origin columns off the single row a test wrote. */
+async function originRow(): Promise<{ project: string | null; environment: string | null; worker: string | null }> {
+  const row = await env.DB.prepare("select project, environment, worker from pithy_audit_events").first<{
+    project: string | null;
+    environment: string | null;
+    worker: string | null;
+  }>();
+  if (!row) throw new Error("expected a recorded row");
+  return row;
+}
+
+describe("the origin columns", () => {
+  const EVENT = { action: "auth/login", outcome: "success", actorType: "user", actorId: "u1" } as const;
+
+  test("are stamped from the recorder's origin, not from the event", async () => {
+    await recordAuditEvent(auditDatabase(env.DB), EVENT, {
+      origin: { project: "acme", environment: "prod", worker: "api" },
+    });
+    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: "api" });
+  });
+
+  test("an emitter cannot set them, and cannot override the recorder's", async () => {
+    // The security property the column exists for. `AuditEvent` has no origin fields, so these are
+    // stripped by the schema before the insert is built — a route cannot claim to be another Worker,
+    // another environment, or another project. Asserted through the real parse path, not by reading
+    // the type: a type says what the compiler allows, and the emitters here are `unknown` at runtime.
+    await recordAuditEvent(
+      auditDatabase(env.DB),
+      { ...EVENT, project: "attacker", environment: "prod", worker: "admin" } as never,
+      { origin: { project: "acme", environment: "dev", worker: "api" } },
+    );
+    expect(await originRow()).toEqual({ project: "acme", environment: "dev", worker: "api" });
+  });
+
+  test("a forged origin cannot reach the row even when the recorder has none", async () => {
+    // The same claim without a competing value to hide behind: with no `origin` option, an emitter's
+    // own fields must still produce nulls rather than being written through.
+    await recordAuditEvent(auditDatabase(env.DB), { ...EVENT, project: "attacker", worker: "admin" } as never);
+    expect(await originRow()).toEqual({ project: null, environment: null, worker: null });
+  });
+
+  test("record as null when the recorder is given no origin", async () => {
+    // An unstamped Worker: scaffolded without the vars, or running a hand-written wrangler.jsonc.
+    await recordAuditEvent(auditDatabase(env.DB), EVENT);
+    expect(await originRow()).toEqual({ project: null, environment: null, worker: null });
+  });
+
+  test("record a partial origin as far as it is known", async () => {
+    // A Worker carrying PROJECT but scaffolded before WORKER existed. Two of three is worth keeping.
+    await recordAuditEvent(auditDatabase(env.DB), EVENT, {
+      origin: { project: "acme", environment: "prod", worker: null },
+    });
+    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: null });
+  });
+});

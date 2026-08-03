@@ -220,6 +220,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     if (existing) return { bucket: existing.name, created: false, skipped: false };
     const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
+      environment: "global",
       action: "support/bucket_created",
       outcome: "success",
       severity: "info",
@@ -227,7 +228,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
       resourceId: created.name,
       // R2 exposes no tags through the API, so the name is the whole ownership record on the bucket
       // itself; this is the only place a human can later read which project it belongs to.
-      metadata: { name: created.name, project: this.#project },
+      metadata: { name: created.name },
     });
     return { bucket: created.name, created: true, skipped: false };
   }
@@ -252,21 +253,21 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "support/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: supportWorkerName(this.#project, env),
-        metadata: { env },
       });
     } catch (error) {
       await this.#audit({
+        environment: env,
         action: "support/worker_deployed",
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: supportWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {
@@ -315,12 +316,12 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
       await dropSearchIndex(db);
     }
     await this.#audit({
+      environment: env,
       action: wanted ? "support/search_index_created" : "support/search_index_dropped",
       outcome: "success",
       severity: "info",
       resourceType: "d1_table",
       resourceId: SEARCH_TABLE,
-      metadata: { env },
     });
     return { created: wanted, dropped: !wanted };
   }
@@ -346,6 +347,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     });
     if (created) {
       await this.#audit({
+        environment: "global",
         action: "support/routing_rule_created",
         outcome: "success",
         severity: "info",
@@ -355,7 +357,6 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
           zoneId: this.#routing.zoneId,
           address: this.#routing.address,
           workerName: this.#routing.appWorkerName,
-          project: this.#project,
           ruleName,
         },
       });
@@ -428,12 +429,12 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
+        environment: env,
         action: "support/worker_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: name,
-        metadata: { env },
       });
     }
   }
@@ -452,12 +453,13 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     });
     if (removed) {
       await this.#audit({
+        environment: "global",
         action: "support/routing_rule_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_email_routing_rule",
         resourceId: ruleName,
-        metadata: { zoneId: this.#routingZoneId, ruleName, project: this.#project },
+        metadata: { zoneId: this.#routingZoneId, ruleName },
       });
     }
     return { removed };
@@ -478,6 +480,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     });
     if (!teardown.deleted) return;
     await this.#audit({
+      environment: "global",
       action: "support/bucket_deleted",
       outcome: "success",
       severity: "warning",
@@ -485,7 +488,6 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
       resourceId: name,
       metadata: {
         name,
-        project: this.#project,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
       },

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { z } from "zod";
 import type { AuditDatabase } from "./data/tables";
 import { auditTables } from "./data/tables";
@@ -78,11 +79,19 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     middleware: [
       (app) => {
         app.use("*", async (c, next) => {
+          // Origin is read from `c.env` here and handed to the recorder, so no emitter supplies it and
+          // none can override it. Read per request rather than once at capability construction: the
+          // capability object is built before any request exists, and `env` is only reachable from a
+          // context. `workerIdentity` never throws and returns nulls for whatever is unstamped, so a
+          // Worker predating these vars still records its events — just without an origin.
           c.set("emit", (event) =>
             recordAuditEvent(
               (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
               event,
-              { onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }) },
+              {
+                origin: workerIdentity(c.env),
+                onError: (error) => c.var.log.child("audit").error("audit event dropped", { error }),
+              },
             ),
           );
           await next();

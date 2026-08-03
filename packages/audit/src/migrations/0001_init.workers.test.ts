@@ -56,6 +56,7 @@ describe("audit_0001_init", () => {
       "pithy_audit_events_actor_idx",
       "pithy_audit_events_event_id_idx",
       "pithy_audit_events_occurred_at_idx",
+      "pithy_audit_events_origin_idx",
       "pithy_audit_events_resource_idx",
     ]);
 
@@ -68,6 +69,25 @@ describe("audit_0001_init", () => {
       .bind("user-1")
       .first<{ action: string; outcome: string; actor_type: string }>();
     expect(row).toEqual({ action: "auth/login", outcome: "success", actor_type: "user" });
+  });
+
+  test("the origin columns exist and default to null when nothing records one", async () => {
+    // Nullable with no default, on purpose: an unstamped Worker and every CLI-originated action have
+    // no origin to record, and inventing one would be indistinguishable from a real one forever.
+    await runMigrations(env.DB, provider());
+    const columns = await env.DB.prepare("select name from pragma_table_info('pithy_audit_events')").all<{
+      name: string;
+    }>();
+    const names = columns.results.map((column) => column.name);
+    for (const column of ["project", "environment", "worker"]) expect(names).toContain(column);
+
+    await env.DB.prepare(
+      "insert into pithy_audit_events (event_id, occurred_at, action, outcome, actor_type) values (?, ?, ?, ?, ?)",
+    )
+      .bind("evt-origin", 1, "auth/login", "success", "system")
+      .run();
+    const row = await env.DB.prepare("select project, environment, worker from pithy_audit_events").first();
+    expect(row).toEqual({ project: null, environment: null, worker: null });
   });
 
   test("the unique index on event_id rejects a duplicate — the idempotency substrate", async () => {

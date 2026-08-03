@@ -46,24 +46,29 @@ function workerFiles(name: string, project: string): Record<string, string> {
   },
 
   // The top level is the dev environment. Staging serves test users; production serves paid users.
-  // Both vars repeat per environment: \`env.<name>.vars\` REPLACES this block rather than merging it.
+  // All three vars repeat per environment: \`env.<name>.vars\` REPLACES this block rather than merging it.
   // \`PROJECT\` is the root pithy.config.ts name — the owner stamped into every Cloudflare Images and
   // Stream asset this Worker mints, since those stores are account-flat and key assets by their own id.
+  // \`WORKER\` is this Worker's own apps/<name> directory. The runtime tells a script nothing about
+  // itself, and Workers sharing a binding share one database, so this is what tells their events apart.
   "vars": {
     "ENVIRONMENT": "dev",
-    "PROJECT": "${project}"
+    "PROJECT": "${project}",
+    "WORKER": "${name}"
   },
   "env": {
     "staging": {
       "vars": {
         "ENVIRONMENT": "staging",
-        "PROJECT": "${project}"
+        "PROJECT": "${project}",
+        "WORKER": "${name}"
       }
     },
     "prod": {
       "vars": {
         "ENVIRONMENT": "prod",
-        "PROJECT": "${project}"
+        "PROJECT": "${project}",
+        "WORKER": "${name}"
       }
     }
   }
