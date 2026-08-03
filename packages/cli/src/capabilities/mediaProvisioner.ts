@@ -194,12 +194,13 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
+      environment: env,
       action: "media/bucket_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_r2_bucket",
       resourceId: created.name,
-      metadata: { name, project: this.#project, environment: env },
+      metadata: { name },
     });
     return { bucketName: created.name };
   }
@@ -213,12 +214,13 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     if (existing) return { namespaceId: existing.id };
     const created = await this.#cf.kvProvisioner().createNamespace(title);
     await this.#audit({
+      environment: env,
       action: "media/kv_namespace_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_kv_namespace",
       resourceId: created.id,
-      metadata: { title, project: this.#project, environment: env },
+      metadata: { title },
     });
     return { namespaceId: created.id };
   }
@@ -253,12 +255,13 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     // One event for one provisioning step. Both names ride in the metadata rather than becoming two
     // events, because nothing can write one secret and not the other — the pair is the unit.
     await this.#audit({
+      environment: env,
       action: "media/credentials_written",
       outcome: "success",
       severity: "info",
       resourceType: "secret",
       resourceId: MEDIA_STORAGE_SECRET,
-      metadata: { env, secrets: [MEDIA_STORAGE_SECRET, MEDIA_R2_SECRET] },
+      metadata: { secrets: [MEDIA_STORAGE_SECRET, MEDIA_R2_SECRET] },
     });
   }
 
@@ -310,21 +313,21 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "media/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: mediaWorkerName(this.#project, env),
-        metadata: { env },
       });
     } catch (error) {
       await this.#audit({
+        environment: env,
         action: "media/worker_deployed",
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: mediaWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {
@@ -388,12 +391,12 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
+        environment: env,
         action: "media/worker_deleted",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: name,
-        metadata: { env },
       });
     }
   }
@@ -413,6 +416,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
     });
     if (!teardown.deleted) return;
     await this.#audit({
+      environment: env,
       action: "media/bucket_deleted",
       outcome: "success",
       severity: "warning",
@@ -420,8 +424,6 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
       resourceId: name,
       metadata: {
         name,
-        project: this.#project,
-        environment: env,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
       },
@@ -436,12 +438,13 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
     if (!existing) return;
     await this.#cf.kvProvisioner().deleteNamespace(existing.id);
     await this.#audit({
+      environment: env,
       action: "media/kv_namespace_deleted",
       outcome: "success",
       severity: "warning",
       resourceType: "cf_kv_namespace",
       resourceId: existing.id,
-      metadata: { title, project: this.#project, environment: env },
+      metadata: { title },
     });
   }
 }

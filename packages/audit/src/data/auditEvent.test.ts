@@ -22,6 +22,9 @@ describe("AuditEventRow codec round-trip", () => {
       userAgent: "pithy-cli/1.0",
       requestId: "req-1",
       metadata: JSON.stringify({ provider: "google" }),
+      project: "acme",
+      environment: "prod",
+      worker: "api",
     } as const;
 
     const event = AuditEventRow.parse(row);
@@ -29,10 +32,46 @@ describe("AuditEventRow codec round-trip", () => {
     expect(event.occurredAt).toBeInstanceOf(Date);
     expect(event.occurredAt.getTime()).toBe(1_700_000_000_000);
     expect(event.metadata).toEqual({ provider: "google" });
+    expect({ project: event.project, environment: event.environment, worker: event.worker }).toEqual({
+      project: "acme",
+      environment: "prod",
+      worker: "api",
+    });
 
     const encoded = AuditEventRow.encode(event);
     expect(encoded.occurredAt).toBe(1_700_000_000_000);
     expect(JSON.parse(encoded.metadata as string)).toEqual({ provider: "google" });
+    // Plain text columns, so they survive the round trip unchanged — no codec to get wrong.
+    expect([encoded.project, encoded.environment, encoded.worker]).toEqual(["acme", "prod", "api"]);
+  });
+
+  test("a row with no recorded origin still decodes", () => {
+    // An unstamped Worker and every CLI-originated action land here, and nothing can back-fill an
+    // origin that was never recorded. If the schema ever stopped accepting a null one, reading the
+    // historical trail would throw — the one thing an audit log must not do.
+    const event = AuditEventRow.parse({
+      id: 2,
+      eventId: "22222222-2222-2222-2222-222222222222",
+      occurredAt: 1_700_000_000_000,
+      action: "auth/login",
+      outcome: "success",
+      severity: "info",
+      actorType: "system",
+      actorId: null,
+      sessionId: null,
+      resourceType: null,
+      resourceId: null,
+      ip: null,
+      userAgent: null,
+      requestId: null,
+      metadata: null,
+      project: null,
+      environment: null,
+      worker: null,
+    });
+    expect([event.project, event.environment, event.worker]).toEqual([null, null, null]);
+    const encoded = AuditEventRow.encode(event);
+    expect([encoded.project, encoded.environment, encoded.worker]).toEqual([null, null, null]);
   });
 
   test("null correlation columns decode to null and round-trip", () => {
@@ -52,6 +91,9 @@ describe("AuditEventRow codec round-trip", () => {
       userAgent: null,
       requestId: null,
       metadata: null,
+      project: null,
+      environment: null,
+      worker: null,
     });
     expect(event.actorId).toBeNull();
     expect(event.metadata).toBeNull();

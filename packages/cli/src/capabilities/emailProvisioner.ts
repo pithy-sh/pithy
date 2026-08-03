@@ -135,12 +135,13 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     if (existing) return { databaseId: existing.uuid };
     const db = await this.#cf.d1Provisioner().createDatabase(name);
     await this.#audit({
+      environment: "global",
       action: "email/suppression_db_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_d1",
       resourceId: db.uuid,
-      metadata: { name, project: this.#project },
+      metadata: { name },
     });
     return { databaseId: db.uuid };
   }
@@ -175,21 +176,21 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "email/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: emailWorkerName(this.#project, env),
-        metadata: { env },
       });
     } catch (error) {
       await this.#audit({
+        environment: env,
         action: "email/worker_deployed",
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: emailWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {
@@ -212,6 +213,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     });
     if (created) {
       await this.#audit({
+        environment: "global",
         action: "email/routing_rule_created",
         outcome: "success",
         severity: "info",
@@ -221,7 +223,6 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
           zoneId: this.#routing.zoneId,
           address: this.#routing.address,
           workerName: this.#routing.appWorkerName,
-          project: this.#project,
           ruleName: bounceRoutingRuleName(this.#project),
         },
       });
@@ -269,12 +270,12 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
+        environment: env,
         action: "email/worker_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: name,
-        metadata: { env },
       });
     }
   }
@@ -286,12 +287,13 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     if (db) {
       await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
       await this.#audit({
+        environment: "global",
         action: "email/suppression_db_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_d1",
         resourceId: db.uuid,
-        metadata: { name, project: this.#project },
+        metadata: { name },
       });
     }
   }

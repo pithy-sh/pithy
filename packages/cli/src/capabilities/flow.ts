@@ -255,7 +255,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       severity: "info",
       resourceType: "capability",
       resourceId: manifest.name,
-      metadata: { worker, package: manifest.package, packageManager, ejected: Boolean(eject) },
+      metadata: { targetWorker: worker, package: manifest.package, packageManager, ejected: Boolean(eject) },
     });
 
     return {
@@ -274,7 +274,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       severity: "info",
       resourceType: "capability",
       resourceId: capability,
-      metadata: { worker, error: messageOf(error) },
+      metadata: { targetWorker: worker, error: messageOf(error) },
     });
     throw error;
   }

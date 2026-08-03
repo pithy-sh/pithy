@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { parse } from "comment-json";
+import { loadProject, requireProjectName } from "../project/config";
 import { discoverWorkers } from "../project/workers";
 import { createCliLogger } from "../terminal/logger";
 
@@ -34,6 +35,13 @@ import { createCliLogger } from "../terminal/logger";
  * parallel interface here would silently drift from `AuditEventInput` the first time a field is added.
  */
 export type CliAuditEvent = import("@pithy-sh/audit/src/cli/emitFromCLI").CliAuditEvent;
+
+/**
+ * Where a CLI-recorded event came from. Referenced **type-only**, like {@link CliAuditEvent} above and
+ * for the same reason: the shape stays the single one the audit package defines, while the CLI keeps
+ * its guarded dynamic import for the runtime path and gains no hard dependency on an optional package.
+ */
+type AuditOrigin = import("@pithy-sh/audit/src/recorder").AuditOrigin;
 
 /**
  * Records an audit event. Always safe to call: a no-op when auditing is unavailable, never throws.
@@ -127,11 +135,48 @@ export async function createRemoteCliAudit(options: CreateCliAuditOptions): Prom
 }
 
 /** Options for {@link createCliAudit}. */
+/**
+ * The origin a CLI-recorded event carries.
+ *
+ * `worker` is **always null**, and that is the accurate answer rather than a gap: a `pithy` command runs
+ * in Node, not in a Worker, so no Worker recorded it. `options.worker` is not the origin either — it is
+ * a *lookup filter* for finding the audit database, so writing it here would attribute
+ * `pithy migrate --worker api` to the `api` Worker, which did nothing.
+ *
+ * The project is resolved the same way every other name-composing command resolves it, and a failure to
+ * resolve is reported as `null` rather than thrown: auditing must never break the command it records,
+ * and a project with no `name` is exactly the broken state a `pithy doctor` run needs to survive.
+ */
+async function cliOrigin(projectDir: string, environment: string | null): Promise<AuditOrigin> {
+  try {
+    return { project: requireProjectName(await loadProject(projectDir)), environment, worker: null };
+  } catch {
+    return { project: null, environment, worker: null };
+  }
+}
+
 export interface CreateCliAuditOptions {
   /** The project root — the parent of `apps/`, whose Workers' `wrangler.jsonc` resolve the audit database. */
   projectDir: string;
-  /** The environment being acted on, which selects the database audit rows are written to. */
+  /**
+   * Which database audit rows are **written to** — a routing choice, not a statement about the action.
+   *
+   * These are two different things and conflating them put a false value in the trail. Eight commands
+   * hardcode this to `dev` precisely *because* they span environments: a provisioning run touches every
+   * managed environment at once, and `pithy feature` deliberately writes to the project's durable
+   * database rather than the feature's, which does not exist yet at `provision` and is deleted by
+   * `destroy`. Recording that routing choice as the environment acted on would claim every production
+   * credential write happened in dev.
+   */
   env: string;
+  /**
+   * The environment the command acts on, recorded in each row's `environment` column.
+   *
+   * Omit it when one invocation spans several environments — `null` reads as "not recorded", which is
+   * true, where naming one of them is not. Such a command should instead set `environment` on each
+   * event it emits, which is where the real answer is known.
+   */
+  actedOn?: string | null;
   /** The capabilities in play — auditing is wired only when `audit` is among them. */
   capabilities: readonly Capability[];
   /** Restrict the audit-database lookup to this Worker (a command's `--worker`). Optional. */
@@ -164,6 +209,7 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
   }
 
   const database = options.clients.d1(databaseId) as unknown as D1Database;
+  const origin = await cliOrigin(options.projectDir, options.actedOn ?? null);
   const resolveActor = createCachedActorResolver(options.apiToken, options.clients.user());
   // Surface a dropped audit write through the CLI logger. Without this a lost record is invisible —
   // and an audit trail you cannot tell is broken is worse than none.
@@ -179,10 +225,14 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
           severity: event.severity ?? "info",
           ...(event.resourceType !== undefined ? { resourceType: event.resourceType } : {}),
           ...(event.resourceId !== undefined ? { resourceId: event.resourceId } : {}),
-          metadata: { env: options.env, ...(event.metadata ?? {}) },
+          // A per-event environment beats the emitter-wide one, for the commands that span several in
+          // one run. Passed as a first-class origin field, never back into `metadata` — that bag is
+          // where this information used to hide, unqueryable and set by only some emitters.
+          ...(event.environment !== undefined ? { environment: event.environment } : {}),
+          metadata: { ...(event.metadata ?? {}) },
         },
         await resolveActor(),
-        { onError: (error: unknown) => log.error("audit event dropped", { error }) },
+        { origin, onError: (error: unknown) => log.error("audit event dropped", { error }) },
       );
     } catch (error) {
       // Resolving the actor can fail too (a revoked token, a network blip). Auditing must never break

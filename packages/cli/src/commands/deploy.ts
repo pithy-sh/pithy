@@ -46,6 +46,8 @@ async function buildAudit(projectDir: string, env: string) {
   return createCliAudit({
     projectDir,
     env,
+    // Here `env` really is the environment acted on, so it is also the recorded origin.
+    actedOn: env,
     capabilities,
     clients: new CloudflareClients({ accountId, apiToken }),
     apiToken,

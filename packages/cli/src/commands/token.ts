@@ -125,7 +125,8 @@ async function buildAudit(
   env: string,
   apiToken: string,
 ): Promise<TokenAudit> {
-  const emit = await createCliAudit({ projectDir, env, capabilities, clients: cf, apiToken });
+  // `env` is both the audit destination and the environment acted on for a token operation.
+  const emit = await createCliAudit({ projectDir, env, actedOn: env, capabilities, clients: cf, apiToken });
   return async (event) => {
     await emit({
       action: event.action,
@@ -133,7 +134,7 @@ async function buildAudit(
       severity: "warning",
       resourceType: "cf_api_token",
       resourceId: event.tokenId ?? `${event.profile}:${event.env}`,
-      metadata: { profile: event.profile, env: event.env, store: event.store ?? null },
+      metadata: { profile: event.profile, store: event.store ?? null },
     });
   };
 }

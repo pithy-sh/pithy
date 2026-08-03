@@ -47,6 +47,87 @@ describe("audit capability through createBackend", () => {
     expect(events[0]).toMatchObject({ action: "auth/login", outcome: "success", actorType: "user", ip: "203.0.113.1" });
   });
 
+  test("the middleware stamps the origin from the Worker's own vars, through the real composition", async () => {
+    // The whole read path, unstubbed: `createBackend` → the audit middleware → `workerIdentity(c.env)` →
+    // the recorder → the row. Every other origin test injects an `AuditOrigin` directly, which proves the
+    // recorder writes what it is given but not that anything ever gives it the right thing.
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post("/act", async (c) => {
+          await c.var.emit({ action: "admin/config_changed", outcome: "success", actorType: "user", actorId: "u-org" });
+          return c.json({ ok: true });
+        });
+      },
+    });
+
+    const backend = createBackend({ capabilities: [audit()], app });
+    const res = await backend.request(
+      "/act",
+      { method: "POST" },
+      { ...env, PROJECT: "acme", ENVIRONMENT: "prod", WORKER: "api" },
+    );
+    expect(res.status).toBe(200);
+
+    const [event] = await queryAuditEvents(auditDatabase(env.DB), { actorId: "u-org" });
+    expect(event).toMatchObject({ project: "acme", environment: "prod", worker: "api" });
+  });
+
+  test("a Worker carrying none of the vars still records, with a null origin", async () => {
+    // The unstamped Worker. A missing var must cost the origin, never the event — the recorder is
+    // contractually non-fatal, and a dropped audit row is the strictly worse outcome.
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post("/act", async (c) => {
+          await c.var.emit({
+            action: "admin/config_changed",
+            outcome: "success",
+            actorType: "user",
+            actorId: "u-bare",
+          });
+          return c.json({ ok: true });
+        });
+      },
+    });
+
+    const backend = createBackend({ capabilities: [audit()], app });
+    expect((await backend.request("/act", { method: "POST" }, env)).status).toBe(200);
+
+    const [event] = await queryAuditEvents(auditDatabase(env.DB), { actorId: "u-bare" });
+    expect(event).toMatchObject({ project: null, environment: null, worker: null });
+  });
+
+  test("an emitting route cannot forge an origin through the seam", async () => {
+    // The security claim at the surface a real attacker would reach: a route handler, not the recorder.
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post("/act", async (c) => {
+          await c.var.emit({
+            action: "admin/config_changed",
+            outcome: "success",
+            actorType: "user",
+            actorId: "u-forge",
+            project: "victim",
+            environment: "prod",
+            worker: "admin",
+          } as never);
+          return c.json({ ok: true });
+        });
+      },
+    });
+
+    const backend = createBackend({ capabilities: [audit()], app });
+    await backend.request("/act", { method: "POST" }, { ...env, PROJECT: "acme", ENVIRONMENT: "dev", WORKER: "api" });
+
+    const [event] = await queryAuditEvents(auditDatabase(env.DB), { actorId: "u-forge" });
+    expect(event).toMatchObject({ project: "acme", environment: "dev", worker: "api" });
+  });
+
   test("a non-fatal write failure routes through the logger seam (not console) as an audit/* record", async () => {
     // Drop the table so the insert fails; the recorder must stay non-fatal and log through c.var.log.
     await env.DB.prepare("drop table pithy_audit_events").run();

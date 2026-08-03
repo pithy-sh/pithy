@@ -112,7 +112,7 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
         userAgent: c.req.header("user-agent"),
         metadata: {
           connectionId: context.connectionId,
-          environment: context.environment,
+          connectionEnvironment: context.environment,
           scope: context.scope,
           keyId: context.keyId,
           method: c.req.method,

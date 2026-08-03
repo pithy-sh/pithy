@@ -250,7 +250,9 @@ describe("runAdd", () => {
         severity: "info",
         resourceType: "capability",
         resourceId: "auth",
-        metadata: { worker: DEFAULT_WORKER, package: "@pithy-sh/auth", packageManager: "bun", ejected: false },
+        // `targetWorker`, not `worker`: this is the Worker the capability was added TO, which is a
+        // different thing from the `worker` origin column (null for a CLI action, which came from none).
+        metadata: { targetWorker: DEFAULT_WORKER, package: "@pithy-sh/auth", packageManager: "bun", ejected: false },
       }),
     ]);
   });

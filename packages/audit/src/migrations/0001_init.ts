@@ -35,6 +35,13 @@ export const audit_0001_init: Migration = {
       .addColumn("userAgent", "text")
       .addColumn("requestId", "text")
       .addColumn("metadata", "text")
+      // Where the event was recorded, stamped by the recorder from the Worker's own vars — never by an
+      // emitter. Nullable, and permanently so: a Worker scaffolded without the vars carries none of
+      // them, and a CLI-originated action came from no Worker at all. `null` means "not recorded",
+      // which is a true statement; a default would invent an origin and make the invention unqueryable.
+      .addColumn("project", "text")
+      .addColumn("environment", "text")
+      .addColumn("worker", "text")
       .execute();
 
     // Unique on eventId — the recorder's idempotency key. A retried write reuses the same eventId, so
@@ -58,8 +65,18 @@ export const audit_0001_init: Migration = {
       .on("pithyAuditEvents")
       .columns(["resourceType", "resourceId"])
       .execute();
+    // One composite index in the order a reader narrows by: a project owns environments, an environment
+    // holds Workers. SQLite uses a leading subset of a composite index, so this also serves `project`
+    // alone and `project + environment` without a second index. A `worker`-only filter is not a shape
+    // the trail is read by — a Worker name only means anything inside its project.
+    await db.schema
+      .createIndex("pithyAuditEventsOriginIdx")
+      .on("pithyAuditEvents")
+      .columns(["project", "environment", "worker"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyAuditEventsOriginIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsResourceIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsActorIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsActionIdx").execute();

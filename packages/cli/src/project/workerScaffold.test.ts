@@ -53,11 +53,13 @@ describe("scaffoldWorker", () => {
     await readFile(join(workerDir, "src", "index.ts"), "utf8");
   });
 
-  test("stamps PROJECT beside ENVIRONMENT in every vars stanza, so the Worker knows what it owns", async () => {
+  test("stamps the Worker's identity in every vars stanza, so it knows what it is and what it owns", async () => {
     // Media's routes mint Images/Stream uploads from the adopter's own Worker, and those two stores are
     // account-flat: an asset is keyed by a Cloudflare-minted id, so the `PROJECT` var is the only thing
-    // that says who owns it (`assetOwner` refuses to mint without it). A capability cannot declare this —
-    // `BindingType` has no `var` kind — so the scaffold owns it.
+    // that says who owns it (`assetOwner` refuses to mint without it). `WORKER` is the same problem one
+    // level down — the runtime tells a script nothing about itself, and two Workers sharing a binding
+    // share one database, so it is what separates their audit events. A capability cannot declare either
+    // — `BindingType` has no `var` kind — so the scaffold owns them.
     const { dir: workerDir } = await scaffoldWorker({ projectDir: dir, name: "web", project: "acme" });
     const wrangler = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
       vars: Record<string, string>;
@@ -65,10 +67,10 @@ describe("scaffoldWorker", () => {
     };
 
     // wrangler's `env.<name>.vars` REPLACES the top level rather than merging it, so a single top-level
-    // PROJECT would be invisible to staging and production. It must appear in all three, like ENVIRONMENT.
-    expect(wrangler.vars).toEqual({ ENVIRONMENT: "dev", PROJECT: "acme" });
-    expect(wrangler.env.staging?.vars).toEqual({ ENVIRONMENT: "staging", PROJECT: "acme" });
-    expect(wrangler.env.prod?.vars).toEqual({ ENVIRONMENT: "prod", PROJECT: "acme" });
+    // PROJECT would be invisible to staging and production. All three must appear in all three stanzas.
+    expect(wrangler.vars).toEqual({ ENVIRONMENT: "dev", PROJECT: "acme", WORKER: "web" });
+    expect(wrangler.env.staging?.vars).toEqual({ ENVIRONMENT: "staging", PROJECT: "acme", WORKER: "web" });
+    expect(wrangler.env.prod?.vars).toEqual({ ENVIRONMENT: "prod", PROJECT: "acme", WORKER: "web" });
   });
 
   test("a hyphenated worker gets a legal migration namespace, keeping its kebab-case directory", async () => {

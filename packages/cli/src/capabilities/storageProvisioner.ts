@@ -193,12 +193,13 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
+      environment: env,
       action: "storage/bucket_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_r2_bucket",
       resourceId: created.name,
-      metadata: { name, project: this.#project, environment: env },
+      metadata: { name },
     });
     return { bucketName: created.name };
   }
@@ -241,12 +242,12 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
       }
     }
     await this.#audit({
+      environment: env,
       action: "storage/credentials_written",
       outcome: "success",
       severity: "info",
       resourceType: "secret",
       resourceId: STORAGE_R2_SECRET,
-      metadata: { env },
     });
   }
 
@@ -273,21 +274,21 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
         env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
       });
       await this.#audit({
+        environment: env,
         action: "storage/worker_deployed",
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: storageWorkerName(this.#project, env),
-        metadata: { env },
       });
     } catch (error) {
       await this.#audit({
+        environment: env,
         action: "storage/worker_deployed",
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
         resourceId: storageWorkerName(this.#project, env),
-        metadata: { env },
       });
       throw error;
     } finally {
@@ -351,12 +352,12 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
+        environment: env,
         action: "storage/worker_deleted",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
         resourceId: name,
-        metadata: { env },
       });
     }
   }
@@ -376,6 +377,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
     });
     if (!teardown.deleted) return;
     await this.#audit({
+      environment: env,
       action: "storage/bucket_deleted",
       outcome: "success",
       severity: "warning",
@@ -383,8 +385,6 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
       resourceId: name,
       metadata: {
         name,
-        project: this.#project,
-        environment: env,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
       },

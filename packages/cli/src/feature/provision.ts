@@ -307,11 +307,12 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     // Record only a genuine creation; a resumed run that reused an existing resource changed nothing.
     if (!found) {
       await audit({
+        environment: options.env,
         action: FeatureAuditActions.resourceCreated,
         outcome: "success",
         resourceType: AUDIT_RESOURCE_TYPE[kind],
         resourceId: id,
-        metadata: { name, binding, env: options.env, feature: options.identity.slug, issue: options.identity.issue },
+        metadata: { name, binding, feature: options.identity.slug, issue: options.identity.issue },
       });
     }
   }
@@ -417,12 +418,13 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     deleted.push({ kind, name, id });
     // `warning`, not `info`: this destroys real infrastructure, and in CI no human saw it happen.
     await audit({
+      environment: options.env,
       action: FeatureAuditActions.resourceDeleted,
       outcome: "success",
       severity: "warning",
       resourceType: AUDIT_RESOURCE_TYPE[kind],
       resourceId: id,
-      metadata: { name, env: options.env, feature: options.identity.slug, issue: options.identity.issue },
+      metadata: { name, feature: options.identity.slug, issue: options.identity.issue },
     });
   };
 

@@ -36,6 +36,8 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
     .catch(() => []);
   return createCliAudit({
     projectDir,
+    // `env` selects the audit database only. This command spans environments, so no single
+    // value is true for the run; each event states the environment it acted on.
     env: "dev",
     capabilities,
     clients: new CloudflareClients({ accountId, apiToken }),

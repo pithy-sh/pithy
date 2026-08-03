@@ -109,7 +109,7 @@ describe("ensureBucket", () => {
       expect.objectContaining({
         action: "support/bucket_created",
         resourceId: supportBucketName(PROJECT),
-        metadata: { name: supportBucketName(PROJECT), project: PROJECT },
+        metadata: { name: supportBucketName(PROJECT) },
       }),
     ]);
   });

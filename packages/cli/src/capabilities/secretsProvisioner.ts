@@ -130,6 +130,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
+      environment: "global",
       action: "secrets/set",
       outcome: "success",
       severity: "warning",
@@ -167,12 +168,13 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     if (!(await store.exists(name))) {
       await store.putSecret(name, JSON.stringify(await initialMasterKeyConfig()));
       await this.#audit({
+        environment: env,
         action: "secrets/set",
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
         resourceId: name,
-        metadata: { name, kind: "master_key", env },
+        metadata: { name, kind: "master_key" },
       });
     }
     return { storeId: this.#storeId };
@@ -301,12 +303,13 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
       await store.deleteSecret(name);
       // Deleting a master key orphans every secret it encrypted — this is the destructive step.
       await this.#audit({
+        environment: env,
         action: "secrets/removed",
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
         resourceId: name,
-        metadata: { name, kind: "master_key", env },
+        metadata: { name, kind: "master_key" },
       });
     }
   }
@@ -336,6 +339,7 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     if (await store.exists(entry)) {
       await store.deleteSecret(entry);
       await this.#audit({
+        environment: "global",
         action: "secrets/removed",
         outcome: "success",
         severity: "warning",

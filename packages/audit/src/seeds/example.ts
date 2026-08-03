@@ -19,6 +19,20 @@ const AUDIT_EXAMPLE_SEED_ORDER = 150;
 const minutesAgo = (minutes: number): Date => new Date(Date.now() - minutes * 60_000);
 
 /**
+ * The origin every example row carries — so a dev database looks like a real one, and the origin
+ * filters have something to return.
+ *
+ * `project` and `worker` are fixture constants in this file's own `example-` idiom: fictional, obviously
+ * so, and stable. **`environment` is null, and that asymmetry is deliberate.** A seed row is a static
+ * literal, but this set runs in both `dev` and `staging` (`environments` below) and nothing rewrites a
+ * row per run — so any environment written here would be a lie in half the runs it appears in. The other
+ * two are properties of the fiction; the environment is a property of the run, and the fixture does not
+ * know it. Null is what "not recorded" looks like everywhere else in this column, which is also the
+ * state of every row written before the origin migration.
+ */
+const EXAMPLE_ORIGIN = { project: "example-app", environment: null, worker: "api" } as const;
+
+/**
  * A handful of example audit events — the durable, queryable trail the licensed dashboard reads. They
  * are attributed to the shared cast from `@pithy-sh/core` ({@link EXAMPLE_ADA} et al.), so the audit
  * trail lines up with the same users `auth` seeds and `leaderboard`/`ledger`/`multiplayer` reference:
@@ -54,6 +68,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0001",
         metadata: { method: "magic_link" },
+        ...EXAMPLE_ORIGIN,
       },
       {
         id: 2,
@@ -71,6 +86,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0002",
         metadata: { reason: "expired_link" },
+        ...EXAMPLE_ORIGIN,
       },
       {
         id: 3,
@@ -88,6 +104,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: null,
         requestId: "example-req-0003",
         metadata: { plan: "pro", grantedBy: "system" },
+        ...EXAMPLE_ORIGIN,
       },
       {
         id: 4,
@@ -105,6 +122,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0004",
         metadata: { field: "seatLimit", from: 5, to: 10 },
+        ...EXAMPLE_ORIGIN,
       },
       {
         id: 5,
@@ -122,6 +140,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "curl/8.4.0",
         requestId: "example-req-0005",
         metadata: { familyId: "example-family-grace", action: "family_revoked" },
+        ...EXAMPLE_ORIGIN,
       },
       {
         id: 6,
@@ -139,6 +158,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0006",
         metadata: { amount: 50, currency: "coins" },
+        ...EXAMPLE_ORIGIN,
       },
     ]),
   ],

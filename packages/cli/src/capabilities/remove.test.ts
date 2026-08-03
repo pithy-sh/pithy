@@ -712,7 +712,7 @@ describe("removeCapability", () => {
         action: "capability/tables_dropped",
         outcome: "success",
         severity: "warning",
-        metadata: { env: "dev", migrationsReverted: 1 },
+        metadata: { migrationsReverted: 1 },
       }),
       expect.objectContaining({ action: "capability/removed", outcome: "success", severity: "info" }),
     ]);
@@ -736,7 +736,6 @@ describe("removeCapability", () => {
         action: "capability/tables_dropped",
         outcome: "denied",
         severity: "warning",
-        metadata: { env: "staging" },
       }),
     ]);
   });

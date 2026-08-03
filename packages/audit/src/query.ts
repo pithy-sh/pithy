@@ -33,6 +33,12 @@ export interface AuditQuery {
   resourceType?: string;
   /** Match the targeted resource's id. */
   resourceId?: string;
+  /** Match the project the event was recorded in. */
+  project?: string;
+  /** Match the environment the recording Worker served. */
+  environment?: string;
+  /** Match the recording Worker's `apps/<name>` directory name. */
+  worker?: string;
   /** Inclusive lower bound on `occurredAt`. */
   from?: Date;
   /** Inclusive upper bound on `occurredAt`. */
@@ -56,6 +62,13 @@ export async function queryAuditEvents(db: AuditDatabase, filter: AuditQuery = {
   if (filter.severity !== undefined) query = query.where("severity", "=", filter.severity);
   if (filter.resourceType !== undefined) query = query.where("resourceType", "=", filter.resourceType);
   if (filter.resourceId !== undefined) query = query.where("resourceId", "=", filter.resourceId);
+  // The origin filters, in the composite index's column order — `project`, then `environment`, then
+  // `worker` — so a narrowing query uses a leading subset of `pithyAuditEventsOriginIdx` rather than
+  // scanning. Note these match a *recorded* origin: a row written before the columns existed has NULL
+  // and is excluded by any of them, which is correct — it has no origin to match.
+  if (filter.project !== undefined) query = query.where("project", "=", filter.project);
+  if (filter.environment !== undefined) query = query.where("environment", "=", filter.environment);
+  if (filter.worker !== undefined) query = query.where("worker", "=", filter.worker);
   if (filter.from !== undefined) query = query.where("occurredAt", ">=", SQLiteDate.encode(filter.from));
   if (filter.to !== undefined) query = query.where("occurredAt", "<=", SQLiteDate.encode(filter.to));
 

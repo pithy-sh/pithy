@@ -43,8 +43,8 @@ function buildProvisioners(projectDir: string): FeatureProvisioners | null {
  * there dies with the thing it was recording. Both defeat the point of auditing a headless CI teardown.
  *
  * So the trail lands in the project's durable, top-level database: it outlives every feature, and it is
- * where an operator looks to answer "who tore this down?". The environment actually acted on is carried on
- * each event's metadata instead.
+ * where an operator looks to answer "who tore this down?". The environment actually acted on is stated by
+ * each event, and lands in the row's own `environment` column.
  */
 const AUDIT_DESTINATION_ENV = "dev";
 

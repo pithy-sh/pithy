@@ -390,12 +390,13 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   if (options.drop && keptFor.length > 0) {
     const plural = keptFor.length === 1 ? "s" : "";
     await audit({
+      environment: options.drop.env,
       action: "capability/tables_dropped",
       outcome: "failure",
       severity: "warning",
       resourceType: "capability",
       resourceId: capability,
-      metadata: { reason: "shared_with_workers", keptFor, env: options.drop.env },
+      metadata: { reason: "shared_with_workers", keptFor },
     });
     throw new ConflictError({
       message: `Can't drop ${capability}'s tables — ${keptFor.join(", ")} still wire${plural} it.`,
@@ -410,12 +411,12 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     if (options.drop.confirm && !(await options.drop.confirm())) {
       // `denied`, not `failure`: a human deliberately blocked a destructive action. First-class in the trail.
       await audit({
+        environment: options.drop.env,
         action: "capability/tables_dropped",
         outcome: "denied",
         severity: "warning",
         resourceType: "capability",
         resourceId: capability,
-        metadata: { env: options.drop.env },
       });
       return {
         capability,
@@ -430,12 +431,13 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     dropped = await steps.dropTables(target, options.drop.env);
     const migrationsReverted = dropped.reduce((sum, run) => sum + run.results.length, 0);
     await audit({
+      environment: options.drop.env,
       action: "capability/tables_dropped",
       outcome: "success",
       severity: "warning",
       resourceType: "capability",
       resourceId: capability,
-      metadata: { env: options.drop.env, migrationsReverted },
+      metadata: { migrationsReverted },
     });
   }
 
