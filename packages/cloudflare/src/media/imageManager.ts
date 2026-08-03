@@ -32,7 +32,12 @@ function encodeMetadata(metadata: unknown): unknown {
 /**
  * Out-of-Worker Cloudflare Images access over the REST API: upload, fetch, edit, delete, list, and
  * direct-upload URLs from a CLI/CI/provisioning context. Image metadata is an arbitrary
- * `Record<string, string>` passthrough — no Pithy-specific shape is imposed on it.
+ * `Record<string, string>` passthrough at this layer — the manager imposes no shape.
+ *
+ * The ownership stamp is imposed one layer up, by `withAssetOwnership` in `ownership.ts`, which every
+ * Pithy path that *creates* an image goes through (the seeder here, and media's `imageMinter`). The
+ * split is deliberate: this class stays a faithful REST client usable for reading and sweeping
+ * anyone's images, while nothing Pithy writes can escape carrying `pithyProject`/`pithyEnv`.
  */
 export class CloudflareImageManager extends CloudflareManager {
   /** Upload an image via the V1 API. `account_id` is set from the manager's config. */

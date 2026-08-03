@@ -33,7 +33,7 @@ function envWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
   return {
     SECRETS: env.SECRETS,
     SECRETS_ENCRYPTION_KEYS: JSON.stringify(config),
-    ENVIRONMENT: "production",
+    ENVIRONMENT: "prod",
     ...extra,
   } as unknown as SecretsStoreEnv;
 }

@@ -99,7 +99,7 @@ Use a **restricted key** if you would rather: hosted checkout needs write on Che
 
 ```sh
 echo '{"stripe":{"secretKey":"sk_live_…","webhookSecret":"whsec_…"}}' \
-  | pithy secrets create payments-provider-credentials --env production
+  | pithy secrets create payments-provider-credentials --env prod
 ```
 
 The value comes from stdin, or from a prompt at a terminal. The secret is environment-scoped, so `--env` is required and each environment holds its own — which is what keeps a test-mode key and a live one apart.

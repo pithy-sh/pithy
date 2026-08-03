@@ -1,10 +1,13 @@
 {
   // The prebuilt payments reconcile worker. Like the storage, email, and media workers, this is a TEMPLATE,
-  // not a wrangler env-stanza file: staging and production are genuinely separate workers. `pithy payments
+  // not a wrangler env-stanza file: staging and prod are genuinely separate workers. `pithy payments
   // provision` resolves it into one complete config per environment — filling the `<...>` placeholders,
   // deriving the `workflows` array and the cron from the capability's specs — and deploys each with
   // `wrangler deploy --config <resolved>`. The adopter authors none of it.
-  "name": "pithy-payments", // resolved per env → pithy-payments-staging / pithy-payments-production
+  // Resolved per project and env → <project>-staging-payments / <project>-prod-payments. Worker
+  // script names are account-scoped, so the project segment is what stops a second Pithy project's
+  // deploy overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-payments",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -25,7 +28,7 @@
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
       "store_id": "<filled-at-provision>",
-      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+      "secret_name": "<filled-at-provision>"
     }
   ],
 

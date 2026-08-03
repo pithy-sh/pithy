@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { TestersConfig } from "../config/config";
 import { TESTERS_CAPABILITY, testersWorkflowRegistry } from "../workflows/specs";
@@ -33,15 +34,23 @@ export interface TestersEmailIdentity {
 
 /** The resolved ids and per-env values for one environment's daily-pass deploy. */
 export interface TestersConfigParams {
+  /**
+   * The project name — the `<project>` segment the deployed host, its daily Workflow, and the
+   * suppression database name all lead with. The root `pithy.config.ts` `name`, resolved by
+   * `requireProjectName` and never guessed.
+   */
+  readonly project: string;
   /** The target environment. */
   readonly env: ManagedEnvironment;
   /** The app database id — where the `pithy_testers_*`, `pithy_auth_*` and `pithy_email_jobs` tables live. */
   readonly appDatabaseId: string;
   /**
-   * The global email-suppression database id.
+   * The project's email-suppression database id.
    *
-   * Global rather than per environment, matching how `@pithy-sh/email` provisions it: an unsubscribe in
-   * production must stop staging too, so every environment's host binds the same database.
+   * Shared across environments rather than per environment, matching how `@pithy-sh/email` provisions
+   * it: an unsubscribe in prod must stop staging too, so every environment's host binds the same
+   * database. Shared across *projects* it is not — the name carries the project, so one product's
+   * opt-out list can no longer suppress another's transactional mail.
    */
   readonly suppressionDatabaseId: string;
   /** The app's resolved testers config — serialized into the host's `TESTERS_CONFIG` var. */
@@ -62,12 +71,21 @@ export function resolveTestersConfig(
   template: WorkflowHostTemplate,
   params: TestersConfigParams,
 ): WorkflowHostTemplate {
-  const { env, appDatabaseId, suppressionDatabaseId, testersConfig, email } = params;
+  const { project, env, appDatabaseId, suppressionDatabaseId, testersConfig, email } = params;
+
+  // Derived before the resolve: `resolveWorkflowHost` refuses a template that declares `workflows`
+  // without them, because the only name it could invent unaided is one a second project would overwrite.
+  const derived = hostWorkflowsFor(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env });
 
   const resolved = resolveWorkflowHost(template, {
+    project,
     capability: TESTERS_CAPABILITY,
     env,
     databaseIds: { DB: appDatabaseId, EMAIL_SUPPRESSIONS: suppressionDatabaseId },
+    // The suppression database is email's, and its name now carries the project. Left alone, the
+    // template would print `pithy-email-suppressions` — a name no account holds.
+    databaseNames: { EMAIL_SUPPRESSIONS: suppressionDatabaseName(project) },
+    workflows: derived.workflows,
     vars: {
       TESTERS_CONFIG: JSON.stringify(testersConfig),
       // Only set when there is an identity to set. The removal below is the other half — see it for why
@@ -92,8 +110,6 @@ export function resolveTestersConfig(
     for (const key of ["EMAIL_FROM_ADDRESS", "EMAIL_FROM_NAME", "EMAIL_THEME"]) delete resolved.vars?.[key];
   }
 
-  const derived = hostWorkflowsFor(testersWorkflowRegistry, TESTERS_CAPABILITY, env);
-  resolved.workflows = derived.workflows;
   // The configured hour, applied to the schedule the spec declares. The spec owns *that there is a
   // daily cron and when it sits by default*; the adopter owns which hour it fires, and until this line
   // existed `snapshotHourUtc` was a fully described, bounded, defaulted knob that nothing read — so

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
 import { media } from "../capability";
-import { MediaEnrichmentParams, mediaWorkflowRegistry, mediaWorkflows } from "./specs";
+import { MEDIA_CAPABILITY, MediaEnrichmentParams, mediaWorkflowRegistry, mediaWorkflows } from "./specs";
 
 describe("mediaWorkflows", () => {
   test("declares the four enrichment jobs, each hosted by its exported class", () => {
@@ -21,8 +21,11 @@ describe("mediaWorkflows", () => {
   });
 
   test("resolves to the names already committed in the worker template", () => {
-    expect(workflowScriptName("media", "image-to-text", "staging")).toBe("pithy-media-image-to-text-staging");
-    expect(workflowScriptName("media", "doc-extract", "production")).toBe("pithy-media-doc-extract-production");
+    // Through the facade, which knows a Workflow name is the 64-character namespace and refuses one
+    // past it rather than truncating — a renamed Workflow orphans every running instance.
+    const names = resourceNames("acme");
+    expect(names.env("staging").workflow(MEDIA_CAPABILITY, "image-to-text")).toBe("acme-staging-media-image-to-text");
+    expect(names.env("prod").workflow(MEDIA_CAPABILITY, "doc-extract")).toBe("acme-prod-media-doc-extract");
   });
 
   test("keys the dispatch registry by `media/<job>`", () => {

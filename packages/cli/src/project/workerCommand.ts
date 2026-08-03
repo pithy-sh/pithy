@@ -10,6 +10,7 @@ import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { wireFeatureDevVars } from "../feature/devVars";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
+import { loadProject, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
@@ -94,7 +95,13 @@ export interface AddWorkerOptions extends WorkerContext {
  * links `.dev.vars`; ports are assigned when `pithy feature create`/`sync` runs.
  */
 export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerReport> {
-  const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name });
+  // The project comes from the root config, through `requireProjectName` — never the directory basename.
+  // It is stamped into the new Worker's `PROJECT` var, and that stamp has to be the same string every
+  // command composes resource names from, or the Worker's Images/Stream assets land under an owner
+  // nothing sweeps. A project with no `name` is refused here rather than scaffolding a Worker that
+  // cannot mint an attributable upload.
+  const project = requireProjectName(await loadProject(options.projectDir));
+  const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project });
 
   if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
 

@@ -11,6 +11,8 @@ import {
   type ReconcilePlan,
   type RunMigrate,
 } from "../capabilities/reconcile";
+import { loadProject, requireProjectName } from "../project/config";
+import { envArg, requireEnvironment } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -61,6 +63,24 @@ export interface UpgradeWorkerResult {
 }
 
 /**
+ * The project name the proposed resource names lead with — resolved here, at the command edge, and handed
+ * to the apply step as a plain string. The same helper `pithy add` uses, for the same reason: a capability
+ * wired by `upgrade` must get the same `<project>-<env>-<binding>` database name it would have got from
+ * `add`, or one route into the project leaves nameless resources behind.
+ *
+ * `requireProjectName`, never `resolveProjectName`: a proposal has to be the name every later command
+ * recomputes, and the lenient resolver's fallbacks differ between checkouts. A project with no `name` gets
+ * no proposal rather than a guess — the entries carry only their binding, and `pithy doctor` says why.
+ */
+async function proposalProject(projectDir: string): Promise<string | undefined> {
+  try {
+    return requireProjectName(await loadProject(projectDir));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Reconcile every Worker in scope, in discovery order. Each Worker gets its own plan, built from and (unless
  * `dryRun`) applied to its own `apps/<name>/` wiring — no Worker's drift can reach another's files.
  */
@@ -70,6 +90,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeWor
     projectDir: options.projectDir,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
   });
+  const project = options.dryRun ? undefined : await proposalProject(options.projectDir);
 
   const results: UpgradeWorkerResult[] = [];
   for (const worker of workers) {
@@ -91,6 +112,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeWor
       plan,
       migrate: options.migrate,
       env: options.env,
+      ...(project === undefined ? {} : { project }),
       capabilities: worker.capabilities,
       ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
     });
@@ -169,7 +191,7 @@ export default defineCommand({
     description: "Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc",
   },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment (drives the pending-migration count)" },
+    env: envArg("Target environment (drives the pending-migration count)"),
     worker: { type: "string", description: "Upgrade only this worker (default: every worker under apps/)" },
     "dry-run": { type: "boolean", default: false, description: "Show the plan without writing anything" },
     migrate: { type: "boolean", default: false, description: "Run pending migrations after reconciling" },
@@ -177,10 +199,11 @@ export default defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const dryRun = args["dry-run"];
       const results = await runUpgrade({
         projectDir: process.cwd(),
-        env: args.env,
+        env,
         ...(args.worker ? { worker: args.worker } : {}),
         dryRun,
         migrate: args.migrate,
@@ -188,7 +211,7 @@ export default defineCommand({
 
       if (args.json) {
         const workers = results.map(({ plan, applied }) => applied ?? plan);
-        process.stdout.write(`${formatJsonLine({ command: "upgrade", env: args.env, dryRun, workers })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "upgrade", env, dryRun, workers })}\n`);
         return;
       }
 

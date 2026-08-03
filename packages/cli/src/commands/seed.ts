@@ -7,8 +7,9 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
-import { loadProject } from "../project/config";
-import { type SeedWorkerReport, seedProject } from "../seed/run";
+import { loadProject, requireProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { saffron } from "../terminal/style";
@@ -43,13 +44,44 @@ function describeReset(entry: ResetPreviewEntry, dryRun: boolean): string {
  * One worker's block of the run report: its sets, then what it skipped and why. A worker is named on
  * every line so a fan-out over several workers reads as one list, not several interleaved ones.
  */
-function describeWorker(worker: SeedWorkerReport, env: string, width: number): string {
+function describeWorker(worker: SeedWorkerReport, env: string, width: number): string[] {
   const name = worker.worker.padEnd(width);
   const lines: string[] = [];
   for (const key of worker.skippedByEnv) lines.push(`${name}  skipped ${key}: not allowed in ${env}.`);
   for (const key of worker.shared) lines.push(`${name}  ${key}: already seeded by another worker.`);
   for (const set of worker.sets) lines.push(`${name}  ${describeSet(set)}`);
-  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+  return lines;
+}
+
+/**
+ * The whole human report for one seed run, as a pure function of its result — the peer of
+ * `renderDoctorText`, and for the same reason: `docs/CLI.md` §8.2 and §8.5 paste these transcripts, so
+ * they have to be a value a test can render and compare against the document (`seedDocs.test.ts`).
+ * Assembling them across inline `process.stdout.write` calls made that impossible, and the blocks
+ * rotted. The command writes what this returns, plus the trailing newline.
+ *
+ * The order is the run's own: what the reset destroyed, then what each Worker wrote, then the dry-run
+ * reminder, then `Done.` The `DESTRUCTIVE.` banner leads a real reset only — a preview dropped nothing.
+ */
+export function renderSeedText(report: SeedRunReport): string {
+  const reset = report.reset ?? [];
+  const lines: string[] = [];
+
+  if (reset.length > 0 && !report.dryRun) {
+    lines.push(`DESTRUCTIVE${saffron(".")} Every table in ${report.env} was dropped and recreated.`);
+  }
+  for (const entry of reset) lines.push(describeReset(entry, report.dryRun));
+
+  if (report.workers.every((worker) => worker.sets.length === 0)) {
+    lines.push(`Nothing to seed for ${report.env}.`);
+  }
+  // One column width across the whole fan-out, so every Worker's lines align into one list.
+  const width = Math.max(0, ...report.workers.map((worker) => worker.worker.length));
+  for (const worker of report.workers) lines.push(...describeWorker(worker, report.env, width));
+
+  if (report.dryRun) lines.push("Dry run. Nothing written.");
+  lines.push(formatDone());
+  return lines.join("\n");
 }
 
 /**
@@ -100,7 +132,7 @@ function productionPrompt(): () => Promise<string> {
 export default defineCommand({
   meta: { name: "seed", description: "Seed an environment from your Zod-typed fixtures" },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     worker: { type: "string", description: "Seed one worker instead of every worker in apps/" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     "dry-run": { type: "boolean", default: false, description: "Print the write plan; change nothing" },
@@ -121,6 +153,7 @@ export default defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
       const config = await loadProject(projectDir);
       const dryRun = args["dry-run"];
@@ -135,8 +168,11 @@ export default defineCommand({
 
       const report = await seedProject({
         projectDir,
+        // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
+        // this name is the owner stamped into their metadata — the only handle a later sweep has on them.
+        project: requireProjectName(config),
         workers,
-        env: args.env,
+        env,
         includeExamples: config.seed?.includeExamples ?? false,
         dryRun,
         redo: args.redo,
@@ -146,10 +182,10 @@ export default defineCommand({
         confirmReset: args["confirm-reset"],
         productionEnvironments: config.seed?.productionEnvironments,
         prompt: interactive ? productionPrompt() : undefined,
-        promptReset: interactive ? resetPrompt(args.env) : undefined,
+        promptReset: interactive ? resetPrompt(env) : undefined,
         audit: await buildSeedAudit(
           projectDir,
-          args.env,
+          env,
           workers.flatMap((worker) => worker.capabilities),
         ),
       });
@@ -159,20 +195,6 @@ export default defineCommand({
         return;
       }
 
-      if (report.reset && report.reset.length > 0 && !dryRun) {
-        process.stdout.write(`DESTRUCTIVE${saffron(".")} Every table in ${args.env} was dropped and recreated.\n`);
-      }
-      for (const entry of report.reset ?? []) {
-        process.stdout.write(`${describeReset(entry, dryRun)}\n`);
-      }
-      if (report.workers.every((worker) => worker.sets.length === 0)) {
-        process.stdout.write(`Nothing to seed for ${args.env}.\n`);
-      }
-      const width = Math.max(0, ...report.workers.map((worker) => worker.worker.length));
-      for (const worker of report.workers) {
-        process.stdout.write(describeWorker(worker, args.env, width));
-      }
-      if (dryRun) process.stdout.write("Dry run. Nothing written.\n");
-      process.stdout.write(`${formatDone()}\n`);
+      process.stdout.write(`${renderSeedText(report)}\n`);
     }),
 });

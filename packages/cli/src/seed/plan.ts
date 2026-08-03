@@ -7,7 +7,7 @@ import type { MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 /**
  * The `--dry-run` write plan: what `pithy seed` **would** write, computed from the composed sets alone
  * with no mutation. Emitted as `--json` so a human or an agent can review a run — especially against
- * staging/production — before authorizing it. Row and entry counts come straight from the fixtures;
+ * staging/prod — before authorizing it. Row and entry counts come straight from the fixtures;
  * per-asset media actions come from an optional resolver (the CLI passes one that reads each item's
  * sidecar), defaulting to the action a first run would take.
  */

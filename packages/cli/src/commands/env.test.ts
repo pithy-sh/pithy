@@ -113,8 +113,8 @@ describe("renderEnvInventory", () => {
           environments: [
             { name: "dev", scriptName: "pithy-app", baseUrl: "local", workerDashboardUrl: null, resources: [] },
             {
-              name: "production",
-              scriptName: "pithy-app-production",
+              name: "prod",
+              scriptName: "pithy-app-prod",
               baseUrl: "https://api.example.com",
               workerDashboardUrl: null,
               resources: [],
@@ -123,8 +123,8 @@ describe("renderEnvInventory", () => {
         },
       ],
     });
-    const out = renderEnvInventory(inv, "production");
-    expect(out).toContain("production");
+    const out = renderEnvInventory(inv, "prod");
+    expect(out).toContain("prod");
     expect(out).toContain("https://api.example.com");
     expect(out).not.toContain("\n  dev  ");
   });

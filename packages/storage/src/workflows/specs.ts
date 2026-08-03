@@ -40,7 +40,7 @@ export const StorageSweepParams = z
       .boolean()
       .optional()
       .describe(
-        "Report what would be reclaimed and delete nothing. The safe way to answer 'what is this sweep about to do to production' before letting it run.",
+        "Report what would be reclaimed and delete nothing. The safe way to answer 'what is this sweep about to do to prod' before letting it run.",
       ),
     maxPages: z
       .number()

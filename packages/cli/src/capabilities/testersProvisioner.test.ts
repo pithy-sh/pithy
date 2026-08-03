@@ -8,6 +8,9 @@ import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareTestersProvisioner } from "./testersProvisioner";
 
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /**
  * The live provisioner's Cloudflare-facing behaviour.
  *
@@ -33,6 +36,7 @@ function fakeCf() {
 
 function provisioner(cf: CloudflareClients, events: CliAuditEvent[] = []) {
   return new CloudflareTestersProvisioner({
+    project: PROJECT,
     cf,
     accountId: "acct-1",
     apiToken: "token",
@@ -63,11 +67,11 @@ describe("deleteWorker is idempotent", () => {
   test("deletes the host when it is deployed, and audits it as a warning", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const events: CliAuditEvent[] = [];
-    getWorker.mockResolvedValue({ id: testersWorkerName("staging") });
+    getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "staging") });
 
     await provisioner(cf, events).deleteWorker("staging");
 
-    expect(deleteWorker).toHaveBeenCalledWith(testersWorkerName("staging"));
+    expect(deleteWorker).toHaveBeenCalledWith(testersWorkerName(PROJECT, "staging"));
     expect(events.map((event) => event.action)).toEqual(["testers/worker_deleted"]);
     expect(events[0]?.severity).toBe("warning");
     expect(events[0]?.metadata).toMatchObject({ env: "staging" });
@@ -93,17 +97,17 @@ describe("deleteWorker is idempotent", () => {
     const events: CliAuditEvent[] = [];
     getWorker.mockResolvedValue(null);
 
-    await provisioner(cf, events).deleteWorker("production");
+    await provisioner(cf, events).deleteWorker("prod");
     expect(events).toEqual([]);
   });
 
   test("re-running after a real delete is still a no-op", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
-    getWorker.mockResolvedValueOnce({ id: testersWorkerName("production") }).mockResolvedValue(null);
+    getWorker.mockResolvedValueOnce({ id: testersWorkerName(PROJECT, "prod") }).mockResolvedValue(null);
 
     const testers = provisioner(cf);
-    await testers.deleteWorker("production");
-    await testers.deleteWorker("production");
+    await testers.deleteWorker("prod");
+    await testers.deleteWorker("prod");
 
     expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
@@ -114,9 +118,10 @@ describe("the audit is optional", () => {
     // The CLI wires an emitter, but `audit` is optional on the options and the default must not be a
     // crash on the teardown path.
     const { cf, getWorker, deleteWorker } = fakeCf();
-    getWorker.mockResolvedValue({ id: testersWorkerName("staging") });
+    getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "staging") });
 
     const bare = new CloudflareTestersProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "token",

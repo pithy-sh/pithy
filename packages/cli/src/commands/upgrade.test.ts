@@ -277,6 +277,18 @@ describe("runUpgrade — fan-out over apps/", () => {
     expect(await readFile(join(apiDir, "wrangler.jsonc"), "utf8")).toContain('"binding": "DB"');
   });
 
+  test("proposes the same project-scoped database name pithy add would have written", async () => {
+    // The two routes into a project must agree. `pithy add` names the D1 it proposes
+    // `<project>-<env>-<binding>`; if `upgrade` wired the same capability with a bare binding, whichever
+    // command an adopter happened to run would decide whether their database carried the project segment
+    // — and an unscoped name is the one a second Pithy project in the account silently adopts.
+    await runUpgrade({ ...base, dryRun: false, projectDir: dir, worker: "api", resolveWorkers: resolve });
+
+    const wrangler = await readFile(join(apiDir, "wrangler.jsonc"), "utf8");
+    expect(wrangler).toContain('"database_name": "upgrade-test-dev-db"');
+    expect(wrangler).toContain('"database_name": "upgrade-test-prod-db"');
+  });
+
   test("--worker leaves the other worker's files untouched", async () => {
     const before = await readFile(join(collabDir, "wrangler.jsonc"), "utf8");
     await runUpgrade({ ...base, dryRun: false, projectDir: dir, worker: "api", resolveWorkers: resolve });

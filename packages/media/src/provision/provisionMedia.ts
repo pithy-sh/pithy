@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames, type ScopedNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { MEDIA_CAPABILITY } from "../workflows/specs";
 
@@ -29,27 +29,58 @@ import { MEDIA_CAPABILITY } from "../workflows/specs";
  */
 
 /**
- * The R2 bucket media objects are stored in, **per environment** — `pithy-media-staging`,
- * `pithy-media-production`.
+ * Every name media provisions under, for one project in one environment.
  *
- * One bucket per account would mean staging writes objects into the bucket production reads, and a
- * staging teardown deletes production's media. Buckets are free — the cost is bytes and operations —
- * so a shared one buys nothing and risks everything. This is the same per-environment posture the
- * media worker itself takes, and the opposite of `@pithy-sh/email`'s deliberately shared suppression
- * database, which is shared precisely *because* an unsubscribe must apply everywhere.
+ * One call to the facade, so the project is validated once and the environment once — the R2 bucket,
+ * the KV namespace, and the host Worker then each ask for their own kind of resource and get that
+ * namespace's own limit. Media names the same capability three times over, in three namespaces whose
+ * caps are 63, 512, and 63; going through the facade is what stops one number standing in for all
+ * three, and what refuses `production` here rather than quietly provisioning a fourth environment.
  */
-export function mediaBucketName(env: ManagedEnvironment): string {
-  return `pithy-${MEDIA_CAPABILITY}-${env}`;
+function mediaNames(project: string, env: ManagedEnvironment): ScopedNames {
+  return resourceNames(project).env(env);
 }
 
-/** The title of the KV namespace media records live in when `recordStore: 'kv'`. Per environment, for the same reason. */
-export function mediaKvTitle(env: ManagedEnvironment): string {
-  return `pithy-${MEDIA_CAPABILITY}-${env}`;
+/**
+ * The R2 bucket media objects are stored in, **per project and per environment** —
+ * `acme-staging-media`, `acme-prod-media`.
+ *
+ * One bucket per account would mean staging writes objects into the bucket prod reads, and a
+ * staging teardown deletes prod's media. Buckets are free — the cost is bytes and operations —
+ * so a shared one buys nothing and risks everything. This is the same per-environment posture the
+ * media worker itself takes, and the opposite of `@pithy-sh/email`'s deliberately project-shared
+ * suppression database, which is shared precisely *because* an unsubscribe must apply everywhere.
+ *
+ * The project segment carries ownership. R2's namespace is flat and account-wide, and provisioning
+ * reuses a bucket it finds by name — so without it, a second Pithy project in the same account adopts
+ * this one's bucket instead of creating its own, and either teardown takes both projects' media.
+ *
+ * Named through the facade's `r2` getter, which carries R2's own rule — 3 to 63 characters, starting
+ * and ending alphanumeric — rather than a number this file picked.
+ */
+export function mediaBucketName(project: string, env: ManagedEnvironment): string {
+  return mediaNames(project, env).r2(MEDIA_CAPABILITY);
 }
 
-/** The deployed Worker name for an environment — also its resolved config basename. */
-export function mediaWorkerName(env: ManagedEnvironment): string {
-  return workflowHostName(MEDIA_CAPABILITY, env);
+/**
+ * The title of the KV namespace media records live in when `recordStore: 'kv'`. Per project and per
+ * environment, for the same reasons — KV titles are account-wide too, and reuse keys on the title.
+ *
+ * Same string as the bucket today, and deliberately asked for separately: a KV title may run to 512
+ * characters and a bucket stops at 63, so the two are the same only for as long as the composed name
+ * is short. Asking `kv` for a KV title is what keeps them right when it stops being.
+ */
+export function mediaKvTitle(project: string, env: ManagedEnvironment): string {
+  return mediaNames(project, env).kv(MEDIA_CAPABILITY);
+}
+
+/**
+ * The deployed Worker name for a project's environment — also its resolved config basename. Held to
+ * the Worker rule (63, refused rather than truncated: a script cannot be renamed after a deploy
+ * without orphaning it and every `service` binding pointing at it).
+ */
+export function mediaWorkerName(project: string, env: ManagedEnvironment): string {
+  return mediaNames(project, env).worker(MEDIA_CAPABILITY);
 }
 
 /** The provisioned resources every environment's worker and secret are wired to. */
@@ -105,7 +136,7 @@ export async function provisionMedia(provisioner: MediaProvisioner): Promise<Med
   // Resources first for every environment, then credentials, then workers — the ordering is the
   // contract. A secret must not name a bucket that does not exist, and a worker must not boot before
   // the secret it reads. Fanning each phase across all environments (rather than completing one
-  // environment at a time) means a failure in production's bucket stops the run before staging's
+  // environment at a time) means a failure in prod's bucket stops the run before staging's
   // worker is deployed against a half-provisioned account.
   const resources = new Map<ManagedEnvironment, MediaResources>();
   for (const env of managedEnvironments()) {

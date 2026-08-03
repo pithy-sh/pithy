@@ -45,8 +45,16 @@ export type R2StorageCredentials = z.output<typeof R2StorageCredentials>;
  * would lose the literal name `SecretsAccessor.get` narrows on.
  */
 export interface R2CredentialsEntry {
-  /** Native Cloudflare Secrets Store: the value is a bound secret, never a D1 row. */
-  backend: "cf-secrets-store";
+  /**
+   * An encrypted row in the per-environment secrets D1 — where these values actually live.
+   *
+   * No `wrangler.jsonc` binds an R2 credential bundle from the Cloudflare Secrets Store; `pithy storage
+   * provision` and `pithy media provision` write it through `dispatchSecretWrite` → the manager
+   * Workflow → `SystemSecretsStore`, which is the D1 path. The registry's `backend` is the *single*
+   * place a secret's storage location is decided and is what the read seam routes on, so declaring
+   * `cf-secrets-store` here would send every deployed read to a binding that does not exist.
+   */
+  backend: "d1";
   /** Each environment addresses its own bucket with its own key pair. */
   scope: "environment";
   /** R2 S3 key pairs are minted and replaced whole, not rotated with overlap windows. */
@@ -59,7 +67,7 @@ export interface R2CredentialsEntry {
 
 /** The one entry shape every name shares — declared once so no two declarations can disagree. */
 const R2_CREDENTIALS_ENTRY: R2CredentialsEntry = {
-  backend: "cf-secrets-store",
+  backend: "d1",
   scope: "environment",
   rotatable: false,
   valueType: "json",

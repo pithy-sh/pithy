@@ -1,13 +1,16 @@
 {
   // The prebuilt support classification worker. Like the media and email workers, this is a TEMPLATE,
-  // not a wrangler env-stanza file: staging and production are separate workers. `pithy support
+  // not a wrangler env-stanza file: staging and prod are separate workers. `pithy support
   // provision` resolves it into one complete config per environment — filling the `<...>` placeholders
   // — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
   //
   // It hosts the one classification Workflow. The app worker receives the mail, stores it, and starts
   // an instance; this worker is what talks to the model. That split is the whole reason classification
   // is durable: an inbound handler has a tight CPU budget and a model call does not fit in it.
-  "name": "pithy-support", // resolved per env → pithy-support-staging / pithy-support-production
+  // Resolved per project and env → <project>-staging-support / <project>-prod-support. Worker
+  // script names are account-scoped, so the project segment is what stops a second Pithy project's
+  // deploy overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-support",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],

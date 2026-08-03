@@ -46,6 +46,12 @@ export interface MediaWorkerEnv extends SecretsStoreEnv {
   AI: MediaAi;
   /** The resolved media config as a JSON string, filled at provision. */
   MEDIA_CONFIG?: string;
+  /**
+   * The project name, stamped alongside `ENVIRONMENT` at provision. Enrichment only reads and updates
+   * existing assets, so nothing here mints one — but the var is part of every host's identity, and it
+   * is what any future create path in this worker would stamp ownership from.
+   */
+  PROJECT?: string;
 }
 
 // A standalone worker, not assembled by `createBackend`, so wire the shared secrets accessor directly.

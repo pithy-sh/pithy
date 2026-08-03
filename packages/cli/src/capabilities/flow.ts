@@ -8,7 +8,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
-import { addCapability, type ConfigValue } from "./add";
+import { addCapability, type ConfigValue, type ProposedName } from "./add";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { loadManifest } from "./manifests";
@@ -98,7 +98,7 @@ export type ConfigPrompt = (
 /** Install the package with the project's package manager. Injectable for tests. */
 export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
 
-/** What the migrate step is told: the persistence root, and the one Worker just wired. */
+/** What the migrate step is told: the persistence root, the one Worker just wired, and who owns the data. */
 export interface MigrateTarget {
   /** The project root — the owner of the `.wrangler/state` store every Worker's local D1 lives in. */
   projectDir: string;
@@ -106,6 +106,8 @@ export interface MigrateTarget {
   workerDir: string;
   /** The target Worker's name. */
   worker: string;
+  /** The project name every database this run touches is claimed for — `add` writes, so it must name itself. */
+  project: string;
 }
 
 /** Run the target Worker's dev migrations. Injectable for tests. */
@@ -122,11 +124,12 @@ const defaultInstall: InstallStep = (input) => installPackage(input);
  * the one `wrangler dev` uses. The config is re-read here, after wiring, so the migration that just
  * arrived is in the registry.
  */
-const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker }) => {
+const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, project }) => {
   const config = await loadWorkerConfig(workerDir);
   const runs = await migrateProject({
     projectDir,
     env: "dev",
+    project,
     workers: [{ name: worker, dir: workerDir, capabilities: allCapabilities(config) }],
   });
   return runs[0]?.databases ?? [];
@@ -139,6 +142,18 @@ export interface RunAddOptions {
   workerDir: string;
   /** The target Worker's name, for the result and the audit trail. Defaults to `workerDir`'s basename. */
   worker?: string;
+  /**
+   * The project name, resolved by the **caller** from the root `pithy.config.ts` (`requireProjectName`)
+   * and handed over as a plain string. It is the first segment of every resource name `add` proposes —
+   * and, because `add` finishes by running the Worker's dev migrations, the name that database is
+   * claimed for. Required for exactly that reason: the proposal can degrade to nothing, a write to a
+   * database cannot. A project with no `name` is told to set one before `add` installs anything.
+   *
+   * `runAdd` deliberately never loads the root config itself. `loadProject` imports it live, and vitest
+   * can only transform a TS config that lives under the project root — the add-flow suites scaffold into
+   * the OS tmpdir, so an import there fails with an error about the config rather than about the test.
+   */
+  project: string;
   /** The capability name, e.g. `auth`. */
   capability: string;
   /** Raw `--set key=value` overrides; coerced against the manifest's options. */
@@ -166,6 +181,13 @@ export interface AddResult {
   package: string;
   packageManager: string;
   databases: DatabaseRun[];
+  /**
+   * The KV namespace titles to create, `<project>-<env>-<binding>`, one per environment that gained the
+   * binding. Reported rather than written because a `kv_namespaces` entry has no title field; D1's
+   * proposal goes straight into `wrangler.jsonc` as `database_name`. Empty when the capability needs no
+   * KV, when no project name was resolved, or on a re-run.
+   */
+  kvNamespaces: ProposedName[];
   /** Present when `--eject` ran: what was copied and which deps were promoted. */
   eject?: EjectResult;
 }
@@ -204,7 +226,12 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       configValues = await options.prompt(manifest, configValues);
     }
 
-    await addCapability({ workerDir, manifest, configValues });
+    const { kvNamespaces } = await addCapability({
+      workerDir,
+      manifest,
+      configValues,
+      project: options.project,
+    });
 
     // Eject before migrating: eject repoints the config import to the local copy and promotes the
     // capability's deps, so the migrate step loads the ejected config with everything it imports present.
@@ -220,7 +247,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       });
     }
 
-    const databases = await migrate({ projectDir, workerDir, worker });
+    const databases = await migrate({ projectDir, workerDir, worker, project: options.project });
 
     await audit({
       action: "capability/added",
@@ -231,7 +258,15 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       metadata: { worker, package: manifest.package, packageManager, ejected: Boolean(eject) },
     });
 
-    return { capability: manifest.name, worker, package: manifest.package, packageManager, databases, eject };
+    return {
+      capability: manifest.name,
+      worker,
+      package: manifest.package,
+      packageManager,
+      databases,
+      kvNamespaces,
+      eject,
+    };
   } catch (error) {
     await audit({
       action: "capability/added",

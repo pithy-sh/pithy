@@ -5,7 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -25,9 +27,13 @@ import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsPr
  *   4. update + delete — round-trip again under the rotated key, then remove the secret.
  *   5. teardown — delete every manager, master key, and database; confirm they are gone.
  *
- * It deploys the real-named `pithy-secrets-<env>` Workers, so it is **double-gated**: it needs CF
- * creds in `.dev.vars` AND `PITHY_LIVE_DEPLOY=1`. Run deliberately — it deploys then deletes the
- * managers, so never point it at an account whose managers you want to keep.
+ * It runs under the reserved test project, so every name it deploys — the manager Workers, their D1s,
+ * both Workflows, the Secrets Store entries, the minted CF API token — is `pithy-int-test-<env>-secrets…`
+ * and lands inside the `pithy-int-` reservation rather than a real project's namespace. Teardown
+ * recomputes exactly those names, so it can only ever delete its own.
+ *
+ * It is still gated on `PITHY_LIVE_DEPLOY=1` as well as CF creds in `.dev.vars`: it really does deploy
+ * Workers, run Workflows, and write to the account's one Secrets Store. Run it deliberately.
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,8 +41,15 @@ const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 const optedIn = process.env.PITHY_LIVE_DEPLOY === "1";
 
-const writeWorkflow = (env: ManagedEnvironment) => `pithy-secrets-write-${env}`;
-const rotateWorkflow = (env: ManagedEnvironment) => `pithy-secrets-rotate-${env}`;
+/**
+ * The reserved project every name in this run derives from. Not a hand-written literal: the names are
+ * what is under test, so they go through the product's own composers, and only the project segment is
+ * swapped for the reservation (CONTRIBUTING.md § live tests).
+ */
+const project = RESERVED_TEST_PROJECT;
+
+const writeWorkflow = (env: ManagedEnvironment) => secretsWriteWorkflowName(project, env);
+const rotateWorkflow = (env: ManagedEnvironment) => secretsRotateWorkflowName(project, env);
 
 /** The `audited` boolean from a write Workflow's output (the only thing the audit returns). */
 function auditedOf(output: unknown): boolean | undefined {
@@ -50,7 +63,7 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
     const storeId = vars.SECRETS_STORE_ID ?? "";
     const cf = new CloudflareClients({ accountId, apiToken });
     const workflows = new CloudflareWorkflowsClient({ accountId, apiToken });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project, storeId });
 
     const env: ManagedEnvironment = "staging";
     const secretName = "pithy-itest-secret";
@@ -70,8 +83,9 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
         accountId,
+        project,
         storeId,
-        deploy: buildManagerDeploy({ accountId, apiToken }),
+        deploy: buildManagerDeploy({ accountId, apiToken, project }),
       });
       const result = await provisionSecrets(provisioner);
       expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments());
@@ -114,7 +128,7 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
 
     // Teardown removed every manager Worker and database.
     for (const e of managedEnvironments()) {
-      const name = managerWorkerName(e);
+      const name = managerWorkerName(project, e);
       expect(await cf.workers().getWorker(name)).toBeNull();
       expect(await cf.d1Provisioner().findDatabaseByName(name)).toBeNull();
     }

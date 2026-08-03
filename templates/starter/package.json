@@ -12,6 +12,6 @@
     "dev": "pithy dev",
     "deploy": "pithy deploy",
     "deploy:staging": "pithy deploy --env staging",
-    "deploy:production": "pithy deploy --env production"
+    "deploy:prod": "pithy deploy --env prod"
   }
 }

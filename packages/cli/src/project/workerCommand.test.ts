@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { addWorker, listWorkers, removeWorker } from "./workerCommand";
@@ -25,6 +26,8 @@ describe("addWorker", () => {
   let dir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-worker-add-"));
+    // Every project has a root config; the scaffold reads the project name from it rather than guessing.
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -45,6 +48,26 @@ describe("addWorker", () => {
     expect(installed).toBe(true);
     expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false });
     await stat(join(dir, "apps", "web", "wrangler.jsonc")); // the scaffold landed
+  });
+
+  test("threads the root project name into the new worker's PROJECT var", async () => {
+    // A Worker added later must be able to mint attributable Images/Stream assets exactly like the one
+    // `pithy init` scaffolded — the project is read from the root config, never guessed from the directory.
+    await addWorker({
+      projectDir: dir,
+      name: "web",
+      mainRoot: dir,
+      skipInstall: true,
+      discoverWorkers: discover(dir, ["app", "web"]),
+    });
+
+    const wrangler = parse(await readFile(join(dir, "apps", "web", "wrangler.jsonc"), "utf8")) as unknown as {
+      vars: Record<string, string>;
+      env: Record<string, { vars: Record<string, string> }>;
+    };
+    expect(wrangler.vars?.PROJECT).toBe("acme");
+    expect(wrangler.env.staging?.vars?.PROJECT).toBe("acme");
+    expect(wrangler.env.prod?.vars?.PROJECT).toBe("acme");
   });
 
   test("--skip-install does not run the workspace install", async () => {
@@ -81,6 +104,7 @@ describe("addWorker", () => {
     const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
     const worktree = join(mainRoot, ".worktrees", "73-demo");
     await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
     try {
       const report = await addWorker({
         projectDir: worktree,

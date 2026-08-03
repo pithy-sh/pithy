@@ -1,9 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
-import type { WorkerMigrationRun } from "../migrations/run";
+import { describe, expect, test, vi } from "vitest";
+import { type MigrateProjectOptions, migrateProject, type WorkerMigrationRun } from "../migrations/run";
 import migrate, { formatMigrateReport } from "./migrate";
+
+// The root config is the only thing stubbed: `requireProjectName` stays real, so the wiring test
+// proves the command normalizes the configured name the same way every other resource name is.
+vi.mock("../project/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/config")>()),
+  loadProject: async () => ({ name: "Acme Corp" }),
+}));
+
+vi.mock("../migrations/run", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../migrations/run")>()),
+  migrateProject: vi.fn(async (): Promise<WorkerMigrationRun[]> => []),
+}));
 
 /** Drop the saffron escape codes so an assertion compares the words, not the color. */
 function plain(value: string): string {
@@ -45,6 +57,24 @@ describe("migrate command", () => {
     expect(args.json).toMatchObject({ type: "boolean", default: false });
   });
 
+  test("hands the run the project name from the root config, so every database is stamped with it", async () => {
+    const written: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await migrate.run?.({ args: { env: "dev", rollback: false, json: true } } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+
+    const [options] = vi.mocked(migrateProject).mock.calls.at(-1) ?? [];
+    expect((options as MigrateProjectOptions).project).toBe("acme-corp");
+    // And the --json line names it, so an agent reads which project owns what it just migrated.
+    expect(JSON.parse(String(written.at(-1)))).toMatchObject({ command: "migrate", project: "acme-corp" });
+  });
+
   describe("output", () => {
     test("groups by worker, one aligned line each", () => {
       const report = formatMigrateReport(
@@ -52,7 +82,7 @@ describe("migrate command", () => {
           run("api", "app", "DB", ["0100_auth_0001", "0100_auth_0002"]),
           run("collab", "collab", "COLLAB_DB", ["0500_multiplayer_0001"]),
         ],
-        { env: "dev", rollback: false, json: false },
+        { project: "acme", env: "dev", rollback: false, json: false },
       );
       expect(plain(report).split("\n").slice(0, 2)).toEqual([
         "api     0100_auth_0001, 0100_auth_0002 applied.",
@@ -65,6 +95,7 @@ describe("migrate command", () => {
       const report = formatMigrateReport(
         [run("api", "app", "DB", ["0100_auth_0002"]), run("collab", "collab", "DB", [])],
         {
+          project: "acme",
           env: "dev",
           rollback: true,
           json: false,
@@ -78,6 +109,7 @@ describe("migrate command", () => {
 
     test("a project with nothing to migrate says so once", () => {
       const report = formatMigrateReport([{ worker: "api", databases: [] }], {
+        project: "acme",
         env: "dev",
         rollback: false,
         json: false,
@@ -87,12 +119,15 @@ describe("migrate command", () => {
 
     test("--json groups per worker, in a stable shape", () => {
       const line = formatMigrateReport([run("api", "app", "DB", ["0100_auth_0001"])], {
+        project: "acme",
         env: "staging",
         rollback: false,
         json: true,
       });
       expect(JSON.parse(line)).toEqual({
         command: "migrate",
+        // The project every migrated database is stamped with — an agent reads which project ran.
+        project: "acme",
         env: "staging",
         rollback: false,
         workers: [
@@ -115,7 +150,9 @@ describe("migrate command", () => {
         { worker: "api", databases: [{ database: "app", binding: "DB", results: [], sharedWith: ["collab"] }] },
         { worker: "collab", databases: [{ database: "app", binding: "DB", results: [], sharedWith: ["api"] }] },
       ];
-      const parsed = JSON.parse(formatMigrateReport(shared, { env: "dev", rollback: false, json: true })) as {
+      const parsed = JSON.parse(
+        formatMigrateReport(shared, { project: "acme", env: "dev", rollback: false, json: true }),
+      ) as {
         workers: { databases: { sharedWith?: string[] }[] }[];
       };
       expect(parsed.workers.map((worker) => worker.databases[0]?.sharedWith)).toEqual([["collab"], ["api"]]);

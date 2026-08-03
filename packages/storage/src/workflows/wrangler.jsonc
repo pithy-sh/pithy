@@ -1,10 +1,13 @@
 {
   // The prebuilt storage sweep worker. Like the email and media workers, this is a TEMPLATE, not a
-  // wrangler env-stanza file: staging and production are genuinely separate workers. `pithy storage
+  // wrangler env-stanza file: staging and prod are genuinely separate workers. `pithy storage
   // provision` resolves it into one complete config per environment — filling the `<...>` placeholders,
   // deriving the `workflows` array and the cron from the capability's specs — and deploys each with
   // `wrangler deploy --config <resolved>`. The adopter authors none of it.
-  "name": "pithy-storage", // resolved per env → pithy-storage-staging / pithy-storage-production
+  // Resolved per project and env → <project>-staging-storage / <project>-prod-storage. Worker
+  // script names are account-scoped, so the project segment is what stops a second Pithy project's
+  // deploy overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-storage",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -27,13 +30,13 @@
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
       "store_id": "<filled-at-provision>",
-      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+      "secret_name": "<filled-at-provision>"
     }
   ],
 
   // The one Workflow this worker hosts. Rewritten at provision from `workflows/specs.ts`, so the
-  // binding, the class name, and the per-environment deployed name come from the spec rather than
-  // from this block — it is here so the template reads as a complete config.
+  // binding, the class name, and the project- and environment-scoped deployed name come from the spec
+  // rather than from this block — it is here so the template reads as a complete config.
   "workflows": [{ "binding": "STORAGE_SWEEP", "name": "pithy-storage-sweep", "class_name": "StorageSweepWorkflow" }],
 
   // The daily sweep. Also rewritten at provision from the spec's `schedule`, for the same reason.

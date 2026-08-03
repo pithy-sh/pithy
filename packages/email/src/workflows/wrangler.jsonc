@@ -1,10 +1,13 @@
 {
   // The prebuilt email worker. Like the secrets manager, this is a TEMPLATE, not a wrangler env-stanza
-  // file: staging and production are genuinely separate workers. `pithy add email` resolves this into
+  // file: staging and prod are genuinely separate workers. `pithy add email` resolves this into
   // one complete config per environment — filling the `<...>` placeholders — and deploys each with
   // `wrangler deploy --config <resolved>`. The user authors none of it. It hosts the send and scheduler
   // Workflows and the every-minute scheduler cron, and holds the `send_email` binding that actually sends.
-  "name": "pithy-email", // resolved per env → pithy-email-staging / pithy-email-production
+  // Resolved per project and env → <project>-staging-email / <project>-prod-email. Worker script
+  // names are account-scoped, so the project segment is what stops a second Pithy project's deploy
+  // overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-email",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -17,8 +20,9 @@
   // app's own data. Plus the secrets database, read for the link-signing key.
   "d1_databases": [
     { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
-    // The shared, durable suppression database — one per account, not per environment, so an
-    // unsubscribe or hard bounce applies everywhere. The same database id is bound in every environment.
+    // The durable suppression database — one per PROJECT, shared across that project's environments,
+    // so an unsubscribe or hard bounce applies everywhere the project sends from. The same database id
+    // is bound in every environment; the name resolves to <project>-global-email-suppressions.
     {
       "binding": "EMAIL_SUPPRESSIONS",
       "database_name": "pithy-email-suppressions",
@@ -36,7 +40,7 @@
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
       "store_id": "<filled-at-provision>",
-      "secret_name": "SECRETS_ENCRYPTION_KEYS"
+      "secret_name": "<filled-at-provision>"
     }
   ],
 

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { discoverWorkers } from "./workers";
 
 /** Adopter token configuration: per-profile overrides of the predefined defaults (permissions/resources/store). */
@@ -161,10 +162,10 @@ export function allCapabilities(config: WorkerConfig): Capability[] {
  * feeds a naming convention another command must reproduce later — use {@link requireProjectName} there.
  */
 export async function resolveProjectName(config: ProjectConfig, projectDir: string): Promise<string> {
-  if (config.name) return kebabName(config.name);
+  if (config.name) return kebab(config.name);
   const [worker] = await discoverWorkers(projectDir);
-  if (worker) return kebabName(worker.name);
-  return kebabName(basename(projectDir));
+  if (worker) return kebab(worker.name);
+  return kebab(basename(projectDir));
 }
 
 /**
@@ -175,6 +176,14 @@ export async function resolveProjectName(config: ProjectConfig, projectDir: stri
  * between machines or checkouts (an alphabetically-first worker, a worktree's directory basename) would
  * make teardown recompute names that match nothing, delete nothing, and exit 0 — a silent resource leak.
  * Throws an actionable `ValidationError` when `name` is absent.
+ *
+ * It also holds the name to `assertValidProjectName`, and that is the *second* half of the same guard.
+ * `scaffoldProject` keeps a bad name from being created; this keeps an already-created one from getting
+ * anywhere. Cloudflare's namespaces disagree about what a legal project segment is — D1, KV, and R2 take
+ * a digit-leading name, Worker scripts and Workflows refuse it — so without this check `pithy add` and
+ * `pithy migrate` provision real resources and only the first host-worker deploy fails, leaving a
+ * half-provisioned project whose only documented fix orphans everything already created. Every command
+ * resolves the project through here, so every command refuses on the first one instead.
  */
 export function requireProjectName(config: ProjectConfig): string {
   if (!config.name) {
@@ -184,13 +193,8 @@ export function requireProjectName(config: ProjectConfig): string {
         "Set `name` in pithy.config.ts. Every feature resource name — and pithy feature destroy's ability to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.",
     });
   }
-  return kebabName(config.name);
-}
-
-/** Lowercase, collapse any run of non-`[a-z0-9]` to one `-`, and trim leading/trailing `-`. */
-function kebabName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  assertValidProjectName(config.name);
+  // `kebab` is core's, imported rather than reimplemented: a project name has to normalize identically
+  // in every command that composes a resource name, and a second copy here would drift.
+  return kebab(config.name);
 }

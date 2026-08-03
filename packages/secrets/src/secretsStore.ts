@@ -178,7 +178,7 @@ export async function secretsStore<R extends SecretRegistry>(
   const bindings = env as unknown as Record<string, SecretBinding | string | undefined>;
 
   // **One explicit signal decides dev vs deployed: `ENVIRONMENT`.** It is stamped into each deployed
-  // worker's vars at provision (`staging` | `production`); when it is not a `ManagedEnvironment` (absent,
+  // worker's vars at provision (`staging` | `prod`); when it is not a `ManagedEnvironment` (absent,
   // or local dev) the worker is in dev. This is the *only* thing that flips resolution — never the runtime
   // shape of a value — so a stray plaintext binding can never make a deployed `d1` secret read unencrypted.
   const deployedEnv = ManagedEnvironment.safeParse(bindings.ENVIRONMENT);

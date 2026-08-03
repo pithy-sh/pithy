@@ -2,8 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import type { CommandDef } from "citty";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import vector from "./vector";
+
+const root = vi.hoisted(() => ({ config: {} as { name?: string } }));
+
+// Belt and braces: no credentials resolve, so nothing here can reach a real Cloudflare account even if the
+// name check is ever moved later in the command. The refusal under test is local and comes first anyway.
+vi.mock("@pithy-sh/cloudflare/src/env/devVars", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pithy-sh/cloudflare/src/env/devVars")>()),
+  loadCloudflareEnv: () => ({}),
+}));
+
+// Only the root config is stubbed. `requireProjectName` stays real, so this exercises the actual refusal.
+vi.mock("../project/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/config")>()),
+  loadProject: async () => root.config,
+}));
 
 /**
  * The command surface, asserted rather than assumed: every vector command is `--env`-targeted and
@@ -61,5 +76,48 @@ describe("pithy vector", () => {
       const args = subcommand(name).args as Record<string, { required?: boolean }>;
       expect(Object.values(args).some((arg) => arg.required === true)).toBe(false);
     }
+  });
+});
+
+/**
+ * The project name is resolved at this command edge, and every index name leads with it. An index is
+ * *found by name and reused*, so a guessed project (the alphabetically first worker, the directory
+ * basename) would let one project embed its corpus into another's index. The name is required, not
+ * guessed, and the refusal comes before a single Cloudflare call.
+ */
+describe("pithy vector — the project name", () => {
+  /** Run a subcommand to its first failure and return the `--json` error payload it reported. */
+  async function failure(name: string, args: Record<string, unknown>): Promise<{ code: string; message: string }> {
+    const lines: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    // withErrorReporting exits the process after reporting; throwing instead keeps the run in this test.
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exited");
+    }) as never);
+    try {
+      await expect(subcommand(name).run?.({ args, rawArgs: [] } as never)).rejects.toThrow("exited");
+    } finally {
+      stderr.mockRestore();
+      exit.mockRestore();
+    }
+    return JSON.parse(lines.join("")).error;
+  }
+
+  beforeEach(() => {
+    root.config = {};
+  });
+
+  test("provision refuses a project with no name, before it reaches Cloudflare", async () => {
+    const error = await failure("provision", { json: true, env: "dev" });
+    expect(error.code).toBe("validation/invalid_input");
+    expect(error.message).toBe("pithy.config.ts has no `name`.");
+  });
+
+  test("reprocess refuses a project with no name rather than re-embedding a guessed index", async () => {
+    const error = await failure("reprocess", { json: true, env: "dev", all: false });
+    expect(error.message).toBe("pithy.config.ts has no `name`.");
   });
 });

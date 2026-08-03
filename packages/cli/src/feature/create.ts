@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { migrateProject } from "../migrations/run";
+import { loadProject, requireProjectName } from "../project/config";
 import { detectPackageManager, type InstallRunner } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
 import { seedProject } from "../seed/run";
@@ -20,12 +21,20 @@ import { createWorktree, defaultGit, type GitRunner } from "./worktree";
 /** A local/dev backend step (migrate or seed) — a seam so create is testable without Miniflare. */
 export type LocalRunner = (args: { projectDir: string }) => Promise<void>;
 
+// A `dev` migrate names its project too: the local Miniflare store lives at the project root and is
+// shared with `wrangler dev`, and this is usually the run that first stamps it. An unstamped database is
+// one any project can later claim, so the first write is the only chance to record the owner.
 const localMigrate: LocalRunner = async ({ projectDir }) => {
-  await migrateProject({ env: "dev", projectDir });
+  const project = requireProjectName(await loadProject(projectDir));
+  await migrateProject({ env: "dev", projectDir, project });
 };
 
+// Even a `dev` seed names its project: Cloudflare Images and Stream have no local emulation, so a media
+// fixture here writes into the same account-wide store production shares, and only the ownership metadata
+// says who put it there.
 const localSeed: LocalRunner = async ({ projectDir }) => {
-  await seedProject({ env: "dev", projectDir, json: true });
+  const project = requireProjectName(await loadProject(projectDir));
+  await seedProject({ env: "dev", projectDir, project, json: true });
 };
 
 /** The structured outcome of `pithy feature create` — the `--json` payload and the human summary source. */

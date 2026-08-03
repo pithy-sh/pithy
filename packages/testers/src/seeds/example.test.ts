@@ -20,10 +20,10 @@ function group(table: string) {
 }
 
 describe("the example seed", () => {
-  test("is an example set, never seeded into production", () => {
+  test("is an example set, never seeded into prod", () => {
     expect(testersExampleSeed.example).toBe(true);
     expect(testersExampleSeed.environments).toEqual(["dev", "staging"]);
-    expect(testersExampleSeed.environments).not.toContain("production");
+    expect(testersExampleSeed.environments).not.toContain("prod");
   });
 
   test("sorts after auth, which owns the users its addresses belong to", () => {

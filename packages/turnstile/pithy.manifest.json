@@ -4,11 +4,11 @@
   "requiredBindings": [],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],
-  "whenToEnable": "Stop bots at credential-entry and form-submit points without asking real users to prove themselves. Stacks a Cloudflare Turnstile humanity check on any route — magic-link and OTP login, signup, lead capture, contact. dev and staging wire Cloudflare's test keys automatically; only production provisions a real widget. The widget secret is stored and read through @pithy-sh/secrets, so the secrets capability is required.",
+  "whenToEnable": "Stop bots at credential-entry and form-submit points without asking real users to prove themselves. Stacks a Cloudflare Turnstile humanity check on any route — magic-link and OTP login, signup, lead capture, contact. dev and staging wire Cloudflare's test keys automatically; only `prod` provisions a real widget. The widget secret is stored and read through @pithy-sh/secrets, so the secrets capability is required.",
   "scaffold": [
     "Edit `turnstile({ ... })` in pithy.config.ts: declare the widget mode(s) you use (`visible` for pages where the challenge should be seen, like login; `invisible` for silent forms) and the `protect` map (action → mode). `login` is gated by the visible widget by default. Social/OAuth login is never gated.",
     "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the turnstile widget secret is stored and read through @pithy-sh/secrets, which the secrets capability sets up.",
-    "Run `pithy turnstile provision` — it writes Cloudflare's documented test secret for dev (into .dev.vars) and staging (into the staging secrets store), and provisions the real production widget, storing its secret in the production secrets store and writing the public sitekeys to config.",
+    "Run `pithy turnstile provision` — it writes Cloudflare's documented test secret for dev (into .dev.vars) and staging (into the staging secrets store), and provisions the real prod widget, storing its secret in the prod secrets store and writing the public sitekeys to config.",
     "Stack the gate on a route: `import { turnstile } from \"@pithy-sh/turnstile/src/http/middleware\"` and `app.use(\"/signup\", turnstile())`. It reads the token from the `cf-turnstile-response` body field (or a header) and resolves the secret through @pithy-sh/secrets. Render the widget on your front-end with the public sitekey — Pithy ships no front-end component."
   ],
   "configOptions": []

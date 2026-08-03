@@ -22,6 +22,7 @@ describe("writeTokenToSink", () => {
       projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
+      storeEntryName: "acme-staging-cf-token-ci-system",
     });
     expect(target.sink).toBe("ephemeral");
     expect(target.location).not.toContain("secret-value");
@@ -34,6 +35,8 @@ describe("writeTokenToSink", () => {
       projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
+      // Deliberately different from the variable key: a dev-vars write must ignore it entirely.
+      storeEntryName: "acme-staging-cf-token-ci-system",
     });
     expect(target).toEqual({ sink: "dev-vars", location: ".dev.vars.staging" });
 
@@ -43,7 +46,12 @@ describe("writeTokenToSink", () => {
     expect(body).toContain("CF_TOKEN_CI_SYSTEM=v1");
 
     // A second write replaces the value in place — no duplicate line.
-    await writeTokenToSink("dev-vars", "v2", { projectDir: dir, env: "staging", secretName: "CF_TOKEN_CI_SYSTEM" });
+    await writeTokenToSink("dev-vars", "v2", {
+      projectDir: dir,
+      env: "staging",
+      secretName: "CF_TOKEN_CI_SYSTEM",
+      storeEntryName: "acme-staging-cf-token-ci-system",
+    });
     const updated = await readFile(join(dir, ".dev.vars.staging"), "utf8");
     expect(updated).toContain("CF_TOKEN_CI_SYSTEM=v2");
     expect(updated.match(/CF_TOKEN_CI_SYSTEM=/g)).toHaveLength(1);
@@ -54,27 +62,37 @@ describe("writeTokenToSink", () => {
       projectDir: dir,
       env: "dev",
       secretName: "CF_TOKEN_CI_SYSTEM",
+      storeEntryName: "acme-dev-cf-token-ci-system",
     });
     expect(target.location).toBe(".dev.vars");
     expect(await readFile(join(dir, ".dev.vars"), "utf8")).toContain("CF_TOKEN_CI_SYSTEM=v1");
   });
 
-  test("secrets-store calls putSecret under the secret name, never leaking the value into the location", async () => {
+  test("secrets-store writes the project-scoped entry name, not the .dev.vars variable key", async () => {
+    // The two names split for a reason: the store is one flat namespace shared by every project in the
+    // account, so its entry is scoped — while the variable key stays verbatim for CI to read.
     const putSecret = vi.fn(async () => {});
     const target = await writeTokenToSink("secrets-store", "sv", {
       projectDir: dir,
-      env: "production",
-      secretName: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",
+      env: "prod",
+      secretName: "SECRETS_MANAGER_CF_API_TOKEN",
+      storeEntryName: "acme-global-secrets-manager-cf-api-token",
       putSecret,
     });
-    expect(putSecret).toHaveBeenCalledWith("GLOBAL_SECRETS_MANAGER_CF_API_TOKEN", "sv");
+    expect(putSecret).toHaveBeenCalledWith("acme-global-secrets-manager-cf-api-token", "sv");
+    expect(putSecret).not.toHaveBeenCalledWith("SECRETS_MANAGER_CF_API_TOKEN", "sv");
     expect(target.sink).toBe("secrets-store");
     expect(target.location).not.toContain("sv");
   });
 
   test("secrets-store without a configured store fails with an actionable error", async () => {
     await expect(
-      writeTokenToSink("secrets-store", "sv", { projectDir: dir, env: "production", secretName: "X" }),
+      writeTokenToSink("secrets-store", "sv", {
+        projectDir: dir,
+        env: "prod",
+        secretName: "X",
+        storeEntryName: "acme-prod-x",
+      }),
     ).rejects.toThrow(PithyError);
   });
 });

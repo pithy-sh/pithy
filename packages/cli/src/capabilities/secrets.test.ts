@@ -51,7 +51,7 @@ describe("runSecretWrite", () => {
       value: "t",
       env: "staging",
     });
-    expect(envs).toEqual(["production"]);
+    expect(envs).toEqual(["prod"]);
   });
 
   test("rejects an undeclared secret", async () => {
@@ -81,8 +81,8 @@ describe("runSecretWrite", () => {
 
   test("delete dispatches with no value", async () => {
     const dispatcher = new StubDispatcher();
-    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "auth-signing-key", env: "production" });
-    expect(dispatcher.calls[0]).toMatchObject({ env: "production", mode: "delete", name: "auth-signing-key" });
+    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "auth-signing-key", env: "prod" });
+    expect(dispatcher.calls[0]).toMatchObject({ env: "prod", mode: "delete", name: "auth-signing-key" });
     expect(dispatcher.calls[0]?.value).toBeUndefined();
   });
 
@@ -120,7 +120,7 @@ describe("runSecretWrite", () => {
       { mode: "update", name: "npm-token", value: "v", env: "staging" },
       audit,
     );
-    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "npm-token", env: "production" }, audit);
+    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "npm-token", env: "prod" }, audit);
 
     expect(events.map((e) => e.action)).toEqual(["secrets/rotated", "secrets/removed"]);
     expect(events.every((e) => e.outcome === "success")).toBe(true);

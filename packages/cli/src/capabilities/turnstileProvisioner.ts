@@ -3,10 +3,10 @@
 
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
-import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
+import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
   type ManagedTurnstileEnv,
   productionWidgetName,
@@ -29,11 +29,29 @@ function cloudflareMode(mode: TurnstileMode): "managed" | "invisible" {
   return mode === "visible" ? "managed" : "invisible";
 }
 
+/**
+ * Every widget name this project can own — one per mode, whether or not config enables both.
+ *
+ * The domain guard subtracts this set rather than matching the one mode being provisioned: a project
+ * running a visible *and* an invisible widget has two of its own widgets on the domain, and the second
+ * pass must not read the first as a squatter. Deriving it from `TurnstileMode` keeps it whole even when
+ * config later enables a mode a previous run already created.
+ */
+function ourWidgetNames(project: string): Set<string> {
+  return new Set(TurnstileMode.options.map((mode) => productionWidgetName(project, mode)));
+}
+
 /** The routing facts the turnstile secret carries — a `d1`, per-environment, rotatable JSON value. */
 const SECRET_FACTS = { backend: "d1", scope: "environment", rotatable: true, valueType: "json" } as const;
 
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;
+  /**
+   * The project name from the root `pithy.config.ts`, resolved by `requireProjectName` and never
+   * guessed. It is the leading segment of every widget name, so a wrong value here reuses — and on
+   * teardown deletes — another project's widget (docs/NAMING.md).
+   */
+  project: string;
   /**
    * The project root — owner of the one shared `.dev.vars` every worker symlinks to, so a dev sitekey
    * written here reaches every worker at once.
@@ -52,12 +70,13 @@ export interface CloudflareTurnstileProvisionerOptions {
 
 /**
  * The live {@link TurnstileProvisioner}. The widget secret is written like any other secret — `.dev.vars`
- * for dev, the per-environment manager Workflow for staging/production (CLAUDE.md §secrets) — and the real
+ * for dev, the per-environment manager Workflow for staging/prod (CLAUDE.md §secrets) — and the real
  * production widget is created through `@pithy-sh/cloudflare`. dev/managed-sitekey writes are idempotent
  * file upserts; the managed secret write upserts (create, else update); widget creation reuses by name.
  */
 export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #projectDir: string;
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
@@ -65,10 +84,23 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#projectDir = options.projectDir;
     this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
     this.#audit = options.audit ?? (async () => {});
+  }
+
+  async assertDomainAvailable(domain: string): Promise<void> {
+    const ours = ourWidgetNames(this.#project);
+    const claimants = await this.#cf.turnstile().listTurnstilesByDomain(domain);
+    const foreign = claimants.find((widget) => !ours.has(widget.name));
+    if (!foreign) return;
+    throw new ValidationError({
+      message: `A Turnstile widget named "${foreign.name}" already covers ${domain}.`,
+      action: "Bind this project to a different domain, delete that widget, or re-run with --allow-shared-domain.",
+      detail: `sitekey ${foreign.sitekey} claims ${domain}; this project's widgets are ${[...ours].join(", ")}`,
+    });
   }
 
   async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
@@ -105,7 +137,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     mode: TurnstileMode,
     domain: string,
   ): Promise<{ sitekey: string; secret: string | null }> {
-    const name = productionWidgetName(mode);
+    const name = productionWidgetName(this.#project, mode);
     const existing = await this.#cf.turnstile().getTurnstile(name);
     if (existing) return { sitekey: existing.sitekey, secret: null };
     const created = await this.#cf.turnstile().addTurnstile(name, [domain], cloudflareMode(mode));
@@ -128,6 +160,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
  */
 export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #projectDir: string;
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
@@ -135,6 +168,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#projectDir = options.projectDir;
     this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
@@ -142,7 +176,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   }
 
   async deleteProductionWidget(mode: TurnstileMode): Promise<void> {
-    const name = productionWidgetName(mode);
+    const name = productionWidgetName(this.#project, mode);
     const existing = await this.#cf.turnstile().getTurnstile(name);
     if (!existing) return;
     await this.#cf.turnstile().deleteTurnstile(existing.sitekey);
@@ -157,7 +191,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   }
 
   async deleteManagedSecret(): Promise<void> {
-    for (const env of ["staging", "production"] as const) {
+    for (const env of ["staging", "prod"] as const) {
       // Delete is idempotent in the manager (a missing name is a no-op), so this is safe to re-run.
       await dispatchSecretWrite(this.#dispatcher, {
         mode: "delete",
@@ -175,7 +209,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
 
   async clearManagedSitekeys(modes: TurnstileMode[]): Promise<void> {
     const keys = modes.map((mode) => sitekeyVarName(mode));
-    for (const env of ["staging", "production"] as const) {
+    for (const env of ["staging", "prod"] as const) {
       await editEnvVars(this.#workerDir, env, (vars) => {
         for (const key of keys) delete vars[key];
       });

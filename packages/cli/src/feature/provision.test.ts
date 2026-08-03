@@ -7,11 +7,11 @@ import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { type FeatureIdentity, featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
-import { type FeatureIdentity, featureResourceName, featureWorkerName } from "./naming";
 import {
   deprovisionFeature,
   FeatureAuditActions,
@@ -468,7 +468,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       const { stores, provisioners } = fakeProvisioners();
       // A production database, listed under a plausible-looking name. For R2 the id IS the bucket name, and
       // D1/KV ids are conventionally committed in wrangler.jsonc — so none of this needs secret knowledge.
-      stores.d1.set("acme-production", "prod-d1-uuid");
+      stores.d1.set("acme-prod", "prod-d1-uuid");
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name: "looks-legit", id: "prod-d1-uuid" }]);
 
       const report = await deprovisionFeature({
@@ -480,7 +480,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       });
 
       expect(report.deleted).toEqual([]);
-      expect(stores.d1.get("acme-production")).toBe("prod-d1-uuid"); // production survived
+      expect(stores.d1.get("acme-prod")).toBe("prod-d1-uuid"); // production survived
     });
 
     test("destroy still deletes a legitimately-recorded resource — the check does not break the real path", async () => {

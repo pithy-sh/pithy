@@ -3,6 +3,8 @@
 
 import { defineCommand } from "citty";
 import { migrateProject, type WorkerMigrationRun } from "../migrations/run";
+import { loadProject, requireProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -23,10 +25,11 @@ function describe(run: WorkerMigrationRun, rollback: boolean): string {
  */
 export function formatMigrateReport(
   workers: WorkerMigrationRun[],
-  options: { env: string; rollback: boolean; json: boolean },
+  options: { project: string; env: string; rollback: boolean; json: boolean },
 ): string {
   if (options.json) {
-    return `${formatJsonLine({ command: "migrate", env: options.env, rollback: options.rollback, workers })}\n`;
+    const payload = { command: "migrate", project: options.project, env: options.env, rollback: options.rollback };
+    return `${formatJsonLine({ ...payload, workers })}\n`;
   }
   if (workers.every((worker) => worker.databases.length === 0)) return `Nothing to migrate.\n${formatDone()}\n`;
 
@@ -38,20 +41,26 @@ export function formatMigrateReport(
 export default defineCommand({
   meta: { name: "migrate", description: "Run migrations for an environment" },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     worker: { type: "string", description: "Migrate one worker instead of every worker in apps/" },
     rollback: { type: "boolean", default: false, description: "Step the latest migration back" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
+      // The non-guessing name: it is stamped into every database this run touches, and a later run
+      // checks against it, so a fallback that differs between checkouts would lock a project out of
+      // its own database. `requireProjectName` refuses to guess (docs/CLI.md §3.3).
+      const project = requireProjectName(await loadProject(projectDir));
       const workers = await migrateProject({
         projectDir,
-        env: args.env,
+        project,
+        env,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
         rollback: args.rollback,
       });
-      process.stdout.write(formatMigrateReport(workers, { env: args.env, rollback: args.rollback, json: args.json }));
+      process.stdout.write(formatMigrateReport(workers, { project, env, rollback: args.rollback, json: args.json }));
     }),
 });

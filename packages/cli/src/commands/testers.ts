@@ -7,14 +7,16 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { SUPPRESSION_DB_NAME } from "@pithy-sh/email/src/provision/provisionEmail";
-import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { createCliAudit } from "../audit/cliAudit";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { loadProject, requireProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -106,28 +108,12 @@ function oneOf<const T extends readonly string[]>(
 }
 
 /**
- * The `--env` of a *provisioning* command, which is a different set from the `--env` everywhere else.
- *
- * The roster subcommands default to `dev`, because they talk to a local D1 and dev is where you use
- * them. Provisioning deploys a Worker to a Cloudflare account, and there is no dev account to deploy
- * to — so its `--env` accepts only the managed environments. That asymmetry is real and worth keeping,
- * but it has to be *said*: `ManagedEnvironment.parse` alone raises a bare `ZodError`, which
- * `withErrorReporting` rethrows unmapped, so `--env dev` — the value the rest of the help text tells
- * you to use — exited with a stack trace and no JSON error line.
+ * `--env` here is two different sets, deliberately. The roster subcommands take {@link ENV_ARG} and
+ * default to `dev`, because they talk to a local D1 and dev is where you use them. Provisioning deploys
+ * a Worker to a Cloudflare account, where there is no dev to deploy to, so it goes through
+ * {@link requireManagedEnvironment} instead. Both refuse an illegal environment as a `ValidationError`;
+ * neither lets a bare `ZodError` escape `withErrorReporting` with a stack trace.
  */
-function managedEnv(value: string): ManagedEnvironment {
-  const parsed = ManagedEnvironment.safeParse(value);
-  if (!parsed.success) {
-    throw new ValidationError({
-      message: `--env must be one of ${managedEnvironments().join(", ")}. Got ${JSON.stringify(value)}.`,
-      action:
-        value === "dev"
-          ? "Provisioning deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead."
-          : `Pass a managed environment: --env ${managedEnvironments()[0]}`,
-    });
-  }
-  return parsed.data;
-}
 
 /**
  * A name within the deployment's configured ceiling.
@@ -149,7 +135,9 @@ function boundedName(value: string, limit: number, flag: string): string {
 }
 
 /** Resolve the app D1 for an environment, plus the resolved testers config. */
-async function openTesters(env: string) {
+async function openTesters(requested: string) {
+  // The roster commands' one door, so the `--env` check lives here rather than nine times over.
+  const env = requireEnvironment(requested);
   const projectDir = process.cwd();
   const workers = await resolveWorkers({ projectDir });
   const { isTestersCapability } = await loadTesters();
@@ -229,8 +217,15 @@ async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>,
  *
  * The sending identity is read off the composed email capability rather than asked for: the adopter has
  * already told `pithy.config.ts` which domain they send from, and asking twice is how the two drift.
+ *
+ * The project name comes from `requireProjectName`, never `resolveProjectName`: it leads the deployed
+ * host name and the suppression database this looks up, and both have to be the same names the other
+ * commands compute (docs/NAMING.md).
  */
 async function buildProvisioner(projectDir: string) {
+  // The name first, before the credentials: both are local checks, and a config that cannot name the
+  // project is not a Cloudflare problem to report as one.
+  const project = requireProjectName(await loadProject(projectDir));
   const vars = loadCloudflareEnv(projectDir);
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -273,13 +268,15 @@ async function buildProvisioner(projectDir: string) {
   const cf = new CloudflareClients({ accountId, apiToken });
   return {
     email,
+    project,
     provisioner: new CloudflareTestersProvisioner({
       cf,
+      project,
       accountId,
       apiToken,
       testersConfig: testers.testersConfig,
       email,
-      resolveEnv: buildResolveEnv(projectDir, cf),
+      resolveEnv: buildResolveEnv(projectDir, project, cf),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
   };
@@ -308,7 +305,7 @@ interface WranglerStanza {
 }
 
 /** Resolve the per-environment database ids the host binds, from the project's `wrangler.jsonc`. */
-function buildResolveEnv(projectDir: string, cf: CloudflareClients) {
+function buildResolveEnv(projectDir: string, project: string, cf: CloudflareClients) {
   return async (env: ManagedEnvironment) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
     const stanza = config.env?.[env];
@@ -326,13 +323,14 @@ function buildResolveEnv(projectDir: string, cf: CloudflareClients) {
       });
     }
 
-    // The suppression database is global rather than per environment, matching how `@pithy-sh/email`
-    // provisions it: an unsubscribe in production has to stop staging too. So it is looked up by name
-    // rather than read from the env stanza.
-    const suppression = await cf.d1Provisioner().findDatabaseByName(SUPPRESSION_DB_NAME);
+    // One suppression database per project, shared across that project's environments, matching how
+    // `@pithy-sh/email` provisions it: an unsubscribe in production has to stop staging too. So it is
+    // looked up by name rather than read from the env stanza.
+    const suppressionName = suppressionDatabaseName(project);
+    const suppression = await cf.d1Provisioner().findDatabaseByName(suppressionName);
     if (!suppression) {
       throw new ValidationError({
-        message: `The global email-suppression database (${SUPPRESSION_DB_NAME}) does not exist.`,
+        message: `This project's email-suppression database (${suppressionName}) does not exist.`,
         action: "Run `pithy email provision` first — the daily pass reads it to reconcile bounced addresses.",
       });
     }
@@ -344,27 +342,32 @@ const provision = defineCommand({
   meta: { name: "provision", description: "Deploy the daily-pass Workflow worker and write its binding" },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
-    env: { type: "string", description: "Provision one environment only. Omit for every managed environment." },
+    env: {
+      type: "string",
+      description: `Provision one environment only: ${managedEnvironments().join(", ")}. Omit for every one.`,
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, email } = await buildProvisioner(projectDir);
+      const { provisioner, project, email } = await buildProvisioner(projectDir);
       const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } = await loadTestersProvisioning();
 
       // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
       // one-line answer into a raw Cloudflare error from a worker that was never deployed.
-      const environments: ManagedEnvironment[] = args.env ? [managedEnv(args.env)] : [...managedEnvironments()];
+      const environments: ManagedEnvironment[] = args.env
+        ? [requireManagedEnvironment(args.env)]
+        : [...managedEnvironments()];
 
-      const results = await provisionTesters(provisioner, environments);
+      const results = await provisionTesters(provisioner, project, environments);
 
       for (const { env } of results) {
         // Only now can the Workflow binding be written. `pithy add testers` cannot: wrangler requires a
         // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
-        // (`pithy-testers-daily-<env>`). An entry short of either field fails the whole config, so `add`
+        // (`<project>-<env>-testers-daily`). An entry short of either field fails the whole config, so `add`
         // emits none and this completes it — see capabilities/add.ts.
         await applyAppBindings(projectDir, env, {
-          workflows: appWorkflowBindings(testersWorkflowRegistry, TESTERS_CAPABILITY, env),
+          workflows: appWorkflowBindings(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }),
         });
       }
 
@@ -392,16 +395,21 @@ const deprovision = defineCommand({
   meta: { name: "deprovision", description: "Delete the daily-pass worker. The roster and its history stay." },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
-    env: { type: "string", description: "Deprovision one environment only. Omit for every managed environment." },
+    env: {
+      type: "string",
+      description: `Deprovision one environment only: ${managedEnvironments().join(", ")}. Omit for every one.`,
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner } = await buildProvisioner(projectDir);
+      const { provisioner, project } = await buildProvisioner(projectDir);
       const { deprovisionTesters } = await loadTestersProvisioning();
 
-      const environments: ManagedEnvironment[] = args.env ? [managedEnv(args.env)] : [...managedEnvironments()];
-      const results = await deprovisionTesters(provisioner, environments);
+      const environments: ManagedEnvironment[] = args.env
+        ? [requireManagedEnvironment(args.env)]
+        : [...managedEnvironments()];
+      const results = await deprovisionTesters(provisioner, project, environments);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "testers deprovision", results })}\n`);
@@ -419,7 +427,7 @@ const create = defineCommand({
   meta: { name: "create", description: "Create a testing cohort" },
   args: {
     name: { type: "positional", description: "A label for the cohort, e.g. closed-test" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     "target-size": { type: "string", description: "Testers required simultaneously (default: 12, Play's floor)" },
     "window-days": { type: "string", description: "Continuous days required (default: 14, Play's window)" },
     "max-roster": { type: "string", description: "Roster cap (default: 100)" },
@@ -477,7 +485,7 @@ const create = defineCommand({
 const list = defineCommand({
   meta: { name: "list", description: "List cohorts and where each one stands" },
   args: {
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -528,7 +536,7 @@ const invite = defineCommand({
     cohort: { type: "positional", description: "The cohort name or id" },
     email: { type: "string", description: "Address to invite. Repeat the flag for several.", required: true },
     name: { type: "string", description: "A display name for the roster" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -573,7 +581,7 @@ const pending = defineCommand({
   },
   args: {
     cohort: { type: "positional", description: "The cohort name or id" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -613,7 +621,7 @@ const roster = defineCommand({
   meta: { name: "roster", description: "The full roster, with per-tester activity and health" },
   args: {
     cohort: { type: "positional", description: "The cohort name or id" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -669,7 +677,7 @@ const status = defineCommand({
   meta: { name: "status", description: "Where a cohort stands: the clock, activity, the forecast, the trend" },
   args: {
     cohort: { type: "positional", description: "The cohort name or id" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     "trend-days": { type: "string", description: "How many daily snapshots to include (default: 30)" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -737,7 +745,7 @@ const remove = defineCommand({
     cohort: { type: "positional", description: "The cohort name or id" },
     email: { type: "string", description: "The tester's address", required: true },
     reason: { type: "string", description: "A short note recorded on the event" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -778,7 +786,7 @@ const close = defineCommand({
   meta: { name: "close", description: "Close a cohort: keep its history, stop accruing snapshots and nudges" },
   args: {
     cohort: { type: "positional", description: "The cohort name or id" },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -809,7 +817,7 @@ const run = defineCommand({
   meta: { name: "run", description: "Run the daily pass now: advance state, chase, and record the day" },
   args: {
     cohort: { type: "string", description: "Run one cohort only. Omit for every open cohort." },
-    env: { type: "string", default: "dev", description: "Target environment" },
+    env: ENV_ARG,
     "skip-nudges": {
       type: "boolean",
       default: false,

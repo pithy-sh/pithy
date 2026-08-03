@@ -6,8 +6,8 @@
  * present in an environment, surfacing two problems:
  *
  *   - **missing** — a declared secret with no value in this env. The app needs it, so this is what
- *     the promote gate fails on (`ls --check --env production`): a newly-required secret must be set
- *     before production deploys against it.
+ *     the promote gate fails on (`ls --check --env prod`): a newly-required secret must be set
+ *     before prod deploys against it.
  *   - **orphan** — a stored secret no longer in the registry. Harmless but worth cleaning up.
  *
  * Pure set logic — the caller gathers `expectedNames` (registry) and `presentNames` (the store's D1

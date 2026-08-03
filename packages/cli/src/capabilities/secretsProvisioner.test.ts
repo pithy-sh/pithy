@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import {
-  MANAGER_CF_API_TOKEN_NAME,
-  MANAGER_CF_API_TOKEN_SECRET_NAME,
+  managerCfApiTokenName,
+  managerCfApiTokenSecretName,
   masterKeySecretName,
 } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import {
@@ -53,18 +56,22 @@ function fakeCf() {
   };
 }
 
+/** The project every provisioner in this suite is scoped to, unless a test names another. */
+const PROJECT = "acme";
+
 /** Standard provisioner options for a fake `cf`; override `deploy` where a test needs to spy on it. */
 function provisionerOptions(
   cf: CloudflareClients,
   deploy: CloudflareSecretsProvisionerOptions["deploy"] = async () => {},
+  project: string = PROJECT,
 ): CloudflareSecretsProvisionerOptions {
-  return { cf, accountId: "acct-1", storeId: "store-1", deploy };
+  return { cf, accountId: "acct-1", project, storeId: "store-1", deploy };
 }
 
 describe("masterKeySecretName", () => {
-  test("env-prefixes the master-key entry name", () => {
-    expect(masterKeySecretName("staging")).toBe("STAGING_SECRETS_ENCRYPTION_KEYS");
-    expect(masterKeySecretName("production")).toBe("PRODUCTION_SECRETS_ENCRYPTION_KEYS");
+  test("scopes the master-key entry to the project and the environment", () => {
+    expect(masterKeySecretName(PROJECT, "staging")).toBe("acme-staging-secrets-encryption-keys");
+    expect(masterKeySecretName(PROJECT, "prod")).toBe("acme-prod-secrets-encryption-keys");
   });
 });
 
@@ -88,16 +95,16 @@ describe("CloudflareSecretsProvisioner", () => {
   test("ensureDatabase creates the env's database when it doesn't exist", async () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue(null);
-    createDatabase.mockResolvedValue({ uuid: "new-id", name: "pithy-secrets-staging" });
+    createDatabase.mockResolvedValue({ uuid: "new-id", name: "acme-staging-secrets" });
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     expect(await provisioner.ensureDatabase("staging")).toEqual({ databaseId: "new-id" });
-    expect(createDatabase).toHaveBeenCalledWith("pithy-secrets-staging");
+    expect(createDatabase).toHaveBeenCalledWith("acme-staging-secrets");
   });
 
   test("ensureDatabase reuses an existing database (idempotent)", async () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
-    findDatabaseByName.mockResolvedValue({ uuid: "existing-id", name: "pithy-secrets-staging" });
+    findDatabaseByName.mockResolvedValue({ uuid: "existing-id", name: "acme-staging-secrets" });
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     expect(await provisioner.ensureDatabase("staging")).toEqual({ databaseId: "existing-id" });
@@ -109,9 +116,9 @@ describe("CloudflareSecretsProvisioner", () => {
     exists.mockResolvedValue(false);
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
-    expect(await provisioner.ensureMasterKey("production")).toEqual({ storeId: "store-1" });
+    expect(await provisioner.ensureMasterKey("prod")).toEqual({ storeId: "store-1" });
     expect(putSecret).toHaveBeenCalledWith(
-      "PRODUCTION_SECRETS_ENCRYPTION_KEYS",
+      masterKeySecretName(PROJECT, "prod"),
       expect.stringContaining("currentVersion"),
     );
   });
@@ -142,9 +149,9 @@ describe("CloudflareSecretsProvisioner", () => {
 
     await provisioner.ensureManagerToken();
 
-    expect(rollToken).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_NAME, managerTokenPermissions("acct-1"));
+    expect(rollToken).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT), managerTokenPermissions("acct-1"));
     const [name, value] = putSecret.mock.calls[0] ?? [];
-    expect(name).toBe(MANAGER_CF_API_TOKEN_SECRET_NAME);
+    expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "minted-token" } });
   });
 
@@ -177,7 +184,7 @@ describe("CloudflareSecretsProvisioner", () => {
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
-        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+        metadata: { name: managerCfApiTokenSecretName(PROJECT), kind: "manager_token" },
       }),
     ]);
     expect(JSON.stringify(events)).not.toContain("minted-token");
@@ -205,19 +212,148 @@ describe("CloudflareSecretsProvisioner", () => {
       audit: async (event) => void events.push(event),
     });
 
-    await provisioner.ensureMasterKey("production");
+    await provisioner.ensureMasterKey("prod");
     expect(events).toEqual([
       expect.objectContaining({
         action: "secrets/set",
         severity: "warning",
-        metadata: { name: "PRODUCTION_SECRETS_ENCRYPTION_KEYS", kind: "master_key", env: "production" },
+        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key", env: "prod" },
       }),
     ]);
 
     events.length = 0;
     exists.mockResolvedValue(true);
-    await provisioner.ensureMasterKey("production");
+    await provisioner.ensureMasterKey("prod");
     expect(events).toEqual([]);
+  });
+});
+
+describe("two projects sharing one Cloudflare account", () => {
+  /**
+   * A fake `cf` over one Cloudflare account: a single Secrets Store, a single D1 namespace, and a
+   * single Worker namespace, each one flat map keyed by name — exactly the real thing. There is one of
+   * each per account, so this is the arrangement the naming has to survive.
+   */
+  function sharedAccount() {
+    const store = new Map<string, string>();
+    const deletedTokenNames: string[] = [];
+    /** name → uuid, the account's one D1 namespace. */
+    const databases = new Map<string, string>();
+    /** script name → owning project. `wrangler deploy` upserts, so a repeated name is a replacement. */
+    const deployedWorkers = new Map<string, string>();
+    const cf = {
+      secrets: () => ({
+        exists: async (name: string) => store.has(name),
+        putSecret: async (name: string, value: string) => void store.set(name, value),
+        deleteSecret: async (name: string) => void store.delete(name),
+      }),
+      accountTokens: () => ({
+        rollToken: async (name: string) => ({ id: `tk-${name}`, value: `value-${name}` }),
+        deleteTokensByName: async (name: string) => {
+          deletedTokenNames.push(name);
+          return 1;
+        },
+      }),
+      d1Provisioner: () => ({
+        findDatabaseByName: async (name: string) => {
+          const uuid = databases.get(name);
+          return uuid ? { uuid, name } : null;
+        },
+        createDatabase: async (name: string) => {
+          const uuid = `db-${databases.size + 1}`;
+          databases.set(name, uuid);
+          return { uuid, name };
+        },
+        deleteDatabase: async (uuid: string) => {
+          for (const [name, id] of databases) if (id === uuid) databases.delete(name);
+        },
+      }),
+      workers: () => ({
+        getWorker: async (name: string) => (deployedWorkers.has(name) ? { id: name } : null),
+        deleteWorker: async (name: string) => void deployedWorkers.delete(name),
+      }),
+    } as unknown as CloudflareClients;
+    return { cf, store, deletedTokenNames, databases, deployedWorkers };
+  }
+
+  test("each project gets its own manager Worker, D1, and Workflows — no name either could overwrite", async () => {
+    // The failure this whole rename exists to kill. A Worker script name is account-scoped and
+    // `wrangler deploy` upserts, so when the manager was `pithy-secrets-<env>` the second project's
+    // `pithy secrets provision` did not collide with the first — it *replaced* the first project's
+    // running manager, repointed it at the second project's D1, and left the first project's writes
+    // and rotations operating on resources it does not own. The D1 was the same one string.
+    const { cf, databases, deployedWorkers } = sharedAccount();
+
+    for (const project of ["acme", "globex"]) {
+      // The deploy step is injected (wrangler is not in a unit test), so it stands in for the real one:
+      // it registers the script under the same name `resolveManagerConfig` writes into the config.
+      const deploy = async (env: ManagedEnvironment) =>
+        void deployedWorkers.set(managerWorkerName(project, env), project);
+      const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf, deploy, project));
+      const { databaseId } = await provisioner.ensureDatabase("prod");
+      await provisioner.deployManager("prod", { databaseId, storeId: "store-1" });
+    }
+
+    // Two databases and two managers, not one of each adopted twice.
+    expect([...databases.keys()]).toEqual(["acme-prod-secrets", "globex-prod-secrets"]);
+    expect([...deployedWorkers.keys()]).toEqual(["acme-prod-secrets", "globex-prod-secrets"]);
+    // And the Workflows each manager hosts — the write one is what that project's CLI dispatches to.
+    expect(secretsWriteWorkflowName("acme", "prod")).toBe("acme-prod-secrets-write");
+    expect(secretsWriteWorkflowName("globex", "prod")).toBe("globex-prod-secrets-write");
+    expect(secretsRotateWorkflowName("acme", "prod")).not.toBe(secretsRotateWorkflowName("globex", "prod"));
+  });
+
+  test("one project's teardown leaves the other's manager and database running", async () => {
+    const { cf, databases, deployedWorkers } = sharedAccount();
+    for (const project of ["acme", "globex"]) {
+      await new CloudflareSecretsProvisioner(provisionerOptions(cf, async () => {}, project)).ensureDatabase("prod");
+      deployedWorkers.set(managerWorkerName(project, "prod"), project);
+    }
+
+    // Every delete is `if exists`-guarded, so the name is the whole containment: acme's teardown must
+    // recompute acme's names and no others, or it silently exits 0 having deleted globex's manager.
+    const teardown = new CloudflareSecretsDeprovisioner({ cf, project: "acme", storeId: "store-1" });
+    await teardown.deleteManager("prod");
+    await teardown.deleteDatabase("prod");
+
+    expect([...deployedWorkers.keys()]).toEqual(["globex-prod-secrets"]);
+    expect([...databases.keys()]).toEqual(["globex-prod-secrets"]);
+  });
+
+  test("each project mints its own master key — neither adopts the other's", async () => {
+    const { cf, store } = sharedAccount();
+    await new CloudflareSecretsProvisioner(provisionerOptions(cf, async () => {}, "acme")).ensureMasterKey("prod");
+    await new CloudflareSecretsProvisioner(provisionerOptions(cf, async () => {}, "globex")).ensureMasterKey("prod");
+
+    const acmeKey = store.get(masterKeySecretName("acme", "prod"));
+    const globexKey = store.get(masterKeySecretName("globex", "prod"));
+    expect(acmeKey).toBeDefined();
+    expect(globexKey).toBeDefined();
+    // Distinct keys, not one adopted twice. Sharing a key would couple two projects' ciphertexts and
+    // make either project's teardown orphan both stores.
+    expect(acmeKey).not.toBe(globexKey);
+    expect(store.size).toBe(2);
+  });
+
+  test("one project's teardown leaves the other's key readable and its token alive", async () => {
+    const { cf, store, deletedTokenNames } = sharedAccount();
+    for (const project of ["acme", "globex"]) {
+      const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf, async () => {}, project));
+      await provisioner.ensureMasterKey("prod");
+      await provisioner.ensureManagerToken();
+    }
+    const globexKey = store.get(masterKeySecretName("globex", "prod"));
+
+    const teardown = new CloudflareSecretsDeprovisioner({ cf, project: "acme", storeId: "store-1" });
+    await teardown.deleteMasterKey("prod");
+    await teardown.deleteManagerToken();
+
+    expect(store.has(masterKeySecretName("acme", "prod"))).toBe(false);
+    expect(store.get(masterKeySecretName("globex", "prod"))).toBe(globexKey);
+    expect(store.has(managerCfApiTokenSecretName("globex"))).toBe(true);
+    // `deleteTokensByName` sweeps every account token of a name; only acme's name was ever swept.
+    expect(deletedTokenNames).toEqual([managerCfApiTokenName("acme")]);
+    expect(deletedTokenNames).not.toContain(managerCfApiTokenName("globex"));
   });
 });
 
@@ -236,11 +372,11 @@ describe("writeManagerCfApiToken", () => {
   test("writes the global token entry as a one-entry uniform envelope", async () => {
     const { cf, putSecret } = fakeCf();
 
-    await writeManagerCfApiToken(cf, "store-1", "scoped-cf-token");
+    await writeManagerCfApiToken(cf, { storeId: "store-1", project: PROJECT }, "scoped-cf-token");
 
     expect(putSecret).toHaveBeenCalledTimes(1);
     const [name, value] = putSecret.mock.calls[0] ?? [];
-    expect(name).toBe(MANAGER_CF_API_TOKEN_SECRET_NAME);
+    expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
     // The stored value is the uniform envelope, not the bare token.
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "scoped-cf-token" } });
   });
@@ -249,35 +385,35 @@ describe("writeManagerCfApiToken", () => {
 describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManager removes the worker only when it is deployed", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
-    getWorker.mockResolvedValue({ id: "pithy-secrets-staging" });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    getWorker.mockResolvedValue({ id: "acme-staging-secrets" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
     await deprovisioner.deleteManager("staging");
-    expect(deleteWorker).toHaveBeenCalledWith("pithy-secrets-staging");
+    expect(deleteWorker).toHaveBeenCalledWith("acme-staging-secrets");
   });
 
   test("deleteManager is a no-op when the worker is absent (idempotent)", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
-    await deprovisioner.deleteManager("production");
+    await deprovisioner.deleteManager("prod");
     expect(deleteWorker).not.toHaveBeenCalled();
   });
 
   test("deleteMasterKey removes the env-prefixed entry only when present", async () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(true);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
-    await deprovisioner.deleteMasterKey("production");
-    expect(deleteSecret).toHaveBeenCalledWith("PRODUCTION_SECRETS_ENCRYPTION_KEYS");
+    await deprovisioner.deleteMasterKey("prod");
+    expect(deleteSecret).toHaveBeenCalledWith(masterKeySecretName(PROJECT, "prod"));
   });
 
   test("deleteMasterKey is a no-op when the key is absent", async () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(false);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
     await deprovisioner.deleteMasterKey("staging");
     expect(deleteSecret).not.toHaveBeenCalled();
@@ -289,62 +425,63 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
       cf,
+      project: PROJECT,
       storeId: "store-1",
       audit: async (event) => void events.push(event),
     });
 
-    await deprovisioner.deleteMasterKey("production");
+    await deprovisioner.deleteMasterKey("prod");
     expect(events).toEqual([
       expect.objectContaining({
         action: "secrets/removed",
         outcome: "success",
         severity: "warning",
-        metadata: { name: "PRODUCTION_SECRETS_ENCRYPTION_KEYS", kind: "master_key", env: "production" },
+        metadata: { name: masterKeySecretName(PROJECT, "prod"), kind: "master_key", env: "prod" },
       }),
     ]);
 
     events.length = 0;
     exists.mockResolvedValue(false);
-    await deprovisioner.deleteMasterKey("production");
+    await deprovisioner.deleteMasterKey("prod");
     expect(events).toEqual([]);
   });
 
   test("deleteDatabase deletes the env's database by id when found", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
-    findDatabaseByName.mockResolvedValue({ uuid: "db-7", name: "pithy-secrets-staging" });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    findDatabaseByName.mockResolvedValue({ uuid: "db-7", name: "acme-staging-secrets" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
     await deprovisioner.deleteDatabase("staging");
-    expect(findDatabaseByName).toHaveBeenCalledWith("pithy-secrets-staging");
+    expect(findDatabaseByName).toHaveBeenCalledWith("acme-staging-secrets");
     expect(deleteDatabase).toHaveBeenCalledWith("db-7");
   });
 
   test("deleteDatabase is a no-op when no database matches", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue(null);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
-    await deprovisioner.deleteDatabase("production");
+    await deprovisioner.deleteDatabase("prod");
     expect(deleteDatabase).not.toHaveBeenCalled();
   });
 
   test("deleteManagerToken deletes the minted CF token and the store entry when present", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(true);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
     await deprovisioner.deleteManagerToken();
-    expect(deleteTokensByName).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_NAME);
-    expect(deleteSecret).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_SECRET_NAME);
+    expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
+    expect(deleteSecret).toHaveBeenCalledWith(managerCfApiTokenSecretName(PROJECT));
   });
 
   test("deleteManagerToken still sweeps the CF token but skips the entry when absent (idempotent)", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(false);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
 
     await deprovisioner.deleteManagerToken();
-    expect(deleteTokensByName).toHaveBeenCalledWith(MANAGER_CF_API_TOKEN_NAME);
+    expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
     expect(deleteSecret).not.toHaveBeenCalled();
   });
 
@@ -354,6 +491,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
       cf,
+      project: PROJECT,
       storeId: "store-1",
       audit: async (event) => void events.push(event),
     });
@@ -362,7 +500,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     expect(events).toEqual([
       expect.objectContaining({
         action: "secrets/removed",
-        metadata: { name: MANAGER_CF_API_TOKEN_SECRET_NAME, kind: "manager_token" },
+        metadata: { name: managerCfApiTokenSecretName(PROJECT), kind: "manager_token" },
       }),
     ]);
 

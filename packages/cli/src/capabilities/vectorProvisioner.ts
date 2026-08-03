@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { parse } from "comment-json";
 import { runWrangler } from "../project/wrangler";
 
@@ -104,6 +104,12 @@ const METADATA_POLL_INTERVAL_MS = 1_000;
 export interface CloudflareVectorProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. The deployed worker and the reprocess Workflow both lead with it, and a
+   * guessed value dispatches into a Workflow name nothing deployed.
+   */
+  project: string;
   /** The bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /** The app's resolved vector config — the indexes to create and the config the worker is deployed with. */
@@ -120,6 +126,7 @@ export interface CloudflareVectorProvisionerOptions {
 export class CloudflareVectorProvisioner implements VectorProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #config: VectorConfig;
   readonly #resolveEnv: ResolveVectorEnv;
@@ -129,6 +136,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   constructor(options: CloudflareVectorProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#config = options.config;
     this.#resolveEnv = options.resolveEnv;
@@ -223,7 +231,13 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     const { appDatabaseId } = await this.#resolveEnv(env);
     const dir = await vectorWorkerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
-    const config = resolveVectorConfig(template, { env, appDatabaseId, indexNames, config: this.#config });
+    const config = resolveVectorConfig(template, {
+      project: this.#project,
+      env,
+      appDatabaseId,
+      indexNames,
+      config: this.#config,
+    });
 
     const configPath = join(dir, `.wrangler.${env}.json`);
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -249,7 +263,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     options: { all?: boolean; filter?: Record<string, unknown> },
   ): Promise<unknown> {
     const { VECTOR_CAPABILITY } = await loadVector();
-    const name = workflowScriptName(VECTOR_CAPABILITY, "reprocess", env);
+    const name = resourceNames(this.#project).env(env).workflow(VECTOR_CAPABILITY, "reprocess");
     return this.#workflows.dispatchAndPoll(name, {
       index,
       ...(options.all !== undefined ? { all: options.all } : {}),

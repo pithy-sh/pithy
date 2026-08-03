@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { describe, expect, test } from "vitest";
@@ -14,6 +15,11 @@ import { secrets_0001_init } from "../migrations/0001_init";
  * LIVE integration test — runs the `secrets_*` migrations against a real D1 over the REST API, the
  * way `pithy add secrets` provisioning will. Creates a throwaway database, migrates it, verifies the
  * prefixed tables exist, and deletes it. Reads creds from `.dev.vars`; skipped when absent.
+ *
+ * The database is named through `uniqueName`, so it lands in the reserved `pithy-int-` namespace and the
+ * reaper can reclaim it if this run is killed before its `finally`. It named itself
+ * `pithy-secrets-migrate-test-<epoch>` once — inside the *product's* namespace, where nothing is allowed
+ * to reap, which is the one place a throwaway must never sit.
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,7 +42,7 @@ describe.skipIf(!hasCreds)("secrets migrations — LIVE against a real D1 over R
       accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "",
       apiToken: vars.CLOUDFLARE_API_TOKEN ?? "",
     });
-    const db = await cf.d1Provisioner().createDatabase(`pithy-secrets-migrate-test-${Date.now()}`);
+    const db = await cf.d1Provisioner().createDatabase(uniqueName("secretsmigrate"));
     try {
       const results = await runMigrations(cf.d1(db.uuid), provider());
       expect(results.map((r) => [r.migrationName, r.status])).toEqual([["0100_secrets_0001_init", "Success"]]);

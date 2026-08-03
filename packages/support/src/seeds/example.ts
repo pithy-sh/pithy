@@ -33,7 +33,7 @@ import { SupportThread } from "../data/thread";
  * the seed shows what "which rows came from which model" looks like before anybody has run one.
  *
  * Composed in only when the project turns on `seed.includeExamples`, and only for `dev` and
- * `staging` — an example fixture never targets production, whatever that setting says.
+ * `staging` — an example fixture never targets prod, whatever that setting says.
  */
 
 /** Where this set sorts. After auth's users (100) and payments' purchases (250), which it links to. */

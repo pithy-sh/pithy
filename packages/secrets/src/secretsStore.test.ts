@@ -145,7 +145,7 @@ describe("secretsStore — d1 backend, local dev .dev.vars fallback", () => {
     const registry = defineSecretRegistry({
       FOO: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
     });
-    await expect(secretsStore(envWith({ ENVIRONMENT: "production", FOO: "plaintext" }), registry)).rejects.toThrow();
+    await expect(secretsStore(envWith({ ENVIRONMENT: "prod", FOO: "plaintext" }), registry)).rejects.toThrow();
   });
 });
 

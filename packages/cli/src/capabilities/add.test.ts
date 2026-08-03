@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
+import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { incompleteBindings } from "../project/appBindings";
@@ -14,6 +16,8 @@ import { addCapability } from "./add";
 
 /** The wrangler stanza shape these tests read back. */
 interface RichWrangler {
+  d1_databases?: { binding: string; database_name?: string }[];
+  kv_namespaces?: { binding: string }[];
   r2_buckets?: { binding: string; remote?: boolean }[];
   vectorize?: { binding: string; index_name?: string }[];
   ai?: { binding: string; remote?: boolean };
@@ -66,7 +70,7 @@ describe("addCapability", () => {
     expect(raw).toContain("The top level is the dev environment");
 
     const wrangler = parse(raw) as unknown as WranglerBindings;
-    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
       expect(stanza?.d1_databases).toEqual([{ binding: "DB" }]);
       expect(stanza?.kv_namespaces).toEqual([{ binding: "SESSIONS" }]);
     }
@@ -110,7 +114,7 @@ describe("addCapability", () => {
     const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as DoWrangler;
 
     // The DO binding is emitted into every environment (each gets its own namespace).
-    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
       expect(stanza?.durable_objects?.bindings).toEqual([{ name: "SESSIONS", class_name: "MultiplayerSession" }]);
     }
     // The D1 binding still rides the normal path.
@@ -119,7 +123,7 @@ describe("addCapability", () => {
     // The class migration tag is top-level ONLY, and uses new_sqlite_classes (not new_classes).
     expect(wrangler.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["MultiplayerSession"] }]);
     expect(wrangler.env.staging?.migrations).toBeUndefined();
-    expect(wrangler.env.production?.migrations).toBeUndefined();
+    expect(wrangler.env.prod?.migrations).toBeUndefined();
 
     // Idempotent: a second add changes nothing.
     const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
@@ -164,7 +168,7 @@ describe("addCapability", () => {
 
     const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as RichWrangler;
 
-    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
       // No `remote` key at all when the spec doesn't set one — an explicit false would pin the
       // binding to local emulation.
       expect(stanza?.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET" }]);
@@ -194,7 +198,7 @@ describe("addCapability", () => {
     await addCapability({ workerDir: worker, manifest: richManifest });
 
     const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as RichWrangler;
-    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.production]) {
+    for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
       expect(stanza?.vectorize ?? []).toEqual([]);
       expect(stanza?.workflows ?? []).toEqual([]);
       // And the config wrangler would load carries no incomplete entry anywhere.
@@ -214,6 +218,141 @@ describe("addCapability", () => {
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain('import { auth } from "@pithy-sh/auth/src/index";');
     expect(config).toMatch(/^\s*auth\(\),$/m); // a real auth() line, not just the myauth() substring
+  });
+
+  describe("proposed resource names", () => {
+    /** The stanza shape these read back — D1 carries a name, KV cannot. */
+    interface NamedWrangler {
+      d1_databases?: { binding: string; database_name?: string }[];
+      kv_namespaces?: { binding: string; title?: string }[];
+      r2_buckets?: { binding: string; bucket_name?: string }[];
+      env: Record<string, NamedWrangler | undefined>;
+    }
+
+    const read = async (): Promise<NamedWrangler> =>
+      parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as NamedWrangler;
+
+    test("writes database_name as <project>-<env>-<binding>, per environment", async () => {
+      await addCapability({ workerDir: worker, manifest, project: "acme" });
+
+      const wrangler = await read();
+      // The environment segment comes from the stanza the entry lands in — the top-level one is dev.
+      expect(wrangler.d1_databases).toEqual([{ binding: "DB", database_name: "acme-dev-db" }]);
+      expect(wrangler.env.staging?.d1_databases).toEqual([{ binding: "DB", database_name: "acme-staging-db" }]);
+      expect(wrangler.env.prod?.d1_databases).toEqual([{ binding: "DB", database_name: "acme-prod-db" }]);
+    });
+
+    test("reports the KV title instead of writing one — a kv_namespaces entry has no name field", async () => {
+      const result = await addCapability({ workerDir: worker, manifest, project: "acme" });
+
+      const wrangler = await read();
+      for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
+        expect(stanza?.kv_namespaces).toEqual([{ binding: "SESSIONS" }]);
+      }
+      expect(result.kvNamespaces).toEqual([
+        { binding: "SESSIONS", env: "dev", name: "acme-dev-sessions" },
+        { binding: "SESSIONS", env: "staging", name: "acme-staging-sessions" },
+        { binding: "SESSIONS", env: "prod", name: "acme-prod-sessions" },
+      ]);
+    });
+
+    test("leaves R2 alone — the storage and media provisioners write bucket_name themselves", async () => {
+      const r2Manifest = CapabilityManifest.parse({
+        name: "storage",
+        package: "@pithy-sh/storage",
+        requiredBindings: [{ type: "r2", name: "MEDIA_BUCKET" }],
+      });
+      await addCapability({ workerDir: worker, manifest: r2Manifest, project: "acme" });
+
+      const wrangler = await read();
+      for (const stanza of [wrangler, wrangler.env.staging, wrangler.env.prod]) {
+        expect(stanza?.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET" }]);
+      }
+    });
+
+    test("no project name proposes nothing, rather than guessing a prefix", async () => {
+      const result = await addCapability({ workerDir: worker, manifest });
+
+      expect((await read()).d1_databases).toEqual([{ binding: "DB" }]);
+      expect(result.kvNamespaces).toEqual([]);
+    });
+
+    test("a second run changes nothing and proposes nothing", async () => {
+      await addCapability({ workerDir: worker, manifest, project: "acme" });
+      const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+
+      const again = await addCapability({ workerDir: worker, manifest, project: "acme" });
+      expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
+      expect(again.kvNamespaces).toEqual([]);
+    });
+
+    test("a renamed database is left alone — presence is keyed on the binding, never the name", async () => {
+      await addCapability({ workerDir: worker, manifest, project: "acme" });
+      const wrangler = await read();
+      // The adopter renames the database by hand.
+      const [entry] = wrangler.d1_databases ?? [];
+      if (entry) entry.database_name = "the-one-we-already-had";
+      await writeFile(join(worker, "wrangler.jsonc"), JSON.stringify(wrangler, null, 2));
+
+      await addCapability({ workerDir: worker, manifest, project: "acme" });
+
+      // One entry still, carrying their name — not a second entry for a binding wrangler already has.
+      expect((await read()).d1_databases).toEqual([{ binding: "DB", database_name: "the-one-we-already-had" }]);
+    });
+
+    test("a D1 name is composed against D1's budget, not R2's — the longest binding survives whole", async () => {
+      // 25 + `-prod-` + 33 = 64: over the 63 this used to be truncated at, and nowhere near a D1 cap,
+      // because Cloudflare publishes none. The binding is the thing an operator recognises in
+      // `wrangler d1 list`, so hashing it away to satisfy another namespace's limit bought nothing.
+      const project = "a".repeat(MAX_PROJECT_NAME);
+      const longBinding = CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [{ type: "d1", name: "ANALYTICS_EVENTS_ARCHIVE_DATABASE" }],
+      });
+      await addCapability({ workerDir: worker, manifest: longBinding, project });
+
+      const name = (await read()).env.prod?.d1_databases?.[0]?.database_name ?? "";
+      expect(name).toBe(`${project}-prod-analytics-events-archive-database`);
+      expect(name.length).toBeGreaterThan(NAMESPACE_LIMITS.r2.maxLength);
+      expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.d1.maxLength);
+    });
+
+    test("a KV title is composed against KV's 512, not the 63 it used to be hashed at", async () => {
+      const project = "a".repeat(MAX_PROJECT_NAME);
+      const longBinding = CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [{ type: "kv", name: "SESSION_REVOCATION_BROADCAST_INDEX" }],
+      });
+      const result = await addCapability({ workerDir: worker, manifest: longBinding, project });
+
+      const prod = result.kvNamespaces.find((entry) => entry.env === "prod");
+      expect(prod?.name).toBe(`${project}-prod-session-revocation-broadcast-index`);
+    });
+
+    test("an environment stanza the naming scheme cannot compose against proposes nothing", async () => {
+      // `pithy add` is a writer and `pithy doctor` a reader, and both walk whatever `env.*` keys the
+      // adopter's wrangler.jsonc carries. An eleven-character environment blows the budget every
+      // project name was accepted under, so no name is proposed for it — but the binding is still
+      // wired, because refusing to add a capability over a stanza key would be a worse answer.
+      const wrangler = await read();
+      wrangler.env.integration = { d1_databases: [], kv_namespaces: [] } as never;
+      await writeFile(join(worker, "wrangler.jsonc"), JSON.stringify(wrangler, null, 2));
+
+      const result = await addCapability({ workerDir: worker, manifest, project: "acme" });
+
+      const written = await read();
+      expect(written.env.integration?.d1_databases).toEqual([{ binding: "DB" }]);
+      expect(result.kvNamespaces.map((entry) => entry.env)).toEqual(["dev", "staging", "prod"]);
+    });
+
+    test("a project name past the cap is refused here too, not silently truncated", async () => {
+      // The refusal belongs at `pithy init`, but `add` composes names as well — so a project that
+      // somehow got past creation must not quietly produce a name no host deploy could match.
+      const project = "a".repeat(MAX_PROJECT_NAME + 1);
+      await expect(addCapability({ workerDir: worker, manifest, project })).rejects.toThrowError(PithyError);
+    });
   });
 
   describe("config options", () => {

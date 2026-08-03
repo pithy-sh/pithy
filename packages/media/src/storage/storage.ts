@@ -42,7 +42,11 @@ export interface MintParams {
   contentType: string;
   /** The declared size in bytes, forwarded to the presigned R2 PUT; 0 when unknown. */
   size?: number;
-  /** Small metadata forwarded to CF Images direct upload (identity, environment). */
+  /**
+   * Small metadata forwarded to the Cloudflare Images or Stream direct upload — the caller's own keys
+   * (identity, album, whatever the adopter tracks). The minters merge the ownership stamp
+   * (`pithyProject`/`pithyEnv`) over it, so nothing here can omit or displace it.
+   */
   metadata?: Record<string, string>;
 }
 
@@ -81,7 +85,7 @@ export function mediaStorage(deps: StorageDeps): MediaStorage {
           return { uploadUrl: result.uploadUrl, storageBackend: "cf-images", storageKey: result.id };
         }
         if (backend === "cf-stream") {
-          const result = await deps.video.mintDirectUpload();
+          const result = await deps.video.mintDirectUpload(params.metadata);
           return { uploadUrl: result.uploadUrl, storageBackend: "cf-stream", storageKey: result.uid };
         }
         const key = mediaR2Key(params.type, params.id);

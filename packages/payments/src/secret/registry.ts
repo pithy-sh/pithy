@@ -24,8 +24,8 @@ import { PaymentsRailNotConfiguredError } from "../error/errors";
  * `await sharedSecretsStore(env, paymentsSecretsRegistry)` then `.get(PAYMENTS_PROVIDER_SECRET)`, at the
  * point of need — never off a raw `env.X`, never through `CloudflareSecretsStoreManager`, never cached in a
  * module variable, and never spread into a log or an audit payload. Grep `sharedSecretsStore(` to find every
- * read site. `backend: "cf-secrets-store"` is the single place the storage location is decided; moving these
- * to `d1` is a one-line edit here and no change at any read site.
+ * read site. `backend` is the single place the storage location is decided; moving this bundle to the
+ * Cloudflare Secrets Store would be a one-line edit here (plus a binding) and no change at any read site.
  *
  * `rotatable: true` because two of these genuinely rotate — Apple's App Store Connect key and Stripe's
  * webhook signing secret — and a verifier that must span a rotation reads `getVersions` instead of `get`.
@@ -135,7 +135,10 @@ export type PaymentsProviderCredentials = z.infer<typeof PaymentsProviderCredent
 /** Payments' secret-registry slice, aggregated into the shared accessor at worker startup. */
 export const paymentsSecretsRegistry = defineSecretRegistry({
   [PAYMENTS_PROVIDER_SECRET]: {
-    backend: "cf-secrets-store",
+    // An encrypted row in the per-environment secrets D1 — where this bundle actually lives. No
+    // wrangler template binds it from the Cloudflare Secrets Store; `pithy payments provision` writes
+    // it through `dispatchSecretWrite` → the manager Workflow → `SystemSecretsStore`, the D1 path.
+    backend: "d1",
     scope: "environment",
     rotatable: true,
     valueType: "json",

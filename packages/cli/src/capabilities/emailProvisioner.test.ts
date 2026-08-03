@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { SUPPRESSION_DB_NAME } from "@pithy-sh/email/src/provision/provisionEmail";
+import { emailWorkerName, suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareEmailDeprovisioner, CloudflareEmailProvisioner } from "./emailProvisioner";
+
+/** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
@@ -32,6 +35,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "tok",
@@ -44,7 +48,7 @@ describe("CloudflareEmailProvisioner", () => {
     });
 
     findDatabaseByName.mockResolvedValue(null);
-    createDatabase.mockResolvedValue({ uuid: "new-db", name: SUPPRESSION_DB_NAME });
+    createDatabase.mockResolvedValue({ uuid: "new-db", name: suppressionDatabaseName(PROJECT) });
     expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "new-db" });
     expect(events).toEqual([
       expect.objectContaining({
@@ -53,13 +57,15 @@ describe("CloudflareEmailProvisioner", () => {
         severity: "info",
         resourceType: "cf_d1",
         resourceId: "new-db",
-        metadata: { name: SUPPRESSION_DB_NAME },
+        // The project rides in the metadata: D1 exposes no tags, so the audit log is the only place a
+        // human can later read which project this database belongs to.
+        metadata: { name: suppressionDatabaseName(PROJECT), project: PROJECT },
       }),
     ]);
 
     events.length = 0;
     createDatabase.mockClear();
-    findDatabaseByName.mockResolvedValue({ uuid: "existing-db", name: SUPPRESSION_DB_NAME });
+    findDatabaseByName.mockResolvedValue({ uuid: "existing-db", name: suppressionDatabaseName(PROJECT) });
     expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "existing-db" });
     expect(createDatabase).not.toHaveBeenCalled();
     expect(events).toEqual([]);
@@ -69,6 +75,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, ensureWorkerRoute } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "tok",
@@ -77,7 +84,7 @@ describe("CloudflareEmailProvisioner", () => {
       resolveEnv: async () => {
         throw new Error("not used by these tests");
       },
-      routing: { zoneId: "zone-1", address: "bounce@example.com", appWorkerName: "pithy-app-production" },
+      routing: { zoneId: "zone-1", address: "bounce@example.com", appWorkerName: "pithy-app-prod" },
       audit: async (event) => void events.push(event),
     });
 
@@ -103,6 +110,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, ensureWorkerRoute } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      project: PROJECT,
       cf,
       accountId: "acct-1",
       apiToken: "tok",
@@ -124,34 +132,42 @@ describe("CloudflareEmailDeprovisioner", () => {
   test("deleteWorker audits a warning-severity removal only when a worker was actually deployed", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const events: CliAuditEvent[] = [];
-    const deprovisioner = new CloudflareEmailDeprovisioner({ cf, audit: async (event) => void events.push(event) });
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      cf,
+      project: PROJECT,
+      audit: async (event) => void events.push(event),
+    });
 
-    getWorker.mockResolvedValue({ id: "pithy-email-staging" });
+    getWorker.mockResolvedValue({ id: emailWorkerName(PROJECT, "staging") });
     await deprovisioner.deleteWorker("staging");
-    expect(deleteWorker).toHaveBeenCalledWith("pithy-email-staging");
+    expect(deleteWorker).toHaveBeenCalledWith(emailWorkerName(PROJECT, "staging"));
     expect(events).toEqual([
       expect.objectContaining({
         action: "email/worker_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_worker",
-        resourceId: "pithy-email-staging",
+        resourceId: emailWorkerName(PROJECT, "staging"),
         metadata: { env: "staging" },
       }),
     ]);
 
     events.length = 0;
     getWorker.mockResolvedValue(null);
-    await deprovisioner.deleteWorker("production");
+    await deprovisioner.deleteWorker("prod");
     expect(events).toEqual([]);
   });
 
   test("deleteSuppressionDatabase audits a warning-severity removal only when the database existed", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
-    const deprovisioner = new CloudflareEmailDeprovisioner({ cf, audit: async (event) => void events.push(event) });
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      cf,
+      project: PROJECT,
+      audit: async (event) => void events.push(event),
+    });
 
-    findDatabaseByName.mockResolvedValue({ uuid: "db-1", name: SUPPRESSION_DB_NAME });
+    findDatabaseByName.mockResolvedValue({ uuid: "db-1", name: suppressionDatabaseName(PROJECT) });
     await deprovisioner.deleteSuppressionDatabase();
     expect(deleteDatabase).toHaveBeenCalledWith("db-1");
     expect(events).toEqual([

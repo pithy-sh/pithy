@@ -9,12 +9,13 @@ import { defineSecretRegistry } from "../registry";
  * every secret use is a visible, grep-able call site. The token is read as a `cf-secrets-store`
  * binding, never a plaintext env string.
  *
- * `CLOUDFLARE_API_TOKEN` is `global` (one value, written once canonically via production, bound the
+ * `CLOUDFLARE_API_TOKEN` is `global` (one value, written once canonically via prod, bound the
  * same way by every manager) and `rotatable` (forward-looking — a future value-rotator may self-roll
  * it; no value-rotation logic ships now). Provisioning owns the store-entry-name → binding-var
- * mapping out of band: the entry lives in the Secrets Store as `GLOBAL_SECRETS_MANAGER_CF_API_TOKEN`
+ * mapping out of band: the entry lives in the account's one flat Secrets Store under the
+ * project-scoped name `<project>-global-secrets-manager-cf-api-token` (`managerCfApiTokenSecretName`)
  * and binds into each manager as `CLOUDFLARE_API_TOKEN`, so this registry stays keyed by the binding
- * var (see `provision/provisionSecrets`).
+ * var — which is not scoped, and must not be (see `provision/provisionSecrets`).
  *
  * **Least privilege — this token needs Secrets Store edit access and nothing else.** The manager's
  * only runtime use of the token is the at-rest rotation's config write-back (`CloudflareSecretsStoreManager.putSecret`

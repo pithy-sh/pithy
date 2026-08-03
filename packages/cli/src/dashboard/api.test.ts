@@ -114,7 +114,7 @@ describe("httpDashboardClient — connections", () => {
 
     const issued = await httpDashboardClient({ fetch }).createConnection("ct_1", {
       project: "acme",
-      environment: "production",
+      environment: "prod",
       workerUrl: "https://api.example.com",
       scopes: ["manifest:read"],
     });
@@ -125,7 +125,7 @@ describe("httpDashboardClient — connections", () => {
     expect(calls[0]?.init.headers.authorization).toBe("Bearer ct_1");
     expect(JSON.parse(calls[0]?.init.body ?? "{}")).toEqual({
       project: "acme",
-      environment: "production",
+      environment: "prod",
       workerUrl: "https://api.example.com",
       scopes: ["manifest:read"],
     });

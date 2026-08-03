@@ -19,7 +19,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareD1Provisioner — LIVE", () => {
 
     expect(await provisioner.validateServiceAccess()).toBe(true);
 
-    const name = uniqueName("pithy-int-d1");
+    const name = uniqueName("d1");
     await withThrowawayResource(
       () => provisioner.createDatabase(name),
       async (db) => {

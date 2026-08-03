@@ -191,7 +191,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
       { propertyName: "rank", indexType: "number" },
     ]);
 
-    const name = uniqueName("pithy-int-vecidx");
+    const name = uniqueName("vecidx");
     await withThrowawayResource(
       () => provisioner.createIndex(name, { dimensions: DIMENSIONS, metric: indexConfig.metric }),
       async (index) => {
@@ -262,7 +262,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
   });
 
   test("embeds, upserts, filters — and a metadata index created late covers none of the vectors before it", async () => {
-    const name = uniqueName("pithy-int-vecdat");
+    const name = uniqueName("vecdat");
     await withThrowawayResource(
       () => provisioner.createIndex(name, { dimensions: DIMENSIONS, metric: indexConfig.metric }),
       async (index) => {

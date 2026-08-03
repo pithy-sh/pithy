@@ -73,9 +73,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The routing facts the media storage secret carries — a Secrets Store, per-environment JSON value. */
+/**
+ * The routing facts the media storage secret carries — an encrypted D1 row, per-environment JSON.
+ *
+ * `d1` is where this value has always physically gone: the write below dispatches to the secrets
+ * manager Workflow, which stores it in `pithy_secrets_system_secrets`. No wrangler template ever bound
+ * it from the Cloudflare Secrets Store. These facts must agree with `mediaSecretsRegistry`'s
+ * declaration, because the read seam routes strictly on `backend` — a disagreement sends a deployed
+ * read to a binding that does not exist.
+ */
 const SECRET_FACTS = {
-  backend: "cf-secrets-store",
+  backend: "d1",
   scope: "environment",
   rotatable: false,
   valueType: "json",
@@ -85,7 +93,7 @@ const SECRET_FACTS = {
 export interface MediaEnvResources {
   /** The app database id for this environment — where media records and hashes live. */
   appDatabaseId: string;
-  /** This environment's secrets database id (`pithy-secrets-<env>`) — holds the storage credentials. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the storage credentials. */
   secretsDatabaseId: string;
 }
 
@@ -95,6 +103,12 @@ export type ResolveMediaEnv = (env: ManagedEnvironment) => Promise<MediaEnvResou
 export interface CloudflareMediaProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. Every name this provisioner creates, finds, and deletes leads with it, so a
+   * guessed value would stand up a second set of resources beside the real ones and tear down neither.
+   */
+  project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /** The CF Secrets Store id holding the per-env master keys (the media worker decrypts its credentials). */
@@ -129,6 +143,7 @@ export interface CloudflareMediaProvisionerOptions {
 export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #mediaApiToken: string;
@@ -142,6 +157,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   constructor(options: CloudflareMediaProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#mediaApiToken = options.mediaApiToken;
@@ -163,10 +179,17 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     }
   }
 
-  /** Reuse this environment's R2 bucket if it exists, otherwise create it. */
+  /**
+   * Reuse this environment's R2 bucket if it exists, otherwise create it.
+   *
+   * Find-then-create is only safe because the name carries the project: R2's namespace is flat and
+   * account-wide, so an unscoped name would make "reuse" mean "adopt whatever another Pithy project
+   * left here". R2 exposes no tags through the API, so the name is the whole ownership record — and
+   * the audit event writes the project down beside it.
+   */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
     const { mediaBucketName } = await loadMedia();
-    const name = mediaBucketName(env);
+    const name = mediaBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
@@ -176,7 +199,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
       severity: "info",
       resourceType: "cf_r2_bucket",
       resourceId: created.name,
-      metadata: { name, environment: env },
+      metadata: { name, project: this.#project, environment: env },
     });
     return { bucketName: created.name };
   }
@@ -185,7 +208,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   async ensureKvNamespace(env: ManagedEnvironment): Promise<{ namespaceId: string } | null> {
     if (this.#mediaConfig.recordStore !== "kv") return null;
     const { mediaKvTitle } = await loadMedia();
-    const title = mediaKvTitle(env);
+    const title = mediaKvTitle(this.#project, env);
     const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
     if (existing) return { namespaceId: existing.id };
     const created = await this.#cf.kvProvisioner().createNamespace(title);
@@ -195,7 +218,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
       severity: "info",
       resourceType: "cf_kv_namespace",
       resourceId: created.id,
-      metadata: { title, environment: env },
+      metadata: { title, project: this.#project, environment: env },
     });
     return { namespaceId: created.id };
   }
@@ -271,6 +294,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     const dir = await mediaWorkerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveMediaConfig(template, {
+      project: this.#project,
       env,
       appDatabaseId,
       secretsDatabaseId,
@@ -290,7 +314,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: mediaWorkerName(env),
+        resourceId: mediaWorkerName(this.#project, env),
         metadata: { env },
       });
     } catch (error) {
@@ -299,7 +323,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: mediaWorkerName(env),
+        resourceId: mediaWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -327,6 +351,8 @@ async function mediaWorkerDir(): Promise<string> {
 
 export interface CloudflareMediaDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
+  project: string;
   /**
    * The R2 S3 key pair, needed only when the bucket comes down. Emptying a bucket is an S3-protocol
    * operation and R2 refuses to delete a non-empty one, so a bucket teardown cannot run on the API token
@@ -344,11 +370,13 @@ export interface CloudflareMediaDeprovisionerOptions {
  */
 export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareMediaDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -356,7 +384,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   /** Delete the env's media worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { mediaWorkerName } = await loadMedia();
-    const name = mediaWorkerName(env);
+    const name = mediaWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
@@ -377,7 +405,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
    */
   async deleteBucket(env: ManagedEnvironment): Promise<void> {
     const { mediaBucketName } = await loadMedia();
-    const name = mediaBucketName(env);
+    const name = mediaBucketName(this.#project, env);
     const teardown = await deleteR2BucketWithContents({
       cf: this.#cf,
       credentials: this.#r2Credentials,
@@ -392,6 +420,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
       resourceId: name,
       metadata: {
         name,
+        project: this.#project,
         environment: env,
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
@@ -402,7 +431,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   /** Delete this environment's `MEDIA` KV namespace if it exists — destructive, only on an explicit storage teardown. */
   async deleteKvNamespace(env: ManagedEnvironment): Promise<void> {
     const { mediaKvTitle } = await loadMedia();
-    const title = mediaKvTitle(env);
+    const title = mediaKvTitle(this.#project, env);
     const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
     if (!existing) return;
     await this.#cf.kvProvisioner().deleteNamespace(existing.id);
@@ -412,7 +441,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
       severity: "warning",
       resourceType: "cf_kv_namespace",
       resourceId: existing.id,
-      metadata: { title, environment: env },
+      metadata: { title, project: this.#project, environment: env },
     });
   }
 }

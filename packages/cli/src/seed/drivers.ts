@@ -17,7 +17,7 @@ import { Miniflare } from "miniflare";
 
 /**
  * The seed driver resolves each backend a seed set touches to a live handle — the only thing that
- * differs between a local (`dev`) run and a live (`staging`/`production`) one, exactly as the migration
+ * differs between a local (`dev`) run and a live (`staging`/`prod`) one, exactly as the migration
  * driver does for D1. `dev` resolves D1, KV, and R2 from the same Miniflare stores `wrangler dev` uses
  * under `.wrangler/state`; other environments resolve them from `@pithy-sh/cloudflare` REST managers,
  * with ids read from the target env's `wrangler.jsonc` block and credentials from `loadCloudflareEnv`.
@@ -106,10 +106,14 @@ export interface SeedDriverOptions {
   stream?: StreamFactory;
 }
 
-/** One D1 binding entry in wrangler.jsonc. */
+/**
+ * One D1 binding entry in wrangler.jsonc — the fields the seed driver reads to resolve a store.
+ * `database_name` is not among them: wrangler ignores it when binding a local D1 (see
+ * {@link resolveStoreIds}), so seeding must ignore it too. Leaving it off the type makes reading it a
+ * compile error.
+ */
 interface D1Binding {
   binding: string;
-  database_name?: string;
   database_id?: string;
 }
 
@@ -149,9 +153,9 @@ async function readWranglerConfig(workerDir: string): Promise<WranglerSeedConfig
 
 /**
  * One Worker's backends, by binding, as the **identity of the store each binding resolves to** for an
- * environment — the same fallback chain the drivers themselves use (locally the id, else the name, else
- * the binding; remotely the target env stanza's id). It resolves ids only: no Miniflare instance, no REST
- * client, no credentials.
+ * environment — the same fallback chain the drivers themselves use (locally the id else the binding;
+ * remotely the target env stanza's id). It resolves ids only: no Miniflare instance, no REST client, no
+ * credentials.
  *
  * The fan-out needs this before it opens anything. Workers share a resource by declaring the same
  * binding, so the same fixture composed into two Workers normally writes to one store and must run once —
@@ -177,9 +181,13 @@ export async function resolveStoreIds(options: { workerDir: string; env: string 
 
   const ids: ResolvedStoreIds = { d1: new Map(), kv: new Map(), r2: new Map() };
   for (const entry of bindings.d1_databases ?? []) {
-    // Locally a store persists under id-else-name-else-binding; remotely only a real `database_id` counts.
-    const local = entry.database_id ?? entry.database_name;
-    ids.d1.set(entry.binding, (options.env === "dev" ? local : entry.database_id) ?? entry.binding);
+    // Locally a store persists under `database_id` else the binding, because that is what wrangler binds:
+    // `d1DatabaseEntry({ binding, database_id, preview_database_id })` computes
+    // `getRemoteId(preview_database_id ?? database_id) ?? binding` and never destructures `database_name`.
+    // `pithy add` writes `database_name` with no id, so folding the name in here would key a store the
+    // Worker never opens — seeded rows would vanish and migrate/seed would disagree. Remotely only a real
+    // `database_id` counts.
+    ids.d1.set(entry.binding, entry.database_id ?? entry.binding);
   }
   for (const entry of bindings.kv_namespaces ?? []) ids.kv.set(entry.binding, entry.id ?? entry.binding);
   for (const entry of bindings.r2_buckets ?? []) ids.r2.set(entry.binding, entry.bucket_name ?? entry.binding);
@@ -206,9 +214,9 @@ function resolveLocal<T>(cache: Map<string, T>, binding: string, kind: string): 
 async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets): Promise<SeedDriver> {
   const config = await readWranglerConfig(options.workerDir);
   const d1Ids: Record<string, string> = {};
-  for (const entry of config.d1_databases ?? []) {
-    d1Ids[entry.binding] = entry.database_id ?? entry.database_name ?? entry.binding;
-  }
+  // `database_id` else the binding — wrangler's own local chain; see {@link resolveStoreIds} for why
+  // `database_name` must never join it.
+  for (const entry of config.d1_databases ?? []) d1Ids[entry.binding] = entry.database_id ?? entry.binding;
   const kvIds: Record<string, string> = {};
   for (const entry of config.kv_namespaces ?? []) kvIds[entry.binding] = entry.id ?? entry.binding;
   const r2Ids: Record<string, string> = {};

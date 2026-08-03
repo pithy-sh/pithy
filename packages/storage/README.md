@@ -132,7 +132,7 @@ await c.var.workflows.trigger("storage/sweep", { dryRun: true, olderThanSeconds:
 
 The Workflow binding is `STORAGE_SWEEP` and it is **optional**: an unprovisioned project still serves every upload and download route.
 
-`pithy add storage` does not write that binding into `wrangler.jsonc`; `pithy storage provision` does. Wrangler requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name is per environment (`pithy-storage-sweep-<env>`) — a value `add` cannot know, and an entry missing it stops wrangler loading the config at all. So the binding lands once the sweep worker exists, complete, in each environment's stanza.
+`pithy add storage` does not write that binding into `wrangler.jsonc`; `pithy storage provision` does. Wrangler requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name is per project and per environment (`<project>-<env>-storage-sweep`) — a value `add` cannot know, and an entry missing it stops wrangler loading the config at all. So the binding lands once the sweep worker exists, complete, in each environment's stanza.
 
 ## Share links
 
@@ -149,7 +149,9 @@ pithy storage provision [--api-token <token>] [--r2-access-key-id <id>] [--r2-se
 pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
-`provision` is idempotent and safe to re-run. For staging and production it creates the R2 bucket (`pithy-storage-<env>`), writes the `storage-r2-credentials` secret, deploys the prebuilt sweep worker with its cron, and writes the `STORAGE_SWEEP` binding into that environment's `wrangler.jsonc` stanza. Buckets come first across both environments, then credentials, then workers — a sweep worker must never boot before the secret it reads. `pithy secrets provision` must have run first: that is where the secret lands.
+`provision` is idempotent and safe to re-run. For staging and prod it creates the R2 bucket (`<project>-<env>-storage`), writes the `storage-r2-credentials` secret, deploys the prebuilt sweep worker (`<project>-<env>-storage`) with its cron, and writes the `STORAGE_SWEEP` binding into that environment's `wrangler.jsonc` stanza. Buckets come first across both environments, then credentials, then workers — a sweep worker must never boot before the secret it reads. `pithy secrets provision` must have run first: that is where the secret lands.
+
+`<project>` is the `name` in your root `pithy.config.ts`. R2's namespace is flat and account-wide, and provisioning finds a bucket by name and reuses it, so without that segment a second project in the same account would adopt this one's bucket — two apps writing objects into one place, and either teardown deleting both. See [`docs/NAMING.md`](../../docs/NAMING.md).
 
 **You supply the R2 S3 access-key pair.** Cloudflare exposes no API for minting one, so nothing here can create it for you. Make the pair under **R2 → Manage API tokens**, then pass the flags above or set `R2_CREDENTIALS` in `.dev.vars`:
 
@@ -157,7 +159,7 @@ pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acc
 R2_CREDENTIALS={"accessKeyId":"…","secretAccessKey":"…"}
 ```
 
-`--api-token` is the Cloudflare API token stored alongside the pair, defaulting to `CLOUDFLARE_API_TOKEN` from `.dev.vars` — that default is your broad bootstrap token, so supply an R2-scoped one for production.
+`--api-token` is the Cloudflare API token stored alongside the pair, defaulting to `CLOUDFLARE_API_TOKEN` from `.dev.vars` — that default is your broad bootstrap token, so supply an R2-scoped one for prod.
 
 `deprovision` removes the sweep workers and leaves your files alone. `--storage` also deletes the buckets, and every stored file with them: it aborts any multipart upload still in flight, drains every key, then deletes the bucket. R2 refuses to delete a bucket that is not empty, and emptying one is an S3-protocol operation, so `--storage` needs the same key pair `provision` did — the flags above, or `R2_CREDENTIALS`. It is resolved before anything is deleted, so a missing pair costs you nothing.
 

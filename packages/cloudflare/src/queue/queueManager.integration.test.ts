@@ -18,7 +18,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareQueueManager — LIVE", () => {
 
   test("resolves the queue id, sends single + batch messages, then surfaces an unknown queue", async () => {
     await withThrowawayResource(
-      () => client.queues.create({ account_id: creds.accountId, queue_name: uniqueName("pithy-int-queue") }),
+      () => client.queues.create({ account_id: creds.accountId, queue_name: uniqueName("queue") }),
       async (queue) => {
         const manager = new CloudflareQueueManager({
           accountId: creds.accountId,
@@ -41,7 +41,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareQueueManager — LIVE", () => {
         const missing = new CloudflareQueueManager({
           accountId: creds.accountId,
           apiToken: creds.apiToken,
-          queueName: uniqueName("pithy-int-missing"),
+          queueName: uniqueName("missing"),
         });
         await expect(missing.send({ x: 1 })).rejects.toThrowError(
           expect.objectContaining({ payload: expect.objectContaining({ code: "core/not_found" }) }),

@@ -6,6 +6,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import {
   type IntegrationCreds,
+  reapStaleTestBuckets,
   reapStaleTestResources,
   uniqueName,
   withThrowawayResource,
@@ -203,7 +204,7 @@ export async function withLiveBucket<T>(
 
   const clients = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });
   const provisioner = clients.r2Provisioner();
-  const bucketName = uniqueName("pithy-int-storage");
+  const bucketName = uniqueName("storage");
   const manager = clients.r2({ ...r2, bucketName });
   const open = new Map<string, OpenUpload>();
   const store = liveObjectStore(
@@ -255,7 +256,7 @@ export async function withLiveDatabase<T>(
   const provisioner = clients.d1Provisioner();
 
   return withThrowawayResource(
-    () => provisioner.createDatabase(uniqueName("pithy-int-storage")),
+    () => provisioner.createDatabase(uniqueName("storage")),
     async (database) => {
       const d1 = clients.d1(database.uuid) as unknown as D1Database;
       await runMigrations(d1, storageMigrations());
@@ -282,24 +283,12 @@ export async function reapStaleStorageResources(
   options: { now?: number; staleAfterMs?: number } = {},
 ): Promise<void> {
   const clients = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });
-  const r2 = creds.r2;
 
-  // Emptying a bucket is an S3-protocol operation, so bucket reaping needs the key pair. Without it the
-  // reaper skips buckets rather than failing — the suite that needs them is gated on `creds.r2` anyway.
-  if (r2) {
-    await reapStaleTestResources(
-      {
-        label: "R2 bucket",
-        list: async () => (await clients.r2Provisioner().listBuckets()).map((bucket) => bucket.name),
-        remove: async (name) => {
-          // A stale bucket may still hold objects or dangling uploads; R2 refuses a non-empty delete.
-          await purgeBucket(clients.r2({ ...r2, bucketName: name }), new Map());
-          await clients.r2Provisioner().deleteBucket(name);
-        },
-      },
-      options,
-    );
-  }
+  // Buckets go through the shared reaper: emptying one is an S3-protocol operation, so it needs the key
+  // pair rather than the API token, and the harness is where those live. It also drains over raw S3
+  // rather than through `emptyBucket` — reclaiming a *previous* run's debris must not depend on the seam
+  // this package is testing, or a regression in the drain would also stop the cleanup that hides it.
+  await reapStaleTestBuckets(creds, options);
 
   await reapStaleTestResources(
     {

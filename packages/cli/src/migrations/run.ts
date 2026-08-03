@@ -9,6 +9,7 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
   dropMigrations,
@@ -60,19 +61,22 @@ export interface WorkerScope {
   capabilities: Capability[];
 }
 
-/** The fan-out options every project-scoped migration entry point shares. */
-export interface MigrateProjectOptions {
+/**
+ * The fan-out every project-scoped migration entry point shares — which project root, which
+ * environment, which Workers. It carries no project **name**, because it is also what the read-only
+ * entry points take: {@link countPendingMigrations} and {@link previewReset} inspect a database without
+ * writing to it, so they have no claim to make and `pithy doctor` may run them on a nameless project.
+ */
+export interface MigrationFanOutOptions {
   /**
    * The project root — the parent of `apps/`, and the owner of the `.wrangler/state` store every
    * Worker's local D1 lives in.
    */
   projectDir: string;
-  /** Target environment. `dev` runs locally via Miniflare; staging/production run over the D1 REST API. */
+  /** Target environment. `dev` runs locally via Miniflare; staging/prod run over the D1 REST API. */
   env: string;
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
-  /** Step the latest applied migration back instead of running forward. */
-  rollback?: boolean;
   /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
   remoteD1?: RemoteD1Factory;
   /**
@@ -83,6 +87,24 @@ export interface MigrateProjectOptions {
    * what is reported and applied stays exactly this set.
    */
   workers?: WorkerScope[];
+}
+
+/** The options for a run that **writes**: the fan-out, plus the project every database it touches is claimed for. */
+export interface MigrateProjectOptions extends MigrationFanOutOptions {
+  /**
+   * The project this run belongs to — the root `pithy.config.ts` `name` (`requireProjectName`, never
+   * `resolveProjectName`). Every database the run touches is stamped with it on first use and checked
+   * against it afterwards, so a database another project owns is refused by name instead of silently
+   * merging two schemas (`claimMigrationOwnership`).
+   *
+   * **Required, on every entry point that can change a database.** It was optional once, and the result
+   * was a guard `pithy migrate` honoured while `pithy add`, `pithy remove`, `pithy upgrade --migrate`,
+   * and the three `pithy feature` paths quietly wrote unstamped — a database no project owns is one any
+   * project may later claim. A caller that cannot resolve a stable name has no business writing here.
+   */
+  project: string;
+  /** Step the latest applied migration back instead of running forward. */
+  rollback?: boolean;
 }
 
 /** A reset never rolls back — it rolls *everything* back, then reapplies everything. */
@@ -154,10 +176,13 @@ interface MigrationDriver {
   dispose(): Promise<void>;
 }
 
-/** One D1 binding entry in wrangler.jsonc — the fields migrate reads to resolve a database's id. */
+/**
+ * One D1 binding entry in wrangler.jsonc — the fields migrate reads to resolve a database's id.
+ * `database_name` is not among them: wrangler ignores it when binding a local D1 (see {@link idsFor}),
+ * so migrate must ignore it too. Leaving it off the type makes reading it a compile error.
+ */
 interface D1Binding {
   binding: string;
-  database_name?: string;
   database_id?: string;
 }
 
@@ -178,15 +203,19 @@ async function readWranglerConfig(workerDir: string): Promise<WranglerD1Config> 
 }
 
 /**
- * Map binding → id from a set of D1 entries. Locally an id can fall back to the database name or the
- * binding (Miniflare only needs a stable persistence key); remotely (`idOnly`) only a real
- * `database_id` counts, so a binding with none is caught as an actionable error, not run against the
- * wrong database.
+ * Map binding → id from a set of D1 entries. Locally the id is `database_id` else the binding — the
+ * exact chain wrangler's `d1DatabaseEntry({ binding, database_id, preview_database_id })` uses to key
+ * the Miniflare store (`getRemoteId(preview_database_id ?? database_id) ?? binding`). **`database_name`
+ * is deliberately absent**: wrangler does not read it for the local binding at all, so folding it in
+ * would migrate a store `pithy dev` never opens — and `pithy add` writes exactly that stanza
+ * (`database_name`, no id), so every request would fail `D1_ERROR: no such table`. Remotely (`idOnly`)
+ * only a real `database_id` counts, so a binding with none is caught as an actionable error, not run
+ * against the wrong database.
  */
 function idsFor(entries: D1Binding[] | undefined, idOnly = false): Map<string, string> {
   const ids = new Map<string, string>();
   for (const entry of entries ?? []) {
-    const value = idOnly ? entry.database_id : (entry.database_id ?? entry.database_name ?? entry.binding);
+    const value = idOnly ? entry.database_id : (entry.database_id ?? entry.binding);
     if (value) ids.set(entry.binding, value);
   }
   return ids;
@@ -305,9 +334,9 @@ async function mergeGroup(
 
 /**
  * Group every Worker's claims by the physical D1 they resolve to, and merge each group's registries.
- * Grouping is by resolved id — locally the `database_id`/`database_name`/binding fallback, remotely the
- * env stanza's `database_id` — falling back to the binding name when no id is declared, since Workers
- * share a resource precisely by declaring the same binding.
+ * Grouping is by resolved id — locally `database_id` else the binding (wrangler's own chain, see
+ * {@link idsFor}), remotely the env stanza's `database_id` — falling back to the binding name when no id
+ * is declared, since Workers share a resource precisely by declaring the same binding.
  *
  * `workers` is always the **complete** set, never the run's narrowed scope: a database is migrated as a
  * whole, so every Worker bound to it must be in its group even when only one of them is being reported
@@ -463,6 +492,8 @@ interface RunContext {
   persistRoot: string;
   /** Target environment. */
   env: string;
+  /** The owning project every touched database is stamped with and checked against. Optional. */
+  project?: string;
   /** Test seam for the remote D1 client. */
   remoteD1?: RemoteD1Factory;
 }
@@ -542,6 +573,34 @@ async function scopedGroups(context: RunContext): Promise<DatabaseGroup[]> {
   return groups.filter((group) => group.entries.some((entry) => scope.has(entry.worker)));
 }
 
+/**
+ * Claim every database in the run for this project **before any of them is written to**. The stamp
+ * lives in the migration bookkeeping, so the first run adopts a database and every later one checks
+ * it; a database another project owns throws, naming both. Doing the whole pass up front is the point
+ * — a foreign database in the set aborts the run rather than being discovered halfway through, with
+ * some of the project's databases already moved.
+ *
+ * **This is the single choke point, and it refuses rather than shrugs.** Every entry point that can
+ * change a database — forward, rollback, reset, capability drop — runs through {@link runGroups} and so
+ * through here, which is why the check lives at this one line instead of at each of the eight callers.
+ * It used to return quietly on a missing project, and that is precisely how the guard shipped honoured
+ * by two commands and ignored by six. A nameless run is now impossible to *reach* the write with.
+ */
+async function claimGroups(context: RunContext, driver: MigrationDriver, groups: DatabaseGroup[]): Promise<void> {
+  const project = context.project;
+  if (project === undefined) {
+    throw new ValidationError({
+      message: "A migration run needs a project name.",
+      action:
+        "Set `name` in pithy.config.ts. It stamps each database as this project's, so another project's database is refused instead of silently merged.",
+      detail: `No project on a run over ${groups.map((group) => group.binding).join(", ") || "no databases"}.`,
+    });
+  }
+  for (const group of groups) {
+    await claimMigrationOwnership(driver.database(group), { project, binding: group.binding });
+  }
+}
+
 /** Open the driver, run `execute` per group, fold the results into a per-Worker report, and tear down. */
 async function runGroups(
   context: RunContext,
@@ -553,6 +612,7 @@ async function runGroups(
 
   const driver = await driverFor(context, groups);
   try {
+    await claimGroups(context, driver, groups);
     for (const group of groups) {
       record(report, group, await execute(driver.database(group), group.provider));
     }
@@ -572,7 +632,7 @@ async function runGroups(
  * fixture, an uninstalled checkout) contributes no neighbours and the caller's set stands alone, exactly
  * as it did before.
  */
-async function projectWorkers(options: MigrateProjectOptions): Promise<WorkerScope[]> {
+async function projectWorkers(options: MigrationFanOutOptions): Promise<WorkerScope[]> {
   if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir });
 
   const discovered = await resolveWorkerScopes({ projectDir: options.projectDir }).catch(() => []);
@@ -589,7 +649,7 @@ async function projectWorkers(options: MigrateProjectOptions): Promise<WorkerSco
  * built from) and the run's own scope (what is reported, and which databases are visited). The scope is
  * always the caller's set narrowed by `--worker`, so an unknown name still fails naming the same Workers.
  */
-async function contextFor(options: MigrateProjectOptions): Promise<RunContext> {
+async function contextFor(options: MigrationFanOutOptions & { project?: string }): Promise<RunContext> {
   const groupWorkers = await projectWorkers(options);
   return {
     workers: await resolveWorkerScopes({
@@ -600,6 +660,7 @@ async function contextFor(options: MigrateProjectOptions): Promise<RunContext> {
     groupWorkers,
     persistRoot: options.projectDir,
     env: options.env,
+    ...(options.project !== undefined ? { project: options.project } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
 }
@@ -608,7 +669,7 @@ async function contextFor(options: MigrateProjectOptions): Promise<RunContext> {
  * Run (or roll back) every Worker's migration registry — the logic behind `pithy migrate`. Each Worker
  * contributes its own capabilities; Workers bound to the same physical D1 merge into one run so a shared
  * database migrates once. Locally that D1 is a Miniflare store under the project root's `.wrangler/state`
- * (shared with `wrangler dev`); for staging/production it is the remote database over the D1 REST API.
+ * (shared with `wrangler dev`); for staging/prod it is the remote database over the D1 REST API.
  * The registries, ordering, and per-database runs are identical — only the driver differs.
  */
 export function migrateProject(options: MigrateProjectOptions): Promise<WorkerMigrationRun[]> {
@@ -649,7 +710,7 @@ export interface ResetPreviewEntry {
  * compute the same numbers a real reset will produce, for the run report). One entry per physical
  * database, so a database two Workers share is previewed once, with their merged migration count.
  */
-export async function previewReset(options: ResetProjectOptions): Promise<ResetPreviewEntry[]> {
+export async function previewReset(options: MigrationFanOutOptions): Promise<ResetPreviewEntry[]> {
   const groups = await scopedGroups(await contextFor(options));
   const preview: ResetPreviewEntry[] = [];
   for (const group of groups) {
@@ -666,7 +727,7 @@ export async function previewReset(options: ResetProjectOptions): Promise<ResetP
  * would touch, and counts a database two Workers share once. The seam behind `pithy deploy`'s warn-only
  * "schema is behind" check.
  */
-export async function countPendingMigrations(options: MigrateProjectOptions): Promise<number> {
+export async function countPendingMigrations(options: MigrationFanOutOptions): Promise<number> {
   const context = await contextFor(options);
   const groups = await scopedGroups(context);
   if (groups.length === 0) return 0;
@@ -691,8 +752,15 @@ export interface DropCapabilityOptions {
   workerDir: string;
   /** The project root whose `.wrangler/state` holds the local D1 every Worker shares. */
   persistRoot: string;
-  /** Target environment. `dev` runs locally via Miniflare; staging/production over the D1 REST API. */
+  /** Target environment. `dev` runs locally via Miniflare; staging/prod over the D1 REST API. */
   env: string;
+  /**
+   * The project this drop belongs to — the root `pithy.config.ts` `name` (`requireProjectName`).
+   * Checked against the database's recorded owner before a single `down` runs, so a project never
+   * reverses another project's migrations. Required: this is the most destructive thing `pithy remove`
+   * can do, and it ran unchecked for as long as the field was optional.
+   */
+  project: string;
   /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
   remoteD1?: RemoteD1Factory;
 }
@@ -719,6 +787,7 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     groupWorkers: [worker],
     persistRoot: options.persistRoot,
     env: options.env,
+    project: options.project,
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
   const [run] = await runGroups(context, dropMigrations);

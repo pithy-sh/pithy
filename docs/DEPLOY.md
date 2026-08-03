@@ -8,7 +8,7 @@ Config resolves per environment: **dev** (local), **staging** (test users), **pr
 
 ## Credentials
 
-Out-of-Worker commands read wrangler's own env vars: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Locally they live in `.dev.vars` (git-ignored). In CI, pass them as environment variables — GitHub Actions secrets, no `.dev.vars` file, no interactive `wrangler login`. Today this is the bootstrap token; once scoped-token minting lands (#32), a least-privilege token per environment.
+Out-of-Worker commands read wrangler's own env vars: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Locally they live in `.dev.vars` (git-ignored). In CI, pass them as environment variables — GitHub Actions secrets, no `.dev.vars` file, no interactive `wrangler login`. The bootstrap token works; a least-privilege `<project>-<env>-ci-system` token minted by `pithy token mint` is what CI should run under. See [`TOKENS.md`](TOKENS.md).
 
 ## Migrate
 
@@ -27,7 +27,17 @@ Roll the latest migration back with `--rollback`:
 pithy migrate --env staging --rollback
 ```
 
-Every run is idempotent — a second run with nothing pending is a no-op. `--json` emits a per-database summary; a failure exits non-zero.
+Every run is idempotent — a second run with nothing pending is a no-op. `--json` emits a per-database summary, carrying the project it ran as; a failure exits non-zero.
+
+### The database has an owner
+
+`pithy migrate` records the project in a `pithy_migrations_owner` row beside the migration ledger, and **refuses a database another project owns.** Every database in the run is claimed before any of them is written to, so a foreign one aborts the run rather than being found halfway through.
+
+Every command that can change a database passes the same claim, not just `migrate`: `pithy add`, `pithy remove --drop`, `pithy upgrade --migrate`, `pithy seed --redo`, and each of the `pithy feature` steps that migrates. They share one code path, and it refuses to run at all without a project name — so a command cannot write to a database without saying who it is writing as.
+
+This is the counterpart to project-scoped naming ([`NAMING.md`](NAMING.md)): the name keeps two projects from provisioning onto each other, and the stamp keeps a hand-edited binding from pointing one project's migration registry at another's data. An unstamped database is adopted on first migrate; your own is a no-op.
+
+Migrate therefore needs `name` in the root `pithy.config.ts` and will not guess one. A guessed name would stamp one value and check a different one on the next run, locking a project out of its own database. Nothing clears the stamp — deliberately handing a database to another project means dropping that table by hand.
 
 ### As a CI promote step
 
@@ -54,6 +64,8 @@ pithy deploy --env production
 ```
 
 Output is labeled per worker. `--json` returns a per-worker summary (name, version id, url). Any worker's failure yields a non-zero exit; the others still deploy.
+
+**Capability host Workers are not part of this set.** The prebuilt Workers that host a capability's Workflows are named `<project>-<env>-<capability>` and deployed by that capability's own `provision` command ([`NAMING.md`](NAMING.md)). `pithy deploy` ships the Workers you wrote, under the `name` in their own `wrangler.jsonc`.
 
 Deploy reads the same two CF env vars, so CI needs no interactive login:
 

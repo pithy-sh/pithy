@@ -104,6 +104,7 @@ describe("runAdd", () => {
     const result = await runAdd({
       projectDir: dir,
       workerDir: worker,
+      project: "acme",
       capability: "auth",
       setFlags: ["basePath=/authentication", "sessionDays=7"],
       install,
@@ -118,21 +119,68 @@ describe("runAdd", () => {
     expect(config).toContain('basePath: "/authentication",');
     expect(config).toContain("sessionDays: 7,");
     expect(config).toContain("cookies: true,"); // un-set option keeps its default
-    // Migration ran against the project after wiring.
-    expect(migrate).toHaveBeenCalledWith({ projectDir: dir, workerDir: worker, worker: DEFAULT_WORKER });
+    // Migration ran against the project after wiring — and named it. `add` finishes by writing to a
+    // database, so it claims it for this project rather than leaving it unowned for the next one.
+    expect(migrate).toHaveBeenCalledWith({
+      projectDir: dir,
+      workerDir: worker,
+      worker: DEFAULT_WORKER,
+      project: "acme",
+    });
     expect(result).toEqual({
       capability: "auth",
       worker: DEFAULT_WORKER,
       package: "@pithy-sh/auth",
       packageManager: "bun",
       databases,
+      // auth declares no KV binding here, so there is nothing to propose a name for.
+      kvNamespaces: [],
+      eject: undefined,
     });
+  });
+
+  test("threads the project name through, so add proposes <project>-<env>-<binding>", async () => {
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      install: vi.fn(
+        installManifest(
+          CapabilityManifest.parse({
+            name: "auth",
+            package: "@pithy-sh/auth",
+            requiredBindings: [
+              { type: "d1", name: "DB" },
+              { type: "kv", name: "SESSIONS" },
+            ],
+          }),
+        ),
+      ),
+      // A local stub: `migrateStub` is shared, and a later test asserts it was never called.
+      migrate: vi.fn(async () => noMigrations),
+    });
+
+    expect(result.kvNamespaces).toContainEqual({
+      binding: "SESSIONS",
+      env: "prod",
+      name: "acme-prod-sessions",
+    });
+    const wrangler = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    expect(wrangler).toContain('"database_name": "acme-dev-db"');
   });
 
   test("an uninstalled capability (install left no manifest) fails naming it", async () => {
     const install = vi.fn(async () => ({ packageManager: "npm" }));
     await expect(
-      runAdd({ projectDir: dir, workerDir: worker, capability: "ghost", install, migrate: migrateStub }),
+      runAdd({
+        projectDir: dir,
+        workerDir: worker,
+        project: "acme",
+        capability: "ghost",
+        install,
+        migrate: migrateStub,
+      }),
     ).rejects.toThrow(/ghost/);
     expect(migrateStub).not.toHaveBeenCalled();
   });
@@ -141,7 +189,15 @@ describe("runAdd", () => {
     const install = vi.fn(installManifest(optionManifest));
     const prompt = vi.fn(async (_manifest, provided) => ({ ...provided, basePath: "/from-prompt" }));
 
-    await runAdd({ projectDir: dir, workerDir: worker, capability: "auth", install, migrate: migrateStub, prompt });
+    await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      install,
+      migrate: migrateStub,
+      prompt,
+    });
 
     expect(prompt).toHaveBeenCalledOnce();
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
@@ -150,11 +206,25 @@ describe("runAdd", () => {
 
   test("is idempotent — a second run leaves config and wrangler unchanged", async () => {
     const install = vi.fn(installManifest(optionManifest));
-    await runAdd({ projectDir: dir, workerDir: worker, capability: "auth", install, migrate: migrateStub });
+    await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      install,
+      migrate: migrateStub,
+    });
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     const wrangler = await readFile(join(worker, "wrangler.jsonc"), "utf8");
 
-    await runAdd({ projectDir: dir, workerDir: worker, capability: "auth", install, migrate: migrateStub });
+    await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      install,
+      migrate: migrateStub,
+    });
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(config);
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(wrangler);
   });
@@ -166,6 +236,7 @@ describe("runAdd", () => {
     await runAdd({
       projectDir: dir,
       workerDir: worker,
+      project: "acme",
       capability: "auth",
       install,
       migrate: migrateStub,
@@ -192,6 +263,7 @@ describe("runAdd", () => {
       runAdd({
         projectDir: dir,
         workerDir: worker,
+        project: "acme",
         capability: "ghost",
         install,
         migrate: migrateStub,

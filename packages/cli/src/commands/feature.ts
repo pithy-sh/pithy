@@ -5,17 +5,19 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { createFeature } from "../feature/create";
 import { destroyFeature } from "../feature/destroy";
 import { deriveIdentityFromBranch } from "../feature/identity";
-import type { FeatureIdentity } from "../feature/naming";
 import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } from "../feature/provision";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, requireProjectName } from "../project/config";
+import { requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -105,9 +107,12 @@ const create = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      if (!/^\d+$/.test(args.issue)) {
+      // Digits *and* the digit budget, both here. `featureResourceName` reserves `MAX_ISSUE_DIGITS` for
+      // the issue segment and refuses anything longer — but it is not reached until provisioning, by
+      // which point the branch and the worktree exist. Refusing at the boundary leaves nothing behind.
+      if (!/^\d+$/.test(args.issue) || args.issue.length > MAX_ISSUE_DIGITS) {
         throw new ValidationError({
-          message: `Issue must be a number (got "${args.issue}").`,
+          message: `Issue must be a number of at most ${MAX_ISSUE_DIGITS} digits (got "${args.issue}").`,
           action: "Pass --issue <number>.",
         });
       }
@@ -175,8 +180,12 @@ const sync = defineCommand({
       // Each fans out over the worktree's Workers, so a Worker the branch added is covered without asking.
       let data = false;
       if (!args["skip-data"]) {
-        await migrateProject({ env: "dev", projectDir });
-        await seedProject({ env: "dev", projectDir, json: true });
+        // Both steps name the project, resolved once. The migrate stamps each database as this
+        // project's — the check that refuses another project's D1 — and the seed carries the same name
+        // into the account-wide Images/Stream stores, which is all a later sweep has to go on.
+        const project = requireProjectName(await loadProject(projectDir));
+        await migrateProject({ env: "dev", projectDir, project });
+        await seedProject({ env: "dev", projectDir, project, json: true });
         data = true;
       }
 
@@ -225,7 +234,7 @@ const provision = defineCommand({
         });
       }
 
-      const env = args.env ?? DEFAULT_FEATURE_ENV;
+      const env = requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV);
       const report = await provisionFeature({
         projectDir,
         env,
@@ -288,7 +297,7 @@ const destroy = defineCommand({
         projectDir,
         identity,
         capabilities,
-        env: args.env ?? DEFAULT_FEATURE_ENV,
+        env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
         ...(provisioners && !args["local-only"] ? { provisioners } : {}),
         audit: await buildAudit(projectDir, capabilities),
       });

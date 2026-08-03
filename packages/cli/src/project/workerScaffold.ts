@@ -22,11 +22,19 @@ export function workerNamespace(name: string): string {
   return NAMESPACE_PATTERN.test(stripped) ? stripped : `app${stripped}`;
 }
 
-/** The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve). */
-function workerFiles(name: string): Record<string, string> {
+/**
+ * The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve).
+ *
+ * The deploy name is `<project>-<name>`, the same shape `scaffoldProject` gives the first Worker — a Worker
+ * script name is an account-flat Cloudflare name (CLAUDE.md §Resource naming), so the project segment is
+ * the only thing keeping two projects apart. Stamping the bare directory name meant two projects that each
+ * ran `pithy worker add admin` deployed to one script called `admin`, and the second `wrangler deploy`
+ * silently replaced the first's live Worker.
+ */
+function workerFiles(name: string, project: string): Record<string, string> {
   const wrangler = `{
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "${name}",
+  "name": "${project}-${name}",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -38,18 +46,24 @@ function workerFiles(name: string): Record<string, string> {
   },
 
   // The top level is the dev environment. Staging serves test users; production serves paid users.
+  // Both vars repeat per environment: \`env.<name>.vars\` REPLACES this block rather than merging it.
+  // \`PROJECT\` is the root pithy.config.ts name — the owner stamped into every Cloudflare Images and
+  // Stream asset this Worker mints, since those stores are account-flat and key assets by their own id.
   "vars": {
-    "ENVIRONMENT": "dev"
+    "ENVIRONMENT": "dev",
+    "PROJECT": "${project}"
   },
   "env": {
     "staging": {
       "vars": {
-        "ENVIRONMENT": "staging"
+        "ENVIRONMENT": "staging",
+        "PROJECT": "${project}"
       }
     },
-    "production": {
+    "prod": {
       "vars": {
-        "ENVIRONMENT": "production"
+        "ENVIRONMENT": "prod",
+        "PROJECT": "${project}"
       }
     }
   }
@@ -73,7 +87,9 @@ function workerFiles(name: string): Record<string, string> {
 
   const pkg = `${JSON.stringify(
     {
-      name,
+      // `<project>-<worker>`, matching both the deploy name above and what `pithy init` gives `apps/api`,
+      // so a workspace never holds two `admin` packages when a second project is checked out beside it.
+      name: `${project}-${name}`,
       private: true,
       type: "module",
       scripts: { dev: "wrangler dev", deploy: "wrangler deploy" },
@@ -169,8 +185,17 @@ export default createEntrypoint(config);
  * The same set `pithy init` gives `apps/api`, so a worker added later is not a second-class one on different
  * TypeScript settings. Additive: it never touches any sibling. The `.dev.vars` symlink and the port
  * reconcile are the command's job, not the scaffold's.
+ *
+ * `project` is the root `pithy.config.ts` name, resolved by the caller through `requireProjectName` (never
+ * guessed — CLAUDE.md §Resource naming). It leads the Worker's **deploy name** (`<project>-<name>`, an
+ * account-flat Cloudflare namespace) and its package name, and it is stamped as the `PROJECT` var in every
+ * environment stanza, which is what lets this Worker mint attributable Cloudflare Images and Stream assets.
  */
-export async function scaffoldWorker(options: { projectDir: string; name: string }): Promise<{ dir: string }> {
+export async function scaffoldWorker(options: {
+  projectDir: string;
+  name: string;
+  project: string;
+}): Promise<{ dir: string }> {
   if (!WORKER_NAME.test(options.name)) {
     throw new ValidationError({
       message: `Worker name must be kebab-case (got "${options.name}").`,
@@ -182,7 +207,7 @@ export async function scaffoldWorker(options: { projectDir: string; name: string
   await mkdir(dir, { recursive: true });
   await ensureEmptyTarget(dir);
 
-  const files = workerFiles(options.name);
+  const files = workerFiles(options.name, options.project);
   for (const [rel, content] of Object.entries(files)) {
     const path = join(dir, rel);
     await mkdir(join(path, ".."), { recursive: true });

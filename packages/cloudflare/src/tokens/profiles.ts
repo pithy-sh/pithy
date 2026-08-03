@@ -53,11 +53,25 @@ export interface TokenProfile {
   resources?: "account" | Record<string, string>;
   /** The secret-registry name the minted value is stored under; its declared backend is the destination. */
   secret: string;
+  /**
+   * Whether the value behind {@link secret} differs per environment (the default) or is one value every
+   * environment shares. It decides the environment segment of the **CF Secrets Store entry name** the
+   * minted value is written to, and nothing else — never the `.dev.vars` key, which is a variable name
+   * and stays verbatim. A `global` profile writes one entry with the literal `global` in that slot,
+   * matching what provisioning wrote; an `environment` profile writes one entry per environment.
+   */
+  secretScope?: TokenSecretScope;
   /** A built-in destination override (`dev-vars`/`ephemeral`/`secrets-store`); else the secret's backend. */
   defaultStore?: TokenStore;
   /** Why this profile exists / what job consumes it. */
   description: string;
 }
+
+/** Whether a profile's secret is one value per environment or one value shared by all of them. */
+export type TokenSecretScope = "environment" | "global";
+
+/** The valid secret scopes, for validating a capability's declaration. */
+const TOKEN_SECRET_SCOPES: readonly TokenSecretScope[] = ["environment", "global"];
 
 /** An adopter's override of a profile's defaults (from `pithy.config.ts` or CLI flags). Every field optional. */
 export interface ProfileOverride {
@@ -115,8 +129,22 @@ function ciSystemProfile(capabilities: readonly Capability[]): TokenProfile {
   };
 }
 
+/**
+ * The seam fields this package reads. Core's {@link TokenProfileSeam} is the structural contract every
+ * capability declares against; `secretScope` is additive on top of it, so it is named here rather than
+ * in core — a seam value that omits it is still assignable, and one that carries it is read as declared.
+ *
+ * Exported so a capability can type its `tokenProfiles` entry against it. Declaring `secretScope` as an
+ * inline object literal directly in `tokenProfiles` still trips TypeScript's excess-property check
+ * against core's narrower `TokenProfileSeam`; declare the entry as its own `const` (with `as const` or
+ * `satisfies TokenProfileSeamInput`) and it flows through.
+ */
+export interface TokenProfileSeamInput extends TokenProfileSeam {
+  readonly secretScope?: string;
+}
+
 /** Build a concrete, validated worker-consumer {@link TokenProfile} from a capability's structural seam entry. */
-function profileFromSeam(name: string, seam: TokenProfileSeam, capability: string): TokenProfile {
+function profileFromSeam(name: string, seam: TokenProfileSeamInput, capability: string): TokenProfile {
   const store = seam.defaultStore;
   if (store !== undefined && !(TOKEN_STORES as readonly string[]).includes(store)) {
     throw new CloudflareNotConfiguredError({
@@ -124,11 +152,19 @@ function profileFromSeam(name: string, seam: TokenProfileSeam, capability: strin
       action: `Use one of: ${TOKEN_STORES.join(", ")}.`,
     });
   }
+  const scope = seam.secretScope;
+  if (scope !== undefined && !(TOKEN_SECRET_SCOPES as readonly string[]).includes(scope)) {
+    throw new CloudflareNotConfiguredError({
+      message: `Token profile "${name}" (capability "${capability}") declares an unknown secret scope: ${scope}.`,
+      action: `Use one of: ${TOKEN_SECRET_SCOPES.join(", ")}.`,
+    });
+  }
   return {
     name,
     permissions: assertPermissionKeys(seam.permissions, `Token profile "${name}"`),
     resources: seam.resources,
     secret: seam.secret ?? tokenSecretName(name),
+    secretScope: scope as TokenSecretScope | undefined,
     defaultStore: store as TokenStore | undefined,
     description: seam.description ?? name,
   };

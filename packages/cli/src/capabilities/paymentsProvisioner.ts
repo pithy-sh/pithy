@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -87,7 +87,7 @@ async function paymentsWorkerDir(): Promise<string> {
 export interface PaymentsEnvResources {
   /** The app database id for this environment — where the `pithy_payments_*` tables live. */
   appDatabaseId: string;
-  /** This environment's secrets database id (`pithy-secrets-<env>`) — holds the rails' credentials. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the rails' credentials. */
   secretsDatabaseId: string;
 }
 
@@ -97,6 +97,12 @@ export type ResolvePaymentsEnv = (env: ManagedEnvironment) => Promise<PaymentsEn
 export interface CloudflarePaymentsProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. The deployed host and the reconcile Workflow both lead with it, and a guessed
+   * value dispatches into a Workflow name nothing deployed.
+   */
+  project: string;
   /** The bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /** The CF Secrets Store id holding the per-env master keys (the worker decrypts its credentials with one). */
@@ -115,6 +121,7 @@ export interface CloudflarePaymentsProvisionerOptions {
 export class CloudflarePaymentsProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #paymentsConfig: PaymentsConfig;
@@ -125,6 +132,7 @@ export class CloudflarePaymentsProvisioner {
   constructor(options: CloudflarePaymentsProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#paymentsConfig = options.paymentsConfig;
@@ -150,6 +158,7 @@ export class CloudflarePaymentsProvisioner {
     const dir = await paymentsWorkerDir();
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolvePaymentsConfig(template, {
+      project: this.#project,
       env,
       appDatabaseId,
       secretsDatabaseId,
@@ -169,7 +178,7 @@ export class CloudflarePaymentsProvisioner {
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: paymentsWorkerName(env),
+        resourceId: paymentsWorkerName(this.#project, env),
         metadata: { env },
       });
     } catch (error) {
@@ -179,7 +188,7 @@ export class CloudflarePaymentsProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: paymentsWorkerName(env),
+        resourceId: paymentsWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -198,6 +207,7 @@ export class CloudflarePaymentsProvisioner {
    */
   async reconcile(env: ManagedEnvironment, params: Record<string, unknown>): Promise<unknown> {
     const { PAYMENTS_CAPABILITY } = await loadPayments();
-    return this.#workflows.dispatchAndPoll(workflowScriptName(PAYMENTS_CAPABILITY, "reconcile", env), params);
+    const name = resourceNames(this.#project).env(env).workflow(PAYMENTS_CAPABILITY, "reconcile");
+    return this.#workflows.dispatchAndPoll(name, params);
   }
 }

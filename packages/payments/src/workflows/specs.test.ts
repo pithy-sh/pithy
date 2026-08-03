@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
 import { PAYMENTS_CAPABILITY, PaymentsReconcileParams, paymentsWorkflowRegistry, paymentsWorkflows } from "./specs";
 
@@ -28,7 +28,9 @@ describe("payments workflow specs", () => {
   });
 
   test("the deployed name is the shape already on the wire for storage and media", () => {
-    expect(workflowScriptName(PAYMENTS_CAPABILITY, "reconcile", "staging")).toBe("pithy-payments-reconcile-staging");
+    expect(resourceNames("acme").env("staging").workflow(PAYMENTS_CAPABILITY, "reconcile")).toBe(
+      "acme-staging-payments-reconcile",
+    );
   });
 
   test("empty params are valid — a cron supplies none, so a required field could never run", () => {

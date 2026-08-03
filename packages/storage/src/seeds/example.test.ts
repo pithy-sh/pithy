@@ -9,7 +9,7 @@ import { STORAGE_OBJECTS_TABLE } from "../data/tables";
 import { storageExampleSeed } from "./example";
 
 describe("storageExampleSeed", () => {
-  it("is flagged as an example, and never lists production", () => {
+  it("is flagged as an example, and never lists prod", () => {
     expect(storageExampleSeed.example).toBe(true);
     expect(storageExampleSeed.environments).toEqual(["dev", "staging"]);
   });
@@ -75,8 +75,8 @@ describe("storage() with seed.includeExamples", () => {
     expect(withExamples.sets[0]?.key).toContain("storage");
   });
 
-  it("never composes the example set for production, even with includeExamples on", () => {
-    const result = composeSeeds([storage()], { env: "production", includeExamples: true });
+  it("never composes the example set for prod, even with includeExamples on", () => {
+    const result = composeSeeds([storage()], { env: "prod", includeExamples: true });
     expect(result.sets).toHaveLength(0);
     expect(result.skippedByEnv.length).toBeGreaterThan(0);
   });

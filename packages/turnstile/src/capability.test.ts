@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import { isTurnstileCapability, turnstile } from "./capability";
 import type { TurnstileConfigInput } from "./config/config";
 
-const sitekeys = { dev: "d", staging: "s", production: "p" };
+const sitekeys = { dev: "d", staging: "s", prod: "p" };
 
 describe("turnstile capability", () => {
   test("is stateless — no bindings of its own (its secret is read through @pithy-sh/secrets)", () => {
@@ -21,7 +21,7 @@ describe("turnstile capability", () => {
   test("attaches the resolved config with brand defaults", () => {
     const cap = turnstile({ widgets: { invisible: { sitekeys } } });
     expect(cap.turnstileConfig.protect).toEqual({ login: "visible" });
-    expect(cap.turnstileConfig.widgets.invisible?.sitekeys.production).toBe("p");
+    expect(cap.turnstileConfig.widgets.invisible?.sitekeys.prod).toBe("p");
   });
 
   test("exposes its config schema for composition validation", () => {
@@ -40,7 +40,7 @@ describe("turnstile capability", () => {
 describe("turnstile client projection", () => {
   test("projects exactly the four keys that render the login widget", () => {
     const cap = turnstile({ widgets: { visible: { sitekeys } } });
-    const projection = resolveClientProjection(cap, { environment: "production" });
+    const projection = resolveClientProjection(cap, { environment: "prod" });
     expect(Object.keys(projection).sort()).toEqual(["enabled", "mode", "sitekey", "token"]);
     expect(projection).toEqual({
       enabled: true,
@@ -54,7 +54,7 @@ describe("turnstile client projection", () => {
     const cap = turnstile({ widgets: { visible: { sitekeys } } });
     expect(resolveClientProjection(cap, { environment: "dev" }).sitekey).toBe("d");
     expect(resolveClientProjection(cap, { environment: "staging" }).sitekey).toBe("s");
-    expect(resolveClientProjection(cap, { environment: "production" }).sitekey).toBe("p");
+    expect(resolveClientProjection(cap, { environment: "prod" }).sitekey).toBe("p");
   });
 
   test("carries the token placement so the front end posts where the middleware reads", () => {
@@ -73,17 +73,17 @@ describe("turnstile client projection", () => {
 
   test("is disabled when no login gate is configured", () => {
     const cap = turnstile({ widgets: { visible: { sitekeys } }, protect: {} });
-    expect(resolveClientProjection(cap, { environment: "production" })).toEqual({ enabled: false });
+    expect(resolveClientProjection(cap, { environment: "prod" })).toEqual({ enabled: false });
   });
 
   test("is disabled when the widget the login gate names is not configured", () => {
     const cap = turnstile({ widgets: { invisible: { sitekeys } } });
-    expect(resolveClientProjection(cap, { environment: "production" })).toEqual({ enabled: false });
+    expect(resolveClientProjection(cap, { environment: "prod" })).toEqual({ enabled: false });
   });
 
   test("is disabled when this environment has no sitekey", () => {
-    const cap = turnstile({ widgets: { visible: { sitekeys: { dev: "d", staging: "s", production: "" } } } });
-    expect(resolveClientProjection(cap, { environment: "production" })).toEqual({ enabled: false });
+    const cap = turnstile({ widgets: { visible: { sitekeys: { dev: "d", staging: "s", prod: "" } } } });
+    expect(resolveClientProjection(cap, { environment: "prod" })).toEqual({ enabled: false });
     expect(resolveClientProjection(cap, { environment: "preview" })).toEqual({ enabled: false });
   });
 
@@ -92,8 +92,8 @@ describe("turnstile client projection", () => {
     const extra = { secret: "0x_widget_secret_never_ship" } as unknown as Partial<TurnstileConfigInput>;
     const cap = turnstile({
       widgets: {
-        visible: { sitekeys: { dev: "dev-key", staging: "staging-key", production: "production-key" } },
-        invisible: { sitekeys: { dev: "inv-dev", staging: "inv-staging", production: "inv-production" } },
+        visible: { sitekeys: { dev: "dev-key", staging: "staging-key", prod: "production-key" } },
+        invisible: { sitekeys: { dev: "inv-dev", staging: "inv-staging", prod: "inv-production" } },
       },
       ...extra,
     });

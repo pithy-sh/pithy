@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import {
-  AbortMultipartUploadCommand,
-  DeleteObjectCommand,
-  ListMultipartUploadsCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from "@aws-sdk/client-s3";
 import { beforeAll, describe, expect, test } from "vitest";
 import { CloudflareClients } from "../client/clients";
-import { loadIntegrationCreds, reapStaleTestResources, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import {
+  emptyTestBucket,
+  loadIntegrationCreds,
+  reapStaleTestBuckets,
+  uniqueName,
+  withThrowawayResource,
+} from "../test-utils/harness";
 import type { CompletedPart } from "./r2Manager";
 import { CloudflareR2Manager } from "./r2Manager";
 
@@ -52,51 +51,11 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
 
   // Teardown only runs while the process lives; a run killed mid-test orphans its bucket. Reaping first
   // makes each run clean up after the last, so an aborted run costs nothing beyond the next run's start.
-  // A stale bucket may still hold objects, so empty it before deleting — R2 refuses a non-empty delete.
+  // `reapStaleTestBuckets` holds the S3 key pair, which is what a bucket reaper needs and an API token
+  // cannot supply — R2 refuses a non-empty delete, and emptying is an S3 operation.
   beforeAll(async () => {
-    await reapStaleTestResources({
-      label: "R2 bucket",
-      list: async () => (await provisioner.listBuckets()).map((bucket) => bucket.name),
-      remove: async (name) => {
-        await purgeBucket(name);
-        await provisioner.deleteBucket(name);
-      },
-    });
+    await reapStaleTestBuckets(creds);
   });
-
-  /**
-   * A raw S3 client used by teardown only. Teardown deliberately does not go through the manager
-   * under test: if `listObjects` or `deleteObject` is the thing that is broken, the bucket still has
-   * to come back empty, or the failing test leaks a bucket instead of reporting a bug.
-   */
-  const teardownS3 = new S3Client({
-    region: "auto",
-    endpoint: `https://${creds.accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: r2.accessKeyId, secretAccessKey: r2.secretAccessKey },
-  });
-
-  /**
-   * Empty a bucket so R2 will delete it. Two things hold a bucket: stored objects, and parts of
-   * multipart uploads that were never completed or aborted — which is exactly what a test that fails
-   * mid-upload leaves behind. Abort those first, then drain every page of keys.
-   */
-  async function purgeBucket(bucketName: string): Promise<void> {
-    const uploads = await teardownS3.send(new ListMultipartUploadsCommand({ Bucket: bucketName }));
-    for (const upload of uploads.Uploads ?? []) {
-      if (!upload.Key || !upload.UploadId) continue;
-      await teardownS3.send(
-        new AbortMultipartUploadCommand({ Bucket: bucketName, Key: upload.Key, UploadId: upload.UploadId }),
-      );
-    }
-    let token: string | undefined;
-    do {
-      const page = await teardownS3.send(new ListObjectsV2Command({ Bucket: bucketName, ContinuationToken: token }));
-      for (const entry of page.Contents ?? []) {
-        if (entry.Key) await teardownS3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: entry.Key }));
-      }
-      token = page.IsTruncated ? page.NextContinuationToken : undefined;
-    } while (token);
-  }
 
   /**
    * Run `exercise` against a manager pointed at a fresh throwaway bucket, then purge and delete it.
@@ -104,12 +63,12 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
    */
   async function withBucket<T>(exercise: (manager: CloudflareR2Manager, bucketName: string) => Promise<T>): Promise<T> {
     return withThrowawayResource(
-      () => provisioner.createBucket(uniqueName("pithy-int-r2")),
+      () => provisioner.createBucket(uniqueName("r2")),
       (bucket) => exercise(new CloudflareR2Manager({ ...r2Config, bucketName: bucket.name }), bucket.name),
       async (bucket) => {
         // A purge failure would only resurface as a bucket-delete failure; let that be the loud one,
         // so a genuine assertion error is never masked by teardown noise.
-        await purgeBucket(bucket.name).catch(() => undefined);
+        await emptyTestBucket(creds, bucket.name).catch(() => undefined);
         await provisioner.deleteBucket(bucket.name);
       },
     );
@@ -135,7 +94,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
       expect(await (await fetch(downloadUrl)).text()).toBe(PAYLOAD);
 
       // Error path: a manager pointed at a non-existent bucket fails access validation.
-      const missing = new CloudflareR2Manager({ ...r2Config, bucketName: uniqueName("pithy-int-nobucket") });
+      const missing = new CloudflareR2Manager({ ...r2Config, bucketName: uniqueName("nobucket") });
       expect(await missing.validateServiceAccess()).toBe(false);
     });
   });
@@ -292,7 +251,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
   test("empties a bucket holding objects and a dangling upload, so R2 will finally delete it", async () => {
     // Not `withBucket`: this test deletes the bucket itself, which is the assertion. Teardown only has
     // to cope with a failure part way through — hence the purge and the idempotent delete below.
-    const bucket = await provisioner.createBucket(uniqueName("pithy-int-r2"));
+    const bucket = await provisioner.createBucket(uniqueName("r2"));
     try {
       const manager = new CloudflareR2Manager({ ...r2Config, bucketName: bucket.name });
       for (const key of ["drain/a", "drain/b", "other/c"]) await seed(manager, key, BODY, "text/plain");
@@ -319,12 +278,12 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
       expect(await provisioner.findBucketByName(bucket.name)).toBeNull();
 
       // And the drain is idempotent on an already-empty bucket, so a retried teardown is safe.
-      const fresh = await provisioner.createBucket(uniqueName("pithy-int-r2"));
+      const fresh = await provisioner.createBucket(uniqueName("r2"));
       const empty = new CloudflareR2Manager({ ...r2Config, bucketName: fresh.name });
       expect(await empty.emptyBucket()).toEqual({ objectsDeleted: 0, uploadsAborted: 0 });
       await provisioner.deleteBucket(fresh.name);
     } finally {
-      await purgeBucket(bucket.name).catch(() => undefined);
+      await emptyTestBucket(creds, bucket.name).catch(() => undefined);
       await provisioner.deleteBucket(bucket.name);
     }
   });

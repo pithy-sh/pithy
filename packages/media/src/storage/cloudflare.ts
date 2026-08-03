@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
+import { type AssetOwner, withAssetOwnership } from "@pithy-sh/cloudflare/src/media/ownership";
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
 import { z } from "zod";
@@ -14,6 +15,12 @@ import type { ImageMinter, R2Minter, VideoMinter } from "./minter";
  * `@pithy-sh/cloudflare` managers' SDK-typed responses, and it validates the handful of fields it needs
  * with a local Zod object so an unexpected shape fails loudly rather than surfacing as `undefined`.
  *
+ * They are also the one boundary where a **name** cannot isolate a project. An R2 key lives inside a
+ * bucket already called `<project>-<env>-media`; an Images id and a Stream uid are minted by
+ * Cloudflare into one account-flat store. So both minters take an {@link AssetOwner} at construction
+ * and stamp it into every asset they create — `withAssetOwnership` merges it **over** the caller's bag,
+ * so a caller can neither omit nor overwrite it.
+ *
  * R2 is not adapted from an SDK at all. It comes from `@pithy-sh/storage`'s {@link ObjectStore} — the
  * object-plane seam built to be pointed at a second bucket under a second credential name. Media holds
  * no `CloudflareR2Manager`, no key pair, and no bucket name; it holds a store it asks for two URLs.
@@ -25,23 +32,28 @@ const STREAM_MAX_DURATION_SECONDS = 21600;
 const ImageUploadResponse = z.object({ id: z.string(), uploadURL: z.string() });
 const StreamUploadResponse = z.object({ uid: z.string(), uploadURL: z.string() });
 
-/** Adapt a {@link CloudflareImageManager} to the {@link ImageMinter} seam. */
-export function imageMinter(manager: CloudflareImageManager): ImageMinter {
+/** Adapt a {@link CloudflareImageManager} to the {@link ImageMinter} seam, stamped for one owner. */
+export function imageMinter(manager: CloudflareImageManager, owner: AssetOwner): ImageMinter {
   return {
     async mintDirectUpload(metadata) {
-      const response = ImageUploadResponse.parse(await manager.createDirectUploadUrl({ metadata }));
+      const response = ImageUploadResponse.parse(
+        await manager.createDirectUploadUrl({ metadata: withAssetOwnership(owner, metadata) }),
+      );
       return { id: response.id, uploadUrl: response.uploadURL };
     },
     delete: (id) => manager.deleteImage(id),
   };
 }
 
-/** Adapt a {@link CloudflareStreamManager} to the {@link VideoMinter} seam. */
-export function videoMinter(manager: CloudflareStreamManager): VideoMinter {
+/** Adapt a {@link CloudflareStreamManager} to the {@link VideoMinter} seam, stamped for one owner. */
+export function videoMinter(manager: CloudflareStreamManager, owner: AssetOwner): VideoMinter {
   return {
-    async mintDirectUpload() {
+    async mintDirectUpload(metadata) {
       const response = StreamUploadResponse.parse(
-        await manager.createDirectUpload({ maxDurationSeconds: STREAM_MAX_DURATION_SECONDS }),
+        await manager.createDirectUpload({
+          maxDurationSeconds: STREAM_MAX_DURATION_SECONDS,
+          meta: withAssetOwnership(owner, metadata),
+        }),
       );
       return { uid: response.uid, uploadUrl: response.uploadURL };
     },

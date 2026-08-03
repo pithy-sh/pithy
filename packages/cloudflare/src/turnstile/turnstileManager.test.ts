@@ -26,7 +26,7 @@ vi.mock("cloudflare", () => ({
 }));
 
 /** An async iterable over the given widgets, matching the SDK's auto-paginating list. */
-function asyncWidgets(widgets: Array<{ name: string; sitekey: string }>) {
+function asyncWidgets(widgets: Array<{ name: string; sitekey: string; domains?: string[] }>) {
   return {
     async *[Symbol.asyncIterator]() {
       for (const widget of widgets) yield widget;
@@ -178,6 +178,38 @@ describe("CloudflareTurnstileManager", () => {
         }),
       });
       await expect(manager.getTurnstile("my-site")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      );
+    });
+  });
+
+  describe("listTurnstilesByDomain", () => {
+    it("returns every widget claiming the domain — a domain is not unique across widgets", async () => {
+      mockList.mockReturnValue(
+        asyncWidgets([
+          { name: "elsewhere", sitekey: "key-1", domains: ["other.example.com"] },
+          { name: "mine", sitekey: "key-2", domains: ["app.example.com", "www.example.com"] },
+          { name: "theirs", sitekey: "key-3", domains: ["app.example.com"] },
+        ]),
+      );
+      expect((await manager.listTurnstilesByDomain("app.example.com")).map((w) => w.name)).toEqual(["mine", "theirs"]);
+    });
+
+    it("matches case-insensitively, hostnames being case-insensitive", async () => {
+      mockList.mockReturnValue(asyncWidgets([{ name: "mine", sitekey: "key-1", domains: ["App.Example.COM"] }]));
+      expect((await manager.listTurnstilesByDomain("app.example.com")).map((w) => w.name)).toEqual(["mine"]);
+    });
+
+    it("returns an empty list when no widget claims the domain", async () => {
+      mockList.mockReturnValue(asyncWidgets([{ name: "elsewhere", sitekey: "key-1", domains: ["other.example.com"] }]));
+      expect(await manager.listTurnstilesByDomain("app.example.com")).toEqual([]);
+    });
+
+    it("wraps a list failure as cloudflare/request_failed", async () => {
+      mockList.mockReturnValue({
+        [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error("API error")) }),
+      });
+      await expect(manager.listTurnstilesByDomain("app.example.com")).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
       );
     });

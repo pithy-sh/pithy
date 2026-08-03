@@ -18,25 +18,32 @@
   // `pithy add <capability>` appends the bindings a capability needs, per environment.
   // `ENVIRONMENT` names this environment — the one signal that decides dev vs deployed,
   // and the value log records carry as their `env` correlation field.
+  // `PROJECT` names the owning project (the root pithy.config.ts `name`). Cloudflare Images and
+  // Stream are account-flat and key an asset by an id they mint, so this var is the only thing
+  // that says which project owns an upload this Worker makes. Every environment repeats both:
+  // `env.<name>.vars` REPLACES this block rather than merging it.
   "vars": {
-    "ENVIRONMENT": "dev"
+    "ENVIRONMENT": "dev",
+    "PROJECT": "pithy-app"
   },
   "d1_databases": [],
   "kv_namespaces": [],
 
   // Staging serves test users; production serves paid users. Deployed names get the
-  // environment suffix automatically (pithy-app-staging, pithy-app-production).
+  // environment suffix automatically (pithy-app-staging, pithy-app-prod).
   "env": {
     "staging": {
       "vars": {
-        "ENVIRONMENT": "staging"
+        "ENVIRONMENT": "staging",
+        "PROJECT": "pithy-app"
       },
       "d1_databases": [],
       "kv_namespaces": []
     },
-    "production": {
+    "prod": {
       "vars": {
-        "ENVIRONMENT": "production"
+        "ENVIRONMENT": "prod",
+        "PROJECT": "pithy-app"
       },
       "d1_databases": [],
       "kv_namespaces": []

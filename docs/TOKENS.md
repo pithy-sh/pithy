@@ -10,6 +10,14 @@ Everything starts from the one credential you set by hand: the bootstrap `CLOUDF
 
 **The delegation rule.** Cloudflare only lets a token create another token whose permissions it already holds. So the bootstrap token must itself hold **every permission it delegates into a minted token** — the union of your `ci-system` permissions (see below) plus API Tokens Edit. Names are resolved against your account at mint time; an unknown or missing one fails loudly, never silently mis-scoped.
 
+## Token names are project-scoped
+
+A minted token is named `<project>-<env>-<profile>` — `acme-production-ci-system`, `acme-staging-secrets`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters on the `<project>-<env>-` prefix and shows nothing outside it.
+
+The store entry a token's value is written to is scoped the same way. The **`.dev.vars` variable name is not** — `CF_TOKEN_CI_SYSTEM` stays as it is, because it is a variable key in your own file, not a name in a shared namespace.
+
+`<project>` is `name` in the root `pithy.config.ts`. See [`NAMING.md`](NAMING.md) for the rule and its length budget.
+
 ## `ci-system` — the one CI credential
 
 CI runs migrate and deploy in one process under one credential, so there is one CI token: `ci-system`. Its permissions are the **base** — deploy Workers, migrate remote D1, read/write the Secrets Store — **plus whatever the composed capabilities need CI to do**. You never hand-list them.
@@ -47,13 +55,16 @@ Some tokens are read by a deployed Worker, not by CI — the secrets manager's r
 tokenProfiles: {
   secrets: {
     permissions: ["secrets:read", "secrets:write"],
-    secret: "GLOBAL_SECRETS_MANAGER_CF_API_TOKEN",  // the CF Secrets Store entry the Worker binds
+    secret: "SECRETS_MANAGER_CF_API_TOKEN",  // the registry key — also the Worker's binding name
+    secretScope: "global",                   // one credential for the whole project, not one per env
     defaultStore: "secrets-store"
   }
 }
 ```
 
-Its value is written to the **CF Secrets Store** under the named secret, and the Worker reads it via its binding.
+Its value is written to the **CF Secrets Store**, and the Worker reads it via its binding.
+
+`secret` is the registry key, unscoped and unchanged. The **store entry** it lands in is `<project>-<env>-<secret>`, or `<project>-global-<secret>` when `secretScope` is `global` — so this profile writes to `acme-global-secrets-manager-cf-api-token`. `secretScope` is load-bearing rather than documentation: it is what makes `pithy token mint secrets` land on the exact entry provisioning wired the Worker to read.
 
 ## Where a token is written — the store
 

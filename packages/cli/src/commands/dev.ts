@@ -14,7 +14,7 @@ import { formatJsonLine, withErrorReporting } from "../terminal/output";
  * worker exiting brings the rest down with it. The real work lives in `startDev`; this stays thin.
  */
 export default defineCommand({
-  meta: { name: "dev", description: "Run every worker locally under one supervisor." },
+  meta: { name: "dev", description: "Run every worker locally under one supervisor" },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },

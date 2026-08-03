@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import {
+  CLOUDFLARE_CREDENTIAL_KEYS,
+  type CloudflareCredentialSplit,
+  cloudflareCredentialSplit,
+  loadCloudflareEnv,
+} from "@pithy-sh/cloudflare/src/env/devVars";
 
 /**
  * Whether `pithy doctor` can reach Cloudflare with the credentials the project is configured with.
@@ -34,10 +39,23 @@ export interface CloudflareAccess {
   missing: string[];
   /** The token's lifecycle status from `GET /user/tokens/verify` (`active`), or null when it could not be read. */
   tokenStatus: string | null;
+  /**
+   * Set when the account id and the token came from **different sources** — part of the pair from
+   * `.dev.vars`, the rest overlaid from the ambient environment.
+   *
+   * Reported alongside the state rather than as one, because it is orthogonal to reachability: mixed
+   * credentials may well reach *an* account. It never fails the exit — the pair may be valid, and only a
+   * fault this project's own config positively establishes may gate CI.
+   */
+  credentialSplit: CloudflareCredentialSplit | null;
 }
 
-/** The credential keys this check needs, in the order they are reported. */
-const REQUIRED_KEYS = ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"] as const;
+/**
+ * The credential keys this check needs, in the order they are reported — the same group
+ * {@link cloudflareCredentialSplit} watches, because "both must be set" and "both must come from one
+ * account" are two readings of one pair.
+ */
+const REQUIRED_KEYS = CLOUDFLARE_CREDENTIAL_KEYS;
 
 /**
  * Verify the token against the endpoint that matches its kind.
@@ -76,26 +94,28 @@ async function verifyByKind(clients: CloudflareClients, apiToken: string): Promi
  */
 export async function checkCloudflareAccess(projectDir: string): Promise<CloudflareAccess> {
   const vars = loadCloudflareEnv(projectDir);
+  // Read from the same directory as the credentials, so what is reported is a fact about *this* resolution.
+  const credentialSplit = cloudflareCredentialSplit(projectDir);
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
-  if (missing.length > 0) return { state: "unconfigured", missing: [...missing], tokenStatus: null };
+  if (missing.length > 0) return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit };
 
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const clients = new CloudflareClients({ accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken });
 
   const tokenStatus = await verifyByKind(clients, apiToken);
-  if (tokenStatus === null) return { state: "token_invalid", missing: [], tokenStatus: null };
+  if (tokenStatus === null) return { state: "token_invalid", missing: [], tokenStatus: null, credentialSplit };
 
   // Account-scoped, read-only, and never throws — and it exercises the one permission the bootstrap token
   // must hold to mint anything (`docs/TOKENS.md`), so a token that cannot mint is caught here rather than
   // by `pithy token mint`.
   const reachable = await clients.accountTokens().validateServiceAccess();
-  if (!reachable) return { state: "account_unreachable", missing: [], tokenStatus };
+  if (!reachable) return { state: "account_unreachable", missing: [], tokenStatus, credentialSplit };
 
-  return { state: "ok", missing: [], tokenStatus };
+  return { state: "ok", missing: [], tokenStatus, credentialSplit };
 }
 
-/** The one-line report for {@link renderDoctorText}, and the `action` a failing state should prompt. */
-export function describeCloudflareAccess(access: CloudflareAccess): string {
+/** The state's own line, before the split warning {@link describeCloudflareAccess} may append. */
+function describeState(access: CloudflareAccess): string {
   switch (access.state) {
     case "ok":
       return `reachable (token ${access.tokenStatus ?? "verified"})`;
@@ -106,4 +126,17 @@ export function describeCloudflareAccess(access: CloudflareAccess): string {
     case "account_unreachable":
       return "token is valid but the account did not answer — check CLOUDFLARE_ACCOUNT_ID and the token's permissions";
   }
+}
+
+/**
+ * The one-line report for {@link renderDoctorText}, and the `action` a failing state should prompt.
+ *
+ * A split group is appended rather than substituted: both facts are true at once, and a reachable state
+ * is exactly what makes the split easy to miss — mixed credentials still reach *an* account.
+ */
+export function describeCloudflareAccess(access: CloudflareAccess): string {
+  const state = describeState(access);
+  const split = access.credentialSplit;
+  if (!split) return state;
+  return `${state}; credentials come from two places — .dev.vars sets ${split.fromFile.join(" and ")}, the environment supplies ${split.fromEnvironment.join(" and ")} — set the whole pair in one of them`;
 }

@@ -16,9 +16,15 @@ function fakeCf() {
   const getTurnstile = vi.fn();
   const addTurnstile = vi.fn();
   const deleteTurnstile = vi.fn();
-  const cf = { turnstile: () => ({ getTurnstile, addTurnstile, deleteTurnstile }) } as unknown as CloudflareClients;
-  return { cf, getTurnstile, addTurnstile, deleteTurnstile };
+  const listTurnstilesByDomain = vi.fn().mockResolvedValue([]);
+  const cf = {
+    turnstile: () => ({ getTurnstile, addTurnstile, deleteTurnstile, listTurnstilesByDomain }),
+  } as unknown as CloudflareClients;
+  return { cf, getTurnstile, addTurnstile, deleteTurnstile, listTurnstilesByDomain };
 }
+
+/** The project name every case here provisions under — the leading segment of every widget name. */
+const PROJECT = "acme";
 
 /** A dispatcher that records every write request. */
 function fakeDispatcher() {
@@ -51,7 +57,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir, workerDir, dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
 
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
 
@@ -63,7 +69,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeManagedSecret dispatches a create with the d1/environment/json routing facts", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
-    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
 
     await p.writeManagedSecret("staging", '{"visible":{"key":"1x"}}');
 
@@ -80,9 +86,14 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("writeManagedSecret falls back to update when create fails (idempotent re-run)", async () => {
     const { cf } = fakeCf();
     const dispatch = vi.fn().mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
-    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher: { dispatch } });
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher: { dispatch },
+    });
 
-    await p.writeManagedSecret("production", '{"visible":{"key":"1x"}}');
+    await p.writeManagedSecret("prod", '{"visible":{"key":"1x"}}');
 
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[0]?.[0]).toMatchObject({ mode: "create" });
@@ -95,9 +106,14 @@ describe("CloudflareTurnstileProvisioner", () => {
       .fn()
       .mockRejectedValueOnce(new Error("create boom: bad token"))
       .mockRejectedValueOnce(new Error("update boom: not found"));
-    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher: { dispatch } });
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher: { dispatch },
+    });
 
-    await expect(p.writeManagedSecret("production", '{"visible":{"key":"1x"}}')).rejects.toMatchObject({
+    await expect(p.writeManagedSecret("prod", '{"visible":{"key":"1x"}}')).rejects.toMatchObject({
       payload: { code: "core/internal", detail: expect.stringContaining("create boom: bad token") },
     });
   });
@@ -106,7 +122,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project('{\n  // staging\n  "env": { "staging": { "vars": {} } }\n}');
-    const p = new CloudflareTurnstileProvisioner({ cf, projectDir, workerDir, dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
 
     await p.writeManagedSitekeys("staging", { TURNSTILE_SITEKEY_VISIBLE: "stg-key" });
 
@@ -119,7 +135,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   test("ensureProductionWidget creates a managed widget for visible, reuses an existing one", async () => {
     const { cf, getTurnstile, addTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const p = new CloudflareTurnstileProvisioner({ cf, ...(await project()), dispatcher });
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
 
     getTurnstile.mockResolvedValueOnce(null);
     addTurnstile.mockResolvedValueOnce({ sitekey: "new-key", secret: "new-secret" });
@@ -127,7 +143,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       sitekey: "new-key",
       secret: "new-secret",
     });
-    expect(addTurnstile).toHaveBeenCalledWith("pithy-turnstile-visible-production", ["app.example.com"], "managed");
+    expect(addTurnstile).toHaveBeenCalledWith("acme-prod-turnstile-visible", ["app.example.com"], "managed");
 
     getTurnstile.mockResolvedValueOnce({ sitekey: "existing-key" });
     expect(await p.ensureProductionWidget("invisible", "app.example.com")).toEqual({
@@ -142,6 +158,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const events: CliAuditEvent[] = [];
     const p = new CloudflareTurnstileProvisioner({
       cf,
+      project: PROJECT,
       ...(await project()),
       dispatcher,
       audit: async (event) => void events.push(event),
@@ -157,7 +174,7 @@ describe("CloudflareTurnstileProvisioner", () => {
         severity: "info",
         resourceType: "turnstile_widget",
         resourceId: "new-key",
-        metadata: { name: "pithy-turnstile-visible-production", mode: "visible", domain: "app.example.com" },
+        metadata: { name: "acme-prod-turnstile-visible", mode: "visible", domain: "app.example.com" },
       }),
     ]);
     // Never the widget's secret.
@@ -168,16 +185,93 @@ describe("CloudflareTurnstileProvisioner", () => {
     await p.ensureProductionWidget("invisible", "app.example.com");
     expect(events).toEqual([]);
   });
+
+  test("two projects in one account provision two distinct widgets, never adopting each other's", async () => {
+    const { cf, getTurnstile, addTurnstile } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const acme = new CloudflareTurnstileProvisioner({ cf, project: "acme", ...(await project()), dispatcher });
+    const globex = new CloudflareTurnstileProvisioner({ cf, project: "globex", ...(await project()), dispatcher });
+
+    getTurnstile.mockResolvedValue(null);
+    addTurnstile.mockResolvedValue({ sitekey: "k", secret: "s" });
+    await acme.ensureProductionWidget("visible", "app.example.com");
+    await globex.ensureProductionWidget("visible", "app.globex.com");
+
+    expect(getTurnstile.mock.calls.map((c) => c[0])).toEqual([
+      "acme-prod-turnstile-visible",
+      "globex-prod-turnstile-visible",
+    ]);
+  });
+});
+
+describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
+  test("refuses a domain a foreign widget already claims, naming the domain and the widget", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
+
+    listTurnstilesByDomain.mockResolvedValue([{ name: "someone-elses-widget", sitekey: "k1" }]);
+
+    await expect(p.assertDomainAvailable("app.example.com")).rejects.toMatchObject({
+      payload: {
+        code: "validation/invalid_input",
+        message: expect.stringContaining("app.example.com"),
+        action: expect.any(String),
+      },
+    });
+    await expect(p.assertDomainAvailable("app.example.com")).rejects.toMatchObject({
+      payload: { message: expect.stringContaining("someone-elses-widget") },
+    });
+    expect(listTurnstilesByDomain).toHaveBeenCalledWith("app.example.com");
+  });
+
+  test("allows a domain nothing claims", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
+
+    listTurnstilesByDomain.mockResolvedValue([]);
+    await expect(p.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
+  });
+
+  test("re-provisioning is idempotent: this project's OWN widgets never trip the guard", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
+
+    // The steady state after a first provision: both of this project's modes hold the domain.
+    listTurnstilesByDomain.mockResolvedValue([
+      { name: "acme-prod-turnstile-visible", sitekey: "k1" },
+      { name: "acme-prod-turnstile-invisible", sitekey: "k2" },
+    ]);
+    await expect(p.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
+  });
+
+  test("a neighbouring project's widget on the same domain IS foreign, and is refused", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
+
+    listTurnstilesByDomain.mockResolvedValue([
+      { name: "acme-prod-turnstile-visible", sitekey: "k1" },
+      { name: "globex-prod-turnstile-visible", sitekey: "k2" },
+    ]);
+    await expect(p.assertDomainAvailable("app.example.com")).rejects.toMatchObject({
+      payload: { code: "validation/invalid_input", message: expect.stringContaining("globex") },
+    });
+  });
 });
 
 describe("CloudflareTurnstileDeprovisioner", () => {
   test("deleteProductionWidget deletes by sitekey when present, no-op when absent", async () => {
     const { cf, getTurnstile, deleteTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const d = new CloudflareTurnstileDeprovisioner({ cf, ...(await project()), dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
 
     getTurnstile.mockResolvedValueOnce({ sitekey: "key-1" });
     await d.deleteProductionWidget("visible");
+    // Teardown recomputes the project-scoped name, so it can only ever delete this project's widget.
+    expect(getTurnstile).toHaveBeenCalledWith("acme-prod-turnstile-visible");
     expect(deleteTurnstile).toHaveBeenCalledWith("key-1");
 
     getTurnstile.mockResolvedValueOnce(null);
@@ -191,6 +285,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const events: CliAuditEvent[] = [];
     const d = new CloudflareTurnstileDeprovisioner({
       cf,
+      project: PROJECT,
       ...(await project()),
       dispatcher,
       audit: async (event) => void events.push(event),
@@ -217,13 +312,13 @@ describe("CloudflareTurnstileDeprovisioner", () => {
   test("deleteManagedSecret dispatches a delete to staging and production", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
-    const d = new CloudflareTurnstileDeprovisioner({ cf, ...(await project()), dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, project: PROJECT, ...(await project()), dispatcher });
 
     await d.deleteManagedSecret();
 
     expect(calls.map((c) => ({ env: c.env, mode: c.mode, name: c.name }))).toEqual([
       { env: "staging", mode: "delete", name: TURNSTILE_SECRET_NAME },
-      { env: "production", mode: "delete", name: TURNSTILE_SECRET_NAME },
+      { env: "prod", mode: "delete", name: TURNSTILE_SECRET_NAME },
     ]);
   });
 
@@ -235,7 +330,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
       join(projectDir, ".dev.vars"),
       `CLOUDFLARE_ACCOUNT_ID=acct\n${TURNSTILE_SECRET_NAME}={"visible":{"key":"1x"}}\nTURNSTILE_SITEKEY_VISIBLE=1x00\n`,
     );
-    const d = new CloudflareTurnstileDeprovisioner({ cf, projectDir, workerDir, dispatcher });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
 
     await d.clearDev(["visible"]);
 

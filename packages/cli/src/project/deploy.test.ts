@@ -49,7 +49,7 @@ describe("deployProject", () => {
 
     const results = await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runDeploy: async (target, args) => {
         calls.push({ name: target.name, args });
         return wranglerOutput(target.name, `ver-${target.name}`);
@@ -57,8 +57,8 @@ describe("deployProject", () => {
     });
 
     expect(calls).toEqual([
-      { name: "pithy-api", args: ["deploy", "--env", "production"] },
-      { name: "pithy-web", args: ["deploy", "--env", "production"] },
+      { name: "pithy-api", args: ["deploy", "--env", "prod"] },
+      { name: "pithy-web", args: ["deploy", "--env", "prod"] },
     ]);
     expect(results).toEqual([
       { name: "pithy-api", ok: true, versionId: "ver-pithy-api", url: "https://pithy-api.acme.workers.dev" },
@@ -105,7 +105,7 @@ describe("deployProject", () => {
 
     const results = await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       // How runWrangler reports a non-zero exit: a public message plus the real output in `detail`.
       runDeploy: async () => {
         throw new InternalError({ message: "wrangler deploy failed.", detail: "exit 1\nAuthentication error [10000]" });
@@ -145,7 +145,7 @@ describe("deployProject", () => {
 
     const results = await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runBuild: async (target, command, args) => {
         order.push(`build:${target.name}`);
         builds.push({ command, args, cwd: target.dir });
@@ -188,11 +188,11 @@ describe("deployProject", () => {
 
     await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runBuild: async (_target, _command, _args, environment) => void environments.push(environment),
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
     });
-    expect(environments).toEqual(["production"]);
+    expect(environments).toEqual(["prod"]);
   });
 
   test("a bare deploy passes no environment, so the build resolves the plugin's own default", async () => {
@@ -233,7 +233,7 @@ describe("deployProject", () => {
 
     const results = await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runBuild: async () => {
         throw new InternalError({ message: "npx vite build failed.", detail: "exit 1\nCould not resolve ./client" });
       },
@@ -276,7 +276,7 @@ describe("deployProject", () => {
 
     await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runBuild: async () => {
         throw new Error("build failed");
       },
@@ -294,7 +294,7 @@ describe("deployProject", () => {
 
     await deployProject({
       projectDir: dir,
-      env: "production",
+      env: "prod",
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
       audit: async (event) => void events.push(event),
     });
@@ -306,7 +306,7 @@ describe("deployProject", () => {
       severity: "warning",
       resourceType: "cf_worker",
       resourceId: "pithy-api",
-      metadata: { worker: "pithy-api", env: "production" },
+      metadata: { worker: "pithy-api", env: "prod" },
     });
   });
 
@@ -331,7 +331,7 @@ describe("deployProject", () => {
 
 describe("deploySeverity", () => {
   test("only production is warning; staging, dev, and the top-level worker are info", () => {
-    expect(deploySeverity("production")).toBe("warning");
+    expect(deploySeverity("prod")).toBe("warning");
     expect(deploySeverity("staging")).toBe("info");
     expect(deploySeverity(undefined)).toBe("info");
   });
@@ -361,14 +361,14 @@ describe("summarizeDeploy", () => {
 
 describe("pendingWarning", () => {
   test("warns and pluralizes when migrations are unapplied", () => {
-    expect(pendingWarning(2, "production")).toBe(
-      "2 migrations unapplied for production. Deploy does not migrate — run pithy migrate --env production.",
+    expect(pendingWarning(2, "prod")).toBe(
+      "2 migrations unapplied for prod. Deploy does not migrate — run pithy migrate --env prod.",
     );
     expect(pendingWarning(1, "staging")).toMatch(/^1 migration unapplied/);
   });
 
   test("is silent when nothing is pending or the count is unknown", () => {
-    expect(pendingWarning(0, "production")).toBeUndefined();
-    expect(pendingWarning(undefined, "production")).toBeUndefined();
+    expect(pendingWarning(0, "prod")).toBeUndefined();
+    expect(pendingWarning(undefined, "prod")).toBeUndefined();
   });
 });

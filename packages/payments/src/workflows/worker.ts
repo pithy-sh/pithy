@@ -48,12 +48,12 @@ configureSharedSecrets({ registry: paymentsSecretsRegistry });
 /**
  * This deployment's store environment, from the `ENVIRONMENT` var — the same rule the app worker's routes use.
  *
- * Only a worker that says it is production is production. The failure directions are not symmetric: treating
+ * Only a worker deployed to `prod` is production. The failure directions are not symmetric: treating
  * production as sandbox refuses a repair that the next pass makes anyway, while treating sandbox as production
  * would let a test transaction rewrite a real entitlement.
  */
 function deploymentEnvironment(env: PaymentsWorkerEnv): PurchaseEnvironment {
-  return env.ENVIRONMENT === "production" ? "production" : "sandbox";
+  return env.ENVIRONMENT === "prod" ? "production" : "sandbox";
 }
 
 /**

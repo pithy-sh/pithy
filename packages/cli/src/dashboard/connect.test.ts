@@ -88,7 +88,7 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
   const at = new Date("2026-01-01T00:00:00.000Z");
   return {
     id: CONNECTION_ID,
-    environment: "production",
+    environment: "prod",
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
     scopes: ["manifest:read"],
@@ -102,7 +102,7 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
 /** The shared arguments of a dashboard-path connect. */
 const base = {
   project: "acme",
-  environment: "production",
+  environment: "prod",
   workerUrl: "https://api.example.com",
   now: () => NOW,
   authorize: async () => "ct_1",
@@ -393,7 +393,7 @@ describe("rotateDashboardKey", () => {
     const report = await rotateDashboardKey({
       registry,
       client,
-      environment: "production",
+      environment: "prod",
       authorize: async () => "ct_1",
       now: () => NOW,
     });
@@ -414,7 +414,7 @@ describe("rotateDashboardKey", () => {
     const report = await rotateDashboardKey({
       registry,
       client,
-      environment: "production",
+      environment: "prod",
       authorize: async () => "ct_1",
       now: () => NOW,
     });
@@ -427,7 +427,7 @@ describe("rotateDashboardKey", () => {
     const error = await rotateDashboardKey({
       registry: fakeRegistry(),
       client: fakeClient(),
-      environment: "production",
+      environment: "prod",
       authorize: async () => "ct_1",
     }).catch((caught: unknown) => caught);
     expect((error as PithyError).payload.code).toBe("controlplane/not_connected");
@@ -446,7 +446,7 @@ describe("disconnectDashboard", () => {
     const report = await disconnectDashboard({
       registry,
       client,
-      environment: "production",
+      environment: "prod",
       authorize: async () => "ct_1",
     });
 
@@ -465,13 +465,13 @@ describe("disconnectDashboard", () => {
       },
     });
 
-    await disconnectDashboard({ registry, client, environment: "production", authorize: async () => "ct_1" });
+    await disconnectDashboard({ registry, client, environment: "prod", authorize: async () => "ct_1" });
 
     expect(rowAtCallTime).toBeNull();
   });
 
   test("nothing registered is not an error — teardown is safe to re-run", async () => {
-    const report = await disconnectDashboard({ registry: fakeRegistry(), environment: "production" });
+    const report = await disconnectDashboard({ registry: fakeRegistry(), environment: "prod" });
     expect(report.removed).toBe(false);
     expect(report.connectionId).toBeNull();
   });
@@ -488,7 +488,7 @@ describe("dashboardStatus", () => {
       }),
     );
 
-    const report = await dashboardStatus({ registry, environment: "production", now: () => NOW });
+    const report = await dashboardStatus({ registry, environment: "prod", now: () => NOW });
 
     expect(report.connected).toBe(true);
     expect(report.workerUrl).toBe("https://api.example.com");
@@ -518,7 +518,7 @@ describe("dashboardStatus", () => {
     const registry = fakeRegistry(existing());
     const report = await dashboardStatus({
       registry,
-      environment: "production",
+      environment: "prod",
       now: () => NOW,
       verify: async () => ({ status: "needs_reconnect", detail: "connection refused" }),
     });
@@ -527,7 +527,7 @@ describe("dashboardStatus", () => {
   });
 
   test("nothing registered reports disconnected rather than throwing", async () => {
-    const report = await dashboardStatus({ registry: fakeRegistry(), environment: "production", now: () => NOW });
+    const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
     expect(report).toMatchObject({ connected: false, connectionId: null, keys: [], status: "unverified" });
   });
 });

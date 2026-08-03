@@ -1,20 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
-import type { BuildPlan } from "../doctor/health";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { buildReconcilePlan } from "../capabilities/reconcile";
 import type { FetchLike } from "../notifier/check";
 import { readState, writeState } from "../notifier/state";
-import type { ShellInfo } from "../platform/shell";
-import type { ProjectConfig } from "../project/config";
 import { scaffoldProject } from "../project/scaffold";
 import type { ResolvedWorker } from "../project/workerScope";
+import {
+  cleanPlanFor,
+  doctorHarness,
+  planStub,
+  planStubPer,
+  registryFetch,
+  workerSet,
+} from "../test-utils/doctorHarness";
 import doctor, {
   buildDoctorReport,
   type DoctorReport,
@@ -27,82 +31,17 @@ import doctor, {
   versionState,
 } from "./doctor";
 
-/** A `fetch` mapping each package's registry URL to a canned latest version. */
-function registryFetch(versions: Record<string, string>): FetchLike {
-  return vi.fn(async (url: string) => {
-    const match = url.match(/@pithy-sh%2F([^/]+)\/latest/);
-    const name = match?.[1] ?? "";
-    const version = versions[name];
-    if (!version) return { ok: false, status: 404, json: async () => ({}) };
-    return { ok: true, status: 200, json: async () => ({ version }) };
-  });
-}
-
-/** A clean plan for one Worker. */
-const cleanPlanFor = (worker: string): ReconcilePlan => ({
-  worker,
-  env: "dev",
-  perCapability: [],
-  ejectedSkipped: [],
-  pendingMigrations: 0,
-  entitlementGap: [],
-});
+const harness = doctorHarness();
+const { baseOptions, healthyOptions } = harness;
 const cleanPlan = cleanPlanFor("api");
 
-/** A plan builder that stamps the requested Worker's name onto a fixed plan. */
-const planStub = (plan: ReconcilePlan): BuildPlan =>
-  vi.fn(async (options) => ({ ...plan, worker: options.worker ?? plan.worker }));
-
-/** A plan builder keyed by Worker — for a project whose Workers differ. */
-const planStubPer = (plans: Record<string, ReconcilePlan>): BuildPlan =>
-  vi.fn(async (options) => plans[options.worker ?? ""] ?? cleanPlanFor(options.worker ?? ""));
-
-/** The Worker set doctor's resolver seam returns; `ResolvedWorker` is satisfied structurally. */
-const workerSet = (...names: string[]) =>
-  names.map((name) => ({ name, dir: `/p/apps/${name}`, capabilities: [] }) as unknown as ResolvedWorker);
-
-const zsh: ShellInfo = { kind: "zsh", rcPath: "/home/u/.zshrc", aliasSyntax: "alias p.='pithy'" };
-const config: ProjectConfig = { name: "pithy-app" };
-
+// The harness makes a fresh directory per test; these mirror it for the tests that address it directly.
 let dir: string;
 let stateFile: string;
-beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "pithy-doctor-"));
-  stateFile = join(dir, "state.json");
+beforeEach(() => {
+  dir = harness.dir;
+  stateFile = harness.stateFile;
 });
-afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
-});
-
-/** Base options: a project present, fresh registry, deterministic env/os/node. */
-function baseOptions(overrides: Partial<DoctorReportOptions> = {}): DoctorReportOptions {
-  return {
-    projectDir: dir,
-    installedVersion: "1.2.0",
-    stateFile,
-    argv1: "/home/u/.bun/bin/pithy",
-    env: {},
-    homedir: "/home/u",
-    os: { name: "macOS", version: "14.5" },
-    runtime: { name: "Node", version: "22.10.0", nodeCompat: null },
-    node: "22.10.0",
-    // Injected so the unit suite never reaches Cloudflare; the live probe is exercised by its own module.
-    checkCloudflare: async () => ({ state: "ok" as const, missing: [], tokenStatus: "active" }),
-    now: () => 1_000,
-    fetch: registryFetch({ cli: "1.3.0" }),
-    detectShell: async () => zsh,
-    readRc: async () => "# >>> pithy alias >>>\nalias p.='pithy'\n# <<< pithy alias <<<\n",
-    loadProject: async () => config,
-    resolveWorkers: async () => workerSet("api"),
-    installedCapabilities: async () => [
-      { name: "@pithy-sh/core", version: "1.2.0" },
-      { name: "@pithy-sh/auth", version: "1.1.8" },
-      { name: "@pithy-sh/leaderboard", version: "1.2.0" },
-    ],
-    buildPlan: planStub(cleanPlan),
-    ...overrides,
-  };
-}
 
 describe("installedCapabilityVersions", () => {
   test("empty when there is no node_modules/@pithy-sh", async () => {
@@ -212,7 +151,7 @@ describe("renderDoctorText", () => {
               missingConfigKeys: [],
               missingBindings: [
                 { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
-                { env: "production", name: "MEDIA_BUCKET", type: "r2" },
+                { env: "prod", name: "MEDIA_BUCKET", type: "r2" },
               ],
             },
           ],
@@ -245,11 +184,13 @@ describe("renderDoctorText", () => {
         "  api:",
         "    config       parses against every capability schema ✓",
         "    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc",
-        "                 env: staging, production",
+        "                 env: staging, prod",
         "    migrations   2 pending — run: pithy migrate --env dev",
         "    entitlements no gated route without a provider ✓",
         "",
         "Cloudflare: reachable (token active)",
+        "",
+        "Project name: pithy-app — every resource name matches",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -303,19 +244,7 @@ describe("renderDoctorText", () => {
   });
 
   test("up-to-date layout is terser and omits the config/health blocks", async () => {
-    const report = await buildDoctorReport(
-      baseOptions({
-        installedVersion: "1.3.0",
-        argv1: "/opt/homebrew/bin/pithy",
-        fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
-        installedCapabilities: async () => [
-          { name: "@pithy-sh/core", version: "1.2.0" },
-          { name: "@pithy-sh/auth", version: "1.2.0" },
-          { name: "@pithy-sh/leaderboard", version: "1.2.0" },
-        ],
-        readRc: async () => "# >>> pithy alias >>>\nalias p.='pithy'\n# <<< pithy alias <<<\n",
-      }),
-    );
+    const report = await buildDoctorReport(healthyOptions());
     expect(renderDoctorText(report, "/home/u")).toBe(
       [
         "",
@@ -334,21 +263,58 @@ describe("renderDoctorText", () => {
     );
   });
 
-  test("outside a project omits every Project line", async () => {
+  /**
+   * Outside a project the `Project:` block states the one fact — there is no config here — and every other
+   * project line is gone, including `Project name:`. Two lines answering the same question is how the
+   * previous doctor defects happened: the name line used to advise adding a key to a file that did not
+   * exist, while the block whose job that is printed nothing at all.
+   */
+  test("no pithy.config.ts here — the Project line says so, and no other line answers a project question", async () => {
+    const probe = vi.fn(async () => ({ state: "ok" as const, project: "pithy-app", misnamed: [] }));
     const report = await buildDoctorReport(
       baseOptions({
         installedVersion: "1.3.0",
         argv1: "/opt/homebrew/bin/pithy",
         fetch: registryFetch({ cli: "1.3.0" }),
-        loadProject: async () => {
-          throw new NotFoundError({ message: "No pithy.config.ts here." });
-        },
+        // The real loader, against a temp directory with no config — the case the defect was reported from.
+        loadProject: undefined,
+        checkProjectName: probe,
       }),
     );
+    // The name question is never asked, so nothing can answer it wrongly.
+    expect(report.projectName).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+    // Terse: someone running doctor outside a project is asking about their toolchain, and it is fine.
+    expect(renderDoctorText(report, "/home/u")).toBe(
+      [
+        "",
+        "pithy 1.3.0 (installed via brew)",
+        "Up to date.",
+        "",
+        "Shell: zsh",
+        "Alias: installed",
+        "",
+        "Project: no pithy.config.ts here — run `pithy init`, or change to a project directory",
+        "",
+        "OS:      macOS 14.5",
+        "Runtime: Node 22.10.0",
+      ].join("\n"),
+    );
+    // Checking the CLI version, the shell, or the alias from anywhere is legitimate and never a fault.
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("a project that loaded but names nothing still says where to set the name", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkProjectName: async () => ({ state: "unconfigured", project: null, misnamed: [] }) }),
+    );
     const text = renderDoctorText(report, "/home/u");
-    expect(text).not.toContain("Project:");
-    expect(text).not.toContain("Project capabilities");
-    expect(text).not.toContain("Project health");
+    expect(text).toContain("Project: pithy.config.ts found");
+    // The advice is correct here and only here: the file exists, and it is missing a key.
+    expect(text).toContain(
+      "Project name: not set (add `name` to pithy.config.ts — every resource name derives from it)",
+    );
+    expect(doctorExitCode(report)).toBe(0);
   });
 });
 
@@ -451,6 +417,23 @@ describe("renderDoctorJson", () => {
     expect(json.os).toBe("macOS 14.5");
     expect(json.node).toBe("22.10.0");
     expect((json.project as { present: boolean }).present).toBe(true);
+  });
+
+  test("outside a project both project keys are null — the same fact, stated once", async () => {
+    const report = await buildDoctorReport(baseOptions({ loadProject: undefined }));
+    const json = renderDoctorJson(report);
+    expect(json.project).toBeNull();
+    expect(json.projectName).toBeNull();
+  });
+
+  test("a project that names nothing keeps the unconfigured state and its detail line", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkProjectName: async () => ({ state: "unconfigured", project: null, misnamed: [] }) }),
+    );
+    const json = renderDoctorJson(report) as { projectName: { state: string; project: null; detail: string } };
+    expect(json.projectName.state).toBe("unconfigured");
+    expect(json.projectName.project).toBeNull();
+    expect(json.projectName.detail).toContain("add `name` to pithy.config.ts");
   });
 });
 
@@ -590,7 +573,7 @@ describe("shared engine", () => {
 describe("cloudflare credentials", () => {
   test("a reachable account reports its token status and does not fail the exit", async () => {
     const report = await buildDoctorReport(baseOptions());
-    expect(report.cloudflare).toEqual({ state: "ok", missing: [], tokenStatus: "active" });
+    expect(report.cloudflare).toEqual({ state: "ok", missing: [], tokenStatus: "active", credentialSplit: null });
     expect(doctorExitCode(report)).toBe(0);
   });
 
@@ -601,6 +584,7 @@ describe("cloudflare credentials", () => {
           state: "unconfigured",
           missing: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
           tokenStatus: null,
+          credentialSplit: null,
         }),
       }),
     );
@@ -609,7 +593,14 @@ describe("cloudflare credentials", () => {
 
   test("a rejected token fails the exit, so CI gates on it", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ checkCloudflare: async () => ({ state: "token_invalid", missing: [], tokenStatus: null }) }),
+      baseOptions({
+        checkCloudflare: async () => ({
+          state: "token_invalid",
+          missing: [],
+          tokenStatus: null,
+          credentialSplit: null,
+        }),
+      }),
     );
     expect(doctorExitCode(report)).toBe(1);
   });
@@ -617,7 +608,12 @@ describe("cloudflare credentials", () => {
   test("a live token pointed at the wrong account fails the exit", async () => {
     const report = await buildDoctorReport(
       baseOptions({
-        checkCloudflare: async () => ({ state: "account_unreachable", missing: [], tokenStatus: "active" }),
+        checkCloudflare: async () => ({
+          state: "account_unreachable",
+          missing: [],
+          tokenStatus: "active",
+          credentialSplit: null,
+        }),
       }),
     );
     expect(doctorExitCode(report)).toBe(1);
@@ -626,7 +622,12 @@ describe("cloudflare credentials", () => {
   test("the text report names only the missing key, not both", async () => {
     const report = await buildDoctorReport(
       baseOptions({
-        checkCloudflare: async () => ({ state: "unconfigured", missing: ["CLOUDFLARE_API_TOKEN"], tokenStatus: null }),
+        checkCloudflare: async () => ({
+          state: "unconfigured",
+          missing: ["CLOUDFLARE_API_TOKEN"],
+          tokenStatus: null,
+          credentialSplit: null,
+        }),
       }),
     );
     const text = renderDoctorText(report, "/home/u");
@@ -634,13 +635,180 @@ describe("cloudflare credentials", () => {
     expect(text).not.toContain("CLOUDFLARE_ACCOUNT_ID");
   });
 
+  test("a split credential group is reported even though the credentials are reachable", async () => {
+    const split = { fromFile: ["CLOUDFLARE_API_TOKEN"], fromEnvironment: ["CLOUDFLARE_ACCOUNT_ID"] };
+    const report = await buildDoctorReport(
+      healthyOptions({
+        checkCloudflare: async () => ({ state: "ok", missing: [], tokenStatus: "active", credentialSplit: split }),
+      }),
+    );
+    // The whole report stays terse — the split earns its one line, and nothing else is dragged out with
+    // it. `Project name:` is the neighbouring verbose-only block, and it is still absent.
+    expect(renderDoctorText(report, "/home/u")).toBe(
+      [
+        "",
+        "pithy 1.3.0 (installed via brew)",
+        "Up to date.",
+        "",
+        "Shell: zsh",
+        "Alias: installed",
+        "",
+        "Project: pithy.config.ts found",
+        "Project capabilities: all up to date",
+        "",
+        "Cloudflare: reachable (token active); credentials come from two places — .dev.vars sets CLOUDFLARE_API_TOKEN, the environment supplies CLOUDFLARE_ACCOUNT_ID — set the whole pair in one of them",
+        "",
+        "OS:      macOS 14.5",
+        "Runtime: Node 22.10.0",
+      ].join("\n"),
+    );
+    // A warning, not a gate — the pair may well work, and only an established fault fails the exit.
+    expect(doctorExitCode(report)).toBe(0);
+
+    const json = renderDoctorJson(report) as { cloudflare: { credentialSplit: unknown } };
+    expect(json.cloudflare.credentialSplit).toEqual(split);
+  });
+
+  test("a clean, unsplit setup keeps the Cloudflare line out of the terse report entirely", async () => {
+    const report = await buildDoctorReport(healthyOptions());
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Cloudflare:");
+  });
+
   test("--json carries the state and a human detail line", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ checkCloudflare: async () => ({ state: "token_invalid", missing: [], tokenStatus: null }) }),
+      baseOptions({
+        checkCloudflare: async () => ({
+          state: "token_invalid",
+          missing: [],
+          tokenStatus: null,
+          credentialSplit: null,
+        }),
+      }),
     );
     const json = renderDoctorJson(report) as { cloudflare: { state: string; detail: string } };
     expect(json.cloudflare.state).toBe("token_invalid");
     expect(json.cloudflare.detail).toContain("CLOUDFLARE_API_TOKEN rejected");
+  });
+});
+
+describe("project name", () => {
+  /** A misnamed resource, as the probe reports one. `owner` is the only field that proves anything. */
+  const misnamed = (name: string, provisioned: boolean | null, owner: string | null = null) => ({
+    name,
+    project: "oldname",
+    kind: "d1" as const,
+    worker: "api",
+    env: "prod",
+    binding: "DB",
+    provisioned,
+    owner,
+  });
+
+  /** The two names a wholesale rename leaves — drift is plural by construction. */
+  const renamed = [misnamed("oldname-prod-db", null), misnamed("oldname-dev-db", null)];
+
+  test("a matching name does not fail the exit and stays out of the terse report", async () => {
+    const report = await buildDoctorReport(baseOptions({ installedVersion: "1.3.0" }));
+    expect(report.projectName?.state).toBe("ok");
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("no name yet never fails the exit — an unconfigured project is legitimate", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkProjectName: async () => ({ state: "unconfigured", project: null, misnamed: [] }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("could-not-check never fails the exit — nothing was established either way", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({ state: "could-not-check", project: "pithy-app", misnamed: [] }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("a name that is set but illegal fails the exit — every other command already refuses it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({ state: "invalid", project: "2026-launch", misnamed: [] }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Project name: ");
+    expect(text).toContain("2026-launch");
+    expect(text).not.toContain("not set");
+  });
+
+  test("--json carries the invalid state and the name that was actually set", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({ state: "invalid", project: "2026-launch", misnamed: [] }),
+      }),
+    );
+    const json = renderDoctorJson(report) as { projectName: { state: string; project: string; detail: string } };
+    expect(json.projectName.state).toBe("invalid");
+    expect(json.projectName.project).toBe("2026-launch");
+    expect(json.projectName.detail).toContain("2026-launch");
+  });
+
+  test("a wholesale rename fails the exit, so CI gates on it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({ state: "drifted", project: "pithy-app", misnamed: renamed }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain('Project name: 2 resource names this project declares lead with "oldname"');
+    // Drift has established no ownership, so it never reaches for the word.
+    expect(text).not.toContain("orphan");
+  });
+
+  test("orphaned resources fail the exit and the text names the stamp that proved it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({
+          state: "orphaned",
+          project: "pithy-app",
+          misnamed: [misnamed("oldname-prod-db", true, "oldname")],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain('Project name: 1 resource is stamped "oldname" by pithy migrate');
+    expect(text).toContain("pithy-app will never find it again");
+    // Never, on any path, does doctor tell an adopter to delete a live resource.
+    expect(text).not.toContain("delete");
+  });
+
+  test("--json carries the state, the misnamed resources, and a human detail line", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkProjectName: async () => ({
+          state: "orphaned",
+          project: "pithy-app",
+          misnamed: [misnamed("oldname-prod-db", true, "oldname")],
+        }),
+      }),
+    );
+    const json = renderDoctorJson(report) as {
+      projectName: {
+        state: string;
+        project: string;
+        misnamed: { name: string; provisioned: boolean | null; owner: string | null }[];
+        detail: string;
+      };
+    };
+    expect(json.projectName.state).toBe("orphaned");
+    expect(json.projectName.project).toBe("pithy-app");
+    expect(json.projectName.misnamed[0]?.name).toBe("oldname-prod-db");
+    // The evidence travels with the finding, so an agent can tell proof from inference.
+    expect(json.projectName.misnamed[0]?.owner).toBe("oldname");
+    expect(json.projectName.detail).toContain("stamped");
   });
 });
 

@@ -13,6 +13,7 @@ import { buildCatalogListing } from "../capabilities/catalog";
 import { type ConfigPrompt, coerceConfigValue, collectSetFlags, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import type { DatabaseRun } from "../migrations/run";
+import { loadProject, requireProjectName } from "../project/config";
 import { type ResolvedWorker, type ResolveOptions, resolveSingleWorker } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
@@ -116,6 +117,22 @@ async function listCapabilities(projectDir: string, json: boolean): Promise<void
   process.stdout.write(`${formatList(rows)}\n`);
 }
 
+/**
+ * The project name `add` works under — resolved **here**, at the command edge, and handed to
+ * {@link runAdd} as a plain string. It does two jobs: it leads every resource name `add` proposes, and
+ * it claims the database `add`'s closing dev migration writes to.
+ *
+ * `requireProjectName`, never `resolveProjectName`: the lenient resolver's fallbacks (the
+ * alphabetically-first worker, then the directory basename) differ between machines and checkouts, so a
+ * later command would recompute a different name for the same resource — and stamp a different owner on
+ * the same database. It throws rather than guessing, and it throws **here**, before the package is
+ * installed and the Worker is wired, so a nameless project is told to set `name` instead of being left
+ * half-configured around an unowned database.
+ */
+function proposalProject(projectDir: string): Promise<string> {
+  return loadProject(projectDir).then(requireProjectName);
+}
+
 /** One line per database migrated, brand-voiced (docs/CLI.md §3). */
 function describeRun(run: DatabaseRun): string {
   return run.results.length === 0
@@ -192,6 +209,7 @@ export default defineCommand({
         projectDir,
         workerDir: target.dir,
         worker: target.name,
+        project: await proposalProject(projectDir),
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
         prompt: interactive ? promptConfigValues : undefined,
@@ -207,6 +225,11 @@ export default defineCommand({
       process.stdout.write(`Wired ${result.capability} into ${result.worker}.\n`);
       for (const run of result.databases) {
         process.stdout.write(`${describeRun(run)}\n`);
+      }
+      // KV titles are printed rather than written: a `kv_namespaces` entry has no title field, so the
+      // only place the name can land is the account. D1's went into wrangler.jsonc as `database_name`.
+      for (const kv of result.kvNamespaces) {
+        process.stdout.write(`Name the ${kv.binding} namespace for ${kv.env}: ${kv.name}\n`);
       }
       if (result.eject) {
         // The fork lands beside the Worker's config, so report it project-relative: apps/<worker>/capabilities/<cap>.

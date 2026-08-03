@@ -10,6 +10,7 @@ import { defineCommand } from "citty";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
+import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
 import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from "../notifier/state";
@@ -25,7 +26,8 @@ import { formatJsonLine, withErrorReporting } from "../terminal/output";
  * cache for a fresh registry query, reports the full toolchain state (CLI version, shell/alias, config,
  * project capability versions) plus a `Project health` block — `pithy upgrade`'s reconcile in read-only
  * mode — and exits non-zero when a health check fails so CI can gate on drift. Toolchain state alone never
- * fails the exit. Outside a Pithy project the `Project*` lines are omitted.
+ * fails the exit. Outside a Pithy project the `Project:` line says there is no config here and every other
+ * `Project*` line is omitted — including `Project name:`, because with no project there is no name question.
  *
  * The health block is **per Worker**: each Worker under `apps/` carries its own `pithy.config.ts` and
  * `wrangler.jsonc`, so each drifts on its own. Any unhealthy Worker fails the exit. `--worker <name>`
@@ -87,6 +89,13 @@ export interface DoctorReport {
   projectLoadError: string | null;
   /** Whether the configured Cloudflare credentials actually reach the account. */
   cloudflare: CloudflareAccess;
+  /**
+   * Whether the configured project name still matches the names this project's resources were provisioned
+   * under — `null` when the root config could not be read, so no name question arises. Set from the same
+   * `loadProject` outcome as {@link DoctorReport.project} and {@link DoctorReport.projectLoadError}, which
+   * is what keeps the two blocks from disputing whether there is a project here.
+   */
+  projectName: ProjectNameCheck | null;
   os: { name: string; version: string };
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
@@ -162,6 +171,8 @@ export interface DoctorReportOptions {
   countPending?: BuildReconcilePlanOptions["countPending"];
   /** Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests never call out. */
   checkCloudflare?: (projectDir: string) => Promise<CloudflareAccess>;
+  /** Project-name probe seam; defaults to {@link checkProjectName}. Injected so unit tests never call out. */
+  checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
 }
 
 /** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
@@ -200,6 +211,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const readRc = options.readRc ?? readRcFile;
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
   const probeCloudflare = options.checkCloudflare ?? checkCloudflareAccess;
+  const probeProjectName = options.checkProjectName ?? checkProjectName;
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
@@ -282,6 +294,12 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
   // "are my credentials right" is a question worth answering before `pithy init` as much as after.
   const cloudflare = await probeCloudflare(options.projectDir);
+  // The name is different, and it is asked only of a project whose root config actually loaded. It is not a
+  // question about the directory, it is a question about a config: "is the `name` in this file still the one
+  // every provisioned resource was named under". With no readable config there is no name and no question,
+  // and the `Project:` block below already reports which of the two happened. Gated on the same `inProject`
+  // that block is written from, so neither can contradict the other about whether a project is here.
+  const projectName = inProject ? await probeProjectName(options.projectDir) : null;
 
   return {
     cli,
@@ -294,6 +312,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     project,
     projectLoadError,
     cloudflare,
+    projectName,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -306,6 +325,23 @@ export function doctorExitCode(report: DoctorReport): number {
   // Configured-but-broken credentials are drift worth gating CI on. Absent ones are not: a project that has
   // not been provisioned yet is a legitimate state, and failing it would make `doctor` useless before setup.
   if (report.cloudflare.state !== "ok" && report.cloudflare.state !== "unconfigured") return 1;
+  // Listed positively, never as "anything but ok": only a fault this project's own config or wiring
+  // positively establishes may gate CI. `unconfigured` (no name yet) and `could-not-check` (the wiring
+  // would not read) establish nothing, and failing on either would break every run in an unprovisioned
+  // project. `invalid` meets the same standard the other two do — the name is set, and no Cloudflare
+  // namespace can carry it, which is why every other command already hard-fails on it.
+  //
+  // `drifted` and `orphaned` now meet it too, which they did not always: `drifted` used to fire on any one
+  // declared name that merely had Pithy's shape, so an adopter's pre-existing `myapp-prod-db` — the ordinary
+  // Cloudflare convention — turned a green CI red on the adoption path. Both are evidence-backed now.
+  // `drifted` is a wholesale contradiction between this repo's own config and its own wiring, checkable
+  // from files alone; `orphaned` is Pithy's own `pithy_migrations_owner` stamp naming another project. A
+  // name that only *looks* like ours establishes nothing and no longer reaches either.
+  //
+  // A `null` check is the same standard once more: no readable config means nothing was established about
+  // any name, and `doctor` outside a project — to read the CLI version, the shell, the alias — must exit 0.
+  const state = report.projectName?.state;
+  if (state === "invalid" || state === "drifted" || state === "orphaned") return 1;
   return report.project && !report.project.health.ok ? 1 : 0;
 }
 
@@ -414,8 +450,19 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   const capsUpToDate = !report.project || report.project.capabilities.every((cap) => cap.state === "current");
   const healthOk = !report.project || report.project.health.ok;
   const cloudflareOk = report.cloudflare.state === "ok";
+  // A name that was never asked about is not a name that failed. Someone running `doctor` outside a project
+  // is asking about their toolchain, and dragging the whole report verbose to explain a project they do not
+  // have would answer a question they did not put. `unconfigured` still forces verbose — there the file is
+  // real and a key is missing from it, which is worth the ink.
+  const projectNameOk = report.projectName === null || report.projectName.state === "ok";
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
-  const terse = report.cli.state === "current" && capsUpToDate && healthOk && cloudflareOk && !report.projectLoadError;
+  const terse =
+    report.cli.state === "current" &&
+    capsUpToDate &&
+    healthOk &&
+    cloudflareOk &&
+    projectNameOk &&
+    !report.projectLoadError;
 
   const blocks: string[] = [];
 
@@ -463,17 +510,32 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
-  // Project.
+  // Project. Three states across two fields, and all three are said out loud: the config loaded, it is
+  // present but would not load, or there is none here. The third used to print nothing while the
+  // `Project name:` line spoke for it — and got it wrong, advising a key be added to a file that did not
+  // exist. Stated here, once, by the block whose subject it is.
   if (report.projectLoadError) {
     blocks.push(["Project: pithy.config.ts found", `  could not load — ${report.projectLoadError}`].join("\n"));
   } else if (report.project) {
     blocks.push(["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities)].join("\n"));
     if (!report.project.health.ok) blocks.push(healthBlock(report.project.health));
+  } else {
+    blocks.push("Project: no pithy.config.ts here — run `pithy init`, or change to a project directory");
   }
 
   // Cloudflare credentials. Shown whenever it is not a clean pass, and in the verbose report either way —
   // a reachable account is worth confirming explicitly when something else is already being explained.
-  if (!terse) blocks.push(`Cloudflare: ${describeCloudflareAccess(report.cloudflare)}`);
+  // A split credential group earns this one line without turning the whole report verbose: the rest of the
+  // toolchain really is fine, and only this line has anything to say.
+  if (!terse || report.cloudflare.credentialSplit) {
+    blocks.push(`Cloudflare: ${describeCloudflareAccess(report.cloudflare)}`);
+  }
+
+  // The project name, reconciled against what is provisioned. Its own block rather than a second
+  // Cloudflare line: the credentials answer "can I reach the account", this answers "is what I would
+  // find there still mine". Absent when the config could not be read — the `Project:` line above has
+  // already said so, and this line has no name to reconcile.
+  if (!terse && report.projectName) blocks.push(`Project name: ${describeProjectName(report.projectName)}`);
 
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
@@ -508,8 +570,19 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       state: report.cloudflare.state,
       missing: report.cloudflare.missing,
       tokenStatus: report.cloudflare.tokenStatus,
+      credentialSplit: report.cloudflare.credentialSplit,
       detail: describeCloudflareAccess(report.cloudflare),
     },
+    // `null` alongside a `null` project: one fact, one shape, both keys agreeing that there is no project
+    // here to name. An agent reading this never sees a name verdict for a directory that has no config.
+    projectName: report.projectName
+      ? {
+          state: report.projectName.state,
+          project: report.projectName.project,
+          misnamed: report.projectName.misnamed,
+          detail: describeProjectName(report.projectName),
+        }
+      : null,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,
     node: report.node,

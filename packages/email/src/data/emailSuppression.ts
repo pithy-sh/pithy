@@ -27,7 +27,7 @@ export const EmailSuppression = z
       .string()
       .nullish()
       .describe(
-        "The environment the triggering job came from (e.g. `production`, `feature-27`). The suppression itself is global; this records where it originated.",
+        "The environment the triggering job came from (e.g. `prod`, `feature-27`). The suppression itself is global; this records where it originated.",
       ),
     detail: z
       .string()

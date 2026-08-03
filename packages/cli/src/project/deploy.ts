@@ -45,12 +45,12 @@ export interface DeployProjectOptions {
 }
 
 /**
- * Shipping code is production-affecting the moment `production` is the named target — everything else
+ * Shipping code is production-affecting the moment `prod` is the named target — everything else
  * (`staging`, a bare deploy with no `--env`) is routine. Exported so the command layer and tests agree on
  * the same rule.
  */
 export function deploySeverity(env: string | undefined): "info" | "warning" {
-  return env === "production" ? "warning" : "info";
+  return env === "prod" ? "warning" : "info";
 }
 
 /** One worker's deploy outcome — the `--json` row and the human summary line both read from this. */

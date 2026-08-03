@@ -17,6 +17,7 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
+import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -174,12 +175,16 @@ const provision = defineCommand({
     "app-worker": {
       type: "string",
       description:
-        "Deployed name of your production app worker — the one running createEntrypoint with the support capability composed (e.g. pithy-app-production).",
+        "Deployed name of your production app worker — the one running createEntrypoint with the support capability composed (e.g. pithy-app-prod).",
     },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // The leading segment of the bucket, the classification workers, and the routing rule. The bucket
+      // is found by name and reused, so `requireProjectName` refuses to guess — a guessed name adopts
+      // another project's inbox (docs/NAMING.md).
+      const project = requireProjectName(await loadProject(projectDir));
       const { provisionSupport } = await loadSupport();
       const { accountId, apiToken } = loadCloudflareCreds(projectDir);
       const supportConfig = await loadSupportConfig(projectDir);
@@ -190,6 +195,7 @@ const provision = defineCommand({
       const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
       const provisioner = new CloudflareSupportProvisioner({
         cf: new CloudflareClients({ accountId, apiToken }),
+        project,
         accountId,
         apiToken,
         supportConfig,
@@ -265,6 +271,9 @@ const deprovision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // Teardown finds resources by recomputing their names, so this must be the same name
+      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+      const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionSupport } = await loadSupport();
       const { accountId, apiToken, r2Raw } = loadCloudflareCreds(projectDir);
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -275,6 +284,7 @@ const deprovision = defineCommand({
         : undefined;
       const deprovisioner = new CloudflareSupportDeprovisioner({
         cf: new CloudflareClients({ accountId, apiToken }),
+        project,
         ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),
         ...(r2Credentials !== undefined ? { r2Credentials } : {}),
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),

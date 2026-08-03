@@ -99,6 +99,12 @@ export type ResolveTestersEnv = (env: ManagedEnvironment) => Promise<TestersEnvR
 export interface CloudflareTestersProvisionerOptions {
   readonly cf: CloudflareClients;
   readonly accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. The deployed host, its daily Workflow, and the suppression database name all
+   * lead with it, and a guessed value deploys a host teardown will never find.
+   */
+  readonly project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   readonly apiToken: string;
   /** The app's resolved testers config — serialized into the host's `TESTERS_CONFIG` var. */
@@ -115,6 +121,7 @@ export interface CloudflareTestersProvisionerOptions {
 export class CloudflareTestersProvisioner implements TestersProvisioner, TestersDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #testersConfig: TestersConfig;
   readonly #email: TestersEmailIdentity | undefined;
@@ -124,6 +131,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
   constructor(options: CloudflareTestersProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#testersConfig = options.testersConfig;
     this.#email = options.email;
@@ -149,6 +157,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
 
     const config = resolveTestersConfig(template, {
+      project: this.#project,
       env,
       appDatabaseId,
       suppressionDatabaseId,
@@ -171,7 +180,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: testersWorkerName(env),
+        resourceId: testersWorkerName(this.#project, env),
         metadata: { env, sends: this.#email !== undefined },
       });
     } catch (error) {
@@ -180,7 +189,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
         outcome: "failure",
         severity: "warning",
         resourceType: "cf_worker",
-        resourceId: testersWorkerName(env),
+        resourceId: testersWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -203,7 +212,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
    */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { testersWorkerName } = await loadTestersProvisioning();
-    const name = testersWorkerName(env);
+    const name = testersWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({

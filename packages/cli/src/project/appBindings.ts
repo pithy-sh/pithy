@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
@@ -34,15 +35,15 @@ import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 export interface AppWorkflowBinding {
   /** The binding name the Worker env exposes, e.g. `STORAGE_SWEEP`. */
   binding: string;
-  /** The deployed Workflow name, `pithy-<capability>-<job>-<env>`. */
+  /** The deployed Workflow name, `<project>-<env>-<capability>-<job>`. */
   name: string;
   /** The exported `WorkflowEntrypoint` subclass that runs the job. */
   class_name: string;
-  /** The host Worker the class lives in, `pithy-<capability>-<env>` — this is a cross-script binding. */
+  /** The host Worker the class lives in, `<project>-<env>-<capability>` — this is a cross-script binding. */
   script_name: string;
 }
 
-/** One `vectorize` entry, complete. `index_name` is the provisioned index, `pithy-vector-<index>-<env>`. */
+/** One `vectorize` entry, complete. `index_name` is the provisioned index, `<project>-<env>-vector-<index>`. */
 export interface AppVectorizeBinding {
   /** The binding name the Worker env exposes, e.g. `VECTORIZE`. */
   binding: string;
@@ -166,10 +167,17 @@ export async function applyAppBindings(projectDir: string, env: string, bindings
  * Every job the capability owns, which is right when the app dispatches all of them (storage, vector).
  * A capability whose host self-fires a job the app must never bind — `@pithy-sh/email`'s scheduler —
  * filters the result against its manifest's `requiredBindings` before writing.
+ *
+ * Takes the same `{ project, capability, env }` object the naming seam does. `project` comes from
+ * `requireProjectName`, never `resolveProjectName`: these two names must match the ones the capability's
+ * provisioner deployed under byte for byte, and a guessed project would write a `script_name` pointing
+ * at a Worker that does not exist — a config that loads and a dispatch that fails at runtime.
  */
-export function appWorkflowBindings(registry: WorkflowRegistry, capability: string, env: string): AppWorkflowBinding[] {
-  const scriptName = workflowHostName(capability, env);
-  return hostWorkflowsFor(registry, capability, env).workflows.map((entry) => ({
+export function appWorkflowBindings(registry: WorkflowRegistry, parts: WorkflowHostNameParts): AppWorkflowBinding[] {
+  // Through the facade, so the host script is held to a Worker's 63 rather than a Workflow's 64 — the
+  // one-character gap is real, and it is the one that survives an adopter enabling workers.dev.
+  const scriptName = resourceNames(parts.project).env(parts.env).worker(parts.capability);
+  return hostWorkflowsFor(registry, parts).workflows.map((entry) => ({
     ...entry,
     script_name: scriptName,
   }));

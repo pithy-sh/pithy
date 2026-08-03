@@ -23,10 +23,10 @@ function entitlements(): PaymentsEntitlement[] {
 }
 
 describe("paymentsExampleSeed", () => {
-  test("is flagged as an example, and never lists production", () => {
+  test("is flagged as an example, and never lists prod", () => {
     expect(paymentsExampleSeed.example).toBe(true);
     expect(paymentsExampleSeed.environments).toEqual(["dev", "staging"]);
-    expect(paymentsExampleSeed.environments).not.toContain("production");
+    expect(paymentsExampleSeed.environments).not.toContain("prod");
   });
 
   test("sorts at 250 — after auth's users (100), which own these purchases", () => {
@@ -111,8 +111,8 @@ describe("payments() with seed.includeExamples", () => {
     expect(withExamples.sets[0]?.key).toContain("payments");
   });
 
-  test("never composes it for production, even with includeExamples on", () => {
-    const result = composeSeeds([payments(catalog)], { env: "production", includeExamples: true });
+  test("never composes it for prod, even with includeExamples on", () => {
+    const result = composeSeeds([payments(catalog)], { env: "prod", includeExamples: true });
     expect(result.sets).toHaveLength(0);
     expect(result.skippedByEnv.length).toBeGreaterThan(0);
   });

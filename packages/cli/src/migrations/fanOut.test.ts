@@ -22,7 +22,7 @@ describe("migrateProject", () => {
     test("runs each worker's own registry, reported per worker", async () => {
       const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability()])];
 
-      const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
       expect(runs.map((run) => run.worker)).toEqual(["api", "collab"]);
       expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
       expect(runs[1]?.databases[0]?.binding).toBe("COLLAB_DB");
@@ -37,7 +37,13 @@ describe("migrateProject", () => {
     test("--worker narrows the fan-out to one worker", async () => {
       const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability()])];
 
-      const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", worker: "collab" });
+      const runs = await migrateProject({
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+        worker: "collab",
+        project: "acme",
+      });
       expect(runs.map((run) => run.worker)).toEqual(["collab"]);
       expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0500_multiplayer_0001_rooms"]);
 
@@ -47,9 +53,13 @@ describe("migrateProject", () => {
 
     test("an unknown --worker fails with an actionable error naming the known workers", async () => {
       const workers = [h.api([appCapability()])];
-      const failure = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", worker: "nope" }).catch(
-        (error: unknown) => error,
-      );
+      const failure = await migrateProject({
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+        worker: "nope",
+        project: "acme",
+      }).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.action).toMatch(/api/);
     });
@@ -59,7 +69,7 @@ describe("migrateProject", () => {
         // Workers share a resource by declaring the same binding, so both `DB` entries are one D1.
         const workers = [h.api([appCapability()]), await h.worker("collab", [appCapability()])];
 
-        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
         // One run, credited to the worker that declared it — not once per worker.
         expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
         expect(runs[1]?.databases[0]?.results).toEqual([]);
@@ -74,7 +84,7 @@ describe("migrateProject", () => {
       test("merges both workers' capabilities into one run, each credited with its own", async () => {
         const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability("DB")])];
 
-        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
         expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
         expect(runs[1]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0500_multiplayer_0001_rooms"]);
 
@@ -111,7 +121,7 @@ describe("migrateProject", () => {
         });
         const workers = [h.api([appCapability()]), await h.worker("collab", [other])];
 
-        const failure = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" }).catch(
+        const failure = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" }).catch(
           (error: unknown) => error,
         );
         expect(failure).toBeInstanceOf(PithyError);
@@ -138,7 +148,7 @@ describe("migrateProject", () => {
           });
         const workers = [h.api([cap("things")]), await h.worker("collab", [cap("widgets")])];
 
-        const failure = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" }).catch(
+        const failure = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" }).catch(
           (error: unknown) => error,
         );
         expect(failure).toBeInstanceOf(PithyError);
@@ -152,7 +162,7 @@ describe("migrateProject", () => {
         expect(appCapability()).not.toBe(appCapability());
         const workers = [h.api([appCapability()]), await h.worker("collab", [appCapability()])];
 
-        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
         expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
         expect(runs[1]?.databases[0]?.results).toEqual([]);
       });
@@ -162,9 +172,15 @@ describe("migrateProject", () => {
         // named worker's namespaces reads as corrupted state to kysely and aborts the run — which is
         // every `pithy add`/`remove`/`upgrade --migrate`, since they always scope to one worker.
         const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability("DB")])];
-        await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+        await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", worker: "api" });
+        const runs = await migrateProject({
+          projectDir: h.projectDir,
+          workers,
+          env: "dev",
+          worker: "api",
+          project: "acme",
+        });
         expect(runs.map((run) => run.worker)).toEqual(["api"]);
         expect(runs[0]?.databases[0]?.results).toEqual([]);
         // The report still names the worker it shares the database with.
@@ -174,7 +190,13 @@ describe("migrateProject", () => {
       test("a narrowed run applies the shared database as a whole, crediting only its own", async () => {
         const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability("DB")])];
 
-        const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", worker: "api" });
+        const runs = await migrateProject({
+          projectDir: h.projectDir,
+          workers,
+          env: "dev",
+          worker: "api",
+          project: "acme",
+        });
         // api is credited with its own migration alone — collab's is applied, never misattributed.
         expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
 
@@ -195,14 +217,16 @@ describe("migrateProject", () => {
         }
 
         // And the ledger is consistent: the full fan-out that follows has nothing left to do.
-        const full = await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+        const full = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
         expect(full.flatMap((run) => run.databases.flatMap((database) => database.results))).toEqual([]);
       });
     });
 
     test("workers keep their bindings but share the project's local state directory", async () => {
-      // Each worker's wrangler.jsonc names the same database, in its own directory. Persistence is
-      // project-scoped, so both resolve to one local store — not one file per worker.
+      // Each worker's wrangler.jsonc declares the same binding, in its own directory. Persistence is
+      // project-scoped, so both resolve to one local store — not one file per worker. The stanzas carry
+      // only a `database_name` (what `pithy add` writes), and wrangler keys the local store on
+      // `database_id` else the binding — so the one store both share is `DB`, never `shared-db`.
       const workers = [h.api([appCapability()]), await h.worker("collab", [appCapability()])];
       for (const target of workers) {
         await writeFile(
@@ -211,12 +235,12 @@ describe("migrateProject", () => {
         );
       }
 
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev" });
+      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
       const mf = new Miniflare({
         modules: true,
         script: "export default {};",
-        d1Databases: { DB: "shared-db" },
+        d1Databases: { DB: "DB" },
         d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
       });
       try {

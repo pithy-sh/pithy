@@ -15,6 +15,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
+import { secretsStore } from "@pithy-sh/secrets/src/secretsStore";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
@@ -178,8 +179,8 @@ let emitted: AuditEventInput[];
 const CONNECTION_ID = "1f6b4d8e-5c02-4a37-9b41-0d7e3a91c8f5";
 const CONTROL_PLANE_ISSUER = "https://app.pithy.sh";
 const CONTROL_PLANE_KEY_ID = "k-2026-01";
-/** The connection's environment, matched against the Worker's own. `production`, like every request below. */
-const CONTROL_PLANE_ENVIRONMENT = "production";
+/** The connection's environment, matched against the Worker's own. `prod`, like every request below. */
+const CONTROL_PLANE_ENVIRONMENT = "prod";
 
 /** The management client's signing key. Only the public half is ever registered. */
 let controlPlaneKeys: CryptoKeyPair;
@@ -261,9 +262,15 @@ beforeEach(async () => {
   // Google's published keys are cached per isolate, which is right in a Worker and wrong across tests.
   resetGoogleJwksCache();
   // The routes read credentials through the shared per-invocation accessor, so it is configured with payments'
-  // own slice. With no `ENVIRONMENT` var, the reader takes the local-dev path and resolves each secret from its
-  // injected string binding — so no secrets D1 and no master key are needed here.
-  configureSharedSecrets({ registry: paymentsSecretsRegistry });
+  // own slice. The bundle is a `d1` secret — an encrypted row the manager Workflow writes — so a deployed read
+  // would want a secrets D1 and a master key stood up per case. These cases are about the routes, not the
+  // secrets pipeline (`secretsStore.workers.test.ts` owns that round trip), so the resolver is pointed at the
+  // local-dev path and reads the bundle each case injects as a binding. `ENVIRONMENT` stays on the request
+  // bindings, because payments reads it for its own purpose: the store environment a purchase is checked against.
+  configureSharedSecrets({
+    registry: paymentsSecretsRegistry,
+    resolve: (env, registry) => secretsStore({ ...env, ENVIRONMENT: undefined }, registry),
+  });
 });
 
 afterEach(() => resetSharedSecrets());
@@ -379,7 +386,7 @@ interface RequestOptions {
   body?: unknown;
   /** A raw body, for the unparseable-JSON cases. */
   raw?: string;
-  /** This deployment's environment. `production` unless a case says otherwise. */
+  /** This deployment's environment. `prod` unless a case says otherwise. */
   environment?: string | null;
   /** The credential bundle on the env. Defaults to a provisioned Apple and Google block. */
   credentials?: unknown;
@@ -426,7 +433,7 @@ async function request(app: Hono<PithyHonoEnv>, method: string, path: string, op
     ...env,
     [PAYMENTS_PROVIDER_SECRET]: JSON.stringify(options.credentials ?? CREDENTIALS),
   };
-  const environment = options.environment === undefined ? "production" : options.environment;
+  const environment = options.environment === undefined ? "prod" : options.environment;
   if (environment !== null) bindings.ENVIRONMENT = environment;
   return app.request(`http://x${path}`, { method, headers, body }, bindings);
 }
@@ -1586,7 +1593,7 @@ async function stripeHook(
   if (header !== null) headers["stripe-signature"] = header;
   const bindings: Record<string, unknown> = {
     ...env,
-    ENVIRONMENT: options.environment === undefined ? "production" : options.environment,
+    ENVIRONMENT: options.environment === undefined ? "prod" : options.environment,
     [PAYMENTS_PROVIDER_SECRET]: JSON.stringify(options.credentials ?? CREDENTIALS),
   };
   return app.request("http://x/payments/webhooks/stripe", { method: "POST", headers, body }, bindings);
@@ -2467,7 +2474,7 @@ describe("wiring", () => {
     const response = await app.request(
       "http://x/payments/entitlements",
       { headers: { "x-user": "ada" } },
-      { ENVIRONMENT: "production" },
+      { ENVIRONMENT: "prod" },
     );
     expect(response.status).toBe(500);
     const body = await response.json<{ error: { message: string; detail?: string } }>();

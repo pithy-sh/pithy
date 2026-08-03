@@ -45,7 +45,7 @@ const CONFIG = TestersConfig.parse({ baseUrl: "https://api.example.test" });
 const CONNECTION_ID = "6f1d2e40-7b3a-4c9e-8d51-2a4b6c8e0f13";
 const CONTROL_PLANE_ISSUER = "https://dashboard.example";
 const CONTROL_PLANE_KEY_ID = "key-1";
-const ENVIRONMENT = "production";
+const ENVIRONMENT = "prod";
 
 let keys: CryptoKeyPair;
 let emitted: AuditEventInput[] = [];

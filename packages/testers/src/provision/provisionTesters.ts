@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TESTERS_CAPABILITY } from "../workflows/specs";
 
@@ -36,9 +36,15 @@ import { TESTERS_CAPABILITY } from "../workflows/specs";
  * surprise that costs a sending domain its reputation. `pithy testers run` is the explicit way.
  */
 
-/** The deployed daily-pass worker name for an environment — also its resolved config's basename. */
-export function testersWorkerName(env: ManagedEnvironment): string {
-  return workflowHostName(TESTERS_CAPABILITY, env);
+/**
+ * The deployed daily-pass worker name for a project's environment — also its resolved config's basename.
+ *
+ * Through core's naming facade under the **`worker`** namespace: the kind of thing carries the cap, so
+ * this cannot be measured against some other namespace's number, and the environment is validated here
+ * rather than at the deploy that would have used it.
+ */
+export function testersWorkerName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).worker(TESTERS_CAPABILITY);
 }
 
 /**
@@ -75,6 +81,7 @@ export interface TestersProvisionResult {
  */
 export async function provisionTesters(
   provisioner: TestersProvisioner,
+  project: string,
   environments: readonly ManagedEnvironment[],
 ): Promise<TestersProvisionResult[]> {
   await provisioner.preflight();
@@ -82,7 +89,7 @@ export async function provisionTesters(
   const results: TestersProvisionResult[] = [];
   for (const env of environments) {
     await provisioner.deployWorker(env);
-    results.push({ env, worker: testersWorkerName(env) });
+    results.push({ env, worker: testersWorkerName(project, env) });
   }
   return results;
 }
@@ -90,12 +97,13 @@ export async function provisionTesters(
 /** Take every environment's host back down. Idempotent: a worker that is already gone is success. */
 export async function deprovisionTesters(
   deprovisioner: TestersDeprovisioner,
+  project: string,
   environments: readonly ManagedEnvironment[],
 ): Promise<TestersProvisionResult[]> {
   const results: TestersProvisionResult[] = [];
   for (const env of environments) {
     await deprovisioner.deleteWorker(env);
-    results.push({ env, worker: testersWorkerName(env) });
+    results.push({ env, worker: testersWorkerName(project, env) });
   }
   return results;
 }

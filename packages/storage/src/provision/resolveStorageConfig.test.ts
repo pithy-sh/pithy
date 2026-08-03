@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test } from "vitest";
 import { StorageConfig } from "../config/config";
 import { resolveStorageConfig } from "./resolveStorageConfig";
@@ -29,32 +30,35 @@ function template(): WorkflowHostTemplate {
 }
 
 const params = {
+  project: "acme",
   env: "staging" as const,
   appDatabaseId: "app-db-id",
   secretsDatabaseId: "secrets-db-id",
   storeId: "store-id",
-  resources: { bucketName: "pithy-storage-staging" },
+  resources: { bucketName: "acme-staging-storage" },
   storageConfig: StorageConfig.parse({}),
 };
 
 describe("resolveStorageConfig", () => {
   test("names the worker per environment and fills every provisioned id", () => {
     const resolved = resolveStorageConfig(template(), params);
-    expect(resolved.name).toBe("pithy-storage-staging");
+    expect(resolved.name).toBe("acme-staging-storage");
     expect(resolved.d1_databases?.map((entry) => entry.database_id)).toEqual(["app-db-id", "secrets-db-id"]);
-    expect(resolved.r2_buckets?.[0]?.bucket_name).toBe("pithy-storage-staging");
+    expect(resolved.r2_buckets?.[0]?.bucket_name).toBe("acme-staging-storage");
     expect(resolved.secrets_store_secrets?.[0]?.store_id).toBe("store-id");
   });
 
-  test("the master key is environment-scoped; the template's other names are not rewritten", () => {
+  test("the master key entry is the project's and the environment's, as the secrets manager named it", () => {
     const resolved = resolveStorageConfig(template(), params);
-    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe("STAGING_SECRETS_ENCRYPTION_KEYS");
+    // Asserted through the secrets package's own function rather than a literal: it owns that naming,
+    // and a copy here would be a second declaration free to drift from the value actually written.
+    expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
   });
 
   test("the workflows array comes from the specs, not from the template's own block", () => {
     const resolved = resolveStorageConfig(template(), params);
     expect(resolved.workflows).toEqual([
-      { binding: "STORAGE_SWEEP", name: "pithy-storage-sweep-staging", class_name: "StorageSweepWorkflow" },
+      { binding: "STORAGE_SWEEP", name: "acme-staging-storage-sweep", class_name: "StorageSweepWorkflow" },
     ]);
   });
 
@@ -76,13 +80,19 @@ describe("resolveStorageConfig", () => {
     expect(original.workflows?.[0]?.binding).toBe("STALE");
   });
 
-  test("production resolves to its own worker, bucket, and workflow names", () => {
+  test("prod resolves to its own worker, bucket, and workflow names", () => {
     const resolved = resolveStorageConfig(template(), {
       ...params,
-      env: "production",
-      resources: { bucketName: "pithy-storage-production" },
+      env: "prod",
+      resources: { bucketName: "acme-prod-storage" },
     });
-    expect(resolved.name).toBe("pithy-storage-production");
-    expect(resolved.workflows?.[0]?.name).toBe("pithy-storage-sweep-production");
+    expect(resolved.name).toBe("acme-prod-storage");
+    expect(resolved.workflows?.[0]?.name).toBe("acme-prod-storage-sweep");
+  });
+
+  test("a second project resolves to entirely different worker and Workflow names", () => {
+    const resolved = resolveStorageConfig(template(), { ...params, project: "globex" });
+    expect(resolved.name).toBe("globex-staging-storage");
+    expect(resolved.workflows?.[0]?.name).toBe("globex-staging-storage-sweep");
   });
 });

@@ -5,6 +5,7 @@ import { basename, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { DEFAULT_WORKER, ensureEmptyTarget, scaffoldProject } from "../project/scaffold";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+import { dim } from "../terminal/style";
 import { installAlias } from "./alias";
 
 /**
@@ -57,6 +58,14 @@ export default defineCommand({
       // the user answers (scaffoldProject re-checks, so the guard still holds).
       await ensureEmptyTarget(targetDir);
 
+      // Said before the question, not after it. The name leads every Cloudflare resource this project
+      // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
+      // scope decision behind it — one project or two — cannot be undone by editing a string later.
+      if (!args.name && interactive(args.json)) {
+        process.stdout.write(
+          `${dim("One project per set of apps that share users or data. Another app? Add a worker, not a project.")}\n${dim("The name leads every Cloudflare resource this project provisions. Changing it later orphans them.")}\n\n`,
+        );
+      }
       const name = args.name
         ? { value: args.name, prompted: false }
         : await ask("Project name:", basename(targetDir), args.json);

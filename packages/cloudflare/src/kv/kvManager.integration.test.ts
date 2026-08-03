@@ -47,7 +47,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareKVManager — LIVE", () => {
 
   test("creates a namespace, round-trips a key with metadata, then reads an absent key as null", async () => {
     await withThrowawayResource(
-      () => client.kv.namespaces.create({ account_id: creds.accountId, title: uniqueName("pithy-int-kv") }),
+      () => client.kv.namespaces.create({ account_id: creds.accountId, title: uniqueName("kv") }),
       async (namespace) => {
         const kv = new CloudflareKVManager({
           accountId: creds.accountId,

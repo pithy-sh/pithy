@@ -15,6 +15,8 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { kebab } from "@pithy-sh/core/src/naming/resource";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
@@ -51,6 +53,14 @@ export type TokenAudit = (event: TokenAuditEvent) => Promise<void>;
 export interface TokenEngine {
   /** The account tokens target. */
   accountId: string;
+  /**
+   * The project name (root `pithy.config.ts` `name`, via `requireProjectName` — never guessed). The
+   * first segment of every token name and of every Secrets Store entry a mint writes. Required, because
+   * Cloudflare's account token list and Secrets Store are both flat: without it, two Pithy projects in
+   * one account mint tokens of the same name, and `revoke` — which deletes *every* token of a name —
+   * revokes the other project's credential along with its own.
+   */
+  project: string;
   /** The project root — where `.dev.vars` stores live. */
   projectDir: string;
   /** The CF account-token control plane (the bootstrap token authenticates it). */
@@ -75,9 +85,44 @@ export interface MintOptions {
   permissions?: PermissionKey[];
 }
 
-/** The stable CF token name for a (profile, env): one identity per pair, rolled in place on re-mint. */
-export function tokenName(profile: string, env: string): string {
-  return `pithy-${profile}-${env}`;
+/**
+ * The stable CF token name for a (project, env, profile): `<project>-<env>-<profile>`. One identity per
+ * triple, rolled in place on re-mint.
+ *
+ * The account's API-token list is flat and account-wide, so this name is the only thing that separates
+ * one project's credentials from another's in the same account. The project segment goes first because
+ * that is the ownership boundary {@link tokenPrefix} filters on.
+ */
+export function tokenName(project: string, env: string, profile: string): string {
+  return resourceNames(project).env(env).apiToken(profile);
+}
+
+/**
+ * The prefix every one of a project's tokens for an environment shares — `<project>-<env>-`.
+ *
+ * This is the ownership filter for listing. It must be built from the same kebab-cased segments
+ * {@link tokenName} composes, and only the trailing `thing` segment of a resource name is ever
+ * truncated, so a prefix match here is exact: a token outside this project or this environment cannot
+ * pass it.
+ */
+export function tokenPrefix(project: string, env: string): string {
+  return `${kebab(project)}-${kebab(env)}-`;
+}
+
+/**
+ * The CF Secrets Store entry name a profile's minted value is written to.
+ *
+ * Distinct from `profile.secret`, which is the registry join key and the `.dev.vars` **variable** name.
+ * Only the store entry is scoped: the store is one flat account-wide namespace where an unscoped name
+ * would let one project's mint overwrite another's live credential, whereas `.dev.vars` is a file in
+ * this checkout and renaming its keys would break every CI pipeline reading `CF_TOKEN_CI_SYSTEM`.
+ *
+ * A `global` profile puts the literal `global` in the environment slot, so every environment resolves
+ * the one entry provisioning wrote instead of minting a per-environment entry nothing binds.
+ */
+export function tokenStoreEntryName(project: string, env: string, profile: TokenProfile): string {
+  const names = resourceNames(project);
+  return (profile.secretScope === "global" ? names.global : names.env(env)).secretEntry(profile.secret);
 }
 
 /** The outcome of a mint/rotate. `value` is for the caller's in-process use — never surface it in output. */
@@ -155,7 +200,7 @@ export async function mintProfileToken(
 ): Promise<TokenResult> {
   const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
   const store = resolveDestination(engine, profile);
-  const name = tokenName(profileName, env);
+  const name = tokenName(engine.project, env, profileName);
 
   try {
     const minted = await engine.tokens.rollToken(name, profilePermissions(profile, engine.accountId));
@@ -163,6 +208,7 @@ export async function mintProfileToken(
       projectDir: engine.projectDir,
       env,
       secretName: profile.secret,
+      storeEntryName: tokenStoreEntryName(engine.project, env, profile),
       putSecret: engine.putSecret,
     });
     await emit(engine, {
@@ -189,19 +235,33 @@ export interface TokenListItem {
   status?: string;
 }
 
-/** List the project's minted tokens for an environment — `pithy-<profile>-<env>` names only, no values. */
+/**
+ * List **this project's** minted tokens for an environment — identities only, never values.
+ *
+ * Two gates, and both matter. The `<project>-<env>-` prefix is the ownership filter: the account token
+ * list is every token in the account, including other Pithy projects' and the operator's own, and
+ * anything the CLI lists is something it offers to rotate and revoke.
+ *
+ * The profile is then recovered by **reverse lookup** from the known profile names, not by slicing the
+ * prefix off the name. A token name is composed through the naming facade, which truncates and hashes a
+ * trailing segment past its namespace's budget — so the profile segment on the wire is not always
+ * the profile name, and a slice would hand back a mangled string that `rotate`/`revoke` cannot resolve.
+ * Composing each known profile's name and matching exactly is the only recovery that survives that. A
+ * prefixed token no profile claims is therefore not listed: it is not a profile token this CLI can act on.
+ */
 export async function listProfileTokens(engine: TokenEngine, env: string): Promise<TokenListItem[]> {
-  const suffix = `-${env}`;
+  const prefix = tokenPrefix(engine.project, env);
+  const byName = new Map<string, string>();
+  for (const profile of Object.keys(engine.profiles)) {
+    byName.set(tokenName(engine.project, env, profile), profile);
+  }
   const all = await engine.tokens.listTokens();
-  return all
-    .filter((token) => token.name.startsWith("pithy-") && token.name.endsWith(suffix))
-    .map((token) => ({
-      profile: token.name.slice("pithy-".length, token.name.length - suffix.length),
-      env,
-      name: token.name,
-      tokenId: token.id,
-      status: token.status,
-    }));
+  return all.flatMap((token) => {
+    if (!token.name.startsWith(prefix)) return [];
+    const profile = byName.get(token.name);
+    if (!profile) return [];
+    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status }];
+  });
 }
 
 /** Options for `pithy token rotate`. */
@@ -224,7 +284,7 @@ export async function rotateProfileToken(
 ): Promise<TokenResult> {
   const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
   const store = resolveDestination(engine, profile);
-  const name = tokenName(profileName, env);
+  const name = tokenName(engine.project, env, profileName);
   try {
     // Snapshot the prior token id(s) before creating the replacement, so we delete exactly what predates it.
     const priorIds = (await engine.tokens.listTokens()).filter((token) => token.name === name).map((token) => token.id);
@@ -233,6 +293,7 @@ export async function rotateProfileToken(
       projectDir: engine.projectDir,
       env,
       secretName: profile.secret,
+      storeEntryName: tokenStoreEntryName(engine.project, env, profile),
       putSecret: engine.putSecret,
     });
     if (!options?.keepPrevious) {
@@ -261,9 +322,13 @@ export interface RevokeResult {
   revoked: number;
 }
 
-/** Revoke the profile's token(s) for an environment — deletes every token of that name. Audited. */
+/**
+ * Revoke the profile's token(s) for an environment — deletes **every** account token of that name.
+ * Audited. The name is project-scoped, which is what keeps that sweep inside this project: an unscoped
+ * name would make one project's revoke delete every other project's token of the same profile.
+ */
 export async function revokeProfileToken(engine: TokenEngine, profileName: string, env: string): Promise<RevokeResult> {
-  const name = tokenName(profileName, env);
+  const name = tokenName(engine.project, env, profileName);
   try {
     const revoked = await engine.tokens.deleteTokensByName(name);
     await emit(engine, { action: TokenAuditActions.revoked, outcome: "success", profile: profileName, env });

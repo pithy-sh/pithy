@@ -4,6 +4,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   deprovisionTurnstile,
+  MANAGED_ENVIRONMENTS,
   productionWidgetName,
   provisionTurnstile,
   sitekeyVarName,
@@ -16,13 +17,34 @@ describe("naming helpers", () => {
   test("sitekey vars and production widget names are stable per mode", () => {
     expect(sitekeyVarName("visible")).toBe("TURNSTILE_SITEKEY_VISIBLE");
     expect(sitekeyVarName("invisible")).toBe("TURNSTILE_SITEKEY_INVISIBLE");
-    expect(productionWidgetName("invisible")).toBe("pithy-turnstile-invisible-production");
+    expect(productionWidgetName("acme", "invisible")).toBe("acme-prod-turnstile-invisible");
+    expect(productionWidgetName("acme", "visible")).toBe("acme-prod-turnstile-visible");
+  });
+
+  test("two projects in one account never share a widget name", () => {
+    expect(productionWidgetName("acme", "visible")).not.toBe(productionWidgetName("globex", "visible"));
+  });
+
+  test("the environment slot is `prod`, the name of the environment the widget serves", () => {
+    // Not cosmetic. Provisioning is reuse-or-create by name, so the day the spelling moved was the day
+    // a re-run would have created a second widget beside the live one and written the front-end a
+    // sitekey the old widget's secret cannot verify.
+    for (const name of MANAGED_ENVIRONMENTS) expect(name).not.toBe("production");
+    expect(productionWidgetName("acme", "visible")).toContain("-prod-");
+  });
+
+  test("the project segment is kebabbed, and an illegal one is refused rather than composed", () => {
+    expect(productionWidgetName("Acme Corp", "visible")).toBe("acme-corp-prod-turnstile-visible");
+    expect(() => productionWidgetName("2026-launch", "visible")).toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+    );
   });
 });
 
 /** A provisioner that records calls and creates fresh production widgets by default. */
 function fakeProvisioner(overrides: Partial<TurnstileProvisioner> = {}) {
   return {
+    assertDomainAvailable: vi.fn().mockResolvedValue(undefined),
     writeDev: vi.fn().mockResolvedValue(undefined),
     writeManagedSecret: vi.fn().mockResolvedValue(undefined),
     writeManagedSitekeys: vi.fn().mockResolvedValue(undefined),
@@ -46,11 +68,8 @@ describe("provisionTurnstile", () => {
     });
 
     expect(p.ensureProductionWidget).toHaveBeenCalledWith("visible", "app.example.com");
-    expect(p.writeManagedSecret).toHaveBeenCalledWith(
-      "production",
-      JSON.stringify({ visible: { key: "secret-visible" } }),
-    );
-    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("production", { TURNSTILE_SITEKEY_VISIBLE: "real-visible" });
+    expect(p.writeManagedSecret).toHaveBeenCalledWith("prod", JSON.stringify({ visible: { key: "secret-visible" } }));
+    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("prod", { TURNSTILE_SITEKEY_VISIBLE: "real-visible" });
     expect(result.widgets).toEqual([{ mode: "visible", sitekey: "real-visible", created: true }]);
     expect(result.productionSecretWritten).toBe(true);
   });
@@ -59,7 +78,7 @@ describe("provisionTurnstile", () => {
     const p = fakeProvisioner();
     await provisionTurnstile(p, { modes: ["visible", "invisible"], productionDomain: "app.example.com" });
     expect(p.writeManagedSecret).toHaveBeenCalledWith(
-      "production",
+      "prod",
       JSON.stringify({ visible: { key: "secret-visible" }, invisible: { key: "secret-invisible" } }),
     );
   });
@@ -70,9 +89,35 @@ describe("provisionTurnstile", () => {
 
     // staging is still written (test value), but production secret is left as-is and flagged so the caller warns.
     expect(p.writeManagedSecret).toHaveBeenCalledWith("staging", expect.any(String));
-    expect(p.writeManagedSecret).not.toHaveBeenCalledWith("production", expect.any(String));
-    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("production", { TURNSTILE_SITEKEY_VISIBLE: "existing" });
+    expect(p.writeManagedSecret).not.toHaveBeenCalledWith("prod", expect.any(String));
+    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("prod", { TURNSTILE_SITEKEY_VISIBLE: "existing" });
     expect(result.productionSecretWritten).toBe(false);
+  });
+
+  test("checks the domain is free before it writes anything at all", async () => {
+    const p = fakeProvisioner({
+      assertDomainAvailable: vi.fn().mockRejectedValue(new Error("domain taken")),
+    });
+    await expect(
+      provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" }),
+    ).rejects.toThrowError("domain taken");
+
+    expect(p.assertDomainAvailable).toHaveBeenCalledWith("app.example.com");
+    // Nothing was written — the guard runs before the first side effect, so a refusal leaves no debris.
+    expect(p.writeDev).not.toHaveBeenCalled();
+    expect(p.writeManagedSecret).not.toHaveBeenCalled();
+    expect(p.ensureProductionWidget).not.toHaveBeenCalled();
+  });
+
+  test("allowSharedDomain skips the guard (CF itself permits several widgets per domain)", async () => {
+    const p = fakeProvisioner();
+    await provisionTurnstile(p, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+      allowSharedDomain: true,
+    });
+    expect(p.assertDomainAvailable).not.toHaveBeenCalled();
+    expect(p.ensureProductionWidget).toHaveBeenCalledWith("visible", "app.example.com");
   });
 
   test("errors on a mixed production state rather than writing a half-secret", async () => {

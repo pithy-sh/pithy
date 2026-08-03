@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { describe, expect, test } from "vitest";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
 
@@ -19,8 +20,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 
-/** A throwaway entry name so the test never touches the real `SECRETS_ENCRYPTION_KEYS`. */
-const TEST_SECRET = "PITHY_SECRETS_INTEGRATION_TEST";
+/**
+ * A throwaway entry name so the test never touches the real `SECRETS_ENCRYPTION_KEYS`.
+ *
+ * Minted through `uniqueName`, so it sits in the reserved `pithy-int-` namespace rather than the
+ * product's own `PITHY_SECRETS_*` one — a store entry a reaper is allowed to reclaim, instead of one that
+ * looks like a real project's master key. Computed once: write, overwrite and delete all address it.
+ */
+const TEST_SECRET = uniqueName("secretsconfig");
 
 describe.skipIf(!hasCreds)("SecretsStoreConfigWriter — LIVE CF Secrets Store", () => {
   test("writes a config entry, overwrites it, then removes it", async () => {

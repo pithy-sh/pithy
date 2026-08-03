@@ -31,6 +31,9 @@ const registry: WorkflowRegistry = {
   },
 };
 
+/** The project every derived name leads with — `requireProjectName`'s answer, never a guess. */
+const PROJECT = "acme";
+
 /** The stanza shape these tests read back out of the written file. */
 interface Stanza {
   workflows?: { binding: string; name?: string; class_name?: string; script_name?: string }[];
@@ -69,19 +72,26 @@ const read = async (): Promise<Wrangler> =>
 
 describe("appWorkflowBindings", () => {
   test("carries every field wrangler requires, plus the host script the class lives in", () => {
-    expect(appWorkflowBindings(registry, "storage", "staging")).toEqual([
+    expect(appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging" })).toEqual([
       {
         binding: "STORAGE_SWEEP",
-        name: "pithy-storage-sweep-staging",
+        name: "acme-staging-storage-sweep",
         class_name: "StorageSweepWorkflow",
-        script_name: "pithy-storage-staging",
+        script_name: "acme-staging-storage",
       },
     ]);
   });
 
+  test("the names carry the project, so an app never binds another project's host", () => {
+    const [ours] = appWorkflowBindings(registry, { project: "acme", capability: "storage", env: "staging" });
+    const [theirs] = appWorkflowBindings(registry, { project: "globex", capability: "storage", env: "staging" });
+    expect(ours?.name).not.toBe(theirs?.name);
+    expect(ours?.script_name).not.toBe(theirs?.script_name);
+  });
+
   test("the names are environment-scoped — which is why add cannot write them", () => {
-    const [staging] = appWorkflowBindings(registry, "storage", "staging");
-    const [production] = appWorkflowBindings(registry, "storage", "production");
+    const [staging] = appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging" });
+    const [production] = appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "prod" });
     expect(staging?.name).not.toBe(production?.name);
     expect(staging?.script_name).not.toBe(production?.script_name);
   });
@@ -89,15 +99,17 @@ describe("appWorkflowBindings", () => {
 
 describe("applyAppBindings", () => {
   test("writes a complete workflows entry into env.<env>", async () => {
-    await applyAppBindings(dir, "staging", { workflows: appWorkflowBindings(registry, "storage", "staging") });
+    await applyAppBindings(dir, "staging", {
+      workflows: appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging" }),
+    });
 
     const stanza = (await read()).env?.staging;
     expect(stanza?.workflows).toEqual([
       {
         binding: "STORAGE_SWEEP",
-        name: "pithy-storage-sweep-staging",
+        name: "acme-staging-storage-sweep",
         class_name: "StorageSweepWorkflow",
-        script_name: "pithy-storage-staging",
+        script_name: "acme-staging-storage",
       },
     ]);
     // The regression, stated as the property: nothing incomplete reached the file.
@@ -106,26 +118,28 @@ describe("applyAppBindings", () => {
 
   test("writes a complete vectorize entry, index name and all", async () => {
     await applyAppBindings(dir, "staging", {
-      vectorize: [{ binding: "VECTORIZE", index_name: "pithy-vector-docs-staging", remote: true }],
+      vectorize: [{ binding: "VECTORIZE", index_name: "acme-staging-vector-docs", remote: true }],
     });
 
     const stanza = (await read()).env?.staging;
-    expect(stanza?.vectorize).toEqual([
-      { binding: "VECTORIZE", index_name: "pithy-vector-docs-staging", remote: true },
-    ]);
+    expect(stanza?.vectorize).toEqual([{ binding: "VECTORIZE", index_name: "acme-staging-vector-docs", remote: true }]);
     expect(incompleteBindings(stanza)).toEqual([]);
   });
 
   test("dev writes the top-level stanza, because wrangler's default environment is not env.dev", async () => {
-    await applyAppBindings(dir, "dev", { workflows: appWorkflowBindings(registry, "storage", "dev") });
+    await applyAppBindings(dir, "dev", {
+      workflows: appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "dev" }),
+    });
 
     const config = await read();
-    expect(config.workflows?.[0]?.name).toBe("pithy-storage-sweep-dev");
+    expect(config.workflows?.[0]?.name).toBe("acme-dev-storage-sweep");
     expect(config.env?.dev).toBeUndefined();
   });
 
   test("is idempotent and keeps the adopter's comments", async () => {
-    const bindings = { workflows: appWorkflowBindings(registry, "storage", "staging") };
+    const bindings = {
+      workflows: appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging" }),
+    };
     await applyAppBindings(dir, "staging", bindings);
     const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
 
@@ -136,14 +150,14 @@ describe("applyAppBindings", () => {
 
   test("re-provisioning replaces the entry rather than appending a second one", async () => {
     await applyAppBindings(dir, "staging", {
-      vectorize: [{ binding: "VECTORIZE", index_name: "pithy-vector-docs-staging", remote: true }],
+      vectorize: [{ binding: "VECTORIZE", index_name: "acme-staging-vector-docs", remote: true }],
     });
     await applyAppBindings(dir, "staging", {
-      vectorize: [{ binding: "VECTORIZE", index_name: "pithy-vector-faqs-staging", remote: true }],
+      vectorize: [{ binding: "VECTORIZE", index_name: "acme-staging-vector-faqs", remote: true }],
     });
 
     expect((await read()).env?.staging?.vectorize).toEqual([
-      { binding: "VECTORIZE", index_name: "pithy-vector-faqs-staging", remote: true },
+      { binding: "VECTORIZE", index_name: "acme-staging-vector-faqs", remote: true },
     ]);
   });
 
@@ -165,7 +179,9 @@ describe("applyAppBindings", () => {
     const before = await readFile(join(dir, "wrangler.jsonc"), "utf8");
 
     await expect(
-      applyAppBindings(dir, "staging", { workflows: appWorkflowBindings(registry, "storage", "staging") }),
+      applyAppBindings(dir, "staging", {
+        workflows: appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging" }),
+      }),
     ).rejects.toBeInstanceOf(PithyError);
     // And the file is untouched: a refusal never leaves a half-written config behind.
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(before);

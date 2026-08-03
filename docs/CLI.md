@@ -41,7 +41,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 8 and `docs/SEED.md` |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
-| `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`production`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
+| `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
 | `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see Section 7) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
@@ -54,8 +54,13 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 `apps/<name>/pithy.config.ts` declares `{ capabilities, app }` — what *that* Worker is made of — because
 everything capabilities drive is per-Worker: the composed route tree, the `requiredBindings` written into
 that Worker's `wrangler.jsonc`, and Durable Object class migrations, which register a class against a
-specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the stable
-prefix every feature resource name derives from), `tokens`, and `seed.productionEnvironments`.
+specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the leading
+segment of **every** name this project provisions — D1, KV, R2, Vectorize, Worker scripts, Workflows, Secrets
+Store entries, API tokens; see `docs/NAMING.md`), `tokens`, and `seed.productionEnvironments`. `name` stops
+at 26 characters and is effectively permanent; `docs/NAMING.md` derives the number and lists every namespace's
+real limit.
+
+**One project, or two?** Do these apps share users or data? Then it is one project with more Workers, not two projects. Two apps often should share. Two projects never can — each carries its own migration registry and upgrade cadence, so one project's `pithy migrate` applies schema the other has never heard of, and `pithy migrate` refuses a database another project owns. `pithy worker add` is the answer far more often than a second `pithy init`. Full reasoning in `docs/NAMING.md`.
 
 Two consequences worth stating outright:
 
@@ -74,8 +79,10 @@ Two consequences worth stating outright:
 - Long flags: `--flag-name` (kebab-case)
 - Short flags: `-f` (single letter)
 - Boolean flags default to `false`; pass to enable
-- Values pass with `=` or space: `--env=production` or `--env production`
-- `--help` and `--version` are global and work on any command
+- Values pass with `=` or space: `--env=prod` or `--env prod`
+- `--help` / `-h` and `--version` / `-v` work on any command. citty answers its version builtin only when it is the *sole* argument, so `bin.ts` answers it first and `pithy add --version` prints the version instead of running `add`. It fires on a bare `--version` or `-v` anywhere before a `--` separator; a value that is literally the string passes as `--flag=--version` or after `--`
+
+**`--env` takes `dev`, `staging`, or `prod`, and it is validated at the flag.** It defaults to `dev`, because every command is safe there. It is **not** `production`: the environment sits verbatim in the middle of every Cloudflare name the project composes, so each of its characters costs one character of project name, one for one — and `--env production` is answered with an error naming `prod`. A custom environment is allowed (`live`, `eu-prod`), held to the same charset and to a hard maximum of 7 characters, the length of `staging`. Every project-name budget is derived against that 7, and a provisioned project cannot be renamed, so a longer environment is refused rather than quietly shrinking a cap projects were already accepted under. See `docs/NAMING.md`.
 
 Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
 
@@ -443,26 +450,55 @@ Color is **forced off** when:
 
 - The `--no-color` flag is passed (overrides everything else)
 
-**Implementation:** Use `picocolors` for the color layer (zero-dep, ~1KB, handles detection and basic colors). The CLI never writes raw ANSI codes directly; all color flows through helper functions. For truecolor saffron (not exposed by `picocolors`), add a tiny helper:
+**Implementation:** `picocolors` carries the terminal-themed tiers (zero-dep, ~1KB), but **not its detection** — picocolors reads any `CI` env as color-capable, and our output is parsed, so a CI runner or a piped consumer would find ANSI in `--json`. The seam decides for itself, once, from `NO_COLOR` / `FORCE_COLOR` / `isTTY`, and every colored character in the CLI flows through it — no raw ANSI anywhere else. Truecolor saffron is not exposed by `picocolors`, so it is written here directly.
+
+The block below is `packages/cli/src/terminal/style.ts`, extracted verbatim and pinned by `packages/cli/src/terminal/styleDocs.test.ts`. Edit the seam and that test fails until this section is recaptured.
 
 ```ts
-import pc from 'picocolors';
-
-const SAFFRON_TC = '\x1b[38;2;212;160;23m';
-const SAFFRON_256 = '\x1b[38;5;178m';
-const RESET = '\x1b[0m';
-
-export function saffron(text: string): string {
-  if (process.env.NO_COLOR || !pc.isColorSupported) return text;
-  if (supportsTruecolor()) return SAFFRON_TC + text + RESET;
-  return SAFFRON_256 + text + RESET;
-}
+const SAFFRON_TRUECOLOR = "\x1b[38;2;212;160;23m"; // #D4A017
+const SAFFRON_256 = "\x1b[38;5;178m";
+const RESET = "\x1b[0m";
 
 function supportsTruecolor(): boolean {
-  const c = process.env.COLORTERM;
-  return c === 'truecolor' || c === '24bit';
+  const colorterm = process.env.COLORTERM;
+  return colorterm === "truecolor" || colorterm === "24bit";
+}
+
+/**
+ * Color is on only for an interactive terminal — never when the output is piped,
+ * redirected, or captured. `NO_COLOR` forces it off, `FORCE_COLOR` forces it on
+ * (the standard env overrides). We decide here rather than trusting
+ * `pc.isColorSupported`: picocolors treats any `CI` env as color-capable, which
+ * would bleed ANSI into our `--json` and `Done.` output the moment a CI runner
+ * (or a piped consumer) reads it. Our output is parsed; a TTY is the real signal.
+ */
+function detectColor(): boolean {
+  if (process.env.NO_COLOR) return false;
+  if (process.env.FORCE_COLOR) return true;
+  return Boolean(process.stdout.isTTY);
+}
+
+// Decided once at import, the way picocolors itself latches its detection.
+const enabled = detectColor();
+
+/**
+ * The latched decision, for the one caller that needs the rule rather than a colored string: `bin.ts`
+ * hands it to citty, which renders its own help and consults none of the above. Exported so the rule
+ * lives in exactly one place — a second copy of it is how the help output came to disagree with every
+ * other surface in the first place.
+ */
+export function colorEnabled(): boolean {
+  return enabled;
+}
+
+/** The brand mark in terminal form. Truecolor → 256-color 178 → no color. */
+export function saffron(text: string): string {
+  if (!enabled) return text;
+  return (supportsTruecolor() ? SAFFRON_TRUECOLOR : SAFFRON_256) + text + RESET;
 }
 ```
+
+**Help is citty's, and citty decides color for itself.** It renders `--help` from its own private flag, latched at import from `NO_COLOR === "1" || TERM === "dumb" || TEST || CI` — not `isTTY`, not `NO_COLOR` set to any other value, not `FORCE_COLOR`. Left alone, `pithy --help | cat` writes escape codes into a pipe while every other surface goes plain. So `bin.ts` reads `colorEnabled()` and, when it is false, sets `NO_COLOR=1` before citty is loaded. That translation runs one way only: Pithy never deletes `CI` to force citty's color back on, because that would rewrite the environment of every child process the CLI spawns. Plain help in a CI log is harmless; ANSI in a pipe is not.
 
 ### 3.5 Tables and lists
 
@@ -492,72 +528,95 @@ Default values shown in brackets. `Y/n` means default yes; `y/N` means default n
 
 ## 4. Help text
 
-`pithy --help` (and any subcommand `--help`) follows the same brevity rules.
+Help is **citty's**, not ours. `pithy --help` and every `<command> --help` are rendered by citty's own `renderUsage` from the command tree in `packages/cli/src/main.ts`: the description line, the `USAGE` line, the `ARGUMENTS` / `OPTIONS` / `COMMANDS` blocks, the column alignment, and the closing pointer. Pithy writes the copy; citty writes the layout. So the brevity rules bind where we actually hold the pen — each command's `meta.description` and each argument's `description` is one line, sentence case, no period unless it is a full sentence.
+
+The two transcripts below are captured from the real binary and pinned by `packages/cli/src/binDocs.test.ts`. Reword a description in `main.ts`, add a command, or add a flag, and that test fails until this section is recaptured. `v<version>` stands in for the installed version — the one part of the output that varies.
 
 ### 4.1 Top-level help
 
+`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help.
+
 ```
 $ pithy --help
+A backend kit for Cloudflare Workers. (pithy v<version>)
 
-A backend kit for Cloudflare Workers.
+USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor
 
-Usage: pithy <command> [options]
+COMMANDS
 
-Commands:
-  init              Scaffold a new project
-  add <capability>  Add a capability (auth, storage, leaderboard, vector)
-  remove <capability>  Remove a capability
-  dev               Start the local dev environment
-  deploy            Deploy to Cloudflare Workers
-  upgrade           Reconcile scaffolded code with current manifests
-  alias             Install or remove the shell shortcut
-  doctor            Diagnose environment and config
+       init    Scaffold a new project
+        add    Add a capability
+     remove    Remove a capability — the manual, interactive inverse of add
+     worker    Manage the project's Workers under apps/ (the dev/deploy registry)
+         ui    Scaffold and wire a front end served by one of the project's Workers
+        dev    Run every worker locally under one supervisor
+    migrate    Run migrations for an environment
+       seed    Seed an environment from your Zod-typed fixtures
+    feature    Set up and tear down an isolated, fully-provisioned feature environment
+        env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
+     deploy    Deploy to Cloudflare Workers
+    upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
+      token    Mint and manage scoped Cloudflare API tokens
+  dashboard    Connect, rotate, revoke, and inspect a management client (control-plane seam)
+    secrets    Manage encrypted secrets
+      email    Provision and manage the email infrastructure
+      media    Provision and manage the media infrastructure
+   payments    Provision the reconciliation Workflow, and run a pass on demand
+    support    Provision and manage the support inbox infrastructure
+    storage    Provision and manage the storage infrastructure
+    testers    Run a closed test: cohorts, roster, the clock, and the daily pass
+     vector    Provision, reset, and re-embed the vector indexes
+  turnstile    Provision and manage Turnstile widgets
+      alias    Install the `p.` shortcut for `pithy`
+     doctor    Check the toolchain, project, and for a new CLI version
 
-Options:
-  -h, --help        Show help
-  -v, --version     Print version
-
-Docs: https://pithy.sh
+Use pithy <command> --help for more information about a command.
 ```
 
 ### 4.2 Subcommand help
 
-Subcommand help follows the same shape:
+Same renderer, one command deep. `pithy add` is the representative case — a positional argument and six flags. Help never enumerates the capability catalog: `pithy add --list` is the command for that (§3.5), and it reads the installed set, which no static block can.
 
 ```
 $ pithy add --help
+Add a capability (pithy add v<version>)
 
-Add a capability to your Pithy project.
+USAGE pithy add [OPTIONS] [CAPABILITY]
 
-Usage: pithy add <capability> [options]
+ARGUMENTS
 
-Capabilities:
-  auth          Authentication and session management
-  storage       Object storage in your own R2
-  leaderboard   Multi-tenant ranking
-  vector        Semantic search over Vectorize
+  CAPABILITY    Capability name, e.g. auth
 
-Options:
-  --dry-run     Show what would change; don't write
-  -h, --help    Show help
+OPTIONS
+
+             --list    List the capabilities you can add (Default: false)
+  --worker=<worker>    Which worker to wire it into (apps/<name>)
+        --set=<set>    Override a config option: --set key=value (repeatable)
+            --eject    Copy the capability's source into your repo and own it (no upgrades) (Default: false)
+            --force    With --eject, overwrite an existing local copy (discards edits) (Default: false)
+             --json    Machine-readable output (Default: false)
 ```
 
 ### 4.3 Color in help
 
-Help text follows the same restraint as the rest of the CLI. Two-tone — default and dim — with one small brand moment.
+**citty colors its own help, and Pithy does not touch it.** `src/terminal/style.ts` — the seam every other colored character in the CLI flows through (§3.4) — is not on this path, and there is no hook that would put it there short of replacing `renderUsage`. So this table describes what citty emits rather than specifying what we render:
 
-| Element | Tier |
-|---|---|
-| Section labels (`Usage:`, `Commands:`, `Options:`, `Capabilities:`) | Dim |
-| Command names (left column) | Default foreground |
-| Argument syntax (`<capability>`) | Default foreground |
-| Descriptions (right column) | Dim |
-| `Docs:` label | Dim |
-| The URL `https://pithy.sh` | Default foreground, with the period before `sh` rendered in saffron |
+| Element | Rendered as | Whose choice |
+|---|---|---|
+| The description line, `(pithy v<version>)` included | Gray | citty |
+| Section labels (`USAGE`, `ARGUMENTS`, `OPTIONS`, `COMMANDS`) | Bold + underline | citty |
+| The usage line after `USAGE` | Cyan | citty |
+| Command names, argument names, flag names (left column) | Cyan | citty |
+| Descriptions (right column) | Default foreground | citty |
+| The `(Default: …)` and `(Required)` hints | Gray | citty |
+| `pithy <command> --help` in the closing line | Cyan | citty |
+| Every word of copy inside those columns | — | Pithy |
 
-The period in the docs URL is the one small brand moment in help output — subtle enough that most users won't consciously notice it, cohesive enough that it ties help back to the brand mark elsewhere.
+Help therefore does **not** obey §3.4, and the divergence is worth knowing before anyone files it as a bug. citty drops color for `NO_COLOR=1` **exactly** (not any value), `TERM=dumb`, or any `TEST` or `CI` variable, and consults nothing else — not `isTTY`, not `FORCE_COLOR`, not `--color` / `--no-color`. Piped help still carries ANSI; every other Pithy surface goes plain the moment it is piped.
 
-No bold, no underline, no color highlighting of command names. The structure (two-column alignment, dim labels) does the scannability work without bright accents.
+Column alignment is citty's too, and it is a pure function of the command tree — each column is padded to its widest cell, never to the terminal — so help looks identical at any width, and the left column is right-aligned.
+
+There is no saffron in help, and no brand moment. The period in `pithy.sh` earns its keep in copy we write; help is a surface we host rather than author, and one accent dropped into someone else's layout would mean owning the renderer.
 
 No banners. No ASCII logos. The wordmark belongs on the website, not in the terminal.
 
@@ -736,12 +795,17 @@ Project health:
   api:
     config       parses against every capability schema ✓
     bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc
-                 env: staging, production
+                 env: staging, prod
     migrations   2 pending — run: pithy migrate --env dev
+    entitlements no gated route without a provider ✓
   collab: healthy ✓
 
-OS:   macOS 14.5
-Node: 22.10.0
+Cloudflare: reachable (token active)
+
+Project name: acme — every resource name matches
+
+OS:      macOS 14.5
+Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 ```
 
 The **`Project health`** block is `pithy upgrade`'s manifest-versus-wiring comparison in read-only mode —
@@ -750,6 +814,14 @@ Worker under `apps/` carries its own `pithy.config.ts` and `wrangler.jsonc` and 
 healthy Worker collapses to one line, and the whole block is omitted when every Worker is healthy. **Doctor
 exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
 required binding is missing before deploy does.
+
+The **`Cloudflare:`** line answers "can I reach the account" — the bootstrap `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` pair, verified against Cloudflare rather than merely read (`docs/TOKENS.md`). A configured-but-broken credential fails the exit; an absent one does not, because a project that has not been provisioned yet is a legitimate state.
+
+The same line warns when the pair **came from two places**. The `.dev.vars` overlay works per key, so a file that sets only `CLOUDFLARE_API_TOKEN` silently takes `CLOUDFLARE_ACCOUNT_ID` from whatever the shell exports — one account's token against another account's id, and nothing disagrees for anything to catch. What you get is a confusing 403, or an empty listing, at some much later call. Doctor names which key came from the file and which from the environment, and this one line is all it adds: an otherwise clean report stays terse. It checks that one source decided the pair, not that the pair is right — a complete `.dev.vars` naming the wrong account is coherent, and coherent is all this can judge. Reported, never gated: the credentials may well work. A complete `.dev.vars`, a shell exporting a different account's whole pair over it, and CI (which has no `.dev.vars` at all) are all silent.
+
+The **`Project name:`** line answers the next question: is what I would find there still mine. Every resource this project provisions leads with the root config's `name` (`docs/NAMING.md`), and teardown *recomputes* those names rather than scanning for them — so one edit to `name` orphans everything while every command keeps exiting 0. Doctor requires positive evidence before it says so, because `<app>-<env>-<resource>` is also the ordinary Cloudflare convention and a database you brought with you is not an orphan. Two states fail the exit: **drifted**, where the wiring contradicts the config wholesale (every declared name leads with one and the same other project, and the configured name appears nowhere — the only shape a one-string rename can leave), and **orphaned**, where a database's `pithy_migrations_owner` stamp proves Pithy created it under another project's name. Neither state ever advises deleting a resource. A single foreign name, a mix, an unset name, and an unreadable `wrangler.jsonc` all pass — none of them establishes anything.
+
+Both lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
 
 When everything is up to date, the output is correspondingly terser:
 
@@ -765,11 +837,30 @@ Alias: installed
 Project: pithy.config.ts found
 Project capabilities: all up to date
 
-OS:   macOS 14.5
-Node: 22.10.0
+OS:      macOS 14.5
+Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 ```
 
-Outside a Pithy project directory, the `Project:` lines are omitted.
+`Runtime:` names the interpreter actually executing. Under Bun, `process.versions.node` is the Node version being emulated, so reporting it alone would name a runtime that is not running — the one thing a diagnostic must not do. On Node it reads `Runtime: Node 22.10.0`, with no compat suffix.
+
+Outside a Pithy project directory, the `Project:` line states the one fact — there is no `pithy.config.ts` here, so run `pithy init` or change to a project directory — and every other project line is omitted, `Project name:` included. With no project there is no name to reconcile, and a second line answering that question is how doctor came to advise adding a key to a file that does not exist. The exit stays 0 and the report stays terse when the toolchain is clean: checking the CLI version, the shell, or the alias from anywhere is legitimate, and someone doing it is asking about their toolchain, not their project.
+
+```
+$ cd /tmp && pithy doctor
+
+pithy 1.3.0 (installed via brew)
+Up to date.
+
+Shell: zsh
+Alias: installed
+
+Project: no pithy.config.ts here — run `pithy init`, or change to a project directory
+
+OS:      macOS 14.5
+Runtime: Bun 1.2.4 (Node 22.10.0 compat)
+```
+
+The `Cloudflare:` check still runs there: `.dev.vars` is read from the directory either way, and "are my credentials right" is worth answering before `pithy init` as much as after.
 
 ### 5.7 Project capability updates
 
@@ -877,6 +968,10 @@ The same branch-first identity that names a feature's D1/KV/R2 resources also na
 - **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli-api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.
 
 **Nothing is stored or committed to make this work.** Every name is derived from the branch, and an already-provisioned resource's id is recovered by looking that name up in Cloudflare — which is exactly what makes `provision` idempotent. On a second push, CI computes the same names, finds the existing D1/KV/R2, rewrites the same wiring, and deploys. There is no id file to merge, so there is nothing to conflict.
+
+A feature environment *is* an environment, so `f<issue>-<slug>` simply occupies the environment slot of the one project-scoped rule every other name follows (`docs/NAMING.md`).
+
+**This is the tightest shape Pithy composes, and it is the shape that caps the project name.** Held to R2's 63 characters, with 7 taken by the fixed literals — `-f`, three more hyphens, and the two-character kind — the four variable segments divide 56 between them: `project + issue + slug + binding = 56`. The issue number is reserved 6 digits, so a 12-character project with a `DB` binding leaves 36 characters of slug at a 6-digit issue, and 40 at a real 2-digit one. A slug over budget is truncated to a head plus a six-hex hash rather than refused — a feature name addresses nothing that outlives the feature, and failing CI over a long branch name would be the worse failure — but a hashed slug tells nobody reading a bucket listing which branch owns it. Keep the part of the branch name after the issue number to roughly 20 characters. `docs/NAMING.md` has the budget worked out per project length.
 
 `<project>` is `pithy.config.ts`'s `name` — required for `pithy feature` naming, with no guessed fallback. `resolveProjectName`'s lenient guesses (an app Worker's `wrangler.jsonc` name, the project directory's basename) are not stable across machines and checkouts, and teardown has no record of a resource beyond its computed name: a wrong guess means `pithy feature destroy` computes names that match nothing, deletes nothing, and exits 0. Set `name` in `pithy.config.ts`; a project without one gets an actionable error the first time a feature command needs it.
 
@@ -1056,69 +1151,76 @@ Run `pithy add auth --worker api`, then re-run `pithy ui add react --worker api`
 | `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
 | `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See 8.5 |
 | `--confirm-reset` | — | Unlock a non-`dev` `--redo`: the exact phrase `yes, i really want to reset <env>` |
-| `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `production`; `dev` never needs it |
-| `--confirm-production <phrase>` | — | The non-interactive unlock for `production` — see 8.3 |
+| `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `prod`; `dev` never needs it |
+| `--confirm-production <phrase>` | — | The non-interactive unlock for `prod` — see 8.3 |
 
 ### 8.2 Output
 
-A normal run reports one line per seed set, then `Done.`:
+A normal run reports one line per seed set, then `Done.`. Every line is prefixed with the Worker that ran it — the run fans out over `apps/*`, so a fan-out over several Workers reads as one list rather than several interleaved ones. Each set is named by its composed key, `NNNN_<capability>_<name>` (see `docs/SEED.md`):
 
 ```
 $ pithy seed --env dev
-leaderboard_0001_demo_board: 12 rows.
-auth_0001_test_users: 3 rows, 1 entry.
+api  0100_auth_test_users: 3 rows, 1 entry.
+api  0200_leaderboard_demo_board: 12 rows.
 Done.
 ```
 
 A set with nothing to write for the current shape still gets a line, so a quiet run is never mistaken for a skipped one:
 
 ```
-media_0001_avatar: nothing to seed.
-```
-
-A set present in the registry but not allowed for the target environment is reported, never silently dropped:
-
-```
-Skipped leaderboard_0002_prod_smoke: not allowed in dev.
+$ pithy seed --env dev
+api  0300_media_avatar: nothing to seed.
 Done.
 ```
 
-`--dry-run` prints the same per-set shape and closes with a plain reminder instead of `Done.`:
+A set present in the registry but not allowed for the target environment is reported above the sets that ran, never silently dropped:
+
+```
+$ pithy seed --env dev
+api  skipped 0210_leaderboard_prod_smoke: not allowed in dev.
+api  0200_leaderboard_demo_board: 12 rows.
+Done.
+```
+
+`--dry-run` prints the same per-set shape and adds a plain reminder before `Done.`:
 
 ```
 $ pithy seed --env staging --dry-run
-leaderboard_0001_demo_board: 12 rows.
+api  0200_leaderboard_demo_board: 12 rows.
 Dry run. Nothing written.
+Done.
 ```
 
-`--json` emits the full plan or report as a single line — the same shape either way, with `dryRun` telling you which:
+`--json` emits the full plan or report as a single line — the same shape either way, one entry per Worker, with `dryRun` telling you which:
 
 ```
 $ pithy seed --env dev --dry-run --json
-{"command":"seed","env":"dev","dryRun":true,"sets":[{"name":"0001_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[]}
+{"command":"seed","env":"dev","dryRun":true,"workers":[{"worker":"api","sets":[{"name":"0200_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[],"shared":[]}]}
 ```
 
 ### 8.3 The production exception
 
-Every other flag in Pithy follows the same rule everywhere: `--json` means non-interactive, full stop. `pithy seed --env production` is the one place a flag additionally gates *content*, not just interactivity — because seeding production is rare and should stay rare.
+Every other flag in Pithy follows the same rule everywhere: `--json` means non-interactive, full stop. `pithy seed --env prod` is the one place a flag additionally gates *content*, not just interactivity — because seeding production is rare and should stay rare.
 
 - `dev` never asks for anything.
-- `staging` (and any other non-`dev`, non-`production` environment) needs `--yes`.
-- `production` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, CI, no TTY), there is no prompt — pass it directly:
+- `staging` (and any other non-`dev`, non-production environment) needs `--yes`.
+- `prod` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, CI, no TTY), there is no prompt — pass it directly:
 
   ```
-  pithy seed --env production --yes --confirm-production "yes, i really want to seed production"
+  pithy seed --env prod --yes --confirm-production "yes, i really want to seed production"
   ```
 
   Get the phrase wrong, or omit it non-interactively, and the run is refused before anything opens:
 
   ```
-  $ pithy seed --env production --yes --json
+  $ pithy seed --env prod --yes --json
   The production confirmation phrase did not match.
   Pass --confirm-production "yes, i really want to seed production" to seed production.
   ```
 
-Underneath both gates is a third, structural one that no flag can bypass: a seed set is only ever composed for `production` if it lists `production` in its own `environments` array. See `docs/SEED.md` for the full layered model.
+The flag and the phrase keep the word `production` deliberately. The **environment** is named `prod`, and `--env production` is refused — but a confirmation phrase is read by a human about to overwrite live data, and `yes, i really want to seed prod` is a sentence you can type without meaning it.
+
+Underneath both gates is a third, structural one that no flag can bypass: a seed set is only ever composed for `prod` if it lists `prod` in its own `environments` array. See `docs/SEED.md` for the full layered model.
 
 ### 8.4 Idempotency
 
@@ -1136,20 +1238,24 @@ This is also why editing a fixture's values and re-running `pithy seed` does not
 
 Because every table the migration registry owns comes back empty, step 3's ordinary non-destructive writes just work — there is nothing left to special-case. There is also nothing left of what was there before: **`--redo` destroys every row in every table the registry owns, not just the rows a fixture wrote.** Data you inserted by hand, in a seeded table, does not survive. This is the sharp edge — reach for `--redo` only when a clean rebuild is actually what you want.
 
+A real reset opens with the banner that names what it just did, then a line per database:
+
 ```
 $ pithy seed --env dev --redo
+DESTRUCTIVE. Every table in dev was dropped and recreated.
 Reset app (DB): 1 migration rolled back and reapplied.
-leaderboard_0001_demo_board: 12 rows.
+api  0200_leaderboard_demo_board: 12 rows.
 Done.
 ```
 
-`--redo --dry-run` reports what would be reset and written, and touches nothing:
+`--redo --dry-run` reports what would be reset and written, and touches nothing — no banner, because nothing was dropped:
 
 ```
 $ pithy seed --env staging --redo --dry-run
 Would reset app (DB): 1 migration.
-leaderboard_0001_demo_board: 12 rows.
+api  0200_leaderboard_demo_board: 12 rows.
 Dry run. Nothing written.
+Done.
 ```
 
 **`--redo` carries its own, stricter gate — it is not the seed gate.** `--yes` means "yes, this is not dev"; it was designed to authorize *writing* seed rows, which is additive and harmless. A reset drops every table first. Letting one flag authorize both would mean a script — or a hand — that knew only to pass `--yes` could destroy an environment's entire dataset. So:
@@ -1158,7 +1264,7 @@ Dry run. Nothing written.
 |---|---|---|
 | `dev` | free | free — a local Miniflare store is what reset is for |
 | `staging`, a feature env, anything non-`dev` | `--yes` | **the exact phrase** `yes, i really want to reset <env>` |
-| `production`/`prod` (+ declared production names) | `--yes` + the seed confirm phrase | the reset phrase, and it is refused headlessly without it |
+| `prod` (+ any name in `seed.productionEnvironments`) | `--yes` + the seed confirm phrase | the reset phrase, and it is refused headlessly without it |
 
 The phrase **names its environment**, so a phrase authorizing a `staging` reset cannot be pasted into a command targeting another one. Pass it as `--confirm-reset "yes, i really want to reset staging"`; interactively, the prompt states plainly that all data will be lost before asking. Automation is preserved — CI passes the flag explicitly — a reset simply cannot happen by accident.
 

@@ -2,19 +2,42 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { SecretDispatcher, SecretWriteRequest } from "../cli/dispatch";
 import type { ManagedEnvironment } from "../scope";
 
-/** Resolve the manager write-Workflow's name for an environment (each env's manager has its own). */
-export type WorkflowNameForEnv = (env: ManagedEnvironment) => string;
+/**
+ * The `<capability>` segment of every name the secrets manager deploys under — its Worker script, its
+ * D1, and both of its Workflows. One literal, so the manager, the dispatcher, and teardown cannot drift.
+ */
+export const SECRETS_CAPABILITY = "secrets";
 
 /**
- * The canonical name of an environment's manager write-Workflow — the contract between the deployed
- * manager and every CLI dispatch site. Defined once here so a rename can't leave a caller dispatching
- * to a non-existent Workflow.
+ * The canonical name of one project's manager write-Workflow in one environment —
+ * `<project>-<env>-secrets-write`. This is the contract between the deployed manager and every CLI
+ * dispatch site, so it is defined once here: a rename can't leave a caller dispatching to a Workflow
+ * that does not exist.
+ *
+ * The project segment is not decoration. Workflow names are **account-scoped**, so without it a second
+ * Pithy project in the same account dispatches into the first project's manager — writing its secrets
+ * into another project's database, under another project's master key.
+ *
+ * Named as a **Workflow** through core's facade: 64 characters, and refused rather than truncated. A
+ * Workflow name is a running instance's address, so a silently reshaped one loses whatever was in
+ * flight — and this particular name is also the contract every CLI dispatch resolves against.
  */
-export function secretsWriteWorkflowName(env: ManagedEnvironment): string {
-  return `pithy-secrets-write-${env}`;
+export function secretsWriteWorkflowName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "write");
+}
+
+/**
+ * The canonical name of one project's at-rest key-rotation Workflow in one environment —
+ * `<project>-<env>-secrets-rotate`. Triggered by the manager's own cron rather than by the CLI, but
+ * named here beside the write Workflow because both are the same account-scoped namespace and the
+ * manager's resolved `wrangler.jsonc` declares them together.
+ */
+export function secretsRotateWorkflowName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate");
 }
 
 /**
@@ -22,18 +45,23 @@ export function secretsWriteWorkflowName(env: ManagedEnvironment): string {
  * write-Workflow over the CF Workflows REST API and polls to completion. This is the CLI's write
  * path — the master key is worker-only, so the CLI never encrypts or stores locally. The dispatched
  * params carry the (already validated) value, so failures never echo them (see the client).
+ *
+ * **Bound to one project.** The dispatcher resolves the target Workflow itself rather than taking an
+ * env-to-name function: the name needs both the project and the environment, and a seam that took only
+ * the environment quietly invited a caller to supply an unscoped name that resolves to whichever
+ * project provisioned the account last.
  */
 export class WorkflowSecretDispatcher implements SecretDispatcher {
   readonly #client: CloudflareWorkflowsClient;
-  readonly #workflowName: WorkflowNameForEnv;
+  readonly #project: string;
 
-  constructor(client: CloudflareWorkflowsClient, workflowName: WorkflowNameForEnv) {
+  constructor(client: CloudflareWorkflowsClient, project: string) {
     this.#client = client;
-    this.#workflowName = workflowName;
+    this.#project = project;
   }
 
   async dispatch(request: SecretWriteRequest): Promise<void> {
-    await this.#client.dispatchAndPoll(this.#workflowName(request.env), {
+    await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
       mode: request.mode,
       name: request.name,
       value: request.value,

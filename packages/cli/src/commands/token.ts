@@ -11,7 +11,8 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
-import { loadProject, type ProjectConfig } from "../project/config";
+import { loadProject, requireProjectName } from "../project/config";
+import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
@@ -159,19 +160,23 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
   const { accountId, apiToken, storeId } = loadCreds(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
-  const config: ProjectConfig | undefined = await loadProject(projectDir).catch(() => undefined);
+  // The root config is required here, not best-effort: every token name and Secrets Store entry starts
+  // with the project name, and `revoke` deletes every account token of the name it computes. Guessing
+  // it would point that sweep at another project's credentials.
+  const config = await loadProject(projectDir);
   const workers = await resolveWorkers({ projectDir }).catch(() => []);
   const capabilities = projectCapabilities(workers);
   const registry = mergedSecretRegistry(workers);
   return {
     accountId,
+    project: requireProjectName(config),
     projectDir,
     tokens: cf.accountTokens(),
     profiles: resolveTokenProfiles(capabilities),
     secretBackend: (name) => registry[name]?.backend,
     putSecret: storeId ? (name, value) => cf.secrets(storeId).putSecret(name, value) : undefined,
     audit: await buildAudit(capabilities, cf, projectDir, env, apiToken),
-    override: config ? tokenOverrideResolver(config) : undefined,
+    override: tokenOverrideResolver(config),
   };
 }
 
@@ -182,7 +187,7 @@ const profileArg = {
     description: "Token profile: ci-system (the CI credential), or a capability's worker-consumer profile",
   },
 } as const;
-const envArg = { env: { type: "string", default: "dev", description: "Target environment" } } as const;
+const envArgs = { env: ENV_ARG } as const;
 const jsonArg = { json: { type: "boolean", default: false, description: "Machine-readable output" } } as const;
 const overrideArgs = {
   store: { type: "string", description: `Override where the value is written: ${TOKEN_STORES.join(" | ")}` },
@@ -194,11 +199,12 @@ const overrideArgs = {
 
 const mint = defineCommand({
   meta: { name: "mint", description: "Mint a scoped account token for a profile (rolls to the current scope)" },
-  args: { ...profileArg, ...envArg, ...overrideArgs, ...jsonArg },
+  args: { ...profileArg, ...envArgs, ...overrideArgs, ...jsonArg },
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
-      const engine = await buildEngine(process.cwd(), args.env);
-      const result = await mintProfileToken(engine, args.profile, args.env, {
+      const env = requireEnvironment(args.env);
+      const engine = await buildEngine(process.cwd(), env);
+      const result = await mintProfileToken(engine, args.profile, env, {
         store: parseStore(args.store),
         permissions: parsePermissions(collectPermissionFlags(rawArgs)),
       });
@@ -213,17 +219,18 @@ const mint = defineCommand({
 
 const list = defineCommand({
   meta: { name: "list", description: "List minted tokens for an environment (ids and profiles, never values)" },
-  args: { ...envArg, ...jsonArg },
+  args: { ...envArgs, ...jsonArg },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const engine = await buildEngine(process.cwd(), args.env);
-      const tokens = await listProfileTokens(engine, args.env);
+      const env = requireEnvironment(args.env);
+      const engine = await buildEngine(process.cwd(), env);
+      const tokens = await listProfileTokens(engine, env);
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "token list", env: args.env, tokens })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "token list", env, tokens })}\n`);
         return;
       }
       if (tokens.length === 0) {
-        process.stdout.write(`No minted tokens for ${args.env}.\n`);
+        process.stdout.write(`No minted tokens for ${env}.\n`);
         return;
       }
       process.stdout.write(
@@ -236,15 +243,16 @@ const rotate = defineCommand({
   meta: { name: "rotate", description: "Rotate a profile's token (create new, delete old)" },
   args: {
     ...profileArg,
-    ...envArg,
+    ...envArgs,
     ...overrideArgs,
     "keep-previous": { type: "boolean", default: false, description: "Keep the old token as a grace window" },
     ...jsonArg,
   },
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
-      const engine = await buildEngine(process.cwd(), args.env);
-      const result = await rotateProfileToken(engine, args.profile, args.env, {
+      const env = requireEnvironment(args.env);
+      const engine = await buildEngine(process.cwd(), env);
+      const result = await rotateProfileToken(engine, args.profile, env, {
         store: parseStore(args.store),
         permissions: parsePermissions(collectPermissionFlags(rawArgs)),
         keepPrevious: args["keep-previous"],
@@ -260,11 +268,12 @@ const rotate = defineCommand({
 
 const revoke = defineCommand({
   meta: { name: "revoke", description: "Revoke a profile's token for an environment" },
-  args: { ...profileArg, ...envArg, ...jsonArg },
+  args: { ...profileArg, ...envArgs, ...jsonArg },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const engine = await buildEngine(process.cwd(), args.env);
-      const result = await revokeProfileToken(engine, args.profile, args.env);
+      const env = requireEnvironment(args.env);
+      const engine = await buildEngine(process.cwd(), env);
+      const result = await revokeProfileToken(engine, args.profile, env);
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "token revoke", ...result })}\n`);
         return;

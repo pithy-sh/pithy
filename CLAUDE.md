@@ -5,7 +5,8 @@ shipped as composable capability packages under `@pithy-sh/*` plus a `pithy` CLI
 Home: **pithy.sh**. These are the binding conventions for every package in this
 monorepo. Read the companion docs before any structural or surface decision:
 `docs/superpowers/specs/2026-06-05-pithy-foundation-design.md` (architecture),
-`docs/BRAND.md` (identity + voice), `docs/CLI.md` (CLI behavior), `docs/STACK.md` (toolchain).
+`docs/BRAND.md` (identity + voice), `docs/CLI.md` (CLI behavior), `docs/NAMING.md` (resource
+naming + project scope), `docs/STACK.md` (toolchain).
 
 ## Non-negotiable principles
 
@@ -143,6 +144,67 @@ monorepo. Read the companion docs before any structural or surface decision:
 - **Cross-context upgrades** (beyond D1 schema — KV reshapes, backfills, multi-step data
   migrations) are modeled as **Cloudflare Workflows**, not ad-hoc scripts.
 
+## Resource naming (`<project>-<env>-<thing>`)
+
+- **Every Cloudflare resource this toolset provisions is named `<project>-<env>-<thing>`,
+  kebab-case** — D1 `database_name`, KV namespace title, R2 `bucket_name`, Vectorize `index_name`,
+  Worker script names, Workflow names, Secrets Store entry names, CF API token names, Email Routing
+  rule names. This rule has the same force as the `pithy_<capability>_<table>` prefix, and for the
+  same reason: every one of those namespaces is **flat and account-wide**, so the name is the only
+  partition. Without the project segment, a second Pithy project in one account adopts the first's
+  resources — provisioning finds a resource by name and reuses it.
+- **Compose it through the facade, never by hand** (see the bullet below for the call shape). A
+  name-producing helper takes `project` first. **Three things are deliberately not scoped**, because they are not account-wide
+  namespaces: **Worker binding names** (`DB`, `SESSIONS`), **`defineSecretRegistry` keys** (the key
+  *is* the binding and `.dev.vars` variable name; only the store entry it resolves to is scoped),
+  and **table names** (already inside a scoped database). Never rename one of those.
+- **Project first** because it is the ownership boundary every operation keys on — teardown
+  recomputes names rather than scanning, `pithy token list` filters the `<project>-<env>-` prefix,
+  and the test reaper's reservation keys on the leading segment. **Environment second** because
+  these land in listings nobody can filter, and sorting must group a project's environments
+  together rather than interleaving production with staging. A thing shared across a project's
+  environments puts the literal **`global`** in the environment slot — never omits it.
+- **`<project>` is the root `pithy.config.ts` `name`, resolved by `requireProjectName`.** Never
+  `resolveProjectName` for a name anything must reproduce later: its fallbacks (first Worker, then
+  directory basename) differ between checkouts, so teardown would compute names matching nothing,
+  delete nothing, and exit 0.
+- **The project name is stable forever once anything is provisioned**, exactly like a
+  `migrationOrder`. Renaming orphans every resource while every command keeps exiting 0.
+  `pithy doctor`'s `Project name:` check and `pithy migrate`'s `pithy_migrations_owner` stamp are
+  guards, not an undo.
+- **Only `thing` is ever truncated** (truncated head + `hash6`); project and environment are
+  verbatim, and a name that cannot fit is **refused with the limit named**, never silently hashed —
+  a truncated project segment would let two projects share the prefix the token listing filters on.
+- **Every namespace carries its own verified cap, in one table: `core/src/naming/limits.ts`.** Never
+  hold one number against all of them — Pithy did, 63, "R2's cap", and it over-truncated a KV title
+  eightfold and hashed D1 / Secrets Store / token names against limits that do not exist. Workflow
+  **64**, Worker script **63** (workers.dev's number, and a script cannot be renamed), R2 **63**
+  (min 3), Vectorize **64**, KV **512**; D1, Secrets Store entries, and API token labels have **no
+  documented Cloudflare cap**, so `MAX_PITHY_NAME` (**128**) is *our* ceiling and is marked as ours.
+  Overflow policy is per namespace too: **refuse** where renaming orphans a durable address (Workflow,
+  Worker, Vectorize), **truncate** where Pithy recomputes the name on every run (D1, KV, R2, secret
+  entries, tokens).
+- **Compose through the facade, not the raw composer:** `resourceNames(project).env(env).<kind>(…)`
+  from `@pithy-sh/core/src/naming/resourceNames`. It takes a *kind*, never a budget — so there is no
+  wrong budget to pass. `.global.<kind>(…)` for the `global` scope,
+  `.feature({ issue, slug }).resource(binding, kind)` for a feature. A call site handing
+  `resourceName` a number it picked itself is the bug this replaced.
+- **Environments are `dev` / `staging` / `prod` — never `production`.** The environment is verbatim in
+  every name, so each of its characters costs one character of project name, 1:1. `MAX_ENVIRONMENT_NAME`
+  (7, the length of `staging`) is a derivation input for every project budget, so a longer environment
+  is refused. Validate every `--env` through `requireEnvironment` before anything else in a command body.
+- **`MAX_PROJECT_NAME` is derived, never chosen: 26.** The *minimum* of what a 64-char Workflow leaves
+  (`64 - 1 - 7 - 1 - 22` = 33) and what a 63-char feature resource leaves after a 6-digit issue, a
+  legible slug, and a binding (= 26). Both derivations are computed constants in `naming/limits.ts`
+  with the arithmetic in a comment and pinned by `limits.test.ts` — never a literal.
+  `docs/NAMING.md`'s numbers are pinned to the same constants by `cli/src/project/namingDocs.test.ts`, so
+  an adopter-facing number cannot drift from the code.
+- **`pithy-int-` is a reserved namespace** for live integration-test resources. `scaffoldProject`
+  refuses a project name inside it, the debris reaper deletes nothing outside it, and no product
+  resource may ever carry it.
+- `docs/NAMING.md` states the rule once, for adopters. Every other doc links there rather than
+  restating it.
+
 ## Cloudflare access: bindings vs REST
 
 - **Inside the Worker → use bindings** (`env.DB`, `env.SESSIONS`, Email binding). Default:
@@ -246,9 +308,10 @@ monorepo. Read the companion docs before any structural or surface decision:
   secret exempt from the reader is the master key (`SECRETS_ENCRYPTION_KEYS`) that decrypts the D1
   store — it is the bootstrap and is read directly by `resolveEncryptionConfig`. A meta-test should
   fail any package that reads a secret-shaped binding outside the reader.
-- **Environments** are first-class: **dev (local) / staging (test users) / production
-  (paid users)**. Config and bindings resolve per environment; the CLI scaffolds per-env
-  `wrangler.jsonc` and the base URLs client apps use to reach a given environment.
+- **Environments** are first-class: **`dev` (local) / `staging` (test users) / `prod` (paid users)** —
+  the identifiers, verbatim, never `production`. Config and bindings resolve per environment; the CLI
+  scaffolds per-env `wrangler.jsonc` and the base URLs client apps use to reach a given environment.
+  See §Resource naming for why the length is a budget and not a preference.
 
 ## CLI & configuration
 
@@ -257,7 +320,7 @@ monorepo. Read the companion docs before any structural or surface decision:
 - **Citty** (unjs) for command structure — TS-first inference, fast cold start, lazy-loaded
   subcommands, built-in shell completions. **`@clack/prompts`** for interactive input.
   **picocolors** + the saffron truecolor helper for color — never raw ANSI; all color flows
-  through `src/lib/style.ts`. Cross-arg validation uses the named helpers
+  through `packages/cli/src/terminal/style.ts`. Cross-arg validation uses the named helpers
   (`requireWhen`/`exactlyOne`/`atLeastOne`/`allOrNone`) for common cases and Zod for complex
   ones. All errors throw `PithyError` (problem line + action line, brand voice). Reuse CMS
   CLI patterns where they fit.
@@ -282,9 +345,10 @@ monorepo. Read the companion docs before any structural or surface decision:
   (`createEntrypoint`), the `requiredBindings` written into that Worker's `wrangler.jsonc`, and
   **Durable Object class migrations, which register a class against a specific script**. So
   `apps/<name>/pithy.config.ts` holds `{ capabilities, app }`, and the root `pithy.config.ts`
-  holds only what cannot be per-Worker: `name` (the stable prefix every feature resource name
-  derives from, and the only key teardown finds them by), `tokens` (account-level CF token
-  profiles), and `seed.productionEnvironments` (a safety policy no Worker may quietly omit).
+  holds only what cannot be per-Worker: `name` (the leading segment of **every** name this project
+  provisions — see §Resource naming — and the only key teardown finds them by), `tokens`
+  (account-level CF token profiles), and `seed.productionEnvironments` (a safety policy no Worker
+  may quietly omit).
   A Worker composes only what it declares — a KV-only Worker never sees a D1 it doesn't use.
 - **Workers share a resource by declaring the same binding name.** Feature resource names are
   derived from `(project, issue, slug, binding, kind)` with **no Worker segment**, so two

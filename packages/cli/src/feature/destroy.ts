@@ -3,9 +3,9 @@
 
 import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { devConfigPath } from "./devConfig";
-import type { FeatureIdentity } from "./naming";
 import { freePortBlock, resolvePortsRegistryPath } from "./ports";
 import { type DeprovisionedResource, deprovisionFeature, type FeatureProvisioners } from "./provision";
 import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";

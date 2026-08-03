@@ -5,10 +5,19 @@
 // Only settings that cannot be per-Worker belong here.
 
 const config = {
-  // The project name. It is the first segment of every Cloudflare resource
-  // `pithy feature` creates (<project>-f<issue>-<slug>-<binding>-<kind>), and the
-  // only key teardown has to find them by — so it must stay stable across
-  // machines and checkouts. Set it once; don't rename it casually.
+  // The project name, and the first segment of every name Pithy provisions:
+  // <project>-<env>-<thing>, kebab-case, one rule for every namespace — D1, KV,
+  // R2, Worker scripts, Workflows, Secrets Store entries, and Cloudflare API
+  // tokens. A thing shared across environments puts the literal `global` in the
+  // environment slot. Feature resources extend the same shape
+  // (<project>-f<issue>-<slug>-<binding>-<kind>).
+  //
+  // Cloudflare's namespaces are flat and account-wide, so this segment is the
+  // only thing keeping two projects in one account from adopting each other's
+  // resources — and it is the only key teardown has to find them by. Renaming it
+  // does not rename anything already provisioned: it orphans it, silently. Set it
+  // once, keep it stable across machines and checkouts, and don't rename it.
+  // `pithy doctor` checks that it still matches what your workers declare.
   name: "pithy-app",
 
   // Overrides for the predefined Cloudflare API token profiles (`pithy token`).

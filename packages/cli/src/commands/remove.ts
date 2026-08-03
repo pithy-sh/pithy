@@ -5,6 +5,8 @@ import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
+import { loadProject, requireProjectName } from "../project/config";
+import { envArg, requireEnvironment } from "../project/environment";
 import { formatDone, withErrorReporting } from "../terminal/output";
 import { buildAudit, targetWorker } from "./add";
 
@@ -49,7 +51,7 @@ export default defineCommand({
       default: false,
       description: "Also roll back the capability's migrations (drops its tables)",
     },
-    env: { type: "string", default: "dev", description: "With --drop, the environment whose tables to drop" },
+    env: envArg("With --drop, the environment whose tables to drop"),
     json: { type: "boolean", default: false, description: "Not supported — remove is manual-only" },
   },
   // Errors always render as terminal problem/action lines: `remove` has no machine-readable surface.
@@ -58,7 +60,7 @@ export default defineCommand({
       rejectJson(args.json);
 
       const projectDir = process.cwd();
-      const env = args.env;
+      const env = requireEnvironment(args.env);
 
       // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever a TTY is.
       const target = await targetWorker({
@@ -68,11 +70,23 @@ export default defineCommand({
       });
       const capabilities = target.capabilities;
 
+      // `requireProjectName`, never `resolveProjectName`: a `--drop` reverses migrations against a live
+      // database, and the name is what that database's owner stamp is checked against. A guessed one
+      // (the alphabetically-first Worker, the directory basename) differs between checkouts, so it would
+      // either refuse this project's own database or claim another's. Resolved here, at the command edge,
+      // before anything is read or unwired — a nameless project is told to fix its config, not half-removed.
+      const project = requireProjectName(await loadProject(projectDir));
+
       const result = await removeCapability({
         workerDir: target.dir,
         capability: args.capability,
         drop: args.drop ? { env, confirm: dropConfirm(args.capability, env) } : undefined,
-        steps: defaultRemoveSteps({ projectDir, workerDir: target.dir, loadCapabilities: async () => capabilities }),
+        steps: defaultRemoveSteps({
+          projectDir,
+          workerDir: target.dir,
+          loadCapabilities: async () => capabilities,
+          project,
+        }),
         // `--drop`'s env is the natural audit target when given; otherwise "dev", which is inert — a
         // plain unwiring has no live environment, and the audit database is resolved from the project
         // root, narrowed to the Worker being unwired.

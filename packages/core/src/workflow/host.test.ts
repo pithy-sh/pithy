@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineCapability } from "../capability/capability";
 import { PithyError } from "../error/pithyError";
-import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "./host";
+import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostParams, type WorkflowHostTemplate } from "./host";
 import { composeWorkflows } from "./register";
 
 /**
@@ -62,25 +62,63 @@ function mediaTemplate(): WorkflowHostTemplate {
   };
 }
 
+/**
+ * The params every resolve needs, so each test states only what it is actually exercising.
+ * `workflows` is required whenever the template declares any — the resolver no longer invents
+ * names by suffixing the template's — so it is defaulted here rather than repeated fifteen times.
+ */
+function hostParams(overrides: Partial<WorkflowHostParams> = {}): WorkflowHostParams {
+  return {
+    project: "acme",
+    capability: "email",
+    env: "staging",
+    workflows: [
+      { binding: "EMAIL_SENDER", name: "acme-staging-email-send", class_name: "EmailSendWorkflow" },
+      { binding: "EMAIL_SCHEDULER", name: "acme-staging-email-schedule", class_name: "EmailSchedulerWorkflow" },
+    ],
+    ...overrides,
+  };
+}
+
+/** Media's equivalent — a different capability, and the binding kinds email's template lacks. */
+function mediaParams(overrides: Partial<WorkflowHostParams> = {}): WorkflowHostParams {
+  return hostParams({
+    capability: "media",
+    workflows: [
+      {
+        binding: "MEDIA_IMAGE_TO_TEXT",
+        name: "acme-staging-media-image-to-text",
+        class_name: "MediaImageToTextWorkflow",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 describe("resolveWorkflowHost", () => {
-  it("names the worker pithy-<capability>-<env>", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "staging" });
-    expect(resolved.name).toBe("pithy-email-staging");
+  it("names the worker <project>-<env>-<capability>", () => {
+    expect(resolveWorkflowHost(emailTemplate(), hostParams()).name).toBe("acme-staging-email");
+  });
+
+  it("gives two projects different Worker names, so one deploy cannot overwrite the other", () => {
+    const acme = resolveWorkflowHost(emailTemplate(), hostParams()).name;
+    const beta = resolveWorkflowHost(emailTemplate(), hostParams({ project: "beta" })).name;
+    expect(acme).not.toBe(beta);
   });
 
   it("does not mutate the template it was given", () => {
     const template = emailTemplate();
-    resolveWorkflowHost(template, { capability: "email", env: "staging", databaseIds: { DB: "db-1" } });
+    resolveWorkflowHost(template, hostParams({ databaseIds: { DB: "db-1" } }));
     expect(template.name).toBe("pithy-email");
     expect(template.d1_databases?.[0]?.database_id).toBe("<filled>");
+    expect(template.workflows?.[0]?.name).toBe("pithy-email-send");
   });
 
   it("fills database ids by binding name and leaves unlisted bindings alone", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), {
-      capability: "email",
-      env: "staging",
-      databaseIds: { DB: "app-id", SECRETS: "secrets-id" },
-    });
+    const resolved = resolveWorkflowHost(
+      emailTemplate(),
+      hostParams({ databaseIds: { DB: "app-id", SECRETS: "secrets-id" } }),
+    );
     expect(resolved.d1_databases).toEqual([
       { binding: "DB", database_name: "pithy-app", database_id: "app-id" },
       { binding: "EMAIL_SUPPRESSIONS", database_name: "pithy-email-suppressions", database_id: "<filled>" },
@@ -89,119 +127,132 @@ describe("resolveWorkflowHost", () => {
   });
 
   it("leaves database_name alone unless the caller asks for it", () => {
-    // Email deliberately lets `pithy-app`/`pithy-secrets` pass through; secrets' own manager rewrites
-    // its name. Making it a blanket rule would break one of the two.
-    const untouched = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "staging" });
+    // Email deliberately lets the app and secrets databases pass through; each capability's own
+    // resolver rewrites the names it owns. Making it a blanket rule would break one of the two.
+    const untouched = resolveWorkflowHost(emailTemplate(), hostParams());
     expect(untouched.d1_databases?.[0]?.database_name).toBe("pithy-app");
 
-    const rewritten = resolveWorkflowHost(emailTemplate(), {
-      capability: "email",
-      env: "staging",
-      databaseNames: { DB: "pithy-app-staging" },
-    });
-    expect(rewritten.d1_databases?.[0]?.database_name).toBe("pithy-app-staging");
+    const rewritten = resolveWorkflowHost(emailTemplate(), hostParams({ databaseNames: { DB: "acme-staging-app" } }));
+    expect(rewritten.d1_databases?.[0]?.database_name).toBe("acme-staging-app");
     expect(rewritten.d1_databases?.[2]?.database_name).toBe("pithy-secrets");
   });
 
-  it("suffixes every workflow name with the environment and never rewrites binding or class_name", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "production" });
+  it("takes the workflows array wholesale from the caller, never rewriting binding or class_name", () => {
+    const resolved = resolveWorkflowHost(
+      emailTemplate(),
+      hostParams({
+        env: "production",
+        workflows: [
+          { binding: "EMAIL_SENDER", name: "acme-production-email-send", class_name: "EmailSendWorkflow" },
+          { binding: "EMAIL_SCHEDULER", name: "acme-production-email-schedule", class_name: "EmailSchedulerWorkflow" },
+        ],
+      }),
+    );
     expect(resolved.workflows).toEqual([
-      { binding: "EMAIL_SENDER", name: "pithy-email-send-production", class_name: "EmailSendWorkflow" },
-      { binding: "EMAIL_SCHEDULER", name: "pithy-email-schedule-production", class_name: "EmailSchedulerWorkflow" },
+      { binding: "EMAIL_SENDER", name: "acme-production-email-send", class_name: "EmailSendWorkflow" },
+      { binding: "EMAIL_SCHEDULER", name: "acme-production-email-schedule", class_name: "EmailSchedulerWorkflow" },
     ]);
   });
 
-  it("stamps ENVIRONMENT and merges caller vars over the template's", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), {
-      capability: "email",
-      env: "staging",
-      vars: { BASE_URL: "https://api.example.com", MAX_ATTEMPTS: "9" },
-    });
+  it("refuses a template that declares workflows when the caller derived none", () => {
+    // The old resolver appended `-<env>` to the template's own name, which cannot produce a
+    // project-scoped name — it has no way to recover the job. Silently falling back to the
+    // template name would deploy an account-colliding Workflow, so absence is an error.
+    const { workflows: _omitted, ...withoutWorkflows } = hostParams();
+    expect(() => resolveWorkflowHost(emailTemplate(), withoutWorkflows)).toThrow(PithyError);
+    // The action names the fix, so whoever hits this knows what to pass rather than what went wrong.
+    expect(() => resolveWorkflowHost(emailTemplate(), withoutWorkflows)).toThrowError(
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: expect.stringContaining("hostWorkflowsFor") }),
+      }),
+    );
+  });
+
+  it("stamps ENVIRONMENT and PROJECT and merges caller vars over the template's", () => {
+    const resolved = resolveWorkflowHost(
+      emailTemplate(),
+      hostParams({ vars: { BASE_URL: "https://api.example.com", MAX_ATTEMPTS: "9" } }),
+    );
     expect(resolved.vars).toEqual({
       BASE_URL: "https://api.example.com",
       MAX_ATTEMPTS: "9",
       ENVIRONMENT: "staging",
+      PROJECT: "acme",
     });
   });
 
   it("ENVIRONMENT always wins, even if a caller tries to set it to something else", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), {
-      capability: "email",
-      env: "staging",
-      vars: { ENVIRONMENT: "production" },
-    });
+    const resolved = resolveWorkflowHost(emailTemplate(), hostParams({ vars: { ENVIRONMENT: "production" } }));
     expect(resolved.vars?.ENVIRONMENT).toBe("staging");
   });
 
+  it("PROJECT always wins too — a host that names the wrong owner stamps another project's assets", () => {
+    const resolved = resolveWorkflowHost(emailTemplate(), hostParams({ vars: { PROJECT: "globex" } }));
+    expect(resolved.vars?.PROJECT).toBe("acme");
+  });
+
   it("sets the store id on every secrets entry and env-scopes only the master key", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), {
-      capability: "email",
-      env: "staging",
-      secretsStoreId: "store-1",
-      masterKeySecretName: "STAGING_SECRETS_ENCRYPTION_KEYS",
-    });
+    const resolved = resolveWorkflowHost(
+      emailTemplate(),
+      hostParams({ secretsStoreId: "store-1", masterKeySecretName: "acme-staging-secrets-encryption-keys" }),
+    );
     expect(resolved.secrets_store_secrets).toEqual([
-      { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "STAGING_SECRETS_ENCRYPTION_KEYS" },
+      {
+        binding: "SECRETS_ENCRYPTION_KEYS",
+        store_id: "store-1",
+        secret_name: "acme-staging-secrets-encryption-keys",
+      },
     ]);
   });
 
   it("leaves the secrets block untouched when no store id is supplied", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "staging" });
+    const resolved = resolveWorkflowHost(emailTemplate(), hostParams());
     expect(resolved.secrets_store_secrets?.[0]?.store_id).toBe("<filled>");
   });
 
   it("fills KV ids and R2 bucket names", () => {
-    const resolved = resolveWorkflowHost(mediaTemplate(), {
-      capability: "media",
-      env: "staging",
-      kvNamespaceIds: { MEDIA: "kv-1" },
-      r2BucketNames: { MEDIA_BUCKET: "pithy-media-staging" },
-    });
+    const resolved = resolveWorkflowHost(
+      mediaTemplate(),
+      mediaParams({ kvNamespaceIds: { MEDIA: "kv-1" }, r2BucketNames: { MEDIA_BUCKET: "acme-staging-media" } }),
+    );
     expect(resolved.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-1" }]);
-    expect(resolved.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET", bucket_name: "pithy-media-staging" }]);
+    expect(resolved.r2_buckets).toEqual([{ binding: "MEDIA_BUCKET", bucket_name: "acme-staging-media" }]);
   });
 
   it("drops an omitted KV binding entirely rather than binding a namespace that was never created", () => {
     // Media's template hardcodes the MEDIA namespace; a `recordStore: 'd1'` project must not deploy
     // a binding pointing at nothing.
-    const resolved = resolveWorkflowHost(mediaTemplate(), {
-      capability: "media",
-      env: "staging",
-      omitKvBindings: ["MEDIA"],
-    });
+    const resolved = resolveWorkflowHost(mediaTemplate(), mediaParams({ omitKvBindings: ["MEDIA"] }));
     expect(resolved.kv_namespaces).toBeUndefined();
   });
 
   it("applies remote: true only to the bindings the caller names", () => {
-    const resolved = resolveWorkflowHost(mediaTemplate(), {
-      capability: "media",
-      env: "staging",
-      remoteBindings: ["AI"],
-    });
+    const resolved = resolveWorkflowHost(mediaTemplate(), mediaParams({ remoteBindings: ["AI"] }));
     expect(resolved.ai).toEqual({ binding: "AI", remote: true });
     expect(resolved.r2_buckets?.[0]).not.toHaveProperty("remote");
   });
 
   it("leaves an existing remote flag in place when no remote bindings are named", () => {
-    const resolved = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "staging" });
+    const resolved = resolveWorkflowHost(emailTemplate(), hostParams());
     expect(resolved.send_email).toEqual([{ name: "EMAIL", remote: true }]);
   });
 
   it("keeps unknown template keys, so a template may carry fields this contract does not model", () => {
     const template = { ...emailTemplate(), observability: { enabled: true } } as WorkflowHostTemplate;
-    const resolved = resolveWorkflowHost(template, { capability: "email", env: "staging" });
+    const resolved = resolveWorkflowHost(template, hostParams());
     expect((resolved as unknown as { observability: unknown }).observability).toEqual({ enabled: true });
   });
 
   it("resolves a template with no bindings at all", () => {
     const resolved = resolveWorkflowHost(
       { name: "pithy-bare", main: "./worker.ts" },
-      {
-        capability: "bare",
-        env: "dev",
-      },
+      hostParams({ capability: "bare", env: "dev" }),
     );
-    expect(resolved).toEqual({ name: "pithy-bare-dev", main: "./worker.ts", vars: { ENVIRONMENT: "dev" } });
+    expect(resolved).toEqual({
+      name: "acme-dev-bare",
+      main: "./worker.ts",
+      vars: { ENVIRONMENT: "dev", PROJECT: "acme" },
+    });
   });
 });
 
@@ -235,24 +286,32 @@ describe("hostWorkflowsFor", () => {
     ]);
 
   it("derives one host's workflows array from its own specs, ignoring other capabilities", () => {
-    const { workflows } = hostWorkflowsFor(registry(), "email", "staging");
+    const { workflows } = hostWorkflowsFor(registry(), { project: "acme", capability: "email", env: "staging" });
     expect(workflows).toEqual([
-      { binding: "EMAIL_SENDER", name: "pithy-email-send-staging", class_name: "EmailSendWorkflow" },
-      { binding: "EMAIL_SCHEDULER", name: "pithy-email-schedule-staging", class_name: "EmailSchedulerWorkflow" },
+      { binding: "EMAIL_SENDER", name: "acme-staging-email-send", class_name: "EmailSendWorkflow" },
+      { binding: "EMAIL_SCHEDULER", name: "acme-staging-email-schedule", class_name: "EmailSchedulerWorkflow" },
     ]);
   });
 
   it("collects crons from the scheduled specs only", () => {
-    expect(hostWorkflowsFor(registry(), "email", "staging").crons).toEqual(["* * * * *"]);
-    expect(hostWorkflowsFor(registry(), "media", "staging").crons).toEqual([]);
+    expect(hostWorkflowsFor(registry(), { project: "acme", capability: "email", env: "staging" }).crons).toEqual([
+      "* * * * *",
+    ]);
+    expect(hostWorkflowsFor(registry(), { project: "acme", capability: "media", env: "staging" }).crons).toEqual([]);
   });
 
-  it("produces names identical to what the resolver suffixes onto a committed template", () => {
-    // The two paths must not drift: a generated entry and a template entry resolve to one name.
-    const generated = hostWorkflowsFor(registry(), "email", "production").workflows[0]?.name;
-    const resolved = resolveWorkflowHost(emailTemplate(), { capability: "email", env: "production" }).workflows?.[0]
-      ?.name;
-    expect(generated).toBe(resolved);
+  it("is the only source of a host's workflow names — the resolver passes them through untouched", () => {
+    // The two paths must not drift, and there is now only one: hostWorkflowsFor derives the names
+    // and the resolver adopts them verbatim.
+    const derived = hostWorkflowsFor(registry(), { project: "acme", capability: "email", env: "production" });
+    const resolved = resolveWorkflowHost(emailTemplate(), {
+      project: "acme",
+      capability: "email",
+      env: "production",
+      workflows: derived.workflows,
+    });
+    expect(resolved.workflows).toEqual(derived.workflows);
+    expect(derived.workflows[0]?.name).toBe("acme-production-email-send");
   });
 
   it("refuses to host a spec with no className — there would be no class for wrangler to instantiate", () => {
@@ -263,6 +322,8 @@ describe("hostWorkflowsFor", () => {
         workflows: { send: { binding: "EMAIL_SENDER", params: z.object({}).describe("None.") } },
       }),
     ]);
-    expect(() => hostWorkflowsFor(registryWithoutClass, "email", "staging")).toThrow(PithyError);
+    expect(() =>
+      hostWorkflowsFor(registryWithoutClass, { project: "acme", capability: "email", env: "staging" }),
+    ).toThrow(PithyError);
   });
 });

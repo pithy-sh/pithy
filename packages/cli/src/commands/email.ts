@@ -20,6 +20,7 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
+import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -99,6 +100,12 @@ interface WranglerStanza {
 function buildResolveEnv(
   worker: ResolvedWorker,
   cf: CloudflareClients,
+  /**
+   * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
+   * caller via `requireProjectName`, never guessed: the lookup is by name, so a wrong one either reports
+   * a database that "does not exist" or binds another project's secrets store.
+   */
+  project: string,
 ): (env: ManagedEnvironment) => Promise<EmailEnvResources> {
   return async (env) => {
     const path = join(worker.dir, "wrangler.jsonc");
@@ -124,10 +131,10 @@ function buildResolveEnv(
         action: `Set vars.BASE_URL to the ${env} ${worker.name} worker's public URL (tracking links are built against it).`,
       });
     }
-    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(env));
+    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
     if (!secretsDb) {
       throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(env)}) does not exist.`,
+        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
         action: "Run `pithy secrets provision` first — the email worker reads its signing key from it.",
       });
     }
@@ -157,12 +164,16 @@ const provision = defineCommand({
     "app-worker": {
       type: "string",
       description:
-        "Deployed name of your production app worker — the one running createEntrypoint with the email() bounce handler (e.g. pithy-app-production).",
+        "Deployed name of your production app worker — the one running createEntrypoint with the email() bounce handler (e.g. pithy-app-prod).",
     },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // The leading segment of the suppression database, the email workers, and the bounce rule. The
+      // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
+      // adopts another project's opt-out list (docs/NAMING.md).
+      const project = requireProjectName(await loadProject(projectDir));
       const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
       const { theme } = await loadEmailConfig(projectDir);
       const appWorker = await resolveSingleWorker({
@@ -178,11 +189,12 @@ const provision = defineCommand({
           : undefined;
       const provisioner = new CloudflareEmailProvisioner({
         cf,
+        project,
         accountId,
         apiToken,
         storeId,
         theme,
-        resolveEnv: buildResolveEnv(appWorker, cf),
+        resolveEnv: buildResolveEnv(appWorker, cf, project),
         routing,
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
@@ -204,17 +216,21 @@ const deprovision = defineCommand({
     suppression: {
       type: "boolean",
       default: false,
-      description: "Also delete the shared suppression DB (irreversible)",
+      description: "Also delete this project's suppression DB (irreversible)",
     },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // Teardown finds resources by recomputing their names, so this must be the same name
+      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+      const project = requireProjectName(await loadProject(projectDir));
       const { accountId, apiToken } = loadCloudflareCreds(projectDir);
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
         cf,
+        project,
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 

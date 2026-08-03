@@ -102,6 +102,27 @@ export class CloudflareTurnstileManager extends CloudflareManager {
   }
 
   /**
+   * Every widget claiming `domain`, matched case-insensitively (hostnames are). The sibling of
+   * {@link getTurnstile}, keyed on the domain instead of the name — and **plural**, deliberately:
+   * Cloudflare's widget names are not unique and a domain may legitimately appear on several widgets,
+   * so returning one would hide the rest from a caller deciding whether the domain is free.
+   *
+   * Exact hostname equality only. Cloudflare treats a widget's domain as covering its subdomains, but
+   * this is the input to a *refusal*, and a refusal inferred from a subdomain relationship would block
+   * `app.example.com` because someone once made a widget for `example.com`.
+   */
+  async listTurnstilesByDomain(domain: string): Promise<WidgetListResponse[]> {
+    const wanted = domain.toLowerCase();
+    return cloudflareRequest(`Turnstile list widgets for '${domain}'`, async () => {
+      const matches: WidgetListResponse[] = [];
+      for await (const widget of this.getClient().turnstile.widgets.list({ account_id: this.accountId })) {
+        if (widget.domains?.some((each) => each.toLowerCase() === wanted)) matches.push(widget);
+      }
+      return matches;
+    });
+  }
+
+  /**
    * Create a widget for the given domains in the requested mode — `managed` (visible) or `invisible`
    * (silent). Defaults to `invisible` so existing callers keep their behavior.
    */

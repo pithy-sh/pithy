@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import type { TurnstileConfig, TurnstileMode } from "../config/config";
 import type { TurnstileSecrets } from "../secret/registry";
 import { TEST_SECRET, testSitekey } from "./testKeys";
@@ -15,17 +16,42 @@ export function enabledModes(config: TurnstileConfig): TurnstileMode[] {
 }
 
 /** The deployed environments whose secret is written to the managed store (dev is local, via `.dev.vars`). */
-export const MANAGED_ENVIRONMENTS = ["staging", "production"] as const;
+export const MANAGED_ENVIRONMENTS = ["staging", "prod"] as const;
 export type ManagedTurnstileEnv = (typeof MANAGED_ENVIRONMENTS)[number];
+
+/**
+ * The one environment a real widget is created for, named once rather than spelled at four call sites.
+ *
+ * It appears in the widget's own name, in the secret write, and in the sitekey write, and those three
+ * have to agree: a widget provisioned under one environment and a secret written under another is a
+ * production login page verifying against a key nobody holds.
+ */
+const REAL_WIDGET_ENV = "prod" satisfies ManagedTurnstileEnv;
 
 /** The Worker var the public sitekey for a mode is surfaced under, for the front-end to render with. */
 export function sitekeyVarName(mode: TurnstileMode): string {
   return `TURNSTILE_SITEKEY_${mode.toUpperCase()}`;
 }
 
-/** The production widget's name, stable per mode so provisioning is idempotent (reuse-or-create by name). */
-export function productionWidgetName(mode: TurnstileMode): string {
-  return `pithy-turnstile-${mode}-production`;
+/**
+ * The production widget's name: `<project>-prod-turnstile-<mode>` (docs/NAMING.md).
+ *
+ * Stable per project and mode, because provisioning is reuse-or-create **by name** — which is exactly
+ * why the project segment is not optional. Turnstile widgets are account-scoped and the account's widget
+ * list is flat, so an unscoped name means a second Pithy project in one account adopts the first's widget
+ * and `turnstile deprovision` deletes it out from under them.
+ *
+ * `prod` sits in the environment slot because that is the environment this widget serves, and it is the
+ * only one: dev and staging wire Cloudflare's documented test keys and create no widget at all. If a real
+ * staging widget ever lands, it takes `staging` in the same slot and nothing else moves.
+ *
+ * **The generic composer rather than the facade**, and for the one reason the facade allows: a Turnstile
+ * widget is not a namespace `@pithy-sh/core/src/naming/limits` carries a verified Cloudflare cap for.
+ * The facade's premise is that a kind of thing brings its own number; inventing one here would be the
+ * flaw it was built to remove. So this takes the conservative default until that namespace lands.
+ */
+export function productionWidgetName(project: string, mode: TurnstileMode): string {
+  return resourceName({ project, env: REAL_WIDGET_ENV, thing: `turnstile-${mode}` });
 }
 
 /** Build the combined secret object for the enabled modes, all set to one key value. */
@@ -49,6 +75,13 @@ function testSitekeyVars(modes: TurnstileMode[]): Record<string, string> {
  * environments via the manager's write Workflow. Every step is idempotent.
  */
 export interface TurnstileProvisioner {
+  /**
+   * Refuse the run when a widget **outside this project** already claims the production domain. Cloudflare
+   * permits several widgets per domain; Pithy does not, because a second widget on one domain is almost
+   * always someone's forgotten first attempt, and the two are indistinguishable to a front-end holding one
+   * sitekey. This project's own widgets are the expected steady state and never trip it.
+   */
+  assertDomainAvailable(domain: string): Promise<void>;
   /** dev: upsert the turnstile secret (JSON) and the public sitekey vars into `.dev.vars`. */
   writeDev(secret: string, sitekeys: Record<string, string>): Promise<void>;
   /** Write the turnstile secret (JSON) to a deployed environment's managed store (via the manager). */
@@ -97,21 +130,32 @@ export interface TurnstilePlan {
   modes: TurnstileMode[];
   /** The production domain the real widget is bound to (resolved from per-environment config). */
   productionDomain: string;
+  /**
+   * Provision even though a foreign widget already covers the domain (`--allow-shared-domain`). The
+   * escape hatch for the one legitimate case: an adopter who already runs a hand-made widget on that
+   * host and is not ready to retire it. Off by default — the refusal is the useful answer.
+   */
+  allowSharedDomain?: boolean;
 }
 
 /**
  * Provision Turnstile across environments. **dev and staging** get Cloudflare's documented test secret
- * (written per-environment — dev to `.dev.vars`, staging to its managed store); **production** gets a real
+ * (written per-environment — dev to `.dev.vars`, staging to its managed store); **`prod`** gets a real
  * widget per mode, bound to the domain, its secret written to the production managed store, and its public
  * sitekey to the production worker vars. Idempotent: a re-run reuses existing production widgets and skips
  * the production secret write (whose value can't be recovered from Cloudflare). A *mixed* production state
  * (some widgets new, some pre-existing) can't compose a consistent secret, so it errors with guidance
- * rather than write a half-secret.
+ * rather than write a half-secret. Before anything is written, a production domain a *foreign* widget
+ * already covers is refused (`allowSharedDomain` opts out).
  */
 export async function provisionTurnstile(
   provisioner: TurnstileProvisioner,
   plan: TurnstilePlan,
 ): Promise<TurnstileProvisionResult> {
+  // First, before a single write: a domain already covered by a foreign widget is refused, so a refusal
+  // leaves no half-wired `.dev.vars` or staging secret behind.
+  if (!plan.allowSharedDomain) await provisioner.assertDomainAvailable(plan.productionDomain);
+
   const testSecret = JSON.stringify(buildSecrets(plan.modes, TEST_SECRET));
   const sitekeys = testSitekeyVars(plan.modes);
 
@@ -140,9 +184,9 @@ export async function provisionTurnstile(
   // existing widgets' secret, so it can't be recomposed and is left as-is (the caller warns).
   const productionSecretWritten = created === plan.modes.length;
   if (productionSecretWritten) {
-    await provisioner.writeManagedSecret("production", JSON.stringify(realSecrets));
+    await provisioner.writeManagedSecret(REAL_WIDGET_ENV, JSON.stringify(realSecrets));
   }
-  await provisioner.writeManagedSitekeys("production", prodSitekeys);
+  await provisioner.writeManagedSitekeys(REAL_WIDGET_ENV, prodSitekeys);
 
   return { modes: plan.modes, widgets, productionSecretWritten };
 }

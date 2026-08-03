@@ -17,7 +17,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareWorkersManager — LIVE", () => {
   const workers = new CloudflareWorkersManager({ accountId: creds.accountId, apiToken: creds.apiToken });
 
   test("creates a script, resolves it, manages a secret + settings, then deletes it", async () => {
-    const name = uniqueName("pithy-int-worker");
+    const name = uniqueName("worker");
 
     await withThrowawayResource(
       () => workers.createWorker(name),
@@ -42,7 +42,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareWorkersManager — LIVE", () => {
         expect((await workers.listVersions(name)).length).toBeGreaterThan(0);
 
         // Error/absent path: an unknown script resolves to null, not a throw.
-        expect(await workers.getWorker(uniqueName("pithy-int-absent"))).toBeNull();
+        expect(await workers.getWorker(uniqueName("absent"))).toBeNull();
       },
       (script) => workers.deleteWorker(script.id ?? name),
     );

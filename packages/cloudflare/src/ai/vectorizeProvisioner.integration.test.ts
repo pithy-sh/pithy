@@ -55,7 +55,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
 
     expect(await provisioner.validateServiceAccess()).toBe(true);
 
-    const name = uniqueName("pithy-int-vecprov");
+    const name = uniqueName("vecprov");
     await withThrowawayResource(
       () => provisioner.createIndex(name, { dimensions: DIMENSIONS, metric: "cosine" }),
       async (index) => {
@@ -85,7 +85,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
         await expect(provisioner.deleteMetadataIndex(name, "tenantId")).resolves.toBeUndefined();
 
         // Absent path: a name nobody created reads as null, not a throw.
-        expect(await provisioner.findIndexByName(uniqueName("pithy-int-absent"))).toBeNull();
+        expect(await provisioner.findIndexByName(uniqueName("absent"))).toBeNull();
       },
       (index) => provisioner.deleteIndex(index.name),
     );

@@ -1,10 +1,13 @@
 {
   // The prebuilt testers daily-pass worker. Like the email, media, storage and payments workers, this is
-  // a TEMPLATE rather than a wrangler env-stanza file: staging and production are genuinely separate
+  // a TEMPLATE rather than a wrangler env-stanza file: staging and prod are genuinely separate
   // workers. `pithy testers provision` resolves it into one complete config per environment — filling
   // the `<...>` placeholders and deriving the `workflows` array and the cron from the capability's
   // specs — and deploys each with `wrangler deploy --config <resolved>`. The adopter authors none of it.
-  "name": "pithy-testers", // resolved per env → pithy-testers-staging / pithy-testers-production
+  // Resolved per project and env → <project>-staging-testers / <project>-prod-testers. Worker
+  // script names are account-scoped, so the project segment is what stops a second Pithy project's
+  // deploy overwriting this one's running worker instead of colliding with it.
+  "name": "pithy-testers",
   "main": "./worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -15,8 +18,9 @@
 
   // Two databases and no more. The app database holds the pithy_testers_* tables, the pithy_auth_*
   // tables the activity reader joins against, and the pithy_email_jobs rows a nudge becomes. The
-  // suppression database is global rather than per environment — an unsubscribe in production must
-  // stop staging too — and the daily pass reads it to reconcile which addresses have bounced.
+  // suppression database is shared across the project's environments rather than per environment — an
+  // unsubscribe in prod must stop staging too — and the daily pass reads it to reconcile which
+  // addresses have bounced. Its name resolves to <project>-global-email-suppressions at provision.
   //
   // No SECRETS binding and no master key: the confirmation token is a random value on the tester's own
   // row rather than a signature, so this worker reads no secret at all. That is the whole reason

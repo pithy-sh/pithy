@@ -50,7 +50,7 @@ An app may need both a **visible** widget (a login page should show the challeng
 // pithy.config.ts
 turnstile({
   widgets: {
-    visible: { sitekeys: { dev: "1x00000000000000000000AA", staging: "…", production: "…" } },
+    visible: { sitekeys: { dev: "1x00000000000000000000AA", staging: "…", prod: "…" } },
   },
   protect: { login: "visible" },   // login (magic-link, OTP) → visible widget. Social/OAuth is never gated.
 });
@@ -63,9 +63,17 @@ turnstile({
 `pithy add turnstile` installs the package and wires its config; the secrets capability must be present (`pithy add secrets` → `pithy secrets provision`) since the widget secret is stored and read through `@pithy-sh/secrets`. `pithy turnstile provision` then wires everything per environment:
 
 - **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into `.dev.vars`, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable.
-- **Only production provisions a real widget**, bound to the production domain in the configured mode. Its secret is written to the **production secrets store**; the public sitekeys are written to the worker vars.
+- **Only `prod` provisions a real widget**, bound to the production domain in the configured mode. Its secret is written to the **`prod` secrets store**; the public sitekeys are written to the worker vars.
 
-Because the secret is read through `secretsStore`, there is **no separate binding to materialize at deploy** — a production worker resolves it the same way it resolves every secret. (The staging/production writes go through the deployed secrets manager, so `pithy secrets provision` must have run for those environments.)
+The widget is named `<project>-prod-turnstile-<mode>` — the one naming rule, see [docs/NAMING.md](../../docs/NAMING.md). `prod` sits in the environment slot because that is the only environment with a real widget; dev and staging wire the test keys and create nothing. The project segment is not decoration: a Turnstile widget is account-scoped and provisioning is reuse-or-create **by name**, so without it a second Pithy project in the same account adopts the first's widget and `deprovision` deletes it.
+
+### One widget per domain
+
+Provisioning refuses a production domain that another Turnstile widget on the account already covers, naming the widget that holds it. Cloudflare permits several widgets per domain; Pithy does not, because a second one is nearly always a forgotten first attempt and a front-end holding one sitekey cannot tell them apart. This project's own widgets never trip it — re-running `provision` is idempotent, as is running a visible and an invisible widget on one host.
+
+If you genuinely need to sit alongside an existing widget — a hand-made one you are not ready to retire — pass `--allow-shared-domain`.
+
+Because the secret is read through `secretsStore`, there is **no separate binding to materialize at deploy** — a production worker resolves it the same way it resolves every secret. (The `staging`/`prod` writes go through the deployed secrets manager, so `pithy secrets provision` must have run for those environments.)
 
 ## `.dev.vars`
 

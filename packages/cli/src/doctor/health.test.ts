@@ -72,7 +72,7 @@ describe("buildProjectHealth", () => {
           missingConfigKeys: [],
           missingBindings: [
             { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
-            { env: "production", name: "MEDIA_BUCKET", type: "r2" },
+            { env: "prod", name: "MEDIA_BUCKET", type: "r2" },
           ],
         },
       ],
@@ -85,7 +85,7 @@ describe("buildProjectHealth", () => {
     });
     expect(health.ok).toBe(false);
     expect(health.workers[0]?.bindings.missing).toEqual([
-      { name: "MEDIA_BUCKET", type: "r2", envs: ["staging", "production"] },
+      { name: "MEDIA_BUCKET", type: "r2", envs: ["staging", "prod"] },
     ]);
   });
 

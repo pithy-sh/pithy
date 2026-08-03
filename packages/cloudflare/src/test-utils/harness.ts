@@ -3,6 +3,16 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  AbortMultipartUploadCommand,
+  DeleteObjectCommand,
+  ListMultipartUploadsCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fitSegment, kebab, MAX_RESOURCE_NAME, RESERVED_TEST_PREFIX } from "@pithy-sh/core/src/naming/resource";
+import { CloudflareClients } from "../client/clients";
 import { loadCloudflareEnv } from "../env/devVars";
 import { R2Credentials } from "../r2/r2Credentials";
 
@@ -59,21 +69,59 @@ export function loadIntegrationCreds(): IntegrationCreds {
   };
 }
 
-/** A unique, account-safe resource name — `<prefix>-<timestamp>-<n>-<rand>`, lowercase `a-z0-9-` only. */
+/**
+ * The project name a live test provisions under, so that names composed by the *product's* provisioners —
+ * `<project>-<env>-<thing>`, where the project segment is verbatim and first — land inside the reservation
+ * too. A live test of `pithy feature provision` cannot route through {@link uniqueName}: the names are the
+ * thing under test. Giving it a reserved project puts them in the namespace anyway.
+ *
+ * The reservation itself is {@link RESERVED_TEST_PREFIX}, in `@pithy-sh/core`. It lives beside the name
+ * composer because both sides of it are naming facts: this harness mints inside it, and `scaffoldProject`
+ * refuses to mint a project that would land in it. One literal, or the two drift apart.
+ */
+export const RESERVED_TEST_PROJECT = `${RESERVED_TEST_PREFIX}test`;
+
+/** Deduplicates names minted within one test file; the random suffix covers the cross-file case. */
 let nameCounter = 0;
 
 /**
- * Mint a collision-proof name for a throwaway live resource: `<prefix>-<timestamp>-<n>-<rand>`. The
- * 6-char random suffix is what guarantees uniqueness across separate test files (Vitest isolates each
- * file, so the counter only deduplicates within one); the timestamp and counter keep names readable and
- * ordered. The output stays in the lowercase `a-z0-9-` charset every CF resource name accepts. Keep the
- * `prefix` short — the default lands ~36 chars, well under R2's 63-char cap, but a long custom prefix
- * can exceed a resource's limit. Default prefix marks it as a Pithy integration-test artifact for cleanup.
+ * Mint a collision-proof name for a throwaway live resource:
+ * `pithy-int-<label>-<timestamp>-<counter>-<rand>`.
+ *
+ * The caller supplies only the distinguishing part — {@link RESERVED_TEST_PREFIX} is composed on, never
+ * passed in. That is the point: when the prefix was a *default* a caller could override, a suite could
+ * silently create resources under a name the reaper does not recognise, which is exactly how orphans
+ * came to sit on a real account. A label that already carries the prefix is refused rather than doubled.
+ *
+ * The 6-char random suffix guarantees uniqueness across separate test files (Vitest isolates each file, so
+ * the counter only deduplicates within one); the timestamp is what {@link testResourceAge} reads, so every
+ * name this mints is reapable by construction. The label is kebabbed and fitted, so the result always
+ * stays inside R2's {@link MAX_RESOURCE_NAME} cap and the lowercase `a-z0-9-` charset every CF namespace
+ * accepts, whatever the caller passed.
  */
-export function uniqueName(prefix = "pithy-int-test"): string {
+export function uniqueName(label: string): string {
+  const segment = kebab(label);
+  if (!segment) {
+    throw new ValidationError({
+      message: "A throwaway resource needs a label.",
+      action: "Pass a short label, e.g. uniqueName('kv').",
+      detail: `uniqueName received ${JSON.stringify(label)}, which kebabs to nothing.`,
+    });
+  }
+  if (segment.startsWith(RESERVED_TEST_PREFIX)) {
+    throw new ValidationError({
+      message: `A throwaway label must not repeat the reserved "${RESERVED_TEST_PREFIX}" prefix.`,
+      action: `Pass only the distinguishing part, e.g. uniqueName('${segment.slice(RESERVED_TEST_PREFIX.length) || "kv"}').`,
+      detail: `uniqueName composes ${RESERVED_TEST_PREFIX} itself; ${JSON.stringify(label)} would double it.`,
+    });
+  }
+
   nameCounter += 1;
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `${prefix}-${Date.now()}-${nameCounter}-${rand}`;
+  // `Math.random()` can produce a short base-36 string, and a name must never end on a hyphen.
+  const rand = Math.random().toString(36).slice(2, 8).padEnd(6, "0");
+  const suffix = `-${Date.now()}-${nameCounter}-${rand}`;
+  const budget = MAX_RESOURCE_NAME - RESERVED_TEST_PREFIX.length - suffix.length;
+  return `${RESERVED_TEST_PREFIX}${fitSegment(segment, budget)}${suffix}`;
 }
 
 /**
@@ -96,26 +144,34 @@ export async function withThrowawayResource<R, T>(
   }
 }
 
-/** The marker every throwaway name carries, so a reaper can tell test debris from a real resource. */
-const TEST_RESOURCE_PREFIX = "pithy-int-";
-
 /**
- * How old a resource must be before a reaper will remove it. An hour is far longer than any suite runs,
- * so a reaper can never delete a resource a concurrent run is still using — the property that makes
- * automatic reaping safe rather than a race.
+ * How old a resource must be before a reaper will remove it.
+ *
+ * **Twelve hours, and the size is the safety argument.** Reaping is a race with any suite that is still
+ * running: a resource deleted mid-flight surfaces as an unexplained 404 in a test that was passing, which
+ * is a far worse failure than debris. Cloudflare offers no way to mark a D1, KV namespace, bucket, or
+ * index as owned by a live process — no lease, no tag our client can set on every kind — so the only
+ * defence available is a window nothing plausible can cross.
+ *
+ * A single live test is capped at 120s and a hook at 120s (`vitest.integration.config.ts`); a whole
+ * package's suite is minutes, and every package's suites together are well under an hour even when
+ * Vectorize is settling. Twelve hours is two orders of magnitude past that, and still short enough that
+ * debris never survives a day. The cost of the wider window is a handful of orphans lingering longer;
+ * the cost of the narrower one is a green suite turned red by its own housekeeping.
  */
-const DEFAULT_STALE_AFTER_MS = 60 * 60 * 1000;
+export const DEFAULT_STALE_AFTER_MS = 12 * 60 * 60 * 1000;
 
 /**
  * The ms-epoch {@link uniqueName} embedded, or `null` if this is not one of our names.
  *
- * `uniqueName` composes `<prefix>-<epoch>-<counter>-<rand>`, so the timestamp is the third segment from
- * the end. Anything that does not match that shape — including a real resource that happens to start
- * with the prefix — returns `null` and is therefore never reaped. Conservative on purpose: failing to
+ * `uniqueName` composes `pithy-int-<label>-<epoch>-<counter>-<rand>`, so the timestamp is the third
+ * segment from the end. Anything that does not match that shape returns `null` and is therefore never
+ * reaped — including a name inside the reservation that some *other* generator produced, such as a
+ * feature resource provisioned under {@link RESERVED_TEST_PROJECT}. Conservative on purpose: failing to
  * clean up costs pennies, deleting someone's data does not.
  */
 export function testResourceAge(name: string, now: number): number | null {
-  if (!name.startsWith(TEST_RESOURCE_PREFIX)) return null;
+  if (!name.startsWith(RESERVED_TEST_PREFIX)) return null;
   const segments = name.split("-");
   if (segments.length < 3) return null;
   const stamp = Number(segments[segments.length - 3]);
@@ -186,4 +242,92 @@ export async function reapStaleTestResources(
   if (reaped.length > 0) console.warn(`reaped ${reaped.length} stale ${kind.label}(s): ${reaped.join(", ")}`);
   if (failed.length > 0) console.warn(`could not reap ${failed.length} stale ${kind.label}(s): ${failed.join(", ")}`);
   return { reaped, failed };
+}
+
+/**
+ * An S3 client for the account's R2, built from the harness's own key pair.
+ *
+ * **R2 is the one kind the API token cannot reap.** Cloudflare refuses to delete a non-empty bucket, and
+ * emptying one is an S3-protocol operation — `ListObjectsV2`, `DeleteObject`, `AbortMultipartUpload` —
+ * that the REST API does not offer and a scoped API token cannot authenticate. So the harness holds the
+ * S3 credentials itself: {@link IntegrationCreds.r2}, parsed from `R2_CREDENTIALS`, is what makes a
+ * throwaway bucket reclaimable at all.
+ *
+ * Raw S3 rather than `CloudflareR2Manager` on purpose. This is teardown, and teardown must not depend on
+ * the code under test: if `emptyBucket` is the thing that broke, the bucket still has to come back empty
+ * or a failing test leaks a real resource instead of reporting a bug.
+ */
+function testS3(creds: IntegrationCreds): S3Client {
+  if (!creds.r2) {
+    throw new ValidationError({
+      message: "Emptying an R2 bucket needs the S3 key pair.",
+      action: "Set R2_CREDENTIALS in .dev.vars, or gate the suite on `creds.r2`.",
+      detail: "R2 refuses to delete a non-empty bucket, and draining one is an S3 operation, not a REST one.",
+    });
+  }
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${creds.accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId: creds.r2.accessKeyId, secretAccessKey: creds.r2.secretAccessKey },
+  });
+}
+
+/**
+ * Empty a throwaway bucket so R2 will delete it.
+ *
+ * Two things hold a bucket against deletion: stored objects, and the parts of a multipart upload that was
+ * never completed or aborted — precisely what a test that failed mid-upload leaves behind. Both are
+ * cleared, dangling uploads first. Every page is drained, so a bucket with more than a thousand keys is
+ * emptied rather than half-emptied.
+ *
+ * Throws when the S3 key pair is absent: a bucket that cannot be emptied cannot be deleted, and silence
+ * there is how debris becomes permanent.
+ */
+export async function emptyTestBucket(creds: IntegrationCreds, bucketName: string): Promise<void> {
+  const s3 = testS3(creds);
+  const uploads = await s3.send(new ListMultipartUploadsCommand({ Bucket: bucketName }));
+  for (const upload of uploads.Uploads ?? []) {
+    if (!upload.Key || !upload.UploadId) continue;
+    await s3.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: upload.Key, UploadId: upload.UploadId }));
+  }
+
+  let token: string | undefined;
+  do {
+    const page = await s3.send(new ListObjectsV2Command({ Bucket: bucketName, ContinuationToken: token }));
+    for (const entry of page.Contents ?? []) {
+      if (entry.Key) await s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: entry.Key }));
+    }
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+}
+
+/**
+ * Reclaim stale throwaway R2 buckets — the one kind that needs more than an API token, so it lives here
+ * once instead of being re-derived by every suite that makes a bucket.
+ *
+ * Without `R2_CREDENTIALS` this reaps nothing and says so loudly rather than failing quietly: the buckets
+ * are still there, still cost money, and the only fix is the key pair. Never throws — a reaper must not
+ * fail the suite it is trying to help.
+ */
+export async function reapStaleTestBuckets(
+  creds: IntegrationCreds,
+  options: { now?: number; staleAfterMs?: number } = {},
+): Promise<{ reaped: string[]; failed: string[] }> {
+  if (!creds.r2) {
+    console.warn("no R2_CREDENTIALS: stale pithy-int- buckets cannot be emptied, so none were reaped.");
+    return { reaped: [], failed: [] };
+  }
+
+  const provisioner = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken }).r2Provisioner();
+  return reapStaleTestResources(
+    {
+      label: "R2 bucket",
+      list: async () => (await provisioner.listBuckets()).map((bucket) => bucket.name),
+      remove: async (name) => {
+        await emptyTestBucket(creds, name);
+        await provisioner.deleteBucket(name);
+      },
+    },
+    options,
+  );
 }

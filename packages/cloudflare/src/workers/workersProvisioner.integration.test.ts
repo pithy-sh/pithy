@@ -20,7 +20,7 @@ describe.skipIf(!creds.hasCreds)("WorkersProvisioner — LIVE", () => {
   const workers = new CloudflareWorkersManager({ accountId: creds.accountId, apiToken: creds.apiToken });
 
   test("provisions a worker (create + subdomain + observability), sets a secret, guards a missing queue", async () => {
-    const name = uniqueName("pithy-int-prov");
+    const name = uniqueName("prov");
 
     await withThrowawayResource(
       () => provisioner.createWorker(name),
@@ -33,9 +33,7 @@ describe.skipIf(!creds.hasCreds)("WorkersProvisioner — LIVE", () => {
         expect((await workers.listSecrets(name)).some((s) => s.name === "API_KEY")).toBe(true);
 
         // Error path: subscribing build events to a non-existent queue is a typed not_configured.
-        await expect(
-          provisioner.setupBuildEventSubscription(name, uniqueName("pithy-int-missing-queue")),
-        ).rejects.toThrowError(
+        await expect(provisioner.setupBuildEventSubscription(name, uniqueName("missing-queue"))).rejects.toThrowError(
           expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),
         );
       },

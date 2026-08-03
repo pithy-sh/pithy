@@ -10,10 +10,11 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
 import {
+  bounceRoutingRuleName,
   type EmailDeprovisioner,
   type EmailProvisioner,
   emailWorkerName,
-  SUPPRESSION_DB_NAME,
+  suppressionDatabaseName,
 } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type EmailWorkerWranglerTemplate, resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
@@ -42,7 +43,7 @@ function suppressionMigrationProvider(): MigrationProvider {
 export interface EmailEnvResources {
   /** The app database id for this environment — where jobs/events live. */
   appDatabaseId: string;
-  /** This environment's secrets database id (`pithy-secrets-<env>`) — holds the signing key. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the signing key. */
   secretsDatabaseId: string;
   /** The app worker's public base URL for this environment — callback links are built against it. */
   baseUrl: string;
@@ -54,6 +55,13 @@ export type ResolveEmailEnv = (env: ManagedEnvironment) => Promise<EmailEnvResou
 export interface CloudflareEmailProvisionerOptions {
   cf: CloudflareClients;
   accountId: string;
+  /**
+   * The project name, from `requireProjectName(await loadProject(projectDir))` — never
+   * `resolveProjectName`. The worker, both Workflows, the suppression database, and the inbound routing
+   * rule all lead with it, and the suppression database is *found by name and reused*: a guessed value
+   * would adopt another project's opt-out list.
+   */
+  project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
   /** The CF Secrets Store id holding the per-env master keys (the email worker decrypts its signing key). */
@@ -82,6 +90,7 @@ export interface CloudflareEmailProvisionerOptions {
 export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
+  readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #theme: EmailTheme;
@@ -92,6 +101,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   constructor(options: CloudflareEmailProvisionerOptions) {
     this.#cf = options.cf;
     this.#accountId = options.accountId;
+    this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#theme = options.theme;
@@ -110,18 +120,27 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     }
   }
 
-  /** Reuse the shared suppression D1 if it exists, otherwise create it. */
+  /**
+   * Reuse the project's suppression D1 if it exists, otherwise create it.
+   *
+   * Find-then-create is safe only because the name carries the project. D1's namespace is
+   * account-wide, so the old fixed `pithy-email-suppressions` meant a second, unrelated product in the
+   * same account silently inherited the first's opt-out list — one product's unsubscribe suppressing
+   * another's transactional mail. D1 exposes no tags through the API, so the name is the whole
+   * ownership record, and the audit event writes the project down beside it.
+   */
   async ensureSuppressionDatabase(): Promise<{ databaseId: string }> {
-    const existing = await this.#cf.d1Provisioner().findDatabaseByName(SUPPRESSION_DB_NAME);
+    const name = suppressionDatabaseName(this.#project);
+    const existing = await this.#cf.d1Provisioner().findDatabaseByName(name);
     if (existing) return { databaseId: existing.uuid };
-    const db = await this.#cf.d1Provisioner().createDatabase(SUPPRESSION_DB_NAME);
+    const db = await this.#cf.d1Provisioner().createDatabase(name);
     await this.#audit({
       action: "email/suppression_db_created",
       outcome: "success",
       severity: "info",
       resourceType: "cf_d1",
       resourceId: db.uuid,
-      metadata: { name: SUPPRESSION_DB_NAME },
+      metadata: { name, project: this.#project },
     });
     return { databaseId: db.uuid };
   }
@@ -139,6 +158,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       await readFile(join(dir, "wrangler.jsonc"), "utf8"),
     ) as unknown as EmailWorkerWranglerTemplate;
     const config = resolveEmailConfig(template, {
+      project: this.#project,
       env,
       appDatabaseId,
       suppressionDatabaseId,
@@ -159,7 +179,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         outcome: "success",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: emailWorkerName(env),
+        resourceId: emailWorkerName(this.#project, env),
         metadata: { env },
       });
     } catch (error) {
@@ -168,7 +188,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: emailWorkerName(env),
+        resourceId: emailWorkerName(this.#project, env),
         metadata: { env },
       });
       throw error;
@@ -184,7 +204,11 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       zoneId: this.#routing.zoneId,
       address: this.#routing.address,
       workerName: this.#routing.appWorkerName,
-      ruleName: "pithy-email-bounce",
+      // Project-scoped, and distinct from `@pithy-sh/support`'s inbound rule. `ensureWorkerRoute` keys
+      // idempotency on the rule name, so two projects sharing a zone and an unscoped name would each
+      // believe the other's rule was their own — and one project's bounce mail would be delivered to
+      // the other project's Worker.
+      ruleName: bounceRoutingRuleName(this.#project),
     });
     if (created) {
       await this.#audit({
@@ -197,6 +221,8 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
           zoneId: this.#routing.zoneId,
           address: this.#routing.address,
           workerName: this.#routing.appWorkerName,
+          project: this.#project,
+          ruleName: bounceRoutingRuleName(this.#project),
         },
       });
     }
@@ -215,6 +241,8 @@ export function emailWorkerDir(): string {
 
 export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
+  /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
+  project: string;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -226,16 +254,18 @@ export interface CloudflareEmailDeprovisionerOptions {
  */
 export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #cf: CloudflareClients;
+  readonly #project: string;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
+    this.#project = options.project;
     this.#audit = options.audit ?? (async () => {});
   }
 
   /** Delete the env's email worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const name = emailWorkerName(env);
+    const name = emailWorkerName(this.#project, env);
     if (await this.#cf.workers().getWorker(name)) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
@@ -249,9 +279,10 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     }
   }
 
-  /** Delete the shared suppression D1 if it exists — destructive, called only on a full destroy. */
+  /** Delete this project's suppression D1 if it exists — destructive, called only on a full destroy. */
   async deleteSuppressionDatabase(): Promise<void> {
-    const db = await this.#cf.d1Provisioner().findDatabaseByName(SUPPRESSION_DB_NAME);
+    const name = suppressionDatabaseName(this.#project);
+    const db = await this.#cf.d1Provisioner().findDatabaseByName(name);
     if (db) {
       await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
       await this.#audit({
@@ -260,7 +291,7 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
         severity: "warning",
         resourceType: "cf_d1",
         resourceId: db.uuid,
-        metadata: { name: SUPPRESSION_DB_NAME },
+        metadata: { name, project: this.#project },
       });
     }
   }

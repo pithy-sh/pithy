@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "../error/pithyError";
-import { workflowHostName, workflowScriptName } from "./naming";
+import { type WorkflowHostNameParts, workflowHostName, workflowScriptName } from "./naming";
 import type { WorkflowRegistry } from "./spec";
 
 /**
@@ -106,6 +106,13 @@ export interface WorkflowHostTemplate {
 
 /** What one environment's resolution needs. Everything absent is left exactly as the template had it. */
 export interface WorkflowHostParams {
+  /**
+   * The project name — the `<project>` segment every derived name leads with. The root
+   * `pithy.config.ts` `name`, resolved by `requireProjectName` and **never guessed**: Worker script
+   * and Workflow names are account-scoped, so a wrong value here overwrites another project's
+   * running Worker rather than colliding with it.
+   */
+  project: string;
   /** The capability that owns the host — the `<capability>` segment of every derived name. */
   capability: string;
   /** The target environment (`dev` | `staging` | `production`). */
@@ -143,10 +150,33 @@ export interface WorkflowHostParams {
    * that does not use one must not ship a binding pointing at a namespace that was never created.
    */
   omitKvBindings?: readonly string[];
+  /**
+   * The host's `workflows` array, already derived from the capability's registry by
+   * {@link hostWorkflowsFor}. **Required whenever the template declares any `workflows`.**
+   *
+   * The resolver used to build these by appending `-<env>` to the template's own name, which cannot
+   * produce a project-scoped name: the template says `pithy-email-send`, and the resolver has no way
+   * to recover the job from it. Deriving them from the registry is the only path that knows both the
+   * project and the job, so the textual suffix is gone and its absence is an error rather than a
+   * silent fallback to an unscoped, account-colliding Workflow name.
+   */
+  workflows?: readonly HostWorkflowBinding[];
 }
 
 /** The `ENVIRONMENT` var every deployed Pithy Worker carries, so a host can tell which env it is running as. */
 const ENVIRONMENT_VAR = "ENVIRONMENT";
+
+/**
+ * The `PROJECT` var every deployed Pithy host carries — the other half of the same identity.
+ *
+ * A host already knows its project at provision (it is the leading segment of its own name), but the
+ * *running* worker cannot recover it: `<project>-<env>-<capability>` is not parseable back into its
+ * parts when a project name contains a hyphen. So it is stamped, exactly as `@pithy-sh/secrets`
+ * stamps it for the at-rest rotation. Anything a host does at runtime that must name its owner —
+ * writing the ownership metadata on a Cloudflare Images or Stream asset, whose store is account-flat
+ * and keyed by a Cloudflare-minted id — reads it from here rather than guessing.
+ */
+const PROJECT_VAR = "PROJECT";
 
 /** Apply `remote: true` to an entry whose binding the caller listed. */
 function withRemote<T extends { remote?: boolean }>(entry: T, name: string, remote: ReadonlySet<string>): T {
@@ -161,16 +191,17 @@ function withRemote<T extends { remote?: boolean }>(entry: T, name: string, remo
  * documentation for whoever reads the file — nothing matches or replaces them, so a template that
  * spells a placeholder differently still resolves correctly.
  *
- * The worker name becomes `pithy-<capability>-<env>` and every `workflows` entry's name is suffixed
- * with the environment, both through {@link workflowScriptName}/{@link workflowHostName} so the
- * deployed names cannot drift from what the dispatcher and the CLI compute. `binding` and
+ * The worker name becomes `<project>-<env>-<capability>` through {@link workflowHostName}, and the
+ * `workflows` array is replaced wholesale by `params.workflows` (derived from the registry by
+ * {@link hostWorkflowsFor}), so the deployed names cannot drift from what the dispatcher and the
+ * CLI compute. `binding` and
  * `class_name` are never rewritten — they are code references, not deployment identities.
  */
 export function resolveWorkflowHost(template: WorkflowHostTemplate, params: WorkflowHostParams): WorkflowHostTemplate {
   const resolved = structuredClone(template);
   const remote = new Set(params.remoteBindings ?? []);
 
-  resolved.name = workflowHostName(params.capability, params.env);
+  resolved.name = workflowHostName({ project: params.project, capability: params.capability, env: params.env });
 
   if (resolved.d1_databases) {
     resolved.d1_databases = resolved.d1_databases.map((entry) => ({
@@ -235,13 +266,24 @@ export function resolveWorkflowHost(template: WorkflowHostTemplate, params: Work
   }
 
   if (resolved.workflows) {
-    resolved.workflows = resolved.workflows.map((entry) => ({
-      ...entry,
-      name: `${entry.name}-${params.env}`,
-    }));
+    if (!params.workflows) {
+      throw new InternalError({
+        message: `The ${params.capability} host template declares workflows but none were derived.`,
+        action: "Pass `workflows` from hostWorkflowsFor(registry, { project, capability, env }).",
+        detail:
+          "A Workflow name is account-scoped and must carry the project; the template name alone cannot produce one.",
+      });
+    }
+    resolved.workflows = params.workflows.map((entry) => ({ ...entry }));
   }
 
-  resolved.vars = { ...resolved.vars, ...params.vars, [ENVIRONMENT_VAR]: params.env };
+  // Identity last: a caller's vars can add anything, but never restate who this worker is.
+  resolved.vars = {
+    ...resolved.vars,
+    ...params.vars,
+    [ENVIRONMENT_VAR]: params.env,
+    [PROJECT_VAR]: params.project,
+  };
 
   return resolved;
 }
@@ -253,9 +295,9 @@ export function resolveWorkflowHost(template: WorkflowHostTemplate, params: Work
  */
 export function hostWorkflowsFor(
   registry: WorkflowRegistry,
-  capability: string,
-  env: string,
+  parts: WorkflowHostNameParts,
 ): { workflows: HostWorkflowBinding[]; crons: string[] } {
+  const { project, capability, env } = parts;
   const owned = Object.values(registry).filter((entry) => entry.capability === capability);
   const workflows: HostWorkflowBinding[] = [];
   const crons: string[] = [];
@@ -269,7 +311,7 @@ export function hostWorkflowsFor(
     }
     workflows.push({
       binding: entry.spec.binding,
-      name: workflowScriptName(capability, entry.job, env),
+      name: workflowScriptName({ project, capability, job: entry.job, env }),
       class_name: entry.spec.className,
     });
     if (entry.spec.schedule) crons.push(entry.spec.schedule);

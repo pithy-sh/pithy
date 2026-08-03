@@ -14,8 +14,8 @@ describe("assertSetAllowedForEnv", () => {
   });
 
   test("refuses a disallowed environment with an actionable error", () => {
-    expect(() => assertSetAllowedForEnv(set, "production")).toThrow(PithyError);
-    expect(() => assertSetAllowedForEnv(set, "production")).toThrow(/not allowed in production/);
+    expect(() => assertSetAllowedForEnv(set, "prod")).toThrow(PithyError);
+    expect(() => assertSetAllowedForEnv(set, "prod")).toThrow(/not allowed in prod/);
   });
 });
 
@@ -38,7 +38,7 @@ describe("assertSeedConfirmed", () => {
 
   test("production requires --yes even with the phrase", async () => {
     const failure = await assertSeedConfirmed({
-      env: "production",
+      env: "prod",
       yes: false,
       json: false,
       confirmProduction: PRODUCTION_CONFIRM_PHRASE,
@@ -50,7 +50,7 @@ describe("assertSeedConfirmed", () => {
   test("production unlocks with the exact --confirm-production phrase (case-insensitive, trimmed)", async () => {
     await expect(
       assertSeedConfirmed({
-        env: "production",
+        env: "prod",
         yes: true,
         json: true,
         confirmProduction: `  ${PRODUCTION_CONFIRM_PHRASE.toUpperCase()}  `,
@@ -60,13 +60,13 @@ describe("assertSeedConfirmed", () => {
 
   test("production refuses a wrong --confirm-production phrase", async () => {
     await expect(
-      assertSeedConfirmed({ env: "production", yes: true, json: false, confirmProduction: "yes please" }),
+      assertSeedConfirmed({ env: "prod", yes: true, json: false, confirmProduction: "yes please" }),
     ).rejects.toThrow(/did not match/);
   });
 
   test("production in --json without the flag is refused — no prompt is shown", async () => {
     const prompt = vi.fn(async () => PRODUCTION_CONFIRM_PHRASE);
-    await expect(assertSeedConfirmed({ env: "production", yes: true, json: true, prompt })).rejects.toThrow(
+    await expect(assertSeedConfirmed({ env: "prod", yes: true, json: true, prompt })).rejects.toThrow(
       /explicit confirmation phrase/,
     );
     expect(prompt).not.toHaveBeenCalled();
@@ -74,15 +74,13 @@ describe("assertSeedConfirmed", () => {
 
   test("production interactively prompts for the phrase and accepts a correct answer", async () => {
     const prompt = vi.fn(async () => `  ${PRODUCTION_CONFIRM_PHRASE}  `);
-    await expect(assertSeedConfirmed({ env: "production", yes: true, json: false, prompt })).resolves.toBeUndefined();
+    await expect(assertSeedConfirmed({ env: "prod", yes: true, json: false, prompt })).resolves.toBeUndefined();
     expect(prompt).toHaveBeenCalledOnce();
   });
 
   test("production interactively refuses a wrong answer", async () => {
     const prompt = vi.fn(async () => "nope");
-    await expect(assertSeedConfirmed({ env: "production", yes: true, json: false, prompt })).rejects.toThrow(
-      /did not match/,
-    );
+    await expect(assertSeedConfirmed({ env: "prod", yes: true, json: false, prompt })).rejects.toThrow(/did not match/);
   });
 
   test("a non-canonical prod env name still needs the phrase — --yes alone is refused", async () => {
@@ -130,10 +128,10 @@ describe("assertSeedConfirmed", () => {
 
 describe("isProductionEnv", () => {
   test("recognizes production and prod, case-insensitively and trimmed", () => {
-    for (const env of ["production", "prod", "PROD", " Production "]) expect(isProductionEnv(env)).toBe(true);
+    for (const env of ["prod", "prod", "PROD", " Production "]) expect(isProductionEnv(env)).toBe(true);
   });
 
-  test("treats every other env as non-production by default", () => {
+  test("treats every other env as non-prod by default", () => {
     for (const env of ["dev", "staging", "preview", "prod-eu"]) expect(isProductionEnv(env)).toBe(false);
   });
 
@@ -141,8 +139,8 @@ describe("isProductionEnv", () => {
     const declared = ["live", "Prod-EU"];
     for (const env of ["live", "LIVE", " prod-eu "]) expect(isProductionEnv(env, declared)).toBe(true);
     // Built-ins still win regardless of the declared list.
-    expect(isProductionEnv("production", declared)).toBe(true);
-    // An env neither built-in nor declared stays non-production.
+    expect(isProductionEnv("prod", declared)).toBe(true);
+    // An env neither built-in nor declared stays non-prod.
     expect(isProductionEnv("preview", declared)).toBe(false);
   });
 });

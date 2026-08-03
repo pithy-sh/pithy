@@ -41,7 +41,7 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
   const at = new Date("2026-07-01T00:00:00.000Z");
   return {
     id: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
-    environment: "production",
+    environment: "prod",
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
     scopes: ["manifest:read", "keys:rotate"],
@@ -54,12 +54,12 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
 
 describe("connectionRegistry", () => {
   test("nothing registered reads as null — the shipped state of a Worker never connected", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     expect(await registry.read()).toBeNull();
   });
 
   test("a saved connection round-trips through the codecs — dates, scopes, and keys", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const saved = connection();
     await registry.save(saved);
 
@@ -71,7 +71,7 @@ describe("connectionRegistry", () => {
   });
 
   test("one connection per environment — saving again replaces rather than accumulates", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
     await registry.save(
       connection({ id: "9a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", workerUrl: "https://new.example.com" }),
@@ -83,7 +83,7 @@ describe("connectionRegistry", () => {
   });
 
   test("environments are isolated — a production save leaves staging alone", async () => {
-    const production = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const production = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const staging = connectionRegistry(controlPlaneDatabase(d1), "staging");
     await staging.save(connection({ id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", environment: "staging" }));
     await production.save(connection());
@@ -93,7 +93,7 @@ describe("connectionRegistry", () => {
   });
 
   test("appendKey appends and leaves the existing key's window open — a rotation never locks anyone out", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
 
     const at = new Date("2026-08-01T00:00:00.000Z");
@@ -106,7 +106,7 @@ describe("connectionRegistry", () => {
   });
 
   test("appendKey refuses a duplicate key id — the safety property lives in core, not here", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
 
     const error = await registry
@@ -117,7 +117,7 @@ describe("connectionRegistry", () => {
   });
 
   test("appendKey with nothing connected raises controlplane/not_connected", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const at = new Date();
     const error = await registry.appendKey(key("key_1", at), at).catch((caught: unknown) => caught);
     expect((error as PithyError).payload.code).toBe("controlplane/not_connected");
@@ -126,7 +126,7 @@ describe("connectionRegistry", () => {
   test("revokeKey stamps revokedAt and core stops accepting that key immediately", async () => {
     // `revokedAt` is honoured by `findVerifyingKey` on every request, so this asserts the whole path:
     // the CLI writes it, the codecs round-trip it through D1, and core's lifecycle refuses the key.
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const at = new Date("2026-08-01T00:00:00.000Z");
     await registry.save(connection());
     await registry.appendKey(key("key_2", at), at);
@@ -144,7 +144,7 @@ describe("connectionRegistry", () => {
     // Deliberately not refused. Expiry is the orderly path and core blocks it when it would empty the
     // live set; revocation is the disorderly one, and an adopter holding a leaked key must never be
     // told they have to keep trusting it. It leaves the connection denying everything, which is right.
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const at = new Date("2026-08-01T00:00:00.000Z");
     await registry.save(connection());
 
@@ -155,7 +155,7 @@ describe("connectionRegistry", () => {
   });
 
   test("revokeKey returns null for a key that was never registered, and changes nothing", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
 
     expect(await registry.revokeKey("key_nope", new Date("2026-08-01T00:00:00.000Z"))).toBeNull();
@@ -163,7 +163,7 @@ describe("connectionRegistry", () => {
   });
 
   test("remove deletes the row, and is idempotent — revocation is safe to re-run", async () => {
-    const registry = connectionRegistry(controlPlaneDatabase(d1), "production");
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
 
     expect(await registry.remove()).toBe(true);

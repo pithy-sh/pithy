@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { bounceRoutingRuleName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import {
   deprovisionSupport,
   provisionSupport,
-  SUPPORT_ROUTING_RULE_NAME,
   type SupportDeprovisioner,
   type SupportProvisioner,
+  supportRoutingRuleName,
   supportWorkerName,
 } from "./provisionSupport";
 
@@ -16,9 +18,9 @@ import {
  * The provisioning orchestration — order, fan-out, and what it reports.
  *
  * Every live step sits behind a seam precisely so this is testable without touching Cloudflare, and
- * the properties worth pinning are the ones whose failure is invisible until production: the order
+ * the properties worth pinning are the ones whose failure is invisible until prod: the order
  * (a routing rule created before the classifier exists means real customer mail arrives with nothing
- * to classify it), and the per-environment fan-out (an index created in staging and not production
+ * to classify it), and the per-environment fan-out (an index created in staging and not prod
  * is a search box that works for the developer and not the customer).
  */
 
@@ -31,7 +33,7 @@ function recorder(overrides: Partial<SupportProvisioner> = {}) {
     },
     ensureBucket: async () => {
       calls.push("bucket");
-      return { bucket: "pithy-support", created: true, skipped: false };
+      return { bucket: "acme-global-support", created: true, skipped: false };
     },
     deployWorker: async (env) => {
       calls.push(`worker:${env}`);
@@ -73,7 +75,7 @@ describe("provisionSupport", () => {
 
   test("touches the search index once per environment, after that environment's worker", async () => {
     // Per environment because each has its own app database — an index in staging says nothing about
-    // production. After the worker so a database that gains an index always has something to write it.
+    // prod. After the worker so a database that gains an index always has something to write it.
     const { provisioner, calls } = recorder();
     await provisionSupport(provisioner);
 
@@ -88,11 +90,11 @@ describe("provisionSupport", () => {
     // Reported rather than assumed: this is DDL on the adopter's own database, and a provisioning
     // command whose output cannot be audited is one an operator has to take on faith.
     const { provisioner } = recorder({
-      ensureSearchIndex: async (env) => ({ created: env === "production", dropped: env === "staging" }),
+      ensureSearchIndex: async (env) => ({ created: env === "prod", dropped: env === "staging" }),
     });
     const result = await provisionSupport(provisioner);
 
-    expect(result.search.filter((entry) => entry.created).map((entry) => entry.env)).toEqual(["production"]);
+    expect(result.search.filter((entry) => entry.created).map((entry) => entry.env)).toEqual(["prod"]);
     expect(result.search.filter((entry) => entry.dropped).map((entry) => entry.env)).toEqual(["staging"]);
   });
 
@@ -104,7 +106,7 @@ describe("provisionSupport", () => {
 
   test("a skipped bucket is reported rather than hidden", async () => {
     const { provisioner } = recorder({
-      ensureBucket: async () => ({ bucket: "pithy-support", created: false, skipped: true }),
+      ensureBucket: async () => ({ bucket: "acme-global-support", created: false, skipped: true }),
     });
     expect((await provisionSupport(provisioner)).bucket.skipped).toBe(true);
   });
@@ -168,15 +170,29 @@ describe("deprovisionSupport", () => {
 });
 
 describe("names", () => {
-  test("the worker name is derived per environment, never hand-written", () => {
-    expect(supportWorkerName("production")).toBe("pithy-support-production");
-    expect(supportWorkerName("staging")).toBe("pithy-support-staging");
+  test("the worker name is derived per project and environment, never hand-written", () => {
+    expect(supportWorkerName("acme", "prod")).toBe("acme-prod-support");
+    expect(supportWorkerName("acme", "staging")).toBe("acme-staging-support");
   });
 
-  test("the routing rule name is distinct from the email capability's", () => {
+  test("two projects in one account never name the same worker", () => {
+    expect(supportWorkerName("acme", "prod")).not.toBe(supportWorkerName("globex", "prod"));
+  });
+
+  test("the routing rule name is distinct from the email capability's, and from another project's", () => {
     // `ensureWorkerRoute` keys idempotency on the rule *name*, so a shared one would make whichever
-    // capability provisioned second silently believe its rule already existed.
-    expect(SUPPORT_ROUTING_RULE_NAME).toBe("pithy-support-inbound");
-    expect(SUPPORT_ROUTING_RULE_NAME).not.toBe("pithy-email-bounce");
+    // capability — or whichever project on the same zone — provisioned second silently believe its rule
+    // already existed, and its mail would go to the other one's Worker.
+    expect(supportRoutingRuleName("acme")).toBe("acme-global-support-inbound");
+    expect(supportRoutingRuleName("acme")).not.toBe(bounceRoutingRuleName("acme"));
+    expect(supportRoutingRuleName("acme")).not.toBe(supportRoutingRuleName("globex"));
+  });
+
+  test("the worker name comes off core's facade, under the Worker namespace's own limit", () => {
+    expect(supportWorkerName("acme", "prod")).toBe(resourceNames("acme").env("prod").worker("support"));
+  });
+
+  test("`production` is refused — the old spelling would deploy a second host beside the real one", () => {
+    expect(() => supportWorkerName("acme", "production" as never)).toThrowError(/not an environment name/);
   });
 });
