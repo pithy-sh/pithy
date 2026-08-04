@@ -99,6 +99,12 @@ export const AuditEventRow = z
       .describe(
         "The `apps/<name>` directory name of the Worker that recorded the event, stamped from the `WORKER` var; null for a CLI-originated action, which came from no Worker. Two Workers in one project share a database when they declare the same binding, so this is the only column that separates their events.",
       ),
+    version: z
+      .string()
+      .nullable()
+      .describe(
+        'The Cloudflare version id of the build that recorded the event, stamped by the recorder from the `CF_VERSION_METADATA` binding. Null for a CLI-originated action, for a Worker that does not declare the binding, and on rows written before this column existed. It is what turns "this was revoked" into "this was revoked, by this subject, against this exact build".',
+      ),
   })
   .describe("One audit event in `pithy_audit_events` — the durable, queryable record of a security-relevant action.");
 export type AuditEventRow = z.output<typeof AuditEventRow>;

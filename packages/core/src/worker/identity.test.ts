@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { ENVIRONMENT_VAR, PROJECT_VAR, WORKER_VAR, workerIdentity } from "./identity";
+import {
+  ENVIRONMENT_VAR,
+  PROJECT_VAR,
+  VERSION_METADATA_BINDING,
+  WORKER_VAR,
+  workerIdentity,
+  workerVersion,
+} from "./identity";
 
 describe("workerIdentity", () => {
   it("reads all three stamped vars", () => {
@@ -10,6 +17,7 @@ describe("workerIdentity", () => {
       project: "acme",
       environment: "prod",
       worker: "api",
+      version: null,
     });
   });
 
@@ -18,8 +26,13 @@ describe("workerIdentity", () => {
     // them, and there is no `pithy upgrade` that back-fills — so absent is a permanent, ordinary
     // state, not a misconfiguration to paper over. An invented value would poison an audit trail
     // silently and forever; a null says "not recorded", which is true.
-    expect(workerIdentity({})).toEqual({ project: null, environment: null, worker: null });
-    expect(workerIdentity({ PROJECT: "acme" })).toEqual({ project: "acme", environment: null, worker: null });
+    expect(workerIdentity({})).toEqual({ project: null, environment: null, worker: null, version: null });
+    expect(workerIdentity({ PROJECT: "acme" })).toEqual({
+      project: "acme",
+      environment: null,
+      worker: null,
+      version: null,
+    });
   });
 
   it("treats an empty or blank var as absent", () => {
@@ -29,6 +42,7 @@ describe("workerIdentity", () => {
       project: null,
       environment: null,
       worker: null,
+      version: null,
     });
   });
 
@@ -37,6 +51,7 @@ describe("workerIdentity", () => {
       project: "acme",
       environment: "prod",
       worker: "api",
+      version: null,
     });
   });
 
@@ -46,6 +61,7 @@ describe("workerIdentity", () => {
       project: null,
       environment: null,
       worker: null,
+      version: null,
     });
   });
 
@@ -54,7 +70,7 @@ describe("workerIdentity", () => {
     // throw here would turn "no origin" into "no audit row at all" — the failure this must not have.
     for (const env of [null, undefined, "env", 7, []]) {
       expect(() => workerIdentity(env)).not.toThrow();
-      expect(workerIdentity(env)).toEqual({ project: null, environment: null, worker: null });
+      expect(workerIdentity(env)).toEqual({ project: null, environment: null, worker: null, version: null });
     }
   });
 
@@ -88,7 +104,7 @@ describe("workerIdentity", () => {
 
     const identity = workerIdentity(env);
 
-    expect(read.sort()).toEqual(["ENVIRONMENT", "PROJECT", "WORKER"]);
+    expect(read.sort()).toEqual(["CF_VERSION_METADATA", "ENVIRONMENT", "PROJECT", "WORKER"]);
     expect(JSON.stringify(identity)).not.toMatch(/supersecret|sk_live|k1/);
   });
 
@@ -97,5 +113,37 @@ describe("workerIdentity", () => {
     // Pinned as literals: renaming a constant is free, renaming the var an adopter's deployed
     // Worker already carries is not.
     expect([PROJECT_VAR, ENVIRONMENT_VAR, WORKER_VAR]).toEqual(["PROJECT", "ENVIRONMENT", "WORKER"]);
+  });
+
+  it("names the version binding the scaffolds actually declare", () => {
+    // Same join, for the binding rather than the vars. The reader shipped once with nothing declaring
+    // it, and the `version` field was silently absent in every scaffolded project — pinning the literal
+    // is what makes a rename fail here instead of going unnoticed for another release.
+    expect(VERSION_METADATA_BINDING).toBe("CF_VERSION_METADATA");
+  });
+});
+
+describe("workerVersion", () => {
+  it("reads the deployed build id off the version-metadata binding", () => {
+    expect(workerVersion({ CF_VERSION_METADATA: { id: "v-abc123", tag: "" } })).toBe("v-abc123");
+    expect(workerIdentity({ CF_VERSION_METADATA: { id: "v-abc123", tag: "" } }).version).toBe("v-abc123");
+  });
+
+  it("reports null where the binding is absent, rather than inventing a build", () => {
+    // The ordinary state for any project scaffolded before `version_metadata` was declared, and for
+    // every local `wrangler dev`. `deploy` reads null as "cannot tell" and reports its check
+    // inconclusive; a fabricated id would make it report a pass.
+    expect(workerVersion({})).toBeNull();
+    expect(workerVersion({ CF_VERSION_METADATA: null })).toBeNull();
+    expect(workerVersion({ CF_VERSION_METADATA: { tag: "v1" } })).toBeNull();
+    expect(workerVersion({ CF_VERSION_METADATA: { id: "" } })).toBeNull();
+    expect(workerVersion({ CF_VERSION_METADATA: { id: 7 } })).toBeNull();
+  });
+
+  it("never throws on a non-object env", () => {
+    for (const env of [null, undefined, "env", 7, []]) {
+      expect(() => workerVersion(env)).not.toThrow();
+      expect(workerVersion(env)).toBeNull();
+    }
   });
 });

@@ -39,7 +39,26 @@ export const AuthAuditActions = defineAuditActions({
 
 ## Reading the trail
 
-`queryAuditEvents(db, filter)` is a typed Kysely query — filter by actor, action, time range, resource, outcome, severity, and origin (project, environment, worker). It is not an HTTP surface; exposing audit over HTTP belongs to the dashboard/control-plane work.
+`queryAuditEvents(db, filter)` is a typed Kysely query — filter by actor, action, time range, resource, outcome, severity, and origin (project, environment, worker). `pageAuditEvents(db, filter)` is the same query one resumable page at a time, and `readAuditEvent(db, eventId)` reads one event.
+
+## The control-plane surface
+
+Two routes, both reads, both `control-plane` and default-denied. They mount under `basePath` (`/audit` by default) and are advertised in `GET /control-plane/manifest`, so a management client composes its calls from the Worker rather than from a route table it ships with.
+
+| Route | Scope | What it is for |
+|---|---|---|
+| `GET /audit/events` | `audit:events:read` | A filtered, resumable page of the trail, newest first |
+| `GET /audit/events/:eventId` | `audit:events:read_detail` | One event in full — client IP, user-agent, and capability metadata included |
+
+**Nothing here writes.** There is no delete, no edit, and no retention control on this surface: a management credential that could erase an audit row could erase the evidence of its own use.
+
+**Two scopes, not one `audit:read`.** The listing answers who did what, when, and whether it worked, and its projection carries no network identifier and no capability payload. The single-event read additionally returns `ip`, `userAgent`, and `metadata` — the trail's personal data, and the bag capabilities write email addresses and resource names into. Bulk-harvesting those is a privacy incident, so it takes a grant the adopter makes deliberately. Because they are separate routes, a detail credential alone cannot enumerate the trail to find ids, and a listing credential alone cannot resolve one.
+
+**Pagination is keyset, never offset.** The trail is appended to while it is being read, so an offset page silently skips records — which on a security trail is a record you never see, not a cosmetic glitch. A page returns `nextCursor`; pass it back as `?cursor=`. A malformed cursor is a first page, not an error.
+
+**Reading is audited, including the reads that found nothing.** Reading the record of everyone else's actions is itself a security-relevant action: `audit/trail_read` records the filter and how much came back, and `audit/event_read` records which event was asked for. Yes, that appends to the table it just read — a surface that exempted itself from the guarantee it provides would be worth less than the row it saves.
+
+**`requireAuth()` appears nowhere in this package's routes, and must not.** The seam leaves `c.var.auth` null for a control-plane caller by design, so an auth gate would deny every legitimate management call permanently, with no credential able to fix it.
 
 ## CLI emitter
 
@@ -53,7 +72,7 @@ Nor an origin. `project`, `environment`, `env`, and `worker` are columns; a `met
 
 ## Out of scope (for now)
 
-Tamper-evidence (a hash chain), retention/pruning, an HTTP API over the trail, and isolating audit into its own D1 are deferred to follow-up issues.
+Tamper-evidence (a hash chain), retention/pruning, and isolating audit into its own D1 are deferred to follow-up issues.
 
 ## License
 

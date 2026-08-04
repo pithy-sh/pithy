@@ -24,6 +24,7 @@ import { CloudflareUserManager } from "../user/userManager";
 import { CloudflareBuildsManager } from "../workers/buildsManager";
 import { CloudflareWorkersManager } from "../workers/workersManager";
 import { WorkersProvisioner } from "../workers/workersProvisioner";
+import { CloudflareZonesManager } from "../zones/zonesManager";
 import type { CloudflareManagerConfig } from "./manager";
 
 /**
@@ -67,6 +68,7 @@ export class CloudflareClients {
   private accountTokensManager?: CloudflareAccountTokensManager;
 
   private userManager?: CloudflareUserManager;
+  private zonesManager?: CloudflareZonesManager;
 
   private workersProvisioner?: WorkersProvisioner;
 
@@ -209,6 +211,12 @@ export class CloudflareClients {
   user(): CloudflareUserManager {
     this.userManager ??= new CloudflareUserManager(this.config);
     return this.userManager;
+  }
+
+  /** The account's zones, read-only — what a custom domain may attach to. Needs only `Zone:Read`. */
+  zones(): CloudflareZonesManager {
+    this.zonesManager ??= new CloudflareZonesManager(this.config);
+    return this.zonesManager;
   }
 }
 

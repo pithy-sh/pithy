@@ -4,11 +4,17 @@
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { PithyError } from "../../error/pithyError";
+import { workerVersion } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
 import { ControlPlaneNotConnectedError } from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
-import { CONTROL_PLANE_HEADER, type ControlPlaneVerifyDeps, verifyControlPlaneCall } from "./verify";
+import {
+  CONTROL_PLANE_HEADER,
+  CONTROL_PLANE_VERSION_HEADER,
+  type ControlPlaneVerifyDeps,
+  verifyControlPlaneCall,
+} from "./verify";
 
 /**
  * `requireControlPlane(scope)` — the gate every control-plane route wears, including the ones
@@ -78,6 +84,19 @@ export function createControlPlaneVerifier(deps: ControlPlaneVerifyDeps): Contro
  */
 export function requireControlPlane(requirement: ControlPlaneRequirement): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
+    // Every control-plane response carries the build that produced it, allowed or denied.
+    //
+    // **On the guard, not on the seam's own routes**, because the guard is the one thing every
+    // control-plane route wears — including the ones capabilities contribute. Stamping it in
+    // `manifestHandler` would give the header to the manifest and to nothing else.
+    //
+    // **Per response, not once at connect.** A client that captured the version when it connected is
+    // holding a stale value the moment the adopter deploys — which is exactly when it matters. Per
+    // response, each recorded action pins the build it actually hit, and a client can notice the version
+    // changing mid-session, which is the moment a rendered pane has quietly gone out of date.
+    const version = workerVersion(c.env);
+    if (version) c.header(CONTROL_PLANE_VERSION_HEADER, version);
+
     const verify = c.var.controlPlaneVerifier;
     if (!verify) {
       const denial = new ControlPlaneNotConnectedError({

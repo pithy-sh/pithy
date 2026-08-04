@@ -5,45 +5,30 @@ import { z } from "zod";
 import type { TypedKv } from "../../kv/kv";
 import type { KvNamespaceSpecMap } from "../../kv/namespaces";
 import { CONTROL_PLANE_JTI_TTL_SECONDS } from "../token/claims";
+import type { ReplayGuard } from "./guard";
 
 /**
- * The replay guard: a control-plane token is spendable exactly once.
+ * The KV-backed {@link ReplayGuard} — still selectable, no longer the default.
  *
- * Every other check asks what the call *is* — signature, issuer, audience, environment, scope, body
- * digest, expiry. None of them notices the same valid call arriving twice. {@link ReplayGuard.claim}
- * is what notices: it records the token's `jti` and reports whether this caller was the first to do
- * so. A second arrival is refused, and the caller denies.
+ * See `./guard.ts` for what the guard is for and why D1 now holds the default. The part that belongs
+ * here is the caveat that is a property of *this* store and not of the seam:
  *
- * ## The consistency caveat — read this before trusting it
- *
- * Workers KV has **no compare-and-set** and is **eventually consistent across colos**. A `put` in one
+ * **Workers KV has no compare-and-set and is eventually consistent across colocations.** A `put` in one
  * PoP is not immediately visible in another, so two copies of one token presented in two locations
- * inside the propagation window can both read a miss and both claim. This is a best-effort guard, not
- * an atomic single-use gate. It is written down here rather than discovered later, because it is the
- * narrowest and highest-risk surface Pithy ships.
+ * inside the propagation window can both read a miss and both claim. Read-then-write is the strongest
+ * claim KV offers; it is best-effort, not an atomic single-use gate.
  *
- * Three things bound the exposure.
+ * Three things bound the exposure for an adopter who chooses it anyway.
  *
  * 1. **The window is KV's propagation delay** — seconds, and independent of the 60-second token. The
- *    write is issued the moment the first call lands; once it has converged the jti is spent for a
- *    full {@link CONTROL_PLANE_JTI_TTL_SECONDS}, which deliberately outlives the token that carried
- *    it. So there is no window at the end of the token's life, only at the very start of it.
+ *    write is issued the moment the first call lands; once it has converged the jti is spent for a full
+ *    {@link CONTROL_PLANE_JTI_TTL_SECONDS}, which deliberately outlives the token that carried it. So
+ *    there is no window at the end of the token's life, only at the very start of it.
  * 2. **The token is not a general capability.** It is bound to one connection, one scope, one request
- *    body digest, and that 60-second expiry. What can survive the window is a replay of *the exact
- *    same call* — not a forged one, not a broader one, not a later one. For the seam's own routes that
- *    is a duplicate ping, a duplicate manifest read, or a key operation that already refuses to
- *    half-apply.
- * 3. **This interface is the substitution point.** {@link ReplayGuard} exists precisely so a
- *    strongly-consistent implementation can replace this one without touching a single call site. The
- *    repo already has the pattern for a genuine race gate: `packages/auth/src/token/rotation.ts`
- *    consumes a refresh token with a conditional `deleteFrom(...).returning(...)`, so of N concurrent
- *    presentations exactly one wins. A D1-backed guard is the same move on the other side — a
- *    conditional insert on the jti primary key, where the constraint decides the winner.
- *
- * KV is the default because the seam is a low-volume admin path on a Worker hot path, and one D1 row
- * per management call is a real cost for a guard that is already backstopped by a 60-second expiry.
- * An adopter who wants the stronger trade makes it by swapping the implementation, not by editing
- * this file.
+ *    body digest, and that expiry. What can survive the window is a replay of *the exact same call* —
+ *    not a forged one, not a broader one, not a later one.
+ * 3. **`d1ReplayGuard` is one config key away**, and closes the race outright. Choosing this one is
+ *    choosing to skip a D1 write on an administrator-paced path, with the race as the stated price.
  */
 
 /**
@@ -139,19 +124,6 @@ export function controlPlaneKvNamespaces(jtiTtlSeconds: number = CONTROL_PLANE_J
 
 /** The shape {@link controlPlaneKvNamespaces} produces — what `c.var.kv` is narrowed to. */
 export type ControlPlaneKvNamespaces = ReturnType<typeof controlPlaneKvNamespaces>;
-
-/**
- * The single-use gate over a token's `jti`. One method, so the storage decision behind it stays
- * replaceable — see the module doc.
- */
-export interface ReplayGuard {
-  /**
-   * Claim `jti` for `connectionId`. Returns true when this call was the first to spend it, and
-   * **false when it was already spent — the caller must then deny.** The false case is not an error to
-   * log and continue past; it is the replay.
-   */
-  claim(jti: string, connectionId: string): Promise<boolean>;
-}
 
 /**
  * A {@link ReplayGuard} over a typed KV store — the shipped implementation.

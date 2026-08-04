@@ -31,10 +31,27 @@ describe("auth capability", () => {
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
-  test("ships the 0001_init migration at its declared order", () => {
+  test("ships both migrations in one namespace, at the one declared order", () => {
     const db = build().databases?.app;
     expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
+    // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
+    // Kysely would then read every applied auth migration as unapplied and run it again.
     expect(db?.migrationOrder).toBe(AUTH_MIGRATION_ORDER);
+  });
+
+  test("advertises its control-plane admin surface, built from the resolved basePath", () => {
+    const cap = build();
+    expect(cap.adminRoutes ?? []).not.toHaveLength(0);
+    for (const route of cap.adminRoutes ?? []) {
+      expect(route.path.startsWith("/auth/admin/"), route.path).toBe(true);
+      // Every admin route names a scope. An unscoped one would be an admin route anybody verified could
+      // call, which on an identity surface is the whole user table.
+      expect(route.scope, route.path).toBeTruthy();
+    }
+    const moved = auth({ baseURL: "https://api.example.com", basePath: "/identity" });
+    for (const route of moved.adminRoutes ?? []) {
+      expect(route.path.startsWith("/identity/admin/"), route.path).toBe(true);
+    }
   });
 
   test("contributes the rate-limit + session middleware and routes", () => {

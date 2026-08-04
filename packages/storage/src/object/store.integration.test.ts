@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { loadIntegrationCreds } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { beforeAll, describe, expect, test } from "vitest";
-import { reapStaleStorageResources, withLiveBucket } from "../test-utils/liveStorage";
+import { describe, expect, test } from "vitest";
+import { withLiveBucket } from "../test-utils/liveStorage";
 import { deriveObjectKey } from "./key";
 import { collectParts, MIN_PART_SIZE_BYTES, planMultipart, type ReportedPart } from "./multipart";
 
@@ -39,7 +39,9 @@ function partBody(filler: number, size: number): Uint8Array {
 
 describe.skipIf(!creds.hasCreds || !creds.r2)("ObjectStore — LIVE against real R2", () => {
   // Clean up whatever a previous aborted run orphaned before creating anything new.
-  beforeAll(() => reapStaleStorageResources(creds));
+  // Stale buckets and databases are reclaimed once per run by `globalSetup`, not here — a `beforeAll`
+  // inside a `describe.skipIf` never runs when the suite skips. See `@pithy-sh/cloudflare`'s
+  // `src/test-utils/reap.ts`.
 
   test("presigns a PUT from the resolved credential bundle, moves real bytes, and reads them back", async () => {
     await withLiveBucket(creds, async ({ store }) => {

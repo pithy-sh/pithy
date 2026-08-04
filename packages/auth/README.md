@@ -96,6 +96,31 @@ Two limiters, two jobs.
 
 This package implements core's `bearer` and `session` strategies — it is the only capability that does. Every other capability gates routes with `requireAuth()` and reads identity off the `AuthContext` seam: `userId`, plus the session and device ids. No capability validates a token itself.
 
+It also contributes a `control-plane` surface under `/auth/admin`, which is a different thing entirely — see below.
+
+## The management surface
+
+A dashboard's user panes reach these. Every one is `control-plane` and **default-denied**: with `controlplane()` not composed, all of them answer `controlplane/not_connected`, and no app session opens any of them whatever it carries. `requireAuth()` never appears on one — the seam leaves `c.var.auth` null on purpose, so an auth gate here would deny every legitimate management call forever, and there would be no user to sign in as that could fix it.
+
+| Method | Path | Scope |
+|---|---|---|
+| GET | `/auth/admin/users` | `auth:users:read` |
+| GET | `/auth/admin/users/:userId` | `auth:users:read` |
+| GET | `/auth/admin/devices` | `auth:devices:read` |
+| POST | `/auth/admin/sessions/revoke` | `auth:sessions:revoke` |
+| POST | `/auth/admin/users/:userId/sessions/revoke` | `auth:users:logout` |
+| POST | `/auth/admin/users/:userId/devices/revoke` | `auth:devices:revoke` |
+
+Five scopes, not one admin flag. Reading a user is a privacy operation; revoking their sessions is an availability one. A support tool that looks people up should never be able to sign the whole customer base out, and an incident-response tool that kills a stolen session has no business reading every address in the user table. Scope matching is exact — no prefix rule — so `auth:users` grants none of them.
+
+**Nothing here is impersonation.** "Sign in as this user" mints a credential indistinguishable from the person's own, so every action taken with it reads in the audit trail as theirs. It is excluded on purpose and is not reachable by composing what is here: no route mints a session, and no read projects a session token. If it is ever built it gets its own design and its own security review.
+
+Both listings are cursor-paginated, never offset — users on `(createdAt, id)`, devices on `(lastSeenAt, userId, id)`. People sign up while somebody is paging through, and offset would shift rows under them.
+
+Every call is audited, reads included, as `actorType: "control-plane"` with the token's verified subject as the actor. Reading the user table hands a management client every customer's email address; if only the writes were recorded, the trail would show one revoked session and say nothing about the customer list walked on the way there.
+
+Responses are projections, never rows. A session's **token** never leaves the Worker (it is the credential), a device's **push token** never leaves (it is a capability to reach somebody's phone), and provider OAuth tokens are never even loaded — the account read selects `providerId` and nothing else.
+
 ## Google sign-in
 
 Google OAuth needs credentials you create by hand in Google Cloud Console — Pithy cannot mint them — and one exact redirect URI per environment. The full setup, including mobile deep links and account linking, is in [docs/google-oauth.md](./docs/google-oauth.md).

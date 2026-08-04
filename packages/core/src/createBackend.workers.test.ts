@@ -13,7 +13,15 @@ describe("createBackend", () => {
     const app = createBackend({ capabilities: [] });
     const res = await app.request("/health", {}, env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok" });
+    expect(await res.json()).toEqual({ status: "ok", version: null });
+  });
+
+  test("GET /health reports the running build, which is what makes deploy verification an assertion", async () => {
+    // A liveness probe proves *a* Worker answers at the declared domain. It does not prove it is the one
+    // just shipped — and the old version answering happily is precisely the failure worth catching.
+    const app = createBackend({ capabilities: [] });
+    const res = await app.request("/health", {}, { ...env, CF_VERSION_METADATA: { id: "v-abc123", tag: "" } });
+    expect(await res.json()).toEqual({ status: "ok", version: "v-abc123" });
   });
 
   test("seeds c.var.emit with a no-op recorder that never throws when no audit capability is composed", async () => {

@@ -6,9 +6,12 @@ import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { z } from "zod";
 import type { AuditDatabase } from "./data/tables";
 import { auditTables } from "./data/tables";
+import { auditAdminRoutes } from "./http/guards";
+import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Sort order of the audit migration within the audit database, relative to other capabilities
@@ -31,6 +34,11 @@ const AUDIT_DATABASE_NAME = "app" as const;
  * **binding** the audit table lives in and writes go to, defaulting to `DB` (the shared app
  * database). KV is deliberately not an option: an audit log is a query workload (by actor, action,
  * time range, resource, outcome) and KV is get-by-key only.
+ *
+ * `basePath` is where the read-only control-plane routes mount. It is config rather than a constant
+ * for the reason every capability's is: an adopter may already own `/audit`, and the admin manifest
+ * reports whatever they chose, so a management client follows the move without either side
+ * coordinating.
  */
 export const AuditConfig = z
   .object({
@@ -38,6 +46,13 @@ export const AuditConfig = z
       .string()
       .default("DB")
       .describe("The D1 binding the audit table and its migrations target. Defaults to `DB`, the shared app database."),
+    basePath: z
+      .string()
+      .startsWith("/")
+      .default("/audit")
+      .describe(
+        "Where the control-plane routes that read the trail mount. Reads only — the trail is append-only and this surface never writes.",
+      ),
   })
   .describe("Configuration for the audit capability.");
 export type AuditConfig = z.output<typeof AuditConfig>;
@@ -59,6 +74,9 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
   const resolved = AuditConfig.parse(config);
   const capability = defineCapability({
     name: "audit",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     config: AuditConfig,
     requiredBindings: [{ type: "d1", name: resolved.database }],
     databases: {
@@ -70,6 +88,15 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
       },
     },
     seeds: [auditExampleSeed],
+    // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/trail`
+    // gets a manifest naming their paths, where a client assuming the default would 404.
+    adminRoutes: auditAdminRoutes(resolved.basePath),
+    // The registry key is this package's own detail, so the routes are handed a resolver rather than
+    // being made to know it — the same reason the middleware below resolves lazily.
+    routes: registerAuditRoutes({
+      basePath: resolved.basePath,
+      database: (c) => (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
+    }),
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that
     // never audits never triggers the lazy Kysely build. Runs after createBackend's default-setter

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { askDomains, writeDomains } from "../project/askDomains";
+import { renderDomainsBlock } from "../project/domainPrompt";
 import { addWorker, listWorkers, removeWorker } from "../project/workerCommand";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -16,16 +18,33 @@ const add = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const report = await addWorker({
-        projectDir: process.cwd(),
-        name: args.name,
-        skipInstall: args["skip-install"],
+      const projectDir = process.cwd();
+      const report = await addWorker({ projectDir, name: args.name, skipInstall: args["skip-install"] });
+
+      // Every Worker serves its own hostname, so a new one is asked about too — the same question
+      // `pithy init` asks, against the same account zones, and equally skippable.
+      const asked = await askDomains({
+        projectDir,
+        workerName: report.name,
+        interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
       });
+      // A declaration the writer could not place must not vanish. `writeDomains` still generates the
+      // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
+      // source of truth, and an adopter who answered the prompt needs to know it did not land.
+      const wrote = asked.domains ? await writeDomains(report.dir, asked.domains) : null;
+
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.add", ...report })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "worker.add", ...report, domains: asked.domains ?? null })}\n`,
+        );
         return;
       }
       process.stdout.write(`Worker ${report.name} scaffolded at ${report.dir}.\n`);
+      if (wrote && !wrote.declared && asked.domains) {
+        process.stdout.write(
+          `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+        );
+      }
       if (report.reconciled && report.port !== null) {
         process.stdout.write(`Pinned to port ${report.port}.\n`);
       } else {

@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { beforeAll, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { CloudflareClients } from "../client/clients";
 import {
   emptyTestBucket,
   loadIntegrationCreds,
-  reapStaleTestBuckets,
   uniqueName,
+  withNamedResource,
   withThrowawayResource,
 } from "../test-utils/harness";
 import type { CompletedPart } from "./r2Manager";
@@ -49,13 +49,9 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
   const r2Config = { accountId: creds.accountId, apiToken: creds.apiToken, ...r2 };
   const provisioner = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken }).r2Provisioner();
 
-  // Teardown only runs while the process lives; a run killed mid-test orphans its bucket. Reaping first
-  // makes each run clean up after the last, so an aborted run costs nothing beyond the next run's start.
-  // `reapStaleTestBuckets` holds the S3 key pair, which is what a bucket reaper needs and an API token
-  // cannot supply — R2 refuses a non-empty delete, and emptying is an S3 operation.
-  beforeAll(async () => {
-    await reapStaleTestBuckets(creds);
-  });
+  // Stale buckets are reclaimed by the run's `globalSetup` sweep, not here. A `beforeAll` inside a
+  // `describe.skipIf` never runs when the suite skips — so this reaper was gated on `R2_CREDENTIALS`,
+  // the one credential whose absence guarantees buckets pile up. See `test-utils/reap.ts`.
 
   /**
    * Run `exercise` against a manager pointed at a fresh throwaway bucket, then purge and delete it.
@@ -277,11 +273,24 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
       await provisioner.deleteBucket(bucket.name);
       expect(await provisioner.findBucketByName(bucket.name)).toBeNull();
 
-      // And the drain is idempotent on an already-empty bucket, so a retried teardown is safe.
-      const fresh = await provisioner.createBucket(uniqueName("r2"));
-      const empty = new CloudflareR2Manager({ ...r2Config, bucketName: fresh.name });
-      expect(await empty.emptyBucket()).toEqual({ objectsDeleted: 0, uploadsAborted: 0 });
-      await provisioner.deleteBucket(fresh.name);
+      // And the drain is idempotent on an already-empty bucket, so a retried teardown is safe. This
+      // second bucket gets its own guaranteed teardown: it used to be created and deleted inline, with
+      // the enclosing `finally` naming only `bucket` — so a failed assertion between the two lines
+      // orphaned a real bucket. `deleteBucket` is 404-idempotent, so the double delete on the happy
+      // path is a no-op.
+      await withNamedResource(
+        uniqueName("r2"),
+        (name) => provisioner.createBucket(name),
+        async (name) => {
+          const empty = new CloudflareR2Manager({ ...r2Config, bucketName: name });
+          expect(await empty.emptyBucket()).toEqual({ objectsDeleted: 0, uploadsAborted: 0 });
+          await provisioner.deleteBucket(name);
+        },
+        async (name) => {
+          await emptyTestBucket(creds, name).catch(() => undefined);
+          await provisioner.deleteBucket(name);
+        },
+      );
     } finally {
       await emptyTestBucket(creds, bucket.name).catch(() => undefined);
       await provisioner.deleteBucket(bucket.name);

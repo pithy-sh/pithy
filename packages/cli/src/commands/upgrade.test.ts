@@ -42,6 +42,7 @@ const plan: ReconcilePlan = {
   ejectedSkipped: ["billing"],
   pendingMigrations: 3,
   entitlementGap: [],
+  missingVersionMetadata: false,
 };
 
 describe("plan rendering", () => {
@@ -62,6 +63,7 @@ describe("plan rendering", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingVersionMetadata: false,
     };
     expect(__test.planLines(clean)).toEqual(["Nothing to upgrade."]);
   });
@@ -77,6 +79,7 @@ describe("applied rendering", () => {
       ejectedSkipped: ["billing"],
       migrated: false,
       migrations: [],
+      addedVersionMetadata: false,
     };
     const lines = __test.appliedLines(applied, plan);
     expect(lines).toContain("auth: added 1 binding, 1 config key.");
@@ -97,6 +100,7 @@ describe("applied rendering", () => {
           results: [{ migrationName: "auth_0001", direction: "Up", status: "Success" }],
         },
       ],
+      addedVersionMetadata: false,
     };
     const lines = __test.appliedLines(applied, plan);
     expect(lines).toContain("Migrated 1 migration.");
@@ -113,6 +117,7 @@ describe("worker grouping", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingVersionMetadata: false,
     };
     const out = __test.renderUpgrade([
       { plan, applied: null },
@@ -135,6 +140,7 @@ describe("worker grouping", () => {
       ejectedSkipped: [],
       migrated: false,
       migrations: [],
+      addedVersionMetadata: false,
     };
     expect(__test.renderUpgrade([{ plan, applied }])).toContain("  auth: added 1 config key.");
   });
@@ -147,6 +153,7 @@ describe("worker grouping", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade([{ plan: clean, applied: null }])).toEqual(["web:", "  Nothing to upgrade."]);
   });

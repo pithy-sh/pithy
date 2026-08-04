@@ -109,6 +109,32 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
   }
 
   /**
+   * Delete a secret, treating an absent one as already done.
+   *
+   * The typed not-found on {@link deleteSecret} is right for a caller that named a specific secret and
+   * needs to hear it was not there. It is wrong for anything reconciling toward absence — teardown, a
+   * reaper, a re-run of a provisioning step — where "gone" is the goal and a second delete is a no-op,
+   * not a failure. Two callers race on the store all the time: another runner's sweep, or a listing that
+   * has not caught up.
+   *
+   * Given as its own method rather than a flag, so which semantics a call site wants is legible at the
+   * call site. The alternative every caller reaches for otherwise is `.catch(() => {})`, which also
+   * swallows the auth failure and the outage — and a teardown that swallows is how debris becomes
+   * permanent with no signal at all.
+   */
+  async deleteSecretIfPresent(name: string): Promise<boolean> {
+    const existing = await this.findByName(name);
+    if (!existing) return false;
+    await cloudflareRequest(`delete secret ${name}`, () =>
+      this.getClient().secretsStore.stores.secrets.delete(existing.id, {
+        account_id: this.accountId,
+        store_id: this.storeId,
+      }),
+    );
+    return true;
+  }
+
+  /**
    * List every secret in the store. The SDK auto-paginates via `for await`, so callers receive the
    * full set in one array. Each entry is Zod-validated (`CfSecretEntry`) at the wire boundary.
    */

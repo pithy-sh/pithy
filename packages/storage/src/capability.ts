@@ -12,6 +12,7 @@ import { registerStorageRoutes } from "./http/routes";
 import { storage_0001_objects } from "./migrations/0001_objects";
 import { storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 import { storageWorkflows } from "./workflows/specs";
 
 /**
@@ -78,6 +79,9 @@ export function storage(options: StorageOptions = {}): StorageCapability {
 
   const capability = defineCapability({
     name: "storage",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     dependsOn: ["secrets"],
     secretRegistry: storageSecretsRegistry,
     workflows: storageWorkflows,

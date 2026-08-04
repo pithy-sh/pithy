@@ -28,6 +28,31 @@ export const AuthAuditActions = {
   deviceRegistered: "auth/device_registered",
   /** A device was revoked (its session(s) signed out). */
   deviceRevoked: "auth/device_revoked",
+
+  /**
+   * The admin actions, emitted only from the control-plane surface (`http/adminRoutes.ts`) and always
+   * with `actorType: "control-plane"` — a management client is not a user of the adopter's app, so its
+   * actions must be answerable separately from their users'.
+   *
+   * **The reads are audited too, and that is not padding.** Listing the user table hands a management
+   * client every customer's email address; reading one user hands over where they signed in from and on
+   * what. If only the writes were recorded, the trail would show a compromised dashboard credential
+   * revoking one session and say nothing at all about the customer list it walked on the way there —
+   * and the exfiltration is the larger incident.
+   */
+
+  /** The user table was listed or searched from the management surface. A read of other people's data. */
+  adminUsersListed: "auth/admin_users_listed",
+  /** One user was read from the management surface, with their sessions and devices. */
+  adminUserRead: "auth/admin_user_read",
+  /** The device registry was walked from the management surface. */
+  adminDevicesListed: "auth/admin_devices_listed",
+  /** One named session was revoked from the management surface. */
+  adminSessionRevoked: "auth/admin_session_revoked",
+  /** Every session a user held was revoked from the management surface — signed out everywhere. */
+  adminUserSessionsRevoked: "auth/admin_user_sessions_revoked",
+  /** One of a user's devices was signed out and its registration dropped, from the management surface. */
+  adminDeviceRevoked: "auth/admin_device_revoked",
 } as const;
 
 /** One of the auth audit action codes. */

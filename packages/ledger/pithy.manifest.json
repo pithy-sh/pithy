@@ -3,7 +3,7 @@
   "package": "@pithy-sh/ledger",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
   "peerCapabilities": [],
-  "optionalCapabilities": ["auth"],
+  "optionalCapabilities": ["auth", "controlplane", "audit"],
   "migrationNamespace": "ledger",
   "whenToEnable": "Give every player a balance. A per-user ledger for whatever your economy runs on — chips, gold, gems, credits, tokens — in your own D1, currency-agnostic. Every movement is atomic (the ledger entry and the balance change commit together), idempotent (a replayed operation applies once, so a payout delivered twice pays once), and overdraft-safe (a database CHECK constraint makes a balance that can go negative impossible). It has holds — reserve a player's stake the moment a bet is placed, then release it or capture it when the outcome lands — which is what makes wagering safe, so it pairs naturally with @pithy-sh/multiplayer. It takes no position on whether your units map to money; that, and any regulation it implies, is yours. Reads are scoped to the caller; moving another player's balance over HTTP is server-authoritative and needs the admin scope, so add auth too.",
   "scaffold": [
@@ -12,7 +12,8 @@
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
     "Run `pithy migrate` to create pithy_ledger_accounts, pithy_ledger_transactions, and pithy_ledger_holds.",
     "Add `@pithy-sh/auth` if it is not already installed. Balance reads scope to the authenticated user; admin credit/debit routes need the `ledger:admin` scope, minted for your trusted server.",
-    "Move balances in-process from your own code with `openLedger(env.DB)` — credit, debit, transfer, hold, release, capture — passing a unique `ref` for each operation so retries are safe."
+    "Move balances in-process from your own code with `openLedger(env.DB)` — credit, debit, transfer, hold, release, capture — passing a unique `ref` for each operation so retries are safe.",
+    "Add `controlplane()` if you want a dashboard to read balances and entry logs. The ledger's management surface is read-only — `ledger:accounts:read` for balances, `ledger:transactions:read` for the history behind them — and grants nothing that can move money."
   ],
   "configOptions": [
     {

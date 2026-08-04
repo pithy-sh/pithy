@@ -19,6 +19,7 @@ import {
   recordConsumedToken,
   revokeFamily,
 } from "../token/rotation";
+import { registerAuthAdminRoutes } from "./adminRoutes";
 import { allowedOrigins, requireSameOrigin } from "./csrf";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
@@ -47,10 +48,18 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
  * | `GET  /devices`            | bearer/session  | none                        |
  * | `POST /devices/revoke`     | bearer/session  | json `RevokeDeviceBody`     |
+ * | `*    /admin/*`            | control-plane   | see `./adminRoutes`         |
  *
  * The catch-all takes NO validator, deliberately: `handleBetterAuth` hands Better Auth `c.req.raw`,
  * and reading the body first would consume the stream. Better Auth validates its own endpoints, and
  * `apiErrorToPithy` re-homes what it rejects.
+ *
+ * **The admin routes must be registered before the catch-all, and it is not a style preference.**
+ * `handleBetterAuth` returns a Response, which ends the chain — so a route registered after
+ * `app.all(`${base}/*`)` is mounted, is visible in `app.routes`, and never runs. A management call to
+ * `/auth/admin/users` would instead reach Better Auth, which knows no such endpoint, and the failure
+ * would look like a 404 from the wrong layer. `routeContract.test.ts` proves the ordering with a real
+ * request rather than by inspecting the route table, because the route table cannot see this.
  */
 export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) => void {
   return (app) => {
@@ -72,6 +81,9 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     app.post(`${base}/devices/revoke`, requireAuth(), csrf, zValidator("json", RevokeDeviceBody, validationHook), (c) =>
       revokeMyDevice(c, wiring, c.req.valid("json")),
     );
+
+    // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
+    registerAuthAdminRoutes(wiring)(app);
 
     // Better Auth owns the rest (sign-in, verify, callback, sign-out, /token, /jwks, revoke-sessions…).
     app.all(`${base}/*`, (c) => handleBetterAuth(c, wiring));

@@ -80,7 +80,7 @@ describe("emitFromCLI", () => {
       db,
       { action: "storage/credentials_written", outcome: "success", environment: "prod" },
       serviceActor,
-      { origin: { project: "acme", environment: null, worker: null } },
+      { origin: { project: "acme", environment: null, worker: null, version: null } },
     );
     expect(calls[0]?.params).toContain("prod");
     expect(calls[0]?.params).toContain("acme");
@@ -89,7 +89,7 @@ describe("emitFromCLI", () => {
   test("the emitter's origin stands when the event states no environment", async () => {
     const { db, calls } = fakeD1();
     await emitFromCLI(db, { action: "deploy/started", outcome: "success" }, serviceActor, {
-      origin: { project: "acme", environment: "staging", worker: null },
+      origin: { project: "acme", environment: "staging", worker: null, version: null },
     });
     expect(calls[0]?.params).toContain("staging");
   });

@@ -98,6 +98,13 @@ export const ControlPlaneConnection = z
       .describe(
         "This environment's deployed Worker URL, captured at connect. The address the management client calls; re-pointed by `pithy dashboard connect --update` when a custom domain or a rename moves it.",
       ),
+    basePath: z
+      .string()
+      .min(1)
+      .default("/control-plane")
+      .describe(
+        "Where this Worker mounts the control-plane seam, captured at connect from its resolved config. Stored beside `workerUrl` because the two together fully determine the manifest address — and this is the one part of it a client cannot discover, since it *is* the manifest's own address. Defaulted rather than required so a connection registered before the column existed still parses, reading as the default it was necessarily using.",
+      ),
     scopes: sqliteJson(z.array(ControlPlaneScope)).describe(
       "The operations this connection was granted, stored and enforced on the adopter's side. Enforced only by the caller, a scope would not be a limit at all.",
     ),

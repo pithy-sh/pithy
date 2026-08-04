@@ -95,7 +95,7 @@ describe("queryAuditEvents", () => {
     // The question these columns exist to answer: two Workers in one project share a database, so
     // `worker` is the only thing separating their events.
     const db = auditDatabase(env.DB);
-    const origin = { project: "acme", environment: "prod", worker: "api" };
+    const origin = { project: "acme", environment: "prod", worker: "api", version: null };
     await recordAuditEvent(
       db,
       { action: "auth/login", outcome: "success", actorType: "user", actorId: "o-api" },

@@ -116,6 +116,7 @@ describe("httpDashboardClient — connections", () => {
       project: "acme",
       environment: "prod",
       workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
       scopes: ["manifest:read"],
     });
 
@@ -127,6 +128,7 @@ describe("httpDashboardClient — connections", () => {
       project: "acme",
       environment: "prod",
       workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
       scopes: ["manifest:read"],
     });
   });

@@ -12,7 +12,7 @@ import {
   isControlPlaneCapability,
 } from "./capability";
 import { ControlPlaneConfig } from "./config/config";
-import { CONTROL_PLANE_CONNECTIONS_TABLE } from "./data/tables";
+import { CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE } from "./data/tables";
 
 /**
  * The composed shape of the `control-plane` capability — assertions on the object, no request made.
@@ -86,35 +86,53 @@ describe("controlplane capability", () => {
     ]);
   });
 
-  test("sorts at order 1100 in the app database, and declares the connections table with its migration", () => {
-    // Stable forever. Renumbering renames the composed key `1100_controlplane_0001_connections`, and
+  test("sorts at order 1100 in the app database, and declares both seam tables with its migration", () => {
+    // Stable forever. Renumbering renames the composed key `1100_controlplane_0001_init`, and
     // Kysely then reads an applied migration as unapplied and runs it again.
     expect(CONTROLPLANE_MIGRATION_ORDER).toBe(1100);
     const app = controlplane().databases?.app;
     expect(app?.binding).toBe("DB");
     expect(app?.migrationOrder).toBe(CONTROLPLANE_MIGRATION_ORDER);
-    expect(Object.keys(app?.migrations ?? {})).toEqual(["0001_connections"]);
-    expect(Object.keys(app?.tables ?? {})).toEqual([CONTROL_PLANE_CONNECTIONS_TABLE]);
+    expect(Object.keys(app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(app?.tables ?? {})).toEqual([CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE]);
   });
 
-  test("owns its own KV namespace rather than sharing one, and publishes the binding name it uses", () => {
-    const namespaces = controlplane().kvNamespaces ?? {};
+  test("the default records replays in D1, so a project needs no KV namespace at all", () => {
+    // The seam used to demand a `CONTROL_PLANE` KV whatever the adopter did with it. Under the `d1`
+    // default nothing in the tree reads that namespace, and requiring it anyway would make every project
+    // provision a resource it never touches.
+    const capability = controlplane();
+    expect(Object.keys(capability.kvNamespaces ?? {})).toEqual([]);
+    expect(capability.requiredBindings.map((binding) => `${binding.type}:${binding.name}`)).toEqual(["d1:DB"]);
+  });
+
+  test("selecting the KV backend brings its namespace and binding back", () => {
+    const capability = controlplane({ replayBackend: "kv" });
+    const namespaces = capability.kvNamespaces ?? {};
     expect(Object.keys(namespaces)).toEqual(["controlplane"]);
     expect(namespaces.controlplane?.binding).toBe(CONTROL_PLANE_KV_BINDING);
     expect(CONTROL_PLANE_KV_BINDING).toBe("CONTROL_PLANE");
+    expect(capability.requiredBindings.map((binding) => `${binding.type}:${binding.name}`)).toEqual([
+      "d1:DB",
+      "kv:CONTROL_PLANE",
+    ]);
   });
 
-  test("the configured jtiTtlSeconds reaches the replay store", () => {
+  test("the configured jtiTtlSeconds reaches the KV replay store", () => {
     // The store's TTL used to be a module constant, which made this setting decorative: an adopter who
     // lengthened `maxTokenLifetimeSeconds` and lengthened the replay memory to match — the pairing the
     // config's own cross-field rule tells them to make — still got a 300-second store, and their tokens
     // outlived the memory of them. That is a reopened replay window arrived at by following the docs, so
-    // the wiring is asserted rather than assumed.
+    // the wiring is asserted rather than assumed. The D1 guard reads the same setting directly.
     const ttl = (capability: ReturnType<typeof controlplane>): number | undefined =>
       capability.kvNamespaces?.controlplane?.stores?.jtis?.ttlSeconds;
 
-    expect(ttl(controlplane())).toBe(300);
-    expect(ttl(controlplane({ clockSkewSeconds: 120, maxTokenLifetimeSeconds: 240, jtiTtlSeconds: 600 }))).toBe(600);
+    expect(ttl(controlplane({ replayBackend: "kv" }))).toBe(300);
+    expect(
+      ttl(
+        controlplane({ replayBackend: "kv", clockSkewSeconds: 120, maxTokenLifetimeSeconds: 240, jtiTtlSeconds: 600 }),
+      ),
+    ).toBe(600);
   });
 
   test("composes into a Worker holding neither auth nor audit nor secrets", () => {
@@ -138,9 +156,20 @@ describe("controlplane pithy.manifest.json", () => {
   test("declares the same bindings the capability needs, derived ones included", async () => {
     // The manifest is what writes `wrangler.jsonc`. A binding the capability derives but the manifest
     // omits is a Worker that boots straight into "Missing required bindings".
+    //
+    // The manifest is one static file and cannot vary with config, so it declares the union of what any
+    // backend needs and marks the KV entry `optional` — `pithy add` then never demands a namespace the
+    // `d1` default will not read, while an adopter who selects `kv` still finds it documented and
+    // reconciled. The capability's own list is the config-aware one, and is asserted above in both
+    // shapes.
     const declared = (await manifest()).requiredBindings.map((binding) => `${binding.type}:${binding.name}`).sort();
-    expect(declared).toEqual(composedBindings(controlplane()));
+    expect(declared).toEqual(composedBindings(controlplane({ replayBackend: "kv" })));
     expect(declared).toEqual(["d1:DB", "kv:CONTROL_PLANE"]);
+
+    const optionalInManifest = (await manifest()).requiredBindings
+      .filter((binding) => binding.optional)
+      .map((binding) => binding.name);
+    expect(optionalInManifest).toEqual(["CONTROL_PLANE"]);
   });
 
   test("its migrationNamespace is the capability name, the one word every namespace token uses", async () => {

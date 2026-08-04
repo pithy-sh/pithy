@@ -59,21 +59,37 @@ export const CapabilityDescriptor = z
       .string()
       .min(1)
       .describe("The capability's name — the same token used as its migration namespace and error domain."),
+    version: z
+      .string()
+      .nullable()
+      .describe(
+        "The npm version of the package supplying this capability, or null where there is none — the adopter's own `app` capability has a name and no package. Reported per capability and never aggregated: the package name is the join key against a release feed, and a project composes some capabilities and not others, so only the intersection of what it composes and what changed is worth reporting.",
+      ),
     adminRoutes: z
       .array(AdminRoute)
       .describe(
         "Every admin route this capability contributes, or empty when it contributes none. Most capabilities are empty: having no management surface is the normal case, and saying so explicitly is what lets a client render a capability it cannot act on.",
       ),
   })
-  .describe("One capability this Worker composes, and the admin surface it exposes.");
+  .describe("One capability this Worker composes, the version it is at, and the admin surface it exposes.");
 export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
 
 /**
  * The manifest a management client reads to build itself.
  *
- * Deliberately not a version number. With the routes described here, a client dispatches on what this
- * Worker declares right now — so a capability that changed its paths or its scopes reports the change,
- * and a version would be a second source of truth to keep in sync with the first.
+ * **There is deliberately no manifest schema version, and that is a different thing from the two build
+ * identities below.** A client dispatches on the routes described here — what this Worker declares right
+ * now — so a capability that changed its paths or its scopes reports the change directly, and a schema
+ * version would be a second source of truth to keep in sync with the first. That reasoning is unchanged.
+ *
+ * What the manifest does carry is **identity**, not schema, and it carries two of them because they
+ * answer questions neither can answer alone. `version` is Cloudflare's opaque per-deploy id: it says
+ * *exactly which build* is running, which is what forensics needs, what reproduces a report, and what
+ * pins the code an audited action ran against. It carries no version semantics, so it says nothing about
+ * features. `capabilities[].version` is the npm version of each composed package: it says *which
+ * features*, which is what answers "should this customer upgrade", "which customers are exposed to what
+ * we just fixed", and "does this project predate the capability a pane needs". Reporting only one leaves
+ * half the questions unanswerable, and they are the halves people actually ask.
  */
 export const ControlPlaneManifest = z
   .object({
@@ -81,6 +97,12 @@ export const ControlPlaneManifest = z
       .string()
       .describe("The environment this connection is bound to, echoed so a client can label what it is looking at."),
     connectionId: z.string().describe("The connection this call authenticated as."),
+    version: z
+      .string()
+      .nullable()
+      .describe(
+        "The Cloudflare version id of the build answering this call, from the `CF_VERSION_METADATA` binding, or null where the binding is absent. Opaque and per-deploy: it identifies which build is running, never which features it has. Null is honest — a Worker scaffolded before the binding was declared genuinely cannot say.",
+      ),
     capabilities: z
       .array(CapabilityDescriptor)
       .describe(

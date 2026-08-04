@@ -24,8 +24,17 @@ export const email_0001_suppressions: Migration = {
       .addColumn("createdAt", "integer", (c) => c.notNull())
       .addColumn("expiresAt", "integer")
       .execute();
+
+    // The control-plane suppression listing pages newest-first. The unique index on `email` already
+    // serves the single-address lookup; this serves the walk.
+    await db.schema
+      .createIndex("pithyEmailSuppressionsCreatedIdx")
+      .on("pithyEmailSuppressions")
+      .column("createdAt")
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyEmailSuppressionsCreatedIdx").execute();
     await db.schema.dropTable("pithyEmailSuppressions").execute();
   },
 };

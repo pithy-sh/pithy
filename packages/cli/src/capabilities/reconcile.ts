@@ -12,6 +12,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { z } from "zod";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
@@ -100,6 +101,11 @@ export const ReconcilePlan = z
       .array(z.string())
       .describe(
         "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
+      ),
+    missingVersionMetadata: z
+      .boolean()
+      .describe(
+        "Whether this Worker's wrangler.jsonc lacks the `version_metadata` binding named `CF_VERSION_METADATA`. Without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it; a config naming a different binding is reported and left alone.",
       ),
   })
   .describe(
@@ -244,13 +250,42 @@ function stanzaHasBinding(stanza: WranglerBindings, binding: BindingSpec): boole
   }
 }
 
+/**
+ * The bindings a capability actually needs *in this Worker*.
+ *
+ * A manifest is one static file and cannot vary with config, so a binding a capability needs only under
+ * a particular setting is declared there as `optional` — the seam's `CONTROL_PLANE` KV, which nothing
+ * reads under the default `d1` replay backend.
+ *
+ * **The manifest decides what is required; the composed instance decides whether an optional one is
+ * needed here.** Non-optional entries always apply — that is what the manifest is for, and it is the
+ * only source available to `pithy add`, which runs before any config exists. An optional entry is
+ * included only when this Worker's *composed* capability genuinely requires it, which is knowable
+ * because `controlplane({ replayBackend: "kv" })` pushes the KV binding, non-optional, exactly when it
+ * is needed.
+ *
+ * Both halves matter. Skipping optional bindings outright left an adopter who selected `kv` with no
+ * binding written by any CLI path and a hard assembly failure at boot. Taking the composed instance's
+ * list wholesale instead would make the manifest dead weight and would report nothing at all for a
+ * caller that passes a name-only capability marker.
+ */
+function effectiveBindings(manifest: CapabilityManifest, composed: Capability | undefined): BindingSpec[] {
+  const required = manifest.requiredBindings.filter((binding) => !binding.optional);
+  const optional = manifest.requiredBindings.filter((binding) => binding.optional);
+  if (optional.length === 0) return required;
+
+  const needed = new Set((composed?.requiredBindings ?? []).map((binding) => `${binding.type}:${binding.name}`));
+  return [...required, ...optional.filter((binding) => needed.has(`${binding.type}:${binding.name}`))];
+}
+
 /** Every required binding absent from an environment, across every environment. Unsupported kinds are skipped. */
 function computeMissingBindings(
   manifest: CapabilityManifest,
   stanzas: { env: string; stanza: WranglerBindings }[],
+  composed: Capability | undefined,
 ): MissingBinding[] {
   const missing: MissingBinding[] = [];
-  for (const binding of manifest.requiredBindings) {
+  for (const binding of effectiveBindings(manifest, composed)) {
     for (const { env, stanza } of stanzas) {
       const has = stanzaHasBinding(stanza, binding);
       if (has === null) break; // unsupported kind — the same for every env, skip it entirely
@@ -437,6 +472,9 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // The Worker's own composed set, by name. Manifests resolve from the shared root install, so this is the
   // only thing that distinguishes "installed in the project" from "part of this Worker".
   const composed = new Set(capabilities.map((capability) => capability.name));
+  // The composed instances, by name. Their `requiredBindings` are config-aware where a manifest cannot
+  // be — see `effectiveBindings`.
+  const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
 
   const perCapability: CapabilityReconcile[] = [];
   for (const manifest of manifests) {
@@ -444,7 +482,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     if (!composed.has(manifest.name)) continue; // installed at the root for another Worker — not this one's
     perCapability.push({
       name: manifest.name,
-      missingBindings: computeMissingBindings(manifest, stanzas),
+      missingBindings: computeMissingBindings(manifest, stanzas, byName.get(manifest.name)),
       missingConfigKeys: computeMissingConfigKeys(manifest, configSource),
     });
   }
@@ -455,7 +493,17 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
   // in its composed set, so the question is per Worker exactly as the rest of the plan is.
   const entitlementGap = await findEntitlementGap(workerDir, capabilities);
-  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap };
+  // Not a capability binding, so it does not travel through the manifest path above: no capability
+  // requires it, every Worker wants it, and the platform populates it. It is a property of the scaffold,
+  // and the reason it is reconciled at all is that it shipped missing from both templates once already.
+  //
+  // Only when the config is actually readable. A Worker with no `wrangler.jsonc` — a Vite frontend that
+  // joins the dev set through `pithy.worker.jsonc` and never deploys — is not missing a binding, it is
+  // missing a deploy target, and reporting drift an apply then declines to fix is worse than silence.
+  // The same holds for a config with a syntax error: the honest answer is that this cannot be assessed.
+  const wrangler = await readWranglerConfig(workerDir).catch(() => null);
+  const missingVersionMetadata = wrangler !== null && !hasVersionMetadata(wrangler);
+  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap, missingVersionMetadata };
 }
 
 /**
@@ -469,8 +517,16 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
  * adopter's renamed database as a missing binding, and `upgrade` would append a second entry for a
  * binding wrangler already has.
  */
-function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest, scope: NameScope): void {
-  for (const binding of manifest.requiredBindings) {
+function appendBindings(
+  stanza: WranglerBindings,
+  manifest: CapabilityManifest,
+  scope: NameScope,
+  composed: Capability | undefined,
+): void {
+  // Same source of truth as the plan — see `effectiveBindings`. Writing from the manifest here while the
+  // plan reported from the composed instance would make `upgrade` decline to write the binding it had
+  // just told the adopter was missing.
+  for (const binding of effectiveBindings(manifest, composed)) {
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
@@ -617,6 +673,8 @@ export interface ReconcileApplied {
   migrated: boolean;
   /** The per-database migration runs, when `migrated`; empty otherwise. */
   migrations: DatabaseRun[];
+  /** Whether this run added the `version_metadata` binding the Worker was missing. */
+  addedVersionMetadata: boolean;
 }
 
 /** Add every plan capability's missing bindings to the Worker's wrangler.jsonc, comment-preserving. Returns what was added per capability. */
@@ -625,12 +683,14 @@ async function applyBindings(
   workerDir: string,
   plan: ReconcilePlan,
   project: string | undefined,
+  capabilities: readonly Capability[],
 ): Promise<Map<string, MissingBinding[]>> {
   const added = new Map<string, MissingBinding[]>();
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
   if (caps.length === 0) return added;
 
   const byName = new Map((await availableManifests(projectDir)).map((manifest) => [manifest.name, manifest]));
+  const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
   const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
   const stanzas = envStanzas(config);
   let touched = false;
@@ -640,7 +700,12 @@ async function applyBindings(
     // Each stanza is written for the environment it *is*, so the name it proposes has that environment
     // in it. `envStanzas` already pairs them on the read side; the write side uses the same pairing.
     for (const { env, stanza } of stanzas) {
-      appendBindings(stanza, manifest, { ...(project === undefined ? {} : { project }), env });
+      appendBindings(
+        stanza,
+        manifest,
+        { ...(project === undefined ? {} : { project }), env },
+        composedByName.get(cap.name),
+      );
     }
     appendDurableObjectMigrations(config, manifest);
     added.set(cap.name, cap.missingBindings);
@@ -713,8 +778,11 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   // is survivable without a name; writing to a database is not.
   const migrateAs = options.migrate ? requireMigrationProject(options.project) : null;
 
-  const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project);
+  const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);
   const addedConfigKeys = await applyConfigKeys(workerDir, plan);
+  // Idempotent, and a no-op on a Worker that already declares it — including one that names a different
+  // binding, which is reported rather than repointed.
+  const addedVersionMetadata = plan.missingVersionMetadata ? await applyVersionMetadata(workerDir) : false;
 
   const perCapability: CapabilityApplied[] = [];
   for (const cap of plan.perCapability) {
@@ -738,5 +806,12 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
     migrated = true;
   }
 
-  return { worker: plan.worker, perCapability, ejectedSkipped: plan.ejectedSkipped, migrated, migrations };
+  return {
+    worker: plan.worker,
+    perCapability,
+    ejectedSkipped: plan.ejectedSkipped,
+    migrated,
+    migrations,
+    addedVersionMetadata,
+  };
 }

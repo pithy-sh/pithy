@@ -11,7 +11,7 @@ import {
   controlPlaneKvNamespaces,
   kvReplayGuard,
   SeenJti,
-} from "./replay";
+} from "./kvGuard";
 
 /**
  * An in-memory stand-in for the KV binding, not for {@link TypedKv} — the guard is driven through the
@@ -105,5 +105,57 @@ describe("kvReplayGuard", () => {
     const { entries, guard } = guardOverFake();
     await guard.claim("token-1", CONNECTION);
     expect(entries.get("controlplane:jti:token-1")?.expirationTtl).toBe(CONTROL_PLANE_JTI_TTL_SECONDS);
+  });
+});
+
+/**
+ * The limit that moved the default to D1, pinned as a test rather than left as a paragraph.
+ *
+ * This is not a defect in `kvReplayGuard` — read-then-write is the strongest claim Workers KV offers.
+ * It is the reason `replayBackend` defaults to `d1`, whose companion test
+ * (`d1Guard.workers.test.ts`) runs the same race and admits exactly one caller.
+ */
+describe("the cross-colocation window", () => {
+  /**
+   * A binding whose `put` is not visible to a read issued before it converges — one propagation window,
+   * which is precisely what KV offers no way to close.
+   */
+  function laggingBinding() {
+    const committed = new Map<string, string>();
+    let pending: Array<() => void> = [];
+    const binding = {
+      async get(name: string): Promise<string | null> {
+        return committed.get(name) ?? null;
+      },
+      async put(name: string, value: string): Promise<void> {
+        pending.push(() => committed.set(name, value));
+      },
+      async delete(name: string): Promise<void> {
+        committed.delete(name);
+      },
+    };
+    return {
+      binding: binding as unknown as KVNamespace,
+      converge: () => {
+        const apply = pending;
+        pending = [];
+        for (const write of apply) write();
+      },
+    };
+  }
+
+  test("two colocations presenting one token inside the window both claim it", async () => {
+    const { binding, converge } = laggingBinding();
+    const guard = kvReplayGuard(new TypedKv(binding, jtiSpec));
+
+    // Both calls read before either write has propagated, so both see a miss. Under D1 this is one
+    // insert and one conflict; here it is two claims, and the caller admits the replay.
+    const outcomes = await Promise.all([guard.claim("token-race", CONNECTION), guard.claim("token-race", CONNECTION)]);
+    expect(outcomes).toEqual([true, true]);
+
+    // Once the write converges the guard behaves as documented — the window is at the very start of a
+    // token's life, not at the end of it.
+    converge();
+    expect(await guard.claim("token-race", CONNECTION)).toBe(false);
   });
 });

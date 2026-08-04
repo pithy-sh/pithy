@@ -7,6 +7,10 @@ import { defineConfig } from "vitest/config";
 //
 // `*.integration.test.ts` files load `.dev.vars` themselves and hit the Email Sending REST API
 // (the binding can only run inside a Worker), so they run in the node pool — no Miniflare.
+//
+// No debris sweep here, deliberately: this suite sends mail and provisions no Cloudflare resource, so it
+// has nothing to reclaim. A live test in this package that ever mints one must add
+// `globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"]` (and the devDependency) with it.
 export default defineConfig({
   test: {
     name: "integration",

@@ -20,6 +20,7 @@ import { registerPaymentsRoutes } from "./http/routes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 import { paymentsWorkflows } from "./workflows/specs";
 
 /**
@@ -186,6 +187,9 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
 
   const capability = defineCapability({
     name: "payments",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     dependsOn: ["secrets"],
     providesEntitlements: true,
     // One secret holds every rail's credentials. Declaring the slice here is what lets `sharedSecretsStore`

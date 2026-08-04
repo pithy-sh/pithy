@@ -3,6 +3,7 @@
 
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
+import { workerVersion } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneContext } from "../context";
@@ -140,6 +141,9 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
     return c.json({
       environment: context.environment,
       connectionId: context.connectionId,
+      // The build answering this call. Read per request rather than captured at assembly: it is the
+      // same binding every log record and audit event reads, and there is one reader for it.
+      version: workerVersion(c.env),
       capabilities: [...deps.composedCapabilities()],
       grantedScopes: [...context.grantedScopes],
     } satisfies ControlPlaneManifest);

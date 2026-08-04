@@ -48,7 +48,11 @@ describe.skipIf(!hasCreds)("SecretsStoreConfigWriter — LIVE CF Secrets Store",
       );
       expect(await manager.exists(TEST_SECRET)).toBe(true);
     } finally {
-      await manager.deleteSecret(TEST_SECRET).catch(() => {});
+      // `deleteSecretIfPresent`, not `deleteSecret(...).catch(() => {})`. The bare catch swallowed an
+      // auth failure and an outage along with the harmless already-gone case, so a leaked store entry
+      // left no signal at all — which is how eight of them accumulated unnoticed. The idempotent delete
+      // absorbs only the case that is genuinely fine, and anything else fails the test loudly.
+      await manager.deleteSecretIfPresent(TEST_SECRET);
     }
   });
 });

@@ -93,7 +93,9 @@ describe("pithy init", () => {
 
     const result = JSON.parse(stdout.trim()) as { command: string; appName: string; targetDir: string };
     // `worker` names the first worker created at apps/<name>; a non-interactive run takes the default.
-    expect(result).toEqual({ command: "init", appName: "smoke", targetDir: target, worker: "api" });
+    // `domains` is null because a non-interactive run asks nothing — every command must work headless,
+    // and a required prompt would break that. A project declares `domains` in pithy.config.ts directly.
+    expect(result).toEqual({ command: "init", appName: "smoke", targetDir: target, worker: "api", domains: null });
 
     const pkg = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as { name: string };
     expect(pkg.name).toBe("smoke");

@@ -30,7 +30,7 @@ const minutesAgo = (minutes: number): Date => new Date(Date.now() - minutes * 60
  * know it. Null is what "not recorded" looks like everywhere else in this column, which is also the
  * state of every row written before the origin migration.
  */
-const EXAMPLE_ORIGIN = { project: "example-app", environment: null, worker: "api" } as const;
+const EXAMPLE_ORIGIN = { project: "example-app", environment: null, worker: "api", version: null } as const;
 
 /**
  * A handful of example audit events — the durable, queryable trail the licensed dashboard reads. They

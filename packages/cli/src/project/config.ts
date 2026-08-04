@@ -6,7 +6,8 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { discoverWorkers } from "./workers";
 
@@ -72,6 +73,37 @@ export interface WorkerConfig {
   capabilities: Capability[];
   /** This Worker's own app capability, composed last. */
   app?: Capability;
+  /**
+   * Where this Worker answers, per environment — the one declaration `routes`, `vars.BASE_URL`, and every
+   * command that needs an address are derived from. Optional: a project without a domain yet is
+   * legitimate, and adding one later is a config edit plus a deploy.
+   *
+   * Validated through {@link WorkerDomains} by {@link loadWorkerDomains} rather than trusted off the
+   * import, because this file is the adopter's own TypeScript and nothing else checks it.
+   */
+  domains?: unknown;
+}
+
+/**
+ * Read and validate a Worker's `domains` declaration.
+ *
+ * Parsed rather than cast: `pithy.config.ts` is the adopter's own module, `loadWorkerConfig` imports it
+ * live, and duck-typing is the only other gate on it — so an unvalidated `domains` would reach the
+ * wrangler generator as whatever they typed. A malformed declaration must fail with the field named,
+ * not produce a `routes` entry Cloudflare rejects at deploy.
+ *
+ * Absent is not an error; it is the ordinary state of a project that has not wired a domain yet.
+ */
+export function loadWorkerDomains(config: WorkerConfig): WorkerDomains | undefined {
+  if (config.domains === undefined || config.domains === null) return undefined;
+  const parsed = WorkerDomains.safeParse(config.domains);
+  if (!parsed.success) {
+    throw fromZodError(parsed.error, {
+      message: "This Worker's `domains` declaration is not valid.",
+      action: "Fix `domains` in the Worker's pithy.config.ts. Each entry is `{ pattern, zone }` — bare hostnames.",
+    });
+  }
+  return parsed.data;
 }
 
 function isWorkerConfig(value: unknown): value is WorkerConfig {

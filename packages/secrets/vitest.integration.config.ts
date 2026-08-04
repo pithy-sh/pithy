@@ -13,7 +13,12 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`
+    // for why this cannot live in a suite's `beforeAll`. This package writes real Secrets Store entries,
+    // the kind that had no reaper at all.
+    globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 120_000,
+    hookTimeout: 300_000,
     pool: "forks",
     passWithNoTests: true,
   },

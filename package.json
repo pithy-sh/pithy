@@ -23,11 +23,12 @@
     "format": "biome format --write .",
     "clean": "turbo run clean",
     "vars:local": "turbo run vars:local",
+    "stamp-versions": "bun scripts/stampVersions.ts",
     "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
     "prepare": "husky",
     "changeset": "changeset",
-    "version": "changeset version",
+    "version": "changeset version && bun scripts/stampVersions.ts",
     "release": "echo 'Release automation lands later. Not wired yet.' && exit 1"
   },
   "devDependencies": {

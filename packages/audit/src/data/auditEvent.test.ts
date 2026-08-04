@@ -25,6 +25,7 @@ describe("AuditEventRow codec round-trip", () => {
       project: "acme",
       environment: "prod",
       worker: "api",
+      version: null,
     } as const;
 
     const event = AuditEventRow.parse(row);
@@ -32,10 +33,16 @@ describe("AuditEventRow codec round-trip", () => {
     expect(event.occurredAt).toBeInstanceOf(Date);
     expect(event.occurredAt.getTime()).toBe(1_700_000_000_000);
     expect(event.metadata).toEqual({ provider: "google" });
-    expect({ project: event.project, environment: event.environment, worker: event.worker }).toEqual({
+    expect({
+      project: event.project,
+      environment: event.environment,
+      worker: event.worker,
+      version: event.version,
+    }).toEqual({
       project: "acme",
       environment: "prod",
       worker: "api",
+      version: null,
     });
 
     const encoded = AuditEventRow.encode(event);
@@ -68,6 +75,7 @@ describe("AuditEventRow codec round-trip", () => {
       project: null,
       environment: null,
       worker: null,
+      version: null,
     });
     expect([event.project, event.environment, event.worker]).toEqual([null, null, null]);
     const encoded = AuditEventRow.encode(event);
@@ -94,6 +102,7 @@ describe("AuditEventRow codec round-trip", () => {
       project: null,
       environment: null,
       worker: null,
+      version: null,
     });
     expect(event.actorId).toBeNull();
     expect(event.metadata).toBeNull();

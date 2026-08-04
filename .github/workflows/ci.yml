@@ -161,6 +161,14 @@ jobs:
       - name: License headers
         run: bun scripts/license-headers.ts --check
 
+      # Whole-repo, and for a reason the two steps around it share: a stamped version that has drifted
+      # from the package.json it came from is worse than reporting none, because a customer acts on it —
+      # deciding not to upgrade against a version that is a lie. The generated constants are committed so
+      # typecheck and consumers get them with no build step, which is exactly what makes staleness
+      # possible and this check necessary.
+      - name: Stamped package versions
+        run: bun scripts/stampVersions.ts --check
+
       # Whole-repo for the same reason as the step above, and learned the same way. Two capabilities
       # in flight at once each took migration order 1200 from the same `NEXT_FREE_ORDER`; because both
       # branches bumped the constant to the same value, git merged the registry with no conflict and

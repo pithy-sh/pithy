@@ -10,6 +10,7 @@ import { registerMatchmakingRoutes } from "./http/routes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { matchmaking_0001_matchmaking } from "./migrations/0001_matchmaking";
 import { matchmakingExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Where matchmaking's migrations sort in the app database. Unique per database; the registry composes keys
@@ -52,6 +53,9 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
 
   const capability = defineCapability({
     name: "matchmaking",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     requiredBindings,
     config: MatchmakingConfig,
     databases: {

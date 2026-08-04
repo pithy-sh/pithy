@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { defineCommand } from "citty";
+import { askDomains, writeDomains } from "../project/askDomains";
+import { renderDomainsBlock } from "../project/domainPrompt";
 import { DEFAULT_WORKER, ensureEmptyTarget, scaffoldProject } from "../project/scaffold";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -76,12 +78,32 @@ export default defineCommand({
         : await ask("First worker (apps/<name>):", DEFAULT_WORKER, args.json);
 
       const appName = name.value;
-      const prompted = name.prompted || worker.prompted;
       await scaffoldProject({ targetDir, appName, worker: worker.value });
 
+      // Where the Worker answers, asked against the account's real zones. Skippable — a project without
+      // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
+      // scaffold exists, because the answer is written into files this just created.
+      const asked = await askDomains({
+        projectDir: targetDir,
+        workerName: worker.value,
+        interactive: interactive(args.json),
+      });
+      // A declaration the writer could not place must not vanish. `writeDomains` still generates the
+      // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
+      // source of truth, and an adopter who answered the prompt needs to know it did not land.
+      const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
+      const prompted = name.prompted || worker.prompted || asked.prompted;
+
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, domains: asked.domains ?? null })}\n`,
+        );
         return;
+      }
+      if (wrote && !wrote.declared && asked.domains) {
+        process.stdout.write(
+          `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+        );
       }
       // Set Done. off from the prompt's gutter; a flagged run has nothing above it.
       process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);

@@ -32,6 +32,11 @@
       "describe": "The public base URL of your app worker. Tracking and unsubscribe links are built against it, so it must be reachable from a recipient's inbox."
     },
     {
+      "key": "basePath",
+      "default": "/email",
+      "describe": "Where the management routes mount — the send log (`<basePath>/jobs`) and the suppression list (`<basePath>/suppressions`). Every one is control-plane and default-denied: they answer a connected management client, never an end user. The recipient callbacks (click, open, unsubscribe) are not affected and keep their fixed `/_pithy/email` prefix, because those URLs are already minted into mail nobody can recall."
+    },
+    {
       "key": "theme",
       "default": "saffron",
       "describe": "An off-the-shelf theme to bootstrap from: `saffron` (Pithy default), `midnight` (blue), `forest` (green), or `rose` (warm). Fine-tune it with a `customTheme` object in pithy.config.ts (accent, logo URLs, palette colors); body width is per-template, not a theme setting."

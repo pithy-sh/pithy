@@ -42,6 +42,7 @@ export const cleanPlanFor = (worker: string): ReconcilePlan => ({
   ejectedSkipped: [],
   pendingMigrations: 0,
   entitlementGap: [],
+  missingVersionMetadata: false,
 });
 
 /** A plan builder that stamps the requested Worker's name onto a fixed plan. */

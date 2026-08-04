@@ -69,8 +69,20 @@ export const email_0001_init: Migration = {
       .execute();
 
     await db.schema.createIndex("pithyEmailEventsJobIdIdx").on("pithyEmailEvents").column("jobId").execute();
+
+    // The control-plane job listing pages newest-first, optionally filtered by status. `(status,
+    // createdAt)` serves the filtered page and `createdAt` alone the unfiltered one — without them an
+    // operator opening the pane scans every job the project has ever queued.
+    await db.schema
+      .createIndex("pithyEmailJobsStatusCreatedIdx")
+      .on("pithyEmailJobs")
+      .columns(["status", "createdAt"])
+      .execute();
+    await db.schema.createIndex("pithyEmailJobsCreatedIdx").on("pithyEmailJobs").column("createdAt").execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyEmailJobsCreatedIdx").execute();
+    await db.schema.dropIndex("pithyEmailJobsStatusCreatedIdx").execute();
     await db.schema.dropIndex("pithyEmailEventsJobIdIdx").execute();
     await db.schema.dropTable("pithyEmailEvents").execute();
     await db.schema.dropIndex("pithyEmailJobsMessageIdIdx").execute();

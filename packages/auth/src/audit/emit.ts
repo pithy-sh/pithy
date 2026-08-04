@@ -137,6 +137,49 @@ export async function emitDeviceRevoked(
   });
 }
 
+/**
+ * Emit one control-plane admin action.
+ *
+ * `actorType` is `control-plane` and never `user`: the caller holds no session and owns no user row, so
+ * recording it as a user would make "what did the management client do" unanswerable from the trail —
+ * and would put a dashboard operator's id in the same column as the adopter's own customers.
+ *
+ * `actorId` is the token's verified `sub` — *which person at the dashboard*, not merely which
+ * dashboard. `resourceId` is the user or session acted on, so the trail reads from both ends: every
+ * action one operator took, and everything ever done to one customer.
+ *
+ * No email address, no session token, no device push token reaches `metadata`. The trail is queryable
+ * and long-lived, and a management client that already saw the address does not need it copied into a
+ * second store with a different retention policy.
+ */
+export async function emitControlPlaneAction(
+  emit: AuditEmit,
+  event: {
+    action: string;
+    subject: string;
+    connectionId: string;
+    resourceType: string;
+    resourceId?: string | null;
+    ip?: string;
+    userAgent?: string;
+    requestId?: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: event.action,
+    outcome: "success",
+    actorType: "control-plane",
+    actorId: event.subject,
+    resourceType: event.resourceType,
+    resourceId: event.resourceId ?? null,
+    ip: event.ip,
+    userAgent: event.userAgent,
+    requestId: event.requestId,
+    metadata: { connectionId: event.connectionId, ...event.metadata },
+  });
+}
+
 /** A blocked/failed auth attempt — recorded as `denied` (first-class). */
 export async function emitDenied(
   emit: AuditEmit,

@@ -124,12 +124,18 @@ describe("recordAuditEvent", () => {
   });
 });
 
-/** Reads the three origin columns off the single row a test wrote. */
-async function originRow(): Promise<{ project: string | null; environment: string | null; worker: string | null }> {
-  const row = await env.DB.prepare("select project, environment, worker from pithy_audit_events").first<{
+/** Reads the writer-stamped columns off the single row a test wrote. */
+async function originRow(): Promise<{
+  project: string | null;
+  environment: string | null;
+  worker: string | null;
+  version: string | null;
+}> {
+  const row = await env.DB.prepare("select project, environment, worker, version from pithy_audit_events").first<{
     project: string | null;
     environment: string | null;
     worker: string | null;
+    version: string | null;
   }>();
   if (!row) throw new Error("expected a recorded row");
   return row;
@@ -140,9 +146,9 @@ describe("the origin columns", () => {
 
   test("are stamped from the recorder's origin, not from the event", async () => {
     await recordAuditEvent(auditDatabase(env.DB), EVENT, {
-      origin: { project: "acme", environment: "prod", worker: "api" },
+      origin: { project: "acme", environment: "prod", worker: "api", version: null },
     });
-    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: "api" });
+    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: "api", version: null });
   });
 
   test("an emitter cannot set them, and cannot override the recorder's", async () => {
@@ -152,30 +158,51 @@ describe("the origin columns", () => {
     // the type: a type says what the compiler allows, and the emitters here are `unknown` at runtime.
     await recordAuditEvent(
       auditDatabase(env.DB),
-      { ...EVENT, project: "attacker", environment: "prod", worker: "admin" } as never,
-      { origin: { project: "acme", environment: "dev", worker: "api" } },
+      { ...EVENT, project: "attacker", environment: "prod", worker: "admin", version: null } as never,
+      { origin: { project: "acme", environment: "dev", worker: "api", version: null } },
     );
-    expect(await originRow()).toEqual({ project: "acme", environment: "dev", worker: "api" });
+    expect(await originRow()).toEqual({ project: "acme", environment: "dev", worker: "api", version: null });
   });
 
   test("a forged origin cannot reach the row even when the recorder has none", async () => {
     // The same claim without a competing value to hide behind: with no `origin` option, an emitter's
     // own fields must still produce nulls rather than being written through.
-    await recordAuditEvent(auditDatabase(env.DB), { ...EVENT, project: "attacker", worker: "admin" } as never);
-    expect(await originRow()).toEqual({ project: null, environment: null, worker: null });
+    await recordAuditEvent(auditDatabase(env.DB), {
+      ...EVENT,
+      project: "attacker",
+      worker: "admin",
+      version: null,
+    } as never);
+    expect(await originRow()).toEqual({ project: null, environment: null, worker: null, version: null });
   });
 
   test("record as null when the recorder is given no origin", async () => {
     // An unstamped Worker: scaffolded without the vars, or running a hand-written wrangler.jsonc.
     await recordAuditEvent(auditDatabase(env.DB), EVENT);
-    expect(await originRow()).toEqual({ project: null, environment: null, worker: null });
+    expect(await originRow()).toEqual({ project: null, environment: null, worker: null, version: null });
+  });
+
+  test("the build id is stamped by the recorder, and an emitter cannot claim another one", async () => {
+    // `version` is a writer property, exactly like project/environment/worker: it is a fact about the
+    // process that wrote the row, never about the action. That is the whole forensic value — "revoked
+    // by this subject, against this exact build" is only worth anything if the build cannot be
+    // asserted by the ~29 call sites that emit.
+    await recordAuditEvent(auditDatabase(env.DB), { ...EVENT, version: "v-forged" } as never, {
+      origin: { project: "acme", environment: "prod", worker: "api", version: "v-real" },
+    });
+    expect(await originRow()).toEqual({
+      project: "acme",
+      environment: "prod",
+      worker: "api",
+      version: "v-real",
+    });
   });
 
   test("record a partial origin as far as it is known", async () => {
     // A Worker carrying PROJECT but scaffolded before WORKER existed. Two of three is worth keeping.
     await recordAuditEvent(auditDatabase(env.DB), EVENT, {
-      origin: { project: "acme", environment: "prod", worker: null },
+      origin: { project: "acme", environment: "prod", worker: null, version: null },
     });
-    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: null });
+    expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: null, version: null });
   });
 });

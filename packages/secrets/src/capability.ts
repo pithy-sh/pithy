@@ -11,6 +11,7 @@ import {
   configureSharedSecrets,
   DEFAULT_SECRETS_CACHE_TTL_SECONDS,
 } from "./sharedSecretsStore";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /**
  * The secrets manager's own token profile — the standard default for its least-privilege runtime
@@ -79,6 +80,9 @@ export function secrets(config: SecretsConfig): SecretsCapability {
   const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
   const capability = defineCapability({
     name: "secrets",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     secretRegistry: config.registry,
     tokenProfiles: { secrets: secretsTokenProfile },
     requiredBindings: [

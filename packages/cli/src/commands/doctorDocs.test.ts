@@ -130,6 +130,7 @@ describe("docs/CLI.md §5.6", () => {
               ],
               pendingMigrations: 2,
               entitlementGap: [],
+              missingVersionMetadata: false,
             },
           }),
           checkProjectName: async () => ({ state: "ok", project: "acme", misnamed: [] }),

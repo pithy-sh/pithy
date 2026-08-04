@@ -34,3 +34,26 @@ export function defineAuditActions<const T extends Record<string, string>>(actio
   }
   return actions;
 }
+
+/**
+ * This capability's own action codes — the trail recording the reads of itself.
+ *
+ * **Reading an audit trail is a security-relevant action.** It is the record of who did what across
+ * every other capability, so a management client paging through it is doing something that has to be
+ * answerable later; a trail that records every write and no read cannot answer "who looked".
+ *
+ * They are separate codes rather than one, because the two reads disclose different things and a
+ * reviewer filtering the trail should not have to inspect metadata to tell them apart:
+ * `audit/trail_read` is a filtered page of structural fields, while `audit/event_read` is the full
+ * record of one event — the IP, the user-agent, and the capability metadata included.
+ *
+ * Yes, this appends to the table it just read. That is a loop by design, not by accident: the row it
+ * writes is one row, it is the only durable evidence the read happened, and the alternative is a
+ * surface that quietly exempts itself from the guarantee it exists to provide.
+ */
+export const AuditTrailActions = defineAuditActions({
+  /** A filtered page of the trail was read. */
+  trailRead: "audit/trail_read",
+  /** One event was read in full, network identifiers and metadata included. */
+  eventRead: "audit/event_read",
+});

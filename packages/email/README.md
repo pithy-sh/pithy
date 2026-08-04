@@ -68,6 +68,33 @@ So non-production environments get their full open/click/unsubscribe funnel (tho
 
 **Suppression is global.** `pithy_email_suppressions` lives in a dedicated, durable `EMAIL_SUPPRESSIONS` database — one per account, bound the same in every environment. An address that hard-bounced, complained, or unsubscribed must never be emailed from *any* environment, so this is the one resource shared across all of them. It mirrors the shared-DB pattern `@pithy-sh/secrets` uses for `SECRETS` (where the link-signing key lives).
 
+## Management routes
+
+Silent email failure costs a signup. These are the routes a dashboard reads to notice, mounted under `basePath` (default `/email`, set it in `email({ basePath: "/mail" })` and the manifest follows).
+
+Every one is `control-plane` and **default-denied**: an M2M admin surface for a management client the adopter connected, verified by the core seam. There is no bearer or session surface here — a recipient's only routes are the click, open, and unsubscribe callbacks, which keep their fixed `/_pithy/email` prefix because those URLs are already minted into mail nobody can recall. With the control-plane seam uncomposed, all six answer 403.
+
+| Method | Path | Scope |
+|---|---|---|
+| GET | `/email/jobs` | `email:jobs:read` |
+| GET | `/email/jobs/:id` | `email:jobs:read` |
+| POST | `/email/jobs/:id/retry` | `email:jobs:retry` |
+| GET | `/email/suppressions` | `email:suppressions:read` |
+| POST | `/email/suppressions` | `email:suppressions:write` |
+| POST | `/email/suppressions/remove` | `email:suppressions:delete` |
+
+Five scopes, not one admin flag, because these fail in five unrelated directions. Reading jobs discloses who you mailed. Retrying one sends real mail to a real person under your domain and DKIM. Reading suppressions discloses, in one list, every address in the project that ever bounced or opted out — across every environment, since that database is global. Adding a suppression is a silent, targeted denial of service: block one address and that person never gets another magic link, and nothing reports an error. Removing one re-opens sending to somebody who reported spam. Scopes match exactly, with no prefix or wildcard rule, so a tool that retries stuck receipts never also holds a suppression write.
+
+**The template payload is never projected. Anywhere.** A `magicLink` job's `payload` holds a working sign-in URL and an OTP job's holds the code, so returning it on a read scope would turn the least privileged credential here into account takeover. There is no flag for it.
+
+**The job list masks the recipient (`ad***@example.com`); the detail route returns the whole address.** That is a bulk-harvest control, not anonymisation: it takes the cost of exporting the list from one request per hundred addresses to one request per address, each individually audited. The domain survives masking, because that is what you read a deliverability problem off. The suppression list is the deliberate exception — an address *is* the record there, which is why reading it is its own scope.
+
+**Every call is audited, reads included** (`email/jobs_read`, `email/job_read`, `email/job_retried`, `email/suppressions_read`, `email/suppression_added`, `email/suppression_removed`), through the `@pithy-sh/audit` seam. A block is silent to everyone it affects, so the trail is the only record it happened.
+
+Both lists are cursor-paginated on `(createdAt, id)`, never offset — `pithy_email_jobs` is written to on every send, so an offset page shifts under whoever is reading it.
+
+A retry is only ever accepted for a `failed` job, and only after re-checking the suppression list: `attempts` is reset (or `runSend`'s budget would end it again on the first retryable error), the row goes back to `pending`, and the send Workflow is dispatched. A dispatch that fails is reported, not fatal — the every-minute scheduler re-drives the row within the minute. A manual block is always recorded as `reason: "manual"`; the other three reasons are facts the system observed, and a management client observed none of them.
+
 ## Feature / staging / prod
 
 Each environment sends its own jobs, recorded in its own app DB. They all read and write **one** shared `EMAIL_SUPPRESSIONS` database, so an unsubscribe collected in production also stops staging and feature builds from emailing that person.

@@ -20,6 +20,7 @@ import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { workerVersion } from "./worker/identity";
 import { buildWorkflowDispatcher, type WorkflowDispatcher } from "./workflow/dispatch";
 import { composeWorkflows } from "./workflow/register";
 
@@ -76,16 +77,14 @@ function dedupeBindings(specs: BindingSpec[]): BindingSpec[] {
 }
 
 /**
- * The deployed Worker version id, read from the `CF_VERSION_METADATA` version-metadata binding when the
- * adopter has wired one; `undefined` off-platform or when the binding is absent. Correlates every log
- * record to the exact deploy that produced it.
+ * The deployed Worker version id, for the log record's `version` correlation field.
+ *
+ * Delegates to `workerVersion` rather than re-reading the binding: this used to be a private copy here,
+ * and a second reader of one binding is how the name and the declaration drift apart. `undefined` rather
+ * than `null` because the logger omits an undefined field.
  */
 function versionOf(env: Record<string, unknown>): string | undefined {
-  const meta = env.CF_VERSION_METADATA;
-  if (typeof meta === "object" && meta !== null && typeof (meta as { id?: unknown }).id === "string") {
-    return (meta as { id: string }).id;
-  }
-  return undefined;
+  return workerVersion(env) ?? undefined;
 }
 
 /**
@@ -212,7 +211,25 @@ export function createBackend<
     c.var.log.info("request", { status: c.res.status, elapsed: Date.now() - start });
   });
 
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  /**
+   * `GET /health` — liveness, and **which build is answering**.
+   *
+   * The version is what turns `pithy deploy`'s post-deploy check from a liveness probe into an
+   * assertion. `status: "ok"` at the declared domain proves *a* Worker is there; it does not prove it is
+   * the one just shipped, and the old version answering happily is exactly the failure worth catching —
+   * a deploy that landed somewhere else while the declared domain kept serving what was already on it.
+   * With the id here, `deploy` compares what it shipped against what replies.
+   *
+   * **Public, deliberately.** A Cloudflare version id is an opaque UUID carrying no version semantics
+   * and no exploitable detail, and most platforms expose a build identifier. The alternative — reporting
+   * it only through the authenticated control-plane manifest — is better for privacy and useless for
+   * deploy verification, since `deploy` holds no control-plane credential.
+   *
+   * `null` where the binding is absent, which is honest rather than misleading: a project scaffolded
+   * before `version_metadata` was declared reports "I cannot tell you", and `deploy` reports the check
+   * as inconclusive instead of failing it.
+   */
+  app.get("/health", (c) => c.json({ status: "ok", version: workerVersion(c.env) }));
 
   for (const cap of all) {
     for (const middleware of cap.middleware ?? []) middleware(app);
