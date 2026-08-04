@@ -15,7 +15,10 @@ import { CloudflareNotConfiguredError } from "../client/errors";
  */
 export const PERMISSION_GROUPS = {
   "d1:read": ["D1 Read"],
-  "d1:write": ["D1 Edit"],
+  // "D1 Write", not "D1 Edit" — Cloudflare names the D1 group Write while several other services use
+  // Edit, and the account catalog has no group called "D1 Edit" at all. `accountTokensManager.integration.test.ts`
+  // now checks every name here against the live account, which is the only place that can tell.
+  "d1:write": ["D1 Write"],
   "workers:write": ["Workers Scripts Write"],
   "secrets:read": ["Secrets Store Read"],
   "secrets:write": ["Secrets Store Write"],

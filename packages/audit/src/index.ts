@@ -12,7 +12,9 @@ export { AuditTrailActions, defineAuditActions } from "./actions";
 export { type AuditCapability, type AuditConfigInput, audit, isAuditCapability } from "./capability";
 export { type CliAuditEvent, emitFromCLI } from "./cli/emitFromCLI";
 export {
+  type CfAccountTokenActorSource,
   type CfActorSource,
+  type CfUserActorSource,
   createCachedActorResolver,
   type ResolvedActor,
   resolveActor,

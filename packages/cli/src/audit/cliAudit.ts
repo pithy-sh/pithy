@@ -213,7 +213,12 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
 
   const database = options.clients.d1(databaseId) as unknown as D1Database;
   const origin = await cliOrigin(options.projectDir, options.actedOn ?? null);
-  const resolveActor = createCachedActorResolver(options.apiToken, options.clients.user());
+  // Both scopes, because the token decides which one is valid: a `cfut_*` token reads `/user/*`, a
+  // `cfat_*` token reads `/accounts/{id}/tokens/*` and is rejected by every user endpoint.
+  const resolveActor = createCachedActorResolver(options.apiToken, {
+    user: options.clients.user(),
+    accountTokens: options.clients.accountTokens(),
+  });
   // Surface a dropped audit write through the CLI logger. Without this a lost record is invisible —
   // and an audit trail you cannot tell is broken is worse than none.
   const log = createCliLogger().child("audit");
