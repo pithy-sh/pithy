@@ -17,6 +17,9 @@ const unusedClients = {
   user: () => {
     throw new Error("must not resolve an actor when auditing is unavailable");
   },
+  accountTokens: () => {
+    throw new Error("must not resolve an actor when auditing is unavailable");
+  },
 } as unknown as CloudflareClients;
 
 /** Write a Worker's `apps/<name>/wrangler.jsonc`, as the per-Worker layout has it. */
@@ -116,6 +119,28 @@ describe("createCliAudit", () => {
 
     // Always callable: a call site never needs an `if (audit)` branch.
     await expect(emit({ action: "feature/resource_deleted", outcome: "success" })).resolves.toBeUndefined();
+  });
+
+  test("hands actor resolution both Cloudflare scopes", async () => {
+    const touched: string[] = [];
+    const clients = {
+      d1: () => ({}),
+      user: () => {
+        touched.push("user");
+        return {};
+      },
+      accountTokens: () => {
+        touched.push("accountTokens");
+        return {};
+      },
+    } as unknown as CloudflareClients;
+
+    await createCliAudit({ projectDir: dir, env: "dev", capabilities: [audit, app], clients, apiToken: "cfat_x" });
+
+    // A `cfat_*` token — the kind `pithy token mint` produces — is rejected by every `/user/*` endpoint,
+    // so the account scope has to reach the resolver. Handed only `user()`, it attributed every account
+    // token to `system`, silently, because resolution failure is never fatal.
+    expect([...touched].sort()).toEqual(["accountTokens", "user"]);
   });
 
   test("is a no-op when the environment's audit database cannot be resolved", async () => {

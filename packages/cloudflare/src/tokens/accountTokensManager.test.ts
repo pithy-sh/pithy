@@ -9,6 +9,8 @@ import { accountResource, CloudflareAccountTokensManager } from "./accountTokens
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
 const mockTokenList = vi.fn();
+const mockTokenGet = vi.fn();
+const mockVerify = vi.fn();
 const mockPgList = vi.fn();
 const mockValueUpdate = vi.fn();
 
@@ -18,7 +20,9 @@ vi.mock("cloudflare", () => ({
       tokens: {
         create: mockCreate,
         delete: mockDelete,
+        get: mockTokenGet,
         list: mockTokenList,
+        verify: mockVerify,
         permissionGroups: { list: mockPgList },
         value: { update: mockValueUpdate },
       },
@@ -158,6 +162,36 @@ describe("CloudflareAccountTokensManager", () => {
     await expect(
       manager.mintToken("t", [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") }]),
     ).rejects.toBeInstanceOf(CloudflareRequestError);
+  });
+
+  it("verifyToken verifies the calling token against the account, never the user endpoint", async () => {
+    mockVerify.mockResolvedValue({ id: "tk-self", status: "active" });
+    expect(await manager.verifyToken()).toEqual({ id: "tk-self", status: "active" });
+    expect(mockVerify).toHaveBeenCalledWith({ account_id: "acct-1" });
+  });
+
+  it("getTokenName reads the token record within the account", async () => {
+    mockTokenGet.mockResolvedValue({ id: "tk-self", name: "pithy-int-ci-system", status: "active" });
+    expect(await manager.getTokenName("tk-self")).toBe("pithy-int-ci-system");
+    expect(mockTokenGet).toHaveBeenCalledWith("tk-self", { account_id: "acct-1" });
+  });
+
+  it("getTokenName returns null when the caller may not read the token record", async () => {
+    // A least-privilege minted token asking its own name: 403 is the expected answer, not a failure.
+    mockTokenGet.mockRejectedValue(
+      Object.assign(new Error("Unauthorized to access requested resource"), { status: 403 }),
+    );
+    expect(await manager.getTokenName("tk-self")).toBeNull();
+  });
+
+  it("getTokenName returns null when the record has no readable name", async () => {
+    mockTokenGet.mockResolvedValue({ id: "tk-self", status: "active" });
+    expect(await manager.getTokenName("tk-self")).toBeNull();
+  });
+
+  it("getTokenName still throws on a non-authorization failure", async () => {
+    mockTokenGet.mockRejectedValue(Object.assign(new Error("rate limited"), { status: 429 }));
+    await expect(manager.getTokenName("tk-self")).rejects.toBeInstanceOf(CloudflareRequestError);
   });
 
   it("findTokenByName returns the matching token, or null", async () => {

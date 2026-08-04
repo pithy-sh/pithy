@@ -118,6 +118,32 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
     return decodeResponse(CfTokenVerification, raw, "account token verify");
   }
 
+  /**
+   * The name of an account-owned token by id, or `null` — `GET /accounts/{id}/tokens/{token_id}`.
+   *
+   * Distinct from {@link CloudflareUserManager.getTokenName}, which hits `GET /user/tokens/:id` and
+   * answers `9109 — Valid user-level authentication not found` for a `cfat_*` caller. Both halves of
+   * the account-token identity read — verify and name — are account-scoped, or neither is.
+   *
+   * **Best effort, by contract.** Reading a token record needs `API Tokens Read`, which the
+   * least-privilege tokens {@link mintToken} produces deliberately do not carry: a 403 is the normal
+   * answer for a CI credential asking its own name, not a fault. So a denied read returns `null` and
+   * the caller falls back to the token id from {@link verifyToken} — which any account token can call
+   * with no permission at all. Every other failure still throws.
+   */
+  async getTokenName(tokenId: string): Promise<string | null> {
+    const raw = await cloudflareRequest(`get account token ${tokenId}`, async () => {
+      try {
+        return await this.getClient().accounts.tokens.get(tokenId, { account_id: this.accountId });
+      } catch (error) {
+        if (isAuthorizationError(error)) return null;
+        throw error;
+      }
+    });
+    const parsed = TokenName.safeParse(raw);
+    return parsed.success ? parsed.data.name : null;
+  }
+
   /** Every permission group available to account-owned tokens in this account (SDK auto-paginates). */
   async listPermissionGroups(): Promise<CfPermissionGroup[]> {
     return cloudflareRequest("list account token permission groups", async () => {
@@ -286,6 +312,11 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
 
 /** The rolled secret value Cloudflare returns from a value-roll — a non-empty bearer string. */
 const RolledTokenValue = z.string().min(1);
+
+/** Just the token's name, the piece the account-token actor path needs. */
+const TokenName = z
+  .object({ name: z.string().describe("The token's registered name — the audit actor id for an account token.") })
+  .describe("The one field a token-record read is narrowed to: its name.");
 
 /**
  * Index permission groups by display name, collecting **every** id that bears a name. A list rather

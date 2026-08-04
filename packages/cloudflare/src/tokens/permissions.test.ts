@@ -7,7 +7,7 @@ import { isPermissionKey, PERMISSION_GROUPS, resolvePermissionKeys } from "./per
 
 describe("resolvePermissionKeys", () => {
   test("maps short permission keys to their CF permission-group names, de-duped in order", () => {
-    expect(resolvePermissionKeys(["d1:read", "d1:write"])).toEqual(["D1 Read", "D1 Edit"]);
+    expect(resolvePermissionKeys(["d1:read", "d1:write"])).toEqual(["D1 Read", "D1 Write"]);
     expect(resolvePermissionKeys(["secrets:read", "secrets:write"])).toEqual([
       "Secrets Store Read",
       "Secrets Store Write",

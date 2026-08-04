@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
 import { accountResource, CloudflareAccountTokensManager } from "./accountTokensManager";
+import { PERMISSION_GROUPS } from "./permissions";
 
 /**
  * LIVE test for the account-token control plane against a real Cloudflare account. It mints a real,
@@ -21,6 +22,26 @@ describe.skipIf(!creds.hasCreds)("CloudflareAccountTokensManager — LIVE mint +
     const resolved = await manager.resolvePermissionGroups(["Secrets Store Read", "Secrets Store Write"]);
     expect(resolved).toHaveLength(2);
     for (const ref of resolved) expect(ref.id).toMatch(/^[0-9a-f]{32}$/);
+  }, 30_000);
+
+  test("every name in the permission catalog exists in the account, exactly once", async () => {
+    // The catalog is a hand-written map of our keys to Cloudflare's *display names*, and nothing local
+    // can tell that a name has drifted — `resolvePermissionKeys` happily returns a name that does not
+    // exist, and the mint fails much later, at `resolvePermissionGroups`. `d1:write` shipped as
+    // "D1 Edit" for exactly this reason: no group by that name, so `pithy token mint ci-system` threw
+    // on the one profile every CI pipeline runs under. Only the live account can settle it. Ambiguity
+    // is a failure too — Cloudflare reuses display names across scopes, and a name mapping to two ids
+    // cannot be resolved without silently picking the wrong scope.
+    const live = await manager.listPermissionGroups();
+    const counts = new Map<string, number>();
+    for (const group of live) counts.set(group.name, (counts.get(group.name) ?? 0) + 1);
+
+    const drifted = Object.entries(PERMISSION_GROUPS).flatMap(([key, names]) =>
+      names
+        .filter((name) => counts.get(name) !== 1)
+        .map((name) => `${key} -> "${name}" (${counts.get(name) ?? 0} matches)`),
+    );
+    expect(drifted).toEqual([]);
   }, 30_000);
 
   test("mints a scoped token, finds it by name, then deletes it", async () => {
