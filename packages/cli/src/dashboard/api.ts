@@ -201,11 +201,45 @@ export interface DashboardClient {
   createConnection(token: string, request: CreateConnectionRequest): Promise<IssuedConnection>;
   /** Generate a successor keypair for an existing connection. Appends only — nothing is replaced. */
   rotateKey(token: string, connectionId: string): Promise<IssuedKey>;
+  /**
+   * Re-point an existing connection at a new address.
+   *
+   * **Without this, `--update` is half an update.** It would rewrite the adopter's own enforcement row
+   * while the management client kept calling wherever it was told at connect — so the CLI would report
+   * success and every subsequent management call would fail against a dead address, which reads as an
+   * outage rather than as a stale registration.
+   */
+  updateConnection(token: string, connectionId: string, request: UpdateConnectionRequest): Promise<void>;
   /** Ask the client to sign a `ping` at `workerUrl` and report what happened. */
   verifyConnection(token: string, connectionId: string, workerUrl: string): Promise<ConnectionHealth>;
   /** Forget a connection on the client's side. The adopter's own revocation is deleting their row. */
   deleteConnection(token: string, connectionId: string): Promise<void>;
 }
+
+/**
+ * What `--update` re-registers: the address, and nothing else.
+ *
+ * Scopes are deliberately absent. The adopter's own row is the authority on what a connection may do —
+ * `assertNoScopeEscalation` refuses a client that returns more than was asked for — so telling the client
+ * about a scope change is neither necessary nor safe to trust. The address is the opposite case: the
+ * client is the one that has to *reach* the Worker, so it is the one that has to be told where it moved.
+ */
+export const UpdateConnectionRequest = z
+  .object({
+    workerUrl: z
+      .url()
+      .describe(
+        "Where this environment's Worker now answers. A custom domain, a rename, or a moved environment all change it, and a client still calling the old address fails in a way that looks like an outage.",
+      ),
+    basePath: z
+      .string()
+      .min(1)
+      .describe(
+        "Where the seam is now mounted. Together with `workerUrl` this fully determines the manifest address — and it is the half a client cannot discover, because it is the manifest's own address.",
+      ),
+  })
+  .describe("Re-point an existing connection at the address its Worker now answers on.");
+export type UpdateConnectionRequest = z.infer<typeof UpdateConnectionRequest>;
 
 /** Options for {@link httpDashboardClient}. */
 export interface HttpDashboardClientOptions {
@@ -337,6 +371,13 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
         { method: "POST", path: `/api/cli/connections/${encodeURIComponent(connectionId)}/rotate`, token },
         IssuedKey,
       ),
+
+    async updateConnection(token, connectionId, body) {
+      await request(
+        { method: "PATCH", path: `/api/cli/connections/${encodeURIComponent(connectionId)}`, token, body },
+        z.unknown(),
+      );
+    },
 
     verifyConnection: (token, connectionId, workerUrl) =>
       request(

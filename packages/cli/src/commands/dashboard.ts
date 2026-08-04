@@ -392,15 +392,21 @@ const connect = defineCommand({
       //
       // This replaces a `--worker-url` that had no fallback whatsoever: the interactive path prompted for
       // it free-text, and the non-interactive path — the agent and CI path — simply threw.
-      const target =
-        args.update && args["worker-url"] === undefined && publicKey === undefined
-          ? null
-          : await resolveConnectTarget({
-              projectDir,
-              environment: args.env,
-              ...(args.worker === undefined ? {} : { worker: args.worker }),
-              ...(args["worker-url"] === undefined ? {} : { workerUrl: args["worker-url"] }),
-            });
+      //
+      // Resolve only when an address is actually needed: on any create, and on an update that is
+      // re-pointing. A **key-only update** — `--update` with no `--worker-url`, including the offline
+      // `--public-key` rotation — needs no address at all, and resolving one would demand a Worker that
+      // resolves *and* composes the seam. That regressed offline rotation for a proxy-fronted project,
+      // whose address no config knows and whose whole point is not needing us.
+      const needsAddress = !args.update || args["worker-url"] !== undefined;
+      const target = !needsAddress
+        ? null
+        : await resolveConnectTarget({
+            projectDir,
+            environment: args.env,
+            ...(args.worker === undefined ? {} : { worker: args.worker }),
+            ...(args["worker-url"] === undefined ? {} : { workerUrl: args["worker-url"] }),
+          });
       if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
       const workerUrl = target?.workerUrl ?? args["worker-url"];
       // Only on a create. On an update, no `--scope` means "leave the grant alone", and a prompt that

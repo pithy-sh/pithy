@@ -3,6 +3,7 @@
 
 import { defineCommand } from "citty";
 import { askDomains, writeDomains } from "../project/askDomains";
+import { renderDomainsBlock } from "../project/domainPrompt";
 import { addWorker, listWorkers, removeWorker } from "../project/workerCommand";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -27,7 +28,10 @@ const add = defineCommand({
         workerName: report.name,
         interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
       });
-      if (asked.domains) await writeDomains(report.dir, asked.domains);
+      // A declaration the writer could not place must not vanish. `writeDomains` still generates the
+      // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
+      // source of truth, and an adopter who answered the prompt needs to know it did not land.
+      const wrote = asked.domains ? await writeDomains(report.dir, asked.domains) : null;
 
       if (args.json) {
         process.stdout.write(
@@ -36,6 +40,11 @@ const add = defineCommand({
         return;
       }
       process.stdout.write(`Worker ${report.name} scaffolded at ${report.dir}.\n`);
+      if (wrote && !wrote.declared && asked.domains) {
+        process.stdout.write(
+          `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+        );
+      }
       if (report.reconciled && report.port !== null) {
         process.stdout.write(`Pinned to port ${report.port}.\n`);
       } else {

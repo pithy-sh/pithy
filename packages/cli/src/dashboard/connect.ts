@@ -214,6 +214,29 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
       scopes: options.scopes ? [...options.scopes] : existing.scopes,
       updatedAt: now,
     };
+
+    // **The client is told first, and the row is saved only if that succeeded.**
+    //
+    // An update writes the address in two places — the adopter's own enforcement row, and the management
+    // client's record of where to call. Saving locally first and telling the client second leaves a
+    // window where the two disagree, and if the second call fails the CLI exits reporting an update that
+    // half happened: the row says `/admin`, the client keeps calling `/control-plane`, and every
+    // management call 404s in a way that reads as an outage rather than as a stale registration.
+    //
+    // Doing it in this order means a failure changes nothing. It also makes an unreachable client a loud
+    // failure rather than a silent divergence, which is the same discipline `saveKeys` applies to a
+    // rotation: one write, or none.
+    //
+    // Only the address is sent. Scopes stay local, because the adopter's row is the authority on what a
+    // connection may do — `assertNoScopeEscalation` refuses a client that claims more than was asked for,
+    // so there is nothing to gain by telling it and something to lose by trusting it.
+    if (connection.workerUrl !== existing.workerUrl || connection.basePath !== existing.basePath) {
+      await client.updateConnection(token, connection.id, {
+        workerUrl: connection.workerUrl,
+        basePath: connection.basePath,
+      });
+    }
+
     await options.registry.save(connection);
     // Re-pointing is not a rotation. The keys are the client's, and they still work.
     const health = await probe(client, token, connection);

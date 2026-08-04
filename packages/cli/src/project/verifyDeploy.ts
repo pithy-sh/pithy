@@ -68,6 +68,15 @@ export interface VerifyDeployOptions {
   attempts?: number;
   /** The backoff between probes, in ms. Defaults to 1000. */
   delayMs?: number;
+  /**
+   * How long one probe may take before it is abandoned, in ms. Defaults to 5 seconds.
+   *
+   * Without a bound, a domain that accepts a connection and never answers stalls on undici's 300-second
+   * headers timeout — five attempts of that is twenty-five minutes of a `pithy deploy` that looks hung,
+   * in CI, after the deploy has already succeeded. A health probe that cannot answer in five seconds has
+   * answered: this attempt failed, try the next one.
+   */
+  timeoutMs?: number;
   /** Injected so a test drives the probe with no network and no clock. */
   fetchImpl?: typeof fetch;
   /** Injected so a test does not actually wait. */
@@ -83,12 +92,18 @@ interface HealthBody {
 const DEFAULT_ATTEMPTS = 5;
 const DEFAULT_DELAY_MS = 1000;
 
+/** Five seconds per probe. A `/health` route that cannot answer in that has answered. */
+const DEFAULT_TIMEOUT_MS = 5000;
+
 /** One probe. Returns the reported version, or null for anything that did not answer with one. */
-async function probe(url: string, fetchImpl: typeof fetch): Promise<string | null> {
+async function probe(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<string | null> {
   try {
     const response = await fetchImpl(`${url.replace(/\/+$/, "")}/health`, {
       method: "GET",
       headers: { accept: "application/json" },
+      // An abort lands in the same `catch` as a DNS or TLS failure, which is right: all three mean this
+      // attempt learned nothing, and the retry loop is what decides whether that is fatal.
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return null;
     const body = (await response.json()) as HealthBody;
@@ -110,13 +125,14 @@ export async function verifyDeployedVersion(options: VerifyDeployOptions): Promi
   const attempts = options.attempts ?? DEFAULT_ATTEMPTS;
   const delayMs = options.delayMs ?? DEFAULT_DELAY_MS;
   const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   const observed: string[] = [];
   let answered = 0;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const version = await probe(options.url, fetchImpl);
+    const version = await probe(options.url, fetchImpl, timeoutMs);
     if (version !== null) {
       answered += 1;
       if (version === options.expectedVersion) {

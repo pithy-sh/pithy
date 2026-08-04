@@ -169,7 +169,10 @@ async function writeDomainsDeclaration(workerDir: string, domains: WorkerDomains
     return false;
   }
 
-  if (source.includes("domains:")) return false; // already declared — never write a second one
+  // Line-anchored, not `includes`. A bare substring match also fires on a comment mentioning `domains:`,
+  // on a nested key, and on the word inside a string — any of which would silently skip a write the
+  // adopter asked for.
+  if (/^\s*domains\s*:/m.test(source)) return false;
   const anchor = source.indexOf("const config = {");
   if (anchor === -1) return false;
   const insertAt = source.indexOf("\n", anchor) + 1;

@@ -64,6 +64,7 @@ function fakeClient(overrides: Partial<DashboardClient> = {}): DashboardClient {
       intervalSeconds: 1,
     }),
     pollForConnectToken: async () => ({ connectToken: "ct_1", expiresInSeconds: 300 }),
+    updateConnection: async () => {},
     createConnection: async () => ({
       connectionId: CONNECTION_ID,
       keyId: "key_1",
@@ -251,6 +252,86 @@ describe("connectDashboard — the dashboard path", () => {
     const error = await connectDashboard({ ...base, registry: fakeRegistry() }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.action).toBeTruthy();
+  });
+});
+
+describe("connectDashboard — an update re-points the client, not only the row", () => {
+  test("tells the client the new address before saving it locally", async () => {
+    // Two places hold the address: the adopter's enforcement row, and the client's record of where to
+    // call. Writing only the first leaves the CLI reporting success while every management call goes to
+    // a dead address — which reads as an outage, not as a stale registration.
+    const told: { connectionId: string; workerUrl: string; basePath: string }[] = [];
+    const registry = fakeRegistry(existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }));
+
+    await connectDashboard({
+      registry,
+      project: "acme",
+      environment: "prod",
+      update: true,
+      workerUrl: "https://new.example.com",
+      basePath: "/admin",
+      client: fakeClient({
+        updateConnection: async (_token, connectionId, request) => {
+          told.push({ connectionId, ...request });
+        },
+      }),
+      authorize: async () => "ct_1",
+      now: () => NOW,
+    });
+
+    expect(told).toEqual([{ connectionId: CONNECTION_ID, workerUrl: "https://new.example.com", basePath: "/admin" }]);
+    expect(registry.current()?.workerUrl).toBe("https://new.example.com");
+    expect(registry.current()?.basePath).toBe("/admin");
+  });
+
+  test("changes nothing locally when the client cannot be re-pointed", async () => {
+    // Remote first, then local. A failure has to leave both sides agreeing on the old address rather
+    // than leaving the row ahead of the client — the same "one write, or none" rule a rotation follows.
+    const registry = fakeRegistry(existing({ workerUrl: "https://old.example.com", basePath: "/control-plane" }));
+
+    await expect(
+      connectDashboard({
+        registry,
+        project: "acme",
+        environment: "prod",
+        update: true,
+        workerUrl: "https://new.example.com",
+        client: fakeClient({
+          updateConnection: async () => {
+            throw new Error("the client refused that request");
+          },
+        }),
+        authorize: async () => "ct_1",
+        now: () => NOW,
+      }),
+    ).rejects.toThrow(/refused/);
+
+    expect(registry.current()?.workerUrl).toBe("https://old.example.com");
+  });
+
+  test("does not call the client when only the scopes changed", async () => {
+    // A scope change is entirely the adopter's side — their row is the authority, and telling the client
+    // what it may do would be asking it to enforce its own limits.
+    let calls = 0;
+    const registry = fakeRegistry(existing({ workerUrl: "https://api.example.com", basePath: "/control-plane" }));
+
+    await connectDashboard({
+      registry,
+      project: "acme",
+      environment: "prod",
+      update: true,
+      scopes: ["manifest:read"],
+      client: fakeClient({
+        updateConnection: async () => {
+          calls += 1;
+        },
+      }),
+      authorize: async () => "ct_1",
+      now: () => NOW,
+    });
+
+    expect(calls).toBe(0);
+    expect(registry.current()?.scopes).toEqual(["manifest:read"]);
   });
 });
 
