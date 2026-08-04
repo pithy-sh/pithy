@@ -37,6 +37,21 @@ export const ENVIRONMENT_VAR = "ENVIRONMENT";
  */
 export const WORKER_VAR = "WORKER";
 
+/**
+ * The version-metadata binding Cloudflare injects, naming the exact build that is running.
+ *
+ * Not a var — a binding, declared as `"version_metadata": { "binding": "CF_VERSION_METADATA" }` and
+ * populated by the platform rather than by the scaffold. It belongs beside the three vars anyway,
+ * because it answers the same question they do and is read on the same path: this is what a Worker knows
+ * about itself.
+ *
+ * **The name is the join.** It is what `pithy init` and `pithy worker add` write and what this module
+ * reads; binding a differently-named one creates a binding nothing consumes, which is the failure this
+ * whole thread is repairing — the reader shipped, the template never declared it, and the field was
+ * silently absent in every scaffolded project.
+ */
+export const VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+
 /** Where a Worker is running, as it can state about itself. Every field is `null` when unstamped. */
 export interface WorkerIdentity {
   /** The owning project, or `null` when the Worker carries no `PROJECT` var. */
@@ -45,6 +60,16 @@ export interface WorkerIdentity {
   environment: string | null;
   /** The Worker's `apps/<name>` directory name, or `null` when unstamped. */
   worker: string | null;
+  /**
+   * The deployed build's Cloudflare version id, or `null` off-platform and wherever the
+   * `CF_VERSION_METADATA` binding is absent.
+   *
+   * Opaque and per-deploy: it identifies *exactly which build* is running, which is the right answer for
+   * forensics, for reproducing a report, and for pinning what an audited action ran against. It carries
+   * no version semantics, so it says nothing about which features a Worker has — that is what the
+   * composed package versions in the control-plane manifest are for.
+   */
+  version: string | null;
 }
 
 /** One var, trimmed, or `null` for anything that is not a non-empty string. */
@@ -67,12 +92,29 @@ function stamped(env: Record<string, unknown>, name: string): string | null {
  */
 export function workerIdentity(env: unknown): WorkerIdentity {
   if (typeof env !== "object" || env === null || Array.isArray(env)) {
-    return { project: null, environment: null, worker: null };
+    return { project: null, environment: null, worker: null, version: null };
   }
   const vars = env as Record<string, unknown>;
   return {
     project: stamped(vars, PROJECT_VAR),
     environment: stamped(vars, ENVIRONMENT_VAR),
     worker: stamped(vars, WORKER_VAR),
+    version: workerVersion(env),
   };
+}
+
+/**
+ * The deployed build's version id, off the `CF_VERSION_METADATA` binding, or `null`.
+ *
+ * Exported on its own because two callers want the id without the rest of the identity: the request
+ * logger's `version` correlation field, and the control-plane manifest and response header. Same
+ * never-throws, never-guesses contract as {@link workerIdentity} — an absent binding is an ordinary,
+ * permanent state for any Worker scaffolded before it was declared.
+ */
+export function workerVersion(env: unknown): string | null {
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return null;
+  const meta = (env as Record<string, unknown>)[VERSION_METADATA_BINDING];
+  if (typeof meta !== "object" || meta === null) return null;
+  const id = (meta as { id?: unknown }).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }

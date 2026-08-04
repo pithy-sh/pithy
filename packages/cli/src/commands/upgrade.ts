@@ -144,6 +144,7 @@ function planLines(plan: ReconcilePlan): string[] {
     if (summary) lines.push(`${cap.name}: ${summary}`);
   }
   for (const name of plan.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
+  if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
   if (plan.pendingMigrations > 0) {
     const pending = count(plan.pendingMigrations, "migration");
     lines.push(`${pending} pending. Run pithy upgrade --migrate, or pithy migrate --env ${plan.env}.`);
@@ -160,6 +161,8 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
     if (summary) lines.push(`${cap.name}: ${summary}`);
   }
   for (const name of applied.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
+  if (applied.addedVersionMetadata) lines.push("version_metadata: added CF_VERSION_METADATA.");
+  else if (plan.missingVersionMetadata) lines.push("version_metadata: names another binding. Left alone.");
   if (applied.migrated) {
     const total = applied.migrations.reduce((sum, run) => sum + run.results.length, 0);
     lines.push(total === 0 ? "Migrations up to date." : `Migrated ${count(total, "migration")}.`);

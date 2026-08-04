@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { TypedKv } from "../../kv/kv";
 import { CONTROL_PLANE_JTI_TTL_SECONDS } from "../token/claims";
-import { controlPlaneKvNamespaces, kvReplayGuard, SeenJti } from "./replay";
+import { controlPlaneKvNamespaces, kvReplayGuard, SeenJti } from "./kvGuard";
 
 /**
  * The guard against real Workers KV in workerd — the node suite proves the logic, this proves the

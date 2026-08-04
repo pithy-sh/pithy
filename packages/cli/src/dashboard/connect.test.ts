@@ -91,6 +91,7 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
     environment: "prod",
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
+    basePath: "/control-plane",
     scopes: ["manifest:read"],
     keys: [key("key_1", at)],
     createdAt: at,
@@ -104,6 +105,7 @@ const base = {
   project: "acme",
   environment: "prod",
   workerUrl: "https://api.example.com",
+  basePath: "/control-plane",
   now: () => NOW,
   authorize: async () => "ct_1",
 };
@@ -222,6 +224,7 @@ describe("connectDashboard — the dashboard path", () => {
       client,
       update: true,
       workerUrl: "https://admin.example.com",
+      basePath: "/control-plane",
       scopes: ["manifest:read", "keys:rotate"],
     });
 

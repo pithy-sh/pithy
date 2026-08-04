@@ -12,6 +12,7 @@ import { provisionGuard } from "./http/provisionGuard";
 import { registerVectorRoutes } from "./http/routes";
 import { vector_0001_documents } from "./migrations/0001_documents";
 import { vectorExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 import { vectorWorkflows } from "./workflows/specs";
 
 /**
@@ -93,6 +94,9 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
 
   const capability = defineCapability({
     name: "vector",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     requiredBindings,
     config: VectorConfig,
     workflows: vectorWorkflows,

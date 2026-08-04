@@ -8,7 +8,7 @@
  * deep path (`@pithy-sh/audit/src/...`); this is the documented contract, not a barrel.
  */
 
-export { defineAuditActions } from "./actions";
+export { AuditTrailActions, defineAuditActions } from "./actions";
 export { type AuditCapability, type AuditConfigInput, audit, isAuditCapability } from "./capability";
 export { type CliAuditEvent, emitFromCLI } from "./cli/emitFromCLI";
 export {
@@ -19,5 +19,11 @@ export {
 } from "./cli/resolveActor";
 export { AuditEventRow } from "./data/auditEvent";
 export { type AuditDatabase, auditDatabase } from "./data/tables";
-export { type AuditQuery, queryAuditEvents } from "./query";
+export {
+  AUDIT_CONTROL_PLANE_SCOPES,
+  AUDIT_EVENT_DETAIL_READ_SCOPE,
+  AUDIT_TRAIL_READ_SCOPE,
+  auditAdminRoutes,
+} from "./http/guards";
+export { type AuditEventPage, type AuditQuery, pageAuditEvents, queryAuditEvents, readAuditEvent } from "./query";
 export { type AuditRecorderOptions, createAuditEmit, recordAuditEvent } from "./recorder";

@@ -39,9 +39,14 @@ export const audit_0001_init: Migration = {
       // emitter. Nullable, and permanently so: a Worker scaffolded without the vars carries none of
       // them, and a CLI-originated action came from no Worker at all. `null` means "not recorded",
       // which is a true statement; a default would invent an origin and make the invention unqueryable.
+      // `version` joins them for the same reason and on the same terms: the Cloudflare build id the
+      // recorder read from `CF_VERSION_METADATA`. It is what turns "this was revoked" into "this was
+      // revoked, by this subject, against this exact build". Null for a CLI action, and for a Worker
+      // that does not declare the binding.
       .addColumn("project", "text")
       .addColumn("environment", "text")
       .addColumn("worker", "text")
+      .addColumn("version", "text")
       .execute();
 
     // Unique on eventId — the recorder's idempotency key. A retried write reuses the same eventId, so

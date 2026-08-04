@@ -6,7 +6,7 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { countPendingMigrations } from "../migrations/run";
-import { deployProject, pendingWarning, summarizeDeploy } from "../project/deploy";
+import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -73,7 +73,11 @@ export default defineCommand({
       const pending = env ? await pendingFor(projectDir, env) : undefined;
       const audit = await buildAudit(projectDir, env ?? "dev");
       const deploys = await deployProject({ projectDir, env, audit });
-      const failed = deploys.some((deploy) => !deploy.ok);
+      // A deploy that shipped but is not the thing answering at the declared address is a failure too,
+      // and it fails the pipeline rather than printing a line nobody reads. Only a *consistent* mismatch
+      // counts — a gradual rollout and a Worker that cannot report its version are both inconclusive,
+      // and failing on either would train everyone to ignore the check.
+      const failed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
 
       if (args.json) {
         process.stdout.write(

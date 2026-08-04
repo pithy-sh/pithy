@@ -8,7 +8,7 @@ import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/sr
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
-import { controlplane_0001_connections } from "@pithy-sh/core/src/controlPlane/migrations/0001_connections";
+import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import {
   ANY_VERIFIED_CALLER,
   KEYS_ROTATE_SCOPE,
@@ -187,6 +187,7 @@ async function registerConnection(publicKey: Ed25519PublicJwk): Promise<void> {
         environment: ENVIRONMENT,
         issuer: ISSUER,
         workerUrl: "https://worker.example.test",
+        basePath: "/control-plane",
         scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
         keys: [
           {
@@ -263,7 +264,13 @@ function allEmpty(tables: readonly string[]): Record<string, number> {
 }
 
 beforeEach(async () => {
-  for (const table of [...AUTH_TABLES, "pithy_controlplane_connections", "pithy_migrations", "pithy_migrations_lock"]) {
+  for (const table of [
+    ...AUTH_TABLES,
+    "pithy_controlplane_connections",
+    "pithy_controlplane_replays",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([
@@ -278,7 +285,12 @@ beforeEach(async () => {
       database: "app",
       namespace: "controlplane",
       order: CONTROLPLANE_MIGRATION_ORDER,
-      migrations: { "0001_connections": controlplane_0001_connections },
+      // All three, because the replay set is a table now and it sits on the verification path for every
+      // control-plane call — an unmigrated database fails them all, not just a replayed one — and 0003
+      // adds the `base_path` column the connection row carries.
+      migrations: {
+        "0001_init": controlplane_0001_init,
+      },
     },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');

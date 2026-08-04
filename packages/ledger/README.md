@@ -74,6 +74,26 @@ POST /ledger/:currency/debit         → remove funds from a player  (bearer | s
 
 A read is always scoped to the authenticated caller — never a user id in the request body — so no player can read or move another's balance without the admin scope. Add `@pithy-sh/auth`; without it every route is denied.
 
+## Management surface
+
+A dashboard reads the ledger through the control-plane seam. It is **read-only**, and permanently so.
+
+```
+GET /ledger/admin/accounts                                → every account, paged   (ledger:accounts:read)
+GET /ledger/admin/accounts/:userId                        → one player's balances  (ledger:accounts:read)
+GET /ledger/admin/accounts/:userId/:currency/transactions → one account's entries  (ledger:transactions:read)
+```
+
+Two scopes rather than one admin flag, because they disclose different things. A balance is a number. An entry log is every wager, payout and purchase in order, with whatever note your own code wrote on it. Scope matching is exact, so holding one confers nothing about the other.
+
+There is no adjustment route, and that is deliberate. Writing to a balance ledger from an admin console needs everything every other movement gets — an idempotency key so a double-click does not pay twice, a recorded reason, a reversal path — and a console route with none of those would be the one place the ledger's guarantees do not hold. Move balances in-process with `openLedger`, or over the trusted-server routes above.
+
+Every management read is audited, including the reads. A credential quietly paging every player's history changes nothing, so the audit trail is the only place it shows up.
+
+These routes are always mounted. Without `controlplane()` composed, each one denies with `controlplane/not_connected` — a management surface that appears only when something else is installed is a surface nobody can discover.
+
+Paths follow your `basePath`: mount the ledger at `/wallet` and the manifest advertises `/wallet/admin/accounts`.
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

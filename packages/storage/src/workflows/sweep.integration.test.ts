@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { loadIntegrationCreds } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { beforeAll, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { StorageObject } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";
 import { deriveObjectKey } from "../object/key";
 import { MIN_PART_SIZE_BYTES } from "../object/multipart";
 import type { ObjectStore } from "../object/store";
-import { reapStaleStorageResources, withLiveBucket, withLiveDatabase } from "../test-utils/liveStorage";
+import { withLiveBucket, withLiveDatabase } from "../test-utils/liveStorage";
 import { sweepStorage } from "./sweep";
 
 /**
@@ -53,7 +53,8 @@ async function rowExists(db: StorageDatabase, id: string): Promise<boolean> {
 
 describe.skipIf(!creds.hasCreds || !creds.r2)("sweepStorage — LIVE against real R2 and real D1", () => {
   // Clean up whatever a previous aborted run orphaned before creating anything new.
-  beforeAll(() => reapStaleStorageResources(creds));
+  // Stale buckets and databases are reclaimed once per run by `globalSetup`, not here. See
+  // `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
 
   test("reconciles both directions, leaves live data alone, and re-runs to nothing", async () => {
     await withLiveDatabase(creds, async (db) => {

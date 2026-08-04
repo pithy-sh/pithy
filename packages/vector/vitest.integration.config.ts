@@ -13,6 +13,10 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
+    // This package mints Vectorize indexes and previously reaped none of them: the only index reaper
+    // lived in `@pithy-sh/cloudflare`, so `--filter @pithy-sh/vector` created and never reclaimed.
+    globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 300_000,
     hookTimeout: 300_000,
     pool: "forks",

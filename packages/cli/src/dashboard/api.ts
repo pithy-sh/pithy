@@ -120,6 +120,12 @@ export const CreateConnectionRequest = z
       .describe(
         "This environment's deployed Worker URL — the address the management client calls. Setup, not an afterthought: a client cannot reach a Worker it cannot address.",
       ),
+    basePath: z
+      .string()
+      .min(1)
+      .describe(
+        "Where the control-plane seam is mounted on that Worker, from its resolved config — `/control-plane` unless the adopter moved it. **The one address a client cannot discover from the manifest, because it is the manifest's own address.** Everything else is discoverable: `AdminRoute.path` carries the fully mounted path so no client hardcodes a capability's mount point. Without this, a client has to assume the default, and an adopter who set `basePath: \"/admin\"` registers successfully, passes the ping, and then 404s on every call — the ping is called at the same assumed path, so a wrong base path fails identically to an unreachable Worker and the operator diagnoses the wrong problem.",
+      ),
     scopes: z
       .array(ControlPlaneScope)
       .min(1)

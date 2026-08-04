@@ -7,10 +7,13 @@ import { createBounceHandler } from "./bounce/handler";
 import { emailSigningRegistry } from "./crypto/signingKey";
 import { emailDatabase, emailSuppressionTables, emailTables } from "./data/tables";
 import { registerCallbacks } from "./http/callbacks";
+import { emailAdminRoutes } from "./http/guards";
+import { registerEmailAdminRoutes } from "./http/routes";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
 import { type EnqueueDeps, type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 import { CustomTheme, type EmailTheme, resolveTheme } from "./templates/theme";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /** The send Workflow binding shape — declared by `EnqueueDeps` so the capability and adopters agree. */
 type SendWorkflowBinding = NonNullable<EnqueueDeps["sender"]>;
@@ -51,6 +54,13 @@ export const EmailConfig = z
     baseUrl: z
       .string()
       .describe("The public base URL of the app worker; tracking and unsubscribe links are built against it."),
+    basePath: z
+      .string()
+      .startsWith("/")
+      .default("/email")
+      .describe(
+        "Where the management routes mount (the send log and the suppression list). Not the callback links: those keep their fixed `/_pithy/email` prefix, because a tracking URL is already minted into mail sitting in somebody's inbox and moving it would break every link ever sent.",
+      ),
     theme: z
       .enum(["saffron", "midnight", "forest", "rose"])
       .default("saffron")
@@ -103,6 +113,9 @@ export function email(config: EmailConfigInput): EmailCapability {
   const theme = resolveTheme(resolved.theme, resolved.customTheme);
   const capability = defineCapability({
     name: "email",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     // The link-signing key is read through @pithy-sh/secrets, so the secrets capability must be
     // composed; createBackend fails fast if it isn't (rather than 500-ing each link-signing request).
     dependsOn: ["secrets"],
@@ -127,7 +140,9 @@ export function email(config: EmailConfigInput): EmailCapability {
         binding: "EMAIL_SUPPRESSIONS",
         tables: emailSuppressionTables,
         migrationOrder: EMAIL_SUPPRESSIONS_MIGRATION_ORDER,
-        migrations: { "0001_suppressions": email_0001_suppressions },
+        migrations: {
+          "0001_suppressions": email_0001_suppressions,
+        },
       },
     },
     /**
@@ -162,7 +177,26 @@ export function email(config: EmailConfigInput): EmailCapability {
         optional: true,
       },
     },
-    routes: registerCallbacks,
+    /**
+     * Two route trees, one hook.
+     *
+     * The public callbacks keep their fixed `/_pithy/email` prefix — those URLs are already minted into
+     * mail nobody can recall — and the management routes mount under the configured `basePath`. They
+     * are registered together here rather than being two capabilities, because they are one
+     * capability's surface and `adminRoutes` below has to describe what this exact composition mounted.
+     */
+    routes: (app) => {
+      registerCallbacks(app);
+      registerEmailAdminRoutes({ basePath: resolved.basePath })(app);
+    },
+    /**
+     * The management surface, advertised on `GET /control-plane/manifest`.
+     *
+     * Built from the **resolved** `basePath` — the same value `registerEmailAdminRoutes` mounts
+     * against, read once. A default here and a default there is how a manifest comes to describe a
+     * route tree nobody serves.
+     */
+    adminRoutes: emailAdminRoutes(resolved.basePath),
     email: createBounceHandler(),
   });
   const enqueue = (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>

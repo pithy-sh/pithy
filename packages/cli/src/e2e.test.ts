@@ -61,7 +61,11 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   try {
     const res = await miniflare.dispatchFetch("http://localhost/health");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok" });
+    // `version` is null here because this harness builds its own Miniflare from the scaffolded
+    // `wrangler.jsonc` without a version-metadata binding — Cloudflare populates that at deploy, and
+    // there is no deploy in an e2e that never leaves the machine. The scaffold *declares* it, which is
+    // what `scaffoldParity.test.ts` pins.
+    expect(await res.json()).toEqual({ status: "ok", version: null });
   } finally {
     await miniflare.dispose();
   }

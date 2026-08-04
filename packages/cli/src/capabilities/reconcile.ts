@@ -12,6 +12,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { z } from "zod";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
@@ -100,6 +101,11 @@ export const ReconcilePlan = z
       .array(z.string())
       .describe(
         "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
+      ),
+    missingVersionMetadata: z
+      .boolean()
+      .describe(
+        "Whether this Worker's wrangler.jsonc lacks the `version_metadata` binding named `CF_VERSION_METADATA`. Without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it; a config naming a different binding is reported and left alone.",
       ),
   })
   .describe(
@@ -251,6 +257,13 @@ function computeMissingBindings(
 ): MissingBinding[] {
   const missing: MissingBinding[] = [];
   for (const binding of manifest.requiredBindings) {
+    // An `optional` binding is one the capability only needs under a particular config — the seam's
+    // `CONTROL_PLANE` KV, which nothing reads under the default `d1` replay backend. The manifest is one
+    // static file and cannot vary with config, so it declares the union and marks such a binding
+    // optional; writing it anyway would make every project provision and bind a namespace no code path
+    // in the tree ever reads, and re-add it the moment an adopter deleted it. `createBackend` reads the
+    // same flag to decide whether a missing binding is fatal at assembly.
+    if (binding.optional) continue;
     for (const { env, stanza } of stanzas) {
       const has = stanzaHasBinding(stanza, binding);
       if (has === null) break; // unsupported kind — the same for every env, skip it entirely
@@ -455,7 +468,11 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
   // in its composed set, so the question is per Worker exactly as the rest of the plan is.
   const entitlementGap = await findEntitlementGap(workerDir, capabilities);
-  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap };
+  // Not a capability binding, so it does not travel through the manifest path above: no capability
+  // requires it, every Worker wants it, and the platform populates it. It is a property of the scaffold,
+  // and the reason it is reconciled at all is that it shipped missing from both templates once already.
+  const missingVersionMetadata = !hasVersionMetadata(await readWranglerConfig(workerDir).catch(() => null));
+  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap, missingVersionMetadata };
 }
 
 /**
@@ -471,6 +488,13 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
  */
 function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest, scope: NameScope): void {
   for (const binding of manifest.requiredBindings) {
+    // An `optional` binding is one the capability only needs under a particular config — the seam's
+    // `CONTROL_PLANE` KV, which nothing reads under the default `d1` replay backend. The manifest is one
+    // static file and cannot vary with config, so it declares the union and marks such a binding
+    // optional; writing it anyway would make every project provision and bind a namespace no code path
+    // in the tree ever reads, and re-add it the moment an adopter deleted it. `createBackend` reads the
+    // same flag to decide whether a missing binding is fatal at assembly.
+    if (binding.optional) continue;
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
@@ -617,6 +641,8 @@ export interface ReconcileApplied {
   migrated: boolean;
   /** The per-database migration runs, when `migrated`; empty otherwise. */
   migrations: DatabaseRun[];
+  /** Whether this run added the `version_metadata` binding the Worker was missing. */
+  addedVersionMetadata: boolean;
 }
 
 /** Add every plan capability's missing bindings to the Worker's wrangler.jsonc, comment-preserving. Returns what was added per capability. */
@@ -715,6 +741,9 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
 
   const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project);
   const addedConfigKeys = await applyConfigKeys(workerDir, plan);
+  // Idempotent, and a no-op on a Worker that already declares it — including one that names a different
+  // binding, which is reported rather than repointed.
+  const addedVersionMetadata = plan.missingVersionMetadata ? await applyVersionMetadata(workerDir) : false;
 
   const perCapability: CapabilityApplied[] = [];
   for (const cap of plan.perCapability) {
@@ -738,5 +767,12 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
     migrated = true;
   }
 
-  return { worker: plan.worker, perCapability, ejectedSkipped: plan.ejectedSkipped, migrated, migrations };
+  return {
+    worker: plan.worker,
+    perCapability,
+    ejectedSkipped: plan.ejectedSkipped,
+    migrated,
+    migrations,
+    addedVersionMetadata,
+  };
 }

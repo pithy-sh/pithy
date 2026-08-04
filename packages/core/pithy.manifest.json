@@ -1,7 +1,7 @@
 {
   "name": "controlplane",
   "package": "@pithy-sh/core",
-  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "kv", "name": "CONTROL_PLANE" }],
+  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "kv", "name": "CONTROL_PLANE", "optional": true }],
   "peerCapabilities": [],
   "optionalCapabilities": ["audit"],
   "migrationNamespace": "controlplane",
@@ -9,8 +9,8 @@
   "scaffold": [
     "Add a `controlplane()` block to pithy.config.ts. Every option has a working default; leave `issuer` alone unless you run your own management client.",
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
-    "Bind a KV namespace named CONTROL_PLANE in wrangler.jsonc. It holds spent token ids for a few minutes and nothing else.",
-    "Run `pithy migrate` to create pithy_controlplane_connections.",
+    "Only if you set `replayBackend: \"kv\"`: bind a KV namespace named CONTROL_PLANE in wrangler.jsonc. The default records spent token ids in D1 instead, where a primary key decides the race, so most projects need no KV at all.",
+    "Run `pithy migrate` to create pithy_controlplane_connections and pithy_controlplane_replays.",
     "Run `pithy dashboard connect --env <environment>` to register a management client. Until you do, every control-plane route denies — which is the correct state, not a broken one.",
     "Add `@pithy-sh/audit` if it is not already installed. The seam emits on every allowed and every denied call, and this is the surface where an unaudited admin action is least acceptable."
   ],

@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { beforeAll, describe, expect, test } from "vitest";
-import { loadIntegrationCreds, reapStaleTestResources, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { describe, expect, test } from "vitest";
+import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
 import { CloudflareVectorizeProvisioner, type VectorizeMetadataIndex } from "./vectorizeProvisioner";
 
 /**
@@ -34,21 +35,18 @@ async function waitForMetadataIndex(
     if (found) return found;
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-  throw new Error(`metadata index ${indexName}.${propertyName} never appeared`);
+  throw new InternalError({
+    message: "A Vectorize metadata index never became visible.",
+    action: "Re-run the suite. If it repeats, check Vectorize's status — the control plane may be degraded.",
+    detail: `metadata index ${indexName}.${propertyName} never appeared after 30 polls at 2s`,
+  });
 }
 
 describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () => {
   // Teardown only runs while the process lives. A run killed by a timeout or a Ctrl-C orphans its index —
-  // which is how two of them once sat on a real account for a month. Reaping first makes each run clean up
-  // after the last, so the failure mode self-heals rather than accumulating.
-  beforeAll(async () => {
-    const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
-    await reapStaleTestResources({
-      label: "Vectorize index",
-      list: async () => (await provisioner.listIndexes()).map((index) => index.name),
-      remove: (name) => provisioner.deleteIndex(name),
-    });
-  });
+  // which is how two of them once sat on a real account for a month, and how `pithy-int-vecprov-…` came
+  // back. The reclaim is now the run's own `globalSetup` sweep rather than a `beforeAll` here, so it also
+  // covers `@pithy-sh/vector`'s indexes, which this suite never saw. See `test-utils/reap.ts`.
 
   test("validates access, creates an index, finds it, indexes a metadata property, then deletes it", async () => {
     const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });

@@ -63,17 +63,31 @@ One keypair per connection — per customer, per project, per environment. A lea
 **We generate the keypair. The private key is born in our infrastructure and never leaves it.** The alternative — your CLI generating one and sending it to us — puts key material on the wire for no benefit.
 
 ```
-pithy dashboard connect --env production
+pithy dashboard connect --env prod
 ```
 
 1. The CLI starts a **device-code flow** against the management client's origin, prints a short user code, and opens your browser. Same shape as `wrangler login`. *This* leg is genuine user delegation, which is why a browser authorization flow belongs here and not on the machine-to-machine leg.
 2. You approve in the browser. The CLI polls and receives a short-lived connect token.
-3. The CLI requests a connection for this project, environment, the scopes you chose, and **this environment's Worker URL**.
+3. The CLI requests a connection for this project, environment, the scopes you chose, and **the seam's address on this Worker** — its URL and its base path.
 4. The dashboard generates an Ed25519 keypair, keeps the private half, and returns `{ connectionId, keyId, publicKeyJwk, issuer }`.
 5. The CLI writes the registration into **your D1**.
 6. **Nothing reports connected until a signed `ping` round-trip succeeds** against your Worker.
 
-The Worker URL is part of setup, not an afterthought — the client cannot reach a Worker it cannot address. It also changes: a custom domain, a renamed Worker, or a moved environment breaks the connection, so `pithy dashboard connect --update` re-points it. A connection whose ping fails surfaces as *needs reconnecting*, never as a silent dead link.
+### The address, and which Worker it belongs to
+
+**You do not pass the URL.** `connect` resolves it from the project: the Worker's `domains` declaration for that environment, else its first `routes` pattern, else a hand-set `vars.BASE_URL`. It prints what it found and where it came from before registering. `--worker-url` still overrides — a proxy in front of your Worker has an address no config knows — and it is the only way to say so.
+
+**It also names the Worker.** The administrative surface is composed on one Worker per project, and a connection targets that one. In a project with several, `connect` refuses the ambiguity and asks for `--worker <name>` rather than guessing; a Worker that composes no `controlplane()` is refused outright, because there is nothing there to connect to.
+
+**And it sends the base path.** The seam's mount point is configurable, defaulting to `/control-plane`, and it is the one address a client cannot discover — because it *is* the manifest's own address. Everything else is discoverable: `AdminRoute.path` carries the fully mounted path, so no client hardcodes a capability's mount point. Without this, a client has to assume the default, and if you mounted the seam at `/admin` you would register cleanly, pass the `ping` — called at that same assumed path — and then 404 on every call, with the operator diagnosing the wrong problem. It is stored beside the URL, and `--update` re-registers both.
+
+The address changes: a custom domain, a renamed Worker, or a moved environment breaks the connection, so `pithy dashboard connect --update` re-points it. A connection whose ping fails surfaces as *needs reconnecting*, never as a silent dead link.
+
+### One connection per project and environment
+
+A customer may register **several projects**, each its own connection with its own keypair. The dashboard resolves how many a customer has and offers a picker when there is more than one; a single project needs no ceremony.
+
+Sibling Workers are not separately addressable, and that is deliberate: the data being administered is shared through binding names rather than owned per Worker, so a second connection to a sibling would be a second credential onto the same rows.
 
 ### Without a dashboard
 
@@ -138,18 +152,26 @@ Every step default-denies, and every failure raises the same `controlplane/inval
 5. `aud` must equal the loaded connection's id, and its `environment` must equal this Worker's. **A staging credential cannot reach production.**
 6. `iss` must equal the issuer that connection was registered against.
 7. `exp` and `iat` are checked with a bounded clock skew, and a token claiming a lifetime longer than the configured maximum is rejected outright.
-8. `jti` is claimed in a short-TTL replay set. Already spent: denied.
+8. `jti` is claimed in the replay set, as a single-use insert. Already spent: denied.
 9. The SHA-256 digest of the raw body is recomputed and compared. A signature over claims that do not bind the body would let an attacker swap the payload.
 10. The scope check of §8.
 11. An audit event is emitted — allowed or denied — and only then does the handler run.
 
-### The replay guard's one weakness, stated plainly
+### The replay guard, and why it now holds
 
-The `jti` set lives in Workers KV, which has no compare-and-set and is **eventually consistent across colocations**. A `put` in one PoP is not immediately visible in another, so a replay arriving at a different colo inside the propagation window can pass the guard.
+A token is spendable exactly once, and that is a guarantee rather than a best effort.
 
-The window is bounded by KV propagation, and the exploitable action is narrow: the token is bound to one connection, one scope, one body digest, and a 60-second expiry, so what can be replayed is the exact same call and nothing else.
+The claim is a single-use insert into `pithy_controlplane_replays`, where `jti` is the primary key: `INSERT … ON CONFLICT DO NOTHING RETURNING`. The insert either wins the key or conflicts, so there is no window between deciding and recording, and of N concurrent presentations of one token SQLite admits exactly one — wherever those requests landed. It is the same move `@pithy-sh/auth` makes on the other side, consuming a refresh token with a conditional delete so that of N presentations exactly one wins.
 
-The guard is behind a `ReplayGuard` interface for exactly this reason. A D1-backed implementation — `INSERT … ON CONFLICT DO NOTHING RETURNING`, the same trick `@pithy-sh/auth` uses to make refresh tokens single-use — is strongly consistent and substitutes without touching a call site. The cost is a D1 write on the hot path, which is why KV is the default and this paragraph exists instead.
+The key is `jti` alone, not `(jti, connectionId)`. A composite would let a token captured from one connection be spent again against another, which is the property the guard exists to deny; the connection id is recorded beside it for the incident, never for the decision.
+
+**This closes a hole earlier versions documented against themselves.** The set used to live in Workers KV, which has no compare-and-set and is eventually consistent across colocations — a `put` in one PoP is not immediately visible in another, so a replay arriving at a different colo inside the propagation window passed the guard. The exploitable action was narrow, since the token is bound to one connection, one scope, one body digest, and a 60-second expiry. Narrow is not harmless: a nudge sends real people a second email, a key registration appends, and anything that enqueues work enqueues it again.
+
+The cost of closing it is one D1 write, and here that is close to free. **A control-plane hot path is an administrator clicking something** — low volume, high privilege — which is a different calculation from a per-request user path. The seam already owned a D1 namespace, so this is a second migration in an existing one rather than new infrastructure.
+
+Rows carry an `expires_at` and are pruned after a successful claim, so the table cannot only grow — the one thing KV gave for nothing, since its entries expired themselves. Pruning deliberately does not run on a refused claim: otherwise replaying one token in a loop would drive an unbounded `DELETE` per attempt.
+
+`replayBackend: "kv"` still selects the old implementation, behind the same `ReplayGuard` interface — which is what let the default move without touching a call site. It remains best-effort, with the race above as its stated price, and is a reasonable trade only where every management operation is idempotent. Choosing it also brings back the `CONTROL_PLANE` KV binding; the D1 default needs no KV namespace at all.
 
 ---
 
@@ -191,7 +213,14 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 
 The same federation as migrations, error codes, and audit actions. A capability declares admin routes behind `requireControlPlane(scope)` and they compose into the tree with nothing to wire.
 
-`@pithy-sh/payments` is the first: `POST /payments/entitlements/grant` and `/revoke`, the only way an entitlement appears without money moving.
+`@pithy-sh/payments` was the first: `POST /payments/entitlements/grant` and `/revoke`, the only way an entitlement appears without money moving. Four more followed, and between them they are what a dashboard's first panes read:
+
+- **`@pithy-sh/auth`** — find and read users with their sessions and devices; revoke a session, sign a user out everywhere, revoke a device. Scopes: `auth:users:read`, `auth:devices:read`, `auth:sessions:revoke`, `auth:users:logout`, `auth:devices:revoke`. **No impersonation** — the most dangerous administrative capability there is, and it gets its own design and security review rather than riding in on a batch.
+- **`@pithy-sh/audit`** — page the trail by actor, action, resource, outcome, severity, origin, and time; read one event in full. Scopes: `audit:events:read`, `audit:events:read_detail`. The detail route is separate because IP, user-agent, and metadata one event at a time is a forensic read, and the same fields across a hundred rows is bulk harvesting. Read-only by construction: a credential that could erase an audit row could erase the evidence of its own use.
+- **`@pithy-sh/email`** — jobs by status and in detail, retry a failed one, read and amend the suppression list. Scopes: `email:jobs:read`, `email:jobs:retry`, `email:suppressions:read`, `email:suppressions:write`, `email:suppressions:delete`. Silent email failure costs a signup.
+- **`@pithy-sh/ledger`** — balances and transaction history, **read-only**. Scopes: `ledger:accounts:read`, `ledger:transactions:read`. No adjustments: writing to a balance ledger from an admin console needs the same care as any other movement.
+
+That list is what a customer consents to at connect, so it is stated here rather than left to be read off a manifest.
 
 A capability also **declares** those routes via `adminRoutes`, so a management client learns how to call them from the Worker itself rather than from a route table it ships with (§14).
 
@@ -220,20 +249,22 @@ A management client composes its navigation **and its calls** from `GET /control
 
 ```json
 {
-  "environment": "production",
+  "environment": "prod",
   "connectionId": "b6a1f0c2-3d4e-4f50-8a9b-0c1d2e3f4a5b",
+  "version": "8f2a1c94-...",
   "capabilities": [
-    { "name": "controlplane", "adminRoutes": [
+    { "name": "controlplane", "version": "1.4.0", "adminRoutes": [
       { "method": "GET",  "path": "/control-plane/ping", "scope": null,
         "summary": "Prove connectivity and which key answered. Always available to a verified caller." }
     ]},
-    { "name": "payments", "adminRoutes": [
+    { "name": "payments", "version": "1.4.0", "adminRoutes": [
       { "method": "POST", "path": "/billing/entitlements/grant", "scope": "payments:entitlements:grant",
         "summary": "Comp an entitlement, or repair a purchase that verified but never projected." },
       { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
         "summary": "Take an entitlement back, effective immediately." }
     ]},
-    { "name": "auth", "adminRoutes": [] }
+    { "name": "leaderboard", "version": "1.2.1", "adminRoutes": [] },
+    { "name": "app", "version": null, "adminRoutes": [] }
   ],
   "grantedScopes": ["manifest:read", "payments:entitlements:grant"]
 }
@@ -249,7 +280,17 @@ So a Worker that does not compose payments has no purchases pane, and that is a 
 
 **The declaration is checked, not trusted.** A hand-maintained list beside generated behaviour is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
 
-There is deliberately **no version number**. With the routes described here, a client dispatches on what this Worker declares right now; a version would be a second source of truth to keep in sync with the first.
+There is deliberately **no manifest schema version**. With the routes described here, a client dispatches on what this Worker declares right now; a schema version would be a second source of truth to keep in sync with the first.
+
+What the manifest *does* carry is **identity**, which is a different thing, and it carries two because neither answers the other's question.
+
+`version` at the top is Cloudflare's opaque per-deploy id, from the `CF_VERSION_METADATA` binding. It says *exactly which build* is running — the answer for forensics, for reproducing a report, and for pinning the code an audited action ran against. It carries no version semantics, so it says nothing about features. It is `null` on a Worker that does not declare the binding, which reads as "cannot say" rather than as a value to trust.
+
+`capabilities[].version` is the npm version of each composed package. It says *which features*, which is what answers "should this customer upgrade", "which customers are exposed to what we just fixed", and "does this project predate the capability a pane needs". It is `null` for the adopter's own `app` capability, which has a name and no package.
+
+**Per capability, never aggregated.** The package name is the join key against a release feed, and a project composes some capabilities and not others — so only the intersection of what it composes and what actually changed is worth reporting, and that intersection is computable only if both sides stay per-module. Aggregate them and a client tells someone they are "five versions behind" counting packages they never installed.
+
+The same build id is also on **every control-plane response**, as a `pithy-worker-version` header — allowed and denied alike, and on every capability's admin routes rather than only the seam's. A client that captured the version at connect holds a stale value the moment the adopter deploys, which is precisely when it matters; per response, each recorded action pins the build it actually hit, and a client can notice the version changing mid-session — the moment a rendered pane has quietly gone out of date.
 
 ### Declaring one
 

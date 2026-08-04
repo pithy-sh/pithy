@@ -9,6 +9,7 @@ import { leaderboardTables } from "./data/tables";
 import { registerLeaderboardRoutes } from "./http/routes";
 import { leaderboard_0001_entries } from "./migrations/0001_entries";
 import { leaderboardExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Where leaderboard's migrations sort in the app database. Unique per database; the registry composes
@@ -54,6 +55,9 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
 
   const capability = defineCapability({
     name: "leaderboard",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     requiredBindings,
     config: LeaderboardConfig,
     databases: {

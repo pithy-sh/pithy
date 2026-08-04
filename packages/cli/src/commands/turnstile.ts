@@ -4,6 +4,7 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileConfig, TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -15,9 +16,10 @@ import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, loadWorkerConfig, loadWorkerDomains, requireProjectName } from "../project/config";
+import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
-import { readWranglerConfig, type WranglerEnvVars } from "../project/wrangler";
+import { readWranglerConfig } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -85,36 +87,42 @@ function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken:
 }
 
 /**
- * Resolve the production domain (hostname) the real widget binds to, from the web-facing Worker's
- * `wrangler.jsonc`. A Turnstile widget is bound to the domain a human loads it on, and every Worker has its
- * own `wrangler.jsonc` and its own `BASE_URL` — so a project with several names one with `--worker` rather
- * than have a widget silently bound to the wrong host.
+ * Resolve the production hostname the real widget binds to, through the one address resolver.
+ *
+ * A Turnstile widget is bound to the domain a human loads it on, so this needs a hostname rather than a
+ * URL — the resolver returns both and this takes the `hostname` half.
+ *
+ * Single-environment by design: a widget binds to production, so `prod` is not a parameter. Every Worker
+ * has its own address, so a project with several names one with `--worker` rather than have a widget
+ * silently bound to the wrong host.
+ *
+ * This used to read `env.prod.vars.BASE_URL` directly, with its own parser and its own two errors — one
+ * of the three unreconciled derivations #89 replaced. The resolver now prefers the `domains` declaration
+ * and falls back to the route and then to that same var, so an adopter who set it by hand still works and
+ * one who declared a domain is no longer told to set a var that would duplicate it.
  */
 async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> {
-  const config = (await readWranglerConfig(worker.dir)) as WranglerEnvVars;
-  const baseUrl = config.env?.prod?.vars?.BASE_URL;
-  if (!baseUrl) {
-    throw new ValidationError({
-      message: `${worker.name}'s wrangler.jsonc env.prod has no BASE_URL var.`,
-      action: "Set vars.BASE_URL to the production app URL; the Turnstile widget binds to its domain.",
-    });
-  }
-  // Accept either a full URL or a bare host[:port][/path]; prepend a scheme when absent so `URL` extracts
-  // the hostname (a scheme-less `host:port` otherwise parses the host as a protocol and yields no hostname).
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `https://${baseUrl}`;
-  let hostname = "";
+  const stanza = ((await readWranglerConfig(worker.dir)) as { env?: Record<string, AddressStanza | undefined> }).env
+    ?.prod;
+  let domains: WorkerDomains | undefined;
   try {
-    hostname = new URL(candidate).hostname;
+    domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
   } catch {
-    hostname = "";
+    // A malformed declaration must not stop a widget being provisioned off a perfectly good route or
+    // var. `pithy env` and `pithy deploy` are where a bad `domains` block gets reported.
+    domains = undefined;
   }
-  if (!hostname) {
+
+  const address = resolveWorkerAddress({ environment: "prod", domains, stanza });
+  if (!address) {
     throw new ValidationError({
-      message: `${worker.name}'s wrangler.jsonc env.prod BASE_URL ("${baseUrl}") is not a valid URL or hostname.`,
-      action: "Set vars.BASE_URL to the production app URL, e.g. https://app.example.com.",
+      message: `${worker.name} has no production address.`,
+      action:
+        'Declare it in the Worker\'s pithy.config.ts — `domains: { prod: { pattern: "app.example.com", zone: "example.com" } }`. The Turnstile widget binds to that domain.',
+      detail: `no domains declaration, route, or vars.BASE_URL resolved for env.prod in ${worker.dir}`,
     });
   }
-  return hostname;
+  return address.hostname;
 }
 
 /** The Worker whose `wrangler.jsonc` carries the production `BASE_URL` and the per-env sitekey vars. */

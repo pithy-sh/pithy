@@ -42,7 +42,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see Section 8 and `docs/SEED.md` |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
-| `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
+| `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` resolves the Worker's address and the seam's base path from the project (it prints both and where they came from; `--worker-url` overrides, and `--worker <name>` is required when a project has several Workers), runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see Section 7) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
@@ -523,6 +523,10 @@ Project name: [my-pithy-app]
 ```
 
 Default values shown in brackets. `Y/n` means default yes; `y/N` means default no.
+
+**A prompt that can be answered from the account, is.** `pithy init` and `pithy worker add` ask where a Worker will answer, per environment, and offer the account's real Cloudflare zones rather than a free-text field — so a typo fails at `init` with a list of what exists, instead of at `deploy` with a Cloudflare error to decode. Where the account cannot be reached — no credentials, a token without `Zone:Read`, an offline laptop — the prompt says so in one line and falls back to free text. Scaffolding has never required the network, and this does not change that.
+
+**Every one of these is skippable.** A project without a domain yet is legitimate, and most are on the first day; an empty answer writes no `domains` block at all, and adding one later is a config edit plus a deploy, never a rescaffold. A non-interactive run asks nothing and declares nothing — `domains` goes in `pithy.config.ts` directly, which is exactly what the prompt writes.
 
 ---
 

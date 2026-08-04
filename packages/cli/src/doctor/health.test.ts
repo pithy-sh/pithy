@@ -16,7 +16,15 @@ function planStub(plans: Record<string, ReconcilePlan>): BuildPlan {
 
 /** A clean plan for one Worker. */
 function clean(worker: string): ReconcilePlan {
-  return { worker, env: "dev", perCapability: [], ejectedSkipped: [], pendingMigrations: 0, entitlementGap: [] };
+  return {
+    worker,
+    env: "dev",
+    perCapability: [],
+    ejectedSkipped: [],
+    pendingMigrations: 0,
+    entitlementGap: [],
+    missingVersionMetadata: false,
+  };
 }
 
 const api = { name: "api", dir: "/p/apps/api", capabilities: [] };

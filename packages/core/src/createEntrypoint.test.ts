@@ -28,7 +28,9 @@ describe("createEntrypoint", () => {
     const entry = createEntrypoint({ capabilities: [] });
     const res = await entry.fetch(new Request("http://x/health"), {}, ctx);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok" });
+    // `version` is null with no `CF_VERSION_METADATA` binding — honest rather than misleading, and what
+    // `pithy deploy` reads as "cannot tell" instead of as a failed check.
+    expect(await res.json()).toEqual({ status: "ok", version: null });
   });
 
   test("no email handler is exposed when no capability declares one (so mail isn't silently dropped)", () => {

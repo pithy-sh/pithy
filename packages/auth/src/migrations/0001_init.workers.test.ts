@@ -73,10 +73,13 @@ describe("auth_0001_init", () => {
     // `sqlite_autoindex_*` and don't match the prefix filter.
     expect(await authIndexes()).toEqual([
       "pithy_auth_accounts_user_id_idx",
+      // The two keyset cursors the control-plane admin listings page on, composite and in sort order.
+      "pithy_auth_devices_last_seen_at_idx",
       "pithy_auth_rotated_tokens_family_id_idx",
       "pithy_auth_rotated_tokens_rotated_at_idx",
       "pithy_auth_sessions_device_id_idx",
       "pithy_auth_sessions_user_id_idx",
+      "pithy_auth_users_created_at_idx",
       "pithy_auth_verifications_identifier_idx",
     ]);
     // The session carries its refresh-token family, and the reuse-detection ledger exists.

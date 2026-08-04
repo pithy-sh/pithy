@@ -145,6 +145,35 @@ export async function withThrowawayResource<R, T>(
 }
 
 /**
+ * Create a live resource **at a name the caller already chose**, exercise it, and guarantee teardown —
+ * including when `create` itself rejects.
+ *
+ * {@link withThrowawayResource} runs `create` outside the `try` on purpose: for a kind whose id only
+ * exists once creation succeeds, tearing down a failed create would be tearing down nothing. But a whole
+ * family of Cloudflare calls are **named writes** — `putSecret(name, …)`, `createBucket(name)`,
+ * `createDatabase(name)`, `createWorker(name)` — where the address is the caller's own argument. There a
+ * rejection is ambiguous: the server may have accepted the write and failed on the way back, and the
+ * resource now exists under a name the test is still holding. `withThrowawayResource` walks away from it.
+ *
+ * This variant tears down on the **name**, and arms the teardown before `create` is ever called, so the
+ * ambiguous case cleans up. `teardown` must therefore tolerate a resource that was never created — every
+ * caller here passes an idempotent delete, and the reaper is the backstop if one is not.
+ */
+export async function withNamedResource<T>(
+  name: string,
+  create: (name: string) => Promise<unknown>,
+  exercise: (name: string) => Promise<T>,
+  teardown: (name: string) => Promise<void>,
+): Promise<T> {
+  try {
+    await create(name);
+    return await exercise(name);
+  } finally {
+    await teardown(name);
+  }
+}
+
+/**
  * How old a resource must be before a reaper will remove it.
  *
  * **Twelve hours, and the size is the safety argument.** Reaping is a race with any suite that is still

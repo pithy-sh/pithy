@@ -27,6 +27,7 @@ const connection: ControlPlaneConnection = {
   environment: "production",
   issuer: "https://app.pithy.sh",
   workerUrl: "https://api.example.com",
+  basePath: "/control-plane",
   scopes: ["manifest:read", "keys:rotate"],
   keys: [key],
   createdAt: CREATED_AT,

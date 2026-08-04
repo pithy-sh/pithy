@@ -9,11 +9,15 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // One debris sweep per run, across every resource kind, before a single suite is collected. It lives
+    // here rather than in a suite's `beforeAll` because Vitest runs no hooks inside a `describe.skipIf`
+    // — which gated each reaper on exactly the credential whose absence lets debris accumulate. See
+    // `src/test-utils/reap.ts`.
+    globalSetup: ["./src/test-utils/integrationSetup.ts"],
     testTimeout: 120_000,
-    // `testTimeout` does not cover hooks, and these suites reap stale resources in `beforeAll` — a
-    // reclaim that has to drain several buckets would blow vitest's 10s hook default and fail the run
-    // before a single test executed. Generous, because the staleness window is twelve hours: a busy day
-    // of aborted runs can leave a lot to reclaim at once, and a reaper that times out leaves it forever.
+    // `testTimeout` does not cover hooks. Generous, because the staleness window is twelve hours: a busy
+    // day of aborted runs can leave a lot to reclaim at once, and a reaper that times out leaves it
+    // forever.
     hookTimeout: 300_000,
     pool: "forks",
     passWithNoTests: true,

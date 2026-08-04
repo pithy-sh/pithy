@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { loadIntegrationCreds } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { beforeAll, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { StorageConfig } from "../config/config";
 import { StorageObject } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";
 import type { ObjectStore } from "../object/store";
-import { reapStaleStorageResources, withLiveBucket, withLiveDatabase } from "../test-utils/liveStorage";
+import { withLiveBucket, withLiveDatabase } from "../test-utils/liveStorage";
 import { abortUpload, completeUpload, type HandlerDeps, initUpload } from "./handlers";
 import { CompleteUploadInput } from "./schemas";
 
@@ -58,7 +58,8 @@ async function loadRow(db: StorageDatabase, id: string): Promise<StorageObject> 
 
 describe.skipIf(!creds.hasCreds || !creds.r2)("storage handlers — LIVE against real R2 and real D1", () => {
   // Clean up whatever a previous aborted run orphaned before creating anything new.
-  beforeAll(() => reapStaleStorageResources(creds));
+  // Stale buckets and databases are reclaimed once per run by `globalSetup`, not here. See
+  // `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
 
   test("completion records the content type R2 stored, not the one the client declared", async () => {
     await withLiveDatabase(creds, async (db) => {

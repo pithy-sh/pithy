@@ -26,6 +26,11 @@ export const PERMISSION_GROUPS = {
   "vectorize:read": ["Vectorize Read"],
   "vectorize:write": ["Vectorize Write"],
   "ai:read": ["Workers AI Read"],
+  // Read-only, and read-only is the whole point: Pithy attaches routes to zones and never creates,
+  // transfers, or deletes one — a zone is the adopter's relationship with their registrar. This exists
+  // so `pithy init` and `pithy worker add` can offer the account's real zones instead of asking someone
+  // to paste an id off a dashboard page.
+  "zone:read": ["Zone Read"],
 } as const;
 
 /** A known permission key — one of {@link PERMISSION_GROUPS}'s keys. */

@@ -142,9 +142,26 @@ export const auth_0001_init: Migration = {
       .on("pithyAuthRotatedTokens")
       .column("rotatedAt")
       .execute();
+
+    // The two keyset cursors the control-plane admin listings page on. Composite and in sort order, so
+    // each page is an index range scan rather than a scan of every user or device the project has.
+    // The trailing id is the tiebreak: without it two rows sharing a timestamp straddle a page boundary
+    // and one of them is skipped or returned twice.
+    await db.schema
+      .createIndex("pithyAuthUsersCreatedAtIdx")
+      .on("pithyAuthUsers")
+      .columns(["createdAt", "id"])
+      .execute();
+    await db.schema
+      .createIndex("pithyAuthDevicesLastSeenAtIdx")
+      .on("pithyAuthDevices")
+      .columns(["lastSeenAt", "userId", "id"])
+      .execute();
   },
 
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyAuthDevicesLastSeenAtIdx").execute();
+    await db.schema.dropIndex("pithyAuthUsersCreatedAtIdx").execute();
     await db.schema.dropIndex("pithyAuthRotatedTokensRotatedAtIdx").execute();
     await db.schema.dropIndex("pithyAuthRotatedTokensFamilyIdIdx").execute();
     await db.schema.dropIndex("pithyAuthVerificationsIdentifierIdx").execute();

@@ -15,6 +15,7 @@ import {
   staleTestResourceNames,
   testResourceAge,
   uniqueName,
+  withNamedResource,
   withThrowawayResource,
 } from "./harness";
 
@@ -128,6 +129,67 @@ describe("withThrowawayResource", () => {
     ).rejects.toThrow("create failed");
 
     expect(toreDown).toBe(false);
+  });
+});
+
+/**
+ * The named-write half of the same contract. `withThrowawayResource` walking away from a failed create is
+ * right when the id only exists on success — and wrong when the caller chose the name, because a
+ * rejection cannot distinguish "never written" from "written, then the response failed".
+ */
+describe("withNamedResource", () => {
+  it("tears down on the name even when creation rejects — the write may still have landed", async () => {
+    const toreDown: string[] = [];
+
+    await expect(
+      withNamedResource(
+        "pithy-int-secret-1-1-aaaaaa",
+        async () => {
+          throw new Error("504 after the store accepted it");
+        },
+        async () => "unreached",
+        async (name) => {
+          toreDown.push(name);
+        },
+      ),
+    ).rejects.toThrow("504 after the store accepted it");
+
+    expect(toreDown).toEqual(["pithy-int-secret-1-1-aaaaaa"]);
+  });
+
+  it("tears down after a failed assertion, and surfaces the original failure", async () => {
+    const toreDown: string[] = [];
+    const boom = new Error("assertion");
+
+    await expect(
+      withNamedResource(
+        "pithy-int-secret-2-1-bbbbbb",
+        async () => undefined,
+        async () => {
+          throw boom;
+        },
+        async (name) => {
+          toreDown.push(name);
+        },
+      ),
+    ).rejects.toBe(boom);
+
+    expect(toreDown).toEqual(["pithy-int-secret-2-1-bbbbbb"]);
+  });
+
+  it("returns the exercise result on the happy path", async () => {
+    const toreDown: string[] = [];
+    const result = await withNamedResource(
+      "pithy-int-secret-3-1-cccccc",
+      async () => undefined,
+      async (name) => `exercised:${name}`,
+      async (name) => {
+        toreDown.push(name);
+      },
+    );
+
+    expect(result).toBe("exercised:pithy-int-secret-3-1-cccccc");
+    expect(toreDown).toEqual(["pithy-int-secret-3-1-cccccc"]);
   });
 });
 

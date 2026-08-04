@@ -10,5 +10,16 @@
 
 export { type CampaignStats, campaignStats } from "./analytics";
 export { type EmailCapability, type EmailConfigInput, email, isEmailCapability } from "./capability";
+// The control-plane scopes, exported because they are the join key with what `pithy dashboard connect`
+// offers an adopter to grant. A doc or a tool naming one of these should read the constant, not retype
+// the string — a scope that differs by a character is a gate nothing ever satisfies.
+export {
+  EMAIL_CONTROL_PLANE_SCOPES,
+  EMAIL_JOBS_READ_SCOPE,
+  EMAIL_JOBS_RETRY_SCOPE,
+  EMAIL_SUPPRESSIONS_DELETE_SCOPE,
+  EMAIL_SUPPRESSIONS_READ_SCOPE,
+  EMAIL_SUPPRESSIONS_WRITE_SCOPE,
+} from "./http/guards";
 export { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 export { listTemplates } from "./templates/engine";

@@ -6,7 +6,7 @@ import { HttpError } from "../../error/http";
 import { PithyError } from "../../error/pithyError";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk, RegisteredKey } from "../data/connection";
-import type { ReplayGuard } from "../kv/replay";
+import type { ReplayGuard } from "../replay/guard";
 import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { base64UrlDecode, base64UrlEncode } from "../token/base64url";
 import { exportPublicJwk, type MintControlPlaneToken, mintControlPlaneToken } from "../token/mint";
@@ -68,6 +68,7 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
     environment: ENVIRONMENT,
     issuer: ISSUER,
     workerUrl: "https://api.example.com",
+    basePath: "/control-plane",
     scopes: [MANIFEST_READ_SCOPE],
     keys: [registeredKey()],
     createdAt: at(-DAY_SECONDS),

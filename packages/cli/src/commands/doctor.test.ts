@@ -157,6 +157,7 @@ describe("renderDoctorText", () => {
           ],
           pendingMigrations: 2,
           entitlementGap: [],
+          missingVersionMetadata: false,
         }),
       }),
     );

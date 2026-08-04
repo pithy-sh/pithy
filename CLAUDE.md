@@ -1,92 +1,38 @@
 # Pithy — Coding Rules & Standards
 
-Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web apps**,
-shipped as composable capability packages under `@pithy-sh/*` plus a `pithy` CLI.
-Home: **pithy.sh**. These are the binding conventions for every package in this
-monorepo. Read the companion docs before any structural or surface decision:
-`docs/superpowers/specs/2026-06-05-pithy-foundation-design.md` (architecture),
-`docs/BRAND.md` (identity + voice), `docs/CLI.md` (CLI behavior), `docs/NAMING.md` (resource
-naming + project scope), `docs/STACK.md` (toolchain).
+Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web apps**, shipped as composable capability packages under `@pithy-sh/*` plus a `pithy` CLI. Home: **pithy.sh**. These are the binding conventions for every package in this monorepo. Read the companion docs before any structural or surface decision: `docs/superpowers/specs/2026-06-05-pithy-foundation-design.md` (architecture), `docs/BRAND.md` (identity + voice), `docs/CLI.md` (CLI behavior), `docs/NAMING.md` (resource naming + project scope), `docs/STACK.md` (toolchain).
 
 ## Non-negotiable principles
 
-1. **The user owns their data and infrastructure — always.** Every capability runs in
-   the user's own Worker, Cloudflare account, D1, and KV. Never design anything that
-   requires data to flow through a Pithy-operated service. No data plane we operate.
-2. **Token-first auth, mobile *and* web both first-class.** Mobile uses
-   `Authorization: Bearer` with short-lived access tokens + rotated refresh tokens in
-   secure device storage; OAuth uses PKCE + deep-link redirects. Web is fully supported:
-   the same bearer flow for SPAs, **or** cookie-based sessions. **When cookie/session
-   mode is enabled, CSRF protection is enabled with it.** Bearer flows are CSRF-exempt.
-3. **Fat package, thin config-driven wiring (the Better Auth model).** Logic lives in
-   packages and upgrades via minor releases. The only user-owned surface is thin, and it is
-   **per Worker**: `apps/<name>/{pithy.config.ts, wrangler.jsonc, pithy.worker.jsonc}` plus a
-   mount file, over a root `pithy.config.ts` carrying project identity and policy. Do not push
-   handler code into the user's repo by default (`--eject` is an opt-in escape hatch).
-4. **Capabilities compose through one contract.** `core`, each capability, and the app
-   are all `Capability` objects contributing a subset of {config, migrations, routes,
-   middleware, workflows, bindings}. Capabilities depend on **core seams** (e.g.
-   `AuthContext`), never on each other's internals.
-5. **Cloudflare Workflows are a first-class primitive** for durable, multi-step,
-   cross-context work (email, migrations/upgrades, retries, backfills).
+1. **The user owns their data and infrastructure — always.** Every capability runs in the user's own Worker, Cloudflare account, D1, and KV. Never design anything that requires data to flow through a Pithy-operated service. No data plane we operate.
+2. **Token-first auth, mobile *and* web both first-class.** Mobile uses `Authorization: Bearer` with short-lived access tokens + rotated refresh tokens in secure device storage; OAuth uses PKCE + deep-link redirects. Web is fully supported: the same bearer flow for SPAs, **or** cookie-based sessions. **When cookie/session mode is enabled, CSRF protection is enabled with it.** Bearer flows are CSRF-exempt.
+3. **Fat package, thin config-driven wiring (the Better Auth model).** Logic lives in packages and upgrades via minor releases. The only user-owned surface is thin, and it is **per Worker**: `apps/<name>/{pithy.config.ts, wrangler.jsonc, pithy.worker.jsonc}` plus a mount file, over a root `pithy.config.ts` carrying project identity and policy. Do not push handler code into the user's repo by default (`--eject` is an opt-in escape hatch).
+4. **Capabilities compose through one contract.** `core`, each capability, and the app are all `Capability` objects contributing a subset of {config, migrations, routes, middleware, workflows, bindings}. Capabilities depend on **core seams** (e.g. `AuthContext`), never on each other's internals.
+5. **Cloudflare Workflows are a first-class primitive** for durable, multi-step, cross-context work (email, migrations/upgrades, retries, backfills).
 6. **Testing and security are paramount** — non-negotiable CI gates, not afterthoughts.
-7. **Everything is pithy.** `docs/BRAND.md` voice and `docs/CLI.md` output conventions are *binding*
-   for every user-facing surface — CLI output, prompts, help, errors, logs, docs, generated
-   `pithy.config.ts` comments, commit and changelog copy. Short sentences. Deliberate
-   periods. No fluff, no emoji, no "successfully completed in 2.3s." `Done.` The period is
-   the brand; saffron earns its place by carrying meaning. The name is the contract:
-   concise, opinionated, no bloat — the stack must read the way it's named.
+7. **Everything is pithy.** `docs/BRAND.md` voice and `docs/CLI.md` output conventions are *binding* for every user-facing surface — CLI output, prompts, help, errors, logs, docs, generated `pithy.config.ts` comments, commit and changelog copy. Short sentences. Deliberate periods. No fluff, no emoji, no "successfully completed in 2.3s." `Done.` The period is the brand; saffron earns its place by carrying meaning. The name is the contract: concise, opinionated, no bloat — the stack must read the way it's named.
 
 ## Toolchain & repo
 
-- **Bun for everything in dev:** `bun install`, `bun run`, `bunx`. **Never `npm`/`npx`.**
-  Bun = package manager + workspaces + script runner (native TS, no `tsx`/`ts-node`).
-  Turborepo orchestrates build/cache; **tsdown** (Rolldown) bundles libraries + dts;
-  Changesets handles versioning/release.
-- **Node 22 LTS is the floor** (TS-7/`tsgo` requires it; CF Workers are at parity). Internal
-  dev/build/test scripts assume Bun, but every published `@pithy-sh/*` package is pure ESM
-  that also runs on Node 22+/Deno/Workers — **adoption is never gated behind a Bun install.**
-- **Bun stays in the workspace, never in a published manifest.** `packageManager` and
-  `engines.bun` live **only** in the private root `package.json` (they are dev/workspace
-  signals for Turbo + Corepack, invisible to adopters). Every published `@pithy-sh/*`
-  package declares `"engines": { "node": ">=22" }` (22 LTS floor, 24 LTS included), omits
-  `packageManager`, ships no lockfile, and uses no Bun-only API — so adopters install with
-  any package manager on Node 22+. The committed `bun.lock` is a root dev artifact, not
-  shipped.
-- **JSONC everywhere it's allowed.** Every config file we author or generate uses the
-  `.jsonc` extension and is comment-documented whenever the consuming tool recognizes that
-  name — `biome.jsonc`, `turbo.jsonc`, `wrangler.jsonc`, and the generated
-  `pithy.config`'s JSON outputs. **Exceptions, forced by the tool:** `package.json` stays
-  strict JSON (npm/Node/Bun reject comments — never comment it); `tsconfig*.json` and
-  `.vscode/settings.json` keep their fixed `.json` names but are JSONC-parsed (comments
-  fine). Biome's single `json` block formats `.json` and `.jsonc` alike. Trailing commas
-  are off everywhere.
-- **Vitest stays the test framework** (`bunx vitest`), with
-  `@cloudflare/vitest-pool-workers` for Workers-runtime tests — not `bun test`.
-- **Repo: GitHub (public).** CI is **GitHub Actions** with Turbo filtered/affected builds
-  — a change builds/tests only its segment; shared-package changes cascade (expected).
-- **No barrel re-exports. No re-exporting third-party libraries.** Modern tooling resolves
-  deep import paths fine. Direct imports only; re-export a dependency only with an
-  amazing, documented reason.
-- **Group a package's `src/` by concern, not by artifact kind.** Folders map to seams /
-  responsibilities (`data/`, `http/`, `kv/`, `capability/`, `config/`), each holding the
-  related codecs/schemas/logic together — never a by-kind junk drawer (`schemas/`,
-  `models/`). A folder appears only when a real module lands; no empty scaffolding. Since
-  there's no barrel, the folder path **is** the public import path
-  (`@pithy-sh/core/src/data/codecs`), so name for the consumer.
+- **Bun for everything in dev:** `bun install`, `bun run`, `bunx`. **Never `npm`/`npx`.** Bun = package manager + workspaces + script runner (native TS, no `tsx`/`ts-node`). Turborepo orchestrates build/cache; **tsdown** (Rolldown) bundles libraries + dts; Changesets handles versioning/release.
+- **Node 22 LTS is the floor** (TS-7/`tsgo` requires it; CF Workers are at parity). Internal dev/build/test scripts assume Bun, but every published `@pithy-sh/*` package is pure ESM that also runs on Node 22+/Deno/Workers — **adoption is never gated behind a Bun install.**
+- **Bun stays in the workspace, never in a published manifest.** `packageManager` and `engines.bun` live **only** in the private root `package.json` (they are dev/workspace signals for Turbo + Corepack, invisible to adopters). Every published `@pithy-sh/*` package declares `"engines": { "node": ">=22" }` (22 LTS floor, 24 LTS included), omits `packageManager`, ships no lockfile, and uses no Bun-only API — so adopters install with any package manager on Node 22+. The committed `bun.lock` is a root dev artifact, not shipped.
+- **JSONC everywhere it's allowed.** Every config file we author or generate uses the `.jsonc` extension and is comment-documented whenever the consuming tool recognizes that name — `biome.jsonc`, `turbo.jsonc`, `wrangler.jsonc`, and the generated `pithy.config`'s JSON outputs. **Exceptions, forced by the tool:** `package.json` stays strict JSON (npm/Node/Bun reject comments — never comment it); `tsconfig*.json` and `.vscode/settings.json` keep their fixed `.json` names but are JSONC-parsed (comments fine). Biome's single `json` block formats `.json` and `.jsonc` alike. Trailing commas are off everywhere.
+- **Vitest stays the test framework** (`bunx vitest`), with `@cloudflare/vitest-pool-workers` for Workers-runtime tests — not `bun test`.
+- **Repo: GitHub (public).** CI is **GitHub Actions** with Turbo filtered/affected builds — a change builds/tests only its segment; shared-package changes cascade (expected).
+- **No barrel re-exports. No re-exporting third-party libraries.** Modern tooling resolves deep import paths fine. Direct imports only; re-export a dependency only with an amazing, documented reason.
+- **Group a package's `src/` by concern, not by artifact kind.** Folders map to seams / responsibilities (`data/`, `http/`, `kv/`, `capability/`, `config/`), each holding the related codecs/schemas/logic together — never a by-kind junk drawer (`schemas/`, `models/`). A folder appears only when a real module lands; no empty scaffolding. Since there's no barrel, the folder path **is** the public import path (`@pithy-sh/core/src/data/codecs`), so name for the consumer.
 
 ## TypeScript
 
-- Latest TypeScript, **TS-7 (native/`tsgo`) ready**: `verbatimModuleSyntax` and
-  `isolatedModules` on, explicit type-only imports, **ESM only**.
+- Latest TypeScript, **TS-7 (native/`tsgo`) ready**: `verbatimModuleSyntax` and `isolatedModules` on, explicit type-only imports, **ESM only**.
 - **No `namespace`, no `const enum`, no type-position decorators** — not TS-7-compatible.
 - Strict mode on. No `any` in committed code; use `unknown` + narrowing.
 
 ## Zod (all data objects)
 
 - **Zod 4.** Codec API: `z.codec`, `.encode()`, `z.input` / `z.output`.
-- **A Zod object const and its inferred type ALWAYS share the same name. Never a
-  `Schema` suffix.**
+- **A Zod object const and its inferred type ALWAYS share the same name. Never a `Schema` suffix.**
   ```ts
   export const User = z.object({ /* … */ });
   export type User = z.output<typeof User>;   // codecs present → z.output
@@ -94,359 +40,114 @@ naming + project scope), `docs/STACK.md` (toolchain).
   ```
 - Codec helpers are PascalCase nouns (`SQLiteDate`, `SQLiteBoolean`, `JsonDate`).
 - Validate at every boundary: HTTP input, KV reads/writes, env/config, D1 rows.
-- **Every field in every Zod object MUST have a `.describe()`**, and each object/enum gets
-  a top-level `.describe()` too. The schemas ARE our object model's documentation — the
-  descriptions feed the self-documenting CLI/config (§Config), generated API/OpenAPI docs,
-  and agent tooling. A field without a description is incomplete. (Codec-helper primitives
-  themselves are exempt, but any *field* using a codec still describes its meaning.) Prefer
-  a meta-test that introspects exported schemas and fails on any field missing a description.
+- **Every field in every Zod object MUST have a `.describe()`**, and each object/enum gets a top-level `.describe()` too. The schemas ARE our object model's documentation — the descriptions feed the self-documenting CLI/config (§Config), generated API/OpenAPI docs, and agent tooling. A field without a description is incomplete. (Codec-helper primitives themselves are exempt, but any *field* using a codec still describes its meaning.) Prefer a meta-test that introspects exported schemas and fails on any field missing a description.
 
 ## Data layer (D1 + Kysely + codecs)
 
-- **One Zod schema per table is the entire table definition.** No separate hand-written
-  row interface. `z.output` = app shape; `z.input` = SQLite row shape.
-- **All JS ↔ SQLite conversion goes through a Zod codec.** A raw `0/1`, an epoch number,
-  a manual `new Date()`, or `JSON.stringify` in repository/query code is a smell. Use
-  `SQLiteBoolean`, `SQLiteDate`, `sqliteJson(schema)` from `@pithy-sh/core`.
+- **One Zod schema per table is the entire table definition.** No separate hand-written row interface. `z.output` = app shape; `z.input` = SQLite row shape.
+- **All JS ↔ SQLite conversion goes through a Zod codec.** A raw `0/1`, an epoch number, a manual `new Date()`, or `JSON.stringify` in repository/query code is a smell. Use `SQLiteBoolean`, `SQLiteDate`, `sqliteJson(schema)` from `@pithy-sh/core`.
   - SQLite stores booleans as `0|1`, dates as **ms-epoch numbers**, JSON as strings.
-  - Codec decode-side input is a **union** (not `z.preprocess`) so the schema stays
-    encode-compatible.
-- **JSON/config columns** use `sqliteJson(ZodSchema)` so serialization is automatic
-  **and the payload is Zod-validated before storing** and after reading.
-- **Round-trip rule:** read with `Schema.parse(row)` (decode); write with
-  `Schema.encode(value)` then `insertInto(...).values(record)`.
-- **Kysely is mandatory** for D1 SQL building. `PithyDatabase` derives from a master
-  Zod map's `z.input` side. **`CamelCasePlugin` is mandatory** — camelCase in TS,
-  snake_case columns; never hand-write snake_case in query code.
-- **ID strategy:** default `id: number` auto-incrementing PK; **UUID/text id for
-  security-sensitive or externally-exposed entities** (e.g. `User`) to prevent
-  enumeration; **Better Auth tables case-by-case**.
-- **Table prefixing — `pithy_<capability>_<table>`:** every table this toolset provides is
-  prefixed `pithy_<capability>_<table>` (e.g. `pithy_auth_users`, `pithy_email_jobs`,
-  `pithy_secrets_rotations`) to never clash with the adopter's own tables (principle 1). The
-  `<capability>` segment matches the migration namespace and error-code domain (`auth`,
-  `email`, `secrets`). The `pithy_` prefix only appears in SQL/migrations — `CamelCasePlugin`
-  means TS query code never types it. A meta-test should enforce that every provided table
-  carries the prefix.
-- **Migrations use the Kysely migration model** (TS `up`/`down`, tested rollbacks) —
-  **not** raw `.sql` files, and **not** wrangler's D1 migrations. Each package ships
-  namespaced, stable-keyed migrations (`auth_0001_…`) merged into one ordered registry
-  (library-before-app), run by **our `pithy migrate`** command. Every migration has a
-  working, tested `down`.
-- **A capability's `migrationOrder` is allocated in one place: `packages/cli/src/migrations/orders.test.ts`.**
-  Take the `NEXT_FREE_ORDER` it advertises, declare it as `<NAME>_MIGRATION_ORDER`, add a row to that
-  file's `DECLARED` table, and bump the constant by 100. Never pick a number by grepping — two pairs of
-  capabilities once collided that way in a range that was 99% empty, and `pithy migrate` throws
-  `duplicate migration order` for any project composing a colliding pair. The order must be **unique
-  within its database** and **stable forever**: renumbering a released capability renames its composed
-  keys (`0350_media_0001_hashes`), so Kysely reads applied migrations as unapplied and re-runs them.
-  Order *across* capabilities is otherwise arbitrary — no capability's tables reference another's.
-- **Cross-context upgrades** (beyond D1 schema — KV reshapes, backfills, multi-step data
-  migrations) are modeled as **Cloudflare Workflows**, not ad-hoc scripts.
+  - Codec decode-side input is a **union** (not `z.preprocess`) so the schema stays encode-compatible.
+- **JSON/config columns** use `sqliteJson(ZodSchema)` so serialization is automatic **and the payload is Zod-validated before storing** and after reading.
+- **Round-trip rule:** read with `Schema.parse(row)` (decode); write with `Schema.encode(value)` then `insertInto(...).values(record)`.
+- **Kysely is mandatory** for D1 SQL building. `PithyDatabase` derives from a master Zod map's `z.input` side. **`CamelCasePlugin` is mandatory** — camelCase in TS, snake_case columns; never hand-write snake_case in query code.
+- **ID strategy:** default `id: number` auto-incrementing PK; **UUID/text id for security-sensitive or externally-exposed entities** (e.g. `User`) to prevent enumeration; **Better Auth tables case-by-case**.
+- **Table prefixing — `pithy_<capability>_<table>`:** every table this toolset provides is prefixed `pithy_<capability>_<table>` (e.g. `pithy_auth_users`, `pithy_email_jobs`, `pithy_secrets_rotations`) to never clash with the adopter's own tables (principle 1). The `<capability>` segment matches the migration namespace and error-code domain (`auth`, `email`, `secrets`). The `pithy_` prefix only appears in SQL/migrations — `CamelCasePlugin` means TS query code never types it. A meta-test should enforce that every provided table carries the prefix.
+- **Migrations use the Kysely migration model** (TS `up`/`down`, tested rollbacks) — **not** raw `.sql` files, and **not** wrangler's D1 migrations. Each package ships namespaced, stable-keyed migrations (`auth_0001_…`) merged into one ordered registry (library-before-app), run by **our `pithy migrate`** command. Every migration has a working, tested `down`.
+- **A capability's `migrationOrder` is allocated in one place: `packages/cli/src/migrations/orders.test.ts`.** Take the `NEXT_FREE_ORDER` it advertises, declare it as `<NAME>_MIGRATION_ORDER`, add a row to that file's `DECLARED` table, and bump the constant by 100. Never pick a number by grepping — two pairs of capabilities once collided that way in a range that was 99% empty, and `pithy migrate` throws `duplicate migration order` for any project composing a colliding pair. The order must be **unique within its database** and **stable forever**: renumbering a released capability renames its composed keys (`0350_media_0001_hashes`), so Kysely reads applied migrations as unapplied and re-runs them. Order *across* capabilities is otherwise arbitrary — no capability's tables reference another's.
+- **Cross-context upgrades** (beyond D1 schema — KV reshapes, backfills, multi-step data migrations) are modeled as **Cloudflare Workflows**, not ad-hoc scripts.
 
 ## Resource naming (`<project>-<env>-<thing>`)
 
-- **Every Cloudflare resource this toolset provisions is named `<project>-<env>-<thing>`,
-  kebab-case** — D1 `database_name`, KV namespace title, R2 `bucket_name`, Vectorize `index_name`,
-  Worker script names, Workflow names, Secrets Store entry names, CF API token names, Email Routing
-  rule names. This rule has the same force as the `pithy_<capability>_<table>` prefix, and for the
-  same reason: every one of those namespaces is **flat and account-wide**, so the name is the only
-  partition. Without the project segment, a second Pithy project in one account adopts the first's
-  resources — provisioning finds a resource by name and reuses it.
-- **Compose it through the facade, never by hand** (see the bullet below for the call shape). A
-  name-producing helper takes `project` first. **Three things are deliberately not scoped**, because they are not account-wide
-  namespaces: **Worker binding names** (`DB`, `SESSIONS`), **`defineSecretRegistry` keys** (the key
-  *is* the binding and `.dev.vars` variable name; only the store entry it resolves to is scoped),
-  and **table names** (already inside a scoped database). Never rename one of those.
-- **Project first** because it is the ownership boundary every operation keys on — teardown
-  recomputes names rather than scanning, `pithy token list` filters the `<project>-<env>-` prefix,
-  and the test reaper's reservation keys on the leading segment. **Environment second** because
-  these land in listings nobody can filter, and sorting must group a project's environments
-  together rather than interleaving production with staging. A thing shared across a project's
-  environments puts the literal **`global`** in the environment slot — never omits it.
-- **`<project>` is the root `pithy.config.ts` `name`, resolved by `requireProjectName`.** Never
-  `resolveProjectName` for a name anything must reproduce later: its fallbacks (first Worker, then
-  directory basename) differ between checkouts, so teardown would compute names matching nothing,
-  delete nothing, and exit 0.
-- **The project name is stable forever once anything is provisioned**, exactly like a
-  `migrationOrder`. Renaming orphans every resource while every command keeps exiting 0.
-  `pithy doctor`'s `Project name:` check and `pithy migrate`'s `pithy_migrations_owner` stamp are
-  guards, not an undo.
-- **Only `thing` is ever truncated** (truncated head + `hash6`); project and environment are
-  verbatim, and a name that cannot fit is **refused with the limit named**, never silently hashed —
-  a truncated project segment would let two projects share the prefix the token listing filters on.
-- **Every namespace carries its own verified cap, in one table: `core/src/naming/limits.ts`.** Never
-  hold one number against all of them — Pithy did, 63, "R2's cap", and it over-truncated a KV title
-  eightfold and hashed D1 / Secrets Store / token names against limits that do not exist. Workflow
-  **64**, Worker script **63** (workers.dev's number, and a script cannot be renamed), R2 **63**
-  (min 3), Vectorize **64**, KV **512**; D1, Secrets Store entries, and API token labels have **no
-  documented Cloudflare cap**, so `MAX_PITHY_NAME` (**128**) is *our* ceiling and is marked as ours.
-  Overflow policy is per namespace too: **refuse** where renaming orphans a durable address (Workflow,
-  Worker, Vectorize), **truncate** where Pithy recomputes the name on every run (D1, KV, R2, secret
-  entries, tokens).
-- **Compose through the facade, not the raw composer:** `resourceNames(project).env(env).<kind>(…)`
-  from `@pithy-sh/core/src/naming/resourceNames`. It takes a *kind*, never a budget — so there is no
-  wrong budget to pass. `.global.<kind>(…)` for the `global` scope,
-  `.feature({ issue, slug }).resource(binding, kind)` for a feature. A call site handing
-  `resourceName` a number it picked itself is the bug this replaced.
-- **Environments are `dev` / `staging` / `prod` — never `production`.** The environment is verbatim in
-  every name, so each of its characters costs one character of project name, 1:1. `MAX_ENVIRONMENT_NAME`
-  (7, the length of `staging`) is a derivation input for every project budget, so a longer environment
-  is refused. Validate every `--env` through `requireEnvironment` before anything else in a command body.
-- **`MAX_PROJECT_NAME` is derived, never chosen: 26.** The *minimum* of what a 64-char Workflow leaves
-  (`64 - 1 - 7 - 1 - 22` = 33) and what a 63-char feature resource leaves after a 6-digit issue, a
-  legible slug, and a binding (= 26). Both derivations are computed constants in `naming/limits.ts`
-  with the arithmetic in a comment and pinned by `limits.test.ts` — never a literal.
-  `docs/NAMING.md`'s numbers are pinned to the same constants by `cli/src/project/namingDocs.test.ts`, so
-  an adopter-facing number cannot drift from the code.
-- **`pithy-int-` is a reserved namespace** for live integration-test resources. `scaffoldProject`
-  refuses a project name inside it, the debris reaper deletes nothing outside it, and no product
-  resource may ever carry it.
-- `docs/NAMING.md` states the rule once, for adopters. Every other doc links there rather than
-  restating it.
+- **Every Cloudflare resource this toolset provisions is named `<project>-<env>-<thing>`, kebab-case** — D1 `database_name`, KV namespace title, R2 `bucket_name`, Vectorize `index_name`, Worker script names, Workflow names, Secrets Store entry names, CF API token names, Email Routing rule names. This rule has the same force as the `pithy_<capability>_<table>` prefix, and for the same reason: every one of those namespaces is **flat and account-wide**, so the name is the only partition. Without the project segment, a second Pithy project in one account adopts the first's resources — provisioning finds a resource by name and reuses it.
+- **Compose it through the facade, never by hand** (see the bullet below for the call shape). A name-producing helper takes `project` first. **Three things are deliberately not scoped**, because they are not account-wide namespaces: **Worker binding names** (`DB`, `SESSIONS`), **`defineSecretRegistry` keys** (the key *is* the binding and `.dev.vars` variable name; only the store entry it resolves to is scoped), and **table names** (already inside a scoped database). Never rename one of those.
+- **Project first** because it is the ownership boundary every operation keys on — teardown recomputes names rather than scanning, `pithy token list` filters the `<project>-<env>-` prefix, and the test reaper's reservation keys on the leading segment. **Environment second** because these land in listings nobody can filter, and sorting must group a project's environments together rather than interleaving production with staging. A thing shared across a project's environments puts the literal **`global`** in the environment slot — never omits it.
+- **`<project>` is the root `pithy.config.ts` `name`, resolved by `requireProjectName`.** Never `resolveProjectName` for a name anything must reproduce later: its fallbacks (first Worker, then directory basename) differ between checkouts, so teardown would compute names matching nothing, delete nothing, and exit 0.
+- **The project name is stable forever once anything is provisioned**, exactly like a `migrationOrder`. Renaming orphans every resource while every command keeps exiting 0. `pithy doctor`'s `Project name:` check and `pithy migrate`'s `pithy_migrations_owner` stamp are guards, not an undo.
+- **Only `thing` is ever truncated** (truncated head + `hash6`); project and environment are verbatim, and a name that cannot fit is **refused with the limit named**, never silently hashed — a truncated project segment would let two projects share the prefix the token listing filters on.
+- **Every namespace carries its own verified cap, in one table: `core/src/naming/limits.ts`.** Never hold one number against all of them — Pithy did, 63, "R2's cap", and it over-truncated a KV title eightfold and hashed D1 / Secrets Store / token names against limits that do not exist. Workflow **64**, Worker script **63** (workers.dev's number, and a script cannot be renamed), R2 **63** (min 3), Vectorize **64**, KV **512**; D1, Secrets Store entries, and API token labels have **no documented Cloudflare cap**, so `MAX_PITHY_NAME` (**128**) is *our* ceiling and is marked as ours. Overflow policy is per namespace too: **refuse** where renaming orphans a durable address (Workflow, Worker, Vectorize), **truncate** where Pithy recomputes the name on every run (D1, KV, R2, secret entries, tokens).
+- **Compose through the facade, not the raw composer:** `resourceNames(project).env(env).<kind>(…)` from `@pithy-sh/core/src/naming/resourceNames`. It takes a *kind*, never a budget — so there is no wrong budget to pass. `.global.<kind>(…)` for the `global` scope, `.feature({ issue, slug }).resource(binding, kind)` for a feature. A call site handing `resourceName` a number it picked itself is the bug this replaced.
+- **Environments are `dev` / `staging` / `prod` — never `production`.** The environment is verbatim in every name, so each of its characters costs one character of project name, 1:1. `MAX_ENVIRONMENT_NAME` (7, the length of `staging`) is a derivation input for every project budget, so a longer environment is refused. Validate every `--env` through `requireEnvironment` before anything else in a command body.
+- **`MAX_PROJECT_NAME` is derived, never chosen: 26.** The *minimum* of what a 64-char Workflow leaves (`64 - 1 - 7 - 1 - 22` = 33) and what a 63-char feature resource leaves after a 6-digit issue, a legible slug, and a binding (= 26). Both derivations are computed constants in `naming/limits.ts` with the arithmetic in a comment and pinned by `limits.test.ts` — never a literal. `docs/NAMING.md`'s numbers are pinned to the same constants by `cli/src/project/namingDocs.test.ts`, so an adopter-facing number cannot drift from the code.
+- **`pithy-int-` is a reserved namespace** for live integration-test resources. `scaffoldProject` refuses a project name inside it, the debris reaper deletes nothing outside it, and no product resource may ever carry it.
+- `docs/NAMING.md` states the rule once, for adopters. Every other doc links there rather than restating it.
 
 ## Cloudflare access: bindings vs REST
 
-- **Inside the Worker → use bindings** (`env.DB`, `env.SESSIONS`, Email binding). Default:
-  faster, cheaper, no token, principle-1 aligned. Bindings = data-plane ops on provisioned
-  resources.
-- **Outside the Worker (CLI, CI, provisioning, control-plane orchestrator — any Node/Bun
-  context), and for control-plane/provisioning ops a binding can't do** (create D1,
-  manage KV namespaces, deploy/provision Workers) → use the encapsulated CF REST client
-  **`@pithy-sh/cloudflare`** (copied/encapsulated/standardized from the CMS
-  `libs/data-types/src/cloudflare/` managers), with a scoped CF API token per environment.
-  Never hand-roll `fetch` to the CF API outside this client.
-- **CF token bootstrap & automation:** the human does two one-time things — `wrangler login`
-  (OAuth, for dev/deploy) and a single bootstrap CF API token in `.dev.vars`
-  (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, wrangler's own env-var names). From there `pithy` **mints scoped,
-  least-privilege tokens** for each use case via the CF API — **always preferring
-  account-owned (org-level) tokens over user-bound ones**. Minted tokens are stored/rotated
-  via `@pithy-sh/secrets`, per environment; never committed.
+- **Inside the Worker → use bindings** (`env.DB`, `env.SESSIONS`, Email binding). Default: faster, cheaper, no token, principle-1 aligned. Bindings = data-plane ops on provisioned resources.
+- **Outside the Worker (CLI, CI, provisioning, control-plane orchestrator — any Node/Bun context), and for control-plane/provisioning ops a binding can't do** (create D1, manage KV namespaces, deploy/provision Workers) → use the encapsulated CF REST client **`@pithy-sh/cloudflare`** (copied/encapsulated/standardized from the CMS `libs/data-types/src/cloudflare/` managers), with a scoped CF API token per environment. Never hand-roll `fetch` to the CF API outside this client.
+- **CF token bootstrap & automation:** the human does two one-time things — `wrangler login` (OAuth, for dev/deploy) and a single bootstrap CF API token in `.dev.vars` (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, wrangler's own env-var names). From there `pithy` **mints scoped, least-privilege tokens** for each use case via the CF API — **always preferring account-owned (org-level) tokens over user-bound ones**. Minted tokens are stored/rotated via `@pithy-sh/secrets`, per environment; never committed.
 
 ## KV
 
 - One namespace per purpose (`SESSIONS`, `CACHE`), never a junk-drawer KV.
-- Typed access only: validate values with a Zod object on read and write. No untyped
-  `JSON.parse`. Namespace keys per capability (`auth:session:<id>`). TTLs are explicit.
+- Typed access only: validate values with a Zod object on read and write. No untyped `JSON.parse`. Namespace keys per capability (`auth:session:<id>`). TTLs are explicit.
 
 ## HTTP (Hono)
 
-- All routing uses **Hono**. Capabilities contribute sub-routers via the `Capability`
-  contract; they do not new-up their own app.
-- Every route declares a **verification strategy** — its identity/authenticity gate:
-  `bearer`, `session` (cookie, CSRF-protected), `signed-webhook`, `control-plane` (M2M
-  admin access for the premium dashboard — customer-issued scoped credential,
-  default-denied), or `public`. No implicit auth. **Turnstile is a humanity check applied
-  as composable middleware, not an identity strategy** (it can stack on top of any of the
-  above, e.g. a `public` signup route that still requires a Turnstile token).
-- **Every route also declares a request contract, and that is as mandatory as the
-  verification strategy.** How a caller is verified and what a caller may send are two
-  halves of one declaration, and both belong on the route line:
-  `zValidator("param" | "query" | "json", Schema, validationHook)` from
-  `@hono/zod-validator`, with the handler reading `c.req.valid(target)`. `validationHook`
-  (`@pithy-sh/core/src/http/validation`) is the only hook — it maps the `ZodError` through
-  `fromZodError`, so a bad request renders as a `validation/invalid_input` 400 through
-  `pithyErrorHandler` like every other failure, never through zod-validator's own response.
-  Request schemas live in the capability's `src/http/schemas.ts`. **Never parse input inside
-  a handler** — a handler takes typed values, so the route signature carries the contract.
-- **Two gates keep it true, and neither is optional.** A Biome GritQL plugin
-  (`plugins/no-raw-request-input.grit`) fails any `c.req.param(`, `c.req.query(`, or
-  `c.req.json(` under `packages/*/src/http/**`: with the raw accessors gone, `c.req.valid()`
-  is the only way to reach query or body, so unvalidated input is unreadable rather than
-  merely discouraged. And each capability's `src/http/routeContract.test.ts` asserts
-  `uncoveredParamRoutes(app)` is empty, so a `:segment` with no param validator fails CI.
-  Params need the positive check because they have no accessor to ban.
-- **Validators go after the guards, never before** —
-  `app.post(path, requireAuth(), requireScope(…), zValidator(…), handler)`. A validator
-  ahead of a guard turns a 401/403 into a 400 and tells an unauthenticated caller which
-  requests were well-formed. Config-backed resolution (`board()`, `currency()`,
-  `resolveGame()`) stays in the handler and keeps raising its domain 404: a param schema
-  constrains the string, it never replaces the lookup, and it is never built from the
-  configured key set.
-- `core` defines the `AuthContext` seam and request `Variables`; only `@pithy-sh/auth`
-  implements bearer/session validation. Other capabilities use `requireAuth()` / the seam.
+- All routing uses **Hono**. Capabilities contribute sub-routers via the `Capability` contract; they do not new-up their own app.
+- Every route declares a **verification strategy** — its identity/authenticity gate: `bearer`, `session` (cookie, CSRF-protected), `signed-webhook`, `control-plane` (M2M admin access for the premium dashboard — customer-issued scoped credential, default-denied), or `public`. No implicit auth. **Turnstile is a humanity check applied as composable middleware, not an identity strategy** (it can stack on top of any of the above, e.g. a `public` signup route that still requires a Turnstile token).
+- **Every route also declares a request contract, and that is as mandatory as the verification strategy.** How a caller is verified and what a caller may send are two halves of one declaration, and both belong on the route line: `zValidator("param" | "query" | "json", Schema, validationHook)` from `@hono/zod-validator`, with the handler reading `c.req.valid(target)`. `validationHook` (`@pithy-sh/core/src/http/validation`) is the only hook — it maps the `ZodError` through `fromZodError`, so a bad request renders as a `validation/invalid_input` 400 through `pithyErrorHandler` like every other failure, never through zod-validator's own response. Request schemas live in the capability's `src/http/schemas.ts`. **Never parse input inside a handler** — a handler takes typed values, so the route signature carries the contract.
+- **Two gates keep it true, and neither is optional.** A Biome GritQL plugin (`plugins/no-raw-request-input.grit`) fails any `c.req.param(`, `c.req.query(`, or `c.req.json(` under `packages/*/src/http/**`: with the raw accessors gone, `c.req.valid()` is the only way to reach query or body, so unvalidated input is unreadable rather than merely discouraged. And each capability's `src/http/routeContract.test.ts` asserts `uncoveredParamRoutes(app)` is empty, so a `:segment` with no param validator fails CI. Params need the positive check because they have no accessor to ban.
+- **Validators go after the guards, never before** — `app.post(path, requireAuth(), requireScope(…), zValidator(…), handler)`. A validator ahead of a guard turns a 401/403 into a 400 and tells an unauthenticated caller which requests were well-formed. Config-backed resolution (`board()`, `currency()`, `resolveGame()`) stays in the handler and keeps raising its domain 404: a param schema constrains the string, it never replaces the lookup, and it is never built from the configured key set.
+- `core` defines the `AuthContext` seam and request `Variables`; only `@pithy-sh/auth` implements bearer/session validation. Other capabilities use `requireAuth()` / the seam.
 
 ## Errors (one PithyError family)
 
-- **Runtime code throws `PithyError`, never plain `new Error`.** `PithyError`
-  (`@pithy-sh/core/src/error`) is a real `Error` that **carries** a Zod-validated
-  `ErrorPayload` — a discriminated union keyed on a namespaced `code` (`auth/invalid_token`,
-  `core/not_found`, …) with an HTTP `status`, a public `message`, an optional `action`, and an
-  optional internal `detail`. The class is the throw/catch vehicle; Zod owns the payload shape.
-  Use the thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`,
-  `InternalError`, …) or construct a payload directly. Map a `ZodError` with `fromZodError`.
-- **One payload, two surfaces — each is just an encoder.** HTTP:
-  `app.onError(pithyErrorHandler)`. CLI: `renderTerminal(payload)` (problem line + action line).
-  **The HTTP codec's encode side strips `detail` — it is the single security boundary; internal
-  context never reaches a client.** Keep client-safe text in `message`, throw-site context in
-  `detail`.
-- **`code` is `domain/reason`**, namespaced per capability and aligned with migration
-  namespaces / table prefixes (`auth_*`). Each capability **adds its own namespaced codes** to
-  the union when it lands; codec/internal throws with no meaningful public code use `core/internal`.
+- **Runtime code throws `PithyError`, never plain `new Error`.** `PithyError` (`@pithy-sh/core/src/error`) is a real `Error` that **carries** a Zod-validated `ErrorPayload` — a discriminated union keyed on a namespaced `code` (`auth/invalid_token`, `core/not_found`, …) with an HTTP `status`, a public `message`, an optional `action`, and an optional internal `detail`. The class is the throw/catch vehicle; Zod owns the payload shape. Use the thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`, `InternalError`, …) or construct a payload directly. Map a `ZodError` with `fromZodError`.
+- **One payload, two surfaces — each is just an encoder.** HTTP: `app.onError(pithyErrorHandler)`. CLI: `renderTerminal(payload)` (problem line + action line). **The HTTP codec's encode side strips `detail` — it is the single security boundary; internal context never reaches a client.** Keep client-safe text in `message`, throw-site context in `detail`.
+- **`code` is `domain/reason`**, namespaced per capability and aligned with migration namespaces / table prefixes (`auth_*`). Each capability **adds its own namespaced codes** to the union when it lands; codec/internal throws with no meaningful public code use `core/internal`.
 
 ## Email, secrets, environments, Workflows
 
-- **Email** is never sent ad-hoc: enqueue a row in the `email_jobs` D1 table and let a
-  **Workflow** send via CF Email Service with retries + history. A column per field.
-  `@pithy-sh/email` ships polished, responsive starter templates (magic link, OTP, welcome,
-  security alert, invite, …) — part of its definition of done.
-- **Secrets** go through `@pithy-sh/secrets` (CF Secrets Store + D1, resting-state key
-  rotation with overlap windows). Never plaintext secrets in repo or config. Signing
-  keys rotate on a schedule.
-- **Every secret is declared in a registry and read through the one `secretsStore` reader —
-  no exceptions but the master key.** A module that needs a secret declares a
-  `defineSecretRegistry({ <name>: { backend, scope, rotatable, valueType } })` and reads it with
-  `secretsStore(env, registry).get(name)` (or `.getVersions` for a verifier that must span a
-  rotation). **Never** read a secret off a raw `env.X` binding, and **never** reach a runtime
-  secret through `CloudflareSecretsStoreManager` or a direct D1 query — those are write/provisioning
-  paths only. The registry entry's **`backend`** (`d1` | `cf-secrets-store`) is the *single* place a
-  secret's storage location is decided: moving a secret between stores is a one-line registry edit,
-  and every read site stays byte-identical and grep-able (find every secret use by grepping
-  `secretsStore(`). The secret **name** is the join key — the same name resolves the same value
-  through any registry that declares it, so a module needs only a minimal registry of what it reads
-  (the project-wide registry on the `secrets` capability is for the `pithy secrets` CLI). The **only**
-  secret exempt from the reader is the master key (`SECRETS_ENCRYPTION_KEYS`) that decrypts the D1
-  store — it is the bootstrap and is read directly by `resolveEncryptionConfig`. A meta-test should
-  fail any package that reads a secret-shaped binding outside the reader.
-- **Environments** are first-class: **`dev` (local) / `staging` (test users) / `prod` (paid users)** —
-  the identifiers, verbatim, never `production`. Config and bindings resolve per environment; the CLI
-  scaffolds per-env `wrangler.jsonc` and the base URLs client apps use to reach a given environment.
-  See §Resource naming for why the length is a budget and not a preference.
+- **Email** is never sent ad-hoc: enqueue a row in the `email_jobs` D1 table and let a **Workflow** send via CF Email Service with retries + history. A column per field. `@pithy-sh/email` ships polished, responsive starter templates (magic link, OTP, welcome, security alert, invite, …) — part of its definition of done.
+- **Secrets** go through `@pithy-sh/secrets` (CF Secrets Store + D1, resting-state key rotation with overlap windows). Never plaintext secrets in repo or config. Signing keys rotate on a schedule.
+- **Every secret is declared in a registry and read through the one `secretsStore` reader — no exceptions but the master key.** A module that needs a secret declares a `defineSecretRegistry({ <name>: { backend, scope, rotatable, valueType } })` and reads it with `secretsStore(env, registry).get(name)` (or `.getVersions` for a verifier that must span a rotation). **Never** read a secret off a raw `env.X` binding, and **never** reach a runtime secret through `CloudflareSecretsStoreManager` or a direct D1 query — those are write/provisioning paths only. The registry entry's **`backend`** (`d1` | `cf-secrets-store`) is the *single* place a secret's storage location is decided: moving a secret between stores is a one-line registry edit, and every read site stays byte-identical and grep-able (find every secret use by grepping `secretsStore(`). The secret **name** is the join key — the same name resolves the same value through any registry that declares it, so a module needs only a minimal registry of what it reads (the project-wide registry on the `secrets` capability is for the `pithy secrets` CLI). The **only** secret exempt from the reader is the master key (`SECRETS_ENCRYPTION_KEYS`) that decrypts the D1 store — it is the bootstrap and is read directly by `resolveEncryptionConfig`. A meta-test should fail any package that reads a secret-shaped binding outside the reader.
+- **Environments** are first-class: **`dev` (local) / `staging` (test users) / `prod` (paid users)** — the identifiers, verbatim, never `production`. Config and bindings resolve per environment; the CLI scaffolds per-env `wrangler.jsonc` and the base URLs client apps use to reach a given environment. See §Resource naming for why the length is a budget and not a preference.
 
 ## CLI & configuration
 
-- **`docs/CLI.md` is binding, not advisory** — it specifies command behavior, output styling,
-  help, error format, the `p.` alias, `doctor`, and the update-notifier. Build to it.
-- **Citty** (unjs) for command structure — TS-first inference, fast cold start, lazy-loaded
-  subcommands, built-in shell completions. **`@clack/prompts`** for interactive input.
-  **picocolors** + the saffron truecolor helper for color — never raw ANSI; all color flows
-  through `packages/cli/src/terminal/style.ts`. Cross-arg validation uses the named helpers
-  (`requireWhen`/`exactlyOne`/`atLeastOne`/`allOrNone`) for common cases and Zod for complex
-  ones. All errors throw `PithyError` (problem line + action line, brand voice). Reuse CMS
-  CLI patterns where they fit.
-- **Command surface:** `init`, `add`/`remove <capability>`, `worker add`/`list`/`remove`
-  (Workers live in `apps/<name>/`; the folder is the registry), `dev` (multi-worker local
-  orchestration), `migrate` (+ `--rollback`), `seed`, `upgrade`, `deploy`, `feature`
-  create/destroy (worktree lifecycle), `env`, `doctor` (env/health + update check), `alias`
-  (install the opt-in `p.` shortcut). The canonical binary is always `pithy`.
-- **`apps/` is the Worker registry, and there is no root Worker.** A project's deployable
-  Workers each live in `apps/<name>/` (distinct from `packages/*` = `@pithy-sh/*` library
-  capabilities); nothing special-cases the project root. Every command that needs the worker
-  set (`dev`, `deploy`, `migrate`, `seed`, `upgrade`, `doctor`, the port allocator)
-  **discovers it by enumerating `apps/*`** — no hand-maintained list. Each worker carries a
-  co-located `pithy.worker.jsonc` with a Zod-described `dev` block: `dev.autostart` (must it
-  run for local dev to function?), `dev.readySignal` (regex marking ready),
-  `dev.preferredPort` (hint), and an optional `dev.command` (run a non-Worker process — e.g. a
-  Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on
-  `pithy.worker.jsonc`, which is what lets such a process join the dev set. The port allocator
-  assigns one port **per autostart worker**, reconciling as workers are added/removed.
-- **One `pithy.config.ts` per Worker; the root one is identity and policy only.** Capabilities
-  are per-Worker because everything they drive is per-Worker: the composed route tree
-  (`createEntrypoint`), the `requiredBindings` written into that Worker's `wrangler.jsonc`, and
-  **Durable Object class migrations, which register a class against a specific script**. So
-  `apps/<name>/pithy.config.ts` holds `{ capabilities, app }`, and the root `pithy.config.ts`
-  holds only what cannot be per-Worker: `name` (the leading segment of **every** name this project
-  provisions — see §Resource naming — and the only key teardown finds them by), `tokens`
-  (account-level CF token profiles), and `seed.productionEnvironments` (a safety policy no Worker
-  may quietly omit).
-  A Worker composes only what it declares — a KV-only Worker never sees a D1 it doesn't use.
-- **Workers share a resource by declaring the same binding name.** Feature resource names are
-  derived from `(project, issue, slug, binding, kind)` with **no Worker segment**, so two
-  Workers that both declare `DB` are backed by one D1; a Worker wanting its own declares a
-  different binding (e.g. `COLLAB_DB`). Sharing is expressed in the binding name, not in
-  topology config. Locally this is why `pithy dev`, `migrate`, and `seed` persist Miniflare
-  state at the **project root** (`<root>/.wrangler/state`) rather than per Worker — per-Worker
-  state would silently give two Workers separate copies of a database they meant to share.
-- **Worker-to-worker calls go through a `service` binding**, not a URL an adopter hand-writes:
-  a capability declares `{ type: "service", name: "COLLAB", service: "collab" }`, and
-  `pithy feature provision` resolves `collab` to that feature's script name per environment, so
-  RPC stays inside the feature environment. `pithy dev` exports each worker's `*_ORIGIN` for the
-  local equivalent over loopback.
-- **Config must be self-documenting.** Capability config carries human-readable rationale
-  (Zod `.describe()` + a `whenToEnable` manifest field). `pithy init` offers **app-target
-  profiles** (mobile-only / web-only / both) that flip a coherent default set, and the CLI
-  explains *why* to enable each feature. A non-expert should configure the right backend
-  from the CLI's questions alone, and `pithy.config.ts` is written with comments.
-- **Every CLI command must be agent-drivable:** works **non-interactively** (full flags,
-  no required prompt) and supports **`--json` structured output**, in addition to the
-  interactive `@clack/prompts` path. Humans and AI agents (Claude/Codex/Cursor skills,
-  MCP) both drive the same CLI — design for both from day one.
-- A **seed/test-data harness** (`pithy seed`, driven by the same Zod schemas/codecs)
-  serves both local dev and ephemeral CI environments.
-- **Every lifecycle command is CI-automatable:** `migrate` (promote), `migrate --rollback`
-  (downgrade), `upgrade`, `seed`, provisioning, and feature teardown run headlessly (exit
-  codes + `--json`), are **idempotent** (safe to re-run), and target a specific `--env`. The
-  merge-to-`main` CI job runs the full feature cleanup (promote migrations, delete ephemeral
-  D1/KV/preview Worker via `@pithy-sh/cloudflare`, unregister the worktree safely) with no
-  human in the loop — the same commands a developer runs locally.
-- **Worktree dev lifecycle:** the CLI creates `feature/<issue>-<name>` worktrees,
-  provisions their ephemeral CF resources (D1/KV), migrates + seeds them, and tears
-  everything down on merge. **Worktree removal follows the CMS-safe process:**
-  `rm <worktree>/.git && git worktree prune` — **never** `rm -rf` or `git worktree remove`
-  (recursive deletion triggers inotify storms that crash on Linux). Delete CF resources
-  first, then prune. **Dev vars:** wrangler loads one `.dev.vars` per worker from
-  that worker's own dir (no merge; `.dev.vars.local` is not loaded). `.dev.vars` is **one
-  shared secrets file for the whole repo** — the main checkout owns it, and each worktree's
-  and each worker's `.dev.vars` **symlinks to it** (CMS pattern) — so a secret edit
-  propagates everywhere at once with no copies to drift. Because it is shared,
-  **per-feature values never go in it** (one feature would clobber another's): those live
-  in the per-worktree git-ignored **`.dev.config.json`**, written by `pithy feature create`
-  and fixed for the life of the feature. Git-ignored; per-env runs use
-  `.dev.vars.<environment>`. Production secrets come from `@pithy-sh/secrets`, never `.dev.vars`.
-- **`pithy dev` is a multi-worker orchestrator** (port the CMS `scripts/dev.ts`): it runs
-  every worker under one supervising process, labels/colorizes their output to terminal +
-  `logs/dev.log`, tracks a git-ignored `.dev-state.json`, reaps orphaned `workerd`/`wrangler`
-  (lsof sweep), and tears down whole process groups (`setsid`, SIGTERM→SIGKILL). **Ports are
-  per-feature, allocated from a central registry:** a single git-ignored **`.dev-ports.json`
-  at the main repo root** (resolved from any worktree via `git rev-parse --git-common-dir`)
-  maps each `feature/<issue>-<name>` branch to its port block. `pithy feature create` locks,
-  reads (sees all taken blocks), assigns the lowest free non-overlapping block, and writes
-  its key; `feature destroy`/merge-cleanup deletes the key. Each worktree gets its own block
-  projected into a git-ignored **`.dev.config.json`** — the feature's dev config, which pins
-  **one port per worker** at creation and holds it for the life of the feature — distinct
-  from `.dev-state.json` (the running session's pids). **Ports are assigned at creation, never
-  probed at startup:** probing on boot is a TOCTOU race where two `pithy dev` processes both
-  see one port free and both bind it; pre-assigning removes it by construction. So multiple
-  worktrees run in unison without conflict and each feature's workers reach each other over
-  localhost at known, stable addresses — never wrangler's cross-`wrangler dev` service
-  registry. `pithy dev` still verifies a port is free on **both** `127.0.0.1` and `::1` and
-  reports a conflict rather than silently drifting off its pinned port.
+- **`docs/CLI.md` is binding, not advisory** — it specifies command behavior, output styling, help, error format, the `p.` alias, `doctor`, and the update-notifier. Build to it.
+- **Citty** (unjs) for command structure — TS-first inference, fast cold start, lazy-loaded subcommands, built-in shell completions. **`@clack/prompts`** for interactive input. **picocolors** + the saffron truecolor helper for color — never raw ANSI; all color flows through `packages/cli/src/terminal/style.ts`. Cross-arg validation uses the named helpers (`requireWhen`/`exactlyOne`/`atLeastOne`/`allOrNone`) for common cases and Zod for complex ones. All errors throw `PithyError` (problem line + action line, brand voice). Reuse CMS CLI patterns where they fit.
+- **Command surface:** `init`, `add`/`remove <capability>`, `worker add`/`list`/`remove` (Workers live in `apps/<name>/`; the folder is the registry), `dev` (multi-worker local orchestration), `migrate` (+ `--rollback`), `seed`, `upgrade`, `deploy`, `feature` create/destroy (worktree lifecycle), `env`, `doctor` (env/health + update check), `alias` (install the opt-in `p.` shortcut). The canonical binary is always `pithy`.
+- **`apps/` is the Worker registry, and there is no root Worker.** A project's deployable Workers each live in `apps/<name>/` (distinct from `packages/*` = `@pithy-sh/*` library capabilities); nothing special-cases the project root. Every command that needs the worker set (`dev`, `deploy`, `migrate`, `seed`, `upgrade`, `doctor`, the port allocator) **discovers it by enumerating `apps/*`** — no hand-maintained list. Each worker carries a co-located `pithy.worker.jsonc` with a Zod-described `dev` block: `dev.autostart` (must it run for local dev to function?), `dev.readySignal` (regex marking ready), `dev.preferredPort` (hint), and an optional `dev.command` (run a non-Worker process — e.g. a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, which is what lets such a process join the dev set. The port allocator assigns one port **per autostart worker**, reconciling as workers are added/removed.
+- **One `pithy.config.ts` per Worker; the root one is identity and policy only.** Capabilities are per-Worker because everything they drive is per-Worker: the composed route tree (`createEntrypoint`), the `requiredBindings` written into that Worker's `wrangler.jsonc`, and **Durable Object class migrations, which register a class against a specific script**. So `apps/<name>/pithy.config.ts` holds `{ capabilities, app }`, and the root `pithy.config.ts` holds only what cannot be per-Worker: `name` (the leading segment of **every** name this project provisions — see §Resource naming — and the only key teardown finds them by), `tokens` (account-level CF token profiles), and `seed.productionEnvironments` (a safety policy no Worker may quietly omit). A Worker composes only what it declares — a KV-only Worker never sees a D1 it doesn't use.
+- **Workers share a resource by declaring the same binding name.** Feature resource names are derived from `(project, issue, slug, binding, kind)` with **no Worker segment**, so two Workers that both declare `DB` are backed by one D1; a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`). Sharing is expressed in the binding name, not in topology config. Locally this is why `pithy dev`, `migrate`, and `seed` persist Miniflare state at the **project root** (`<root>/.wrangler/state`) rather than per Worker — per-Worker state would silently give two Workers separate copies of a database they meant to share.
+- **Worker-to-worker calls go through a `service` binding**, not a URL an adopter hand-writes: a capability declares `{ type: "service", name: "COLLAB", service: "collab" }`, and `pithy feature provision` resolves `collab` to that feature's script name per environment, so RPC stays inside the feature environment. `pithy dev` exports each worker's `*_ORIGIN` for the local equivalent over loopback.
+- **Config must be self-documenting.** Capability config carries human-readable rationale (Zod `.describe()` + a `whenToEnable` manifest field). `pithy init` offers **app-target profiles** (mobile-only / web-only / both) that flip a coherent default set, and the CLI explains *why* to enable each feature. A non-expert should configure the right backend from the CLI's questions alone, and `pithy.config.ts` is written with comments.
+- **Every CLI command must be agent-drivable:** works **non-interactively** (full flags, no required prompt) and supports **`--json` structured output**, in addition to the interactive `@clack/prompts` path. Humans and AI agents (Claude/Codex/Cursor skills, MCP) both drive the same CLI — design for both from day one.
+- A **seed/test-data harness** (`pithy seed`, driven by the same Zod schemas/codecs) serves both local dev and ephemeral CI environments.
+- **Every lifecycle command is CI-automatable:** `migrate` (promote), `migrate --rollback` (downgrade), `upgrade`, `seed`, provisioning, and feature teardown run headlessly (exit codes + `--json`), are **idempotent** (safe to re-run), and target a specific `--env`. The merge-to-`main` CI job runs the full feature cleanup (promote migrations, delete ephemeral D1/KV/preview Worker via `@pithy-sh/cloudflare`, unregister the worktree safely) with no human in the loop — the same commands a developer runs locally.
+- **Worktree dev lifecycle:** the CLI creates `feature/<issue>-<name>` worktrees, provisions their ephemeral CF resources (D1/KV), migrates + seeds them, and tears everything down on merge. **Worktree removal follows the CMS-safe process:** `rm <worktree>/.git && git worktree prune` — **never** `rm -rf` or `git worktree remove` (recursive deletion triggers inotify storms that crash on Linux). Delete CF resources first, then prune. **Dev vars:** wrangler loads one `.dev.vars` per worker from that worker's own dir (no merge; `.dev.vars.local` is not loaded). `.dev.vars` is **one shared secrets file for the whole repo** — the main checkout owns it, and each worktree's and each worker's `.dev.vars` **symlinks to it** (CMS pattern) — so a secret edit propagates everywhere at once with no copies to drift. Because it is shared, **per-feature values never go in it** (one feature would clobber another's): those live in the per-worktree git-ignored **`.dev.config.json`**, written by `pithy feature create` and fixed for the life of the feature. Git-ignored; per-env runs use `.dev.vars.<environment>`. Production secrets come from `@pithy-sh/secrets`, never `.dev.vars`.
+- **`pithy dev` is a multi-worker orchestrator** (port the CMS `scripts/dev.ts`): it runs every worker under one supervising process, labels/colorizes their output to terminal + `logs/dev.log`, tracks a git-ignored `.dev-state.json`, reaps orphaned `workerd`/`wrangler` (lsof sweep), and tears down whole process groups (`setsid`, SIGTERM→SIGKILL). **Ports are per-feature, allocated from a central registry:** a single git-ignored **`.dev-ports.json` at the main repo root** (resolved from any worktree via `git rev-parse --git-common-dir`) maps each `feature/<issue>-<name>` branch to its port block. `pithy feature create` locks, reads (sees all taken blocks), assigns the lowest free non-overlapping block, and writes its key; `feature destroy`/merge-cleanup deletes the key. Each worktree gets its own block projected into a git-ignored **`.dev.config.json`** — the feature's dev config, which pins **one port per worker** at creation and holds it for the life of the feature — distinct from `.dev-state.json` (the running session's pids). **Ports are assigned at creation, never probed at startup:** probing on boot is a TOCTOU race where two `pithy dev` processes both see one port free and both bind it; pre-assigning removes it by construction. So multiple worktrees run in unison without conflict and each feature's workers reach each other over localhost at known, stable addresses — never wrangler's cross-`wrangler dev` service registry. `pithy dev` still verifies a port is free on **both** `127.0.0.1` and `::1` and reports a conflict rather than silently drifting off its pinned port.
 
 ## Packaging, build & releases
 
-- **Bun workspaces** monorepo. **Turborepo** for build + caching. **tsdown** (Rolldown) for
-  library bundling + dts. **Changesets** for versioning/release. **Biome** for lint + format
-  (not ESLint/Prettier).
-- **Clean commits are gated locally and in CI.** **Husky** + **lint-staged** run Biome on
-  staged files; **commitlint** enforces **Conventional Commits** (`feat`/`fix`/`docs`/…,
-  scoped to `@pithy-sh/*` package names). A commit that fails Biome or commitlint is
-  rejected — no routine `--no-verify`. Commit copy follows the brand voice (principle 7).
-- Core capability packages are **MIT/Apache**; anything that could become a paid product
-  starts more restrictive (BSL/AGPL). Capability boundaries are real package boundaries.
+- **Bun workspaces** monorepo. **Turborepo** for build + caching. **tsdown** (Rolldown) for library bundling + dts. **Changesets** for versioning/release. **Biome** for lint + format (not ESLint/Prettier).
+- **Clean commits are gated locally and in CI.** **Husky** + **lint-staged** run Biome on staged files; **commitlint** enforces **Conventional Commits** (`feat`/`fix`/`docs`/…, scoped to `@pithy-sh/*` package names). A commit that fails Biome or commitlint is rejected — no routine `--no-verify`. Commit copy follows the brand voice (principle 7).
+- Core capability packages are **MIT/Apache**; anything that could become a paid product starts more restrictive (BSL/AGPL). Capability boundaries are real package boundaries.
 
 ## Testing
 
 - **Vitest**, co-located (`feature.ts` → `feature.test.ts`).
-- Workers-runtime behavior uses `@cloudflare/vitest-pool-workers` with real D1/KV
-  bindings (Miniflare), not mocks, where it matters.
+- Workers-runtime behavior uses `@cloudflare/vitest-pool-workers` with real D1/KV bindings (Miniflare), not mocks, where it matters.
 - Every migration's `up` **and** `down` is tested. Every codec round-trips in tests.
 - CI gates merges on tests + typecheck + Biome.
 
 ## Security
 
-- Security is a first-class deliverable. Validate every boundary. Declare a verification
-  strategy on every route. CSRF protection whenever cookie/session mode is on. Secrets
-  only via `@pithy-sh/secrets`. An OWASP-aligned security review is part of each
-  capability's definition of done.
-- **Emit audit events** for security-relevant actions (auth, entitlement, admin changes)
-  via the `@pithy-sh/audit` seam — Pithy provides audit logging since Better Auth ships no
-  audit plugin.
+- Security is a first-class deliverable. Validate every boundary. Declare a verification strategy on every route. CSRF protection whenever cookie/session mode is on. Secrets only via `@pithy-sh/secrets`. An OWASP-aligned security review is part of each capability's definition of done.
+- **Emit audit events** for security-relevant actions (auth, entitlement, admin changes) via the `@pithy-sh/audit` seam — Pithy provides audit logging since Better Auth ships no audit plugin.
 
 ## Definition of done (any capability)
 
-A capability is "done" only when it ships: the package, its manifest, namespaced
-migrations with tested rollbacks, its routes/middleware/workflows with declared
-verification strategies **and declared request contracts** (§HTTP — a validator on every
-input surface, schemas in `src/http/schemas.ts`, and a `routeContract.test.ts` proving no
-`:segment` is unvalidated), `pithy add <capability>` wiring, tests, a security review, and
-docs. Docs are part of the product, not an afterthought.
+A capability is "done" only when it ships: the package, its manifest, namespaced migrations with tested rollbacks, its routes/middleware/workflows with declared verification strategies **and declared request contracts** (§HTTP — a validator on every input surface, schemas in `src/http/schemas.ts`, and a `routeContract.test.ts` proving no `:segment` is unvalidated), **its stamped version** (§Capability version), `pithy add <capability>` wiring, tests, a security review, and docs. Docs are part of the product, not an afterthought.
+
+## Capability version (every capability reports its own)
+
+- **Every `defineCapability` call sets `version: PACKAGE_VERSION`**, imported from that package's generated `./version.generated`. `GET /control-plane/manifest` reports it per composed capability, and that is what answers the questions the Cloudflare build id cannot: should this customer upgrade, which customers are exposed to something we just fixed, does this project predate the capability a pane needs. The build id says *which build*; this says *which features*.
+- **The constant is generated, never hand-written.** `scripts/stampVersions.ts` writes `packages/<pkg>/src/version.generated.ts` from that package's own `package.json`, and the file is **committed** so typecheck and every consumer get it with no build step. A Worker cannot read its own `package.json` — no filesystem, everything bundled — so writing it into the source is the only way the value exists at runtime. Regenerate with `bun run stamp-versions`.
+- **It is chained into the root `version` script, and deliberately not into `build`.** Changesets rewrites every `package.json` *after* any build, so a constant stamped at build time would ship reading whatever it was before the release bump. Stamping per build, by contrast, regenerates something that cannot have changed, makes a build silently rewrite tracked source, and lets a developer's local build quietly repair drift that CI is supposed to surface.
+- **`bun scripts/stampVersions.ts --check` runs whole-repo in CI**, beside the licence-header gate. A stamped version that has drifted from its `package.json` is worse than reporting none, because a customer acts on it — deciding not to upgrade against a version that is a lie.
+- **`null` is reserved for the adopter's own `app` capability**, which has a name and no npm version. So a published package that forgets is indistinguishable from the adopter's own code. `packages/cli/src/project/capabilityVersions.test.ts` is repo-wide and fails on any capability that ships no constant, never attaches it, or has drifted — the same shape as the migration-order test, and for the same reason: the property is only true as a set.
+- **The stamper keys on `src/capability.ts`, never on `pithy.manifest.json`.** The manifest looks like the obvious signal and is the wrong one — `@pithy-sh/matchmaking` and `@pithy-sh/rating` are published capability packages that ship no manifest, and a manifest-keyed rule silently skipped both.

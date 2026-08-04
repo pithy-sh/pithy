@@ -45,10 +45,19 @@ export interface AuditOrigin {
   environment: string | null;
   /** The recording Worker's `apps/<name>` directory name; null for a CLI action. */
   worker: string | null;
+  /**
+   * The Cloudflare version id of the build recording the event, from `CF_VERSION_METADATA`; null for a
+   * CLI action and for a Worker that does not declare the binding.
+   *
+   * Required-but-nullable rather than optional, deliberately: making it optional would let a
+   * construction site forget it and silently record null, and there are three of them — this recorder,
+   * `emitFromCLI`, and the CLI's own `cliOrigin()`. A required field makes the compiler find all three.
+   */
+  version: string | null;
 }
 
 /** No origin established — what an unstamped Worker and an un-migrated caller both record. */
-const NO_ORIGIN: AuditOrigin = { project: null, environment: null, worker: null };
+const NO_ORIGIN: AuditOrigin = { project: null, environment: null, worker: null, version: null };
 
 /** Options for the recorder. All optional; the defaults route failures to a sink and retry transient D1 faults. */
 export interface AuditRecorderOptions {
@@ -119,6 +128,7 @@ export async function recordAuditEvent(
             project: origin.project,
             environment: origin.environment,
             worker: origin.worker,
+            version: origin.version,
           })
           .execute(),
       options?.retry,

@@ -4,13 +4,7 @@
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
-import {
-  type IntegrationCreds,
-  reapStaleTestBuckets,
-  reapStaleTestResources,
-  uniqueName,
-  withThrowawayResource,
-} from "@pithy-sh/cloudflare/src/test-utils/harness";
+import { type IntegrationCreds, uniqueName, withThrowawayResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
@@ -263,42 +257,5 @@ export async function withLiveDatabase<T>(
       return exercise(storageDatabase(d1));
     },
     (database) => provisioner.deleteDatabase(database.uuid),
-  );
-}
-
-/**
- * Remove throwaway buckets and databases a previous run orphaned.
- *
- * `withThrowawayResource` guarantees teardown only while the process lives — a run killed by a timeout
- * or a Ctrl-C leaves its resources behind. Call this from a suite's `beforeAll` so each run cleans up
- * after the last. Only names {@link uniqueName} produced, and only ones older than an hour, are ever
- * touched, so a concurrent run is never reaped out from under itself.
- *
- * Storage reaps its own kinds rather than relying on `@pithy-sh/cloudflare`'s suites, because this
- * package's tests are frequently run alone and an orphaned D1 database would otherwise sit until
- * somebody happened to run the other package.
- */
-export async function reapStaleStorageResources(
-  creds: IntegrationCreds,
-  options: { now?: number; staleAfterMs?: number } = {},
-): Promise<void> {
-  const clients = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });
-
-  // Buckets go through the shared reaper: emptying one is an S3-protocol operation, so it needs the key
-  // pair rather than the API token, and the harness is where those live. It also drains over raw S3
-  // rather than through `emptyBucket` — reclaiming a *previous* run's debris must not depend on the seam
-  // this package is testing, or a regression in the drain would also stop the cleanup that hides it.
-  await reapStaleTestBuckets(creds, options);
-
-  await reapStaleTestResources(
-    {
-      label: "D1 database",
-      list: async () => (await clients.d1Provisioner().listDatabases()).map((database) => database.name),
-      remove: async (name) => {
-        const found = await clients.d1Provisioner().findDatabaseByName(name);
-        if (found) await clients.d1Provisioner().deleteDatabase(found.uuid);
-      },
-    },
-    options,
   );
 }

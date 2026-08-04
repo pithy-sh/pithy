@@ -45,6 +45,11 @@ function workerFiles(name: string, project: string): Record<string, string> {
     "head_sampling_rate": 1
   },
 
+  // The deployed version of this Worker, injected by Cloudflare. Top level, so every environment
+  // inherits it. It is what puts a build id on every log record and audit event, and what
+  // \`pithy deploy\` reads back to prove this Worker is the one answering at your domain.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+
   // The top level is the dev environment. Staging serves test users; production serves paid users.
   // All three vars repeat per environment: \`env.<name>.vars\` REPLACES this block rather than merging it.
   // \`PROJECT\` is the root pithy.config.ts name — the owner stamped into every Cloudflare Images and

@@ -20,6 +20,7 @@
       "name": "@pithy-sh/audit",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "hono": "^4.12.0",

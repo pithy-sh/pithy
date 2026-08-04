@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { askDomains, writeDomains } from "../project/askDomains";
 import { addWorker, listWorkers, removeWorker } from "../project/workerCommand";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -16,13 +17,22 @@ const add = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const report = await addWorker({
-        projectDir: process.cwd(),
-        name: args.name,
-        skipInstall: args["skip-install"],
+      const projectDir = process.cwd();
+      const report = await addWorker({ projectDir, name: args.name, skipInstall: args["skip-install"] });
+
+      // Every Worker serves its own hostname, so a new one is asked about too — the same question
+      // `pithy init` asks, against the same account zones, and equally skippable.
+      const asked = await askDomains({
+        projectDir,
+        workerName: report.name,
+        interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
       });
+      if (asked.domains) await writeDomains(report.dir, asked.domains);
+
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.add", ...report })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "worker.add", ...report, domains: asked.domains ?? null })}\n`,
+        );
         return;
       }
       process.stdout.write(`Worker ${report.name} scaffolded at ${report.dir}.\n`);

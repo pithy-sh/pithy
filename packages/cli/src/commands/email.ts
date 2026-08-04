@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isEmailCapability, type ResolvedEmailConfig } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type RenderTracking, renderEmail } from "@pithy-sh/email/src/templates/engine";
@@ -20,7 +21,8 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, loadWorkerConfig, loadWorkerDomains, requireProjectName } from "../project/config";
+import { resolveWorkerAddress } from "../project/workerAddress";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -126,13 +128,27 @@ function buildResolveEnv(
         action: `Provision the ${env} app database and set its id on the DB binding.`,
       });
     }
-    const baseUrl = stanza.vars?.BASE_URL;
-    if (!baseUrl) {
+    // Through the one resolver, which prefers the `domains` declaration and falls back to the route and
+    // then to this same var — so an adopter who set it by hand still works, and one who declared a domain
+    // is not told to set a var that would only duplicate it. This used to read `vars.BASE_URL` directly
+    // with no validation at all, passing whatever string was there through to the deployed email Worker.
+    let domains: WorkerDomains | undefined;
+    try {
+      domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
+    } catch {
+      // A malformed declaration must not block provisioning off a good route or var; `pithy env` and
+      // `pithy deploy` are where it gets reported.
+      domains = undefined;
+    }
+    const address = resolveWorkerAddress({ environment: env, domains, stanza });
+    if (!address) {
       throw new ValidationError({
-        message: `${worker.name}'s wrangler.jsonc env.${env} has no BASE_URL var.`,
-        action: `Set vars.BASE_URL to the ${env} ${worker.name} worker's public URL (tracking links are built against it).`,
+        message: `${worker.name} has no ${env} address.`,
+        action: `Declare it in the Worker's pithy.config.ts — \`domains: { ${env}: { pattern: "…", zone: "…" } }\`. Tracking and unsubscribe links are built against it.`,
+        detail: `no domains declaration, route, or vars.BASE_URL resolved for env.${env} in ${path}`,
       });
     }
+    const baseUrl = address.url;
     const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
     if (!secretsDb) {
       throw new ValidationError({

@@ -22,7 +22,8 @@ import {
   type StatusReport,
 } from "../dashboard/connect";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
-import { loadProject, resolveProjectName } from "../project/config";
+import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
+import { loadProject, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -254,20 +255,6 @@ const commonArgs = {
   json: { type: "boolean", default: false, description: "Machine-readable output" },
 } as const;
 
-/** Prompt for the Worker URL when a human is attached and did not pass one. */
-async function promptWorkerUrl(): Promise<string> {
-  const { isCancel, text } = await import("@clack/prompts");
-  const answer = await text({
-    message: "This environment's worker URL — the address the management client calls",
-    placeholder: "https://api.example.com",
-  });
-  if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
-    process.exit(1);
-  }
-  return answer as string;
-}
-
 /**
  * Offer the seam's grantable scopes at a terminal. Every one is off nothing by default and on
  * everything by default here, because a connect run the operator narrows is the point: `keys:rotate`
@@ -343,7 +330,11 @@ const connect = defineCommand({
   meta: { name: "connect", description: "Connect a management client to an environment, and prove it with a ping" },
   args: {
     ...commonArgs,
-    "worker-url": { type: "string", description: "This environment's deployed worker URL" },
+    worker: {
+      type: "string",
+      description: "Which worker composes the admin surface (apps/<name>). Required when the project has several",
+    },
+    "worker-url": { type: "string", description: "Override the resolved worker URL for this environment" },
     scope: { type: "string", description: "Grant one scope: --scope manifest:read (repeatable)" },
     update: { type: "boolean", default: false, description: "Re-point an existing connection's URL and scopes" },
     "public-key": { type: "string", description: "Register a JWK you generated yourself — no dashboard involved" },
@@ -393,9 +384,25 @@ const connect = defineCommand({
       }
 
       const interactive = isInteractive(args.json);
-      // A create needs an address; an update may be re-pointing scopes only.
-      const needsUrl = args["worker-url"] === undefined && !args.update;
-      const workerUrl = needsUrl && interactive ? await promptWorkerUrl() : args["worker-url"];
+      const projectDir = process.cwd();
+
+      // Which Worker, at what address, with the seam mounted where — resolved from the project rather
+      // than demanded. `--worker-url` still overrides (a proxy in front of the Worker has an address no
+      // config knows), and an update that is only re-pointing scopes needs no address at all.
+      //
+      // This replaces a `--worker-url` that had no fallback whatsoever: the interactive path prompted for
+      // it free-text, and the non-interactive path — the agent and CI path — simply threw.
+      const target =
+        args.update && args["worker-url"] === undefined && publicKey === undefined
+          ? null
+          : await resolveConnectTarget({
+              projectDir,
+              environment: args.env,
+              ...(args.worker === undefined ? {} : { worker: args.worker }),
+              ...(args["worker-url"] === undefined ? {} : { workerUrl: args["worker-url"] }),
+            });
+      if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
+      const workerUrl = target?.workerUrl ?? args["worker-url"];
       // Only on a create. On an update, no `--scope` means "leave the grant alone", and a prompt that
       // defaulted to everything would quietly widen it.
       //
@@ -406,8 +413,7 @@ const connect = defineCommand({
       const granted: ControlPlaneScope[] | undefined =
         scopes.length > 0 ? scopes : interactive && !args.update ? await promptScopes() : undefined;
 
-      const projectDir = process.cwd();
-      const project = args.project ?? (await resolveProjectName(await loadProject(projectDir), projectDir));
+      const project = args.project ?? requireProjectName(await loadProject(projectDir));
 
       const report = await withRegistry(args, (registry) =>
         connectDashboard({
@@ -415,6 +421,7 @@ const connect = defineCommand({
           project,
           environment: args.env,
           ...(workerUrl === undefined ? {} : { workerUrl }),
+          ...(target === null ? {} : { basePath: target.basePath }),
           ...(granted === undefined ? {} : { scopes: granted }),
           update: args.update,
           ...(publicKey === undefined

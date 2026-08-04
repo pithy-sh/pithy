@@ -3,7 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
-import { AUDIT_MIGRATION_ORDER, audit, isAuditCapability } from "./capability";
+import { AUDIT_MIGRATION_ORDER, AuditConfig, audit, isAuditCapability } from "./capability";
 
 describe("audit capability", () => {
   test("contributes the audit table to the app database on the DB binding by default", () => {
@@ -40,6 +40,27 @@ describe("audit capability", () => {
 
   test("installs a middleware that replaces the emit seam", () => {
     expect(audit().middleware?.length).toBe(1);
+  });
+
+  test("mounts its control-plane read routes at /audit by default", () => {
+    // The default lives in `AuditConfig` and nowhere else. A second fallback inside the route
+    // registrar is how the mounted path and the advertised path drift apart, and a management client
+    // composing calls from a manifest that names the wrong one 404s against exactly the adopters who
+    // changed something.
+    expect(AuditConfig.parse({}).basePath).toBe("/audit");
+    expect(audit().adminRoutes?.map((route) => route.path)).toEqual(["/audit/events", "/audit/events/:eventId"]);
+    expect(audit({ basePath: "/trail" }).adminRoutes?.map((route) => route.path)).toEqual([
+      "/trail/events",
+      "/trail/events/:eventId",
+    ]);
+  });
+
+  test("every advertised route is a read, behind its own scope", () => {
+    // The trail is append-only, and the two scopes are what stops a credential issued to render a
+    // recent-activity pane from also resolving every client IP in the project.
+    const routes = audit().adminRoutes ?? [];
+    expect(routes.map((route) => route.method)).toEqual(["GET", "GET"]);
+    expect(new Set(routes.map((route) => route.scope)).size).toBe(routes.length);
   });
 
   test("is discoverable via isAuditCapability and rejects other capabilities", () => {

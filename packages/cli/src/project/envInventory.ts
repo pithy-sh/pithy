@@ -4,8 +4,11 @@
 import { relative } from "node:path";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { z } from "zod";
+import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { dashboardListUrl, dashboardUrl } from "./dashboard";
+import { resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig } from "./wrangler";
 
@@ -17,10 +20,12 @@ import { readWranglerConfig } from "./wrangler";
  * environment's base URL, and a Cloudflare dashboard link per linkable resource. It writes nothing
  * and never fails on a not-provisioned resource — provisioning health belongs to `pithy doctor`.
  *
- * Discovery reads `apps/` directly and never imports a Worker's `pithy.config.ts`: environments come
- * from `wrangler.jsonc` alone, and an inventory must still print in a project whose dependencies are
- * not installed. A discovered process with no `wrangler.jsonc` (a Vite frontend in the dev set) has
- * no environments and is skipped.
+ * Discovery reads `apps/` directly, and the environment set still comes from `wrangler.jsonc` alone — an
+ * inventory must print in a project whose dependencies are not installed. A Worker's `pithy.config.ts` is
+ * read only for its `domains` declaration, and only ever opportunistically: a config that is missing,
+ * unimportable, or carries a malformed `domains` block leaves the declaration unresolved and the
+ * wrangler-derived report intact. A discovered process with no `wrangler.jsonc` (a Vite frontend in the
+ * dev set) has no environments and is skipped.
  */
 
 /** The wrangler binding array key and id field for each id-carrying resource kind (mirrors feature/wranglerEnv.ts KIND_TO_WRANGLER). */
@@ -95,7 +100,7 @@ export const EnvironmentReport = z
       .string()
       .nullable()
       .describe(
-        'The environment\'s base URL: "local" for dev, else derived from the first route pattern, or null when none is declared.',
+        'The environment\'s base URL: "local" for dev (there is no public address for a local run), else resolved in order from the `domains` declaration, the first route pattern, and a hand-set `vars.BASE_URL` — or null when the Worker declares no address at all.',
       ),
     workerDashboardUrl: z
       .string()
@@ -185,24 +190,21 @@ function collectResources(stanza: RawStanza, accountId: string | null): EnvResou
   return resources;
 }
 
-/** The pattern string of a route entry (string or object form), or null. */
-function routePattern(route: RawRoute): string | null {
-  if (typeof route === "string") return route || null;
-  return route.pattern ?? null;
-}
-
 /**
- * The base URL for an environment. `dev` is always `"local"` (miniflare). Otherwise it is derived
- * from the first declared route: `https://<host>`, where host is the route pattern up to its first
- * `/` (so `api.example.com/*` → `https://api.example.com`). No route → null. This route-first rule
- * is our deterministic choice; base-URL sourcing is otherwise unspecified in the codebase.
+ * The base URL for an environment, through the one resolver.
+ *
+ * `dev` keeps its `"local"` sentinel — there is no public address for a local run, and the real answer
+ * is `http://localhost:<port>` from the port pinned in `.dev.config.json`, which is not this report's
+ * business. For every other environment `resolveWorkerAddress` decides, in its documented order:
+ * the `domains` declaration, then the first route, then a hand-set `vars.BASE_URL`.
+ *
+ * The resolver is **offline by construction**, which is what lets it be used here: `pithy env` is
+ * contractually read-only and always exits 0, so a resolver that reached Cloudflare would turn it into a
+ * command that fails without credentials.
  */
-function deriveBaseUrl(name: string, stanza: RawStanza): string | null {
+function deriveBaseUrl(name: string, stanza: RawStanza, domains: WorkerDomains | undefined): string | null {
   if (name === "dev") return "local";
-  const route = stanza.routes?.[0] ?? stanza.route;
-  const first = route === undefined ? null : routePattern(route);
-  if (!first) return null;
-  return `https://${first.split("/")[0]}`;
+  return resolveWorkerAddress({ environment: name, domains, stanza })?.url ?? null;
 }
 
 /** Assemble one environment report from its stanza. */
@@ -211,23 +213,28 @@ function buildEnvironment(
   stanza: RawStanza,
   scriptName: string | null,
   accountId: string | null,
+  domains: WorkerDomains | undefined,
 ): EnvironmentReport {
   const workerDashboardUrl = accountId && scriptName ? dashboardUrl("worker", accountId, scriptName) : null;
   return {
     name,
     scriptName,
-    baseUrl: deriveBaseUrl(name, stanza),
+    baseUrl: deriveBaseUrl(name, stanza, domains),
     workerDashboardUrl,
     resources: collectResources(stanza, accountId),
   };
 }
 
 /** Every environment one Worker declares: the top-level stanza as `dev`, then each `env.<name>`. */
-function buildEnvironments(config: RawWrangler, accountId: string | null): EnvironmentReport[] {
-  const environments: EnvironmentReport[] = [buildEnvironment("dev", config, config.name ?? null, accountId)];
+function buildEnvironments(
+  config: RawWrangler,
+  accountId: string | null,
+  domains: WorkerDomains | undefined,
+): EnvironmentReport[] {
+  const environments: EnvironmentReport[] = [buildEnvironment("dev", config, config.name ?? null, accountId, domains)];
   for (const [name, stanza] of Object.entries(config.env ?? {})) {
     if (!stanza) continue;
-    environments.push(buildEnvironment(name, stanza, stanza.name ?? null, accountId));
+    environments.push(buildEnvironment(name, stanza, stanza.name ?? null, accountId, domains));
   }
   return environments;
 }
@@ -282,10 +289,22 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
+    // The declaration, when this Worker has one. Read defensively: `pithy env` reports and does not
+    // gate, so a Worker whose `pithy.config.ts` is missing, unimportable, or carries a malformed
+    // `domains` block must still have its wrangler-derived environments listed rather than fail the
+    // whole inventory. The declaration simply does not contribute for that Worker, and the route
+    // fallback answers instead.
+    let domains: WorkerDomains | undefined;
+    try {
+      domains = loadWorkerDomains(await loadWorkerConfig(target.dir));
+    } catch {
+      domains = undefined;
+    }
+
     workers.push({
       worker: target.name,
       dir: relative(options.projectDir, target.dir),
-      environments: buildEnvironments(config, accountId),
+      environments: buildEnvironments(config, accountId, domains),
     });
   }
 

@@ -8,7 +8,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys, findVerifyingKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
-import { controlplane_0001_connections } from "@pithy-sh/core/src/controlPlane/migrations/0001_connections";
+import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { Miniflare } from "miniflare";
@@ -24,7 +24,7 @@ let d1: D1Database;
 beforeEach(async () => {
   miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" } });
   d1 = (await miniflare.getD1Database("DB")) as unknown as D1Database;
-  await controlplane_0001_connections.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
+  await controlplane_0001_init.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
 });
 
 afterEach(async () => {
@@ -44,6 +44,7 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
     environment: "prod",
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
+    basePath: "/control-plane",
     scopes: ["manifest:read", "keys:rotate"],
     keys: [key("key_1", at)],
     createdAt: at,

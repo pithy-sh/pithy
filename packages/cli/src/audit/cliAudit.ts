@@ -138,8 +138,11 @@ export async function createRemoteCliAudit(options: CreateCliAuditOptions): Prom
 /**
  * The origin a CLI-recorded event carries.
  *
- * `worker` is **always null**, and that is the accurate answer rather than a gap: a `pithy` command runs
- * in Node, not in a Worker, so no Worker recorded it. `options.worker` is not the origin either — it is
+ * `worker` and `version` are **always null**, and that is the accurate answer rather than a gap: a
+ * `pithy` command runs in Node, not in a Worker, so no Worker recorded it and there is no Cloudflare
+ * build id to name. (`pithy deploy` does learn the version of the Worker it *ships*, but that is a fact
+ * about the deployed resource, not about the process writing the row, so it stays in the event's
+ * metadata where it belongs.) `options.worker` is not the origin either — it is
  * a *lookup filter* for finding the audit database, so writing it here would attribute
  * `pithy migrate --worker api` to the `api` Worker, which did nothing.
  *
@@ -149,9 +152,9 @@ export async function createRemoteCliAudit(options: CreateCliAuditOptions): Prom
  */
 async function cliOrigin(projectDir: string, environment: string | null): Promise<AuditOrigin> {
   try {
-    return { project: requireProjectName(await loadProject(projectDir)), environment, worker: null };
+    return { project: requireProjectName(await loadProject(projectDir)), environment, worker: null, version: null };
   } catch {
-    return { project: null, environment, worker: null };
+    return { project: null, environment, worker: null, version: null };
   }
 }
 

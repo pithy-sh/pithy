@@ -43,9 +43,13 @@ Each log emits as one per-line structured record Cloudflare Workers Logs indexes
 
 So structured logs are queryable in the dashboard with zero setup. Lower `head_sampling_rate` (0–1) to sample under heavy traffic.
 
-Every Worker-side record auto-carries request-correlation fields, resolved from context with no caller effort: `request` (the CF ray id), `method`, `path`, `env` (the `ENVIRONMENT` var — the same signal Pithy stamps into each deployed Worker), and `version` (the deployed Worker version, when the `CF_VERSION_METADATA` binding is present). `createBackend` also emits one access-log record per request carrying `status` and `elapsed`.
+Every Worker-side record auto-carries request-correlation fields, resolved from context with no caller effort: `request` (the CF ray id), `method`, `path`, `env` (the `ENVIRONMENT` var — the same signal Pithy stamps into each deployed Worker), and `version` (the deployed Worker version). `createBackend` also emits one access-log record per request carrying `status` and `elapsed`.
 
-The scaffolded `wrangler.jsonc` sets `ENVIRONMENT` per environment (`dev` / `staging` / `production`), so the `env` field is accurate out of the box. Where the var is absent, `createBackend({ env })` supplies a fallback, and failing that the field reads `unknown`.
+`version` is the Cloudflare version id, from the `version_metadata` binding the scaffold declares as `CF_VERSION_METADATA`. It is what answers the first question anyone asks when a deploy goes wrong: which build produced this line? The binding is top level in `wrangler.jsonc`, so every environment inherits it, and `pithy upgrade` adds it to a project scaffolded before it existed. A Worker that does not declare it still logs — the field is simply absent, which reads as "cannot say" rather than as a build to trust.
+
+The same id reaches four other places: the control-plane manifest, a `pithy-worker-version` header on every control-plane response, the `version` column on every audit event, and the check `pithy deploy` runs to prove the Worker it just shipped is the one answering at your domain.
+
+The scaffolded `wrangler.jsonc` sets `ENVIRONMENT` per environment (`dev` / `staging` / `prod`), so the `env` field is accurate out of the box. Where the var is absent, `createBackend({ env })` supplies a fallback, and failing that the field reads `unknown`.
 
 ## The security rule
 

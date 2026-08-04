@@ -9,7 +9,10 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
+    globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 300_000,
+    hookTimeout: 300_000,
     // Color off, as in the default suite — these assert CLI output too, and the shell must not decide it.
     env: { NO_COLOR: "1" },
     pool: "forks",

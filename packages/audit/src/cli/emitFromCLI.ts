@@ -55,6 +55,11 @@ export async function emitFromCLI(
   const origin =
     environment === undefined
       ? options?.origin
-      : { project: options?.origin?.project ?? null, environment, worker: options?.origin?.worker ?? null };
+      : {
+          project: options?.origin?.project ?? null,
+          environment,
+          worker: options?.origin?.worker ?? null,
+          version: options?.origin?.version ?? null,
+        };
   await recordAuditEvent(auditDatabase(d1), merged, { ...options, ...(origin ? { origin } : {}) });
 }

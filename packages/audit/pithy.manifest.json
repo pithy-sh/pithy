@@ -9,6 +9,11 @@
       "key": "database",
       "default": "DB",
       "describe": "The D1 binding the audit table and its migrations target. Defaults to `DB`, the shared app database. KV is not an option — an audit log is a query workload, not a key lookup."
+    },
+    {
+      "key": "basePath",
+      "default": "/audit",
+      "describe": "Where the control-plane routes that read the trail mount. Reads only — the trail is append-only and this surface never writes."
     }
   ]
 }

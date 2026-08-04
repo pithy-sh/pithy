@@ -9,7 +9,7 @@ import { pithyErrorHandler } from "../../error/http";
 import { validationHook } from "../../http/validation";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connection";
-import type { ReplayGuard } from "../kv/replay";
+import type { ReplayGuard } from "../replay/guard";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { type ControlPlaneVerifier, createControlPlaneVerifier, requireControlPlane } from "./guard";
@@ -44,6 +44,7 @@ beforeAll(async () => {
     environment: ENVIRONMENT,
     issuer: ISSUER,
     workerUrl: "https://api.example.com",
+    basePath: "/control-plane",
     scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
     keys: [
       {

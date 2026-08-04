@@ -24,8 +24,10 @@ export const Device = z
   .object({
     id: z
       .string()
+      .min(1)
+      .max(128)
       .describe(
-        "Primary key. A client-generated stable id (UUID) so one physical device maps to one row across re-logins.",
+        "Primary key. A client-generated stable id (UUID) so one physical device maps to one row across re-logins. Bounded because it arrives verbatim from the `x-pithy-device-id` header and becomes both a stored key and the tiebreak inside the device listing's keyset cursor — an unbounded id is an unbounded write, and it would also let one device push that cursor past the length the same route accepts on the way back in, making the registry unpageable past that row. Same reasoning as the control-plane `jti` bound.",
       ),
     userId: z
       .string()

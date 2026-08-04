@@ -10,7 +10,7 @@ import {
   ControlPlaneInvalidCredentialError,
   ControlPlaneNotConnectedError,
 } from "../error/errors";
-import type { ReplayGuard } from "../kv/replay";
+import type { ReplayGuard } from "../replay/guard";
 import { type ControlPlaneRequirement, scopeCovers } from "../scope/scope";
 import { sha256Base64Url, timingSafeEqual } from "../token/digest";
 import { parseCompactJws, verifyEd25519 } from "../token/jws";
@@ -53,6 +53,17 @@ import { parseCompactJws, verifyEd25519 } from "../token/jws";
  * auth capability's global session middleware never sees a management call.
  */
 export const CONTROL_PLANE_HEADER = "pithy-control-plane";
+
+/**
+ * The response header carrying the build that answered a control-plane call.
+ *
+ * Set by `requireControlPlane` on every control-plane response — allowed and denied alike, and on every
+ * capability's admin routes rather than only the seam's own. A management client reads it to pin each
+ * recorded action to the exact build it hit, and to notice a version changing mid-session, which is the
+ * moment a rendered pane has quietly gone out of date. Absent where the `CF_VERSION_METADATA` binding
+ * is, which reads as "this Worker cannot say" rather than as a value to trust.
+ */
+export const CONTROL_PLANE_VERSION_HEADER = "pithy-worker-version";
 
 /** What the pipeline needs from the outside world. Every one is injectable, so every step is testable. */
 export interface ControlPlaneVerifyDeps {

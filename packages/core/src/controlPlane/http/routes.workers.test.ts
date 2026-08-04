@@ -7,21 +7,22 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "../data/tables";
 import { ControlPlaneManifest } from "../discovery/adminRoute";
-import { controlplane_0001_connections } from "../migrations/0001_connections";
+import { controlplane_0001_init } from "../migrations/0001_init";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
-import { CONTROL_PLANE_HEADER } from "./verify";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./verify";
 
 /**
  * The seam end to end, in workerd: a real composed backend, real D1, real KV, real Ed25519 tokens.
  *
  * Nothing here is a fixture. Every token is minted with `mintControlPlaneToken` and verified by the
  * same pipeline a deployed Worker runs, against a connection row that went through
- * `ControlPlaneConnection.encode` into the table `controlplane_0001_connections` created. So a test
+ * `ControlPlaneConnection.encode` into the table `controlplane_0001_init` created. So a test
  * that passes here is a statement about the shipped seam, not about a mock of it.
  *
  * Two properties are load-bearing and are asserted first, because they are what an adopter is trusting:
@@ -83,6 +84,7 @@ async function connect(keys: RegisteredKey[], scopes: string[] = [MANIFEST_READ_
     environment: ENVIRONMENT,
     issuer: ISSUER,
     workerUrl: "https://api.acme.example",
+    basePath: "/control-plane",
     scopes,
     keys,
     createdAt: now,
@@ -204,7 +206,10 @@ let carol: Signer;
 
 beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_controlplane_connections");
-  await controlplane_0001_connections.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await env.DB.exec("DROP TABLE IF EXISTS pithy_controlplane_replays");
+  const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
+  await controlplane_0001_init.up(db);
+  // The replay set is a table now, not a KV namespace, and it is on the verification path for every
   [alice, bob, carol] = await Promise.all([signer("cpk_alice"), signer("cpk_bob"), signer("cpk_carol")]);
 });
 
@@ -258,6 +263,65 @@ describe("GET /control-plane/manifest", () => {
     // The response is the contract a management client parses, so it parses here too. A field renamed
     // without the schema noticing would break every client and nothing else.
     expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
+  });
+
+  test("reports both version axes, because neither answers the other's question", async () => {
+    // The Cloudflare id says *which build* — the answer for forensics, and what `pithy deploy` verifies.
+    // The per-capability package versions say *which features* — the answer for "should this customer
+    // upgrade" and "who is exposed to what we just fixed". Reporting one leaves half the questions
+    // unanswerable, and they are the halves people actually ask.
+    await connect([registered(alice)]);
+
+    const response = await backend.request(
+      "http://worker.example/control-plane/manifest",
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope: MANIFEST_READ_SCOPE }) } },
+      { ...BINDINGS, CF_VERSION_METADATA: { id: "v-deadbeef", tag: "" } },
+    );
+
+    const json = await body<ControlPlaneManifest>(response);
+    expect(json.version).toBe("v-deadbeef");
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.version).toBe(PACKAGE_VERSION);
+    // Per capability, never aggregated: a project composes some capabilities and not others, so only
+    // the intersection of what it composes and what changed is worth reporting.
+    const quietDescriptor = json.capabilities.find((capability) => capability.name === "quiet");
+    expect(quietDescriptor?.version).toBeNull();
+    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
+  });
+
+  test("says it cannot tell, rather than inventing a build, with no version binding", async () => {
+    await connect([registered(alice)]);
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    expect((await body<ControlPlaneManifest>(response)).version).toBeNull();
+  });
+
+  test("stamps the running build on every control-plane response, allowed and denied alike", async () => {
+    // Per response, not once at connect: a client that captured the version when it connected holds a
+    // stale value the moment the adopter deploys, which is precisely when it matters. And on the guard
+    // rather than in a handler, so every capability's admin routes carry it too — not only the seam's.
+    await connect([registered(alice)]);
+    const bindings = { ...BINDINGS, CF_VERSION_METADATA: { id: "v-deadbeef", tag: "" } };
+
+    const allowed = await backend.request(
+      "http://worker.example/control-plane/manifest",
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope: MANIFEST_READ_SCOPE }) } },
+      bindings,
+    );
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
+
+    // A denial pins the build too. An operator reading a run of refusals needs to know which deploy was
+    // refusing them.
+    const denied = await backend.request("http://worker.example/control-plane/manifest", { method: "GET" }, bindings);
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
+  });
+
+  test("omits the version header entirely where the binding is absent", async () => {
+    // Absent reads as "this Worker cannot say". An empty or invented value would read as one to trust.
+    await connect([registered(alice)]);
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    expect(response.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBeNull();
   });
 
   test("describes how to call each route, not merely that a capability exists", async () => {

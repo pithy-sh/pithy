@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import { loadIntegrationCreds, uniqueName, withNamedResource } from "../test-utils/harness";
 import { CloudflareSecretsStoreManager } from "./secretsStoreManager";
 
 /**
@@ -24,10 +24,15 @@ describe.skipIf(!hasStore)("CloudflareSecretsStoreManager — LIVE", () => {
   test("creates, updates, lists, and deletes a secret; reports a missing delete", async () => {
     const name = uniqueName("secret");
 
-    await withThrowawayResource(
-      async () => {
-        await manager.putSecret(name, "first-value");
-        return name;
+    // `withNamedResource`, because `putSecret` is a write at a name this test already chose. Under
+    // `withThrowawayResource` a create that rejects skips teardown entirely — correct when the id only
+    // exists on success, and wrong here: the store may have accepted the write and failed on the way
+    // back, leaving an entry whose name is right there in scope. Eight such entries sat on a real
+    // account with no reaper for the kind.
+    await withNamedResource(
+      name,
+      async (secretName) => {
+        await manager.putSecret(secretName, "first-value");
       },
       async (secretName) => {
         // Happy path: the secret exists and decodes in the listing (metadata only, never plaintext).
@@ -48,7 +53,9 @@ describe.skipIf(!hasStore)("CloudflareSecretsStoreManager — LIVE", () => {
         );
       },
       async (secretName) => {
-        await manager.deleteSecret(secretName);
+        // Idempotent: teardown now also runs when the create rejected, where the entry may never have
+        // existed, and the run's `globalSetup` sweep may have reached it first.
+        await manager.deleteSecretIfPresent(secretName);
       },
     );
 

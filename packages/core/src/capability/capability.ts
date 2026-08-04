@@ -236,6 +236,26 @@ export interface Capability<
    */
   adminRoutes?: readonly AdminRoute[];
   /**
+   * The npm version of the package that supplies this capability, or `null` where there is none.
+   *
+   * Every `@pithy-sh/*` capability sets it from its generated `PACKAGE_VERSION` constant
+   * (`scripts/stampVersions.ts`) — a Worker cannot read its own `package.json`, so the value has to be
+   * written into the source. **Nullable, and not merely optional**, because the adopter's own `app`
+   * capability has a name and no npm version at all; that is an ordinary permanent state, not a gap.
+   *
+   * `GET /control-plane/manifest` reports it **per capability, never aggregated**. The package name is
+   * the join key against a release feed, and a project composes some capabilities and not others — so
+   * only the intersection of what a project composes and what actually changed is worth reporting, and
+   * that intersection is computable only if both sides stay per-module. Aggregate them and a client
+   * tells someone they are "five versions behind" counting packages they never installed.
+   *
+   * Distinct from the Cloudflare version id the manifest reports beside it. That id is opaque and
+   * per-deploy: it says *which build*, which is what forensics needs and what `pithy deploy` verifies.
+   * This says *which features*, which is what an upgrade decision needs. Neither answers the other's
+   * question.
+   */
+  version?: string | null;
+  /**
    * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
    * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes
    * mount. Lets a capability wire across capabilities at startup — `@pithy-sh/secrets` aggregates

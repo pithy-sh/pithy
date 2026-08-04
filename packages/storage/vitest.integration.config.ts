@@ -10,11 +10,13 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`
+    // for why this cannot live in a suite's `beforeAll`.
+    globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 120_000,
-    // Hooks are not covered by `testTimeout`, and these suites reap stale resources in `beforeAll` —
-    // draining several orphaned buckets would blow vitest's 10s hook default and fail the run before a
-    // single test executed. Generous, because the staleness window is twelve hours: a busy day of
-    // aborted runs can leave a lot to reclaim at once, and a reaper that times out leaves it forever.
+    // Hooks are not covered by `testTimeout`. Generous, because the staleness window is twelve hours: a
+    // busy day of aborted runs can leave a lot to reclaim at once, and a reaper that times out leaves it
+    // forever.
     hookTimeout: 300_000,
     pool: "forks",
     passWithNoTests: true,

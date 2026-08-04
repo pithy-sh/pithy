@@ -8,7 +8,7 @@ import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/confi
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
-import type { ReplayGuard } from "@pithy-sh/core/src/controlPlane/kv/replay";
+import type { ReplayGuard } from "@pithy-sh/core/src/controlPlane/replay/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
@@ -201,6 +201,7 @@ async function connection(scopes: readonly ControlPlaneScope[]): Promise<Control
     environment: CONTROL_PLANE_ENVIRONMENT,
     issuer: CONTROL_PLANE_ISSUER,
     workerUrl: "https://acme.example",
+    basePath: "/control-plane",
     scopes: [...scopes],
     keys: [
       {

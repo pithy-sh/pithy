@@ -56,6 +56,28 @@ describe("email capability", () => {
     expect(overridden.emailConfig.theme.dark.background).toBe("#0B1120");
   });
 
+  test("ships one migration per database", () => {
+    // One per database, with the control-plane listing indexes folded into it. Nothing has been
+    // released, so an additive index migration would be pure overhead — a second file to run, order, and
+    // test for a table no adopter has ever created.
+    const cap = email(config);
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(cap.databases?.emailSuppressions?.migrations ?? {})).toEqual(["0001_suppressions"]);
+  });
+
+  test("advertises its management surface under the configured basePath", () => {
+    expect((email(config).adminRoutes ?? []).map((route) => route.path)).toEqual([
+      "/email/jobs",
+      "/email/jobs/:id",
+      "/email/jobs/:id/retry",
+      "/email/suppressions",
+      "/email/suppressions",
+      "/email/suppressions/remove",
+    ]);
+    // The callbacks do not move with it — those URLs are already minted into mail nobody can recall.
+    expect(email({ ...config, basePath: "/mail" }).emailConfig.baseUrl).toBe(config.baseUrl);
+  });
+
   test("its migration composes into the app database registry under the email namespace", () => {
     const cap = email(config);
     const registry = createMigrationRegistry([

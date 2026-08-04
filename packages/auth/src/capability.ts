@@ -10,12 +10,14 @@ import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
 import { authTables } from "./data/tables";
+import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import { authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
 import { authExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 
 /** A social provider toggle. Credentials live in the secrets store, never config. */
 const ProviderToggle = z
@@ -131,6 +133,9 @@ export function auth(config: AuthConfigInput): AuthCapability {
 
   const capability = defineCapability({
     name: "auth",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     config: AuthConfig,
     dependsOn: ["secrets", "email"],
     secretRegistry: authSecretsRegistry,
@@ -143,6 +148,8 @@ export function auth(config: AuthConfigInput): AuthCapability {
         binding: resolved.database,
         tables: authTables,
         migrationOrder: AUTH_MIGRATION_ORDER,
+        // One namespace, two migrations, one order. `AUTH_MIGRATION_ORDER` is stable forever —
+        // renumbering it would rename `0300_auth_0001_init` and re-run every applied auth migration.
         migrations: { "0001_init": auth_0001_init },
       },
     },
@@ -189,6 +196,10 @@ export function auth(config: AuthConfigInput): AuthCapability {
     // then the session-resolution middleware fills the AuthContext.
     middleware: [rateLimitMiddleware, createSessionMiddleware(wiring)],
     routes: createAuthRoutes(wiring),
+    // Built from the RESOLVED basePath, never the default: an adopter who mounts auth at `/identity`
+    // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
+    // from the manifest 404s against exactly the adopters who customised anything.
+    adminRoutes: authAdminRoutes(resolved.basePath),
     seeds: [authExampleSeed],
   });
 

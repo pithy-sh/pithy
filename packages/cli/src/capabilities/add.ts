@@ -269,6 +269,13 @@ function envStanzas(config: WranglerBindings): { env: string; stanza: WranglerBi
 function appendBindings(stanza: WranglerBindings, manifest: CapabilityManifest, scope: NameScope): ProposedName[] {
   const proposed: ProposedName[] = [];
   for (const binding of manifest.requiredBindings) {
+    // An `optional` binding is one the capability only needs under a particular config — the seam's
+    // `CONTROL_PLANE` KV, which nothing reads under the default `d1` replay backend. The manifest is one
+    // static file and cannot vary with config, so it declares the union and marks such a binding
+    // optional; writing it anyway would make every project provision and bind a namespace no code path
+    // in the tree ever reads, and re-add it the moment an adopter deleted it. `createBackend` reads the
+    // same flag to decide whether a missing binding is fatal at assembly.
+    if (binding.optional) continue;
     if (binding.type === "d1") {
       stanza.d1_databases ??= [];
       if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {

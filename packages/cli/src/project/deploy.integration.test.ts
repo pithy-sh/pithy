@@ -4,10 +4,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
-import { reapStaleTestResources, uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import { afterAll, describe, expect, test } from "vitest";
 import { deployProject } from "./deploy";
 
 /**
@@ -115,18 +114,9 @@ async function removeScript(name: string): Promise<void> {
 
 let projectDir: string | null = null;
 
-beforeAll(async () => {
-  // A run killed before `afterAll` — a timeout, a Ctrl-C, a crash — orphans live endpoints, so each run
-  // clears the last one's debris. Only `pithy-int-` names older than the harness's 12h window, so a
-  // concurrent suite's scripts are never in range.
-  if (!hasCreds) return;
-  const workers = new CloudflareClients({ accountId, apiToken }).workers();
-  await reapStaleTestResources({
-    label: "Worker script",
-    list: async () => (await workers.listWorkers()).map((script) => script.id ?? "").filter(Boolean),
-    remove: (name) => workers.deleteWorker(name),
-  });
-});
+// A run killed before `afterAll` — a timeout, a Ctrl-C, a crash — orphans live endpoints. Clearing the
+// last run's debris now happens once per run in `globalSetup`, across every kind rather than only Worker
+// scripts, and outside any suite's skip gate. See `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
 
 afterAll(async () => {
   // Unconditional. A leaked Worker is a live endpoint on the account, so a cleanup failure is shouted,

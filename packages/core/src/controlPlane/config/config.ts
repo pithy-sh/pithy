@@ -79,6 +79,12 @@ export const ControlPlaneConfig = z
       .describe(
         "How long a spent `jti` is remembered, so the same token cannot be presented twice. It must outlive the widest window a token is accepted in (lifetime plus skew) — a shorter memory forgets a token that is still valid, which is precisely the replay this exists to stop.",
       ),
+    replayBackend: z
+      .enum(["d1", "kv"])
+      .default("d1")
+      .describe(
+        "Where spent token ids are recorded. `d1` claims with `INSERT … ON CONFLICT DO NOTHING`, so the primary key decides the race and one token is spendable exactly once, wherever the requests land — it costs one write on a path an administrator paces. `kv` skips that write and is best-effort: Workers KV has no compare-and-set and is eventually consistent across colocations, so one token presented twice in two places inside the propagation window can pass twice. Choose `kv` only where every management operation is idempotent.",
+      ),
     keyRetentionDays: z
       .number()
       .int()

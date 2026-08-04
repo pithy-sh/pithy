@@ -14,6 +14,16 @@
     "head_sampling_rate": 1
   },
 
+  // The deployed version of this Worker, injected by Cloudflare. Top level, so every environment
+  // inherits it — this is metadata about the build, not a per-environment setting.
+  // It answers the first question anyone asks when a deploy goes wrong: which build produced this?
+  // The id reaches five places from here — the `version` field on every log record, the
+  // control-plane manifest, a header on every control-plane response, every audit event, and the
+  // check `pithy deploy` runs to prove the Worker it just shipped is the one answering at your
+  // domain. `CF_VERSION_METADATA` is the name the code reads; renaming it binds something nothing
+  // consumes.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+
   // The top level is the dev environment — what `wrangler dev` runs locally.
   // `pithy add <capability>` appends the bindings a capability needs, per environment.
   // `ENVIRONMENT` names this environment — the one signal that decides dev vs deployed,

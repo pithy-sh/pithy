@@ -9,6 +9,7 @@ describe("ControlPlaneConfig", () => {
     expect(ControlPlaneConfig.parse({})).toEqual({
       basePath: "/control-plane",
       issuer: "https://app.pithy.sh",
+      replayBackend: "d1",
       clockSkewSeconds: 60,
       maxTokenLifetimeSeconds: 60,
       jtiTtlSeconds: 300,

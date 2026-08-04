@@ -10,6 +10,15 @@ import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./a
 import type { ConnectionRegistry } from "./registry";
 
 /**
+ * The mount point assumed only when a caller could not resolve a composed seam.
+ *
+ * Mirrors `ControlPlaneConfig.basePath`'s own default, and is deliberately the *fallback* rather than
+ * the value: an adopter who moved the mount must have their real one sent, because a wrong base path
+ * registers cleanly, passes the ping, and then 404s every call.
+ */
+const DEFAULT_CONTROL_PLANE_BASE_PATH = "/control-plane";
+
+/**
  * `pithy dashboard`'s orchestration — connect, rotate, disconnect, status — with every I/O boundary
  * injected. The registry is the adopter's D1, the client is the management client, and nothing here
  * touches either directly.
@@ -120,6 +129,15 @@ export interface ConnectDashboardOptions {
   environment: string;
   /** This environment's Worker URL. Required to create a connection; optional when only re-pointing. */
   workerUrl?: string;
+  /**
+   * Where this Worker mounts the control-plane seam, from its **resolved** config rather than a flag.
+   *
+   * Sent at connect and stored beside `workerUrl`, because the two together fully determine the manifest
+   * address. Defaults to `/control-plane` only when the caller could not resolve a composed seam — an
+   * adopter who moved the mount must never have the default assumed on their behalf, since a wrong base
+   * path fails identically to an unreachable Worker.
+   */
+  basePath?: string;
   /** The scopes to grant. Defaults to the seam's own on a create; left alone on an update. */
   scopes?: readonly ControlPlaneScope[];
   /** Re-point an existing connection's URL and scopes instead of creating one. */
@@ -189,6 +207,10 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     const connection: ControlPlaneConnection = {
       ...existing,
       workerUrl: options.workerUrl ?? existing.workerUrl,
+      // Re-pointed with the URL, because the two together are the address. An adopter who moved the
+      // seam to `/admin` and ran `--update` would otherwise keep a stale mount in their own enforcement
+      // row — the exact failure this field exists to prevent, and one that exits 0 saying `Done.`
+      basePath: options.basePath ?? existing.basePath,
       scopes: options.scopes ? [...options.scopes] : existing.scopes,
       updatedAt: now,
     };
@@ -199,11 +221,15 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   }
 
   const workerUrl = requireWorkerUrl(options.workerUrl);
+  // The seam's resolved mount point, sent so a client never has to assume `/control-plane`. It is the
+  // one address the manifest cannot describe, because it *is* the manifest's address.
+  const basePath = options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH;
   const scopes = options.scopes ? [...options.scopes] : [...SEAM_SCOPES];
   const issued = await client.createConnection(token, {
     project: options.project,
     environment: options.environment,
     workerUrl,
+    basePath,
     scopes,
   });
 
@@ -212,6 +238,7 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     environment: options.environment,
     issuer: issued.issuer,
     workerUrl,
+    basePath,
     // **What the operator asked for, never what the client echoed back.** This row is the adopter's
     // enforcement copy, and it is the only thing their Worker consults — so writing the client's own
     // account of its grant would let the client decide what it may do, which is precisely the property
@@ -250,6 +277,7 @@ async function connectOffline(
       environment: options.environment,
       issuer: offline.issuer,
       workerUrl: requireWorkerUrl(options.workerUrl),
+      basePath: options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH,
       scopes: options.scopes ? [...options.scopes] : [...SEAM_SCOPES],
       keys: [{ keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null }],
       createdAt: now,
@@ -274,6 +302,8 @@ async function connectOffline(
     await options.registry.save({
       ...existing,
       workerUrl: options.workerUrl ?? existing.workerUrl,
+      // Same as the dashboard update path above — the mount point moves with the URL.
+      basePath: options.basePath ?? existing.basePath,
       scopes: options.scopes ? [...options.scopes] : existing.scopes,
       updatedAt: now,
     });

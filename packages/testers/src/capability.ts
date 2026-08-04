@@ -14,6 +14,7 @@ import { registerTestersRoutes } from "./http/routes";
 import { testers_0001_cohorts } from "./migrations/0001_cohorts";
 import type { EnqueueNudge } from "./nudge/send";
 import { testersExampleSeed } from "./seeds/example";
+import { PACKAGE_VERSION } from "./version.generated";
 import { testersWorkflows } from "./workflows/specs";
 
 /**
@@ -85,6 +86,9 @@ export function testers(options: TestersOptions = {}): TestersCapability {
 
   const capability = defineCapability({
     name: "testers",
+    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
+    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    version: PACKAGE_VERSION,
     // Email is the one hard dependency: a capability whose whole job is inviting people cannot ship
     // with "and you supply the delivery". Secrets is deliberately NOT one — the confirmation token is a
     // random value on the member row rather than a signature, so nothing here reads a secret, and
