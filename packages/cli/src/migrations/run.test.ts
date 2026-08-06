@@ -4,7 +4,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -86,6 +86,41 @@ describe("migrateProject", () => {
     } finally {
       await mf.dispose();
     }
+  });
+
+  test("a capability added out of migrationOrder migrates — the order typed never decides the order run", async () => {
+    // The adopter's sequence: `pithy add email` (200), `pithy add auth` (300), `pithy add audit` (250).
+    // Each add migrates the worker as it now stands, so audit's key lands between two applied ones.
+    const capability = (name: string, order: number) =>
+      defineCapability({
+        name,
+        requiredBindings: [],
+        databases: {
+          app: {
+            binding: "DB",
+            tables: {},
+            migrations: { "0001_init": createTable(`${name}_rows`) },
+            migrationOrder: order,
+          },
+        },
+      });
+    const email = capability("email", 200);
+    const auth = capability("auth", 300);
+    const audit = capability("audit", 250);
+    const run = (capabilities: Capability[]) =>
+      migrateProject({ projectDir: h.projectDir, workers: [h.api(capabilities)], env: "dev", project: "acme" });
+
+    await run([email]);
+    await run([email, auth]);
+    const third = await run([email, audit, auth]);
+
+    expect(third[0]?.databases[0]?.results.map((r) => [r.migrationName, r.status])).toEqual([
+      ["0250_audit_0001_init", "Success"],
+    ]);
+    // And the project is still migratable: the ledger is behind nothing.
+    expect(
+      await countPendingMigrations({ projectDir: h.projectDir, workers: [h.api([email, audit, auth])], env: "dev" }),
+    ).toBe(0);
   });
 
   describe("dropCapabilityTables", () => {
