@@ -298,6 +298,24 @@ export type PaymentsConfig = z.output<typeof PaymentsConfig>;
 export type PaymentsConfigInput = z.input<typeof PaymentsConfig>;
 
 /**
+ * The catalog's pieces as *written*, beside the whole config as written.
+ *
+ * A catalog assembled in TypeScript — products built from a map of price ids, which is what makes the
+ * ids swappable per environment — needs a name for each piece it builds. The output types are the
+ * wrong ones: they are what `PaymentsConfig.parse()` returns, with every default already filled in, so
+ * typing an unparsed product with `PaymentsProduct` demands `entitlements` and `clawback` back from the
+ * author. The alternative was leaving adopters to write `z.input<typeof PaymentsProduct>` themselves,
+ * which works and makes the schema's internals part of the surface anyway.
+ *
+ * `PaymentsStripeSettings` defaults nothing today, so its input and output coincide. It is exported all
+ * the same: the three pieces a catalog is assembled from should be nameable as a set, and a default
+ * added later then shifts nothing.
+ */
+export type PaymentsProductInput = z.input<typeof PaymentsProduct>;
+export type PaymentsRailTogglesInput = z.input<typeof PaymentsRailToggles>;
+export type PaymentsStripeSettingsInput = z.input<typeof PaymentsStripeSettings>;
+
+/**
  * A catalog product and the logical id it is keyed by. Both halves travel together because every write
  * needs the id — a purchase row stores `productId`, not the product — and every read needs the product.
  */

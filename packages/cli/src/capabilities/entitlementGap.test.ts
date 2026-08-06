@@ -53,54 +53,13 @@ describe("finding the gates", () => {
     await expect(entitlementGates(dir)).resolves.toEqual([]);
   });
 
-  test("an import of the gate is not a gate", async () => {
-    // Only a call gates a route. Importing the helper and never using it is not a composition error, and
-    // reporting it would make the check noise an adopter learns to ignore.
-    const dir = await worker({
-      "src/routes.ts": `import { requireEntitlement } from "@pithy-sh/core/src/entitlement/require";\n`,
-    });
-    await expect(entitlementGates(dir)).resolves.toEqual([]);
-  });
-
-  test("a mention in a comment is not a gate", async () => {
+  test("a mention in a comment is not a gate — the pure scanner's rules apply through the walk", async () => {
+    // One case here, deliberately. Comment blanking, the `/*`-in-a-string trap and the rest belong to
+    // `@pithy-sh/core/src/entitlement/gateScan` and are tested there; this only proves it is wired in.
     const dir = await worker({
       "src/routes.ts": `// TODO: put requireEntitlement("pro") on this once payments lands.\napp.get("/x", h);`,
     });
     await expect(entitlementGates(dir)).resolves.toEqual([]);
-  });
-
-  test("a gate inside a block comment is not a gate", async () => {
-    const dir = await worker({
-      "src/routes.ts": `/* app.get("/x", requireEntitlement("pro"), h) */\napp.get("/free", h);`,
-    });
-    await expect(entitlementGates(dir)).resolves.toEqual([]);
-  });
-
-  test("a `/*` inside a string does not blind the scan", async () => {
-    // The defect this pins: stripping block comments with a regex over raw source let a `/*` inside a string
-    // literal open a comment that swallowed everything to the next `*/`. A route path like `/assets/*`
-    // followed by any JSDoc block hid the gate between them, `pithy doctor` reported no gap, and the Worker
-    // shipped denying every gated route.
-    const dir = await worker({
-      "src/routes.ts": [
-        'app.get("/assets/*", serveAssets);',
-        'app.get("/reports", requireEntitlement("pro"), handler);',
-        "/** A doc comment, whose opening the string above must not have already consumed. */",
-        "export const routes = true;",
-      ].join("\n"),
-    });
-    await expect(entitlementGates(dir)).resolves.toEqual(["src/routes.ts"]);
-  });
-
-  test("a gate after a line comment containing a URL is still found", async () => {
-    // `//` inside `https://` must not start a comment either.
-    const dir = await worker({
-      "src/routes.ts": [
-        'const docs = "https://pithy.sh/payments";',
-        'app.get("/x", requireEntitlement("pro"), h);',
-      ].join("\n"),
-    });
-    await expect(entitlementGates(dir)).resolves.toEqual(["src/routes.ts"]);
   });
 
   test("only the Worker's own source is scanned", async () => {

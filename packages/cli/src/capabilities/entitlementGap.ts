@@ -4,6 +4,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { gateCallSites } from "@pithy-sh/core/src/entitlement/gateScan";
 
 /**
  * The entitlement composition check — the CLI half of the entitlement seam.
@@ -18,9 +19,9 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
  * a Worker's own source against whether any capability it composes declares
  * {@link Capability.providesEntitlements}. Runtime denial stays the backstop; this is the check.
  *
- * The scan is textual, and deliberately so. Loading a Worker's routes to inspect them would execute
- * adopter code during a health check, and the question is not subtle enough to need a parser: a call to
- * one of two named helpers, in the Worker's own `src/`.
+ * What is left here is the filesystem half: which files to read, and which to leave alone. Deciding
+ * whether a given source gates is `@pithy-sh/core/src/entitlement/gateScan` — pure, and importable from a
+ * Workers-typed program, which is the half an adopter asserting their own rules needs.
  */
 
 /** Source extensions a Worker's routes can live in. `.tsx` is included — a route file may render. */
@@ -28,69 +29,6 @@ const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
 
 /** Directories never scanned: dependencies, build output, and caches. */
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", ".turbo", ".wrangler", "coverage", ".git"]);
-
-/**
- * A call to either gate. `\b` before the name keeps `myRequireEntitlement(` out, and requiring the open
- * paren keeps a bare import or a re-export out — an unused import is not a composition error, and
- * reporting one would make the check noise rather than signal.
- */
-const GATE_CALL = /\brequire(?:Any)?Entitlement\s*\(/;
-
-/**
- * The source with its comments blanked, so a `// TODO: requireEntitlement("pro")` is not read as a gate.
- *
- * **String-aware, and it has to be.** Doing this with two regexes over raw source looks equivalent and is
- * not: a `/*` inside a string literal opens a comment the scanner never sees closed, and everything up to the
- * next `*&#47;` in the file vanishes. A Worker with `app.get("/assets/*", …)` followed by any doc comment lost
- * whatever sat between them — so a real gate went unseen, `pithy doctor` reported no gap, and the Worker
- * shipped denying every gated route. The same trap in reverse is `https://`, whose `//` is not a comment.
- *
- * So this walks the source once, tracking which of code / string / template / line comment / block comment it
- * is in, and replaces comment characters with spaces rather than removing them — offsets stay put, which keeps
- * anything reported against this text meaningful. It mirrors the string-aware walk `capabilities/reconcile.ts`
- * already does for `pithy.config.ts`; a real parser would be the third option and is far more than a
- * two-identifier search needs.
- */
-function withoutComments(source: string): string {
-  const out: string[] = [];
-  let index = 0;
-  while (index < source.length) {
-    const char = source[index] as string;
-    const next = source[index + 1];
-
-    if (char === "/" && next === "*") {
-      const close = source.indexOf("*/", index + 2);
-      const end = close === -1 ? source.length : close + 2;
-      // Newlines are kept so line structure survives; everything else becomes a space.
-      out.push(source.slice(index, end).replace(/[^\n]/g, " "));
-      index = end;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      const newline = source.indexOf("\n", index);
-      const end = newline === -1 ? source.length : newline;
-      out.push(" ".repeat(end - index));
-      index = end;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      // Consume the whole literal, escapes included, so nothing inside it is read as code or as a comment.
-      let scan = index + 1;
-      while (scan < source.length && source[scan] !== char) {
-        // A newline ends an unterminated quoted string; a template literal may legally span lines.
-        if (source[scan] === "\n" && char !== "`") break;
-        scan += source[scan] === "\\" ? 2 : 1;
-      }
-      const end = Math.min(scan + 1, source.length);
-      out.push(source.slice(index, end));
-      index = end;
-      continue;
-    }
-    out.push(char);
-    index += 1;
-  }
-  return out.join("");
-}
 
 /** Every scannable source file under `dir`, recursively, as paths relative to `dir`. */
 async function sourceFiles(dir: string, root: string): Promise<string[]> {
@@ -115,12 +53,8 @@ async function sourceFiles(dir: string, root: string): Promise<string[]> {
  */
 export async function entitlementGates(workerDir: string): Promise<string[]> {
   const files = await sourceFiles(join(workerDir, "src"), workerDir);
-  const gating: string[] = [];
-  for (const file of files) {
-    const source = await readFile(join(workerDir, file), "utf8");
-    if (GATE_CALL.test(withoutComments(source))) gating.push(file);
-  }
-  return gating.sort((a, b) => a.localeCompare(b));
+  const sources = await Promise.all(files.map(async (file) => [file, await readFile(join(workerDir, file), "utf8")]));
+  return gateCallSites(Object.fromEntries(sources));
 }
 
 /** The composed capability that fills the entitlement seam, by name, or null when none does. */
