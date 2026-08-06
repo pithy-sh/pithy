@@ -42,6 +42,42 @@ function preparedCapability(seen: SeedPrepareContext[], environments: readonly s
   });
 }
 
+/**
+ * A capability whose static set declares a row and whose prepared set reads it back off the context. The
+ * shape auth's dev login has: one set creates the users, a later one references whichever exist.
+ */
+function inventoryCapability(seen: string[]): Capability {
+  return defineCapability({
+    name: "app",
+    requiredBindings: [],
+    databases: {
+      app: {
+        binding: "DB",
+        tables: { things: Things },
+        migrations: { "0001_things": createThings },
+        migrationOrder: 1000,
+      },
+    },
+    seeds: [
+      defineSeed({
+        name: "static",
+        order: 900,
+        environments: ["dev"],
+        d1: [d1SeedGroup("app", "things", Things, [{ id: 1, name: "declared" }])],
+      }),
+      defineSeed({
+        name: "prepared",
+        order: 1000,
+        environments: ["dev"],
+        prepare: async (context) => {
+          seen.push(...context.seeded("app", "things").map((row) => Things.parse(row).name));
+          return {};
+        },
+      }),
+    ],
+  });
+}
+
 describe("a prepared seed set", () => {
   const h = seedHarness();
 
@@ -74,6 +110,22 @@ describe("a prepared seed set", () => {
     }
 
     expect(await readFile(join(h.projectDir, DEV_LOGIN_PATH), "utf8")).toBe('{"user":"ada@example.com"}\n');
+  });
+
+  test("sees the rows another set declares, so it can reference a row it does not own", async () => {
+    await h.writeWrangler(localWrangler);
+    const seen: string[] = [];
+    const capabilities = [inventoryCapability(seen)];
+    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+
+    await seedProject({
+      project: "acme",
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+    });
+
+    expect(seen).toEqual(["declared"]);
   });
 
   test("a dry run neither prepares nor emits — it touches no backend and needs no secret", async () => {

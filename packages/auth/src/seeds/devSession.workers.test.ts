@@ -7,7 +7,8 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
-import type { D1SeedGroup } from "@pithy-sh/core/src/seed/seed";
+import type { D1SeedGroup, SeedSet } from "@pithy-sh/core/src/seed/seed";
+import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { beforeEach, expect, test } from "vitest";
 import { Session, User } from "../data/betterAuth";
@@ -52,9 +53,29 @@ function instance(secret = SECRET) {
   });
 }
 
-/** Run the two auth seed sets the way `pithy seed` does: users first, then the dev session. */
-async function seedDevLogin(user: string) {
-  for (const group of authExampleSeed.d1 ?? []) await write(group, User);
+/** An adopter's own seed set — a real user of the app built on this kit, not one of the fictional cast. */
+const APP_USER = {
+  id: "app-jim",
+  name: "Jim",
+  email: "jim@pithy.sh",
+  emailVerified: true,
+  image: null,
+  createdAt: new Date(1_800_000_000_000),
+  updatedAt: new Date(1_800_000_000_000),
+};
+const appUserSeed: SeedSet = {
+  name: "users",
+  order: 900,
+  environments: ["dev"],
+  d1: [{ database: "app", table: "pithyAuthUsers", rows: [APP_USER] }],
+};
+
+/**
+ * Run the seed sets the way `pithy seed` does: the user-creating sets write their rows, and the dev-session
+ * set prepares against the same composed registry the CLI hands it.
+ */
+async function seedDevLogin(user: string, userSets: readonly SeedSet[] = [authExampleSeed, appUserSeed]) {
+  for (const set of userSets) for (const group of set.d1 ?? []) await write(group, User);
   const hook = authDevSessionSeed.prepare;
   if (!hook) throw new Error("the dev-session set must declare a prepare hook");
   const prepared = await hook({
@@ -62,6 +83,7 @@ async function seedDevLogin(user: string) {
     project: "acme",
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
     preferences: { user },
+    seeded: collectSeededRows(userSets),
   });
   for (const group of prepared.d1 ?? []) await write(group, Session);
   return prepared;
@@ -95,6 +117,19 @@ test("Better Auth accepts the seeded cookie as a real session", async () => {
 
   expect(session?.user.email).toBe(EXAMPLE_ADA.email);
   expect(session?.user.id).toBe(EXAMPLE_ADA.id);
+});
+
+test("Better Auth accepts the seeded cookie for a user no example set creates", async () => {
+  // The case that matters to an adopter: the dev login is their own user, and the fictional cast is absent.
+  const prepared = await seedDevLogin(APP_USER.email, [appUserSeed]);
+  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+
+  const session = await instance().api.getSession({
+    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
+  });
+
+  expect(session?.user.email).toBe(APP_USER.email);
+  expect(session?.user.id).toBe(APP_USER.id);
 });
 
 test("the cookie name matches the one this Better Auth version reads", async () => {

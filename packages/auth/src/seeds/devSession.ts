@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
 import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
-import { EXAMPLE_IDENTITIES, type ExampleIdentity } from "@pithy-sh/core/src/seed/exampleIdentities";
-import { d1SeedGroup, defineSeed, type SeedPreparation, type SeedSet } from "@pithy-sh/core/src/seed/seed";
+import {
+  d1SeedGroup,
+  defineSeed,
+  type SeedPreparation,
+  type SeedPrepareContext,
+  type SeedSet,
+} from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { Session } from "../data/betterAuth";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
@@ -25,12 +31,27 @@ import { AUTH_SESSION_SECRET } from "../instance/secrets";
  *   opting in is a per-machine file outside the repo, so two developers on one checkout can differ.
  * - The login file is transient, written under the gitignored `logs/` ({@link DEV_LOGIN_PATH}). A seeded
  *   cookie must never be committable.
- * - `example: true` — it signs in as one of the canonical example identities, which only exist when the
- *   project turns on `seed.includeExamples`. A session for a user nobody seeded would be a dangling row.
+ * - The named user must be one this run actually creates. A session for a user nobody seeded is a dangling
+ *   row, so `dev.json` is checked against `context.seeded` — the run's own inventory — and a miss fails
+ *   saying who *was* seeded.
+ *
+ * Not an example set. It seeds no users of its own; it signs in as whoever the run creates — auth's example
+ * cast when the project enables `includeExamples`, the app's own users otherwise, both when both. An adopter
+ * should not have to turn on a fictional cast to get a dev login, and the cast is no more seeded than before:
+ * it still arrives only through `authExampleSeed`, which is still `example: true`.
  */
 
-/** Where this set sorts: after `auth`'s example set (100), whose users it mints a session for. */
-export const AUTH_DEV_SESSION_SEED_ORDER = 110;
+/**
+ * Where this set sorts: last, at the ceiling. It depends on every set that can create a user — auth's own
+ * example set, and an adopter's app set, which sorts high by convention — so it sorts after all of them.
+ * Ties break on the namespaced key, but nothing rests on that: what this set needs to *know* comes from the
+ * composed plan, not from what has already been written, and the session row carries no foreign key.
+ */
+export const AUTH_DEV_SESSION_SEED_ORDER = MAX_SEED_ORDER;
+
+/** The composed registry coordinates of the users table this set reads and signs in as. */
+const USERS_DATABASE = "app";
+const USERS_TABLE = "pithyAuthUsers";
 
 /**
  * The cookie Better Auth reads the session from. Better Auth builds it as `<cookiePrefix>.session_token`
@@ -53,13 +74,28 @@ export const DevPreferences = z
     user: z
       .string()
       .describe(
-        "The email of the seeded user to sign in as. Must be one of the seeded example identities, or the seed fails rather than signing in as nobody.",
+        "The email of the seeded user to sign in as. Must be a user this seed run creates, or the seed fails rather than signing in as nobody.",
       ),
   })
   .describe(
     "A developer's machine-local dev preferences (`$XDG_CONFIG_HOME/<project>/dev.json`, else `~/.config/...`) — outside the repo, so opting in needs no commit.",
   );
 export type DevPreferences = z.output<typeof DevPreferences>;
+
+/**
+ * A user this run seeds, read back out of the composed plan.
+ *
+ * Narrow on purpose: the rows come from a set this capability does not own — an adopter's, most of the time —
+ * so they cross a trust boundary and are validated, but only for the two fields a session needs. A row with
+ * more in it is fine; a row without these is not a user this set can sign in as.
+ */
+export const SeededUser = z
+  .object({
+    id: z.string().min(1).describe("The user id the session's `userId` points at."),
+    email: z.string().min(1).describe("The email `dev.json` names, and the login artifact records."),
+  })
+  .describe("A seeded `pithy_auth_users` row, narrowed to what minting a dev session for it requires.");
+export type SeededUser = z.output<typeof SeededUser>;
 
 /** What {@link mintDevSession} produces: the row to write, and the artifact the browser is handed. */
 export interface MintedDevSession {
@@ -108,8 +144,8 @@ async function secretFingerprint(secret: string): Promise<string> {
 
 /** Inputs to {@link mintDevSession}. `now` is a seam so the determinism tests do not depend on the clock. */
 export interface MintDevSessionInput {
-  /** The seeded identity to sign in as. */
-  identity: ExampleIdentity;
+  /** The seeded user to sign in as. */
+  user: SeededUser;
   /** The Better Auth signing secret for this environment — never logged, never stored, never in an error. */
   secret: string;
   /** The moment the session is minted. Defaults to now. */
@@ -126,12 +162,12 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + DEV_SESSION_LIFETIME_MS);
   const fingerprint = await secretFingerprint(input.secret);
-  const token = `dev-session-${input.identity.id}-${fingerprint}`;
+  const token = `dev-session-${input.user.id}-${fingerprint}`;
 
   const session: Session = {
     id: token,
     token,
-    userId: input.identity.id,
+    userId: input.user.id,
     expiresAt,
     createdAt: now,
     updatedAt: now,
@@ -144,8 +180,8 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
   return {
     session,
     login: {
-      email: input.identity.email,
-      userId: input.identity.id,
+      email: input.user.email,
+      userId: input.user.id,
       cookieName: DEV_SESSION_COOKIE_NAME,
       cookieValue: await signCookieValue(token, input.secret),
       expiresAt,
@@ -153,45 +189,60 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
   };
 }
 
-/** The seeded emails a `dev.json` may name — the actionable half of every failure here. */
-function seededEmails(): string {
-  return EXAMPLE_IDENTITIES.map((identity) => identity.email).join(", ");
+/**
+ * The users this run creates, whichever set contributes them.
+ *
+ * A row that does not parse is skipped rather than fatal: it belongs to some other set, which owns its own
+ * validation, and failing the dev login over someone else's fixture would be the wrong place to find out.
+ */
+function seededUsers(seeded: SeedPrepareContext["seeded"]): SeededUser[] {
+  return seeded(USERS_DATABASE, USERS_TABLE).flatMap((row) => {
+    const parsed = SeededUser.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
-/** Resolve the preference file into the identity to sign in as, or fail saying which emails exist. */
-function requireIdentity(preferences: unknown): ExampleIdentity {
+/** What to do about it — the actionable half of every failure here, and never a guess. */
+function nameOneOf(users: readonly SeededUser[]): string {
+  if (users.length === 0) {
+    return "This run seeds no users at all. Add a user fixture to your app's seed set, or turn on seed.includeExamples for the example cast.";
+  }
+  return `Name one of the users this run seeds instead: ${users.map((user) => user.email).join(", ")}.`;
+}
+
+/** Resolve the preference file into the user to sign in as, or fail saying who this run does seed. */
+function requireUser(preferences: unknown, users: readonly SeededUser[]): SeededUser {
   const parsed = DevPreferences.safeParse(preferences);
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
       message: "The dev.json preference file does not name a user.",
-      action: `Set { "user": "<email>" } in it. Seeded users: ${seededEmails()}.`,
+      action: `Set { "user": "<email>" } in it. ${nameOneOf(users)}`,
     });
   }
-  const identity = EXAMPLE_IDENTITIES.find((candidate) => candidate.email === parsed.data.user);
-  if (!identity) {
+  const user = users.find((candidate) => candidate.email === parsed.data.user);
+  if (!user) {
     throw new ValidationError({
-      message: `dev.json asks to sign in as ${parsed.data.user}, which no seed creates.`,
-      action: `Name one of the seeded users instead: ${seededEmails()}.`,
+      message: `dev.json asks to sign in as ${parsed.data.user}, which this seed run does not create.`,
+      action: nameOneOf(users),
     });
   }
-  return identity;
+  return user;
 }
 
 /**
- * The dev-login seed set. Composed by the auth capability; runs only in `dev`, only with examples on, and
- * only when the developer has opted in with a `dev.json`.
+ * The dev-login seed set. Composed by the auth capability; runs only in `dev`, only for a user this same run
+ * creates, and only when the developer has opted in with a `dev.json`.
  */
 export const authDevSessionSeed: SeedSet = defineSeed({
   name: "dev-session",
   order: AUTH_DEV_SESSION_SEED_ORDER,
   environments: ["dev"],
-  example: true,
   prepare: async (context): Promise<SeedPreparation> => {
     // No dev.json, no session. This is the default, and it is the one that keeps "there is no way in but
     // a magic link" true for everyone who never asked for anything else.
     if (context.preferences === undefined || context.preferences === null) return {};
 
-    const identity = requireIdentity(context.preferences);
+    const user = requireUser(context.preferences, seededUsers(context.seeded));
     const secret = await context.secret(AUTH_SESSION_SECRET);
     if (!secret) {
       throw new ValidationError({
@@ -200,7 +251,7 @@ export const authDevSessionSeed: SeedSet = defineSeed({
       });
     }
 
-    const minted = await mintDevSession({ identity, secret });
+    const minted = await mintDevSession({ user, secret });
     return {
       d1: [d1SeedGroup("app", "pithyAuthSessions", Session, [minted.session])],
       artifacts: [{ file: DEV_LOGIN_FILE, contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` }],

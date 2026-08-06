@@ -140,7 +140,7 @@ A set may declare a `prepare` hook for exactly that. It runs once per Worker, im
 ```ts
 defineSeed({
   name: "dev-session",
-  order: 110,
+  order: 9999,
   environments: ["dev"],
   prepare: async (context) => {
     const secret = await context.secret("auth-session-secret");
@@ -152,26 +152,45 @@ defineSeed({
 });
 ```
 
-The context is deliberately narrow: `env`, `project`, a `secret(name)` reader, and the developer's machine-local `preferences`. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
+The context is deliberately narrow: `env`, `project`, a `secret(name)` reader, the developer's machine-local `preferences`, and `seeded` — the run's own inventory. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
 - `secret` resolves from `.dev.vars`, which is where local dev's secrets genuinely live. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
 
+### Seeing the rest of the run: `context.seeded`
+
+`seeded(database, table)` answers with the app-shape rows *this run* declares for that table — from every composed set, across the whole fan-out, including your app's own.
+
+It exists for the fixture that has to reference a row it does not own. Auth's dev login is the case: it mints a session for a user, and the user may come from auth's example set or from your app's. Hard-coding a roster would exclude your users; opening D1 from a capability module would be worse. So the CLI hands over the composed plan it already holds.
+
+```ts
+const users = context.seeded("app", "pithyAuthUsers").map((row) => User.parse(row));
+```
+
+Two things to know:
+
+- **Validate what you read.** The rows come back as `unknown`, from a set you do not own. Parse them with the schema you expect, and skip what does not fit rather than failing someone else's fixture.
+- **Statically declared rows only.** Another set's `prepare` has not run yet, and a media record's row has no id until the CLI mints one — so neither is reported, because neither is certain. A fixture that needs to be *seen* declares its rows as literals.
+
+It is a plan, not a query: no I/O, no credentials, and the same answer whether or not the write succeeds.
+
 ### The dev login
 
 `@pithy-sh/auth` ships the first of these. Sign-in is passwordless, so every local sign-in is a magic link — correct in production, a tax in development, and impossible for anything automated.
 
-With `seed.includeExamples` on, `auth`'s `dev-session` set mints a **real** session for a seeded user and writes `logs/dev-login.json`. `pithy dev` reads it and prints, on the ready banner, a line you paste into the browser console to be signed in.
+`auth`'s `dev-session` set mints a **real** session for a seeded user and writes `logs/dev-login.json`. `pithy dev` reads it and prints, on the ready banner, a line you paste into the browser console to be signed in.
 
 It is opt-in per machine, not per repo. Create `~/.config/<project>/dev.json` (or `$XDG_CONFIG_HOME/<project>/dev.json`):
 
 ```json
-{ "user": "ada@example.com" }
+{ "user": "jim@acme.dev" }
 ```
 
-No file, no session — the default stays "there is no way in but a magic link". A file naming a user no seed creates fails with the seeded emails rather than quietly seeding nothing.
+Name **any user this run seeds** — one of your app's own, or one of the example cast when `seed.includeExamples` is on. The set is not itself an example: you should not have to turn on a fictional cast to sign in as yourself, and turning it off does not take your dev login away. It sorts last (order `9999`), so every set that could create a user has already been composed when it looks.
+
+No file, no session — the default stays "there is no way in but a magic link". A file naming a user this run does not create fails, listing the emails it does seed, rather than quietly seeding nothing.
 
 The cookie is signed the way Better Auth signs its own, and its token is derived from a fingerprint of the auth secret. That makes it deterministic across reseeds — the same cookie keeps working in every worktree once each is seeded — while rotating the secret invalidates every previously seeded cookie for free.
 

@@ -11,6 +11,7 @@ import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
+import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
 import type { ZodType } from "zod";
@@ -563,7 +564,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     await audit({ ...auditEvent, outcome: "success" });
   }
 
-  const prepareSeams = preparedRun(options);
+  const prepareSeams = preparedRun(options, composed);
   const reports: SeedWorkerReport[] = [];
   for (const entry of composed) {
     reports.push({
@@ -589,18 +590,23 @@ interface PreparedRun {
   preferences: () => Promise<unknown>;
   /** Resolve a secret by name. */
   secret: (name: string) => Promise<string | undefined>;
+  /** The rows this run declares, per table, across the whole fan-out. */
+  seeded: SeededRows;
   /** Write one artifact. */
   writeArtifact: (artifact: SeedArtifact) => Promise<void>;
 }
 
 /** Bind the prepared-set seams to this run, defaulting each to the real machine. */
-function preparedRun(options: SeedProjectOptions): PreparedRun {
+function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWorker[]): PreparedRun {
   const read = options.preferences ?? (() => readDevPreferences(options.project));
   // Memoized, so two Workers in one fan-out cannot observe one hand-edited file in two states — and so a
   // run with no prepared set never reads it at all.
   let pending: Promise<unknown> | undefined;
   return {
     preferences: () => (pending ??= read()),
+    // One inventory for the whole run, not one per Worker: a set deduped onto another Worker still writes
+    // its rows, so a prepared set must be able to see them wherever the fan-out put them.
+    seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
     secret: options.secret ?? devSecretReader(options.projectDir),
     writeArtifact:
       options.writeArtifact ??
@@ -650,6 +656,7 @@ async function writeWorker(
             project: options.project,
             secret: prepared.secret,
             preferences: await prepared.preferences(),
+            seeded: prepared.seeded,
           })
         : undefined;
       const d1Groups: readonly D1SeedGroup[] = [...(resolved.set.d1 ?? []), ...(preparation?.d1 ?? [])];

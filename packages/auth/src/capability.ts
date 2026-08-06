@@ -203,7 +203,8 @@ export function auth(config: AuthConfigInput): AuthCapability {
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
     // from the manifest 404s against exactly the adopters who customised anything.
     adminRoutes: authAdminRoutes(resolved.basePath),
-    // Order matters here too: the example set creates the users, the dev-session set signs one of them in.
+    // Order matters here too: the dev-session set sorts last, after every set that could create the user
+    // it signs in as — this one's example cast included, and the adopter's own.
     seeds: [authExampleSeed, authDevSessionSeed],
   });
 
