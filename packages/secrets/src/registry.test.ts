@@ -67,9 +67,131 @@ describe("defineSecretRegistry", () => {
     ).toThrow(InternalError);
   });
 
+  test("accepts a text entry that declares its dev value may be minted", () => {
+    const registry = defineSecretRegistry({
+      "auth-session-secret": {
+        backend: "d1",
+        scope: "environment",
+        rotatable: true,
+        valueType: "text",
+        devValue: "random",
+      },
+    });
+    expect(registry["auth-session-secret"].devValue).toBe("random");
+  });
+
+  test("leaves devValue off by default — a secret is not generatable until its owner says so", () => {
+    const registry = defineSecretRegistry({
+      "stripe-key": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    });
+    expect(registry["stripe-key"]).not.toHaveProperty("devValue");
+  });
+
+  test("rejects an unknown devValue", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: { backend: "d1", scope: "global", rotatable: false, valueType: "text", devValue: "guess" },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects devValue on a json entry — a random string cannot satisfy a schema", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "d1",
+            scope: "environment",
+            rotatable: false,
+            valueType: "json",
+            schema: z.object({ clientId: z.string().describe("Client id.") }).describe("A credential pair."),
+            devValue: "random",
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects devValue on a keyed entry — a keyspace has no one value to mint", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "d1",
+            scope: "environment",
+            rotatable: false,
+            valueType: "text",
+            keyed: true,
+            devValue: "random",
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
   test("rejects an empty name", () => {
     expect(() =>
       defineSecretRegistry(asRegistry({ "": { backend: "d1", scope: "global", rotatable: false, valueType: "text" } })),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a name carrying the keyspace separator — it would collide with a member", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({ "KEYSPACE/member": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" } }),
+      ),
+    ).toThrow(InternalError);
+  });
+});
+
+describe("defineSecretRegistry — keyed entries", () => {
+  test("accepts a keyed entry: a keyspace, not a name", () => {
+    const registry = defineSecretRegistry({
+      CONNECTION_SIGNING_KEY: {
+        backend: "d1",
+        scope: "environment",
+        rotatable: true,
+        valueType: "json",
+        schema: z.object({ privateKey: z.string().describe("PKCS#8 key.") }).describe("A connection signing key."),
+        keyed: true,
+      },
+    });
+    expect(registry.CONNECTION_SIGNING_KEY.keyed).toBe(true);
+  });
+
+  test("rejects a non-boolean keyed", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", keyed: "yes" },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a keyed cf-secrets-store entry — a binding cannot exist for a name that does not", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: false,
+            valueType: "text",
+            keyed: true,
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a global keyed entry — a member is written to one environment's store", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({ broken: { backend: "d1", scope: "global", rotatable: false, valueType: "text", keyed: true } }),
+      ),
     ).toThrow(InternalError);
   });
 });

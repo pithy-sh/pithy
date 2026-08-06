@@ -80,10 +80,15 @@ const BUN = { name: "Bun", version: "1.2.4", nodeCompat: "22.10.0" };
 /**
  * What every transcript shares, layered over whichever harness fixture a test starts from.
  *
- * `Config dir:`, `State file:`, and the shell's rc path are tilde-abbreviated against the home the report
- * is rendered for, so all three live under the fixture's home — the temp directory — and print as the
- * `~/.config/pithy` and `~/.zshrc` the document pastes. The runtime is Bun in all three transcripts, which
- * is what earns each one the `(Node … compat)` suffix.
+ * `Config dir:`, `State file:`, `Dev login:`, and the shell's rc path are tilde-abbreviated against the home
+ * the report is rendered for, so all four live under the fixture's home — the temp directory — and print as
+ * the `~/.config/pithy` and `~/.zshrc` the document pastes. The runtime is Bun in all three transcripts,
+ * which is what earns each one the `(Node … compat)` suffix.
+ *
+ * The dev-login check is stubbed to the state most machines are in — no `dev.json` — because it is the one
+ * that has to name the path, and naming the path is the reason the line exists. The other two transcripts
+ * carry the stub too and print nothing from it: the terse report suppresses the block, and outside a project
+ * the report has no project name to key a preference file by.
  */
 function docOptions(options: DoctorReportOptions): DoctorReportOptions {
   return {
@@ -91,6 +96,11 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
     homedir: harness.dir,
     stateFile: join(harness.dir, ".config", "pithy", "state.json"),
     detectShell: async () => ({ ...zsh, rcPath: join(harness.dir, ".zshrc") }),
+    checkDevPreferences: async () => ({
+      state: "absent",
+      path: join(harness.dir, ".config", "pithy", "acme", "dev.json"),
+      user: null,
+    }),
     runtime: BUN,
   };
 }

@@ -125,10 +125,25 @@ describe("scaffoldWorker", () => {
     );
 
     // Comments stripped: the settings must match, the prose around them need not.
-    const settings = async (path: string) => parse(await readFile(path, "utf8"), null, true);
+    const settings = async (path: string) =>
+      parse(await readFile(path, "utf8"), null, true) as unknown as {
+        compilerOptions: Record<string, unknown>;
+      };
     const scaffolded = await settings(join(workerDir, "tsconfig.json"));
-    expect(scaffolded).toEqual(await settings(starter));
-    expect(scaffolded).toMatchObject({ compilerOptions: { strict: true, types: ["@cloudflare/workers-types"] } });
+    const template = await settings(starter);
+
+    // `tsBuildInfoFile` is the one setting that legitimately differs, and it must: `composite` makes tsc
+    // write build state, and two Workers pointing at one file overwrite each other's. So it is compared
+    // as a rule rather than as a string — each names its own Worker, under the project's dist/ and never
+    // a Worker's own, which Vite empties on every client build.
+    expect(scaffolded.compilerOptions.tsBuildInfoFile).toBe("../../dist/web.server.tsbuildinfo");
+    expect(template.compilerOptions.tsBuildInfoFile).toBe("../../dist/api.server.tsbuildinfo");
+    scaffolded.compilerOptions.tsBuildInfoFile = template.compilerOptions.tsBuildInfoFile;
+
+    expect(scaffolded).toEqual(template);
+    expect(scaffolded).toMatchObject({
+      compilerOptions: { strict: true, composite: true, types: ["@cloudflare/workers-types"] },
+    });
   });
 
   test("rejects a non-kebab-case name", async () => {

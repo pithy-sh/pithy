@@ -186,3 +186,45 @@ describe("runSecretsList", () => {
     expect(view.promotable).toBe(true);
   });
 });
+
+describe("keyspaces", () => {
+  const withKeyspace = defineSecretRegistry({
+    "auth-signing-key": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+  });
+
+  test("a write to a keyspace is refused — its members are the app's to write, not the CLI's", async () => {
+    const dispatcher = new StubDispatcher();
+    await expect(
+      runSecretWrite(withKeyspace, dispatcher, {
+        mode: "create",
+        name: "CONNECTION_SIGNING_KEY",
+        value: "k",
+        env: "staging",
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(dispatcher.calls).toEqual([]);
+  });
+
+  test("a keyspace is never missing — there is no single value to provision", () => {
+    const view = runSecretsList(withKeyspace, ["auth-signing-key"]);
+    expect(view.names).toEqual(["CONNECTION_SIGNING_KEY", "auth-signing-key"]);
+    expect(view.audit.missing).toEqual([]);
+    expect(view.promotable).toBe(true);
+  });
+
+  test("a stored member is attributed to its keyspace, not reported as an orphan", () => {
+    const view = runSecretsList(withKeyspace, [
+      "auth-signing-key",
+      "CONNECTION_SIGNING_KEY/conn_a",
+      "CONNECTION_SIGNING_KEY/conn_b",
+      "left-behind",
+    ]);
+    expect(view.audit.orphan).toEqual(["left-behind"]);
+  });
+
+  test("a member of an undeclared keyspace is still an orphan", () => {
+    const view = runSecretsList(withKeyspace, ["auth-signing-key", "GONE_KEYSPACE/conn_a"]);
+    expect(view.audit.orphan).toEqual(["GONE_KEYSPACE/conn_a"]);
+  });
+});

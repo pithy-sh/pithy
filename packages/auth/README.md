@@ -56,7 +56,7 @@ No handler code lands in your repo. The logic lives in the package and upgrades 
 
 Through `@pithy-sh/secrets`, never an env literal.
 
-- `auth-session-secret` — the Better Auth signing and encryption secret. Create it:
+- `auth-session-secret` — the Better Auth signing and encryption secret. `pithy add auth` mints this project's **dev** value into `.dev.vars`, because nothing else names it: it is not a required binding, so without it the app boots healthy and fails at the first sign-in. Written only when absent — a new value signs out every live session. Deployed environments need their own:
   ```
   pithy secrets create auth-session-secret
   ```
@@ -83,6 +83,22 @@ All `pithy_auth_*`, all run by `pithy migrate`:
 `users`, `sessions`, `accounts`, `verifications`, `jwks`, `rate_limit`, `devices`.
 
 The first six are Better Auth's. `devices` is Pithy's own.
+
+## Signing in locally
+
+Passwordless is right in production and a tax in development: every local sign-in is a magic link, and nothing automated can read a mailbox.
+
+So auth ships a `dev-session` seed set. `pithy seed` mints a **real** session for a seeded user and writes `logs/dev-login.json`; `pithy dev` prints, on its ready banner, the line you paste into the browser console to be signed in.
+
+Opt in per machine, never per repo — create `~/.config/pithy/<project>/dev.json` (`%APPDATA%\pithy\<project>\dev.json` on Windows):
+
+```json
+{ "user": "jim@acme.dev" }
+```
+
+Name any user the seed run creates — one of your own, or one of the example cast with `seed.includeExamples` on. Naming a user nothing seeds fails, listing who was seeded.
+
+No file, no session. The set is `dev`-only, so it can never compose into staging or production, and the file it writes lives under the gitignored `logs/` because a seeded cookie is a live credential. The cookie's token is derived from a fingerprint of `auth-session-secret`: deterministic across reseeds, and invalidated by a rotation. Full detail in `docs/SEED.md`.
 
 ## Rate limiting
 

@@ -26,6 +26,24 @@ export const BindingType = z
 export type BindingType = z.infer<typeof BindingType>;
 
 /**
+ * Whether a provision command creates this kind of binding, rather than an adopter writing it into
+ * `wrangler.jsonc` by hand.
+ *
+ * The three are the ones `pithy add` deliberately leaves unwritten, and for the same reason each time:
+ * the entry carries a value only provisioning knows. A `secret` is a Secrets Store entry (a `.dev.vars`
+ * string in local dev); a `workflow` entry needs the deployed script's environment-scoped `name`; a
+ * `vectorize` entry needs the provisioned `index_name`. Telling anyone to add one of these to
+ * `wrangler.jsonc` sends them somewhere the value does not exist.
+ *
+ * `service` is not here. Its entry is also written for the adopter — by `pithy feature`, out of the
+ * target Worker's env-scoped script name — but it is wiring between an app's own Workers rather than a
+ * capability's provisioned resource, and no shipped capability declares one.
+ */
+export function isProvisionedBinding(type: BindingType): boolean {
+  return type === "secret" || type === "workflow" || type === "vectorize";
+}
+
+/**
  * Declares a Cloudflare binding a capability requires in the Worker env. The authoring
  * shape lets `optional` be omitted (defaults false); `createBackend` normalizes via parse.
  */

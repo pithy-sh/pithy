@@ -7,10 +7,10 @@ import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CONTROLPLANE_MIGRATION_ORDER, controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
-import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -19,6 +19,7 @@ import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { auth } from "../capability";
 import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
@@ -32,6 +33,13 @@ import {
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
 } from "./guards";
+import {
+  AdminDeviceRevokeResponse,
+  AdminDevicesResponse,
+  AdminRevokeResponse,
+  AdminUserResponse,
+  AdminUsersResponse,
+} from "./responses";
 
 /**
  * The admin handlers, actually executed — against real D1, a real `createBackend`, and tokens signed by
@@ -636,5 +644,82 @@ describe("the admin surface stays outside the user surface", () => {
       const row = await env.DB.prepare(`select count(*) as n from ${table}`).first<{ n: number }>();
       expect(row?.n, table).toBe(0);
     }
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a management client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions — a field
+   * the schema does not know about is dropped and shows as a difference, and a field it declares
+   * wrongly fails the parse. That is what stops the two from drifting silently, and it is why the
+   * dashboard can import these objects instead of hand-writing a mirror of each.
+   */
+  async function contract<T>(
+    schema: z.ZodType<T>,
+    method: string,
+    path: string,
+    scope: ControlPlaneScope,
+    body?: unknown,
+  ): Promise<T> {
+    const response = await call(method, path, scope, body);
+    expect(response.status, path).toBe(200);
+    const raw = await response.json();
+    expect(schema.parse(raw), path).toEqual(raw);
+    await grant(ALL_SCOPES);
+    return schema.parse(raw);
+  }
+
+  test("every admin route returns exactly its declared envelope", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await seedUser("u-2", "grace@example.test", 20);
+    await seedSession("s-1", "u-1", "d-1");
+    await seedDevice("d-1", "u-1");
+    await db()
+      .insertInto("pithyAuthAccounts")
+      .values({
+        id: "acct-1",
+        accountId: "google-sub",
+        providerId: "google",
+        userId: "u-1",
+        accessToken: OAUTH_ACCESS_TOKEN,
+        refreshToken: "1//refresh-must-not-leak",
+        idToken: "eyJ.id.must-not-leak",
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        scope: "openid email",
+        password: null,
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+      })
+      .execute();
+
+    // A limit of one, so the paged branch is the one under test — a cursor is null on the last page,
+    // and a schema proven only there says nothing about the field a client actually pages with.
+    const users = await contract(AdminUsersResponse, "GET", "/auth/admin/users?limit=1", AUTH_USERS_READ_SCOPE);
+    expect(users.nextCursor).not.toBeNull();
+
+    const user = await contract(AdminUserResponse, "GET", "/auth/admin/users/u-1", AUTH_USERS_READ_SCOPE);
+    expect(user.providers).toEqual(["google"]);
+    expect(user.sessions).toHaveLength(1);
+    expect(user.devices).toHaveLength(1);
+
+    await contract(AdminDevicesResponse, "GET", "/auth/admin/devices", AUTH_DEVICES_READ_SCOPE);
+
+    await contract(AdminRevokeResponse, "POST", "/auth/admin/sessions/revoke", AUTH_SESSIONS_REVOKE_SCOPE, {
+      sessionId: "s-1",
+    });
+    await contract(AdminRevokeResponse, "POST", "/auth/admin/users/u-1/sessions/revoke", AUTH_USERS_LOGOUT_SCOPE);
+    await contract(
+      AdminDeviceRevokeResponse,
+      "POST",
+      "/auth/admin/users/u-1/devices/revoke",
+      AUTH_DEVICES_REVOKE_SCOPE,
+      {
+        deviceId: "d-1",
+      },
+    );
   });
 });

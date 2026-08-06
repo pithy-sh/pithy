@@ -10,12 +10,14 @@ import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
 import { authTables } from "./data/tables";
+import { publishSameOrigin } from "./http/csrf";
 import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import { authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
+import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
 
@@ -192,15 +194,18 @@ export function auth(config: AuthConfigInput): AuthCapability {
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,
     }),
-    // Order matters: the tier-1 edge rate limiter runs first (before session resolution touches D1),
+    // Order matters: the same-origin policy is published first, so it is on the request before any
+    // route can gate on it; then the tier-1 edge rate limiter (before session resolution touches D1);
     // then the session-resolution middleware fills the AuthContext.
-    middleware: [rateLimitMiddleware, createSessionMiddleware(wiring)],
+    middleware: [publishSameOrigin(wiring), rateLimitMiddleware, createSessionMiddleware(wiring)],
     routes: createAuthRoutes(wiring),
     // Built from the RESOLVED basePath, never the default: an adopter who mounts auth at `/identity`
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
     // from the manifest 404s against exactly the adopters who customised anything.
     adminRoutes: authAdminRoutes(resolved.basePath),
-    seeds: [authExampleSeed],
+    // Order matters here too: the dev-session set sorts last, after every set that could create the user
+    // it signs in as — this one's example cast included, and the adopter's own.
+    seeds: [authExampleSeed, authDevSessionSeed],
   });
 
   return Object.assign(capability, { authConfig: resolved });

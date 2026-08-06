@@ -5,6 +5,7 @@
   "peerCapabilities": ["secrets", "email"],
   "optionalCapabilities": ["turnstile", "audit"],
   "migrationNamespace": "auth",
+  "devSecrets": [{ "name": "auth-session-secret", "devValue": "random" }],
   "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, and GitHub. A successful sign-in mints a long-lived refresh session and short-lived JWT access tokens that verify locally with no database hit. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
   "scaffold": [
     "Create the session signing secret: `pithy secrets create auth-session-secret`.",

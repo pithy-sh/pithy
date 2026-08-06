@@ -19,6 +19,7 @@ import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { publishSameOrigin } from "./csrf";
 import { createSessionMiddleware } from "./middleware";
 import { createRateLimitMiddleware } from "./rateLimit";
 import { createAuthRoutes } from "./routes";
@@ -73,7 +74,10 @@ function buildApp(wiring: AuthWiring, emit: AuditEmit = noopEmit): Hono<PithyHon
     if (c.get("auth") === undefined) c.set("auth", null);
     await next();
   });
-  // Mirror the capability's middleware order: tier-1 rate limiter, then session resolution.
+  // Mirror the capability's middleware order: the same-origin policy, the tier-1 rate limiter, then
+  // session resolution. The first is not optional scaffolding — auth's own mutating routes read their
+  // CSRF gate off the request, so a Worker that never published one denies them, as it should.
+  publishSameOrigin(wiring)(app);
   app.use(`${wiring.config.basePath}/*`, createRateLimitMiddleware(wiring.config.rateLimiterBinding));
   createSessionMiddleware(wiring)(app);
   createAuthRoutes(wiring)(app);

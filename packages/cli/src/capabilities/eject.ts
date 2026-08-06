@@ -5,6 +5,7 @@ import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
+import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } from "./configImports";
 
 /**
  * The directory an ejected capability's source is copied into, relative to the Worker's
@@ -26,13 +27,28 @@ export function ejectImportPath(capability: string): string {
  */
 export function parseEjectedCapabilities(configSource: string): string[] {
   const names: string[] = [];
-  // Match either quote style so a hand-reformatted config still reads as ejected.
-  const pattern = /from\s+["']\.\/capabilities\/([^"'/]+)(?:\/[^"']*)?["']/g;
-  for (const match of configSource.matchAll(pattern)) {
-    const name = match[1];
+  for (const specifier of importedSpecifiers(configSource)) {
+    const name = ejectedCapabilityName(specifier);
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
+}
+
+/**
+ * The capability a specifier forks, or `undefined` when it does not point into the fork directory.
+ *
+ * Decided by {@link isInside} — the same call `importOrigin` makes — because these two functions
+ * answer one question and used to answer it differently: a regex here accepted
+ * `./capabilities/<name>/<anything>` while `isCapabilityImport` demanded exact equality, so a config
+ * read as ejected while the import that made it so was refused as not the capability's. The regex also
+ * captured `..` as a capability name, off a path leaving the directory entirely.
+ */
+function ejectedCapabilityName(specifier: string): string | undefined {
+  const prefix = `./${EJECT_DIR}/`;
+  if (!specifier.startsWith(prefix)) return undefined;
+  const name = specifier.slice(prefix.length).split("/")[0];
+  if (!name || name === "." || name === "..") return undefined;
+  return isInside(specifier, ejectImportPath(name)) ? name : undefined;
 }
 
 /**
@@ -114,17 +130,30 @@ async function promotableDependencies(projectDir: string, pkg: string): Promise<
     .map(([name, version]) => `${name}@${version}`);
 }
 
-/** Repoint the managed-region import from the package to the local copy; idempotent if already local. */
+/**
+ * Repoint the managed-region import from the package to the local copy; idempotent if already local.
+ *
+ * The import is found by its binding and repointed whatever path into the package it uses — the same
+ * set `add` writes and `remove` takes out. Matching one exact specifier meant a hand-edited deep
+ * import could not be ejected at all, and `pithy add` would not put the canonical line back, so there
+ * was no way out through the CLI.
+ */
 async function repointImport(workerDir: string, pkg: string, capability: string): Promise<void> {
   const path = join(workerDir, "pithy.config.ts");
   const source = await readFile(path, "utf8");
-  const packageSpecifier = `"${pkg}/src/index"`;
-  const localSpecifier = `"${ejectImportPath(capability)}"`;
-  if (source.includes(packageSpecifier)) {
-    await writeFile(path, source.replace(packageSpecifier, localSpecifier));
+  const local = ejectImportPath(capability);
+  const found = findNamedImport(source, capability);
+  if (found?.specifier === local) return; // already ejected — a --force re-copy leaves it local
+  if (found && isCapabilityImport(found.specifier, pkg, local)) {
+    // The specifier is the only quoted region in the statement, so swapping it there keeps whatever
+    // spacing and quote style the adopter's config uses.
+    const repointed = found.statement.replace(found.specifier, () => local);
+    await writeFile(
+      path,
+      source.replace(found.statement, () => repointed),
+    );
     return;
   }
-  if (source.includes(localSpecifier)) return; // already ejected — a --force re-copy leaves it local
   throw new NotFoundError({
     message: `${path} doesn't import ${pkg}.`,
     action: `Run pithy add ${capability} first, then eject.`,

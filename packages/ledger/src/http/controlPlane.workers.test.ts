@@ -7,19 +7,21 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { LedgerConfig } from "../config/config";
 import { openLedger } from "../ledger";
 import { ledger_0001_accounts } from "../migrations/0001_accounts";
 import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./guards";
+import { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
 import { registerLedgerRoutes } from "./routes";
 
 /**
@@ -443,5 +445,52 @@ describe("the management surface cannot move a balance", () => {
     );
     expect(response.status).toBe(401);
     expect(await openLedger(env.DB).balance("alice", "chips")).toEqual({ balance: 0, held: 0, available: 0 });
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a management client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions, which is
+   * what stops the schema and the handler from drifting apart silently.
+   */
+  async function contract<T>(schema: z.ZodType<T>, scope: ControlPlaneScope, path: string): Promise<T> {
+    const response = await call(makeApp([scope]), path, scope);
+    expect(response.status, path).toBe(200);
+    const raw = await response.json();
+    expect(schema.parse(raw), path).toEqual(raw);
+    return schema.parse(raw);
+  }
+
+  test("every management route returns exactly its declared envelope", async () => {
+    await openLedger(env.DB).credit("alice", "chips", 100, "c1", { memo: "welcome bonus" });
+    await openLedger(env.DB).hold("alice", "chips", 40, "h1");
+    await openLedger(env.DB).credit("bob", "chips", 20, "c2");
+
+    // A limit of one, so the paged branch is under test — a schema proven only on the last page says
+    // nothing about the cursor a client actually pages with.
+    const accounts = await contract(
+      LedgerAccountsResponse,
+      LEDGER_ACCOUNTS_READ_SCOPE,
+      "/ledger/admin/accounts?limit=1",
+    );
+    expect(accounts.nextCursor).not.toBeNull();
+
+    await contract(LedgerUserAccountsResponse, LEDGER_ACCOUNTS_READ_SCOPE, "/ledger/admin/accounts/alice");
+    // A player who holds nothing is an empty list, not a 404, and the schema has to accept that too.
+    const none = await contract(
+      LedgerUserAccountsResponse,
+      LEDGER_ACCOUNTS_READ_SCOPE,
+      "/ledger/admin/accounts/nobody",
+    );
+    expect(none.accounts).toEqual([]);
+
+    await contract(
+      LedgerTransactionsResponse,
+      LEDGER_TRANSACTIONS_READ_SCOPE,
+      "/ledger/admin/accounts/alice/chips/transactions",
+    );
   });
 });

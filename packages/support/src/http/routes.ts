@@ -24,6 +24,7 @@ import {
   replyToConversation,
   updateFlags,
 } from "./handlers";
+import type { SupportRepliesResponse } from "./responses";
 import { ArchiveThreadInput, FlagsInput, ListThreadsQuery, RepliesQuery, ReplyInput, ThreadIdParam } from "./schemas";
 
 /**
@@ -41,6 +42,11 @@ import { ArchiveThreadInput, FlagsInput, ListThreadsQuery, RepliesQuery, ReplyIn
  * reaches this capability by sending email; there is nothing here for an end user to call. With the
  * seam uncomposed every one of these denies with `controlplane/not_connected`, which is the correct
  * failure for an inbox holding other people's private correspondence.
+ *
+ * **Every response has an exported schema**, in `responses.ts`. Each handler's return type is
+ * `z.output` of its envelope, so `c.json(await handler(...))` carries the contract without a cast — and
+ * a management client imports the same object and validates with it rather than hand-writing a mirror
+ * that drifts.
  *
  * The validators sit **after** the gate on every line. A validator ahead of it turns a 401 into a
  * 400 and tells an unverified caller which requests were well-formed — and on this surface that is a
@@ -91,7 +97,8 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       `${base}/replies`,
       requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
       zValidator("query", RepliesQuery, validationHook),
-      async (c) => c.json({ replies: listReplies(await resolve(c), c.req.valid("query")) }),
+      async (c) =>
+        c.json({ replies: listReplies(await resolve(c), c.req.valid("query")) } satisfies SupportRepliesResponse),
     );
 
     app.get(

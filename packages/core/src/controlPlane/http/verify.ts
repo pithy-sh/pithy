@@ -49,21 +49,16 @@ import { parseCompactJws, verifyEd25519 } from "../token/jws";
  */
 
 /**
- * The header a control-plane token is presented on. See the module doc: not `Authorization`, so the
- * auth capability's global session middleware never sees a management call.
- */
-export const CONTROL_PLANE_HEADER = "pithy-control-plane";
-
-/**
- * The response header carrying the build that answered a control-plane call.
+ * The header names live in `../wire`, which imports nothing so that a browser can hold them — the far
+ * end of this seam calls the adopter's Worker directly, and importing them from here drags WebCrypto
+ * into a DOM-typed build.
  *
- * Set by `requireControlPlane` on every control-plane response — allowed and denied alike, and on every
- * capability's admin routes rather than only the seam's own. A management client reads it to pin each
- * recorded action to the exact build it hit, and to notice a version changing mid-session, which is the
- * moment a rendered pane has quietly gone out of date. Absent where the `CF_VERSION_METADATA` binding
- * is, which reads as "this Worker cannot say" rather than as a value to trust.
+ * Re-exported because this path is already published: every caller outside the repo names
+ * `@pithy-sh/core/src/controlPlane/http/verify`, and moving a wire constant must not break the
+ * programs that speak the wire. Write new imports against `../wire`; everything in this repo already
+ * does.
  */
-export const CONTROL_PLANE_VERSION_HEADER = "pithy-worker-version";
+export { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 
 /** What the pipeline needs from the outside world. Every one is injectable, so every step is testable. */
 export interface ControlPlaneVerifyDeps {

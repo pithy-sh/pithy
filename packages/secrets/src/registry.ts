@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { KEYSPACE_SEPARATOR } from "./keyspace";
 
 /**
  * The secret registry is the dispatcher. Each entry declares where a secret lives
@@ -54,6 +56,21 @@ interface SecretRegistryEntryBase {
    * same either way. Value rotation itself is deferred.
    */
   rotatable: boolean;
+  /**
+   * How this secret's **dev** value may be minted, when it may be minted at all.
+   *
+   * Set it when the value is *arbitrary* — a session signing key, a link signing key: any random
+   * string works, because nothing outside the project has to agree with it. Leave it off when the
+   * value must match something that already exists — an OAuth app's client secret, a Stripe key, a
+   * storage credential. A generated value there authenticates against nothing, and hides the real gap
+   * behind one that looks filled in.
+   *
+   * The declaration lives here, with the capability that owns the secret, so `pithy add` never carries
+   * a list of names that drifts as capabilities are added. It is mirrored into the capability's
+   * `pithy.manifest.json` as `devSecrets` — the CLI wires a capability without executing it — and the
+   * capability's own tests assert the two agree.
+   */
+  devValue?: DevSecretValue;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -63,10 +80,25 @@ type TextEntry = { valueType: "text" };
 /** A `json` entry is parsed and validated against `schema` before exposure. */
 type JsonEntry = { valueType: "json"; schema: z.ZodType };
 
-/** A single registry entry — the cross-product of the base fields and the value-type discriminant. */
-export type SecretRegistryEntry = SecretRegistryEntryBase & (TextEntry | JsonEntry);
+/** A named entry — one secret, one value, its name declared here. The default, and the common case. */
+type NamedEntry = { keyed?: false };
+/**
+ * A keyed entry declares a **keyspace** instead of a name: the same backend, scope and schema applied
+ * to an unbounded set of members whose keys exist only at runtime — one signing key per customer
+ * connection, one credential per tenant. Read a member with `getKeyed(name, key)`; `get(name)` is
+ * refused, because a keyspace has no single value.
+ *
+ * `d1` and `environment` are enforced, not conventional. A Cloudflare Secrets Store binding is
+ * declared in `wrangler.jsonc` at build time, so a name that does not exist then can never have one;
+ * and a member is written to one environment's store by the app itself, so `global` would promise a
+ * fan-out that no CLI write performs. See `./keyspace` for how a member is named.
+ */
+type KeyedEntry = { keyed: true };
 
-/** A registry: secret name → entry. The source of truth for backend, scope, rotatability, and value type. */
+/** A single registry entry — the cross-product of the base fields, the value-type discriminant, and named vs keyed. */
+export type SecretRegistryEntry = SecretRegistryEntryBase & (TextEntry | JsonEntry) & (NamedEntry | KeyedEntry);
+
+/** A registry: secret name (or keyspace) → entry. The source of truth for backend, scope, rotatability, and value type. */
 export type SecretRegistry = Record<string, SecretRegistryEntry>;
 
 /**
@@ -79,8 +111,21 @@ export type SecretValue<E extends SecretRegistryEntry> = E extends { valueType: 
     : never
   : string;
 
-/** The declared names of a registry — constrains callers to entries that exist. */
-export type SecretName<R extends SecretRegistry> = keyof R & string;
+/**
+ * The declared **named** secrets of a registry — constrains callers to entries that exist and that
+ * have one value. A keyed entry is excluded on purpose: `get("CONNECTION_SIGNING_KEY")` is a
+ * question with no answer, and the type says so before the accessor has to.
+ */
+export type SecretName<R extends SecretRegistry> = {
+  [K in keyof R]: R[K] extends { keyed: true } ? never : K;
+}[keyof R] &
+  string;
+
+/** The declared **keyspaces** of a registry — the only names `getKeyed` accepts. */
+export type KeyedSecretName<R extends SecretRegistry> = {
+  [K in keyof R]: R[K] extends { keyed: true } ? K : never;
+}[keyof R] &
+  string;
 
 /**
  * Author a registry. Validates each entry's enum axes, that `rotatable` is a boolean, and that
@@ -92,6 +137,13 @@ export type SecretName<R extends SecretRegistry> = keyof R & string;
 export function defineSecretRegistry<const R extends SecretRegistry>(registry: R): R {
   for (const [name, entry] of Object.entries(registry)) {
     if (!name) throw new InternalError({ message: "secret registry: every entry needs a non-empty name." });
+    // A name carrying the separator would be indistinguishable from a keyspace member, so one
+    // registry entry could shadow another tenant's stored credential. Refused at define time.
+    if (name.includes(KEYSPACE_SEPARATOR)) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" must not contain '${KEYSPACE_SEPARATOR}' — it separates a keyspace from a member key.`,
+      });
+    }
     const axes: [string, z.ZodType, unknown][] = [
       ["backend", SecretBackend, entry.backend],
       ["scope", SecretScope, entry.scope],
@@ -109,6 +161,43 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
     }
     if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
       throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });
+    }
+    if (entry.devValue !== undefined) {
+      if (!DevSecretValue.safeParse(entry.devValue).success) {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" has an invalid devValue (${String(entry.devValue)}).`,
+        });
+      }
+      // A minted value is a random string, so only a `text` entry can hold one: a `json` entry's shape
+      // is the schema's, and nothing can invent a credential that satisfies it.
+      if (entry.valueType !== "text") {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" declares devValue but is not a text entry — a random value cannot satisfy a json schema.`,
+        });
+      }
+      // A keyspace has no single value to mint, and its members do not exist until runtime.
+      if (entry.keyed) {
+        throw new InternalError({
+          message: `secret registry: keyed entry "${name}" must not declare devValue — a keyspace has no one value.`,
+        });
+      }
+    }
+    if (entry.keyed !== undefined && typeof entry.keyed !== "boolean") {
+      throw new InternalError({ message: `secret registry: entry "${name}" must declare keyed as a boolean.` });
+    }
+    if (entry.keyed) {
+      // Both axes are load-bearing for a keyspace — see `KeyedEntry`. Caught here, where the author
+      // is, rather than at a read that finds nothing and cannot say why.
+      if (entry.backend !== "d1") {
+        throw new InternalError({
+          message: `secret registry: keyed entry "${name}" must use the d1 backend — a Secrets Store binding is declared at build time, and its members are not.`,
+        });
+      }
+      if (entry.scope !== "environment") {
+        throw new InternalError({
+          message: `secret registry: keyed entry "${name}" must be environment-scoped — its members are written to one environment's store.`,
+        });
+      }
     }
   }
   return registry;

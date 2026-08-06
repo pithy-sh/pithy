@@ -37,6 +37,15 @@ import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "..
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
 import { PAYMENTS_ENTITLEMENT_GRANT_SCOPE, PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, requireAuth } from "./guards";
+import type {
+  PaymentsEntitlementResponse,
+  PaymentsEntitlementsResponse,
+  PaymentsEntitlementView,
+  PaymentsHostedSessionResponse,
+  PaymentsPurchaseResponse,
+  PaymentsPurchaseView,
+  PaymentsRestoreResponse,
+} from "./responses";
 import {
   AppleWebhookNotification,
   CheckoutRequest,
@@ -197,9 +206,10 @@ function product(config: PaymentsConfig, id: string): PaymentsCatalogEntry {
 
 /**
  * A purchase as a client may see it. Deliberately not the row: the stored `payload` is the whole provider
- * response, and a client has no use for its own receipt read back to it.
+ * response, and a client has no use for its own receipt read back to it. The return type is `z.output` of
+ * the exported schema, so what this sends and what a client validates against are one declaration.
  */
-function purchaseView(projection: PurchaseProjection) {
+function purchaseView(projection: PurchaseProjection): PaymentsPurchaseView {
   const { purchase } = projection;
   return {
     id: purchase.id,
@@ -215,7 +225,11 @@ function purchaseView(projection: PurchaseProjection) {
 }
 
 /** Entitlements as a client reads them: the key, whether it grants right now, and when it lapses. */
-function entitlementView(entitlement: { key: string; active: boolean; expiresAt: Date | null }) {
+function entitlementView(entitlement: {
+  key: string;
+  active: boolean;
+  expiresAt: Date | null;
+}): PaymentsEntitlementView {
   return { key: entitlement.key, granted: entitlement.active, expiresAt: entitlement.expiresAt?.toISOString() ?? null };
 }
 
@@ -368,7 +382,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             entitlements: projection.entitlements.map((row) =>
               entitlementView({ key: row.entitlement, active: row.active, expiresAt: row.expiresAt }),
             ),
-          },
+          } satisfies PaymentsPurchaseResponse,
           200,
         );
       } catch (cause) {
@@ -393,7 +407,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(`${base}/entitlements`, requireAuth(), async (c) => {
       const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), callerId(c), clock());
-      return c.json({ entitlements: entitlements.map(entitlementView) }, 200);
+      return c.json({ entitlements: entitlements.map(entitlementView) } satisfies PaymentsEntitlementsResponse, 200);
     });
 
     /**
@@ -419,7 +433,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         sessionId: c.var.auth?.sessionId,
         metadata: { rail: input.rail, restored: purchases.length },
       });
-      return c.json({ purchases, entitlements: entitlements.map(entitlementView) }, 200);
+      return c.json(
+        { purchases, entitlements: entitlements.map(entitlementView) } satisfies PaymentsRestoreResponse,
+        200,
+      );
     });
 
     /**
@@ -509,7 +526,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         resourceId: entry.id,
         metadata: { rail: "stripe", productId: entry.id, subscription: entry.product.type === "subscription" },
       });
-      return c.json({ url: session.url }, 200);
+      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
 
     /**
@@ -549,7 +566,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         resourceId: providerAccountId,
         metadata: { rail: "stripe" },
       });
-      return c.json({ url: session.url }, 200);
+      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
 
     /**
@@ -608,7 +625,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
               active: granted.active,
               expiresAt: granted.expiresAt,
             }),
-          },
+          } satisfies PaymentsEntitlementResponse,
           200,
         );
       },
@@ -656,7 +673,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
               active: revoked.active,
               expiresAt: revoked.expiresAt,
             }),
-          },
+          } satisfies PaymentsEntitlementResponse,
           200,
         );
       },

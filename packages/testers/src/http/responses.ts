@@ -470,3 +470,155 @@ export const CohortsResponse = z
   })
   .describe("What a dashboard needs to render cohort state, per-tester health, the trend, and the forecast.");
 export type CohortsResponse = z.output<typeof CohortsResponse>;
+
+/**
+ * ## The write routes, and the tester's own read
+ *
+ * Everything above describes the control-plane cohort read. What follows is the rest of the wire
+ * contract — the roster writes, the nudge, and the one route a tester calls about themselves. They
+ * were object literals with no schema, which meant a management client had nothing to validate them
+ * with and hand-wrote a mirror of each.
+ *
+ * **The three write responses carry an id and never an address.** The scopes are separated so a
+ * credential may mail or manage a roster it was never granted permission to read; echoing the address
+ * back on every write would turn a list of ids into a list of real people's email addresses, which is
+ * exactly what `testers:roster:read` exists to gate. `invite` is the one exception and it is not one:
+ * the caller sent the address in the request body, so returning it discloses nothing new.
+ */
+
+/** One membership, as the tester themselves sees it. */
+export const MembershipView = z
+  .object({
+    cohortName: z.string().describe("The cohort's human label — the only thing about it a tester is shown."),
+    state: MemberState.describe("Their own roster state."),
+    estimatedOptedInAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When they followed Pithy's confirmation link, or null. OUR record, not Google's."),
+    estimatedDaysRemaining: z.number().int().describe("Window days still to hold, on Pithy's estimate."),
+    windowDays: z.number().int().describe("Continuous days the programme requires."),
+  })
+  .describe("One cohort a tester belongs to, as that tester sees it — never the roster, never the forecast.");
+export type MembershipView = z.output<typeof MembershipView>;
+
+/**
+ * `GET {base}/status` — a tester's own view.
+ *
+ * A tester sees their memberships and nothing else. An address this Worker cannot resolve to a user
+ * gets an empty list rather than a 404, so the route is not an oracle for who is on a roster.
+ */
+export const MembershipsResponse = z
+  .object({
+    memberships: z
+      .array(MembershipView)
+      .describe("Every cohort the caller belongs to. Empty when they belong to none."),
+    disclaimer: EstimateDisclaimer.describe("Required here too — a tester reading days remaining is reading a guess."),
+  })
+  .describe("What a tester is told about their own participation.");
+export type MembershipsResponse = z.output<typeof MembershipsResponse>;
+
+/** `POST {base}/invite`. */
+export const InviteResponse = z
+  .object({
+    member: z
+      .object({
+        id: z.string().describe("The member id — the handle every other write route takes."),
+        email: z.string().describe("The invited address. Returned because the caller just sent it."),
+        state: MemberState.describe("Their roster state after the invitation."),
+      })
+      .describe("The roster row, as the invitation left it."),
+    created: z
+      .boolean()
+      .describe(
+        "False when the address was already on this roster. Re-inviting is not an error, so this is how a caller tells the two apart.",
+      ),
+    jobId: z
+      .string()
+      .nullable()
+      .describe("The email job the invitation was enqueued as, or null when the caller asked for no mail."),
+  })
+  .describe("The invited tester, whether the roster row is new, and the mail it enqueued.");
+export type InviteResponse = z.output<typeof InviteResponse>;
+
+/** `POST {base}/resend`. */
+export const ResendResponse = z
+  .object({
+    member: z
+      .object({ id: z.string().describe("The member the invitation went to. An id, never the address.") })
+      .describe("Who was re-invited."),
+    jobId: z.string().describe("The email job the re-invitation was enqueued as."),
+  })
+  .describe("Which tester was re-invited, and the mail it enqueued.");
+export type ResendResponse = z.output<typeof ResendResponse>;
+
+/** `POST {base}/remove`. */
+export const RemoveResponse = z
+  .object({
+    member: z
+      .object({
+        id: z.string().describe("The member removed. An id, never the address."),
+        state: MemberState.describe("Their roster state after the removal."),
+      })
+      .describe("The roster row, as the removal left it."),
+  })
+  .describe("The removed tester's row, as it now stands.");
+export type RemoveResponse = z.output<typeof RemoveResponse>;
+
+/** Why an eligible tester was not mailed. Counts, so a caller can tell a full send from a partial one. */
+const NudgeSkipped = z
+  .object({
+    cooling: z.number().int().describe("Inside the cooldown window, so they were not mailed again."),
+    unreachable: z.number().int().describe("Bounced or suppressed — we cannot mail them at all."),
+    chasedOut: z.number().int().describe("Already chased as far as the policy allows."),
+    truncated: z
+      .number()
+      .int()
+      .describe(
+        "Eligible testers dropped by the batch cap. Reported rather than silent: without it a caller cannot tell 'everyone eligible was mailed' from 'the first two hundred were'.",
+      ),
+  })
+  .describe("Who was eligible and still not mailed, by reason.");
+
+/**
+ * `POST {base}/nudge` with `dryRun: true`.
+ *
+ * Ids, not addresses. A caller holding only `testers:nudge:send` can mail the roster but was never
+ * granted permission to read it, and a preview returning every eligible tester's email would hand
+ * them exactly what `testers:roster:read` exists to gate.
+ */
+export const NudgeDryRunResponse = z
+  .object({
+    dryRun: z.literal(true).describe("Always true. The discriminator that keeps a preview from being read as a send."),
+    wouldSend: z
+      .array(z.object({ id: z.string().describe("A member who would be mailed. An id, never the address.") }))
+      .describe("Who this send would reach, capped at the batch limit."),
+    cooling: z.number().int().describe("Inside the cooldown window."),
+    unreachable: z.number().int().describe("Bounced or suppressed."),
+    chasedOut: z.number().int().describe("Already chased as far as the policy allows."),
+    truncated: z.number().int().describe("Eligible testers dropped by the batch cap."),
+  })
+  .describe("What a nudge would do, without doing it.");
+export type NudgeDryRunResponse = z.output<typeof NudgeDryRunResponse>;
+
+/** `POST {base}/nudge`. */
+export const NudgeResponse = z
+  .object({
+    sent: z
+      .array(
+        z
+          .object({
+            memberId: z.string().describe("The tester mailed. An id, never the address."),
+            jobId: z.string().describe("The email job it was enqueued as."),
+          })
+          .describe("One enqueued nudge."),
+      )
+      .describe("Every nudge actually enqueued. Never empty — an empty send is refused, not reported as success."),
+    skipped: NudgeSkipped.describe("Who was eligible and still not mailed, by reason."),
+    copySource: z
+      .enum(["supplied", "default"])
+      .describe(
+        "Whether the caller supplied the copy or the capability's own was used. The provenance, never the words.",
+      ),
+  })
+  .describe("What a nudge send actually did, and who it left out.");
+export type NudgeResponse = z.output<typeof NudgeResponse>;

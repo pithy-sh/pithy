@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
- * `@pithy-sh/matchmaking` throw sugar. The `matchmaking/*` codes live in core's closed `ErrorPayload`
+ * `@pithy-sh/matchmaking` throw sugar. The `matchmaking/*` codes live in core's closed `KitErrorPayload`
  * union; these subclasses set one of those members — the leaderboard/multiplayer pattern. Runtime code
  * throws one of these, never a plain `new Error`.
  */

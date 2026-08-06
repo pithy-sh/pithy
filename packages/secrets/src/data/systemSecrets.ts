@@ -23,7 +23,11 @@ export const SystemSecret = z
       .number()
       .int()
       .describe("Surrogate primary key, autoincremented by SQLite. Lookups use the unique `name` column."),
-    name: z.string().describe("Stable identifier for the secret (matches a registry entry name); uniquely indexed."),
+    name: z
+      .string()
+      .describe(
+        "Stable identifier for the secret: a registry entry name, or `<keyspace>/<key>` for one member of a keyed entry; uniquely indexed.",
+      ),
     encryptedValue: z.string().describe("Base64-encoded AES-256-GCM ciphertext of the version→value map."),
     iv: z.string().describe("Base64-encoded initialization vector; unique per encryption operation."),
     keyVersion: z

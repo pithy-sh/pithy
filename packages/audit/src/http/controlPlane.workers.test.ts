@@ -7,9 +7,9 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
@@ -21,6 +21,7 @@ import { audit_0001_init } from "../migrations/0001_init";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
+import { AuditEventResponse, AuditEventsResponse } from "./responses";
 import { registerAuditRoutes } from "./routes";
 
 /**
@@ -436,5 +437,67 @@ describe("the two read scopes are not interchangeable", () => {
   test("a connection granted neither reads nothing", async () => {
     const response = await call(makeApp([]), `${BASE}/events`, AUDIT_TRAIL_READ_SCOPE);
     expect(response.status).toBe(403);
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a client is told it returns.
+   *
+   * Parsing alone is not enough: a Zod object strips unknown keys, so a route that grew a field would
+   * still parse. Comparing the parsed value with the raw body fails in both directions — a field the
+   * schema does not know about is dropped and shows as a difference, a field it declares wrongly fails
+   * the parse. That is what makes the two unable to drift silently.
+   */
+  test("GET /events returns exactly AuditEventsResponse", async () => {
+    await seed({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u-1" }, new Date(1_000));
+    await seed(
+      {
+        action: "testers/member_invited",
+        outcome: "denied",
+        severity: "warning",
+        actorType: "control-plane",
+        actorId: "ops@dashboard.test",
+        sessionId: "s-1",
+        resourceType: "testers_member",
+        resourceId: "m-1",
+        requestId: "cf-ray-1",
+        ip: "203.0.113.9",
+        userAgent: "Dashboard/1.0",
+        metadata: { email: "ada@example.test" },
+      },
+      new Date(2_000),
+    );
+
+    const body = await (
+      await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), `${BASE}/events?limit=1`, AUDIT_TRAIL_READ_SCOPE)
+    ).json();
+    expect(AuditEventsResponse.parse(body)).toEqual(body);
+    // A page that stops short must still carry a cursor, or the schema is only proven on the last page.
+    expect((body as AuditEventsResponse).nextCursor).not.toBeNull();
+  });
+
+  test("GET /events/:eventId returns exactly AuditEventResponse", async () => {
+    await seed(
+      {
+        action: "auth/login",
+        outcome: "success",
+        actorType: "user",
+        actorId: "u-1",
+        ip: "203.0.113.9",
+        userAgent: "Dashboard/1.0",
+        metadata: { reason: "magic_link" },
+      },
+      new Date(1_000),
+    );
+    const [event] = await trail();
+    const body = await (
+      await call(
+        makeApp([AUDIT_EVENT_DETAIL_READ_SCOPE]),
+        `${BASE}/events/${event?.eventId}`,
+        AUDIT_EVENT_DETAIL_READ_SCOPE,
+      )
+    ).json();
+    expect(AuditEventResponse.parse(body)).toEqual(body);
   });
 });

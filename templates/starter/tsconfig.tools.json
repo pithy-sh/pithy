@@ -1,0 +1,30 @@
+{
+  // The TOOLING program: the files that configure the project rather than run in it. They execute on
+  // Node, not in a Worker and not in a browser, so they get their own program and `types: ["node"]`.
+  //
+  // Left out of the solution, these were config files nothing checked — which is how a Vitest config
+  // that names a project no longer present, or a `pithy.config.ts` with a typo in a key, survives until
+  // the command that reads it fails.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    // `composite` is what a referenced project must declare, and it makes tsc write build state.
+    // Under `dist/`, which .gitignore already covers — and the project root's `dist/`, never a
+    // Worker's: Vite empties a Worker's on every client build, taking the incremental state with it.
+    "composite": true,
+    "tsBuildInfoFile": "dist/tools.tsbuildinfo",
+    "noEmit": true
+  },
+  "include": ["pithy.config.ts", "vitest.config.ts", "vitest.workers.config.ts"]
+}

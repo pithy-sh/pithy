@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
- * `@pithy-sh/multiplayer` throw sugar. The `multiplayer/*` codes live in core's closed `ErrorPayload`
+ * `@pithy-sh/multiplayer` throw sugar. The `multiplayer/*` codes live in core's closed `KitErrorPayload`
  * union (CLAUDE.md §Errors: capabilities add their codes to the one union); these subclasses are the
  * package-local vehicles that set one of those members — the same pattern as `@pithy-sh/leaderboard` and
  * `@pithy-sh/media`. Runtime code in this package throws one of these, never a plain `new Error`.

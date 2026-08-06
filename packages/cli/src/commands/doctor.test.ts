@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -523,6 +523,14 @@ describe("project health — installed is not composed (regression)", () => {
     api = join(projectDir, "apps", "api");
     web = join(projectDir, "apps", "web");
     await cp(api, web, { recursive: true });
+    // A copied Worker is a second Worker, so it carries the first one's script name and `WORKER` var —
+    // which is precisely the drift `checkWorkerNames` now fails the exit on. Stamped for the directory it
+    // was copied into, the way `pithy worker add` would have written it.
+    const copied = join(web, "wrangler.jsonc");
+    await writeFile(
+      copied,
+      (await readFile(copied, "utf8")).replaceAll("doctor-test-api", "doctor-test-web").replaceAll('"api"', '"web"'),
+    );
     // `pithy add auth --worker api`: one install at the project root, wired into api alone.
     const pkgDir = join(projectDir, "node_modules", "@pithy-sh", "auth");
     await mkdir(pkgDir, { recursive: true });
@@ -810,6 +818,155 @@ describe("project name", () => {
     // The evidence travels with the finding, so an agent can tell proof from inference.
     expect(json.projectName.misnamed[0]?.owner).toBe("oldname");
     expect(json.projectName.detail).toContain("stamped");
+  });
+});
+
+describe("dev login", () => {
+  const prefs =
+    (over: Partial<DoctorReport["devPreferences"] & object> = {}) =>
+    async () => ({
+      state: "absent" as const,
+      path: "/home/u/.config/pithy/acme/dev.json",
+      user: null,
+      ...over,
+    });
+
+  test("names the resolved path, tilde-abbreviated, beside the other config paths", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: prefs() }));
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Dev login:  ~/.config/pithy/acme/dev.json — none yet; sign-in stays magic-link only",
+    );
+  });
+
+  test("no file never fails the exit — a magic-link-only project is the documented default", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: prefs() }));
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("a healthy file names its user and still does not fail the exit", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Dev login:  ~/.config/pithy/acme/dev.json — names ada@example.com");
+    // Doctor runs no seed, so it must never imply it checked the roster.
+    expect(text).not.toContain("seeded");
+  });
+
+  test("a file that will not parse fails the exit and drags the report verbose", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "unparseable" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain("Dev login:  ~/.config/pithy/acme/dev.json — will not parse");
+  });
+
+  test("a file naming no user fails the exit too", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "no-user" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain('no "user"');
+  });
+
+  test("a healthy file keeps the terse report terse — it has nothing to say", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Dev login:");
+  });
+
+  test("outside a project there is no line at all — no config, no per-project path", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: async () => null }));
+    expect(report.devPreferences).toBeNull();
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Dev login:");
+    expect((renderDoctorJson(report) as { devPreferences: unknown }).devPreferences).toBeNull();
+  });
+
+  test("--json carries the absolute path, the state, and the user the file names", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    const json = renderDoctorJson(report) as {
+      devPreferences: { state: string; path: string; user: string | null; detail: string };
+    };
+    expect(json.devPreferences).toEqual({
+      state: "ok",
+      path: "/home/u/.config/pithy/acme/dev.json",
+      user: "ada@example.com",
+      detail: "names ada@example.com",
+    });
+  });
+});
+
+describe("worker names", () => {
+  /** The hand-rename the dashboard did: `apps/board`, still deploying and stamping as `api`. */
+  const handRenamed = {
+    state: "drifted" as const,
+    mismatches: [
+      { worker: "board", stamp: "name" as const, declared: "acme-api", expected: "acme-board", envs: [] },
+      {
+        worker: "board",
+        stamp: "vars.WORKER" as const,
+        declared: "api",
+        expected: "board",
+        envs: ["dev", "staging", "prod"],
+      },
+    ],
+  };
+
+  test("agreeing names stay out of the terse report and do not fail the exit", async () => {
+    const report = await buildDoctorReport(healthyOptions());
+    expect(report.workerNames?.state).toBe("ok");
+    expect(doctorExitCode(report)).toBe(0);
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Worker names:");
+  });
+
+  test("a hand-rename fails the exit, so CI catches the stamp nobody remembered", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkWorkerNames: async () => handRenamed }));
+    expect(doctorExitCode(report)).toBe(1);
+    // Pinned whole, on the health block's columns: a diagnostic's layout is what makes it readable at a
+    // glance, and every other block here is pinned the same way.
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      [
+        "Worker names:",
+        "  board:",
+        "    name         deploys as acme-api, not acme-board",
+        "    vars.WORKER  stamps events as api, not board",
+        "                 env: dev, staging, prod",
+        "    Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.",
+      ].join("\n"),
+    );
+  });
+
+  test("could-not-check never fails the exit — an unreadable config establishes nothing", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkWorkerNames: async () => ({ state: "could-not-check", mismatches: [] }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("outside a project there are no workers to name", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        loadProject: async () => {
+          throw new NotFoundError({ message: "No pithy.config.ts here." });
+        },
+      }),
+    );
+    expect(report.workerNames).toBeNull();
+    expect(renderDoctorJson(report).workerNames).toBeNull();
+  });
+
+  test("--json carries every mismatch, so an agent can fix them without parsing columns", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkWorkerNames: async () => handRenamed }));
+    const json = renderDoctorJson(report) as {
+      workerNames: { state: string; mismatches: { worker: string; stamp: string; detail: string }[] };
+    };
+    expect(json.workerNames.state).toBe("drifted");
+    expect(json.workerNames.mismatches).toHaveLength(2);
+    expect(json.workerNames.mismatches[0]?.detail).toBe("deploys as acme-api, not acme-board");
   });
 });
 

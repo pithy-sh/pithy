@@ -9,12 +9,8 @@ import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
 import { ControlPlaneNotConnectedError } from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
-import {
-  CONTROL_PLANE_HEADER,
-  CONTROL_PLANE_VERSION_HEADER,
-  type ControlPlaneVerifyDeps,
-  verifyControlPlaneCall,
-} from "./verify";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import { type ControlPlaneVerifyDeps, verifyControlPlaneCall } from "./verify";
 
 /**
  * `requireControlPlane(scope)` — the gate every control-plane route wears, including the ones

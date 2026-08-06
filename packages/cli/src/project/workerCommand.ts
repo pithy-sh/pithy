@@ -2,18 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
+import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { wireFeatureDevVars } from "../feature/devVars";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
+import { WORKER_NAME } from "./scaffold";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
+import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
 const run = promisify(execFile);
 
@@ -196,4 +200,265 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
   const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
   await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
   return { name: target.name, dir: target.dir, reconciled: true };
+}
+
+/**
+ * The `wrangler.jsonc` keys a rename rewrites: the deployed script name, and the `WORKER` var in every
+ * environment stanza. Everything else in the file belongs to the adopter and is left exactly as it is.
+ */
+interface RenamableWrangler {
+  name?: string;
+  vars?: Record<string, string | undefined>;
+  env?: Record<string, RenamableWrangler | undefined>;
+}
+
+/**
+ * The script name a worker called `to` would deploy under, given the one it deploys under as `from` —
+ * `null` when the current name does not carry the worker segment at all.
+ *
+ * `scaffoldWorker` writes `<project>-<worker>`, so the worker is the trailing segment and only that
+ * segment moves. A name that does not end in it (`my-service`, brought in from a Worker that predates the
+ * project) was never composed from the worker's name, so there is nothing here to recompute: renaming it
+ * would rename a Worker the adopter named themselves, and — deployed — strand it under a name pithy
+ * invented.
+ */
+function renamedScript(declared: string, from: string, to: string): string | null {
+  if (declared === from) return to;
+  return declared.endsWith(`-${from}`) ? `${declared.slice(0, -from.length)}${to}` : null;
+}
+
+/**
+ * Every script name the worker currently deploys under, in environment order.
+ *
+ * The top-level `name` is the dev script. A named environment takes `env.<name>.name` when it declares
+ * one and wrangler's own default — `<name>-<env>` — when it does not, which is the case for every Worker
+ * `pithy` scaffolds. These are the names the account is asked about: they are what a rename leaves behind.
+ */
+function deployedScriptNames(config: RenamableWrangler): string[] {
+  const top = config.name;
+  if (top === undefined) return [];
+  const names = [top];
+  for (const [env, stanza] of Object.entries(config.env ?? {})) {
+    names.push(stanza?.name ?? `${top}-${env}`);
+  }
+  return names;
+}
+
+/** Whether anything at all is at this path — a directory, a file, a link. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What the account said about the old worker's script names. */
+export interface DeployedScripts {
+  /** The script names that exist on the account. Empty when nothing does — or when nothing was asked. */
+  live: string[];
+  /**
+   * Whether the account actually answered. `false` means unchecked, not clear: no credentials, an
+   * offline laptop, or a token that would not list. A rename then proceeds saying so, rather than
+   * claiming a check it never made.
+   */
+  checked: boolean;
+}
+
+/** The account seam — asked which of `scripts` are live, so a unit test never reaches Cloudflare. */
+export type DeployedScriptProbe = (projectDir: string, scripts: string[]) => Promise<DeployedScripts>;
+
+/**
+ * Ask the account which of these script names are deployed. Never throws: every failure is `checked:
+ * false`, because "I could not find out" and "nothing is there" must not become the same answer when the
+ * difference decides whether a rename orphans a live Worker.
+ */
+export const probeDeployedScripts: DeployedScriptProbe = async (projectDir, scripts) => {
+  if (scripts.length === 0) return { live: [], checked: true };
+  const vars = loadCloudflareEnv(projectDir);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return { live: [], checked: false };
+  try {
+    // One listing, not one call per name: the account is asked once and the answer filtered locally.
+    const live = await new CloudflareClients({ accountId, apiToken }).workers().listWorkers();
+    const deployed = new Set(live.map((script) => script.id));
+    return { live: scripts.filter((script) => deployed.has(script)), checked: true };
+  } catch {
+    return { live: [], checked: false };
+  }
+};
+
+/** The outcome of {@link renameWorker}. */
+export interface RenameWorkerReport {
+  from: string;
+  to: string;
+  /** Where the worker now lives — `apps/<to>`. */
+  dir: string;
+  /** The deployed script name before and after, or `null` when it carried no worker segment to move. */
+  script: { from: string; to: string } | null;
+  /**
+   * Script names left live on the account under the old name — non-empty only under `force`. Empty when
+   * the account said nothing is there **and** when it said nothing at all; read it with `accountChecked`.
+   */
+  orphaned: string[];
+  /** Whether the account answered. `false` → `orphaned` establishes nothing. */
+  accountChecked: boolean;
+  /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
+  reconciled: boolean;
+}
+
+/** Options for {@link renameWorker}. */
+export interface RenameWorkerOptions extends WorkerContext {
+  /** The worker to rename, by the name `worker list` shows or its `apps/<dir>` basename. */
+  from: string;
+  /** The new name — the directory, the script's worker segment, and the `WORKER` var. */
+  to: string;
+  /** Rename even though a script is live under the old name. It stays deployed, and the report says so. */
+  force?: boolean;
+  probeDeployed?: DeployedScriptProbe;
+}
+
+/**
+ * Rename a worker — the logic behind `pithy worker rename`.
+ *
+ * **A worker's name is three strings, and they have to agree.** The directory `apps/<name>/`, which
+ * tsconfig references and CI working-directories point at; the deployed script name in `wrangler.jsonc`
+ * and `package.json`; and `vars.WORKER`, which is what separates two Workers' audit events when they
+ * share a database. Renamed by hand, whichever one is missed fails quietly and in the worst possible
+ * shape: the Worker deploys under one name and stamps its events with another.
+ *
+ * **A rename after a deploy is not a rename.** Resource names are computed rather than stored, so
+ * `<project>-<env>-<binding>` survives untouched. The Worker script is not: it is named for the worker,
+ * so a renamed worker deploys as a *new* script and leaves the old one live, serving, and billing. That
+ * is refused rather than reported, and `force` is the way to say it is understood — the report then names
+ * exactly what was left behind. When the account cannot be reached the rename proceeds with
+ * `accountChecked: false`; declaring an unchecked account clear would be the one lie this guard cannot
+ * afford.
+ *
+ * Not touched, deliberately: the app capability's `name` in `pithy.config.ts`. That is a **migration
+ * namespace**, and it is stamped into every applied migration's row — moving it orphans the ledger and
+ * re-runs every migration under a name the database has never seen.
+ */
+export async function renameWorker(options: RenameWorkerOptions): Promise<RenameWorkerReport> {
+  // The same rule `scaffoldWorker` holds a new worker to, imported rather than restated: a name this
+  // refuses is a directory `pithy worker add` could not have created in the first place.
+  if (!WORKER_NAME.test(options.to)) {
+    throw new ValidationError({
+      message: `Worker name must be kebab-case (got "${options.to}").`,
+      action: "Use lowercase words joined by hyphens, e.g. web or admin-api.",
+    });
+  }
+
+  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
+  const appsDir = join(options.projectDir, "apps");
+  // Resolved from the discovered set exactly as `removeWorker` resolves one — by the name `worker list`
+  // shows OR the `apps/<dir>` basename — so a worker already half-renamed by hand is still addressable.
+  const workers = await discoverWorkers(options.projectDir);
+  const target = workers.find(
+    (worker) =>
+      dirname(worker.dir) === appsDir && (worker.name === options.from || basename(worker.dir) === options.from),
+  );
+  if (!target) {
+    throw new NotFoundError({
+      message: `No worker named "${options.from}" under apps/.`,
+      action: "Run pithy worker list to see the workers this project has.",
+    });
+  }
+
+  const to = join(appsDir, options.to);
+  // Checked against the filesystem rather than the discovered set: a directory holding neither manifest
+  // nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still destroy it.
+  if (await exists(to)) {
+    throw new ConflictError({
+      message: `apps/${options.to} already exists.`,
+      action: "Pick another name, or remove that directory first.",
+    });
+  }
+
+  let config: RenamableWrangler;
+  try {
+    config = (await readWranglerConfig(target.dir)) as RenamableWrangler;
+  } catch (cause) {
+    throw new InternalError({
+      message: `Could not read ${basename(target.dir)}'s wrangler.jsonc.`,
+      action: "Fix the file, then run the rename again — this command edits it.",
+      detail: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
+  // The account is asked before anything moves, and asked even under `force`: the point of the flag is to
+  // proceed knowing what is being orphaned, which means the report still has to name it.
+  const deployed = await (options.probeDeployed ?? probeDeployedScripts)(
+    options.projectDir,
+    deployedScriptNames(config),
+  );
+  if (deployed.live.length > 0 && !options.force) {
+    throw new ConflictError({
+      message: `${options.from} is deployed as ${deployed.live.join(", ")}.`,
+      action:
+        "A renamed worker deploys as a NEW script and leaves that one live and serving. Delete it first, or pass --force to rename anyway and orphan it.",
+      detail: `Live scripts under the old name: ${deployed.live.join(", ")}.`,
+    });
+  }
+
+  // A plain filesystem move, not `git mv`: a project need not be a git repo at all (`pithy worker add`
+  // scaffolds into one that is not), and git reads a rename off the content anyway on the next `git add`.
+  await rename(target.dir, to);
+
+  const from = basename(target.dir);
+  const declared = config.name;
+  const renamed = declared === undefined ? null : renamedScript(declared, from, options.to);
+  const script = declared !== undefined && renamed !== null ? { from: declared, to: renamed } : null;
+  if (script) config.name = script.to;
+  for (const stanza of [config, ...Object.values(config.env ?? {})]) {
+    if (!stanza) continue;
+    if (stanza !== config && stanza.name !== undefined) {
+      // A stanza that names its own script gets the same treatment; one that does not inherits
+      // wrangler's `<name>-<env>` default and so moved with the top-level name already.
+      stanza.name = renamedScript(stanza.name, from, options.to) ?? stanza.name;
+    }
+    // Set, never added: a stanza that declares no `WORKER` declares nothing this rename can invalidate,
+    // and inventing the var would put a binding-shaped opinion into a config that never asked for one.
+    if (stanza.vars?.WORKER !== undefined) stanza.vars.WORKER = options.to;
+  }
+  await writeWranglerConfig(to, config);
+  await renamePackage(to, from, options.to);
+
+  const { mainRoot, inWorktree } = await resolveRoots(options);
+  const report: RenameWorkerReport = {
+    from,
+    to: options.to,
+    dir: to,
+    script,
+    orphaned: deployed.live,
+    accountChecked: deployed.checked,
+    reconciled: false,
+  };
+  if (!inWorktree) return report;
+
+  const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
+  await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
+  return { ...report, reconciled: true };
+}
+
+/**
+ * Move the worker's package name with it, by the same rule the script name moves. Written as plain JSON
+ * (CLAUDE.md: `package.json` stays strict JSON), and a worker without one is simply left alone — a
+ * non-Worker process in the dev set may have no package at all.
+ */
+async function renamePackage(dir: string, from: string, to: string): Promise<void> {
+  const path = join(dir, "package.json");
+  let pkg: Record<string, unknown>;
+  try {
+    pkg = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const name = pkg.name;
+  if (typeof name !== "string") return;
+  const renamed = renamedScript(name, from, to);
+  if (renamed === null) return;
+  await writeFile(path, `${JSON.stringify({ ...pkg, name: renamed }, null, 2)}\n`);
 }

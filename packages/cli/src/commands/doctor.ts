@@ -9,8 +9,10 @@ import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError
 import { defineCommand } from "citty";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
+import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
 import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from "../notifier/state";
@@ -96,6 +98,22 @@ export interface DoctorReport {
    * is what keeps the two blocks from disputing whether there is a project here.
    */
   projectName: ProjectNameCheck | null;
+  /**
+   * Whether each Worker's three names still agree — its `apps/<dir>`, its deployed script name, and its
+   * `WORKER` var. `null` outside a readable project, on the same `loadProject` outcome as
+   * {@link DoctorReport.projectName}: with no project there are no Workers to name.
+   */
+  workerNames: WorkerNameCheck | null;
+  /**
+   * This project's dev-login preference file: where it goes, whether it is there, and whether it says
+   * anything a seed can use. `null` outside a readable project, on the same footing as the two above.
+   *
+   * It sits in the report because nothing else could say it. `dev.json` is machine-local and named by
+   * nothing in the checkout, and until this line doctor reported one config directory while `pithy seed`
+   * read a different one — so a developer whose dev login was not working looked where doctor pointed and
+   * found nothing, correctly.
+   */
+  devPreferences: DevPreferencesCheck | null;
   os: { name: string; version: string };
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
@@ -173,6 +191,13 @@ export interface DoctorReportOptions {
   checkCloudflare?: (projectDir: string) => Promise<CloudflareAccess>;
   /** Project-name probe seam; defaults to {@link checkProjectName}. Injected so unit tests never call out. */
   checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
+  /** Worker-name agreement seam; defaults to {@link checkWorkerNames}. Reads files only — no account call. */
+  checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
+  /**
+   * Dev-login preference seam; defaults to {@link checkDevPreferences} resolved against the same `homedir`
+   * and `env` the config directory is, so the line can never name a path this report did not resolve.
+   */
+  checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
 }
 
 /** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
@@ -212,6 +237,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
   const probeCloudflare = options.checkCloudflare ?? checkCloudflareAccess;
   const probeProjectName = options.checkProjectName ?? checkProjectName;
+  const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
+  const probeDevPreferences =
+    options.checkDevPreferences ??
+    ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
@@ -300,6 +329,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // and the `Project:` block below already reports which of the two happened. Gated on the same `inProject`
   // that block is written from, so neither can contradict the other about whether a project is here.
   const projectName = inProject ? await probeProjectName(options.projectDir) : null;
+  // The same question one level down, and gated the same way. `checkProjectName` asks whether this
+  // project's name still names its resources; this asks whether each Worker's own three names still name
+  // one Worker. Files only, so it costs nothing and answers offline.
+  const workerNames = inProject ? await probeWorkerNames(options.projectDir) : null;
+  // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
+  // there is no path to resolve and no file to look for. Files only, no account, no seed run.
+  const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
 
   return {
     cli,
@@ -313,6 +349,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectLoadError,
     cloudflare,
     projectName,
+    workerNames,
+    devPreferences,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -342,6 +380,17 @@ export function doctorExitCode(report: DoctorReport): number {
   // any name, and `doctor` outside a project — to read the CLI version, the shell, the alias — must exit 0.
   const state = report.projectName?.state;
   if (state === "invalid" || state === "drifted" || state === "orphaned") return 1;
+  // Same standard once more, and it is met from local files alone: a Worker's directory and its own
+  // wrangler.jsonc contradict each other about which Worker this is. Nothing is inferred about the
+  // account, and `could-not-check` establishes nothing, so only `drifted` gates.
+  if (report.workerNames?.state === "drifted") return 1;
+  // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
+  // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
+  // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
+  // CI (which has no `dev.json` at all) is therefore never touched by this check. The audience is the
+  // developer whose dev login stopped working, which is the audience the whole check exists for.
+  const preferences = report.devPreferences?.state;
+  if (preferences === "unparseable" || preferences === "no-user") return 1;
   return report.project && !report.project.health.ok ? 1 : 0;
 }
 
@@ -423,6 +472,28 @@ function healthBlock(health: ProjectHealth): string {
   return lines.join("\n");
 }
 
+/**
+ * The `Worker names` lines — shown only when a stamp contradicts its directory, grouped one block per
+ * Worker, on the health block's shape. A Worker whose names agree says nothing at all: there is no
+ * "names fine ✓" line, because unlike a health check this has no per-Worker section to sit in.
+ */
+function workerNamesBlock(check: WorkerNameCheck): string {
+  const lines = ["Worker names:"];
+  const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
+  for (const worker of workers) {
+    lines.push(`  ${worker}:`);
+    for (const mismatch of check.mismatches.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(mismatch.stamp, describeWorkerName(mismatch)));
+      if (mismatch.envs.length > 0) lines.push(`${HEALTH_CONT}env: ${mismatch.envs.join(", ")}`);
+    }
+  }
+  // No command is offered to fix this one, because none of them can: the directory has already moved, and
+  // `pithy worker rename` refuses a destination that exists. The fix is the two edits named above. The
+  // command is named anyway, for the next rename — it moves all three at once and this block stays empty.
+  lines.push(`${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.`);
+  return lines.join("\n");
+}
+
 /** The `Project capabilities` lines — collapsed to one line when everything is current. */
 function capabilitiesBlock(capabilities: CapabilityStatus[]): string {
   if (capabilities.length === 0 || capabilities.every((cap) => cap.state === "current")) {
@@ -455,6 +526,13 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // have would answer a question they did not put. `unconfigured` still forces verbose — there the file is
   // real and a key is missing from it, which is worth the ink.
   const projectNameOk = report.projectName === null || report.projectName.state === "ok";
+  // `could-not-check` keeps its silence here rather than forcing verbose: unlike an unreadable name, an
+  // unreadable `wrangler.jsonc` is already the health block's line to say, and it says it louder.
+  const workerNamesOk = !report.workerNames || report.workerNames.mismatches.length === 0;
+  // A dev login is optional, so having none is a pass — the terse report is for the developer who has
+  // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
+  const devPreferencesState = report.devPreferences?.state;
+  const devPreferencesOk = devPreferencesState !== "unparseable" && devPreferencesState !== "no-user";
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
   const terse =
     report.cli.state === "current" &&
@@ -462,6 +540,8 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     healthOk &&
     cloudflareOk &&
     projectNameOk &&
+    workerNamesOk &&
+    devPreferencesOk &&
     !report.projectLoadError;
 
   const blocks: string[] = [];
@@ -501,13 +581,16 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     } else {
       notifier = "disabled (pithy doctor --enable-notifier to re-enable)";
     }
-    blocks.push(
-      [
-        `Config dir: ${tildify(report.configDir, home)}`,
-        `State file: ${tildify(report.stateFile, home)}`,
-        `Notifier:   ${notifier}`,
-      ].join("\n"),
-    );
+    // The dev-login line belongs in this block and nowhere else. It is the same question the two lines above
+    // it answer — where does the CLI keep this, and what is in it — and it is here because it used not to be
+    // resolvable from them: `dev.json` lived under a second, unrelated config root, so this block named a
+    // directory that did not contain it. One root, one block.
+    const paths = [`Config dir: ${tildify(report.configDir, home)}`, `State file: ${tildify(report.stateFile, home)}`];
+    if (report.devPreferences) {
+      const path = tildify(report.devPreferences.path, home);
+      paths.push(`Dev login:  ${path} — ${describeDevPreferences(report.devPreferences)}`);
+    }
+    blocks.push([...paths, `Notifier:   ${notifier}`].join("\n"));
   }
 
   // Project. Three states across two fields, and all three are said out loud: the config loaded, it is
@@ -536,6 +619,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // find there still mine". Absent when the config could not be read — the `Project:` line above has
   // already said so, and this line has no name to reconcile.
   if (!terse && report.projectName) blocks.push(`Project name: ${describeProjectName(report.projectName)}`);
+
+  // The Workers' own names, and only when they disagree. A Worker whose three stamps agree has nothing to
+  // report — the block is the finding, the way `Project health` is.
+  if (report.workerNames && report.workerNames.mismatches.length > 0) {
+    blocks.push(workerNamesBlock(report.workerNames));
+  }
 
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
@@ -582,6 +671,22 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           misnamed: report.projectName.misnamed,
           detail: describeProjectName(report.projectName),
         }
+      : null,
+    // Same `null` discipline: no project, no Workers, no verdict. Each mismatch carries its own sentence
+    // so an agent fixing it never has to reproduce the wording from the fields.
+    workerNames: report.workerNames
+      ? {
+          state: report.workerNames.state,
+          mismatches: report.workerNames.mismatches.map((mismatch) => ({
+            ...mismatch,
+            detail: describeWorkerName(mismatch),
+          })),
+        }
+      : null,
+    // The path is absolute here, not tilde-abbreviated: `--json` is read by agents and scripts, which need
+    // a path they can open, not one a human recognises. The same `null` discipline as the two above.
+    devPreferences: report.devPreferences
+      ? { ...report.devPreferences, detail: describeDevPreferences(report.devPreferences) }
       : null,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,

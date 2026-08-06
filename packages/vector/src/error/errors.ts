@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
- * `@pithy-sh/vector` throw sugar. The `vector/*` codes live in core's closed `ErrorPayload` union
+ * `@pithy-sh/vector` throw sugar. The `vector/*` codes live in core's closed `KitErrorPayload` union
  * (CLAUDE.md §Errors); these subclasses are the package-local vehicles that set one of those members.
  * Runtime code in this package throws one of these, never a plain `new Error`.
  *

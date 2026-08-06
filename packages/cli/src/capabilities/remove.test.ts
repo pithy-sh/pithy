@@ -89,6 +89,58 @@ describe("unwireConfig", () => {
     expect(out).not.toContain("auth()");
   });
 
+  test("removes a hand-edited deep import of the capability's package", () => {
+    // `add` accepts any specifier into the capability's own package, so `remove` has to take the same
+    // set out. Leaving one behind while the package is uninstalled is a config that cannot load.
+    const source = [
+      'import { auth } from "@pithy-sh/auth/src/capability";',
+      "  capabilities: [",
+      "    auth(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    const out = unwireConfig(source, "auth", "@pithy-sh/auth");
+    expect(out).not.toContain("@pithy-sh/auth");
+    expect(out).not.toContain("auth()");
+  });
+
+  test("takes out every import of the capability, not just the first", () => {
+    // The wreckage the old `add` left behind: a hand-corrected specifier, plus the broken one put
+    // straight back on the next run. Removing one of the two still leaves the config unloadable.
+    const source = [
+      'import { secrets } from "@pithy-sh/secrets/src/capability";',
+      'import { secrets } from "@pithy-sh/secrets/src/index";',
+      "    secrets(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    expect(unwireConfig(source, "secrets", "@pithy-sh/secrets")).not.toContain("@pithy-sh/secrets");
+  });
+
+  test("takes the capability out of a shared clause and leaves the adopter's other bindings", () => {
+    // Deleting the whole statement deleted bindings that were never ours. `hashPassword` still resolves
+    // here; if the uninstall then takes the package, that is a loud typecheck failure, not a silent
+    // deletion of code the adopter wrote.
+    const source = [
+      'import { auth, hashPassword } from "@pithy-sh/auth/src/index";',
+      "  capabilities: [",
+      "    auth(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    const out = unwireConfig(source, "auth", "@pithy-sh/auth");
+    expect(out).toContain('import { hashPassword } from "@pithy-sh/auth/src/index";');
+    expect(out).not.toContain("auth()");
+  });
+
+  test("leaves an import of the same name from somewhere else alone", () => {
+    // The adopter's own `auth`, which `add` would have refused to wire over. Not ours to delete.
+    const source = ['import { auth } from "./lib/myAuth";', "  capabilities: [", "    // pithy:capabilities"].join(
+      "\n",
+    );
+    expect(unwireConfig(source, "auth", "@pithy-sh/auth")).toBe(source);
+  });
+
   test("leaves a config that never had the capability unchanged", () => {
     const source = 'import { email } from "@pithy-sh/email/src/index";\n    email(),\n    // pithy:capabilities';
     expect(unwireConfig(source, "auth", "@pithy-sh/auth")).toBe(source);
@@ -372,7 +424,7 @@ describe("removeCapability", () => {
       },
       uninstall: async (pkg) => {
         calls.uninstall.push(pkg);
-        return { packageManager: "bun" };
+        return { packageManager: "bun", uninstalled: true };
       },
       deleteSource: async (d) => {
         calls.deleteSource.push(d);
@@ -572,6 +624,24 @@ describe("removeCapability", () => {
     expect(result.packageManager).toBe("bun");
   });
 
+  test("an uninstall that declined is not reported as one — the linked package is still there", async () => {
+    // `uninstallPackage` refuses to hand a linked checkout to npm, which would prune the whole scope.
+    // The wiring still goes, so the removal is real; saying "Uninstalled @pithy-sh/turnstile" is not.
+    await fixture();
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile")] });
+
+    const result = await removeCapability({
+      workerDir: worker,
+      capability: "turnstile",
+      steps: { ...s, uninstall: async () => ({ packageManager: "npm", uninstalled: false }) },
+    });
+
+    expect(result.present).toBe(true);
+    expect(result.packageManager).toBeUndefined();
+    expect(result.keptLinked).toBe(true);
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).not.toContain("turnstile()");
+  });
+
   test("with the real scan: two workers composing one capability keep the package installed", async () => {
     // The end-to-end shape of the defect: apps/api and apps/web both compose turnstile. Removing it from
     // api must leave @pithy-sh/turnstile installed, so apps/web/pithy.config.ts still loads.
@@ -593,7 +663,7 @@ describe("removeCapability", () => {
         packageInstalled: async () => true,
         uninstall: async (pkg) => {
           uninstalled.push(pkg);
-          return { packageManager: "bun" };
+          return { packageManager: "bun", uninstalled: true };
         },
       },
     });
@@ -623,7 +693,7 @@ describe("removeCapability", () => {
         packageInstalled: async () => true,
         uninstall: async (pkg) => {
           uninstalled.push(pkg);
-          return { packageManager: "bun" };
+          return { packageManager: "bun", uninstalled: true };
         },
       },
     });

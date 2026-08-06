@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import {
   currentValue,
   decodeVersionedValue,
@@ -9,7 +10,8 @@ import {
 } from "./crypto/versionedValue";
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
-import type { SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
+import { keyedSecretName } from "./keyspace";
+import type { KeyedSecretName, SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
 import { ManagedEnvironment } from "./scope";
 import { SystemSecretsStore } from "./store/systemSecretsStore";
 
@@ -20,12 +22,19 @@ import { SystemSecretsStore } from "./store/systemSecretsStore";
  * worker is deployed is decided by **one explicit signal — the `ENVIRONMENT` var** (a `ManagedEnvironment`
  * means deployed): in local dev **every** secret resolves from its injected `.dev.vars` string (same shape
  * as stored), so dev needs no `SECRETS` D1 or master key; deployed reads route strictly by backend, so a
- * stray plaintext binding can never shadow a `d1` secret. The accessor's methods are synchronous.
+ * stray plaintext binding can never shadow a `d1` secret. The accessor's named methods are synchronous.
  *
  * `get(name)` returns the current value — what almost every consumer wants. `getVersions(name)`
  * returns the current pointer plus every still-valid version — for the rare verifier that must
  * check a kid against every valid key (e.g. token verification across a signing-key rotation).
  * Both are available for every secret; the shape is not a per-secret switch.
+ *
+ * **A keyspace is the one asymmetry, and it is honest.** A `keyed` entry covers an unbounded set of
+ * members whose keys exist only at runtime — one credential per tenant — so nothing is resolved for it
+ * up front, and `getKeyed(name, key)` / `getKeyedVersions(name, key)` are async: they fetch exactly the
+ * one member asked for, from the encrypted D1 store, in dev and deployed alike (nothing can inject a
+ * name that does not exist at build time). Members are never cached — one tenant's credential must not
+ * sit in an accessor the next request reuses.
  *
  * The master key never leaves the worker, and resolved plaintext is held in `#private` fields so
  * it cannot leak via `JSON.stringify`, structured logging, or object spread.
@@ -44,6 +53,26 @@ interface Resolved {
   current: unknown;
   currentVersion: string;
   versions: Record<string, unknown>;
+}
+
+/**
+ * Fetches one keyspace member's stored envelope by its composed `<keyspace>/<key>` name, or
+ * `undefined` when nothing is stored under it — which the accessor turns into `secrets/not_found`.
+ * A seam, so the accessor's rules are testable without a D1; {@link d1KeyedSource} is the real one.
+ */
+export type KeyedSecretSource = (storedName: string) => Promise<VersionedValue | undefined>;
+
+/**
+ * The real keyed source: the per-environment encrypted D1 store, one member per read.
+ *
+ * The store is built per read rather than once, so it re-resolves the master key — a
+ * `SECRETS_ENCRYPTION_KEYS` rotation is picked up instead of being pinned for the life of a cached
+ * accessor. A keyspace has no other home: a Secrets Store binding is declared at build time and a
+ * member's name is not, so this is the same path in local dev as deployed. Dev therefore needs the
+ * `SECRETS` D1 and a master key **if** it reads a keyspace — which it needs anyway to write one.
+ */
+export function d1KeyedSource(env: SecretsStoreEnv): KeyedSecretSource {
+  return async (storedName) => (await SystemSecretsStore.fromEnv(env)).getValue(storedName);
 }
 
 /** Parse a raw stored string into the entry's value type: `text` passes through, `json` is validated. */
@@ -101,17 +130,20 @@ function resolveInjected(entry: SecretRegistryEntry, name: string, raw: string):
 }
 
 /**
- * The resolved, typed accessor. Methods are synchronous — every value was materialized by
- * `secretsStore`. Resolved plaintext lives in `#private` fields, and `toJSON` redacts, so a stray
- * `logger.info({ secrets })` surfaces only the count.
+ * The resolved, typed accessor. The named methods are synchronous — every value was materialized by
+ * `secretsStore`; the keyed ones are not, because a keyspace member is fetched at the read. Resolved
+ * plaintext lives in `#private` fields, and `toJSON` redacts, so a stray `logger.info({ secrets })`
+ * surfaces only the count.
  */
 export class SecretsAccessor<R extends SecretRegistry> {
   readonly #registry: R;
   readonly #resolved: Record<string, Resolved>;
+  readonly #keyedSource: KeyedSecretSource | undefined;
 
-  constructor(registry: R, resolved: Record<string, Resolved>) {
+  constructor(registry: R, resolved: Record<string, Resolved>, keyedSource?: KeyedSecretSource) {
     this.#registry = registry;
     this.#resolved = resolved;
+    this.#keyedSource = keyedSource;
   }
 
   /** The current value of a declared secret. */
@@ -129,24 +161,97 @@ export class SecretsAccessor<R extends SecretRegistry> {
   }
 
   /**
+   * The current value of one member of a declared keyspace — the credential `key` names. Async
+   * because it is fetched now: a keyspace is unbounded, so nothing was resolved for it up front.
+   */
+  async getKeyed<K extends KeyedSecretName<R>>(name: K, key: string): Promise<SecretValue<R[K]>> {
+    return (await this.#loadKeyed(name, key)).current as SecretValue<R[K]>;
+  }
+
+  /**
+   * The current pointer plus every still-valid version of one keyspace member — what a verifier needs
+   * mid-rotation, when a tenant's retired key must still be honoured alongside its new one.
+   */
+  async getKeyedVersions<K extends KeyedSecretName<R>>(name: K, key: string): Promise<VersionedSecret<R[K]>> {
+    const resolved = await this.#loadKeyed(name, key);
+    return {
+      currentVersion: resolved.currentVersion,
+      versions: resolved.versions as Record<string, SecretValue<R[K]>>,
+    };
+  }
+
+  /**
    * A typed view over a subset of this accessor, restricted to `registry`'s names and sharing the
    * already-resolved values — no re-fetch. Used by the shared per-invocation accessor: the combined
    * registry is resolved once, then each capability gets a precisely-typed accessor over only its own
    * slice. A name in `registry` that this accessor never resolved is simply absent, so a later
    * `get`/`getVersions` fails loudly as `secrets/not_found` rather than returning a silent `undefined`.
+   *
+   * `keyedSource` defaults to this accessor's own. The shared store passes the current invocation's
+   * instead: it hands out views over an accessor cached across requests, and a keyspace read is real
+   * I/O, which must run through the binding of the request making it — not of whichever request
+   * happened to fill the cache.
    */
-  subset<R2 extends SecretRegistry>(registry: R2): SecretsAccessor<R2> {
+  subset<R2 extends SecretRegistry>(
+    registry: R2,
+    keyedSource: KeyedSecretSource | undefined = this.#keyedSource,
+  ): SecretsAccessor<R2> {
     const resolved: Record<string, Resolved> = {};
     for (const name of Object.keys(registry)) {
       const value = this.#resolved[name];
       if (value) resolved[name] = value;
     }
-    return new SecretsAccessor(registry, resolved);
+    return new SecretsAccessor(registry, resolved, keyedSource);
+  }
+
+  /**
+   * Resolve one keyspace member. The key is validated and composed by {@link keyedSecretName} — the
+   * one place a member name is ever built — so a key can neither escape into a neighbouring keyspace
+   * nor land on a named entry. A member with no stored value throws instead of resolving `undefined`.
+   *
+   * Every failure names the keyspace and never the key: `detail` reaches logs verbatim, and the key
+   * is caller input identifying one tenant.
+   */
+  async #loadKeyed(name: string, key: string): Promise<Resolved> {
+    const entry = this.#registry[name];
+    if (!entry) {
+      throw new SecretNotFoundError({ detail: `keyspace '${name}' is not declared in this registry` });
+    }
+    if (!entry.keyed) {
+      throw new InternalError({
+        message: `Secret '${name}' is not a keyspace.`,
+        action: "Read a named secret with get(name), or declare the entry keyed.",
+        detail: `getKeyed called on named secret '${name}'`,
+      });
+    }
+    if (!this.#keyedSource) {
+      throw new InternalError({
+        message: `Secret '${name}' cannot be read here.`,
+        detail: `keyspace '${name}' read from an accessor built without a keyed source`,
+      });
+    }
+    const stored = await this.#keyedSource(keyedSecretName(name, key));
+    if (!stored) {
+      throw new SecretNotFoundError({
+        message: `Secret '${name}' has no value for that key.`,
+        detail: `keyspace '${name}': no member stored under the requested key`,
+      });
+    }
+    // Parsed against the keyspace's name, not the member's, so a malformed member says which keyspace
+    // it belongs to without putting a tenant identifier in the log.
+    return resolveVersioned(entry, name, stored);
   }
 
   #require(name: string): Resolved {
     if (!(name in this.#registry)) {
       throw new SecretNotFoundError({ detail: `secret '${name}' is not declared in this registry` });
+    }
+    if (this.#registry[name]?.keyed) {
+      throw new InternalError({
+        message: `Secret '${name}' is a keyspace, not a single value.`,
+        action: "Read one member with getKeyed(name, key).",
+        detail: `get called on keyspace '${name}'`,
+      });
     }
     const resolved = this.#resolved[name];
     if (!resolved) {
@@ -168,7 +273,8 @@ export class SecretsAccessor<R extends SecretRegistry> {
  * Resolve every secret declared in `registry` from `env` and return a typed accessor. `d1` entries
  * are decrypted in one batch from the per-environment store; `cf-secrets-store` entries are read
  * from their bound values (or `.dev.vars` strings). A declared secret with no value throws
- * `secrets/not_found` so a missing secret fails loudly, never as a silent `undefined`.
+ * `secrets/not_found` so a missing secret fails loudly, never as a silent `undefined`. A keyed entry
+ * resolves nothing here — it declares a keyspace, not a value — and its members are fetched at the read.
  */
 export async function secretsStore<R extends SecretRegistry>(
   env: SecretsStoreEnv,
@@ -189,11 +295,12 @@ export async function secretsStore<R extends SecretRegistry>(
     // and dev needs no `SECRETS` D1, master key, or live Secrets Store.
     for (const name of Object.keys(registry)) {
       const entry = registry[name];
-      if (!entry) continue;
+      // A keyspace has no binding to inject: its member names do not exist until runtime.
+      if (!entry || entry.keyed) continue;
       const raw = await resolveBinding(bindings[name], name);
       resolved[name] = resolveInjected(entry, name, raw);
     }
-    return new SecretsAccessor(registry, resolved);
+    return new SecretsAccessor(registry, resolved, d1KeyedSource(env));
   }
 
   // **Deployed: route strictly by registry backend.** `d1` secrets are ALWAYS decrypted from the
@@ -201,8 +308,11 @@ export async function secretsStore<R extends SecretRegistry>(
   const d1Names: string[] = [];
   const cfNames: string[] = [];
   for (const name of Object.keys(registry)) {
-    if (!registry[name]) continue;
-    if (registry[name]?.backend === "cf-secrets-store") cfNames.push(name);
+    const entry = registry[name];
+    // Keyspaces are skipped either way: batching one would mean decrypting every tenant's credential
+    // to serve a request that wants one, which is the shape this entry type exists to avoid.
+    if (!entry || entry.keyed) continue;
+    if (entry.backend === "cf-secrets-store") cfNames.push(name);
     else d1Names.push(name);
   }
 
@@ -230,5 +340,5 @@ export async function secretsStore<R extends SecretRegistry>(
     resolved[name] = resolveInjected(entry, name, raw);
   }
 
-  return new SecretsAccessor(registry, resolved);
+  return new SecretsAccessor(registry, resolved, d1KeyedSource(env));
 }

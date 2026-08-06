@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
@@ -9,6 +9,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
+import { installPackage } from "../project/packageManager";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { coerceSetFlags, collectSetFlags, runAdd } from "./flow";
 
@@ -135,8 +136,35 @@ describe("runAdd", () => {
       databases,
       // auth declares no KV binding here, so there is nothing to propose a name for.
       kvNamespaces: [],
+      // Every binding auth needs is one `add` writes, so there is nothing left to say.
+      notes: [],
       eject: undefined,
     });
+  });
+
+  test("mints the secrets dev master key and reports it — `pithy dev` serves the moment add finishes", async () => {
+    const secrets = CapabilityManifest.parse({
+      name: "secrets",
+      package: "@pithy-sh/secrets",
+      requiredBindings: [
+        { type: "d1", name: "SECRETS" },
+        { type: "secret", name: "SECRETS_ENCRYPTION_KEYS" },
+      ],
+    });
+
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "secrets",
+      install: vi.fn(installManifest(secrets)),
+      migrate: vi.fn(async () => noMigrations),
+    });
+
+    // The project root's `.dev.vars`, which every worker symlinks to — not the worker directory.
+    const vars = await readFile(join(dir, ".dev.vars"), "utf8");
+    expect(vars).toMatch(/^SECRETS_ENCRYPTION_KEYS=\{"currentVersion":"1"/m);
+    expect(result.notes.join(" ")).toMatch(/pithy secrets provision/);
   });
 
   test("threads the project name through, so add proposes <project>-<env>-<binding>", async () => {
@@ -183,6 +211,44 @@ describe("runAdd", () => {
       }),
     ).rejects.toThrow(/ghost/);
     expect(migrateStub).not.toHaveBeenCalled();
+  });
+
+  test("a linked checkout installs nothing and still wires — the skip and the manifest read agree", async () => {
+    // The real install step, not a stub: `installPackage` must decline to spawn, and `loadManifest`
+    // must then find the manifest in the very directory the skip was decided from. When those two
+    // disagreed, `pithy add secrets` skipped the install and answered "No capability named secrets is
+    // installed. Run pithy add secrets to install it." — a dead end with no flag out of it.
+    const checkout = join(dir, "checkout", "auth");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/auth" }));
+    await writeFile(join(checkout, "pithy.manifest.json"), JSON.stringify(optionManifest));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "auth"), "dir");
+
+    // The real `installPackage`, with only its spawner replaced. The outcome alone did not pin this:
+    // with the guard reverted the tmpdir has no lockfile, so the test spawned `npm install
+    // @pithy-sh/auth` against the live registry — an E404 today (a failure for the wrong reason, and no
+    // failure at all offline), and a passing test the day the scope publishes. A recording runner is
+    // the assertion the outcome could not make: nothing spawned.
+    const spawned: string[] = [];
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      install: (input) =>
+        installPackage({
+          ...input,
+          run: async (command, args) => {
+            spawned.push(`${command} ${args.join(" ")}`);
+          },
+        }),
+      migrate: vi.fn(async () => noMigrations),
+    });
+
+    expect(spawned).toEqual([]);
+    expect(result.capability).toBe("auth");
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('from "@pithy-sh/auth/src/index"');
   });
 
   test("prompts for un-set options when a prompt seam is supplied", async () => {

@@ -6,6 +6,9 @@ import {
   entitlementsForProduct,
   PaymentsConfig,
   type PaymentsConfigInput,
+  type PaymentsProductInput,
+  type PaymentsRailTogglesInput,
+  type PaymentsStripeSettingsInput,
   productForProviderSku,
   providerProductId,
   railEnabled,
@@ -51,6 +54,32 @@ function catalog(overrides: Partial<PaymentsConfigInput> = {}): PaymentsConfigIn
     ...overrides,
   };
 }
+
+describe("the catalog's pieces are typeable as written", () => {
+  test("a product assembles from a price id without restating what the schema defaults", () => {
+    // The shape that makes price ids swappable per environment: products built from a map, one
+    // helper per rail. Typed as output, each piece would have to restate `entitlements` and
+    // `clawback` — values the schema exists to supply.
+    const plans = {
+      pro_monthly: { name: "Pro", entitlement: "pro", priceId: "price_1Abc" },
+      team_monthly: { name: "Team", entitlement: "team", priceId: "price_1Def" },
+    };
+    const products: Record<string, PaymentsProductInput> = Object.fromEntries(
+      Object.entries(plans).map(([id, plan]) => [
+        id,
+        { type: "subscription", name: plan.name, entitlements: [plan.entitlement], stripe: { priceId: plan.priceId } },
+      ]),
+    );
+
+    const rails: PaymentsRailTogglesInput = { stripe: true };
+    const stripe: PaymentsStripeSettingsInput = STRIPE_RETURN_URLS;
+
+    const config = PaymentsConfig.parse({ rails, products, stripe } satisfies PaymentsConfigInput);
+    expect(config.rails).toEqual({ apple: false, google: false, stripe: true });
+    expect(config.products.pro_monthly?.clawback).toBe(false);
+    expect(config.products.team_monthly?.entitlements).toEqual(["team"]);
+  });
+});
 
 describe("PaymentsConfig defaults", () => {
   test("mounts at /payments and grants access during grace, because that is the point of grace", () => {

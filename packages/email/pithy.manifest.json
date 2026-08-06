@@ -8,6 +8,7 @@
   ],
   "peerCapabilities": ["secrets"],
   "migrationNamespace": "email",
+  "devSecrets": [{ "name": "email-link-signing-key", "devValue": "random" }],
   "whenToEnable": "Transactional and lifecycle email — magic link, OTP, welcome, security alerts, invites, plus newsletters and campaigns. Every send is a durable job: scheduled, retried, and tracked. Auth needs it for magic-link and OTP delivery.",
   "scaffold": [
     "Onboard the sending domain onto Cloudflare Email Service (SPF/DKIM/DMARC are configured automatically for a Cloudflare-hosted zone). The from address must use that domain. See the package README.",

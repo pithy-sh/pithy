@@ -12,6 +12,13 @@ import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
 import type { CapabilityDescriptor, ControlPlaneManifest } from "../discovery/adminRoute";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
+import type {
+  ControlPlaneKeysResponse,
+  ControlPlanePingResponse,
+  ExpireKeyResponse,
+  PublicKeyView,
+  RegisterKeyResponse,
+} from "./responses";
 import type { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
 
 /**
@@ -24,6 +31,12 @@ import type { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./sc
  * **Nothing here returns a key's private half, because none is ever held.** `GET /control-plane/keys`
  * returns public keys and their windows, which is exactly what a management client needs to see that a
  * key is ageing and exactly what an attacker learns nothing from.
+ *
+ * **Every response has an exported schema**, in `responses.ts`, and each `c.json` below is
+ * `satisfies`-checked against it. A management client imports the same object and validates with it
+ * rather than hand-writing a mirror that drifts. The check is at compile time on purpose: parsing every
+ * response would spend a validation pass on values this Worker just built, and would turn a shape
+ * mistake into a 500 in production rather than a red build.
  */
 
 /** A day, in ms — `keyRetentionDays` is expressed in days because that is how anyone reasons about it. */
@@ -94,8 +107,14 @@ async function saveKeys(
     .execute();
 }
 
-/** The public view of one registered key. Windows and ages, never anything secret. */
-function publicKeyView(key: RegisteredKey): Record<string, unknown> {
+/**
+ * The public view of one registered key. Windows and ages, never anything secret.
+ *
+ * The return type is `z.output` of the exported schema, so what this sends and what a management
+ * client validates against are one declaration rather than two that drift. It was
+ * `Record<string, unknown>`, which is not a contract at all.
+ */
+function publicKeyView(key: RegisteredKey): PublicKeyView {
   return {
     keyId: key.keyId,
     publicKey: key.publicKey,
@@ -125,7 +144,7 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
       environment: context.environment,
       keyId: context.keyId,
       now: deps.now().toISOString(),
-    });
+    } satisfies ControlPlanePingResponse);
   };
 }
 
@@ -159,7 +178,7 @@ export function listKeysHandler(deps: ControlPlaneHandlerDeps) {
       connectionId: connection.id,
       environment: connection.environment,
       keys: connection.keys.map(publicKeyView),
-    });
+    } satisfies ControlPlaneKeysResponse);
   };
 }
 
@@ -217,7 +236,14 @@ export function registerKeyHandler(deps: ControlPlaneHandlerDeps) {
       c.var.log,
     );
 
-    return c.json({ keyId: body.keyId, validFrom: now.toISOString(), keys: pruned.map(publicKeyView) }, 201);
+    return c.json(
+      {
+        keyId: body.keyId,
+        validFrom: now.toISOString(),
+        keys: pruned.map(publicKeyView),
+      } satisfies RegisterKeyResponse,
+      201,
+    );
   };
 }
 
@@ -277,6 +303,10 @@ export function expireKeyHandler(deps: ControlPlaneHandlerDeps) {
       c.var.log,
     );
 
-    return c.json({ keyId: params.keyId, validUntil: now.toISOString(), keys: expired.map(publicKeyView) });
+    return c.json({
+      keyId: params.keyId,
+      validUntil: now.toISOString(),
+      keys: expired.map(publicKeyView),
+    } satisfies ExpireKeyResponse);
   };
 }

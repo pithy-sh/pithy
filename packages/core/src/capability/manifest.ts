@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
+import { DevSecret } from "./devSecret";
 
 /**
  * One configurable option a capability exposes. `pithy add` renders each as
@@ -52,6 +53,10 @@ export const CapabilityManifest = z
       .describe(
         "Namespace prefix for this capability's migrations — must match the registry's format (e.g. \"auth\").",
       ),
+    devSecrets: z
+      .array(DevSecret)
+      .default([])
+      .describe("Secrets from this capability's registry whose dev value `pithy add` mints into `.dev.vars`."),
     scaffold: z.array(z.string()).default([]).describe("Human-readable scaffold steps the CLI performs or explains."),
     configOptions: z
       .array(ConfigOption)

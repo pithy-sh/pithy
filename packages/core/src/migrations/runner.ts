@@ -25,12 +25,28 @@ import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookke
  * migrations applied before the failure in `detail`, since those stay applied.
  */
 
+/**
+ * **`allowUnorderedMigrations` is on, and it is not a loosening.** A composed key leads with its
+ * capability's `migrationOrder` (`0250_audit_0001_init`), so the sorted registry *is* the order Pithy
+ * promises — and it is the same order whatever sequence an adopter typed `pithy add` in. Kysely's
+ * default mode additionally requires the applied ledger to be a prefix of that order, which nothing in
+ * the model can guarantee: add `email` (200), then `auth` (300), then `audit` (250), and audit's
+ * migration sorts between two applied ones. Every later run then failed, naming keys and index
+ * positions the adopter never chose, and the only recovery was wiping the database.
+ *
+ * Unordered mode still applies pending migrations in `migrationOrder`. It drops one thing: the demand
+ * that the past agree with it. That is sound here because no capability's tables reference another's
+ * — order across capabilities is arbitrary by design, and order *within* one is preserved, since a
+ * capability arrives with its whole set. Refusing the add with an actionable error was the
+ * alternative; it explains the corner instead of removing it.
+ */
 function migrator(database: D1Database, provider: MigrationProvider): Migrator {
   return new Migrator({
     db: migrationKysely(database),
     provider,
     migrationTableName: MIGRATION_TABLE,
     migrationLockTableName: MIGRATION_LOCK_TABLE,
+    allowUnorderedMigrations: true,
   });
 }
 

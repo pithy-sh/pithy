@@ -9,8 +9,9 @@ import { ErrorPayload } from "./payload";
  * `PithyError` is the one throw/catch vehicle. A thrown thing must be `instanceof Error`
  * (for `catch`, stack traces, `cause`); a Zod object is a data shape, not an `Error`. So the
  * class does not extend a schema — it **carries** one. The payload is validated against
- * `ErrorPayload` at construction, so every `PithyError` in flight is a member of the closed
- * taxonomy. The subclasses below are sugar that default a member's `code`/`status`; they set a
+ * `ErrorPayload` at construction, so every `PithyError` in flight is either a member of the kit's
+ * closed taxonomy or an adopter's own code under a domain the kit does not reserve — nothing else
+ * gets thrown. The subclasses below are sugar that default a member's `code`/`status`; they set a
  * payload the union already defines, so there is no second source of truth.
  */
 export class PithyError extends Error {
@@ -62,6 +63,28 @@ export class UnauthorizedError extends PithyError {
         status: 401,
         message: args.message ?? "Invalid or expired credentials.",
         action: args.action,
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * One code for every way a `signed-webhook` delivery fails to prove its origin. The step that failed
+ * goes in `detail`, which the HTTP codec strips — a forger learns only that it failed, and an operator
+ * reading the log learns which check refused it.
+ */
+export class WebhookUnverifiedError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/webhook_unverified" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/webhook_unverified",
+        status: 401,
+        message: args.message ?? "That delivery could not be verified.",
+        action: args.action ?? "Sign the request with this endpoint's current secret and send it promptly.",
         detail: args.detail,
       },
       options,
@@ -147,6 +170,47 @@ export class InternalError extends PithyError {
         status: 500,
         message: args.message ?? "Something unexpected happened.",
         action: args.action,
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * A service this one depends on and does not control failed. Reach for this — never `InternalError`
+ * — whenever the thing that broke sits behind a network call: a proxied request, a REST client, a
+ * provider. A 500 tells the operator to read *our* logs, and for an upstream outage that is the
+ * wrong system. The endpoint and the upstream's own status belong in `detail`.
+ */
+export class UpstreamError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/upstream_failed" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/upstream_failed",
+        status: 502,
+        message: args.message ?? "An upstream service could not be reached.",
+        action: args.action,
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
+/** The same dependency, out of time rather than answered. Retryable, and possibly already applied. */
+export class UpstreamTimeoutError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/upstream_timeout" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/upstream_timeout",
+        status: 504,
+        message: args.message ?? "An upstream service did not answer in time.",
+        action: args.action ?? "Try again in a moment.",
         detail: args.detail,
       },
       options,

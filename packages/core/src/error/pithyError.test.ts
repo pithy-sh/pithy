@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { ErrorPayload } from "./payload";
+import { KitErrorPayload } from "./payload";
 import {
   ConflictError,
   ForbiddenError,
@@ -13,6 +13,8 @@ import {
   PithyError,
   RateLimitError,
   UnauthorizedError,
+  UpstreamError,
+  UpstreamTimeoutError,
   ValidationError,
 } from "./pithyError";
 
@@ -46,6 +48,8 @@ describe("subclasses (sugar over the same payload)", () => {
     { Cls: ConflictError, code: "core/conflict", status: 409 },
     { Cls: RateLimitError, code: "rate_limit/exceeded", status: 429 },
     { Cls: InternalError, code: "core/internal", status: 500 },
+    { Cls: UpstreamError, code: "core/upstream_failed", status: 502 },
+    { Cls: UpstreamTimeoutError, code: "core/upstream_timeout", status: 504 },
   ] as const;
 
   test("every subclass is both a PithyError and its own type, with matching code/status", () => {
@@ -58,9 +62,12 @@ describe("subclasses (sugar over the same payload)", () => {
     }
   });
 
-  test("META: no subclass drifts from its union member (defaults parse as a valid ErrorPayload)", () => {
+  test("META: no subclass drifts from its union member (defaults parse as a KitErrorPayload)", () => {
+    // Against the closed union, not `ErrorPayload`: the latter is open at its edge, so a domain
+    // typo — `cor/upstream_failed` — would parse there as somebody's adopter code with a status
+    // nobody pinned, and the table below would agree with itself all the way to green.
     for (const { Cls, code, status } of cases) {
-      const parsed = ErrorPayload.parse(new Cls().payload);
+      const parsed = KitErrorPayload.parse(new Cls().payload);
       expect(parsed.code).toBe(code);
       expect(parsed.status).toBe(status);
     }
@@ -71,6 +78,12 @@ describe("subclasses (sugar over the same payload)", () => {
     expect(err.payload.message).toBe("No.");
     expect(err.payload.action).toBe("Ask an admin.");
     expect(err.payload.detail).toBe("user 5 lacks role:admin");
+  });
+
+  test("an upstream failure blames the upstream, not this service", () => {
+    const err = new UpstreamError({ detail: "GET https://customer.example/admin/users → 503" });
+    expect(err.payload.status).toBe(502);
+    expect(err.payload.message).not.toContain("customer.example");
   });
 
   test("ValidationError narrows to carry issues", () => {

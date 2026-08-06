@@ -17,6 +17,7 @@ import { type LedgerConfig, resolveCurrency } from "../config/config";
 import { LedgerCurrencyNotFoundError } from "../error/errors";
 import { openLedger } from "../ledger";
 import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE, requireAdmin, requireAuth } from "./guards";
+import type { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
 import {
   AdminAccountParam,
   AdminAccountsQuery,
@@ -231,7 +232,10 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
           returned: page.items.length,
           resumed: query.cursor !== undefined,
         });
-        return c.json({ accounts: page.items.map(accountView), nextCursor: page.nextCursor }, 200);
+        return c.json(
+          { accounts: page.items.map(accountView), nextCursor: page.nextCursor } satisfies LedgerAccountsResponse,
+          200,
+        );
       },
     );
 
@@ -246,7 +250,7 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
         // A player with no account is an empty list, not a 404 — the honest answer, since an account is
         // opened by its first credit and its absence is not a missing player. It also keeps this surface
         // from being an existence oracle for user ids.
-        return c.json({ userId, accounts: accounts.map(accountView) }, 200);
+        return c.json({ userId, accounts: accounts.map(accountView) } satisfies LedgerUserAccountsResponse, 200);
       },
     );
 
@@ -267,7 +271,12 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
           resumed: query.cursor !== undefined,
         });
         return c.json(
-          { userId, currency: code, transactions: page.items.map(transactionView), nextCursor: page.nextCursor },
+          {
+            userId,
+            currency: code,
+            transactions: page.items.map(transactionView),
+            nextCursor: page.nextCursor,
+          } satisfies LedgerTransactionsResponse,
           200,
         );
       },

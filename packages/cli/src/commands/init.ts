@@ -5,16 +5,17 @@ import { basename, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { renderDomainsBlock } from "../project/domainPrompt";
-import { DEFAULT_WORKER, ensureEmptyTarget, scaffoldProject } from "../project/scaffold";
+import { DEFAULT_WORKER, ensureScaffoldable, scaffoldProject } from "../project/scaffold";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { installAlias } from "./alias";
 
 /**
  * Offer the `p.` shortcut once, right after scaffolding (docs/CLI.md §2.7). Interactive only — a `--json`
- * or non-TTY run never prompts. `pithy init` requires an empty directory, so it runs at most once per
- * project; there is no "asked before" flag to persist. On yes, the alias installs silently (its own
- * Added/Reload lines are the only output).
+ * or non-TTY run never prompts. Asked at most once per project because a second `pithy init` in the same
+ * directory never reaches this line — it collides on the files the first one wrote — so there is no
+ * "asked before" flag to persist. On yes, the alias installs silently (its own Added/Reload lines are
+ * the only output).
  */
 async function offerAlias(): Promise<void> {
   const { isCancel, confirm } = await import("@clack/prompts");
@@ -50,7 +51,11 @@ export default defineCommand({
       type: "string",
       description: `Name of the first worker, created at apps/<name>. Defaults to "${DEFAULT_WORKER}".`,
     },
-    dir: { type: "string", default: ".", description: "Target directory. Created if missing; must be empty." },
+    dir: {
+      type: "string",
+      default: ".",
+      description: "Target directory. Created if missing; must not already hold the files init writes.",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -58,7 +63,10 @@ export default defineCommand({
       const targetDir = resolve(process.cwd(), args.dir);
       // Gate on the target before prompting — a doomed run fails fast, not after
       // the user answers (scaffoldProject re-checks, so the guard still holds).
-      await ensureEmptyTarget(targetDir);
+      // `--worker` is passed when given: it decides which `apps/<name>` the scaffold lands at, and so
+      // what counts as a collision. A prompted worker name is only known later, and the re-check covers
+      // it. `ensureScaffoldable` validates the name before it builds a path out of it.
+      await ensureScaffoldable(targetDir, args.worker);
 
       // Said before the question, not after it. The name leads every Cloudflare resource this project
       // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the

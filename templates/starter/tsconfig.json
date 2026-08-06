@@ -1,0 +1,14 @@
+{
+  // The SOLUTION file. It compiles nothing of its own — `"files": []` — and names the programs that do.
+  // `bun run typecheck` is `tsc -b`, which builds every reference below, in order.
+  //
+  // Why several programs rather than one: a Worker needs `@cloudflare/workers-types`, a browser client
+  // needs the DOM, and TypeScript cannot hold both in one program. Load both and `Uint8Array` stops being
+  // assignable to `BufferSource`, which breaks every crypto call in the kit's control-plane signing code.
+  // Keeping them apart by construction is what this file is for.
+  //
+  // `pithy ui add` appends that Worker's client programs here. `pithy worker add` does not yet — add the
+  // new Worker's `tsconfig.json` yourself, or its source is typechecked by nothing.
+  "files": [],
+  "references": [{ "path": "./tsconfig.tools.json" }, { "path": "./apps/api/tsconfig.json" }]
+}

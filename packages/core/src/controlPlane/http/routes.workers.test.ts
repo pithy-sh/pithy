@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
@@ -15,7 +16,14 @@ import { ControlPlaneManifest } from "../discovery/adminRoute";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./verify";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import {
+  ControlPlaneKeysResponse,
+  ControlPlanePingResponse,
+  ExpireKeyResponse,
+  type PublicKeyView,
+  RegisterKeyResponse,
+} from "./responses";
 
 /**
  * The seam end to end, in workerd: a real composed backend, real D1, real KV, real Ed25519 tokens.
@@ -151,15 +159,6 @@ async function call(method: string, path: string, options: Call = {}): Promise<R
   if (token) headers[CONTROL_PLANE_HEADER] = token;
   if (payload !== undefined) headers["content-type"] = "application/json";
   return backend.request(`http://worker.example${path}`, { method, headers, body: payload }, BINDINGS);
-}
-
-/** The public wire shape of one registered key — windows and public material, nothing else. */
-interface PublicKeyView {
-  keyId: string;
-  publicKey: Ed25519PublicJwk;
-  validFrom: string;
-  validUntil: string | null;
-  revokedAt: string | null;
 }
 
 interface WireError {
@@ -622,5 +621,66 @@ describe("the error surface", () => {
       "controlplane/key_not_found",
       "controlplane/not_connected",
     ]);
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a management client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions — a field
+   * the schema does not know about is dropped and shows as a difference, and a field it declares
+   * wrongly fails the parse. `publicKeyView` returned a bare `Record<string, unknown>` before these
+   * existed, which is to say the wire shape of the seam's own routes was stated nowhere.
+   */
+  async function contract<T>(schema: z.ZodType<T>, response: Response, expected = 200): Promise<T> {
+    expect(response.status).toBe(expected);
+    const raw = await body<unknown>(response);
+    expect(schema.parse(raw)).toEqual(raw);
+    return schema.parse(raw);
+  }
+
+  test("every route on the seam's own surface returns exactly its declared envelope", async () => {
+    await connect([registered(alice)]);
+
+    const ping = await contract(
+      ControlPlanePingResponse,
+      await call("GET", "/control-plane/ping", { key: alice, scope: MANIFEST_READ_SCOPE }),
+    );
+    expect(ping.keyId).toBe(alice.keyId);
+
+    await contract(
+      ControlPlaneManifest,
+      await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE }),
+    );
+
+    await contract(
+      ControlPlaneKeysResponse,
+      await call("GET", "/control-plane/keys", { key: alice, scope: KEYS_ROTATE_SCOPE }),
+    );
+
+    const appended = await contract(
+      RegisterKeyResponse,
+      await call("POST", "/control-plane/keys", {
+        key: alice,
+        scope: KEYS_ROTATE_SCOPE,
+        body: { keyId: bob.keyId, publicKey: bob.publicKey },
+      }),
+      201,
+    );
+    expect(appended.keys.map((key) => key.keyId)).toContain(bob.keyId);
+
+    // Expiry is signed with the successor, because "proof by use" is what the route checks — and a
+    // key with a closed window is exactly the case that proves `validUntil` is not always null.
+    const expired = await contract(
+      ExpireKeyResponse,
+      await call("POST", `/control-plane/keys/${alice.keyId}/expire`, {
+        key: bob,
+        scope: KEYS_ROTATE_SCOPE,
+        body: { provenKeyId: bob.keyId },
+      }),
+    );
+    expect(expired.keys.find((key) => key.keyId === alice.keyId)?.validUntil).not.toBeNull();
   });
 });

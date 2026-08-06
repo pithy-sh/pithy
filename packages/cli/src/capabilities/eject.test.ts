@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ejectCapability, parseEjectedCapabilities } from "./eject";
+import { isCapabilityImport } from "./configImports";
+import { ejectCapability, ejectImportPath, parseEjectedCapabilities } from "./eject";
 
 describe("parseEjectedCapabilities", () => {
   test("finds capabilities imported from a local ./capabilities/<name> path", () => {
@@ -28,6 +29,26 @@ describe("parseEjectedCapabilities", () => {
 
   test("reads either quote style — a reformatted config still counts as ejected", () => {
     expect(parseEjectedCapabilities("import { auth } from './capabilities/auth';")).toEqual(["auth"]);
+  });
+
+  test("agrees with isCapabilityImport about every path it calls ejected", () => {
+    // Two functions answering one question differently is the bug: this one accepted
+    // `./capabilities/auth/<anything>` while `isCapabilityImport` demanded exact equality, so `remove`
+    // read a config as ejected and then refused to unwire the very import that made it so.
+    for (const specifier of ["./capabilities/auth", "./capabilities/auth/index", "./capabilities/auth/http/routes"]) {
+      expect(parseEjectedCapabilities(`import { auth } from "${specifier}";`)).toEqual(["auth"]);
+      expect(isCapabilityImport(specifier, "@pithy-sh/auth", ejectImportPath("auth"))).toBe(true);
+    }
+  });
+
+  test("a traversal out of the eject directory ejects nothing", () => {
+    // `[^"'/]+` captured `..` as the capability's name — a name no capability has, read off a path that
+    // points outside the fork directory entirely.
+    expect(parseEjectedCapabilities('import { auth } from "./capabilities/../lib/auth";')).toEqual([]);
+  });
+
+  test("a commented-out local import is not an ejected capability", () => {
+    expect(parseEjectedCapabilities('// import { auth } from "./capabilities/auth";')).toEqual([]);
   });
 });
 
@@ -103,6 +124,17 @@ describe("ejectCapability", () => {
     expect(config).toContain('import { turnstile } from "./capabilities/turnstile";');
     expect(config).not.toContain("@pithy-sh/turnstile/src/index");
     expect(config).toContain("turnstile(),");
+  });
+
+  test("repoints a hand-edited deep import of the package as well as the barrel one", async () => {
+    const path = join(worker, "pithy.config.ts");
+    await writeFile(path, (await readFile(path, "utf8")).replace("/src/index", "/src/capability"));
+
+    await eject();
+
+    const config = await readFile(path, "utf8");
+    expect(config).toContain('import { turnstile } from "./capabilities/turnstile";');
+    expect(config).not.toContain("@pithy-sh/turnstile");
   });
 
   test("promotes the package's third-party deps, filtering workspace: ones", async () => {

@@ -10,6 +10,7 @@ import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
+import type { SameOriginGate } from "../http/sameOrigin";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import type { SeedSet } from "../seed/seed";
@@ -42,6 +43,17 @@ export interface PithyVars {
    * enabled the seam, rather than stand open because the thing meant to protect them is absent.
    */
   controlPlaneVerifier: ControlPlaneVerifier | null;
+  /**
+   * The same-origin CSRF gate, published **already bound** to this Worker's trusted origins by the
+   * capability that resolved them (`@pithy-sh/auth`, from its `baseURL` and `trustedOrigins`); `null`
+   * when none is composed. Read through `requireSameOrigin()`, which takes no argument.
+   *
+   * A bound gate rather than the origin list, and for the same reason {@link controlPlaneVerifier} is a
+   * verifier rather than the seam's config: an adopter's routes need the decision, not the material to
+   * rebuild it. Handing over the list is how a Worker ends up with two same-origin implementations,
+   * free to disagree — and the weaker one is then its real policy.
+   */
+  sameOrigin: SameOriginGate | null;
   /**
    * The audit recorder seam. Any capability records a security-relevant action with `c.var.emit(...)`
    * (CLAUDE.md §Security). `@pithy-sh/audit` replaces the default with a D1-backed recorder; with no
@@ -111,6 +123,13 @@ export interface SecretRegistryEntrySeam {
   readonly rotatable: boolean;
   /** How a decrypted value is interpreted (`text` | `json`). */
   readonly valueType: string;
+  /**
+   * How a dev value for this secret may be minted (`random`), or absent when it may not be — because
+   * the value must match something outside the project (an OAuth app, a Stripe account). The
+   * capability that owns the secret decides; `pithy add` reads the same declaration off the manifest,
+   * which it can do without executing the package.
+   */
+  readonly devValue?: string;
 }
 
 /** A capability's secret-registry slice: secret name → {@link SecretRegistryEntrySeam}. */

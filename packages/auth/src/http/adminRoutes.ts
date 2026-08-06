@@ -22,8 +22,6 @@ import {
 import { AuthAuditActions } from "../audit/actions";
 import { correlation, emitControlPlaneAction } from "../audit/emit";
 import type { AuthWiring } from "../capability";
-import type { Session, User } from "../data/betterAuth";
-import type { Device } from "../data/device";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens } from "../device/registry";
 import {
@@ -34,7 +32,15 @@ import {
   AUTH_USERS_READ_SCOPE,
 } from "./guards";
 import { getAuthInstance, resolveDb } from "./resolve";
+import type {
+  AdminDeviceRevokeResponse,
+  AdminDevicesResponse,
+  AdminRevokeResponse,
+  AdminUserResponse,
+  AdminUsersResponse,
+} from "./responses";
 import { ListDevicesQuery, ListUsersQuery, RevokeDeviceBody, RevokeSessionBody, UserIdParam } from "./schemas";
+import { deviceView, sessionView, userView } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
 
@@ -70,14 +76,18 @@ type Ctx = Context<PithyHonoEnv>;
  * ordering is asserted in `routeContract.test.ts` rather than trusted to the order somebody typed the
  * arguments in.
  *
- * ## Every response is a deliberate projection
+ * ## Every response is a deliberate projection, and every projection has a schema
  *
- * No handler returns a row. `sessionView` drops the session **token** — projecting it would hand a
- * management client the ability to act *as* the user, which is the impersonation this surface
- * deliberately does not offer. `deviceView` drops the **push token** — a credential for sending
- * notifications to somebody's phone, which no dashboard pane needs. And the account link is read as a
- * list of provider slugs by a query that selects only `providerId`, so the OAuth `accessToken`,
- * `refreshToken` and `idToken` are never loaded at all.
+ * No handler returns a row. The projections live in `views.ts` and the objects a client validates
+ * against live in `responses.ts`, each view typed as `z.output` of its own schema — so what this
+ * Worker sends and what a management client is told to expect are one declaration rather than two
+ * that drift. `sessionView` drops the session **token**; `deviceView` drops the **push token**; and
+ * the account link is read as a list of provider slugs by a query that selects only `providerId`, so
+ * the OAuth `accessToken`, `refreshToken` and `idToken` are never loaded at all.
+ *
+ * Each `c.json` below is `satisfies`-checked against its envelope. The check belongs at compile time:
+ * parsing every response would spend a validation pass on data this Worker just built from its own
+ * rows, and it would turn a shape mistake into a 500 in production rather than a red build.
  */
 
 /** The auth Kysely for this request. */
@@ -107,110 +117,6 @@ function controlPlaneCaller(c: Ctx): ControlPlaneContext {
 /** The request correlation every admin audit event carries. */
 function context(c: Ctx): { ip?: string; userAgent?: string; requestId?: string } {
   return { ...correlation(c.req.raw.headers), requestId: c.req.header("cf-ray") };
-}
-
-/** A user as a management client may see them. */
-interface AdminUserView {
-  id: string;
-  email: string;
-  name: string;
-  emailVerified: boolean;
-  image: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/**
- * The user projection.
- *
- * Email and display name are personal data and they are here on purpose: identifying the right person
- * is the entire job of a support pane, and `auth:users:read` is precisely the grant an adopter makes
- * when they accept that. Nothing else on `pithy_auth_users` is withheld because nothing else on it is
- * sensitive — the table holds no credential at all, which is what passwordless-only buys.
- */
-function userView(user: User): AdminUserView {
-  return {
-    id: user.id,
-    email: user.email,
-    name: user.name,
-    emailVerified: user.emailVerified,
-    image: user.image,
-    createdAt: user.createdAt.toISOString(),
-    updatedAt: user.updatedAt.toISOString(),
-  };
-}
-
-/** A session as a management client may see it. */
-interface AdminSessionView {
-  id: string;
-  deviceId: string | null;
-  ipAddress: string | null;
-  userAgent: string | null;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
-}
-
-/**
- * The session projection — **without the token**.
- *
- * The token *is* the credential: a bearer of it is the user, everywhere, until it expires. Projecting
- * it would turn a read scope into silent impersonation and would leave no trace distinguishable from
- * the person's own activity, which is exactly the capability this surface refuses to offer. The `id` is
- * the handle instead, and it is what `POST /admin/sessions/revoke` accepts.
- *
- * `familyId` is dropped too — it is internal rotation bookkeeping, and a pane that rendered it would
- * invite somebody to act on a correlation the model does not promise to keep stable.
- *
- * The IP and user-agent stay: "where is this person signed in from" is the question the pane exists to
- * answer, and it is the one that catches a stolen session.
- */
-function sessionView(session: Session): AdminSessionView {
-  return {
-    id: session.id,
-    deviceId: session.deviceId,
-    ipAddress: session.ipAddress,
-    userAgent: session.userAgent,
-    createdAt: session.createdAt.toISOString(),
-    updatedAt: session.updatedAt.toISOString(),
-    expiresAt: session.expiresAt.toISOString(),
-  };
-}
-
-/** A registered device as a management client may see it. */
-interface AdminDeviceView {
-  id: string;
-  userId: string;
-  platform: string;
-  name: string | null;
-  model: string | null;
-  osVersion: string | null;
-  appVersion: string | null;
-  lastIp: string | null;
-  lastSeenAt: string;
-  createdAt: string;
-}
-
-/**
- * The device projection — **without the push token**.
- *
- * An APNs/FCM token is the capability to put a notification on somebody's lock screen. It is a
- * credential, it is useless to a dashboard, and a management client that held one could message an
- * adopter's users under the adopter's own app identity. It never leaves the Worker.
- */
-function deviceView(device: Device): AdminDeviceView {
-  return {
-    id: device.id,
-    userId: device.userId,
-    platform: device.platform,
-    name: device.name,
-    model: device.model,
-    osVersion: device.osVersion,
-    appVersion: device.appVersion,
-    lastIp: device.lastIp,
-    lastSeenAt: device.lastSeenAt.toISOString(),
-    createdAt: device.createdAt.toISOString(),
-  };
 }
 
 /** Delete sessions through Better Auth's own adapter, so its bookkeeping stays consistent. */
@@ -255,7 +161,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           // makes an exfiltration pattern visible; the string itself adds nothing to that.
           metadata: { searched: query.search !== undefined, returned: page.items.length },
         });
-        return c.json({ users: page.items.map(userView), nextCursor: page.nextCursor });
+        return c.json({ users: page.items.map(userView), nextCursor: page.nextCursor } satisfies AdminUsersResponse);
       },
     );
 
@@ -297,7 +203,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           sessionsTruncated: sessions.truncated,
           devices: devices.items.map(deviceView),
           devicesTruncated: devices.truncated,
-        });
+        } satisfies AdminUserResponse);
       },
     );
 
@@ -318,7 +224,10 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           ...context(c),
           metadata: { returned: page.items.length, filteredByUser: query.userId !== undefined },
         });
-        return c.json({ devices: page.items.map(deviceView), nextCursor: page.nextCursor });
+        return c.json({
+          devices: page.items.map(deviceView),
+          nextCursor: page.nextCursor,
+        } satisfies AdminDevicesResponse);
       },
     );
 
@@ -349,7 +258,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           metadata: { revoked, userId: session?.userId ?? null },
         });
 
-        return c.json({ revoked });
+        return c.json({ revoked } satisfies AdminRevokeResponse);
       },
     );
 
@@ -375,7 +284,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
         // No 404 for an unknown user, for the same two reasons as the single-session revoke: signing out
         // somebody who is already signed out everywhere is a success, and this scope is not a read scope.
-        return c.json({ revoked });
+        return c.json({ revoked } satisfies AdminRevokeResponse);
       },
     );
 
@@ -407,7 +316,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           metadata: { userId, revoked, removed },
         });
 
-        return c.json({ revoked, removed });
+        return c.json({ revoked, removed } satisfies AdminDeviceRevokeResponse);
       },
     );
   };

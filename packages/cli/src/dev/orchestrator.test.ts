@@ -337,6 +337,18 @@ describe("startDev — spawn commands and env", () => {
   });
 });
 
+/** Drive both fake workers past their ready signals, so the banner fires. */
+async function signalReady(h: ReturnType<typeof harness>): Promise<void> {
+  const child = (dir: string): FakeChild => {
+    const entry = h.spawned.find((s) => s.opts.cwd === dir);
+    if (!entry) throw new Error(`no worker spawned in ${dir}`);
+    return entry.child;
+  };
+  child("/proj/apps/api").stdout.write("Ready on http://localhost:8787\n");
+  child("/proj/apps/web").stdout.write("VITE ready in 300 ms\n");
+  await flush();
+}
+
 describe("startDev — ready banner", () => {
   test("fires only once every started worker matches its ready signal", async () => {
     const h = harness();
@@ -359,6 +371,33 @@ describe("startDev — ready banner", () => {
     web.stdout.write("ready in 5 ms\n");
     await flush();
     expect(h.stdoutLines.filter((l) => l === "Ready.")).toHaveLength(1);
+  });
+
+  test("offers the seeded dev login, so the banner is where signing in is discovered", async () => {
+    const h = harness({
+      readDevLogin: async () => ({
+        email: "ada@example.com",
+        userId: "example-ada",
+        cookieName: "better-auth.session_token",
+        cookieValue: "dev-session-example-ada-abcd.c2ln",
+        expiresAt: new Date("2027-07-27T00:00:00.000Z"),
+      }),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(h.stdoutLines).toContain("Dev login: ada@example.com. Paste into the browser console, then reload.");
+    expect(h.stdoutLines.some((line) => line.includes("better-auth.session_token="))).toBe(true);
+  });
+
+  test("says nothing about signing in when no seed wrote a login", async () => {
+    const h = harness({ readDevLogin: async () => undefined });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(h.stdoutLines.some((line) => line.startsWith("Dev login:"))).toBe(false);
   });
 });
 

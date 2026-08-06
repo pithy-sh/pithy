@@ -6,10 +6,11 @@ import { join } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
+import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
 import { loadStubFiles } from "./templates";
-import { wireAssets, wireManifest, wirePackage } from "./wire";
+import { readAssets, wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
 import { readWorkerUi } from "./workerUi";
 
 /**
@@ -207,7 +208,10 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
 
   const assets = await wireAssets(options.workerDir, options.config);
   await wireManifest(options.workerDir, stub, packageManager);
-  const pkg = await wirePackage(options.workerDir, stub);
+  const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
+  // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
+  // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
+  await wireSolution(options.projectDir, options.worker);
 
   return {
     worker: options.worker,
@@ -235,6 +239,12 @@ export interface UiSyncReport {
   /** Whether anything actually moved — false on a re-run, which is the point. */
   changed: boolean;
   /**
+   * Routes the allowlist **in the file** does not cover: the ones the SPA shell is answering with a 200
+   * and the wrong body. Always empty after a write — the run just re-derived the list — so this is the
+   * finding `--check` exists to produce, and the one thing that fails the exit.
+   */
+  uncovered: string[];
+  /**
    * `assets.not_found_handling` as it stands. Reported because SPA routing depends on it: an adopter
    * who set it to something else has deep links 404ing in Hono rather than serving the app shell, and
    * `ui sync` does not overwrite a value they chose.
@@ -243,10 +253,16 @@ export interface UiSyncReport {
 }
 
 /**
- * Re-derive one worker's `assets.run_worker_first` from its current route table. `pithy add
- * <capability>` mounts new routes, and a route the asset router answers first is a route that never
- * reaches the worker — so the allowlist has to be re-derivable on demand. Creates no files, and
- * re-running changes nothing.
+ * Re-derive one worker's `assets.run_worker_first` from its current route table, or — with `check` —
+ * only report how far the file has drifted from it.
+ *
+ * The allowlist is written once, at `pithy ui add`, and every route mounted afterwards is a route the
+ * asset router answers before the worker runs. `pithy add <capability>` is one way that happens; the
+ * adopter writing a route into their own app capability is the other, and that one runs no command at
+ * all. So the allowlist has to be re-derivable on demand *and* checkable in CI, because a list that
+ * has gone stale does not fail — it returns 200 with the SPA shell.
+ *
+ * Creates no files either way, and re-running changes nothing.
  */
 export async function runUiSync(options: {
   /** The target worker's directory, `apps/<name>`. */
@@ -255,6 +271,8 @@ export async function runUiSync(options: {
   worker: string;
   /** The target worker's loaded `pithy.config.ts`. */
   config: WorkerConfig;
+  /** Report the drift and write nothing — the CI gate. */
+  check?: boolean;
 }): Promise<UiSyncReport> {
   const current = await readWorkerUi(options.workerDir);
   if (!current) {
@@ -262,6 +280,19 @@ export async function runUiSync(options: {
       message: `${options.worker} has no front end.`,
       action: `Run pithy ui add react --worker ${options.worker} to scaffold one.`,
     });
+  }
+
+  const after = deriveWorkerFirst(options.config);
+  if (options.check) {
+    const assets = await readAssets(options.workerDir);
+    return {
+      worker: options.worker,
+      before: assets.runWorkerFirst,
+      after,
+      changed: assets.runWorkerFirst.join("\n") !== after.join("\n") || assets.notFoundHandling === undefined,
+      uncovered: uncoveredRoutes(options.config, assets.runWorkerFirst),
+      notFoundHandling: assets.notFoundHandling,
+    };
   }
 
   const change = await wireAssets(options.workerDir, options.config);
@@ -273,6 +304,8 @@ export async function runUiSync(options: {
     // Every way this call can have moved the file, not just the allowlist — a report that says
     // nothing changed while the file did is worse than no report, because CI keys off it.
     changed: before.join("\n") !== change.after.join("\n") || change.wroteNotFoundHandling,
+    // The list was just re-derived from this same route table, so nothing is left outside it.
+    uncovered: [],
     notFoundHandling: change.notFoundHandling,
   };
 }

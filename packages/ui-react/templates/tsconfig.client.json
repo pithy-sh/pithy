@@ -16,6 +16,12 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "types": ["vite/client"],
+    // Referenced from the project's root tsconfig.json, which requires `composite` — and `composite`
+    // makes tsc write build state. It goes under the PROJECT's `dist/`, already gitignored, never under
+    // this Worker's: Vite owns `apps/<worker>/dist` and empties it on every build, which would throw the
+    // incremental state away each time.
+    "composite": true,
+    "tsBuildInfoFile": "../../dist/__PITHY_WORKER__.client.tsbuildinfo",
     "noEmit": true
   },
   "include": ["src/**/*.tsx", "client-env.d.ts"]

@@ -3,6 +3,7 @@
 
 import type { EmailJob } from "../data/emailJob";
 import type { EmailSuppression } from "../data/emailSuppression";
+import type { EmailJobDetail, EmailJobListItem, EmailSuppressionView } from "./responses";
 
 /**
  * What a management client is allowed to see. Nothing in this package ever returns a raw row.
@@ -60,82 +61,13 @@ export function maskAddress(address: string): string {
   return `${local.slice(0, 2)}***@${domain}`;
 }
 
-/** One job as the list shows it: enough to scan, not enough to harvest. */
-export interface EmailJobListItem {
-  /** The job id — what the detail and retry routes take. */
-  id: string;
-  /** The recipient, masked. The detail route has the whole address. */
-  recipient: string;
-  /** The template that produced this email. Structural, so it identifies the kind of mail with no rendered content. */
-  template: string;
-  /** `transactional` or `marketing`. */
-  category: string;
-  /** The lifecycle state. */
-  status: string;
-  /** How the send time was decided. */
-  mode: string;
-  /** How many send attempts have been made. */
-  attempts: number;
-  /** The campaign this belongs to, for attribution; null for transactional mail. */
-  campaignId: string | null;
-  /** How a bounce was classified, when one arrived. */
-  bounceType: string | null;
-  /**
-   * Whether the row carries an error, without carrying it.
-   *
-   * Provider error strings routinely embed the recipient (`550 5.1.1 <ada@example.com> user unknown`),
-   * so the text itself is on the detail route, behind the same request that discloses the address
-   * anyway. In the list it is a boolean, which is all a "show me the failures" pane needs.
-   */
-  failed: boolean;
-  /** When this job is (or was) due to send, ISO-8601. */
-  sendAt: string;
-  /** When the row was created, ISO-8601. The list's sort key. */
-  createdAt: string;
-  /** When the send succeeded, ISO-8601; null until then. */
-  sentAt: string | null;
-}
-
 /**
- * One job in full.
+ * ## The field lists live in `responses.ts`
  *
- * Everything in the list, plus the whole recipient, the rendered subject, the sender identity, and the
- * failure detail. Deliberately absent, beyond `payload`: `inReplyTo` and `references`, which are
- * threading internals of a support reply and tell an operator nothing they would act on.
+ * Every view type below is `z.output` of the Zod object there, so there is one declaration of what a
+ * client receives rather than an interface here and a hand-written mirror of it in every management
+ * client. A field added to one and not the other does not compile.
  */
-export interface EmailJobDetail extends Omit<EmailJobListItem, "recipient" | "failed"> {
-  /** The recipient, in full. Disclosed one job at a time, and audited as such. */
-  toAddress: string;
-  /**
-   * The rendered subject line.
-   *
-   * Rendered *from* the payload, so it can carry a fragment of it — "Your receipt for order 4471".
-   * That is the one piece of rendered content an operator genuinely cannot diagnose a send without, and
-   * it is here rather than in the list for the same reason the address is: one row, one request, one
-   * audit event.
-   */
-  subject: string;
-  /** The sending identity — the adopter's own configuration, not the recipient's data. */
-  fromAddress: string;
-  /** The sender display name recipients saw. */
-  fromName: string;
-  /** The Email Service message id, the handle a later bounce is attributed through. */
-  messageId: string | null;
-  /** The last error recorded against this job; null when healthy. */
-  error: string | null;
-  /** The SMTP or Email Service code from a bounce; null unless it bounced. */
-  bounceCode: string | null;
-  /** The recipient's IANA timezone, for a `timezone`-mode send. */
-  timezone: string | null;
-  /** The recipient-local time-of-day, for a `timezone`-mode send. */
-  localTime: string | null;
-  /** Whether an open-tracking pixel was injected. */
-  openTracking: boolean;
-  /** Whether links were rewritten to tracked callbacks. */
-  clickTracking: boolean;
-  /** When the row was last written, ISO-8601. */
-  updatedAt: string;
-}
 
 /** Project one job for the list. */
 export function jobListView(job: EmailJob): EmailJobListItem {
@@ -174,35 +106,6 @@ export function jobDetailView(job: EmailJob): EmailJobDetail {
     clickTracking: job.clickTracking,
     updatedAt: job.updatedAt.toISOString(),
   };
-}
-
-/** One suppressed address, as a management client sees it. */
-export interface EmailSuppressionView {
-  /** The row's surrogate key. */
-  id: number;
-  /** The blocked address, in full — the record is the address, so there is nothing to mask. */
-  email: string;
-  /** Why it is blocked: hard bounce, complaint, unsubscribe, or a manual block. */
-  reason: string;
-  /** The environment the triggering job came from; the block itself applies everywhere. */
-  environment: string | null;
-  /** The job that triggered it, when one did. */
-  jobId: string | null;
-  /** Free-form context — the bounce code, or what an operator typed when blocking by hand. */
-  detail: string | null;
-  /** When the address was blocked, ISO-8601. */
-  createdAt: string;
-  /** When a temporary block lifts, ISO-8601; null when permanent. */
-  expiresAt: string | null;
-  /**
-   * Whether the block is in force right now.
-   *
-   * Computed rather than left to the client, because "is this person blocked" is the actual question
-   * and answering it from `expiresAt` means every client re-implements the comparison the send path
-   * already makes — and one of them gets the boundary wrong and tells an operator an expired block is
-   * still stopping their mail.
-   */
-  active: boolean;
 }
 
 /** Project one suppression row, resolving `active` against `now`. */

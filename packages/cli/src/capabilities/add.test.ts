@@ -86,6 +86,79 @@ describe("addCapability", () => {
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(wranglerOnce);
   });
 
+  test("a hand-edited import specifier is left alone — presence is keyed on the binding", async () => {
+    // The follow-on to the broken `secrets` specifier: `add` was idempotent on the registration call
+    // but matched the import on its exact text, so an adopter who corrected the specifier by hand got
+    // the wrong one added straight back on the next run — two imports of the same binding, which is a
+    // TypeScript redeclaration error and a config that no longer loads at all.
+    await addCapability({ workerDir: worker, manifest });
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      config.replace('"@pithy-sh/auth/src/index"', '"@pithy-sh/auth/src/capability"'),
+    );
+
+    await addCapability({ workerDir: worker, manifest });
+
+    const after = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    expect(after.match(/^import\s*\{\s*auth\s*\}/gm)).toHaveLength(1);
+    expect(after).toContain('import { auth } from "@pithy-sh/auth/src/capability";');
+  });
+
+  test("recognises an existing import that does not start at column zero", async () => {
+    await addCapability({ workerDir: worker, manifest });
+    const path = join(worker, "pithy.config.ts");
+    await writeFile(path, (await readFile(path, "utf8")).replace("import { auth }", "  import { auth }"));
+
+    await addCapability({ workerDir: worker, manifest });
+
+    // Indentation is cosmetic. Not seeing the import writes a second one, and two bindings of one name
+    // is a TypeScript redeclaration — the config stops loading.
+    expect((await readFile(path, "utf8")).match(/import\s*\{\s*auth\s*\}/g)).toHaveLength(1);
+  });
+
+  test("a commented-out import is not an import", async () => {
+    // The decoy that made the guard answer for a binding it never bound: a block comment above the
+    // managed region read as the capability already being imported, so `add` wrote the registration and
+    // no import at all — `auth()` against nothing, a config that fails to load.
+    const path = join(worker, "pithy.config.ts");
+    const commented = ["/*", 'import { auth } from "@pithy-sh/auth/src/index";', "*/", ""].join("\n");
+    await writeFile(path, `${commented}${await readFile(path, "utf8")}`);
+
+    await addCapability({ workerDir: worker, manifest });
+
+    // Two lines read as an import now: the adopter's comment, untouched, and the real one above it.
+    const after = await readFile(path, "utf8");
+    expect(after.match(/^import\s*\{\s*auth\s*\}/gm)).toHaveLength(2);
+    expect(after.slice(0, after.indexOf("/*"))).toContain('import { auth } from "@pithy-sh/auth/src/index";');
+    expect(after).toContain("auth(),");
+  });
+
+  test("refuses an import of the bare package — it resolves to nothing", async () => {
+    // `@pithy-sh/auth` declares no "." export, so this line throws at load. Read as wiring, it made
+    // `add` write the registration against an import that could never bind, and exit 0 saying so.
+    const path = join(worker, "pithy.config.ts");
+    const before = `import { auth } from "@pithy-sh/auth";\n${await readFile(path, "utf8")}`;
+    await writeFile(path, before);
+
+    await expect(addCapability({ workerDir: worker, manifest })).rejects.toThrow(PithyError);
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  test("refuses when the name is already bound to something that is not the capability", async () => {
+    // Keying idempotency on the binding alone was wrong in the other direction: an adopter's own
+    // `auth` suppressed the capability's import while the registration went in anyway, so
+    // `capabilities: [auth()]` composed their middleware and the capability never loaded. Silently.
+    const path = join(worker, "pithy.config.ts");
+    const before = `import { auth } from "./lib/myAuth";\n${await readFile(path, "utf8")}`;
+    await writeFile(path, before);
+
+    await expect(addCapability({ workerDir: worker, manifest })).rejects.toThrow(PithyError);
+
+    // Refused before anything was written — the config is exactly as the adopter left it.
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
+
   test("a config without the managed-region marker fails with an action line", async () => {
     await writeFile(join(worker, "pithy.config.ts"), "export default { capabilities: [] };\n");
     await expect(addCapability({ workerDir: worker, manifest })).rejects.toThrow(PithyError);

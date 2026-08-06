@@ -4,8 +4,10 @@
 import { readFileSync } from "node:fs";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
+import { AUTH_SESSION_SECRET, authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 
 function build(overrides: Partial<AuthConfigInput> = {}): AuthCapability {
@@ -54,10 +56,12 @@ describe("auth capability", () => {
     }
   });
 
-  test("contributes the rate-limit + session middleware and routes", () => {
+  test("contributes the same-origin, rate-limit and session middleware, and routes", () => {
     const cap = build();
-    // Two middleware: the tier-1 edge rate limiter (runs first) then session resolution.
-    expect(cap.middleware?.length).toBe(2);
+    // Three middleware, in this order: the same-origin policy is published first so every route —
+    // auth's and the adopter's — can gate on it; then the tier-1 edge rate limiter; then session
+    // resolution.
+    expect(cap.middleware?.length).toBe(3);
     expect(typeof cap.routes).toBe("function");
   });
 
@@ -169,5 +173,22 @@ describe("pithy.manifest.json", () => {
 
   test("lists turnstile and audit as optional", () => {
     expect(manifest.optionalCapabilities).toEqual(["turnstile", "audit"]);
+  });
+
+  test("its devSecrets are exactly the registry entries that declare a devValue — nothing else checks", () => {
+    // `pithy add` reads the manifest without executing this package, so the manifest carries the
+    // projection. Both directions: a registry entry marked generatable and left out of the manifest is
+    // never minted, and a manifest name the registry does not mark is a value written for nothing.
+    const entries: [string, SecretRegistryEntry][] = Object.entries(authSecretsRegistry);
+    const declared = entries
+      .filter(([, entry]) => entry.devValue)
+      .map(([name, entry]) => ({ name, devValue: entry.devValue }));
+    expect(manifest.devSecrets).toEqual(declared);
+  });
+
+  test("mints only the session secret — the four OAuth pairs are registered with a provider", () => {
+    // A generated Google client secret authenticates against nothing. It would replace a loud gap
+    // with a quiet one.
+    expect(manifest.devSecrets).toEqual([{ name: AUTH_SESSION_SECRET, devValue: "random" }]);
   });
 });

@@ -32,12 +32,14 @@ describe("auth() with seed.includeExamples", () => {
   it("composes the example set only when includeExamples is on", () => {
     const capability = auth({ baseURL: "https://api.example.com" });
 
+    // The dev-session set is not an example — a dev login must not require the fictional cast — so it
+    // composes either way. It seeds nothing without a dev.json, and nothing at all creates a user here.
     const withoutExamples = composeSeeds([capability], { env: "dev", includeExamples: false });
-    expect(withoutExamples.sets).toHaveLength(0);
+    expect(withoutExamples.sets.map((set) => set.key)).toEqual(["9999_auth_dev-session"]);
 
+    // Two: the users, then the dev session that signs one of them in — in that order.
     const withExamples = composeSeeds([capability], { env: "dev", includeExamples: true });
-    expect(withExamples.sets).toHaveLength(1);
-    expect(withExamples.sets[0]?.key).toContain("auth");
+    expect(withExamples.sets.map((set) => set.key)).toEqual(["0100_auth_example", "9999_auth_dev-session"]);
   });
 
   it("never composes the example set for production, even with includeExamples on", () => {

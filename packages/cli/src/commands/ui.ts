@@ -88,7 +88,10 @@ const add = defineCommand({
       }
       process.stdout.write(`Worker-first: ${report.runWorkerFirst.join(", ")}.\n`);
       process.stdout.write(`Install the packages: ${report.packageManager} install. Then pithy dev.\n`);
-      process.stdout.write("After pithy add <capability>, run pithy ui sync to re-derive that list.\n");
+      // Naming `pithy add` alone was the whole failure: it read as "capabilities change this list",
+      // and the routes an adopter writes themselves change it too, with no command in the loop.
+      process.stdout.write("That list covers the routes mounted now. Mount another — your own included —\n");
+      process.stdout.write("and run pithy ui sync. Gate it in CI with pithy ui sync --check.\n");
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
@@ -97,10 +100,15 @@ const add = defineCommand({
 const sync = defineCommand({
   meta: {
     name: "sync",
-    description: "Re-derive a worker's assets.run_worker_first from its routes, after adding a capability",
+    description: "Re-derive a worker's assets.run_worker_first from its routes, after mounting one",
   },
   args: {
     worker: { type: "string", description: "Which worker to re-derive (apps/<name>)" },
+    check: {
+      type: "boolean",
+      default: false,
+      description: "Report drift and write nothing; exits 1 on a shadowed route",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -113,10 +121,29 @@ const sync = defineCommand({
         ...(args.worker === undefined ? {} : { worker: args.worker }),
       });
 
-      const report = await runUiSync({ workerDir: target.dir, worker: target.name, config: target.config });
+      const report = await runUiSync({
+        workerDir: target.dir,
+        worker: target.name,
+        config: target.config,
+        check: args.check,
+      });
+
+      // A shadowed route is a 200 with the wrong body, so the gate is the exit code, not the wording.
+      if (report.uncovered.length > 0) process.exitCode = 1;
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report })}\n`);
+        return;
+      }
+      if (args.check) {
+        if (report.uncovered.length === 0) {
+          process.stdout.write(`${report.worker}: every route reaches the worker.\n`);
+          process.stdout.write(`${formatDone()}\n`);
+          return;
+        }
+        process.stdout.write(`${report.worker}: the SPA shell is answering these, not the worker.\n`);
+        for (const route of report.uncovered) process.stdout.write(`  ${route}\n`);
+        process.stdout.write(`Run pithy ui sync --worker ${report.worker}.\n`);
         return;
       }
       if (!report.changed) {

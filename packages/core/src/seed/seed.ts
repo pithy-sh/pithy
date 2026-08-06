@@ -3,6 +3,7 @@
 
 import type { z } from "zod";
 import type { KvStoreSpec } from "../kv/namespaces";
+import type { SeededRows } from "./seededRows";
 
 /**
  * The seed contract: the pure, schema-bound shapes a capability (or the app) contributes to
@@ -132,6 +133,72 @@ export interface MediaSeedItem {
 }
 
 /**
+ * A transient file a prepared set asks the CLI to write, under the project's gitignored `logs/`.
+ *
+ * The path is not the author's choice: a set names the file, never the directory, so a fixture can never
+ * put a run artifact somewhere committable. The one artifact that exists today is the dev login
+ * (`DEV_LOGIN_PATH`), which holds a live session cookie — hence both halves of that rule.
+ */
+export interface SeedArtifact {
+  /** The file name within the project's `logs/` directory (no directory separators). */
+  file: string;
+  /** The file's contents, written verbatim after the set's rows land. */
+  contents: string;
+}
+
+/**
+ * What a run gives {@link SeedSet.prepare} so it can compute the fixtures it cannot state statically.
+ *
+ * Deliberately narrow. `secret` is the only I/O, and it is the reason the hook exists: a fixture that must
+ * agree with what the running app will verify — a signed cookie, a derived id — needs the same secret the
+ * app reads, and a static row cannot hold one. Everything else is passed in already-read, so a capability
+ * never touches the filesystem: a capability module is bundled into the Worker, and `node:fs` there is a
+ * build error rather than a possibility. For the same reason `seeded` is the composed plan rather than a
+ * database handle — a prepared set answers "does this row exist" from the run, never from a query.
+ */
+export interface SeedPrepareContext {
+  /** The environment being seeded — the same value the set's `environments` allowed. */
+  env: string;
+  /** The project name (the root `pithy.config.ts` `name`), for messages and per-project lookups. */
+  project: string;
+  /**
+   * Read one of this environment's secrets by name, or `undefined` when it is not set. Local dev resolves
+   * every secret from `.dev.vars`, so this answers there; a deployed environment's secrets are not on the
+   * operator's disk, and a set that needs one must therefore be `dev`-only.
+   */
+  secret: (name: string) => Promise<string | undefined>;
+  /**
+   * The developer's machine-local preferences for this project, read from the Pithy config directory
+   * (`~/.config/pithy/<project>/dev.json`, or `%APPDATA%\pithy\<project>\dev.json` on Windows), parsed but
+   * unvalidated — `undefined` when the file is absent or unreadable. It is a per-machine opt-in, outside
+   * the repo, so two developers on one checkout can differ and neither has to commit anything. The set
+   * validates the shape it expects.
+   */
+  preferences: unknown;
+  /**
+   * The rows this run declares for one `database`.`table`, from every composed set — this one included, and
+   * every other capability's and the app's. It is how a fixture that must reference a row it does not own
+   * (a session for a seeded user) finds that row without hard-coding a roster or opening D1. Statically
+   * declared rows only; see {@link SeededRows}.
+   */
+  seeded: SeededRows;
+}
+
+/**
+ * What {@link SeedSet.prepare} contributes: more of the same groups a static set declares, plus any
+ * transient artifacts. The groups are appended to the set's static ones and written through the identical
+ * validated path; the artifacts are written afterwards, so a file never claims a row that failed to land.
+ */
+export interface SeedPreparation {
+  /** D1 row groups computed for this run. */
+  d1?: readonly D1SeedGroup[];
+  /** KV entry groups computed for this run. */
+  kv?: readonly KvSeedGroup[];
+  /** Transient files to write under the project's `logs/` once the rows are in. */
+  artifacts?: readonly SeedArtifact[];
+}
+
+/**
  * One named, ordered batch of fixtures a capability contributes to `pithy seed`. Sets are composed
  * library-before-app by `order` (like migrations) and each declares the environments it may be
  * seeded into — the first layer of the env-safety model. `production` is seeded only when a set
@@ -161,6 +228,15 @@ export interface SeedSet {
   r2?: readonly R2SeedItem[];
   /** Media assets (Images/Stream), uploaded by the CLI. */
   media?: readonly MediaSeedItem[];
+  /**
+   * Late-bound fixtures: run once per Worker, just before this set's rows are written, to compute what a
+   * static literal cannot hold. Its groups are appended to the static ones and go through the same
+   * `schema.encode` validation; its artifacts are written after.
+   *
+   * A dry run never calls it. A plan touches no backend and needs no credentials, so a prepared set
+   * reports nothing there rather than reading a secret to describe work it is not going to do.
+   */
+  prepare?: (context: SeedPrepareContext) => Promise<SeedPreparation>;
 }
 
 /**

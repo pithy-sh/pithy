@@ -6,7 +6,7 @@ import type { z } from "zod";
 
 /**
  * Cloudflare REST client throw sugar. The `cloudflare/*` codes live in core's closed
- * `ErrorPayload` union (CLAUDE.md §Errors: capabilities add their codes to the one union); these
+ * `KitErrorPayload` union (CLAUDE.md §Errors: capabilities add their codes to the one union); these
  * subclasses are the package-local vehicles that set one of those members — the same pattern as
  * core's `NotFoundError`/`InternalError`, just owned here. Runtime code in this package throws
  * one of these, never a plain `new Error`.

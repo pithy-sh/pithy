@@ -9,6 +9,7 @@ import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
 import { addCapability, type ConfigValue, type ProposedName } from "./add";
+import { bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { loadManifest } from "./manifests";
@@ -188,6 +189,15 @@ export interface AddResult {
    * KV, when no project name was resolved, or on a re-run.
    */
   kvNamespaces: ProposedName[];
+  /**
+   * What `add` finished, and what it could not — one line each, printed in order.
+   *
+   * A binding whose entry carries a provisioned value is never written into `wrangler.jsonc`, so the
+   * adopter is otherwise told about it by a 500 on their first request. These lines say it at add time:
+   * the dev master key `pithy add secrets` just minted, or the provision command a Workflow needs.
+   * Empty for a capability every one of whose bindings `add` writes.
+   */
+  notes: string[];
   /** Present when `--eject` ran: what was copied and which deps were promoted. */
   eject?: EjectResult;
 }
@@ -249,6 +259,10 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     const databases = await migrate({ projectDir, workerDir, worker, project: options.project });
 
+    // Last, after every step that can fail: a dev key is minted only into a project the add finished
+    // on. It is absent-only anyway, so an earlier failure costs a re-run rather than a stranded value.
+    const notes = await bootstrapAdd({ projectDir, manifest });
+
     await audit({
       action: "capability/added",
       outcome: "success",
@@ -265,6 +279,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       packageManager,
       databases,
       kvNamespaces,
+      notes,
       eject,
     };
   } catch (error) {

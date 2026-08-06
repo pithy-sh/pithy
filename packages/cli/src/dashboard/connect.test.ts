@@ -4,7 +4,6 @@
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
-import type { ConnectionHealth, DashboardClient } from "./api";
 import {
   authorizeDashboard,
   connectDashboard,
@@ -12,6 +11,7 @@ import {
   disconnectDashboard,
   rotateDashboardKey,
 } from "./connect";
+import type { ConnectionHealth, DashboardClient } from "./contract";
 import type { ConnectionRegistry } from "./registry";
 
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
@@ -212,6 +212,41 @@ describe("connectDashboard — the dashboard path", () => {
 
     expect(report.status).toBe("needs_reconnect");
     expect(report.detail).toContain("Couldn't reach");
+  });
+
+  test("tells the client whether the environment holds live data, at the moment it registers", async () => {
+    const createConnection = vi.fn<DashboardClient["createConnection"]>().mockResolvedValue({
+      connectionId: CONNECTION_ID,
+      keyId: "key_1",
+      publicKeyJwk: JWK,
+      issuer: "https://app.pithy.sh",
+      scopes: ["manifest:read", "keys:rotate"],
+    });
+
+    await connectDashboard({
+      ...base,
+      registry: fakeRegistry(),
+      client: fakeClient({ createConnection }),
+      isProduction: true,
+    });
+
+    // Sent, not inferred. A client reading the environment name gives a project that calls production
+    // `live` the safe-looking treatment — on real users.
+    expect(createConnection).toHaveBeenCalledWith("ct_1", expect.objectContaining({ isProduction: true }));
+  });
+
+  test("an unstated environment is not production — the dangerous default is never the quiet one", async () => {
+    const createConnection = vi.fn<DashboardClient["createConnection"]>().mockResolvedValue({
+      connectionId: CONNECTION_ID,
+      keyId: "key_1",
+      publicKeyJwk: JWK,
+      issuer: "https://app.pithy.sh",
+      scopes: ["manifest:read", "keys:rotate"],
+    });
+
+    await connectDashboard({ ...base, registry: fakeRegistry(), client: fakeClient({ createConnection }) });
+
+    expect(createConnection).toHaveBeenCalledWith("ct_1", expect.objectContaining({ isProduction: false }));
   });
 
   test("--update re-points the worker URL and scopes instead of creating a connection", async () => {

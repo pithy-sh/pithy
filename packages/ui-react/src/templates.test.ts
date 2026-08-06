@@ -93,8 +93,10 @@ describe("the React template library", () => {
       const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
       if (text.includes(WORKER_TOKEN)) users.push(path);
     }
-    // Exactly one template needs the worker's name today: the document title.
-    expect(users).toEqual(["index.html"]);
+    // Three templates need the worker's name: the document title, and each tsconfig's `tsBuildInfoFile`.
+    // The build-state files sit together under the project's `dist/`, so they are named after the Worker
+    // they belong to — two composite programs pointing at one file overwrite each other's state.
+    expect(users).toEqual(["index.html", "tsconfig.client.json", "tsconfig.node.json"]);
   });
 
   test("no template reaches for a token that nothing substitutes", async () => {

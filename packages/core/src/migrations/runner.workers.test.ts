@@ -40,9 +40,21 @@ const createWidgets: Migration = {
   },
 };
 
+const createGadgets: Migration = {
+  up: async (db) => {
+    await db.schema
+      .createTable("gadgets")
+      .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+      .execute();
+  },
+  down: async (db) => {
+    await db.schema.dropTable("gadgets").execute();
+  },
+};
+
 async function tableNames(): Promise<string[]> {
   const rows = await env.DB.prepare(
-    "select name from sqlite_master where type = 'table' and name in ('things', 'widgets')",
+    "select name from sqlite_master where type = 'table' and name in ('things', 'widgets', 'gadgets')",
   ).all<{ name: string }>();
   return rows.results.map((row) => row.name).sort();
 }
@@ -57,6 +69,7 @@ async function migrationTableNames(): Promise<string[]> {
 beforeEach(async () => {
   // Each test starts from a blank slate: no app tables, no migration bookkeeping state.
   for (const table of [
+    "gadgets",
     "widgets",
     "things",
     "kysely_migration",
@@ -114,6 +127,35 @@ describe("runMigrations", () => {
 
     // The prefix keeps an adopter's own Kysely migrations on the same D1 from colliding (principle 1).
     expect(await migrationTableNames()).toEqual(["pithy_migrations", "pithy_migrations_lock"]);
+  });
+
+  test("a capability whose order sorts before an applied one still runs — add-order is not schema-order", async () => {
+    // The adopter's sequence: `pithy add email` (200), `pithy add auth` (300), `pithy add audit` (250).
+    // The ledger holds 0200 then 0300; audit's 0250 sorts between them. Kysely's ordered mode reads that
+    // as corrupted state and refuses every later run, so the composed order — the only order Pithy
+    // promises — would depend on the order an adopter happened to type.
+    const emailOnly = createMigrationRegistry([
+      { database: "app", namespace: "email", order: 200, migrations: { "0001_init": createThings } },
+    ]);
+    await runMigrations(env.DB, providerFor(emailOnly, "app"));
+
+    const withAuth = createMigrationRegistry([
+      { database: "app", namespace: "email", order: 200, migrations: { "0001_init": createThings } },
+      { database: "app", namespace: "auth", order: 300, migrations: { "0001_init": createWidgets } },
+    ]);
+    await runMigrations(env.DB, providerFor(withAuth, "app"));
+
+    const withAudit = createMigrationRegistry([
+      { database: "app", namespace: "email", order: 200, migrations: { "0001_init": createThings } },
+      { database: "app", namespace: "audit", order: 250, migrations: { "0001_init": createGadgets } },
+      { database: "app", namespace: "auth", order: 300, migrations: { "0001_init": createWidgets } },
+    ]);
+    const results = await runMigrations(env.DB, providerFor(withAudit, "app"));
+
+    expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
+      ["0250_audit_0001_init", "Up", "Success"],
+    ]);
+    expect(await tableNames()).toEqual(["gadgets", "things", "widgets"]);
   });
 
   test("an empty provider is a no-op success", async () => {

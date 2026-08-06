@@ -128,6 +128,12 @@ function workerFiles(name: string, project: string): Record<string, string> {
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "types": ["@cloudflare/workers-types"],
+    // Referenced from the root solution file, which requires \`composite\` — and \`composite\` makes tsc
+    // write build state. It goes under the PROJECT's \`dist/\`, already gitignored, and deliberately not
+    // under this Worker's: once this Worker carries a UI, Vite owns \`apps/<worker>/dist\` and empties it
+    // on every build, which would throw the incremental state away each time.
+    "composite": true,
+    "tsBuildInfoFile": "../../dist/${name}.server.tsbuildinfo",
     "noEmit": true
   },
   "include": ["src/**/*.ts", "pithy.config.ts"]

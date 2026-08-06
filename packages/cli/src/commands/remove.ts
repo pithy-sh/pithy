@@ -116,6 +116,10 @@ export default defineCommand({
         process.stdout.write(`Deleted ${relative(projectDir, join(target.dir, "capabilities", args.capability))}/.\n`);
       } else if (result.packageManager) {
         process.stdout.write(`Uninstalled @pithy-sh/${args.capability}.\n`);
+      } else if (result.keptLinked) {
+        // Nothing declared the package, so there is nothing to uninstall — and npm, asked anyway, prunes
+        // every linked sibling with it. Say what was left, so the link in node_modules is never a surprise.
+        process.stdout.write(`Kept @pithy-sh/${args.capability} — a linked checkout provides it.\n`);
       } else if (result.keptFor.length > 0) {
         // The wiring is gone from this Worker, but the package is one shared install — say so plainly,
         // and name who still holds it, so the leftover dependency is never a surprise.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { SIGNED_WEBHOOK_MAX_CANDIDATES } from "@pithy-sh/core/src/http/signedWebhook";
 import { describe, expect, test } from "vitest";
 import { STRIPE_TEST_WEBHOOK_SECRET, stripeSignatureHeader } from "./fixtures/events";
 import {
@@ -62,6 +63,14 @@ describe("parseStripeSignatureHeader", () => {
   test("refuses a negative or fractional timestamp", () => {
     expect(parseStripeSignatureHeader("t=-1,v1=aa")).toBeUndefined();
     expect(parseStripeSignatureHeader("t=1.5,v1=aa")).toBeUndefined();
+  });
+
+  test("refuses a second timestamp, and a non-canonical one", () => {
+    // Inherited from the kit's primitive, which this rail now composes rather than copies. Stripe writes
+    // neither shape, so nothing legitimate is refused — but a header carrying two answers to "when was this
+    // signed" has not answered, and `t=0001768435200` is not the string Stripe's own HMAC covered.
+    expect(parseStripeSignatureHeader("t=1768435200,v1=aa,t=1768435201")).toBeUndefined();
+    expect(parseStripeSignatureHeader("t=0001768435200,v1=aa")).toBeUndefined();
   });
 });
 
@@ -135,6 +144,17 @@ describe("verifyStripeSignature", () => {
     // one does not match would drop every delivery for the length of the rotation.
     const header = await stripeSignatureHeader(BODY, NOW, { extra: ["ab".repeat(32)] });
     await expect(verify(BODY, header)).resolves.toBeUndefined();
+  });
+
+  test("caps how many candidates one delivery may spend", async () => {
+    // The `v1` list is written by whoever sent the request and each entry costs a full HMAC over the body.
+    // Stripe lists one per active secret — two during a rotation — so the kit's cap is far past anything
+    // Stripe sends, and it is the only thing standing between this endpoint and an anonymous CPU bill.
+    const flood = Array.from({ length: SIGNED_WEBHOOK_MAX_CANDIDATES }, (_, index) =>
+      index.toString(16).padStart(64, "0"),
+    );
+    const header = await stripeSignatureHeader(BODY, NOW, { extra: flood });
+    expect((await refusal(verify(BODY, header))).payload.code).toBe("payments/verification_failed");
   });
 
   test("no refusal carries the secret, the body, or the signature", async () => {

@@ -14,6 +14,7 @@ import { AuditTrailActions } from "../actions";
 import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
+import type { AuditEventResponse, AuditEventsResponse } from "./responses";
 import { AuditEventIdParam, ListAuditEventsQuery } from "./schemas";
 import { auditEventDetailView, auditEventView } from "./views";
 
@@ -153,7 +154,13 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
             more: page.nextCursor !== null,
           },
         });
-        return c.json({ events: page.events.map(auditEventView), nextCursor: page.nextCursor }, 200);
+        // `satisfies`, not `.parse()`. The check belongs at compile time: parsing every response would
+        // spend a validation pass on data this Worker just built from its own rows, and it would turn a
+        // shape mistake into a 500 in production rather than a red build.
+        return c.json(
+          { events: page.events.map(auditEventView), nextCursor: page.nextCursor } satisfies AuditEventsResponse,
+          200,
+        );
       },
     );
 
@@ -190,7 +197,7 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
             action: "Check the eventId against a page from GET /events.",
           });
         }
-        return c.json({ event: auditEventDetailView(row) }, 200);
+        return c.json({ event: auditEventDetailView(row) } satisfies AuditEventResponse, 200);
       },
     );
   };

@@ -6,7 +6,7 @@ import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ConflictError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./api";
+import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./contract";
 import type { ConnectionRegistry } from "./registry";
 
 /**
@@ -127,6 +127,20 @@ export interface ConnectDashboardOptions {
   project: string;
   /** The environment being connected. */
   environment: string;
+  /**
+   * Whether that environment holds live data — resolved by the caller, never inferred here.
+   *
+   * A management client's production treatment is the thing standing between an operator and an
+   * unguarded destructive action against real users, and the environment *name* cannot answer the
+   * question: a project may call production `live` or `prod-eu`, and a client reading `prod` alone gives
+   * every one of those the safe-looking treatment. So the CLI answers it, from the same list that gates a
+   * destructive seed (`seed.productionEnvironments`, plus the built-in `prod`/`production`), and sends it
+   * at the one moment the connection is being created.
+   *
+   * Defaults to false only on the offline path and the update path, neither of which creates a record on
+   * the client's side. A create sends what the caller resolved.
+   */
+  isProduction?: boolean;
   /** This environment's Worker URL. Required to create a connection; optional when only re-pointing. */
   workerUrl?: string;
   /**
@@ -251,6 +265,7 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   const issued = await client.createConnection(token, {
     project: options.project,
     environment: options.environment,
+    isProduction: options.isProduction ?? false,
     workerUrl,
     basePath,
     scopes,

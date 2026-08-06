@@ -13,6 +13,8 @@ import { UNCATEGORIZED } from "../data/enums";
 import { SupportMessage } from "../data/message";
 import { SUPPORT_FLAGS_TABLE, SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, supportDatabase } from "../data/tables";
 import { SupportThread } from "../data/thread";
+import { SupportListedThreadView, SupportMessageView, SupportThreadView } from "../http/responses";
+import { listedThreadView, messageView, threadView } from "../http/views";
 import { support_0001_threads } from "../migrations/0001_threads";
 import { indexMessage } from "./search";
 import { createSearchIndex } from "./searchIndex";
@@ -631,5 +633,44 @@ describe("the index being configured is not the index existing", () => {
 
     const page = await listThreads(db, { q: "charged" }, { fts: true, viewer: VIEWER, now: new Date(T0 + 1) });
     expect(ids(page)).toEqual(["t1"]);
+  });
+});
+
+describe("the exported response schemas against real rows", () => {
+  /**
+   * The projections, fed rows that came out of D1 rather than out of a fixture.
+   *
+   * `http/responses.test.ts` runs the same schemas against hand-built rows, which proves the field
+   * lists agree. This proves the other half: that a row as SQLite actually returns it — decoded
+   * through the table's own codecs, with the columns a migration really produced — still projects to
+   * exactly what the schema declares. A `0`/`1` reaching a boolean field, or an ms-epoch reaching a
+   * date one, fails here and nowhere else.
+   *
+   * Equality rather than a bare parse, because a Zod object strips unknown keys: comparing the parsed
+   * value with the projection's output is what catches a field the schema does not know about.
+   */
+  test("a listed thread, a thread, and a message all match", async () => {
+    await seedThread({ id: "t-1", lastMessageAt: T0 + 100, category: "billing", priority: "urgent" });
+    await seedMessage({ id: "m-1", threadId: "t-1", subject: "Where is my refund?", body: "Still waiting." });
+    await setFlags(db, {
+      threadId: "t-1",
+      viewer: VIEWER,
+      read: true,
+      snoozedUntil: new Date(T0 + 90_000),
+      newId: () => "flag-1",
+      now: new Date(T0),
+    });
+
+    const page = await listThreads(db, {}, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) });
+    const listed = page.threads.map(listedThreadView);
+    expect(SupportListedThreadView.array().parse(listed)).toEqual(listed);
+    expect(listed[0]?.read).toBe(true);
+    expect(listed[0]?.snoozedUntil).toBe(new Date(T0 + 90_000).toISOString());
+
+    const detail = await readThread(db, "t-1");
+    const thread = threadView(detail.thread);
+    expect(SupportThreadView.parse(thread)).toEqual(thread);
+    const messages = detail.messages.map(messageView);
+    expect(SupportMessageView.array().parse(messages)).toEqual(messages);
   });
 });

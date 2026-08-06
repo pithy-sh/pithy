@@ -14,7 +14,7 @@ It scaffolds the client into `apps/api/`, beside the Worker that serves it, and 
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Joins the dev set.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
-- **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions.
+- **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions. A `@pithy-sh/*` package your project already provides from a linked checkout gets no range written — there is no published version to name, and writing one breaks your next install.
 
 ## What it does not do
 
@@ -53,7 +53,11 @@ apps/api/
   pithy.worker.jsonc         edited  dev block + ui block
   package.json               edited  dependencies + scripts
   tsconfig.json                      the Worker's own program — untouched
+
+../../tsconfig.json          edited  the project's solution file: + the two programs above
 ```
+
+**Both client tsconfigs are `composite`, and both are referenced.** The project's root `tsconfig.json` is a solution file — `"files": []` and a list of `references` that `tsc -b` walks — and `pithy ui add` appends the client's two programs to it. Left unreferenced they compile for nobody: `bun run typecheck` would cover the Worker and none of the client beside it. `composite` is what a reference costs, and it makes tsc write a `.tsbuildinfo`; each names one under the **project's** `dist/`, never `apps/<worker>/dist`, which Vite empties on every build.
 
 **Why `client-env.d.ts` sits at the Worker root and not under `src/`.** The Worker's `tsconfig.json` includes `src/**/*.ts`. That glob does not match `.tsx`, so every client file being `.tsx` is what keeps the client out of the Worker's type program — no edit to the Worker's tsconfig, no DOM types leaking into Workers code. A `.d.ts` under `src/` *would* match, so the ambient declarations live one level up.
 
@@ -189,7 +193,9 @@ An entitlement belongs to somebody, so declaring one implies the session guard: 
 
 The scaffolded client uses **cookie sessions**, and it can because the SPA and the API share an origin. The browser sends the session cookie on same-origin requests with no header work, no token juggling, and no refresh logic in your UI.
 
-Cookie mode means CSRF protection, always, and Pithy's is `requireSameOrigin` in `@pithy-sh/auth`: every mutating route checks the request's origin against the auth config's `baseURL` and `trustedOrigins`. Same-origin deployment is what makes that check both strict and invisible.
+Cookie mode means CSRF protection, always, and Pithy's is `requireSameOrigin()` from `@pithy-sh/core`: every mutating route checks the request's origin against the auth config's `baseURL` and `trustedOrigins`. Same-origin deployment is what makes that check both strict and invisible.
+
+**Your own routes wear the same gate, and it takes no arguments.** `@pithy-sh/auth` publishes the check already bound to the origins it resolved, so `requireSameOrigin()` on a route of yours is the policy auth is enforcing — not a second copy of it that can drift. There is no origin list to pass, which is why there is no wrong one.
 
 **No token is ever put in `localStorage`.** Not the access token, not the refresh token, not a copy "just for convenience". A token in `localStorage` is readable by any script that ends up on the page, and the whole point of the cookie path is that the credential is not reachable from JavaScript at all.
 
@@ -235,18 +241,41 @@ Two rules the derivation follows:
 - **Both forms, every time.** `"/auth/*"` does not match a bare `"/auth"`, so each base path is emitted as the pair `"/auth"` and `"/auth/*"`.
 - **Never a bare-prefix glob.** `"/media*"` would also capture `/mediafoo`. The pair `"/media"` + `"/media/*"` captures the route table and nothing beyond it.
 
-Because it is derived, it goes stale when the route table changes:
+### It is derived once, and every route you mount afterwards is yours to re-derive
+
+This is the sharp edge, and it has cut. The list is written at `pithy ui add`, from the route table as it stood that day. Every route mounted after it — by `pithy add <capability>`, and by **you, writing a route into your own app capability** — is outside the list until something re-derives it. A route outside the list is answered by the SPA shell: `200`, `text/html`, and your handler never ran. Not a 404, not a 500. The wrong body with the right status.
+
+Nothing in your test suite catches that. Tests call handlers directly; the asset router is not in the picture. So the check is a command, and it belongs in CI:
 
 ```bash
-pithy add leaderboard --worker api
-pithy ui sync --worker api
+pithy ui sync --check --worker api     # writes nothing, exits 1 on a shadowed route
+pithy ui sync --worker api             # re-derives and rewrites that one key
 ```
 
-`pithy ui sync` re-derives the allowlist from the Worker's current capabilities and rewrites that one key. It creates no files and regenerates no screens. Run it after any `pithy add` or `pithy remove` on a Worker that carries a UI — otherwise the new capability's routes are shadowed by the SPA shell, and a removed one's stay allowlisted.
+```
+$ pithy ui sync --check --worker api
+api: the SPA shell is answering these, not the worker.
+  /api/cli/device/start
+  /api/organisations
+Run pithy ui sync --worker api.
+```
+
+`pithy ui sync` creates no files and regenerates no screens. Run it after any `pithy add` or `pithy remove`, and after you mount a route of your own.
 
 **One key** is literal. `not_found_handling` is written once, when `pithy ui add` finds no `assets` stanza, and from then on it is yours like any other file Pithy authored — `sync` reads it and reports it, and never rewrites it. If you set it to something other than `single-page-application`, client-side deep links stop being served the app shell and reach your Worker instead, where Hono 404s them; `sync` will tell you what the value is, not argue with it.
 
-One more detail, in case you were counting on it: passing `run_worker_first` as an array disables Cloudflare's automatic `Sec-Fetch-Mode: navigate` detection. That is deliberate. `not_found_handling` then applies only to requests no worker-first pattern matched, which is the behaviour that makes the split reliable.
+### Why there is a list at all
+
+The obvious repair for a list that goes stale is to delete it. Try it and the API comes back to life: `curl /api/organisations` reaches the Worker, and deep links still serve the app shell. It looks free. It is not, and the reason is one line in Cloudflare's asset worker:
+
+```js
+if (!(has_static_routing || (navigateFlag && request.headers.get("Sec-Fetch-Mode") === "navigate")))
+  configuration = { ...configuration, not_found_handling: "none" };
+```
+
+An array `run_worker_first` is what sets `has_static_routing`. With it, a path the list misses gets the shell whatever the method — the failure above. Without it, every **non**-navigation falls through to the Worker, which is why `curl` and `fetch` look fixed. The navigation half does not change: a request carrying `Sec-Fetch-Mode: navigate` still gets the shell.
+
+Two of those requests are ones Pithy's sign-in depends on. A magic-link click lands on `/auth/magic-link/verify`, and an OAuth provider redirects to `/auth/callback/<provider>` — both top-level navigations, both onto the Worker. Delete the list and they are answered by the app shell, silently, exactly the way the stale list answered `/api/organisations`. So the list stays, and `--check` is what keeps it honest.
 
 One route is deliberately never allowlisted: one your app capability mounts at **`/`**. In a Worker that serves a SPA, `/` is the app shell — that is what `not_found_handling` is for — so a root API route loses to the front end rather than shadowing it. If you need both, move the API route under a prefix (`/api/status` rather than `/`) and `pithy ui sync` will pick it up.
 
@@ -267,6 +296,8 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `@cloudflare/vite-plugin` | ^1.48.0 | Runs the Worker in workerd inside the dev server; owns the build output |
 | `wrangler` | ^4.115.0 | Deploy |
 | `@pithy-sh/vite` | matching your CLI | Serves the `virtual:pithy/*` modules |
+
+One exception to the table: if `@pithy-sh/vite` is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.48 peers on `vite ^6.1 || ^7 || ^8` and `wrangler ^4.115.0`. Downgrading one of them alone will not resolve.
 

@@ -3,6 +3,8 @@
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { initialVersionedValue } from "./crypto/versionedValue";
+import { SecretCryptoError } from "./error/errors";
 import { defineSecretRegistry, type SecretRegistry } from "./registry";
 import { SecretsAccessor } from "./secretsStore";
 import {
@@ -46,6 +48,18 @@ describe("aggregateSecretRegistries", () => {
     const a = defineCapability({ name: "secrets", requiredBindings: [], secretRegistry: signingKey });
     const b = defineCapability({ name: "email", requiredBindings: [], secretRegistry: signingKey });
     expect(() => aggregateSecretRegistries([a, b])).not.toThrow();
+  });
+
+  test("throws when one capability declares a name keyed and another declares it named", () => {
+    const named = defineSecretRegistry({
+      CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    });
+    const keyed = defineSecretRegistry({
+      CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+    });
+    const a = defineCapability({ name: "connections", requiredBindings: [], secretRegistry: named });
+    const b = defineCapability({ name: "rogue", requiredBindings: [], secretRegistry: keyed });
+    expect(() => aggregateSecretRegistries([a, b])).toThrowError(/declared incompatibly/);
   });
 
   test("throws on a divergent re-declaration of the same secret name", () => {
@@ -114,5 +128,28 @@ describe("sharedSecretsStore", () => {
 
   test("defaults the TTL to 60 seconds", () => {
     expect(DEFAULT_SECRETS_CACHE_TTL_SECONDS).toBe(60);
+  });
+});
+
+describe("sharedSecretsStore — keyspaces", () => {
+  const keyspace = defineSecretRegistry({
+    CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+  });
+
+  test("a keyed read uses the calling invocation's env, not the one that filled the cache", async () => {
+    // The cached accessor carries the source built when it was resolved — a previous request's env.
+    // A keyspace read is real I/O, so the shared store rebinds it to this invocation's env; here that
+    // means the bare `env` above, whose missing master key surfaces as a crypto fault. Were the stale
+    // source used instead, this would quietly return "from-a-previous-request".
+    const stale = async () => initialVersionedValue("from-a-previous-request");
+    configureSharedSecrets({
+      registry: keyspace,
+      resolve: async () => new SecretsAccessor(keyspace, {}, stale),
+      now: () => 0,
+    });
+
+    const accessor = await sharedSecretsStore(env, keyspace);
+
+    await expect(accessor.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).rejects.toBeInstanceOf(SecretCryptoError);
   });
 });

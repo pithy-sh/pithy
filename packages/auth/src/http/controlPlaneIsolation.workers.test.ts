@@ -7,7 +7,6 @@ import { CONTROLPLANE_MIGRATION_ORDER, controlplane } from "@pithy-sh/core/src/c
 import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import {
   ANY_VERIFIED_CALLER,
@@ -15,6 +14,7 @@ import {
   MANIFEST_READ_SCOPE,
 } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
@@ -9,13 +9,21 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { reactStub } from "./react";
-import { wireAssets, wireManifest, wirePackage } from "./wire";
+import type { UiStub } from "./stubs";
+import { wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
 
 const WRANGLER = `{
   // The adopter's note. It must survive every edit pithy makes.
   "name": "api",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01"
+}
+`;
+
+const SOLUTION = `{
+  // The adopter's note. It must survive every edit pithy makes.
+  "files": [],
+  "references": [{ "path": "./apps/api/tsconfig.json" }]
 }
 `;
 
@@ -64,6 +72,19 @@ describe("wire", () => {
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
   });
+
+  /**
+   * A worker at `apps/api` under the project root, so `projectDir` and `workerDir` are the two different
+   * directories they are in a real project — the packages resolve from the root, the manifest is the
+   * worker's.
+   */
+  async function scaffoldWorker(overrides: Record<string, unknown> = {}): Promise<string> {
+    const workerDir = join(dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
+    const pkg = { ...(JSON.parse(PACKAGE) as Record<string, unknown>), ...overrides };
+    await writeFile(join(workerDir, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+    return workerDir;
+  }
 
   test("wireAssets writes the SPA stanza with the derived allowlist and NO directory", async () => {
     const change = await wireAssets(dir, CONFIG);
@@ -151,7 +172,7 @@ describe("wire", () => {
   });
 
   test("wirePackage merges — an existing pin is never downgraded", async () => {
-    const change = await wirePackage(dir, reactStub);
+    const change = await wirePackage(dir, dir, reactStub);
     const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as {
       name: string;
       scripts: Record<string, string>;
@@ -181,16 +202,120 @@ describe("wire", () => {
     pkg.scripts.dev = "wrangler dev --remote";
     await writeFile(join(dir, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 
-    await wirePackage(dir, reactStub);
+    await wirePackage(dir, dir, reactStub);
     const after = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { scripts: Record<string, string> };
     expect(after.scripts.dev).toBe("wrangler dev --remote");
   });
 
+  test("wirePackage writes no registry range for a @pithy-sh package a checkout provides", async () => {
+    // The local-checkout case: `@pithy-sh/vite` is linked in, and nothing under the scope is published.
+    // A `"^0.0.0"` here succeeds now and 404s on the adopter's next install — the failure lands on an
+    // unrelated command, days later.
+    const workerDir = await scaffoldWorker();
+    const checkout = join(dir, "checkout", "vite");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/vite" }));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "vite"), "dir");
+
+    const change = await wirePackage(dir, workerDir, reactStub);
+    const pkg = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as {
+      devDependencies: Record<string, string>;
+    };
+
+    expect(pkg.devDependencies["@pithy-sh/vite"]).toBeUndefined();
+    expect(change.devDependencies).not.toContain("@pithy-sh/vite");
+    // Every registry package still lands — the rule is about the unpublished scope, not about hoisting.
+    expect(pkg.devDependencies.vite).toBe("^8.0.16");
+    expect(change.devDependencies).toContain("@vitejs/plugin-react");
+  });
+
+  test("wirePackage writes the @pithy-sh range when the project has no checkout linked in", async () => {
+    // The published world, and the hoisted-transitive one: a real directory in `node_modules` is a
+    // registry install with a version, so the range is correct and the worker must declare it. Omitting
+    // it would leave the build resolving whatever happened to be hoisted, unpinned and unlocked.
+    const workerDir = await scaffoldWorker();
+    const installed = join(dir, "node_modules", "@pithy-sh", "vite");
+    await mkdir(installed, { recursive: true });
+    await writeFile(join(installed, "package.json"), JSON.stringify({ name: "@pithy-sh/vite", version: "0.1.0" }));
+
+    const change = await wirePackage(dir, workerDir, reactStub);
+    const pkg = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as {
+      devDependencies: Record<string, string>;
+    };
+
+    expect(pkg.devDependencies["@pithy-sh/vite"]).toBe(reactStub.devDependencies["@pithy-sh/vite"]);
+    expect(change.devDependencies).toContain("@pithy-sh/vite");
+  });
+
+  test("wirePackage drops a provided @pithy-sh runtime dependency too, not only a dev one", async () => {
+    // `withoutProvided` guards both maps. The react stub happens to carry the scope only in
+    // devDependencies, so the runtime call site would otherwise never be exercised.
+    const workerDir = await scaffoldWorker({ dependencies: {} });
+    const checkout = join(dir, "checkout", "core");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/core" }));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "core"), "dir");
+
+    const stub: UiStub = {
+      ...reactStub,
+      dependencies: { "@pithy-sh/core": "^0.0.0", react: "^19.2.8" },
+    };
+    const change = await wirePackage(dir, workerDir, stub);
+    const pkg = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+
+    expect(pkg.dependencies["@pithy-sh/core"]).toBeUndefined();
+    expect(change.dependencies).toEqual(["react"]);
+  });
+
   test("wirePackage is idempotent", async () => {
-    await wirePackage(dir, reactStub);
+    await wirePackage(dir, dir, reactStub);
     const once = await readFile(join(dir, "package.json"), "utf8");
-    const change = await wirePackage(dir, reactStub);
+    const change = await wirePackage(dir, dir, reactStub);
     expect(change).toEqual({ dependencies: [], devDependencies: [], scripts: [] });
     expect(await readFile(join(dir, "package.json"), "utf8")).toBe(once);
+  });
+
+  test("wireSolution adds the client's programs to the root tsconfig, comments intact", async () => {
+    // Two tsconfigs nothing references are two tsconfigs nothing checks — which is what `pithy ui add`
+    // left behind, so an adopter's `typecheck` covered the Worker and none of the client it just wrote.
+    await writeFile(join(dir, "tsconfig.json"), SOLUTION);
+
+    expect(await wireSolution(dir, "api")).toEqual([
+      "./apps/api/tsconfig.client.json",
+      "./apps/api/tsconfig.node.json",
+    ]);
+
+    const written = await readFile(join(dir, "tsconfig.json"), "utf8");
+    expect(written).toContain("The adopter's note");
+    const solution = parse(written) as unknown as { files: string[]; references: { path: string }[] };
+    expect(solution.files).toEqual([]);
+    expect(solution.references.map((reference) => reference.path)).toEqual([
+      "./apps/api/tsconfig.json",
+      "./apps/api/tsconfig.client.json",
+      "./apps/api/tsconfig.node.json",
+    ]);
+  });
+
+  test("wireSolution is idempotent", async () => {
+    // `pithy ui add --auth` backfills a scaffold created with `--no-auth`, and that run wires everything
+    // again. A second reference to the same program is a `tsc -b` error, not a duplicate it tolerates.
+    await writeFile(join(dir, "tsconfig.json"), SOLUTION);
+    await wireSolution(dir, "api");
+    const once = await readFile(join(dir, "tsconfig.json"), "utf8");
+
+    expect(await wireSolution(dir, "api")).toEqual([]);
+    expect(await readFile(join(dir, "tsconfig.json"), "utf8")).toBe(once);
+  });
+
+  test("wireSolution leaves a project that has no solution file alone", async () => {
+    // A project scaffolded before the root tsconfig existed has Workers whose programs are not
+    // `composite`, and `tsc -b` refuses a reference to one of those outright. Writing the file would hand
+    // that adopter a typecheck that cannot pass.
+    expect(await wireSolution(dir, "api")).toEqual([]);
+    await expect(readFile(join(dir, "tsconfig.json"), "utf8")).rejects.toThrow();
   });
 });

@@ -7,10 +7,10 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/http/verify";
 import type { ReplayGuard } from "@pithy-sh/core/src/controlPlane/replay/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
+import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
@@ -20,6 +20,7 @@ import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/sr
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import { paymentsDatabase } from "../data/tables";
@@ -81,6 +82,7 @@ import {
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
 } from "./guards";
+import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
 
 const TABLES = [
@@ -2488,5 +2490,51 @@ describe("wiring", () => {
     app.onError(pithyErrorHandler);
     registerPaymentsRoutes({ config: PaymentsConfig.parse({ ...CATALOG, basePath: "/billing" }), now: () => NOW })(app);
     expect((await app.request("http://x/payments/webhooks/apple", { method: "POST" }, { ...env })).status).toBe(404);
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions, which is
+   * what stops the schema and the handler from drifting apart silently — and is why a management client
+   * can import these objects instead of hand-writing a mirror.
+   */
+  async function contract<T>(schema: z.ZodType<T>, response: Response): Promise<T> {
+    expect(response.status).toBe(200);
+    const raw = await response.json();
+    expect(schema.parse(raw)).toEqual(raw);
+    return schema.parse(raw);
+  }
+
+  test("the control-plane grant and revoke return exactly PaymentsEntitlementResponse", async () => {
+    const app = makeApp();
+    const granted = await contract(
+      PaymentsEntitlementResponse,
+      await request(app, "POST", "/payments/entitlements/grant", {
+        controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE },
+        body: { userId: "grace", entitlement: "pro", expiresAt: "2026-12-01T00:00:00.000Z" },
+      }),
+    );
+    expect(granted.entitlement).toEqual({ key: "pro", granted: true, expiresAt: "2026-12-01T00:00:00.000Z" });
+
+    // The revoke's own shape matters as much: it reports the state it produced rather than nothing, so a
+    // pane renders the result instead of assuming it.
+    const revoked = await contract(
+      PaymentsEntitlementResponse,
+      await request(app, "POST", "/payments/entitlements/revoke", {
+        controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE },
+        body: { userId: "grace", entitlement: "pro" },
+      }),
+    );
+    expect(revoked.entitlement.granted).toBe(false);
+
+    // And the read every pane pairs with them.
+    await contract(
+      PaymentsEntitlementsResponse,
+      await request(app, "GET", "/payments/entitlements", { user: "grace" }),
+    );
   });
 });

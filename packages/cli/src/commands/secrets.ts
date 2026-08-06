@@ -202,7 +202,9 @@ const ls = defineCommand({
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, entry]) => ({
           name,
-          description: `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}`,
+          // A keyspace is marked, because it is the one entry an operator must not try to set: its
+          // members are written per key by the application that mints them.
+          description: `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}${entry.keyed ? " · keyspace" : ""}`,
         }));
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "secrets ls", secrets: rows })}\n`);

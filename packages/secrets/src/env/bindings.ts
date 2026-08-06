@@ -7,6 +7,17 @@ import { SecretCryptoError, SecretNotFoundError } from "../error/errors";
 import type { ManagedEnvironment } from "../scope";
 
 /**
+ * The **binding name** every worker reads the master key through, fixed across environments — the
+ * counterpart to `masterKeySecretName`, which scopes the Secrets Store *entry* the binding points at.
+ * Local dev has no store: `.dev.vars` supplies this same name as a string, so it is also the key
+ * `pithy add secrets` writes there.
+ *
+ * Stated once, and here, beside the reader: the writer is in another package, and a near-miss between
+ * the two ends is a worker that boots into "Missing required bindings" over a value that was written.
+ */
+export const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
+
+/**
  * A Cloudflare Secrets Store binding: `.get()` resolves the secret's plaintext inside the
  * worker. In local dev `.dev.vars` resolves the same name to a literal string instead, so
  * every binding is `SecretBinding | string` and {@link resolveBinding} normalizes the two.
@@ -51,19 +62,19 @@ export async function resolveBinding(value: SecretBinding | string | undefined, 
 export async function resolveEncryptionConfig(env: SecretsStoreEnv): Promise<EncryptionConfig> {
   let raw: string;
   try {
-    raw = await resolveBinding(env.SECRETS_ENCRYPTION_KEYS, "SECRETS_ENCRYPTION_KEYS");
+    raw = await resolveBinding(env.SECRETS_ENCRYPTION_KEYS, MASTER_KEY_BINDING);
   } catch (cause) {
-    throw new SecretCryptoError({ detail: "SECRETS_ENCRYPTION_KEYS binding is not configured" }, { cause });
+    throw new SecretCryptoError({ detail: `${MASTER_KEY_BINDING} binding is not configured` }, { cause });
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (cause) {
-    throw new SecretCryptoError({ detail: "SECRETS_ENCRYPTION_KEYS is not valid JSON" }, { cause });
+    throw new SecretCryptoError({ detail: `${MASTER_KEY_BINDING} is not valid JSON` }, { cause });
   }
   const result = EncryptionConfig.safeParse(parsed);
   if (!result.success) {
-    throw new SecretCryptoError({ detail: "SECRETS_ENCRYPTION_KEYS is not a valid EncryptionConfig" });
+    throw new SecretCryptoError({ detail: `${MASTER_KEY_BINDING} is not a valid EncryptionConfig` });
   }
   return result.data;
 }

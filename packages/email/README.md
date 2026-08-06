@@ -10,6 +10,8 @@ There are three send modes. **Immediate** inserts a `pending` row and starts the
 
 Links in a tracked email are HMAC-signed callbacks. A click goes through `/_pithy/email/c/<token>` (records the click, 302-redirects to the signed destination); an open loads `/_pithy/email/o/<token>.png`; an unsubscribe hits `/_pithy/email/u/<token>`. The signing key is a rotatable secret from `@pithy-sh/secrets`, and every token carries its key version so a link in a months-old email still verifies after a rotation.
 
+`pithy add email` mints this project's **dev** signing key into `.dev.vars` as `email-link-signing-key` — any random string signs a link this app also verifies, so there is nothing for you to invent. It is written only when absent: a new key breaks every link already in an inbox. Deployed environments need their own, with `pithy secrets create email-link-signing-key`.
+
 ## Deployment architecture
 
 ```mermaid

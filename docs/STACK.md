@@ -310,6 +310,22 @@ ergonomics by constructing a payload — `new InternalError({ message, action })
 second class. **Runtime code throws `PithyError`, never plain `new Error`**; every new
 capability adds its own namespaced codes (`domain/reason`, aligned with migration namespaces).
 
+**The kit's set is closed; the union is not.** `KitErrorPayload` is the discriminated union above —
+the only one anything may switch over exhaustively, and the one every kit code is validated against,
+status and all. `ErrorPayload` is that plus one open member, so an adopter declares their own
+`domain/reason` codes through `defineErrorPayload` instead of reusing a kit code that means
+something else. The kit's domains are reserved — `auth/`, `payments/`, `core/` and the rest are
+refused, at the declaration as a type error and again at the parse, which is also what keeps a
+capability's own typo a hard failure — and `detail` is stripped from an adopter's errors by the same
+codec, on the same path: the boundary is a property of the schema, not of who wrote the code.
+
+Two things the seam cannot carry across. A kit member pins one `status` per `code`; an adopter's is
+bounded to 400–599 and no further, so declare each of your codes in one vehicle class and keep the
+pinning yourself. And an adopter's code is branded, which is what keeps `payload.code ===
+"core/not_found"` narrowing to exactly one kit member — so narrow your own with
+`isErrorCode(payload, "connect/device_code_expired")` and type the class with
+`ErrorPayloadOf<"connect/device_code_expired">`, never a bare `===`.
+
 ---
 
 ## 4. Argument validation: Zod

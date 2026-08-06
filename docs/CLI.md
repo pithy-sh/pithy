@@ -35,7 +35,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy init` | Scaffold a new Pithy project in the current directory |
 | `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
-| `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6) |
+| `pithy worker <add\|list\|remove\|rename\|sync> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6). `rename` moves the directory and the two other places a Worker's name is stamped (see Section 6.6). `sync` writes the Worker's **app-declared** Workflows and cron triggers into its `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's (see Section 6.5) |
 | `pithy ui <add\|sync\|list> [--worker <name>]` | Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command. `sync` re-derives the asset routing after the Worker's capabilities change; `list` reports which Workers carry a UI (see Section 7 and `docs/UI.md`) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
@@ -85,6 +85,26 @@ Two consequences worth stating outright:
 **`--env` takes `dev`, `staging`, or `prod`, and it is validated at the flag.** It defaults to `dev`, because every command is safe there. It is **not** `production`: the environment sits verbatim in the middle of every Cloudflare name the project composes, so each of its characters costs one character of project name, one for one — and `--env production` is answered with an error naming `prod`. A custom environment is allowed (`live`, `eu-prod`), held to the same charset and to a hard maximum of 7 characters, the length of `staging`. Every project-name budget is derived against that 7, and a provisioned project cannot be renamed, so a longer environment is refused rather than quietly shrinking a cap projects were already accepted under. See `docs/NAMING.md`.
 
 Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
+
+### 1.3 The gates a scaffold ships with
+
+`pithy init` writes the three checks CI needs, not only the two commands a developer runs:
+
+| Script | Runs | Config |
+|---|---|---|
+| `bun run typecheck` | `tsc -b` | `tsconfig.json` — the solution file |
+| `bun run test` | `vitest run` | `vitest.config.ts`, `vitest.workers.config.ts` |
+| `bun run lint` | `biome check .` | `biome.jsonc` |
+
+**The root `tsconfig.json` is a solution file, and it has to be.** It declares `"files": []` and a list of `references`, and `tsc -b` builds each in turn. The programs cannot be merged into one: a Worker needs `@cloudflare/workers-types`, a browser client needs the DOM, and a program carrying both makes `Uint8Array` structurally incompatible with `BufferSource` — which breaks every crypto call in Pithy's own control-plane signing code. Keeping the two type worlds apart is not tidiness; it is the only arrangement that compiles. A fresh project references two programs — `tsconfig.tools.json`, for the configs that run on Node, and `apps/<worker>/tsconfig.json` — and `pithy ui add` appends the client's two.
+
+**`references` requires `composite: true`, and `composite` makes tsc write a `.tsbuildinfo`.** Each program names its own, under the **project's** `dist/`: already covered by the scaffolded `.gitignore`, so no `*.tsbuildinfo` rule is needed, and deliberately not a Worker's `dist/`, which Vite owns and empties on every client build. One file per program, named after its Worker — two composite programs pointing at one build-state file overwrite each other's, and the incremental build goes quietly wrong.
+
+**The Vitest config comes split by runtime.** `*.workers.test.ts` runs inside workerd against a real D1 database and a real KV namespace through Miniflare; every other `*.test.ts` runs in Node. That split is the kit's whole testing argument — a test that mocks D1 proves the mock works — and the Workers half is the fiddly one to wire, which is why it is scaffolded rather than described. Its bindings are declared in `vitest.workers.config.ts`, with a matching `Cloudflare.Env` in `apps/<worker>/src/cloudflare-test.d.ts`; a capability that needs a new one needs it in both.
+
+**Biome formats everything except the two files Pithy rewrites.** `wrangler.jsonc` and `pithy.worker.jsonc` are edited in place by `pithy add`, `pithy ui add`, and `pithy ui sync`, through a comment-preserving writer that puts every array element on its own line. They are still linted; they are not formatted, because formatting a file a tool owns means `bun run lint` fails after every command that touches it.
+
+One gap, stated rather than hidden: `pithy worker add` writes the new Worker's `tsconfig.json` with the same settings `init` gives `apps/api`, but does **not** add it to the solution file. Add the reference yourself, or that Worker's source is typechecked by nothing.
 
 ---
 
@@ -787,6 +807,7 @@ Alias: installed (`p.` → `pithy`)
 
 Config dir: ~/.config/pithy
 State file: ~/.config/pithy/state.json
+Dev login:  ~/.config/pithy/acme/dev.json — none yet; sign-in stays magic-link only
 Notifier:   enabled (PITHY_NO_UPDATE_NOTIFIER to disable)
 
 Project: pithy.config.ts found
@@ -825,7 +846,11 @@ The same line warns when the pair **came from two places**. The `.dev.vars` over
 
 The **`Project name:`** line answers the next question: is what I would find there still mine. Every resource this project provisions leads with the root config's `name` (`docs/NAMING.md`), and teardown *recomputes* those names rather than scanning for them — so one edit to `name` orphans everything while every command keeps exiting 0. Doctor requires positive evidence before it says so, because `<app>-<env>-<resource>` is also the ordinary Cloudflare convention and a database you brought with you is not an orphan. Two states fail the exit: **drifted**, where the wiring contradicts the config wholesale (every declared name leads with one and the same other project, and the configured name appears nowhere — the only shape a one-string rename can leave), and **orphaned**, where a database's `pithy_migrations_owner` stamp proves Pithy created it under another project's name. Neither state ever advises deleting a resource. A single foreign name, a mix, an unset name, and an unreadable `wrangler.jsonc` all pass — none of them establishes anything.
 
-Both lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
+The **`Dev login:`** line names the one config file that is per project rather than per machine: `dev.json`, the opt-in that makes `pithy seed` mint a real session instead of leaving you a magic link (`docs/SEED.md`). It sits with `Config dir:` and `State file:` because it answers the same question they do, and it is here because until recently it could not be: the file was resolved against a second, unrelated config root — and on Windows against no valid root at all — so this block named a directory that did not contain it and a developer whose dev login was not working looked there and found nothing. The line reports the resolved path whether or not the file exists, because where it *would* go is most of what anyone asking needs. **No file is not a fault** — magic-link-only is the documented default, and it never gates. A file that will not parse does, and so does one naming no user: `pithy seed` reads an unparseable `dev.json` as an absence, silently, so nothing else in the toolchain would ever mention it. It reports the user the file names and never claims that user is seeded — doctor runs no seed, so it has not established that, and the seed itself already refuses loudly on a name it does not create.
+
+The two name lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
+
+A **`Worker names:`** block appears when a Worker's three names stop agreeing — its `apps/<dir>`, the deployed script name in its `wrangler.jsonc`, and its `vars.WORKER`. It is the hand-rename check: `git mv apps/api apps/board` and one forgotten edit leaves a Worker deploying under one name and stamping its audit events with another, and nothing else in the toolchain notices. Shown per Worker, one line per stamp that disagrees, and it **fails the exit** — the contradiction is between this repo's own directory and its own config, so it is established from local files alone and no account is consulted. Held to the same evidence bar as `Project name:`: a script name that was never composed from `<project>-<worker>` was brought in from somewhere, not renamed, and passes. `pithy worker rename` (§6.6) is what moves all three at once.
 
 When everything is up to date, the output is correspondingly terser:
 
@@ -899,7 +924,7 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 
 ### 6.1 What it does
 
-- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.autostart` (does this worker need to run for the local env to function?), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. It starts exactly the `autostart` workers. Add or remove a worker with `pithy worker add|remove` and the dev set follows automatically.
+- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.autostart` (does this worker need to run for the local env to function?), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. It starts exactly the `autostart` workers. Add, remove, or rename a worker with `pithy worker add|remove|rename` and the dev set follows automatically.
 - **Runs a front end as part of the set.** A Worker scaffolded by `pithy ui add` (Section 7) does not get a second process. Its `dev.command` replaces `wrangler dev` with Vite, and Vite serves the SPA *and* the Worker on that worker's one pinned port. The command is argv, and the token **`{port}`** in any argument is substituted with that port at spawn time: `["bun", "x", "vite", "dev", "--configLoader", "runner", "--strictPort", "--port", "{port}"]` runs as `bun x vite dev --configLoader runner --strictPort --port 8787`. `{port}` is the only token substituted.
 - **Supervises N workers.** Spawns each autostart worker, labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Section 6.3), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
@@ -983,6 +1008,44 @@ A feature environment *is* an environment, so `f<issue>-<slug>` simply occupies 
 
 All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): labeled lines, deliberate periods, no celebration. The ready banner is information, not confetti.
 
+### 6.5 App-declared Workflows (`pithy worker sync`)
+
+```
+pithy worker sync [--worker <name>] [--env <environment>] [--json]
+```
+
+A library capability's Workflows are provisioned: `pithy <capability> provision` deploys the host Worker and writes the cross-script binding into the app's `wrangler.jsonc`. A Workflow the **adopter's own app capability** declares had no such path, so its `workflows` array, its `triggers.crons`, and the repetition of both across every environment were written by hand — against `<project>-<env>-<capability>-<job>` and Cloudflare's segment rule, neither of which fails until deploy.
+
+`pithy worker sync` writes them. It reads the Worker's `app` capability, derives each job's name through the same helper the kit uses for a library capability's, and reconciles the result into `wrangler.jsonc`: the top-level stanza and every `env.<name>` the Worker already declares, or just the one `--env` names. It touches no Cloudflare account and runs no deploy.
+
+Three rules govern what it writes:
+
+- **The app's entries are replaced, not merged.** A job renamed or dropped leaves. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched.
+- **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler and it starts *every* job that declares a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is every job running again at a time nobody asked for.
+- **The class stays yours.** Cloudflare resolves `class_name` in the script the binding names, so the `WorkflowEntrypoint` subclass has to be exported from the Worker's `main`. That is five lines written once; the command names the classes it expects.
+
+Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change reports that nothing moved, and a stanza wrangler would reject aborts the run rather than leaving half a config behind.
+
+### 6.6 Renaming a worker (`pithy worker rename`)
+
+```
+pithy worker rename <old> <new> [--force] [--json]
+```
+
+**A worker's name is not one string. It is three, and they have to agree.**
+
+- the directory, `apps/<name>/`, which tsconfig references and CI `working-directory` keys point at;
+- the deployed script name, in `wrangler.jsonc` and the worker's `package.json`;
+- `vars.WORKER`, which is what tells two Workers' audit events apart when they share a database.
+
+Renamed by hand — `git mv`, then the edits — whichever one is missed fails quietly, and in the worst shape a failure takes: the Worker deploys under one name and stamps its events with another, so the audit trail names a Worker that did not act. `pithy worker rename` moves all three at once, comment-preserving, holding the new name to the same kebab-case rule `pithy worker add` holds a new one to and refusing a destination that already exists.
+
+Two things it deliberately leaves alone. The **app capability's `name`** in `pithy.config.ts` is a migration namespace, stamped into every applied migration's row — moving it orphans the ledger and re-runs every migration under a name the database has never seen. And a **script name the adopter chose**: `<project>-<worker>` is what the scaffold writes, so only a name carrying the worker segment is recomputed. A Worker migrated in as `my-service` keeps its name, and the command says so.
+
+**A rename after a deploy is not a rename.** Resource names are computed rather than stored, so `<project>-<env>-<binding>` survives untouched — but the Worker script is named for the worker, so a renamed worker deploys as a *new* script and leaves the old one live, serving, and billing. So the account is asked first, and a live script under the old name is refused by name. `--force` is how you say it is understood; the report then names exactly what was left behind. Where the account cannot be reached — no credentials, an offline laptop, a token that will not list — the rename proceeds and says it did not check. It never reports an unchecked account as a clear one.
+
+What it does not touch is everything outside the worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run (§5.6), so a hand-rename that misses one fails CI instead of a deploy.
+
 ---
 
 ## 7. Front ends (`pithy ui`)
@@ -993,7 +1056,7 @@ All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): label
 
 ```
 pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--json]
-pithy ui sync [--worker <name>] [--json]
+pithy ui sync [--worker <name>] [--check] [--json]
 pithy ui list [--json]
 ```
 
@@ -1001,6 +1064,7 @@ pithy ui list [--json]
 |---|---|---|---|
 | `<framework>` | `add` | required | The stub to scaffold. `react` is the only stub Pithy ships |
 | `--worker <name>` | `add`, `sync` | resolved — see 7.2 | The Worker under `apps/` to scaffold into, or to re-derive |
+| `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
 | `--auth` / `--no-auth` | `add` | see 7.3 | Scaffold the sign-in screens, or leave them out |
 | `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set |
 
@@ -1036,6 +1100,8 @@ Every file is written **only if it does not already exist**. `pithy ui add` neve
 | `vite.config.ts` | always | `cloudflare()` + `react()` + `pithy()` |
 | `tsconfig.client.json` | always | The client program — jsx + DOM, covering `src/**/*.tsx` and `client-env.d.ts` |
 | `tsconfig.node.json` | always | The config program — `types: ["node"]`, covering `vite.config.ts` |
+
+Both are `composite`, because both are referenced from the project's root `tsconfig.json` (Section 1.3), and each names a `.tsbuildinfo` under the **project's** `dist/` — never this Worker's, which Vite empties on every build.
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
 | `src/client.tsx` | always | The SPA entry |
 | `src/router.tsx` | always | The two-glob router and its route guard |
@@ -1055,7 +1121,7 @@ Two structural rules the stub depends on, worth knowing before you move a file:
 
 ### 7.5 What it wires
 
-Three files are edited.
+Four files are edited.
 
 **`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
 
@@ -1064,7 +1130,7 @@ Three files are edited.
 
 `assets.directory` is **not** written. Under the Vite plugin the directory is the plugin's to set — it overwrites the key silently rather than erroring, so a value there would be a lie in the adopter's own config.
 
-The array form of `run_worker_first` also turns off Cloudflare's automatic `Sec-Fetch-Mode: navigate` detection, which is the point: `not_found_handling` then applies only to requests no worker-first pattern matched, so an API route can never be answered with the SPA shell.
+The array form of `run_worker_first` is what sets `has_static_routing`, and that is the whole mechanism. With it, `not_found_handling` applies to every request no worker-first pattern matched — so a listed route always reaches the Worker, and an unlisted one always gets the SPA shell, whatever the method. Without it, the asset worker overrides `not_found_handling` to `"none"` for every request that is not a `Sec-Fetch-Mode: navigate` navigation, which sends `fetch` and `curl` to the Worker and still hands the shell to a magic-link click or an OAuth callback. Both halves of that trade are silent 200s; the list is the half that can be checked, and `pithy ui sync --check` is what checks it (7.6).
 
 **`pithy.worker.jsonc` — the `dev` and `ui` blocks.**
 
@@ -1077,13 +1143,27 @@ The array form of `run_worker_first` also turns off Cloudflare's automatic `Sec-
 
 `dev.command` is what joins the front end to the dev set (Section 6.1), `{port}` and all. `--strictPort` is not optional: without it Vite silently increments off a busy port, and a worker that quietly moves breaks every sibling that was told its address at creation. `ui.stub` records which stub was scaffolded — it is what makes a second `ui add` on the same Worker an error, and what tells `ui add --auth` it is backfilling a scaffold rather than starting one. `ui.build` is argv run through the adopter's package manager before `wrangler deploy`, so a UI-bearing Worker never ships a stale client. `pithy deploy --env <name>` sets `ENVIRONMENT` for that build, which is what makes a capability's per-environment client values — a Turnstile sitekey, say — resolve for the environment being shipped rather than for `dev`. Both commands carry `--configLoader runner`, and that is load-bearing rather than a preference: Vite's default config loader bundles `vite.config.ts` and leaves `@pithy-sh/vite` external, which asks Node to import raw TypeScript with extensionless relative imports — Node cannot resolve those, and refuses to strip types under `node_modules` at all. The runner loads the config through Vite's own resolver, where both are ordinary.
 
-**`package.json` — the client dependencies and the scripts that run them.** React, the Vite plugins, and `@pithy-sh/vite`, at the versions listed in `docs/UI.md`. Written at scaffold; `pithy ui` never revisits them.
+**`package.json` — the client dependencies and the scripts that run them.** React, the Vite plugins, and `@pithy-sh/vite`, at the versions listed in `docs/UI.md`. Written at scaffold; `pithy ui` never revisits them. A `@pithy-sh/*` package a linked checkout already provides is left out of `devDependencies` — it resolves without a range, and a range naming a version the registry does not have would break the next install. `devDependencies` in the `--json` result names only what was written, so that run omits it there too.
+
+**The project's root `tsconfig.json` — the client's two programs, appended to `references`.** A program nothing references is a program nothing checks, and `pithy ui add` used to leave exactly that: two tsconfigs beside the Worker's, both invisible to `bun run typecheck`. They are appended after the Worker's own, so `tsc -b` reports in layout order, and a re-run adds nothing. **Extended, never created** — a project scaffolded before Section 1.3 existed has Workers whose programs are not `composite`, and `tsc -b` refuses a reference to one of those outright, so writing the file would hand that adopter a typecheck that cannot pass.
 
 ### 7.6 `pithy ui sync`
 
-`run_worker_first` is derived from the route table, and the route table changes when the Worker's capabilities do. `pithy ui sync` re-derives it and rewrites that one key. Run it after `pithy add <capability>` or `pithy remove <capability>` on a Worker that carries a UI — otherwise the new capability's routes are shadowed by the SPA shell, and a removed one's stay allowlisted.
+`run_worker_first` is derived from the route table, and the route table changes whenever a route is mounted: by `pithy add <capability>`, by `pithy remove <capability>`, and by the adopter writing one into their own app capability. **That last one runs no command**, which is how the list goes stale without anyone touching it. `pithy ui sync` re-derives it and rewrites that one key.
 
 `sync` touches nothing else. No file is created, no dependency moves, no scaffolded screen is regenerated. It is idempotent: a run with nothing to change reports that nothing moved.
+
+`--check` writes nothing and reports what the list no longer covers. A shadowed route answers `200 text/html` from the SPA shell with the handler never invoked, and no adopter test suite sees it — tests call handlers directly, so the asset router is never in the picture. So the check exits non-zero and belongs in CI, beside `pithy doctor`:
+
+```
+$ pithy ui sync --check --worker api
+api: the SPA shell is answering these, not the worker.
+  /api/cli/device/start
+  /api/organisations
+Run pithy ui sync --worker api.
+```
+
+A route the allowlist cannot express is never reported: `core`'s own `app.use("*")`, and a route mounted at `/`, are paths the derivation deliberately leaves to the shell (7.5). A check that flagged them would mark every project drifted forever.
 
 ### 7.7 `--json`
 
@@ -1098,10 +1178,10 @@ $ pithy ui add react --worker api --json
 
 ```
 $ pithy ui sync --worker api --json
-{"command":"ui.sync","worker":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"notFoundHandling":"single-page-application"}
+{"command":"ui.sync","worker":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"uncovered":[],"notFoundHandling":"single-page-application"}
 ```
 
-`before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
+`before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `uncovered` names the routes the list **in the file** does not cover: always empty after a write, and under `--check` it is the finding, the one thing that fails the exit. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
 
 ```
 $ pithy ui list --json
