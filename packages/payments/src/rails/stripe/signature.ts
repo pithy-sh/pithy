@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import {
+  checkSignedWebhook,
+  parseSignedWebhookHeader,
+  type SignedWebhookHeader,
+  type SignedWebhookRefusal,
+} from "@pithy-sh/core/src/http/signedWebhook";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 
 /**
@@ -9,33 +15,35 @@ import { PaymentsVerificationFailedError } from "../../error/errors";
  * `Stripe-Signature: t=1768435200,v1=5257a8…` — the timestamp the delivery claims, then one hex HMAC-SHA256 per
  * active signing secret, each computed over `<timestamp>.<body>` and keyed with the endpoint's `whsec_…`.
  *
- * ## Why the timestamp is checked, and why it cannot be bypassed
+ * ## Why the scheme itself is not here
  *
- * A signature with no freshness window is valid forever: anybody who captures one delivery can replay it for as
- * long as the secret lives. For payments that is not abstract — a captured `customer.subscription.updated` replayed
- * months later is a state claim about a subscription that has since lapsed, and the projection's monotonic rule
- * would correctly ignore it *only because* the stored event time is newer. Relying on that would make the window a
- * happy accident of another rule.
+ * It is `@pithy-sh/core`'s `signed-webhook` primitive, and this module is one of its callers. Stripe's format is
+ * the one every other sender copied, so the kit implements it once — the freshness window in both directions, the
+ * timestamp inside the signed payload, `crypto.subtle.verify` instead of a hand-written compare, every listed
+ * signature tried, and a cap on how many. Each of those is a security property with a reason written down beside
+ * it, and a second copy here would be a second set of reasons to keep in step: a parser fix landing in one and
+ * not the other, with money on the side that missed it.
  *
- * So the tolerance is enforced here, and it is real because **the timestamp is inside the signed payload**. Re-dating
- * a captured delivery to escape the window invalidates its own signature, which is why this is a boundary rather
- * than a suggestion. Five minutes is Stripe's own default and is generous against delivery latency and clock skew.
- * The window is checked in both directions: a timestamp far in the future is a clock problem or a crafted one, and
- * neither is a delivery to act on.
+ * What stays is what is Stripe's: the header name, the accepted scheme key, the tolerance, and the wording of a
+ * refusal.
  *
- * ## Why the comparison is `crypto.subtle.verify`
+ * ## Why the window matters to this rail in particular
  *
- * Comparing HMACs with `===` leaks how many leading bytes matched, and a leak like that is enough to forge a
- * signature one byte at a time given enough attempts. WebCrypto's `verify` does the comparison itself, in constant
- * time, in the platform — so the constant-time requirement is met by not hand-writing the compare at all. Every
- * listed `v1` is tried, because Stripe lists one per active secret while an endpoint's secret is being rotated, and
- * refusing a delivery whose second signature matched would drop every event for the length of the rotation.
+ * A captured `customer.subscription.updated` replayed months later is a state claim about a subscription that has
+ * since lapsed. The projection's monotonic rule would correctly ignore it *only because* the stored event time is
+ * newer — and relying on that would make the window a happy accident of another rule. Five minutes is Stripe's own
+ * default and is generous against delivery latency and clock skew.
+ *
+ * Freshness is not uniqueness. Inside the window a captured delivery replays as often as it is sent, which is what
+ * the guard's `UNIQUE (rail, providerEventId)` insert is for.
  *
  * ## What a refusal says
  *
  * `payments/verification_failed`, with the reason in `detail` and nothing else. Never the secret, never the body,
  * never the signature: `detail` reaches an operator's log, and the webhook guard maps this to
  * `payments/webhook_unverified` (401) before anything reaches the sender — a forger learns only that it failed.
+ * That code is this rail's contract with its guard, which is why verification goes through the primitive's
+ * reporting seam rather than its throwing one.
  */
 
 /** The header Stripe puts its proof in. Lower case, because that is how Hono presents a header name. */
@@ -47,19 +55,14 @@ export const STRIPE_SIGNATURE_TOLERANCE_SECONDS = 300;
 /** The one signature scheme this build accepts. `v0` is Stripe's thin-event variant and proves nothing here. */
 const ACCEPTED_SCHEME = "v1";
 
-/** HMAC-SHA256 — the only algorithm Stripe signs a webhook with. Pinned as a literal, never read from input. */
-const HMAC_SHA256 = { name: "HMAC", hash: "SHA-256" } as const;
+/** The timestamp key Stripe writes. The primitive's default, named here so this file states its own format. */
+const TIMESTAMP_KEY = "t";
 
-/** The byte length of an HMAC-SHA256 signature. A candidate of any other length cannot be one. */
-const SIGNATURE_BYTES = 32;
-
-/** A parsed `Stripe-Signature` header: when the delivery says it was signed, and with what. */
-export interface StripeSignatureHeader {
-  /** The `t` value, in seconds since the epoch. Part of the signed payload as well as of the header. */
-  timestamp: number;
-  /** Every `v1` value, in the order listed. One per active signing secret during a rotation. */
-  signatures: readonly string[];
-}
+/**
+ * A parsed `Stripe-Signature` header: when the delivery says it was signed, and with what. The primitive's
+ * shape under this rail's name — the format is Stripe's, the parser is the kit's.
+ */
+export type StripeSignatureHeader = SignedWebhookHeader;
 
 /** What verification needs beyond the bytes: the clock, and how wide the freshness window is. */
 export interface VerifyStripeSignatureOptions {
@@ -81,26 +84,7 @@ export interface VerifyStripeSignatureOptions {
  * else it carries. A header carrying *only* unknown schemes has proved nothing, so it yields undefined.
  */
 export function parseStripeSignatureHeader(header: string): StripeSignatureHeader | undefined {
-  let timestamp: number | undefined;
-  const signatures: string[] = [];
-
-  for (const part of header.split(",")) {
-    const separator = part.indexOf("=");
-    if (separator < 0) continue;
-    const key = part.slice(0, separator).trim();
-    const value = part.slice(separator + 1).trim();
-    if (key === "t") {
-      // A decimal integer and nothing else. `Number("")` is 0 and `Number("1.5")` is a float, and both would
-      // otherwise pass into the window comparison as a plausible-looking date.
-      if (!/^\d+$/.test(value)) return undefined;
-      timestamp = Number(value);
-    } else if (key === ACCEPTED_SCHEME) {
-      signatures.push(value);
-    }
-  }
-
-  if (timestamp === undefined || signatures.length === 0) return undefined;
-  return { timestamp, signatures };
+  return parseSignedWebhookHeader(header, TIMESTAMP_KEY, ACCEPTED_SCHEME);
 }
 
 /**
@@ -113,50 +97,31 @@ export async function verifyStripeSignature(
   secret: string,
   options: VerifyStripeSignatureOptions,
 ): Promise<void> {
-  const parsed = header === null ? undefined : parseStripeSignatureHeader(header);
-  if (parsed === undefined) {
-    throw new PaymentsVerificationFailedError({
-      detail: "Stripe: the delivery carries no readable Stripe-Signature header with a t= timestamp and a v1= HMAC.",
-    });
-  }
-
-  const tolerance = options.toleranceSeconds ?? STRIPE_SIGNATURE_TOLERANCE_SECONDS;
-  const skew = Math.abs(Math.floor(options.now.getTime() / 1000) - parsed.timestamp);
-  if (skew > tolerance) {
-    throw new PaymentsVerificationFailedError({
-      detail: `Stripe: the delivery is dated ${skew}s from now, outside the ${tolerance}s tolerance. Check this Worker's clock, or a replayed delivery.`,
-    });
-  }
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret) as unknown as ArrayBuffer,
-    HMAC_SHA256,
-    false,
-    ["verify"],
-  );
-  const signed = new TextEncoder().encode(`${parsed.timestamp}.${body}`) as unknown as ArrayBuffer;
-
-  for (const candidate of parsed.signatures) {
-    const bytes = hexBytes(candidate);
-    // A candidate that is not 32 bytes of hex cannot be an HMAC-SHA256, so it is skipped rather than refused —
-    // another entry in the same header may still be the good one.
-    if (bytes === undefined || bytes.length !== SIGNATURE_BYTES) continue;
-    if (await crypto.subtle.verify(HMAC_SHA256.name, key, bytes as unknown as ArrayBuffer, signed)) return;
-  }
-
-  throw new PaymentsVerificationFailedError({
-    detail:
-      "Stripe: no signature in the Stripe-Signature header matches these bytes under the configured signing secret. Check that the secret belongs to this endpoint and this environment.",
+  const refusal = await checkSignedWebhook(body, header, {
+    header: STRIPE_SIGNATURE_HEADER,
+    timestampKey: TIMESTAMP_KEY,
+    signatureKey: ACCEPTED_SCHEME,
+    secret,
+    toleranceSeconds: options.toleranceSeconds ?? STRIPE_SIGNATURE_TOLERANCE_SECONDS,
+    now: options.now,
   });
+  if (refusal === undefined) return;
+  throw new PaymentsVerificationFailedError({ detail: stripeRefusal(refusal) });
 }
 
-/** Decode lower- or upper-case hex, or `undefined` when it is not hex at all. */
-function hexBytes(value: string): Uint8Array | undefined {
-  if (value.length === 0 || value.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(value)) return undefined;
-  const bytes = new Uint8Array(value.length / 2);
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+/**
+ * This rail's wording for the primitive's three refusals.
+ *
+ * Prefixed `Stripe:` because a payments Worker composes several rails and `detail` is what an operator reads to
+ * find out which one refused. The strings say what failed and what to check, and nothing the delivery carried.
+ */
+function stripeRefusal(refusal: SignedWebhookRefusal): string {
+  switch (refusal.reason) {
+    case "unreadable":
+      return "Stripe: the delivery carries no readable Stripe-Signature header with a t= timestamp and a v1= HMAC.";
+    case "stale":
+      return `Stripe: the delivery is dated ${refusal.skew}s from now, outside the ${refusal.tolerance}s tolerance. Check this Worker's clock, or a replayed delivery.`;
+    case "unmatched":
+      return "Stripe: no signature in the Stripe-Signature header matches these bytes under the configured signing secret. Check that the secret belongs to this endpoint and this environment.";
   }
-  return bytes;
 }

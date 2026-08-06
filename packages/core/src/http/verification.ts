@@ -13,7 +13,11 @@ export const VerificationStrategy = z
   .union([
     z.literal("bearer").describe("Short-lived access token via Authorization: Bearer; validated by @pithy-sh/auth."),
     z.literal("session").describe("Cookie-based web session, CSRF-protected; validated by @pithy-sh/auth."),
-    z.literal("signed-webhook").describe("Inbound webhook authenticated by an HMAC signature over the payload."),
+    z
+      .literal("signed-webhook")
+      .describe(
+        "Inbound webhook authenticated by a timestamped HMAC signature over the exact received bytes; implemented by `requireSignedWebhook` (./signedWebhook).",
+      ),
     z.literal("control-plane").describe("M2M admin via a customer-issued scoped credential; default-denied."),
     z.literal("public").describe("No authentication — the route is open. Must be a deliberate choice."),
   ])
