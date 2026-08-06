@@ -10,7 +10,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
-import type { MediaSeedItem, R2SeedItem } from "@pithy-sh/core/src/seed/seed";
+import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
 import type { ZodType } from "zod";
@@ -36,6 +36,7 @@ import {
 } from "./drivers";
 import { type MediaFs, type MediaUploader, type SeedMediaResult, seedMediaItem } from "./media";
 import { buildDryRunPlan, type SeedPlanMediaAction, type SeedPlanSet } from "./plan";
+import { devSecretReader, readDevPreferences, writeSeedArtifact } from "./prepare";
 import { buildSeedPlan } from "./registry";
 import { assertResetConfirmed, assertSeedConfirmed, assertSetAllowedForEnv } from "./safety";
 
@@ -126,6 +127,16 @@ export interface SeedProjectOptions {
   mediaFs?: MediaFs;
   /** Test seam: the byte uploader media seeding mints through, overriding the driver-built default. */
   mediaUploader?: MediaUploader;
+  /**
+   * Seam: read the developer's machine-local preferences, handed to every prepared set. Defaults to
+   * `$XDG_CONFIG_HOME/<project>/dev.json`. Read once per run, so one hand-edited file cannot be observed
+   * in two states by two Workers of the same fan-out.
+   */
+  preferences?: () => Promise<unknown>;
+  /** Seam: resolve a secret for a prepared set. Defaults to the project's `.dev.vars` — local dev's own store. */
+  secret?: (name: string) => Promise<string | undefined>;
+  /** Seam: write a prepared set's artifact. Defaults to the project's gitignored `logs/`. */
+  writeArtifact?: (artifact: SeedArtifact) => Promise<void>;
 }
 
 /** One Worker's slice of a seed run: what its own capabilities' fixtures wrote, and what they didn't. */
@@ -552,11 +563,12 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     await audit({ ...auditEvent, outcome: "success" });
   }
 
+  const prepareSeams = preparedRun(options);
   const reports: SeedWorkerReport[] = [];
   for (const entry of composed) {
     reports.push({
       worker: entry.worker.name,
-      sets: entry.sets.length > 0 ? await writeWorker(entry, options) : [],
+      sets: entry.sets.length > 0 ? await writeWorker(entry, options, prepareSeams) : [],
       skippedByEnv: entry.skippedByEnv,
       shared: entry.shared,
     });
@@ -571,13 +583,44 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
   };
 }
 
+/** The machine-side seams a prepared set runs against, resolved once per run and shared by the fan-out. */
+interface PreparedRun {
+  /** The developer's preferences, read lazily and at most once — no prepared set, no filesystem read. */
+  preferences: () => Promise<unknown>;
+  /** Resolve a secret by name. */
+  secret: (name: string) => Promise<string | undefined>;
+  /** Write one artifact. */
+  writeArtifact: (artifact: SeedArtifact) => Promise<void>;
+}
+
+/** Bind the prepared-set seams to this run, defaulting each to the real machine. */
+function preparedRun(options: SeedProjectOptions): PreparedRun {
+  const read = options.preferences ?? (() => readDevPreferences(options.project));
+  // Memoized, so two Workers in one fan-out cannot observe one hand-edited file in two states — and so a
+  // run with no prepared set never reads it at all.
+  let pending: Promise<unknown> | undefined;
+  return {
+    preferences: () => (pending ??= read()),
+    secret: options.secret ?? devSecretReader(options.projectDir),
+    writeArtifact:
+      options.writeArtifact ??
+      (async (artifact) => {
+        await writeSeedArtifact(options.projectDir, artifact);
+      }),
+  };
+}
+
 /**
  * Write one Worker's sets. The driver resolves that Worker's own bindings from its own `wrangler.jsonc`,
  * while local persistence stays at the project root, so Workers sharing a binding write to one store.
  * Opened only when the Worker has something to write — a Worker with no fixtures never builds a
  * Miniflare instance and never reaches for credentials.
  */
-async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): Promise<SeedPlanSet[]> {
+async function writeWorker(
+  entry: ComposedWorker,
+  options: SeedProjectOptions,
+  prepared: PreparedRun,
+): Promise<SeedPlanSet[]> {
   const driver = await openSeedDriver({
     workerDir: entry.worker.dir,
     persistRoot: options.projectDir,
@@ -599,7 +642,20 @@ async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): 
       assertSetAllowedForEnv(resolved.set, options.env);
       const setReport: SeedPlanSet = { name: resolved.key, d1: [], kv: [], r2: [], media: [] };
 
-      for (const group of resolved.set.d1 ?? []) {
+      // Late-bound fixtures, computed against this run before anything of this set is written. The groups
+      // it returns go through the identical validated path below — a prepared row is not a privileged row.
+      const preparation = resolved.set.prepare
+        ? await resolved.set.prepare({
+            env: options.env,
+            project: options.project,
+            secret: prepared.secret,
+            preferences: await prepared.preferences(),
+          })
+        : undefined;
+      const d1Groups: readonly D1SeedGroup[] = [...(resolved.set.d1 ?? []), ...(preparation?.d1 ?? [])];
+      const kvGroups: readonly KvSeedGroup[] = [...(resolved.set.kv ?? []), ...(preparation?.kv ?? [])];
+
+      for (const group of d1Groups) {
         const dbGroup = databaseGroup(databases, group.database);
         const schema = tableSchema(dbGroup.items, group.database, group.table);
         const db = createDatabase(driver.d1(dbGroup.binding), dbGroup.items);
@@ -607,7 +663,7 @@ async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): 
         setReport.d1.push({ database: group.database, table: result.table, rows: result.rows });
       }
 
-      for (const group of resolved.set.kv ?? []) {
+      for (const group of kvGroups) {
         const nsGroup = namespaces[group.namespace];
         if (!nsGroup) {
           throw new ValidationError({
@@ -646,6 +702,10 @@ async function writeWorker(entry: ComposedWorker, options: SeedProjectOptions): 
         if (item.record && result.id !== undefined) await writeMediaRecord(driver, databases, item.record, result.id);
         setReport.media.push(mediaEntry(result));
       }
+
+      // Last, and only now: a run artifact describes rows that have landed. Written before the writes, a
+      // failed seed would leave behind a file promising a session that does not exist.
+      for (const artifact of preparation?.artifacts ?? []) await prepared.writeArtifact(artifact);
 
       reportSets.push(setReport);
     }

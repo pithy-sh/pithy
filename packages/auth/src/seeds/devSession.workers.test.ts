@@ -1,0 +1,114 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { env } from "cloudflare:test";
+import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
+import type { D1SeedGroup } from "@pithy-sh/core/src/seed/seed";
+import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
+import { beforeEach, expect, test } from "vitest";
+import { Session, User } from "../data/betterAuth";
+import { authDatabase, authTables } from "../data/tables";
+import { type AuthEmailMessage, makeAuth } from "../instance/auth";
+import { AUTH_SESSION_SECRET } from "../instance/secrets";
+import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME } from "./devSession";
+import { authExampleSeed } from "./example";
+
+const SECRET = "dev-secret-please-rotate-000000000000";
+
+async function migrate(): Promise<void> {
+  const provider = createMigrationRegistry([
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+  ]).app;
+  if (!provider) throw new Error('expected a provider for database "app"');
+  await runMigrations(env.DB, provider);
+}
+
+/** Write a seed group through the same validated writer `pithy seed` uses. */
+async function write(group: D1SeedGroup, schema: typeof User | typeof Session): Promise<void> {
+  await seedD1Group(createDatabase(env.DB, authTables), group, schema);
+}
+
+/** Build an auth instance on the seeded database, with the same secret the seed signed with. */
+function instance(secret = SECRET) {
+  const mailbox: AuthEmailMessage[] = [];
+  return makeAuth({
+    db: authDatabase(env.DB),
+    secret,
+    baseURL: "http://localhost:8787",
+    basePath: "/api/auth",
+    trustedOrigins: ["http://localhost:8787"],
+    sendEmail: async (message) => void mailbox.push(message),
+    sessionExpiresIn: 60 * 60 * 24 * 7,
+    sessionUpdateAge: 60 * 60 * 24,
+    verificationExpiresIn: 300,
+    otpLength: 6,
+    disableSignUp: false,
+    emit: async () => {},
+  });
+}
+
+/** Run the two auth seed sets the way `pithy seed` does: users first, then the dev session. */
+async function seedDevLogin(user: string) {
+  for (const group of authExampleSeed.d1 ?? []) await write(group, User);
+  const hook = authDevSessionSeed.prepare;
+  if (!hook) throw new Error("the dev-session set must declare a prepare hook");
+  const prepared = await hook({
+    env: "dev",
+    project: "acme",
+    secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
+    preferences: { user },
+  });
+  for (const group of prepared.d1 ?? []) await write(group, Session);
+  return prepared;
+}
+
+beforeEach(async () => {
+  for (const table of [
+    "pithy_auth_accounts",
+    "pithy_auth_devices",
+    "pithy_auth_jwks",
+    "pithy_auth_rate_limit",
+    "pithy_auth_rotated_tokens",
+    "pithy_auth_sessions",
+    "pithy_auth_users",
+    "pithy_auth_verifications",
+    "pithy_migrations",
+    "pithy_migrations_lock",
+  ]) {
+    await env.DB.prepare(`drop table if exists ${table}`).run();
+  }
+  await migrate();
+});
+
+test("Better Auth accepts the seeded cookie as a real session", async () => {
+  const prepared = await seedDevLogin(EXAMPLE_ADA.email);
+  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+
+  const session = await instance().api.getSession({
+    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
+  });
+
+  expect(session?.user.email).toBe(EXAMPLE_ADA.email);
+  expect(session?.user.id).toBe(EXAMPLE_ADA.id);
+});
+
+test("the cookie name matches the one this Better Auth version reads", async () => {
+  const context = await instance().$context;
+  expect(context.authCookies.sessionToken.name).toBe(DEV_SESSION_COOKIE_NAME);
+});
+
+test("a cookie signed with the previous secret is rejected after a rotation", async () => {
+  const prepared = await seedDevLogin(EXAMPLE_ADA.email);
+  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+
+  const session = await instance(`${SECRET}-rotated`).api.getSession({
+    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
+  });
+
+  expect(session).toBeNull();
+});

@@ -17,6 +17,7 @@ import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import { authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
+import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
 
@@ -202,7 +203,8 @@ export function auth(config: AuthConfigInput): AuthCapability {
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
     // from the manifest 404s against exactly the adopters who customised anything.
     adminRoutes: authAdminRoutes(resolved.basePath),
-    seeds: [authExampleSeed],
+    // Order matters here too: the example set creates the users, the dev-session set signs one of them in.
+    seeds: [authExampleSeed, authDevSessionSeed],
   });
 
   return Object.assign(capability, { authConfig: resolved });

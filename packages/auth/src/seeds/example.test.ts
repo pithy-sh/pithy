@@ -35,9 +35,9 @@ describe("auth() with seed.includeExamples", () => {
     const withoutExamples = composeSeeds([capability], { env: "dev", includeExamples: false });
     expect(withoutExamples.sets).toHaveLength(0);
 
+    // Two: the users, then the dev session that signs one of them in — in that order.
     const withExamples = composeSeeds([capability], { env: "dev", includeExamples: true });
-    expect(withExamples.sets).toHaveLength(1);
-    expect(withExamples.sets[0]?.key).toContain("auth");
+    expect(withExamples.sets.map((set) => set.key)).toEqual(["0100_auth_example", "0110_auth_dev-session"]);
   });
 
   it("never composes the example set for production, even with includeExamples on", () => {

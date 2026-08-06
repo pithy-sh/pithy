@@ -6,6 +6,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
 import {
   buildDevConfig,
@@ -21,6 +22,7 @@ import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { dim, workerColor } from "../terminal/style";
+import { devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
 import { buildWorkerEnv, startCommand, type WranglerLauncher } from "./env";
 import { type DataStream, teeStream } from "./logging";
 import {
@@ -91,6 +93,8 @@ export interface StartDevOptions {
   launchWrangler?: WranglerLauncher;
   hasSetsid?: boolean;
   stdout?: (text: string) => void;
+  /** Seam: the seeded dev login the ready banner offers, if `pithy seed` wrote one. */
+  readDevLogin?: (projectDir: string) => Promise<DevLogin | undefined>;
   openLog?: (path: string) => LogSink;
   baseEnv?: NodeJS.ProcessEnv;
   now?: () => Date;
@@ -256,6 +260,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const sleep = options.sleep ?? realSleep;
   const hasSetsid = options.hasSetsid ?? process.platform !== "win32";
   const stdout = options.stdout ?? ((text: string) => void process.stdout.write(text));
+  const readDevLogin = options.readDevLogin ?? readDevLoginDefault;
   const openLog = options.openLog ?? openLogDefault;
   const now = options.now ?? (() => new Date());
   const readState = options.readState ?? readDevState;
@@ -329,6 +334,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   // 6. Open the log, wire the shared env, and spawn.
   const logPath = join(projectDir, "logs", "dev.log");
+  // Read before anything spawns, so the banner never waits on the disk once the workers are up.
+  const devLogin = await readDevLogin(projectDir);
   const log = openLog(logPath);
   log.write(
     `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
@@ -360,6 +367,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     if (!options.json) {
       emitLine("Ready.");
       for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
+      // The banner is the discovery mechanism. A seeded session nobody finds has removed no friction, and
+      // the line below is the only place a developer reliably looks after `pithy dev`.
+      for (const line of devLoginLines(devLogin, now())) emitLine(line);
       emitLine(dim(`logs → ${logPath}`));
     }
     for (const s of started) log.write(`ready: ${s.worker.name} ${s.origin}`);

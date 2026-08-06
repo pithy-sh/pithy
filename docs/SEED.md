@@ -131,6 +131,52 @@ The one standard key today is `pithyEnv` — the environment the asset was creat
 
 This convention is not specific to seeding — it is the account-wide rule for any write to a shared Images or Stream store. Seeded assets are simply its first consumer. The reason it matters: it is what lets a staging teardown find and remove only staging's assets, never touching anything a production write created. Keep relying on `pithyEnv` (and any future standard key) rather than inventing a parallel scheme per capability.
 
+## Late-bound fixtures: `prepare`
+
+A fixture is normally a literal. Some cannot be — a row that has to agree with a value the running app will verify, like a signed cookie or an id derived from a secret, is not knowable when the module is written.
+
+A set may declare a `prepare` hook for exactly that. It runs once per Worker, immediately before that set's static rows are written, and returns more of the same groups plus any transient files:
+
+```ts
+defineSeed({
+  name: "dev-session",
+  order: 110,
+  environments: ["dev"],
+  prepare: async (context) => {
+    const secret = await context.secret("auth-session-secret");
+    return {
+      d1: [d1SeedGroup("app", "sessions", Session, [buildSession(secret)])],
+      artifacts: [{ file: "session.json", contents: "…" }],
+    };
+  },
+});
+```
+
+The context is deliberately narrow: `env`, `project`, a `secret(name)` reader, and the developer's machine-local `preferences`. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
+
+- Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
+- `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
+- `secret` resolves from `.dev.vars`, which is where local dev's secrets genuinely live. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
+- A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
+
+### The dev login
+
+`@pithy-sh/auth` ships the first of these. Sign-in is passwordless, so every local sign-in is a magic link — correct in production, a tax in development, and impossible for anything automated.
+
+With `seed.includeExamples` on, `auth`'s `dev-session` set mints a **real** session for a seeded user and writes `logs/dev-login.json`. `pithy dev` reads it and prints, on the ready banner, a line you paste into the browser console to be signed in.
+
+It is opt-in per machine, not per repo. Create `~/.config/<project>/dev.json` (or `$XDG_CONFIG_HOME/<project>/dev.json`):
+
+```json
+{ "user": "ada@example.com" }
+```
+
+No file, no session — the default stays "there is no way in but a magic link". A file naming a user no seed creates fails with the seeded emails rather than quietly seeding nothing.
+
+The cookie is signed the way Better Auth signs its own, and its token is derived from a fingerprint of the auth secret. That makes it deterministic across reseeds — the same cookie keeps working in every worktree once each is seeded — while rotating the secret invalidates every previously seeded cookie for free.
+
+**The file is a live credential** for your local database. It lives under `logs/`, which the starter template gitignores. Do not move it, and do not commit it.
+
 ## The layered env-safety model
 
 Nothing about `pithy seed` trusts a single check. Three independent layers stand between a fixture and a write, and each is enforced at a different point so bypassing one still leaves the others:
