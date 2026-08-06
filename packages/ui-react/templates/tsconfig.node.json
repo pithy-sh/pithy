@@ -12,6 +12,10 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["node"],
+    // Referenced from the project's root tsconfig.json — see tsconfig.client.json for why the build
+    // state lands in the project's `dist/` and not this Worker's.
+    "composite": true,
+    "tsBuildInfoFile": "../../dist/__PITHY_WORKER__.node.tsbuildinfo",
     "noEmit": true
   },
   "include": ["vite.config.ts"]

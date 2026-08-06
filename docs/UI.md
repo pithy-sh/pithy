@@ -53,7 +53,11 @@ apps/api/
   pithy.worker.jsonc         edited  dev block + ui block
   package.json               edited  dependencies + scripts
   tsconfig.json                      the Worker's own program — untouched
+
+../../tsconfig.json          edited  the project's solution file: + the two programs above
 ```
+
+**Both client tsconfigs are `composite`, and both are referenced.** The project's root `tsconfig.json` is a solution file — `"files": []` and a list of `references` that `tsc -b` walks — and `pithy ui add` appends the client's two programs to it. Left unreferenced they compile for nobody: `bun run typecheck` would cover the Worker and none of the client beside it. `composite` is what a reference costs, and it makes tsc write a `.tsbuildinfo`; each names one under the **project's** `dist/`, never `apps/<worker>/dist`, which Vite empties on every build.
 
 **Why `client-env.d.ts` sits at the Worker root and not under `src/`.** The Worker's `tsconfig.json` includes `src/**/*.ts`. That glob does not match `.tsx`, so every client file being `.tsx` is what keeps the client out of the Worker's type program — no edit to the Worker's tsconfig, no DOM types leaking into Workers code. A `.d.ts` under `src/` *would* match, so the ambient declarations live one level up.
 

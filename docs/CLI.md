@@ -86,6 +86,26 @@ Two consequences worth stating outright:
 
 Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
 
+### 1.3 The gates a scaffold ships with
+
+`pithy init` writes the three checks CI needs, not only the two commands a developer runs:
+
+| Script | Runs | Config |
+|---|---|---|
+| `bun run typecheck` | `tsc -b` | `tsconfig.json` — the solution file |
+| `bun run test` | `vitest run` | `vitest.config.ts`, `vitest.workers.config.ts` |
+| `bun run lint` | `biome check .` | `biome.jsonc` |
+
+**The root `tsconfig.json` is a solution file, and it has to be.** It declares `"files": []` and a list of `references`, and `tsc -b` builds each in turn. The programs cannot be merged into one: a Worker needs `@cloudflare/workers-types`, a browser client needs the DOM, and a program carrying both makes `Uint8Array` structurally incompatible with `BufferSource` — which breaks every crypto call in Pithy's own control-plane signing code. Keeping the two type worlds apart is not tidiness; it is the only arrangement that compiles. A fresh project references two programs — `tsconfig.tools.json`, for the configs that run on Node, and `apps/<worker>/tsconfig.json` — and `pithy ui add` appends the client's two.
+
+**`references` requires `composite: true`, and `composite` makes tsc write a `.tsbuildinfo`.** Each program names its own, under the **project's** `dist/`: already covered by the scaffolded `.gitignore`, so no `*.tsbuildinfo` rule is needed, and deliberately not a Worker's `dist/`, which Vite owns and empties on every client build. One file per program, named after its Worker — two composite programs pointing at one build-state file overwrite each other's, and the incremental build goes quietly wrong.
+
+**The Vitest config comes split by runtime.** `*.workers.test.ts` runs inside workerd against a real D1 database and a real KV namespace through Miniflare; every other `*.test.ts` runs in Node. That split is the kit's whole testing argument — a test that mocks D1 proves the mock works — and the Workers half is the fiddly one to wire, which is why it is scaffolded rather than described. Its bindings are declared in `vitest.workers.config.ts`, with a matching `Cloudflare.Env` in `apps/<worker>/src/cloudflare-test.d.ts`; a capability that needs a new one needs it in both.
+
+**Biome formats everything except the two files Pithy rewrites.** `wrangler.jsonc` and `pithy.worker.jsonc` are edited in place by `pithy add`, `pithy ui add`, and `pithy ui sync`, through a comment-preserving writer that puts every array element on its own line. They are still linted; they are not formatted, because formatting a file a tool owns means `bun run lint` fails after every command that touches it.
+
+One gap, stated rather than hidden: `pithy worker add` writes the new Worker's `tsconfig.json` with the same settings `init` gives `apps/api`, but does **not** add it to the solution file. Add the reference yourself, or that Worker's source is typechecked by nothing.
+
 ---
 
 ## 2. The alias system
@@ -1077,6 +1097,8 @@ Every file is written **only if it does not already exist**. `pithy ui add` neve
 | `vite.config.ts` | always | `cloudflare()` + `react()` + `pithy()` |
 | `tsconfig.client.json` | always | The client program — jsx + DOM, covering `src/**/*.tsx` and `client-env.d.ts` |
 | `tsconfig.node.json` | always | The config program — `types: ["node"]`, covering `vite.config.ts` |
+
+Both are `composite`, because both are referenced from the project's root `tsconfig.json` (Section 1.3), and each names a `.tsbuildinfo` under the **project's** `dist/` — never this Worker's, which Vite empties on every build.
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
 | `src/client.tsx` | always | The SPA entry |
 | `src/router.tsx` | always | The two-glob router and its route guard |
@@ -1096,7 +1118,7 @@ Two structural rules the stub depends on, worth knowing before you move a file:
 
 ### 7.5 What it wires
 
-Three files are edited.
+Four files are edited.
 
 **`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
 
@@ -1119,6 +1141,8 @@ The array form of `run_worker_first` is what sets `has_static_routing`, and that
 `dev.command` is what joins the front end to the dev set (Section 6.1), `{port}` and all. `--strictPort` is not optional: without it Vite silently increments off a busy port, and a worker that quietly moves breaks every sibling that was told its address at creation. `ui.stub` records which stub was scaffolded — it is what makes a second `ui add` on the same Worker an error, and what tells `ui add --auth` it is backfilling a scaffold rather than starting one. `ui.build` is argv run through the adopter's package manager before `wrangler deploy`, so a UI-bearing Worker never ships a stale client. `pithy deploy --env <name>` sets `ENVIRONMENT` for that build, which is what makes a capability's per-environment client values — a Turnstile sitekey, say — resolve for the environment being shipped rather than for `dev`. Both commands carry `--configLoader runner`, and that is load-bearing rather than a preference: Vite's default config loader bundles `vite.config.ts` and leaves `@pithy-sh/vite` external, which asks Node to import raw TypeScript with extensionless relative imports — Node cannot resolve those, and refuses to strip types under `node_modules` at all. The runner loads the config through Vite's own resolver, where both are ordinary.
 
 **`package.json` — the client dependencies and the scripts that run them.** React, the Vite plugins, and `@pithy-sh/vite`, at the versions listed in `docs/UI.md`. Written at scaffold; `pithy ui` never revisits them. A `@pithy-sh/*` package a linked checkout already provides is left out of `devDependencies` — it resolves without a range, and a range naming a version the registry does not have would break the next install. `devDependencies` in the `--json` result names only what was written, so that run omits it there too.
+
+**The project's root `tsconfig.json` — the client's two programs, appended to `references`.** A program nothing references is a program nothing checks, and `pithy ui add` used to leave exactly that: two tsconfigs beside the Worker's, both invisible to `bun run typecheck`. They are appended after the Worker's own, so `tsc -b` reports in layout order, and a re-run adds nothing. **Extended, never created** — a project scaffolded before Section 1.3 existed has Workers whose programs are not `composite`, and `tsc -b` refuses a reference to one of those outright, so writing the file would hand that adopter a typecheck that cannot pass.
 
 ### 7.6 `pithy ui sync`
 

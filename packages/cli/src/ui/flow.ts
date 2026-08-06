@@ -10,7 +10,7 @@ import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
 import { loadStubFiles } from "./templates";
-import { readAssets, wireAssets, wireManifest, wirePackage } from "./wire";
+import { readAssets, wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
 import { readWorkerUi } from "./workerUi";
 
 /**
@@ -209,6 +209,9 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const assets = await wireAssets(options.workerDir, options.config);
   await wireManifest(options.workerDir, stub, packageManager);
   const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
+  // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
+  // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
+  await wireSolution(options.projectDir, options.worker);
 
   return {
     worker: options.worker,

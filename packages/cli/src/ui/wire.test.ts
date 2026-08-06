@@ -10,13 +10,20 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { reactStub } from "./react";
 import type { UiStub } from "./stubs";
-import { wireAssets, wireManifest, wirePackage } from "./wire";
+import { wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
 
 const WRANGLER = `{
   // The adopter's note. It must survive every edit pithy makes.
   "name": "api",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01"
+}
+`;
+
+const SOLUTION = `{
+  // The adopter's note. It must survive every edit pithy makes.
+  "files": [],
+  "references": [{ "path": "./apps/api/tsconfig.json" }]
 }
 `;
 
@@ -270,5 +277,45 @@ describe("wire", () => {
     const change = await wirePackage(dir, dir, reactStub);
     expect(change).toEqual({ dependencies: [], devDependencies: [], scripts: [] });
     expect(await readFile(join(dir, "package.json"), "utf8")).toBe(once);
+  });
+
+  test("wireSolution adds the client's programs to the root tsconfig, comments intact", async () => {
+    // Two tsconfigs nothing references are two tsconfigs nothing checks — which is what `pithy ui add`
+    // left behind, so an adopter's `typecheck` covered the Worker and none of the client it just wrote.
+    await writeFile(join(dir, "tsconfig.json"), SOLUTION);
+
+    expect(await wireSolution(dir, "api")).toEqual([
+      "./apps/api/tsconfig.client.json",
+      "./apps/api/tsconfig.node.json",
+    ]);
+
+    const written = await readFile(join(dir, "tsconfig.json"), "utf8");
+    expect(written).toContain("The adopter's note");
+    const solution = parse(written) as unknown as { files: string[]; references: { path: string }[] };
+    expect(solution.files).toEqual([]);
+    expect(solution.references.map((reference) => reference.path)).toEqual([
+      "./apps/api/tsconfig.json",
+      "./apps/api/tsconfig.client.json",
+      "./apps/api/tsconfig.node.json",
+    ]);
+  });
+
+  test("wireSolution is idempotent", async () => {
+    // `pithy ui add --auth` backfills a scaffold created with `--no-auth`, and that run wires everything
+    // again. A second reference to the same program is a `tsc -b` error, not a duplicate it tolerates.
+    await writeFile(join(dir, "tsconfig.json"), SOLUTION);
+    await wireSolution(dir, "api");
+    const once = await readFile(join(dir, "tsconfig.json"), "utf8");
+
+    expect(await wireSolution(dir, "api")).toEqual([]);
+    expect(await readFile(join(dir, "tsconfig.json"), "utf8")).toBe(once);
+  });
+
+  test("wireSolution leaves a project that has no solution file alone", async () => {
+    // A project scaffolded before the root tsconfig existed has Workers whose programs are not
+    // `composite`, and `tsc -b` refuses a reference to one of those outright. Writing the file would hand
+    // that adopter a typecheck that cannot pass.
+    expect(await wireSolution(dir, "api")).toEqual([]);
+    await expect(readFile(join(dir, "tsconfig.json"), "utf8")).rejects.toThrow();
   });
 });

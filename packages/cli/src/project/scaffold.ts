@@ -112,6 +112,20 @@ async function occupied(path: string): Promise<boolean> {
 }
 
 /**
+ * Template files that land under a different name, source → target.
+ *
+ * Two files cannot ship under the name they land as. `gitignore` because npm strips dotfiles from a
+ * published package. `biome.template.jsonc` because Biome discovers `biome.jsonc` by name and refuses a
+ * nested one inside a repository that already has a root config — shipping it as-is broke *this* repo's
+ * own `biome check .`, which is a fair warning about what it would do inside any monorepo that vendored
+ * the template.
+ */
+const RENAMED_ON_LANDING: Record<string, string> = {
+  gitignore: ".gitignore",
+  "biome.template.jsonc": "biome.jsonc",
+};
+
+/**
  * Every path {@link scaffoldProject} writes, relative to the target — walked from the template rather
  * than listed here, so a file added to the starter is covered without anyone remembering to.
  *
@@ -120,11 +134,11 @@ async function occupied(path: string): Promise<boolean> {
  * symlink where one belongs kills `mkdir` and `cp` outright, and the gate has to see that before the
  * copy starts rather than halfway through it.
  *
- * Two adjustments, both because the copy is not a straight copy. The template ships `gitignore`
- * unprefixed (npm strips dotfiles from published packages) and it lands as `.gitignore`, so **both**
- * names are checked: the copy writes over the shipped name and the rename then moves it away, which
- * destroyed an adopter's own undotted `gitignore` without ever naming it. And the first worker is copied
- * to `apps/api` and *then* renamed, so a run naming another worker also collides on `apps/<worker>`.
+ * Two adjustments, both because the copy is not a straight copy. Each file in {@link RENAMED_ON_LANDING}
+ * is checked under **both** names: the copy writes over the shipped name and the rename then moves it
+ * away, which destroyed an adopter's own undotted `gitignore` without ever naming it. And the first
+ * worker is copied to `apps/api` and *then* renamed, so a run naming another worker also collides on
+ * `apps/<worker>`.
  */
 async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
   const root = templateDir();
@@ -136,7 +150,10 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
 
   const files = named
     .filter((entry) => !entry.directory)
-    .flatMap(({ path }) => (path === "gitignore" ? [path, ".gitignore"] : [path]));
+    .flatMap(({ path }) => {
+      const landed = RENAMED_ON_LANDING[path];
+      return landed ? [path, landed] : [path];
+    });
   const directories = named.filter((entry) => entry.directory).map(({ path }) => path);
   if (worker === DEFAULT_WORKER) return { files, directories };
 
@@ -263,8 +280,11 @@ async function stampPackageName(path: string, name: string): Promise<void> {
  * `pithy.config.ts`, `wrangler.jsonc`, and `pithy.worker.jsonc`. There is no root Worker — `pithy worker add`
  * is then purely additive, and each Worker's capabilities, bindings, and DO class migrations attach to it.
  *
- * The template ships `gitignore` unprefixed (npm strips dotfiles from published packages); it lands as
- * `.gitignore`.
+ * It also carries the project's gates — a root `tsconfig.json` solution file, a split Vitest config, a
+ * Biome config, and the `typecheck`/`test`/`lint` scripts that run them. A scaffold that can be deployed
+ * but not checked is a scaffold whose adopter builds the checking themselves, every time.
+ *
+ * Two files land under a different name than they ship as — see {@link RENAMED_ON_LANDING}.
  */
 export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   // Both name guards run before the directory is created, let alone copied into: a refusal must leave
@@ -302,7 +322,9 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   await ensureScaffoldable(options.targetDir, worker);
 
   await cp(templateDir(), options.targetDir, { recursive: true });
-  await rename(join(options.targetDir, "gitignore"), join(options.targetDir, ".gitignore"));
+  for (const [shipped, landed] of Object.entries(RENAMED_ON_LANDING)) {
+    await rename(join(options.targetDir, shipped), join(options.targetDir, landed));
+  }
 
   const workerDir = join(options.targetDir, "apps", worker);
   if (worker !== DEFAULT_WORKER) {
@@ -343,5 +365,36 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
       .replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`)
       .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
       .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`),
+  );
+
+  await stampWorkerPrograms(options.targetDir, workerDir, worker);
+}
+
+/**
+ * Point the solution file at the Worker's real directory, and give its build state a name no sibling
+ * Worker will take.
+ *
+ * Both strings name `apps/<DEFAULT_WORKER>` in the template and both would otherwise survive a rename:
+ * the root `tsconfig.json` would reference a path that no longer exists — `tsc -b` fails outright on that,
+ * so the whole `typecheck` gate would be broken by the one flag that renames the Worker — and every
+ * Worker's `tsBuildInfoFile` would resolve to the same file under the project's `dist/`, where two
+ * composite programs overwriting each other's state makes incremental builds silently wrong.
+ *
+ * Keyed off {@link DEFAULT_WORKER} rather than a literal, for the reason the wrangler stamps above are:
+ * the template ships that name, and a literal here is a second place to change.
+ */
+async function stampWorkerPrograms(targetDir: string, workerDir: string, worker: string): Promise<void> {
+  const solutionPath = join(targetDir, "tsconfig.json");
+  const solution = await readFile(solutionPath, "utf8");
+  await writeFile(
+    solutionPath,
+    solution.replaceAll(`./apps/${DEFAULT_WORKER}/`, () => `./apps/${worker}/`),
+  );
+
+  const programPath = join(workerDir, "tsconfig.json");
+  const program = await readFile(programPath, "utf8");
+  await writeFile(
+    programPath,
+    program.replaceAll(`/${DEFAULT_WORKER}.server.tsbuildinfo`, () => `/${worker}.server.tsbuildinfo`),
   );
 }

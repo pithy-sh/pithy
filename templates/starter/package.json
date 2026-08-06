@@ -12,6 +12,17 @@
     "dev": "pithy dev",
     "deploy": "pithy deploy",
     "deploy:staging": "pithy deploy --env staging",
-    "deploy:prod": "pithy deploy --env prod"
+    "deploy:prod": "pithy deploy --env prod",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@types/node": "^22.15.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0"
   }
 }

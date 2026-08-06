@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
 import type { WorkerConfig } from "../project/config";
 import { alreadyProvided, execArgs, type PackageManager } from "../project/packageManager";
@@ -14,11 +15,12 @@ import type { UiStub } from "./stubs";
 import { readManifestDocument, writeManifestDocument } from "./workerUi";
 
 /**
- * The three files `pithy ui` edits rather than creates: the worker's `wrangler.jsonc` (how the built
+ * The four files `pithy ui` edits rather than creates: the worker's `wrangler.jsonc` (how the built
  * assets are served), its `pithy.worker.jsonc` (how `pithy dev` runs it and `pithy deploy` builds it),
- * and its `package.json` (the stub's packages and scripts).
+ * its `package.json` (the stub's packages and scripts), and the project's root `tsconfig.json` (which
+ * programs `bun run typecheck` builds).
  *
- * All three are edited in place and comment-preserving. comment-json keeps an adopter's notes as
+ * All four are edited in place and comment-preserving. comment-json keeps an adopter's notes as
  * symbol-keyed properties on the very object or array they hang off, so a replaced array is a
  * deleted comment — every update below mutates what is already there.
  */
@@ -229,4 +231,50 @@ export async function wirePackage(projectDir: string, workerDir: string, stub: U
 
   await writeFileAtomic(path, `${JSON.stringify(pkg, null, 2)}\n`);
   return { dependencies, devDependencies, scripts };
+}
+
+/** The project's root `tsconfig.json`, in the shape this module extends. */
+interface SolutionFile {
+  references?: { path: string }[];
+}
+
+/**
+ * Add the client's two programs to the project's root `tsconfig.json`, so `bun run typecheck` builds them.
+ *
+ * The client cannot join the Worker's program and must not: the Worker needs `@cloudflare/workers-types`
+ * and the client needs the DOM, and a program holding both makes `Uint8Array` structurally incompatible
+ * with `BufferSource` — which breaks every crypto call in the kit's control-plane signing code. So a
+ * scaffolded front end is two more *programs*, and a program nothing references is a program nothing
+ * checks. `pithy ui add` used to leave exactly that: two tsconfigs, unreferenced, silently unchecked.
+ *
+ * Appended in file order — the Worker's program, then its client's — because `tsc -b` reports in that
+ * order and reading a failure top-down should walk the project the way its layout does.
+ *
+ * **Extends, never creates.** A project scaffolded before the root solution file existed has Workers whose
+ * programs are not `composite`, and `tsc -b` refuses a reference to one of those outright. Writing the file
+ * would hand that adopter a `typecheck` that cannot pass; leaving it alone costs them only what they
+ * already had. Returns the paths added — empty when there is no solution file, or when a re-run finds both
+ * already there.
+ */
+export async function wireSolution(projectDir: string, worker: string): Promise<string[]> {
+  const path = join(projectDir, "tsconfig.json");
+  let document: SolutionFile;
+  try {
+    document = parse(await readFile(path, "utf8")) as unknown as SolutionFile;
+  } catch {
+    return []; // no solution file — this project predates it, and inventing one would break its typecheck
+  }
+
+  const references = Array.isArray(document.references) ? document.references : [];
+  const present = new Set(references.map((reference) => reference.path));
+  const added = [`./apps/${worker}/tsconfig.client.json`, `./apps/${worker}/tsconfig.node.json`].filter(
+    (reference) => !present.has(reference),
+  );
+  if (added.length === 0) return [];
+
+  // In place: the array object carries the adopter's comments, and comment-json hangs them off it.
+  references.push(...added.map((reference) => ({ path: reference })));
+  document.references = references;
+  await writeFileAtomic(path, `${stringify(document, null, 2)}\n`);
+  return added;
 }

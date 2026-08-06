@@ -1,0 +1,53 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+  // Biome for both lint and format — one tool, one pass, no ESLint/Prettier pair to keep in step.
+  // `bun run lint` reports; `bun run format` writes.
+  //
+  // No `vcs` block on purpose. Reading .gitignore needs a repository, and `pithy init` scaffolds into
+  // directories that are not one yet — the ignores are stated here instead, so the first `bun run lint`
+  // works before the first `git init`.
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**", "!**/dist", "!**/.wrangler", "!**/.worktrees"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120,
+    "lineEnding": "lf",
+    // The two files Pithy rewrites are linted but not formatted. `pithy add`, `pithy ui add` and
+    // `pithy ui sync` edit them in place through a comment-preserving writer that puts every array
+    // element on its own line; Biome would collapse the short ones. Neither is wrong, and formatting a
+    // file a tool owns just means `bun run lint` fails after every command that touches it.
+    "includes": ["**", "!**/wrangler.jsonc", "!**/pithy.worker.jsonc"]
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": { "level": "on" }
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": { "preset": "recommended" }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "json": {
+    // Every config Pithy writes is JSONC — wrangler.jsonc, pithy.worker.jsonc, and the tsconfigs.
+    "parser": {
+      "allowComments": true,
+      "allowTrailingCommas": false
+    },
+    "formatter": {
+      "trailingCommas": "none"
+    }
+  }
+}

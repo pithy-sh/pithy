@@ -46,6 +46,64 @@ describe("scaffoldProject", () => {
     await readFile(join(target, ".dev.vars.example"), "utf8");
   });
 
+  test("writes the three gates, and a solution file that keeps the type worlds apart", async () => {
+    // A scaffold with `dev` and `deploy` and nothing else cannot be checked by CI at all, and the adopter
+    // who wires it discovers the hard part unaided: the Worker and a client cannot share one program.
+    await scaffoldProject({ targetDir: dir, appName: "gated" });
+
+    const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(pkg.scripts).toMatchObject({ typecheck: "tsc -b", test: "vitest run", lint: "biome check ." });
+    // Every gate's tool is declared, or the first `bun install` leaves three scripts that cannot run.
+    expect(Object.keys(pkg.devDependencies)).toEqual(
+      expect.arrayContaining(["@biomejs/biome", "@cloudflare/vitest-pool-workers", "typescript", "vitest"]),
+    );
+
+    // `tsc -b` needs a solution file: `files: []` and references, never one program over both worlds.
+    const solution = parse(await readFile(join(dir, "tsconfig.json"), "utf8")) as unknown as {
+      files: string[];
+      references: { path: string }[];
+    };
+    expect(solution.files).toEqual([]);
+    expect(solution.references.map((reference) => reference.path)).toEqual([
+      "./tsconfig.tools.json",
+      "./apps/api/tsconfig.json",
+    ]);
+
+    // Referenced means composite, and composite means build state — under the project's dist/, which the
+    // gitignore already covers, and never under a Worker's, which Vite empties on every client build.
+    const worker = parse(await readFile(join(dir, "apps", "api", "tsconfig.json"), "utf8")) as unknown as {
+      compilerOptions: { composite: boolean; tsBuildInfoFile: string };
+    };
+    expect(worker.compilerOptions.composite).toBe(true);
+    expect(worker.compilerOptions.tsBuildInfoFile).toBe("../../dist/api.server.tsbuildinfo");
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toMatch(/^dist\/$/m);
+
+    await readFile(join(dir, "biome.jsonc"), "utf8");
+    await readFile(join(dir, "vitest.config.ts"), "utf8");
+    await readFile(join(dir, "vitest.workers.config.ts"), "utf8");
+    await readFile(join(dir, "tsconfig.tools.json"), "utf8");
+  });
+
+  test("points the solution file and the build state at the worker's real name", async () => {
+    // Both strings name `apps/api` in the template. Left unstamped, `tsc -b` fails on a reference to a
+    // directory that does not exist — so `--worker` alone would break the typecheck gate it just wrote.
+    await scaffoldProject({ targetDir: dir, appName: "acme", worker: "edge" });
+
+    const solution = parse(await readFile(join(dir, "tsconfig.json"), "utf8")) as unknown as {
+      references: { path: string }[];
+    };
+    expect(solution.references.map((reference) => reference.path)).toContain("./apps/edge/tsconfig.json");
+
+    const worker = parse(await readFile(join(dir, "apps", "edge", "tsconfig.json"), "utf8")) as unknown as {
+      compilerOptions: { tsBuildInfoFile: string };
+    };
+    // Per worker, because two composite programs sharing one build-state file overwrite each other's.
+    expect(worker.compilerOptions.tsBuildInfoFile).toBe("../../dist/edge.server.tsbuildinfo");
+  });
+
   test("scaffolds the first worker under the chosen name, not the default", async () => {
     await scaffoldProject({ targetDir: dir, appName: "acme", worker: "edge" });
 
