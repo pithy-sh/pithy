@@ -9,6 +9,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
+import { installPackage } from "../project/packageManager";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { coerceSetFlags, collectSetFlags, runAdd } from "./flow";
 
@@ -197,14 +198,28 @@ describe("runAdd", () => {
     await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
     await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "auth"), "dir");
 
+    // The real `installPackage`, with only its spawner replaced. The outcome alone did not pin this:
+    // with the guard reverted the tmpdir has no lockfile, so the test spawned `npm install
+    // @pithy-sh/auth` against the live registry — an E404 today (a failure for the wrong reason, and no
+    // failure at all offline), and a passing test the day the scope publishes. A recording runner is
+    // the assertion the outcome could not make: nothing spawned.
+    const spawned: string[] = [];
     const result = await runAdd({
       projectDir: dir,
       workerDir: worker,
       project: "acme",
       capability: "auth",
+      install: (input) =>
+        installPackage({
+          ...input,
+          run: async (command, args) => {
+            spawned.push(`${command} ${args.join(" ")}`);
+          },
+        }),
       migrate: vi.fn(async () => noMigrations),
     });
 
+    expect(spawned).toEqual([]);
     expect(result.capability).toBe("auth");
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('from "@pithy-sh/auth/src/index"');
   });
