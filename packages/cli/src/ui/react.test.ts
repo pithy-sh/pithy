@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { beforeAll, describe, expect, test } from "vitest";
+import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
 import { loadStubFiles } from "./templates";
 
@@ -308,5 +310,20 @@ describe("the React 19 stub", () => {
     expect(reactStub.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.4");
     expect(reactStub.devDependencies.vite).toBe("^8.0.16");
     expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe("^1.48.0");
+  });
+
+  test("every @pithy-sh range is the kit's own, so it is right on both sides of publication", () => {
+    // The one range in this file that no release can move is the one that breaks every release. A
+    // literal `"^0.0.0"` 404s today for any adopter not linking a checkout in, and goes on 404ing
+    // after the scope publishes while every sibling range beside it is correct. Asserted against
+    // `kitRange(PACKAGE_VERSION)` rather than against today's value, because a test pinning the
+    // unpublished state would turn red on the release commit — which is the one commit that must
+    // not have to touch this file at all.
+    for (const [name, range] of Object.entries({ ...reactStub.dependencies, ...reactStub.devDependencies })) {
+      if (!name.startsWith("@pithy-sh/")) continue;
+      expect(range, name).toBe(kitRange(PACKAGE_VERSION));
+    }
+    // Named, so dropping the package is a deliberate edit rather than a loop that silently sees nothing.
+    expect(Object.keys(reactStub.devDependencies)).toContain("@pithy-sh/vite");
   });
 });

@@ -5,9 +5,11 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
+import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
 import type { UiStub } from "./stubs";
 import { wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
@@ -234,6 +236,10 @@ describe("wire", () => {
     // The published world, and the hoisted-transitive one: a real directory in `node_modules` is a
     // registry install with a version, so the range is correct and the worker must declare it. Omitting
     // it would leave the build resolving whatever happened to be hoisted, unpinned and unlocked.
+    //
+    // Until the scope publishes there IS no correct range, so the line is dropped instead — the same
+    // answer `kitRange` gives the starter template. Both sides asserted from `kitRange`, so the release
+    // commit flips this test's expectation without editing it.
     const workerDir = await scaffoldWorker();
     const installed = join(dir, "node_modules", "@pithy-sh", "vite");
     await mkdir(installed, { recursive: true });
@@ -244,8 +250,28 @@ describe("wire", () => {
       devDependencies: Record<string, string>;
     };
 
-    expect(pkg.devDependencies["@pithy-sh/vite"]).toBe(reactStub.devDependencies["@pithy-sh/vite"]);
-    expect(change.devDependencies).toContain("@pithy-sh/vite");
+    const range = kitRange(PACKAGE_VERSION);
+    expect(pkg.devDependencies["@pithy-sh/vite"]).toBe(range ?? undefined);
+    expect(change.devDependencies.includes("@pithy-sh/vite")).toBe(range !== null);
+  });
+
+  test("wirePackage writes no range the registry cannot resolve, whatever the project looks like", async () => {
+    // The adopter this regressed for: a plain project, nothing under `@pithy-sh` linked in, so
+    // `withoutProvided` keeps every stub package — and `pithy ui add react` said Done while planting
+    // `"@pithy-sh/vite": "^0.0.0"`. The 404 landed on the next `bun install`, on an unrelated command.
+    // Asserting an absence, so it stays true after the scope publishes. The worker starts with empty
+    // dependency maps: whatever an adopter already declared is theirs and is never rewritten, so only
+    // what this call adds is on trial here.
+    const workerDir = await scaffoldWorker({ dependencies: {}, devDependencies: {} });
+    await wirePackage(dir, workerDir, reactStub);
+    const pkg = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+
+    for (const [name, declared] of Object.entries({ ...pkg.dependencies, ...pkg.devDependencies })) {
+      expect(declared, name).not.toBe("^0.0.0");
+    }
   });
 
   test("wirePackage drops a provided @pithy-sh runtime dependency too, not only a dev one", async () => {

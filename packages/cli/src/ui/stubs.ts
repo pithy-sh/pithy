@@ -77,10 +77,22 @@ export interface UiStub {
    * that should have been two files.
    */
   substitutions(context: UiStubContext): Record<string, string>;
-  /** Runtime dependencies merged into the Worker's `package.json`. */
-  dependencies: Record<string, string>;
-  /** Build-time dependencies merged into the Worker's `package.json`. */
-  devDependencies: Record<string, string>;
+  /**
+   * Runtime dependencies merged into the Worker's `package.json`.
+   *
+   * A **null** range means "declare nothing" — the package is needed, but no range exists that the
+   * registry could resolve. That is the state every `@pithy-sh/*` package is in until the scope
+   * publishes, and it is `kitRange` that decides, not this declaration: see {@link devDependencies}.
+   */
+  dependencies: Record<string, string | null>;
+  /**
+   * Build-time dependencies merged into the Worker's `package.json`.
+   *
+   * Every `@pithy-sh/*` range here is `kitRange(PACKAGE_VERSION)` rather than a literal, for the reason
+   * `stampWorkerManifest` gives: a hardcoded `"^0.0.0"` 404s the adopter's next install today and keeps
+   * 404ing after release, because no release moves it. `null` drops the line; a real version writes it.
+   */
+  devDependencies: Record<string, string | null>;
   /**
    * The dev argv **without** a package-manager prefix, for a given port. `wire` runs it through the
    * adopter's `execArgs` before persisting, so a Bun project gets `bun x vite dev …` and an npm project
