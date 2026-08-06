@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -393,6 +393,31 @@ describe("scaffoldProject", () => {
     // Only the unresolvable range goes. Everything else the worker declares is untouched.
     expect(pkg.dependencies.hono).toBeDefined();
     expect(pkg.name).toBe("acme-board");
+  });
+
+  test("links the worker at the project's one .dev.vars, so the runtime reads what pithy add mints", async () => {
+    // wrangler loads `.dev.vars` from the worker's own directory and looks nowhere else. Without the link
+    // a scaffolded project has a root file the runtime never opens, and every secret in it reports as
+    // *absent* — so the adopter hunts for a value they already have.
+    await scaffoldProject({ targetDir: dir, appName: "acme", worker: "board" });
+
+    const link = join(dir, "apps", "board", ".dev.vars");
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    // Read through it, not at it: what the worker sees is the one file the project shares.
+    await writeFile(join(dir, ".dev.vars"), "SECRETS_ENCRYPTION_KEYS=k\n");
+    expect(await readFile(link, "utf8")).toBe("SECRETS_ENCRYPTION_KEYS=k\n");
+  });
+
+  test("seeds the shared .dev.vars from the example, since a link needs a file to point at", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+    expect(await readFile(join(dir, ".dev.vars"), "utf8")).toBe(await readFile(join(dir, ".dev.vars.example"), "utf8"));
+  });
+
+  test("never writes over a .dev.vars already in the target — those are the adopter's secrets", async () => {
+    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=mine\n");
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+    expect(await readFile(join(dir, ".dev.vars"), "utf8")).toBe("CLOUDFLARE_API_TOKEN=mine\n");
+    expect(await readFile(join(dir, "apps", "api", ".dev.vars"), "utf8")).toBe("CLOUDFLARE_API_TOKEN=mine\n");
   });
 
   test("the template declares only the kit package the stamp knows a version for", async () => {

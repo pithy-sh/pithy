@@ -12,6 +12,7 @@ import {
   RESERVED_TEST_PREFIX,
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { wireFeatureDevVars } from "../feature/devVars";
 
 export interface ScaffoldOptions {
   /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
@@ -322,6 +323,24 @@ async function stampWorkerManifest(path: string, name: string): Promise<void> {
 }
 
 /**
+ * Give the project the one `.dev.vars` every worker in it shares, seeded from the example the template
+ * ships. Kept if one is already there.
+ *
+ * The seed is what makes the link below possible: `wireFeatureDevVars` points at a file, and at scaffold
+ * time there is none — the example says "copy this to `.dev.vars`" and nobody has yet. So the copy is that
+ * instruction, carried out. The example is comments only, so a project starts with the same empty set of
+ * variables it started with before, reachable from where the runtime looks.
+ *
+ * A `.dev.vars` already in the target is the adopter's, holds their credentials, and is never a template
+ * path — so nothing else in this module would have refused the run over it. It is left exactly as it is.
+ */
+async function seedDevVars(targetDir: string): Promise<void> {
+  const path = join(targetDir, ".dev.vars");
+  if (await exists(path)) return;
+  await cp(join(targetDir, ".dev.vars.example"), path);
+}
+
+/**
  * Copy the starter template into `targetDir` and stamp the app name — the pure logic behind `pithy init`.
  *
  * The scaffold is the `apps/` layout: the root carries project identity and policy (`pithy.config.ts`,
@@ -417,6 +436,20 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   );
 
   await stampWorkerPrograms(options.targetDir, workerDir, worker);
+
+  // Point the worker at the project's shared `.dev.vars`, exactly as `pithy worker add` points every
+  // worker it creates — one implementation of the convention, called from both places that make a worker.
+  // `pithy init` was the one that did not, so a plainly scaffolded project had a root `.dev.vars` the
+  // runtime never opened, and every secret `pithy add` mints into it was invisible to the Worker that
+  // needs it. Wired here rather than left to the first `pithy add`, because it is a property of the
+  // project's layout, not of any capability — and a link that already exists is one nothing has to
+  // remember later.
+  await seedDevVars(options.targetDir);
+  await wireFeatureDevVars({
+    mainRoot: options.targetDir,
+    worktreePath: options.targetDir,
+    workers: [{ name: worker, dir: workerDir }],
+  });
 }
 
 /**
