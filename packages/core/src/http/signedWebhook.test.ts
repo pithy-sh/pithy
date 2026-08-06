@@ -9,6 +9,7 @@ import type { PithyHonoEnv } from "../capability/capability";
 import { pithyErrorHandler } from "../error/http";
 import { PithyError } from "../error/pithyError";
 import {
+  checkSignedWebhook,
   parseSignedWebhookHeader,
   requireSignedWebhook,
   SIGNED_WEBHOOK_MAX_CANDIDATES,
@@ -363,6 +364,34 @@ describe("verifySignedWebhook — what a refusal says", () => {
     expect(said).not.toContain(signature);
     expect(said).not.toContain(BODY);
     expect(said).not.toContain("invoice.paid");
+  });
+
+  test("claims no comparison when there was nothing to compare", async () => {
+    // Every listed value fell to the 32-byte hex filter, so no secret was ever tried. Saying "no signature
+    // matches under a configured signing secret" would assert a comparison that never ran, and send an
+    // operator hunting a rotated secret while the sender's signature format is what is wrong.
+    const timestamp = epochSeconds(NOW);
+    expect(
+      await checkSignedWebhook(BODY, `t=${timestamp},v1=not-hex`, { header: HEADER, secret: SECRET, now: NOW }),
+    ).toEqual({ reason: "unmatched", compared: 0 });
+
+    const payload = await refusal(verify(BODY, `t=${timestamp},v1=not-hex`));
+    expect(payload.detail).toContain("no signature was compared");
+    expect(payload.detail).not.toContain("configured signing secret");
+  });
+
+  test("counts what it compared when a comparison did run", async () => {
+    const timestamp = epochSeconds(NOW);
+    const junk = (index: number) => index.toString(16).padStart(64, "0");
+    const value = `t=${timestamp},v1=${junk(1)},v1=${junk(2)}`;
+    expect(await checkSignedWebhook(BODY, value, { header: HEADER, secret: SECRET, now: NOW })).toEqual({
+      reason: "unmatched",
+      compared: 2,
+    });
+
+    const payload = await refusal(verify(BODY, value));
+    expect(payload.detail).toContain("2 signatures");
+    expect(payload.detail).toContain("configured signing secret");
   });
 
   test("a refusal is a 401 whose wire body carries no detail", async () => {

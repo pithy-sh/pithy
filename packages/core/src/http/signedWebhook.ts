@@ -206,8 +206,15 @@ export type SignedWebhookRefusal =
   | { reason: "unreadable" }
   /** Read, but dated outside the freshness window — a clock, or a replay. */
   | { reason: "stale"; skew: number; tolerance: number }
-  /** Read and fresh, but no listed signature matches these bytes under any configured secret. */
-  | { reason: "unmatched" };
+  /**
+   * Read and fresh, and nothing in it verified.
+   *
+   * `compared` is how many listed values were actually put to a secret — the candidates left after the ones
+   * that cannot be an HMAC-SHA256 are dropped and the cap is applied. Zero is a different finding from the
+   * rest: no comparison ran at all, so the answer is the sender's signature format, not the endpoint's
+   * secret. A refusal that does not carry the number cannot tell an operator which of the two it is.
+   */
+  | { reason: "unmatched"; compared: number };
 
 /**
  * Check one delivery, and **report** rather than throw: `undefined` when a holder of the secret signed these
@@ -293,12 +300,15 @@ export async function checkSignedWebhook(
     }
   }
 
-  return { reason: "unmatched" };
+  return { reason: "unmatched", compared: candidates.length };
 }
 
 /**
  * The kit's wording for each refusal, in one place — so the guard's early exit says exactly what the full
  * check would have said, rather than a second sentence about the same finding.
+ *
+ * Every string states what was actually determined and nothing more. `detail` is what an operator reads to
+ * decide where to look, and a refusal that asserts a comparison it never ran sends them somewhere else.
  */
 function webhookRefusal(refusal: SignedWebhookRefusal, scheme: SignedWebhookScheme): WebhookUnverifiedError {
   const timestampKey = scheme.timestampKey ?? DEFAULT_TIMESTAMP_KEY;
@@ -313,8 +323,14 @@ function webhookRefusal(refusal: SignedWebhookRefusal, scheme: SignedWebhookSche
         detail: `The delivery is dated ${refusal.skew}s from now, outside the ${refusal.tolerance}s tolerance. Check this Worker's clock, or a replayed delivery.`,
       });
     case "unmatched":
+      // Two findings wear one code, and they send an operator to different places. When nothing survived the
+      // 32-byte hex filter no secret was ever tried, so naming the secret would be an assertion about a
+      // comparison that did not happen — the sender's signature format is what is wrong.
       return new WebhookUnverifiedError({
-        detail: `No signature in the ${scheme.header} header matches these bytes under a configured signing secret. Check that the secret belongs to this endpoint and this environment.`,
+        detail:
+          refusal.compared === 0
+            ? `No ${signatureKey}= value in the ${scheme.header} header is 32 bytes of hex, so no signature was compared. Check the sender's signature format.`
+            : `Compared ${refusal.compared} signature${refusal.compared === 1 ? "" : "s"} from the ${scheme.header} header against every configured signing secret; none matches these bytes. Check that the secret belongs to this endpoint and this environment.`,
       });
   }
 }
