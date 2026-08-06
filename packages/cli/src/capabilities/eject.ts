@@ -5,7 +5,7 @@ import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
-import { findNamedImport, isCapabilityImport } from "./configImports";
+import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } from "./configImports";
 
 /**
  * The directory an ejected capability's source is copied into, relative to the Worker's
@@ -27,13 +27,28 @@ export function ejectImportPath(capability: string): string {
  */
 export function parseEjectedCapabilities(configSource: string): string[] {
   const names: string[] = [];
-  // Match either quote style so a hand-reformatted config still reads as ejected.
-  const pattern = /from\s+["']\.\/capabilities\/([^"'/]+)(?:\/[^"']*)?["']/g;
-  for (const match of configSource.matchAll(pattern)) {
-    const name = match[1];
+  for (const specifier of importedSpecifiers(configSource)) {
+    const name = ejectedCapabilityName(specifier);
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
+}
+
+/**
+ * The capability a specifier forks, or `undefined` when it does not point into the fork directory.
+ *
+ * Decided by {@link isInside} — the same call `importOrigin` makes — because these two functions
+ * answer one question and used to answer it differently: a regex here accepted
+ * `./capabilities/<name>/<anything>` while `isCapabilityImport` demanded exact equality, so a config
+ * read as ejected while the import that made it so was refused as not the capability's. The regex also
+ * captured `..` as a capability name, off a path leaving the directory entirely.
+ */
+function ejectedCapabilityName(specifier: string): string | undefined {
+  const prefix = `./${EJECT_DIR}/`;
+  if (!specifier.startsWith(prefix)) return undefined;
+  const name = specifier.slice(prefix.length).split("/")[0];
+  if (!name || name === "." || name === "..") return undefined;
+  return isInside(specifier, ejectImportPath(name)) ? name : undefined;
 }
 
 /**

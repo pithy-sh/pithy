@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { capabilityImportSpecifier, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
+import {
+  capabilityImportSpecifier,
+  findNamedImport,
+  importOrigin,
+  isCapabilityImport,
+  withoutBinding,
+} from "./configImports";
 
 describe("capabilityImportSpecifier", () => {
   test("is the package's src/index barrel", () => {
@@ -85,20 +91,49 @@ describe("findNamedImport", () => {
   });
 });
 
+describe("importOrigin", () => {
+  const eject = "./capabilities/auth";
+  const origin = (specifier: string): string => importOrigin(specifier, "@pithy-sh/auth", eject);
+
+  test("the barrel, any deeper path into the package, and the ejected copy are the capability", () => {
+    expect(origin("@pithy-sh/auth/src/index")).toBe("capability");
+    expect(origin("@pithy-sh/auth/src/capability")).toBe("capability");
+    expect(origin(eject)).toBe("capability");
+    expect(origin("./capabilities/auth/index")).toBe("capability");
+  });
+
+  test("the bare package is ours and resolves to nothing", () => {
+    // No capability package declares a "." export — `catalog.test.ts` holds that claim against all
+    // fifteen. So this import throws at load, and treating it as wiring made `add` bless a dead config.
+    expect(origin("@pithy-sh/auth")).toBe("unresolvable");
+  });
+
+  test("a traversal past the package is not the package", () => {
+    // The specifier is unresolved text, and Bun resolves `..` in it. A prefix test blessed anything the
+    // adopter — or anything that wrote their config — could point past the package at.
+    expect(origin("@pithy-sh/auth/../evil")).toBe("foreign");
+    expect(origin("@pithy-sh/auth/src/../../../evil/mod")).toBe("foreign");
+    expect(origin("./capabilities/auth/../../lib/evil")).toBe("foreign");
+  });
+
+  test("the adopter's own module and a shared-prefix package are foreign", () => {
+    expect(origin("./lib/myAuth")).toBe("foreign");
+    expect(origin("@pithy-sh/authpro/src/index")).toBe("foreign");
+    expect(origin("./capabilities/authpro")).toBe("foreign");
+  });
+});
+
 describe("isCapabilityImport", () => {
   const eject = "./capabilities/auth";
 
-  test("accepts the barrel, any deeper path into the package, and the ejected copy", () => {
+  test("is every origin but foreign — what is ours to rewrite or take out", () => {
+    // Including the unresolvable bare package: it names our package, and leaving it behind while
+    // `remove` uninstalls that package is the broken config the command exists to undo.
     expect(isCapabilityImport("@pithy-sh/auth/src/index", "@pithy-sh/auth", eject)).toBe(true);
-    expect(isCapabilityImport("@pithy-sh/auth/src/capability", "@pithy-sh/auth", eject)).toBe(true);
     expect(isCapabilityImport("@pithy-sh/auth", "@pithy-sh/auth", eject)).toBe(true);
     expect(isCapabilityImport(eject, "@pithy-sh/auth", eject)).toBe(true);
-  });
-
-  test("rejects the adopter's own module and a shared-prefix package", () => {
     expect(isCapabilityImport("./lib/myAuth", "@pithy-sh/auth", eject)).toBe(false);
-    expect(isCapabilityImport("@pithy-sh/authpro/src/index", "@pithy-sh/auth", eject)).toBe(false);
-    expect(isCapabilityImport("./capabilities/authpro", "@pithy-sh/auth", eject)).toBe(false);
+    expect(isCapabilityImport("@pithy-sh/auth/../evil", "@pithy-sh/auth", eject)).toBe(false);
   });
 });
 

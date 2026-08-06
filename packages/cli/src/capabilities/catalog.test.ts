@@ -115,6 +115,13 @@ describe("every catalog entry is addable", () => {
         `${entry.package} declares no ./src/* export, so ${specifier} cannot resolve.`,
       ).toBeDefined();
 
+      // And no "." export, which is why `importOrigin` calls a bare `@pithy-sh/<cap>` unresolvable
+      // rather than wiring. The day a package declares one, that verdict is wrong and this fails.
+      expect(
+        pkg.exports?.["."],
+        `${entry.package} declares a "." export now, so a bare import of it resolves. importOrigin still calls that unresolvable.`,
+      ).toBeUndefined();
+
       // Which maps the specifier onto exactly one file. Derived from the string `add` writes, so a
       // change to that string is a change here.
       const barrel = join(pkgDir, `${specifier.slice(`${entry.package}/`.length)}.ts`);

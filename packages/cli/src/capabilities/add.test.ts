@@ -134,6 +134,17 @@ describe("addCapability", () => {
     expect(after).toContain("auth(),");
   });
 
+  test("refuses an import of the bare package — it resolves to nothing", async () => {
+    // `@pithy-sh/auth` declares no "." export, so this line throws at load. Read as wiring, it made
+    // `add` write the registration against an import that could never bind, and exit 0 saying so.
+    const path = join(worker, "pithy.config.ts");
+    const before = `import { auth } from "@pithy-sh/auth";\n${await readFile(path, "utf8")}`;
+    await writeFile(path, before);
+
+    await expect(addCapability({ workerDir: worker, manifest })).rejects.toThrow(PithyError);
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
+
   test("refuses when the name is already bound to something that is not the capability", async () => {
     // Keying idempotency on the binding alone was wrong in the other direction: an adopter's own
     // `auth` suppressed the capability's import while the registration went in anyway, so

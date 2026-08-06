@@ -9,7 +9,7 @@ import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyErro
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
-import { capabilityImportSpecifier, findNamedImport, isCapabilityImport } from "./configImports";
+import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
 import { ejectImportPath } from "./eject";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
@@ -185,13 +185,24 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   // decides what to do about it, and a name bound to something else is refused before anything is
   // written.
   const existing = findNamedImport(source, manifest.name);
+  const origin = existing && importOrigin(existing.specifier, manifest.package, ejectImportPath(manifest.name));
   if (existing === undefined) {
     source = `import { ${manifest.name} } from "${capabilityImportSpecifier(manifest.package)}";\n${source}`;
-  } else if (!isCapabilityImport(existing.specifier, manifest.package, ejectImportPath(manifest.name))) {
+  } else if (origin === "foreign") {
     throw new ConflictError({
       message: `${path} already imports ${manifest.name} from "${existing.specifier}".`,
       action: `Rename that import, then run pithy add ${manifest.name} again.`,
       detail: `Wiring ${manifest.name}() would have composed ${existing.specifier} as the capability.`,
+    });
+  } else if (origin === "unresolvable") {
+    // Ours, and dead: the package exports `./src/*` and no `.`, so this line throws the moment anything
+    // loads the config. Accepted as wiring, `add` wrote the registration against an import that could
+    // never bind and exited 0. Refused rather than rewritten — the specifier is the adopter's line to
+    // correct, and a command that silently repoints imports is one nobody can predict.
+    throw new ConflictError({
+      message: `${path} imports ${manifest.name} from "${existing.specifier}", which resolves to nothing.`,
+      action: `Point that import at "${capabilityImportSpecifier(manifest.package)}", then run pithy add ${manifest.name} again.`,
+      detail: `${manifest.package} exports ./src/* only, so the bare specifier has no entry point.`,
     });
   }
 

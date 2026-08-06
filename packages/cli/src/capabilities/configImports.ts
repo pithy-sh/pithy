@@ -125,6 +125,24 @@ function scanConfig(source: string): ScannedConfig {
   return { code, inLiteral };
 }
 
+/**
+ * Every named import statement in a config, in source order, with the comments and literals already
+ * ruled out. The one place file text becomes imports — `findNamedImport` and `parseEjectedCapabilities`
+ * both read a config through it, so neither can quietly grow its own idea of what an import is.
+ */
+function* namedImports(source: string): Generator<RegExpExecArray> {
+  const { code, inLiteral } = scanConfig(source);
+  for (const match of code.matchAll(NAMED_IMPORT)) {
+    if (inLiteral[match.index]) continue; // an import inside a string is a string
+    yield match;
+  }
+}
+
+/** The module specifier of every named import in a config, in source order. Duplicates included. */
+export function importedSpecifiers(source: string): string[] {
+  return [...namedImports(source)].map((match) => match[3] ?? "");
+}
+
 /** One comma-separated name in an import clause, and where it sits in the source. */
 interface ClauseSegment {
   /** The segment verbatim, padding and all — `" auth "` in `{ a, auth }`. */
@@ -150,13 +168,11 @@ function clauseSegments(clause: string, offset: number): ClauseSegment[] {
  *
  * **Keyed on the binding, not the specifier.** Where a capability is imported from is the adopter's
  * business — a deep path, an ejected copy — but the *name* is the thing a registration call resolves
- * through, so that is what identifies the import. What the specifier is then used for is a separate
- * question each caller answers with {@link isCapabilityImport}.
+ * through, so that is what identifies the import. Where that specifier actually points is a separate
+ * question each caller answers with {@link importOrigin}.
  */
 export function findNamedImport(source: string, name: string): ConfigImport | undefined {
-  const { code, inLiteral } = scanConfig(source);
-  for (const match of code.matchAll(NAMED_IMPORT)) {
-    if (inLiteral[match.index]) continue; // an import inside a string is a string
+  for (const match of namedImports(source)) {
     const clause = match[1] ?? "";
     const segments = clauseSegments(clause, match.index + match[0].indexOf("{") + 1);
     for (const [index, segment] of segments.entries()) {
@@ -200,18 +216,60 @@ export function capabilityImportSpecifier(pkg: string): string {
   return `${pkg}/src/index`;
 }
 
+/** Where an import that binds a capability's name actually points. */
+export type ImportOrigin =
+  /** The capability itself: its package barrel, a deeper path into it, or the ejected local copy. */
+  | "capability"
+  /** Ours, but pointing at nothing that loads — the bare package specifier. */
+  | "unresolvable"
+  /** Someone else's module that happens to bind the same name. Not ours to rewrite or delete. */
+  | "foreign";
+
 /**
- * Whether a specifier is one the capability itself can be behind: its package (the `src/index`
- * barrel or any deeper path into it), or the local copy an eject wrote.
+ * Whether `specifier` is `base` itself or a path *inside* it, with no way back out.
  *
- * Deep paths count because an adopter reaching past the barrel is still importing *this capability*,
- * and the three commands have to agree on that. They did not: `add` blessed a hand-edited deep
- * import, `remove` left it behind while uninstalling the package, and `eject` refused to find it.
- * Anything else is the adopter's own module that happens to share the name — not ours to rewrite,
- * and not ours to delete.
+ * The `..` check is the point. The specifier is unresolved text, and Bun — which is what actually
+ * `import()`s a `pithy.config.ts` (`project/config.ts`) — resolves `@pithy-sh/auth/../../elsewhere`
+ * to wherever that lands. A `startsWith` prefix test called that the capability's own import, so the
+ * guard on "is this really ours?" answered yes for anything that walked straight back out of the
+ * package. Deciding on the shape of the resolved path instead means no traversal can change the
+ * answer. Exported because `eject.ts` asks it of the fork directory, and the two must agree.
+ */
+export function isInside(specifier: string, base: string): boolean {
+  if (specifier === base) return true;
+  if (!specifier.startsWith(`${base}/`)) return false;
+  const rest = specifier.slice(base.length + 1);
+  return rest !== "" && !rest.split("/").includes("..");
+}
+
+/**
+ * Where an import of the capability's name points: the capability, the capability by a specifier that
+ * resolves to nothing, or somebody else's module.
+ *
+ * Deep paths are the capability because an adopter reaching past the barrel is still importing *this
+ * capability*, and the three commands have to agree on that. They did not: `add` blessed a hand-edited
+ * deep import, `remove` left it behind while uninstalling the package, and `eject` refused to find it.
+ *
+ * The bare package is its own verdict because it is **ours and broken**: every capability package
+ * exports `./src/*` and nothing else, so `import { auth } from "@pithy-sh/auth"` throws at load
+ * (`catalog.test.ts` holds that against all fifteen). `remove` and `eject` still own it — leaving it
+ * behind while the package is uninstalled is the unloadable config `remove` exists to undo — but `add`
+ * must not read it as wiring already done.
+ */
+export function importOrigin(specifier: string, pkg: string, ejectPath: string): ImportOrigin {
+  if (specifier === pkg) return "unresolvable";
+  if (isInside(specifier, pkg) || isInside(specifier, ejectPath)) return "capability";
+  return "foreign";
+}
+
+/**
+ * Whether the import is the capability's to rewrite or take out — every origin but `foreign`.
+ *
+ * The question `remove` and `eject` ask. Whether it also *loads* is a separate one, and only `add`
+ * needs it: see {@link importOrigin}.
  */
 export function isCapabilityImport(specifier: string, pkg: string, ejectPath: string): boolean {
-  return specifier === pkg || specifier.startsWith(`${pkg}/`) || specifier === ejectPath;
+  return importOrigin(specifier, pkg, ejectPath) !== "foreign";
 }
 
 /**
