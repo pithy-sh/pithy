@@ -54,10 +54,12 @@ describe("auth capability", () => {
     }
   });
 
-  test("contributes the rate-limit + session middleware and routes", () => {
+  test("contributes the same-origin, rate-limit and session middleware, and routes", () => {
     const cap = build();
-    // Two middleware: the tier-1 edge rate limiter (runs first) then session resolution.
-    expect(cap.middleware?.length).toBe(2);
+    // Three middleware, in this order: the same-origin policy is published first so every route —
+    // auth's and the adopter's — can gate on it; then the tier-1 edge rate limiter; then session
+    // resolution.
+    expect(cap.middleware?.length).toBe(3);
     expect(typeof cap.routes).toBe("function");
   });
 

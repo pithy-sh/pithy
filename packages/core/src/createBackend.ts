@@ -184,6 +184,10 @@ export function createBackend<
     // `requireControlPlane()` gate in the tree denies while it is null, so an admin route in a Worker
     // that never composed the seam is closed rather than unguarded.
     if (c.get("controlPlaneVerifier") === undefined) c.set("controlPlaneVerifier", null);
+    // Null unless a capability publishes a gate bound to the origins it resolved. Every
+    // `requireSameOrigin()` denies while it is null — a CSRF check whose policy is missing must refuse,
+    // not wave the request through.
+    if (c.get("sameOrigin") === undefined) c.set("sameOrigin", null);
     if (c.get("emit") === undefined) c.set("emit", noopEmit);
     // Fail closed: with no payments capability composed, nothing is held and every gate denies.
     if (c.get("entitlements") === undefined) c.set("entitlements", noEntitlementProvider);

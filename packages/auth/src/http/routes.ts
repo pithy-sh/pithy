@@ -4,6 +4,7 @@
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import { isAPIError } from "better-auth/api";
@@ -20,7 +21,6 @@ import {
   revokeFamily,
 } from "../token/rotation";
 import { registerAuthAdminRoutes } from "./adminRoutes";
-import { allowedOrigins, requireSameOrigin } from "./csrf";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
 import { getAuthInstance, resolveDb } from "./resolve";
@@ -64,8 +64,10 @@ function db(c: Ctx, wiring: AuthWiring) {
 export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) => void {
   return (app) => {
     const base = wiring.config.basePath;
-    // The CSRF origin guard for our own mutating routes (Better Auth guards its own endpoints).
-    const csrf = requireSameOrigin(allowedOrigins(wiring.config.baseURL, wiring.config.trustedOrigins));
+    // The CSRF origin guard for our own mutating routes (Better Auth guards its own endpoints). The
+    // same gate an adopter's routes wear: this capability publishes it bound to the origins it
+    // resolved, and reads it back here rather than binding a second copy of the same decision.
+    const csrf = requireSameOrigin();
 
     // Auto-gate the magic-link and OTP send routes with the humanity check, when turnstile is composed.
     if (wiring.turnstile) {

@@ -10,6 +10,7 @@ import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
 import { authTables } from "./data/tables";
+import { publishSameOrigin } from "./http/csrf";
 import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
@@ -192,9 +193,10 @@ export function auth(config: AuthConfigInput): AuthCapability {
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,
     }),
-    // Order matters: the tier-1 edge rate limiter runs first (before session resolution touches D1),
+    // Order matters: the same-origin policy is published first, so it is on the request before any
+    // route can gate on it; then the tier-1 edge rate limiter (before session resolution touches D1);
     // then the session-resolution middleware fills the AuthContext.
-    middleware: [rateLimitMiddleware, createSessionMiddleware(wiring)],
+    middleware: [publishSameOrigin(wiring), rateLimitMiddleware, createSessionMiddleware(wiring)],
     routes: createAuthRoutes(wiring),
     // Built from the RESOLVED basePath, never the default: an adopter who mounts auth at `/identity`
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
