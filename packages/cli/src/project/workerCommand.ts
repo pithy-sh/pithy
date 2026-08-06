@@ -33,8 +33,10 @@ const defaultInstall: WorkspaceInstall = async (projectDir) => {
     await run(pm, ["install"], { cwd: projectDir });
   } catch (cause) {
     throw new InternalError({
-      message: `${pm} install failed after scaffolding the worker.`,
-      action: `Run ${pm} install by hand in the project root.`,
+      // The worker is rolled back, so "run the install by hand" would point at a workspace that no
+      // longer has the package in it. The retry is the command itself.
+      message: `${pm} install failed, so the worker was not added.`,
+      action: `Fix the install, then run pithy worker add again — or pass --skip-install and run ${pm} install later.`,
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
@@ -92,11 +94,58 @@ export interface AddWorkerOptions extends WorkerContext {
 }
 
 /**
+ * Everything `pithy worker add` does once `apps/<name>/` exists: link the worker's `.dev.vars`, take a
+ * port when there is a block to take one from, and relink the workspace.
+ *
+ * **The install goes last.** It used to run first, and it is the one step here that reaches the network —
+ * so when it threw, the `.dev.vars` wiring below it never ran and every worker after the first came out
+ * without the link `pithy init` promises every worker has. Ordering fixes that outright: by the time an
+ * install can fail, there is nothing left for it to skip.
+ */
+async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<AddWorkerReport> {
+  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
+  const { mainRoot, inWorktree } = await resolveRoots(options);
+
+  let port: number | null = null;
+  let reconciled = false;
+  if (inWorktree) {
+    const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
+    const report = await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
+    port = report.dev.workers[options.name]?.port ?? null;
+    reconciled = true;
+  } else {
+    // No feature port block in a plain checkout — just link the new worker's .dev.vars at the shared file.
+    await wireFeatureDevVars({
+      mainRoot,
+      worktreePath: options.projectDir,
+      workers: await discoverWorkers(options.projectDir),
+    });
+  }
+
+  if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
+  return { name: options.name, dir, port, reconciled };
+}
+
+/**
  * Scaffold `apps/<name>/` and wire it into the project — the logic behind `pithy worker add`. Additive: the
  * root worker and every sibling are untouched. Inside a feature worktree it reconciles the feature's
  * `.dev.config.json` (the new worker takes the lowest free port in the reserved block, every existing worker
  * keeps its port) and re-links `.dev.vars`. In a plain main checkout there is no port block yet — it only
  * links `.dev.vars`; ports are assigned when `pithy feature create`/`sync` runs.
+ *
+ * **All-or-nothing.** Anything that fails after the directory is made rolls it back, so the same command
+ * works on the retry. It used to leave the half-made `apps/<name>` behind, and `scaffoldWorker` refuses a
+ * directory holding anything at all — so the failure blocked its own retry, and `rm -rf` by hand was the
+ * only way forward. Rolled back rather than resumed, deliberately: `apps/<name>` is a directory pithy owns
+ * outright and fills in one pass, so nothing in it is ever the adopter's and removing it destroys nothing
+ * they wrote. Resuming would mean deciding whether a non-empty `apps/<name>` is our half-made worker or
+ * their directory — and after they have opened an editor in it, those look identical. Guessing wrong there
+ * overwrites their file, which is a worse failure than the one being fixed.
+ *
+ * The feature's `.dev.config.json` may name the rolled-back worker until the next reconcile. It is derived
+ * state, rebuilt from the workers actually present on every `feature sync`, `worker add` and `worker
+ * remove`, and `pithy dev` starts the discovered set rather than the pinned one — so a stale entry starts
+ * nothing and costs the feature one port until it is next reconciled away.
  */
 export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerReport> {
   // The project comes from the root config, through `requireProjectName` — never the directory basename.
@@ -107,29 +156,14 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   const project = requireProjectName(await loadProject(options.projectDir));
   const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project });
 
-  if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
-
-  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
-  const { mainRoot, inWorktree } = await resolveRoots(options);
-
-  if (!inWorktree) {
-    // No feature port block in a plain checkout — just link the new worker's .dev.vars at the shared file.
-    await wireFeatureDevVars({
-      mainRoot,
-      worktreePath: options.projectDir,
-      workers: await discoverWorkers(options.projectDir),
-    });
-    return { name: options.name, dir, port: null, reconciled: false };
+  try {
+    return await wireAddedWorker(options, dir);
+  } catch (cause) {
+    // Only `dir`, and only the one this call just created — never a sibling, and never a path that was
+    // there before `scaffoldWorker` ran, which it would have refused.
+    await rm(dir, { recursive: true, force: true });
+    throw cause;
   }
-
-  const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
-  const report = await syncFeatureDevConfig({
-    mainRoot,
-    worktreePath: options.projectDir,
-    branch,
-    discoverWorkers,
-  });
-  return { name: options.name, dir, port: report.dev.workers[options.name]?.port ?? null, reconciled: true };
 }
 
 /** One row of {@link listWorkers}: a worker's name, dir, whether it autostarts, and its pinned dev port. */

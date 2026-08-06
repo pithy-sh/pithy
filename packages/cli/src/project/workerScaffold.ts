@@ -5,7 +5,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
-import { ensureEmptyTarget, WORKER_NAME } from "./scaffold";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { ensureEmptyTarget, kitRange, WORKER_NAME } from "./scaffold";
 
 /**
  * The scaffolded app capability's name — which is also its **migration namespace**, and namespaces admit no
@@ -95,6 +96,12 @@ function workerFiles(name: string, project: string): Record<string, string> {
 }
 `;
 
+  // The kit range, by the same rule `pithy init` stamps into the first Worker — `kitRange` imported from
+  // there rather than restated, because a second copy of the rule is a second thing to forget. `null`
+  // while nothing under `@pithy-sh/*` is published, and then the line is omitted outright: a `"^0.0.0"`
+  // here 404'd the install this command runs, which is how the second Worker in a project came out
+  // half-made. A published version writes the range with no change to this file.
+  const kit = kitRange(PACKAGE_VERSION);
   const pkg = `${JSON.stringify(
     {
       // `<project>-<worker>`, matching both the deploy name above and what `pithy init` gives `apps/api`,
@@ -102,9 +109,18 @@ function workerFiles(name: string, project: string): Record<string, string> {
       name: `${project}-${name}`,
       private: true,
       type: "module",
-      scripts: { dev: "wrangler dev", deploy: "wrangler deploy" },
-      dependencies: { "@pithy-sh/core": "^0.0.0", hono: "^4.12.0" },
-      devDependencies: { "@cloudflare/workers-types": "^4.20260610.1", wrangler: "^4.99.0" },
+      // Every field below is held equal to the starter template's by `scaffoldParity.test.ts`. This file
+      // and that template are the project's two Worker producers, and only one of them is ever the file
+      // somebody remembers to edit — which is how the pins here fell a major version behind.
+      engines: { node: ">=22" },
+      scripts: {
+        dev: "wrangler dev",
+        deploy: "wrangler deploy",
+        "deploy:staging": "wrangler deploy --env staging",
+        "deploy:prod": "wrangler deploy --env prod",
+      },
+      dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.12.0" },
+      devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: "^4.115.0" },
     },
     null,
     2,

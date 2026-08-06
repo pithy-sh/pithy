@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
@@ -123,6 +123,84 @@ describe("addWorker", () => {
     } finally {
       await rm(mainRoot, { recursive: true, force: true });
     }
+  });
+
+  test("wires .dev.vars before the install, so a failed install cannot be why a worker has none", async () => {
+    // The ordering that broke every worker after the first: the install ran first and threw, and the
+    // dev-vars link below it never ran at all. The link is the convention `pithy init` established —
+    // one `.dev.vars` at the project root, symlinked into every worker.
+    await writeFile(join(dir, ".dev.vars"), "SHARED=1\n");
+    const order: string[] = [];
+    await addWorker({
+      projectDir: dir,
+      name: "web",
+      mainRoot: dir,
+      install: async () => {
+        order.push("install");
+        // Whatever the worker looks like when the install runs is what it looks like afterwards.
+        order.push((await lstat(join(dir, "apps", "web", ".dev.vars"))).isSymbolicLink() ? "linked" : "plain");
+      },
+      discoverWorkers: discover(dir, ["app", "web"]),
+    });
+
+    expect(order).toEqual(["install", "linked"]);
+  });
+
+  test("a failed install leaves nothing behind, so the same command works on the retry", async () => {
+    // `apps/<name>` is a directory pithy owns outright — `ensureEmptyTarget` refuses to scaffold into
+    // one that holds anything. A half-made worker therefore blocks its own retry, and the adopter's
+    // only way out was `rm -rf`. All-or-nothing instead: the failure rolls the directory back.
+    const failing = async () => {
+      throw new InternalError({ message: "npm install failed after scaffolding the worker.", action: "Retry." });
+    };
+    await expect(
+      addWorker({
+        projectDir: dir,
+        name: "web",
+        mainRoot: dir,
+        install: failing,
+        discoverWorkers: discover(dir, ["app", "web"]),
+      }),
+    ).rejects.toBeInstanceOf(InternalError);
+
+    await expect(stat(join(dir, "apps", "web"))).rejects.toThrow();
+
+    // The whole point: the same command, unchanged, now succeeds.
+    const report = await addWorker({
+      projectDir: dir,
+      name: "web",
+      mainRoot: dir,
+      skipInstall: true,
+      discoverWorkers: discover(dir, ["app", "web"]),
+    });
+    expect(report.dir).toBe(join(dir, "apps", "web"));
+    await stat(join(dir, "apps", "web", "wrangler.jsonc"));
+  });
+
+  test("a worker that was already there survives a failed run — the rollback removes only what it made", async () => {
+    // The rollback must never reach a sibling, and must never reach a directory this run did not create.
+    await addWorker({
+      projectDir: dir,
+      name: "admin",
+      mainRoot: dir,
+      skipInstall: true,
+      discoverWorkers: discover(dir, ["app", "admin"]),
+    });
+
+    await expect(
+      addWorker({
+        projectDir: dir,
+        name: "web",
+        mainRoot: dir,
+        install: async () => {
+          throw new InternalError({ message: "install failed.", action: "Retry." });
+        },
+        discoverWorkers: discover(dir, ["app", "admin", "web"]),
+      }),
+    ).rejects.toBeInstanceOf(InternalError);
+
+    await stat(join(dir, "apps", "admin", "wrangler.jsonc"));
+    await expect(stat(join(dir, "apps", "web"))).rejects.toThrow();
   });
 });
 

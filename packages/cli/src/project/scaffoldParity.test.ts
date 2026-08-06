@@ -5,14 +5,16 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { VERSION_METADATA_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { kitRange, scaffoldProject } from "./scaffold";
 import { hasVersionMetadata } from "./versionMetadata";
 import { scaffoldWorker } from "./workerScaffold";
 
 /**
- * The two `wrangler.jsonc` producers, held together.
+ * The two Worker producers, held together.
  *
  * A Pithy project's Workers come from two entirely separate code paths that share nothing.
  * `pithy init` copies `templates/starter/apps/api/wrangler.jsonc` and string-replaces three
@@ -26,10 +28,28 @@ import { scaffoldWorker } from "./workerScaffold";
  *
  * So this file asserts the invariants that must hold in **both**, rather than in whichever one a change
  * happened to touch. It deliberately does not demand the files be identical: they legitimately differ.
+ *
+ * `wrangler.jsonc` was the only file it covered, which is exactly why `package.json` drifted next — two
+ * stale pins, a missing `engines`, and two missing deploy scripts, in the producer nobody re-read. Both
+ * files are covered now, each against the right side of the starter: `wrangler.jsonc` against the
+ * template on disk, which `pithy init` only string-replaces, and `package.json` against a **scaffolded**
+ * project, because `pithy init` stamps that one and the template's pre-stamp text is not what an adopter
+ * ever holds.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STARTER_WRANGLER = resolve(HERE, "../../../../templates/starter/apps/api/wrangler.jsonc");
+
+/** A worker's `package.json`, in the shape both producers write. */
+interface WorkerPackage {
+  name?: string;
+  private?: boolean;
+  type?: string;
+  engines?: Record<string, string>;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
 
 describe("both wrangler.jsonc producers", () => {
   let dir: string;
@@ -84,5 +104,65 @@ describe("both wrangler.jsonc producers", () => {
 
   test("declare the same environments, so a capability lands everywhere in both", () => {
     expect(Object.keys((added.env ?? {}) as object).sort()).toEqual(Object.keys((starter.env ?? {}) as object).sort());
+  });
+});
+
+describe("both package.json producers", () => {
+  let dir: string;
+  let added: WorkerPackage;
+  let starter: WorkerPackage;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-package-parity-"));
+    // Project name and worker name deliberately different. `<project>-<worker>` and `<worker>` look
+    // alike whenever they are not, and every check below that reads a name would pass on a coincidence.
+    const project = join(dir, "replay");
+    await scaffoldProject({ targetDir: project, appName: "replay", worker: "board" });
+    starter = JSON.parse(await readFile(join(project, "apps", "board", "package.json"), "utf8")) as WorkerPackage;
+
+    const { dir: workerDir } = await scaffoldWorker({ projectDir: project, name: "web", project: "replay" });
+    added = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as WorkerPackage;
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("declare the same kit range — one that resolves, or none at all", () => {
+    // The regression this block exists for. `pithy init` stopped writing `"@pithy-sh/core": "^0.0.0"`;
+    // `pithy worker add` went on writing it, and every worker after the first 404'd on install.
+    // Asserted from `kitRange` rather than from today's value, so the release commit needs no edit here.
+    const range = kitRange(PACKAGE_VERSION);
+    for (const pkg of [starter, added]) {
+      expect(pkg.dependencies?.[PACKAGE_NAME]).toBe(range ?? undefined);
+      expect(pkg.dependencies?.hono).toBe("^4.12.0");
+    }
+  });
+
+  test("pin the same toolchain — a drifted wrangler is a Worker built by a different compiler", () => {
+    for (const key of ["@cloudflare/workers-types", "wrangler"]) {
+      expect(added.devDependencies?.[key], key).toBe(starter.devDependencies?.[key]);
+    }
+  });
+
+  test("declare the same Node floor, so `npm install` refuses the same runtimes", () => {
+    expect(added.engines).toEqual(starter.engines);
+    expect(added.engines?.node).toBeDefined();
+  });
+
+  test("declare the same scripts, so every worker deploys to staging and prod the same way", () => {
+    // `pithy deploy --env prod` is the supported path, but a worker whose package.json is missing
+    // `deploy:prod` is a worker whose adopter reaches for wrangler by hand and guesses the flag.
+    expect(Object.keys(added.scripts ?? {}).sort()).toEqual(Object.keys(starter.scripts ?? {}).sort());
+    for (const [name, command] of Object.entries(starter.scripts ?? {})) {
+      expect(added.scripts?.[name], name).toBe(command);
+    }
+  });
+
+  test("name the package `<project>-<worker>` in both, never the bare worker", () => {
+    // A workspace holding two projects would otherwise hold two packages called `board`.
+    expect(starter.name).toBe("replay-board");
+    expect(added.name).toBe("replay-web");
+    expect(added.private).toBe(true);
+    expect(added.type).toBe("module");
   });
 });
