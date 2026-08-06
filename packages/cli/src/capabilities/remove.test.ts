@@ -424,7 +424,7 @@ describe("removeCapability", () => {
       },
       uninstall: async (pkg) => {
         calls.uninstall.push(pkg);
-        return { packageManager: "bun" };
+        return { packageManager: "bun", uninstalled: true };
       },
       deleteSource: async (d) => {
         calls.deleteSource.push(d);
@@ -624,6 +624,24 @@ describe("removeCapability", () => {
     expect(result.packageManager).toBe("bun");
   });
 
+  test("an uninstall that declined is not reported as one — the linked package is still there", async () => {
+    // `uninstallPackage` refuses to hand a linked checkout to npm, which would prune the whole scope.
+    // The wiring still goes, so the removal is real; saying "Uninstalled @pithy-sh/turnstile" is not.
+    await fixture();
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile")] });
+
+    const result = await removeCapability({
+      workerDir: worker,
+      capability: "turnstile",
+      steps: { ...s, uninstall: async () => ({ packageManager: "npm", uninstalled: false }) },
+    });
+
+    expect(result.present).toBe(true);
+    expect(result.packageManager).toBeUndefined();
+    expect(result.keptLinked).toBe(true);
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).not.toContain("turnstile()");
+  });
+
   test("with the real scan: two workers composing one capability keep the package installed", async () => {
     // The end-to-end shape of the defect: apps/api and apps/web both compose turnstile. Removing it from
     // api must leave @pithy-sh/turnstile installed, so apps/web/pithy.config.ts still loads.
@@ -645,7 +663,7 @@ describe("removeCapability", () => {
         packageInstalled: async () => true,
         uninstall: async (pkg) => {
           uninstalled.push(pkg);
-          return { packageManager: "bun" };
+          return { packageManager: "bun", uninstalled: true };
         },
       },
     });
@@ -675,7 +693,7 @@ describe("removeCapability", () => {
         packageInstalled: async () => true,
         uninstall: async (pkg) => {
           uninstalled.push(pkg);
-          return { packageManager: "bun" };
+          return { packageManager: "bun", uninstalled: true };
         },
       },
     });

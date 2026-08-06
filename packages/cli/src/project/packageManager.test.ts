@@ -82,7 +82,46 @@ describe("uninstallPackage", () => {
     });
 
     expect(result.packageManager).toBe("bun");
+    expect(result.uninstalled).toBe(true);
     expect(calls).toEqual([{ command: "bun", args: ["remove", "@pithy-sh/auth"], cwd: dir }]);
+  });
+
+  test("declines for a package a linked checkout provides — nothing declared it, so nothing removes it", async () => {
+    // The mirror of the install skip, and not a symmetry for its own sake. npm treats every undeclared
+    // entry as extraneous and prunes the lot: `npm uninstall @pithy-sh/auth` over a linked scope takes
+    // `secrets` and `core` with it, out from under a worker whose config still imports them. No lockfile
+    // means npm, so that is the default path for the project this whole state exists to serve.
+    await link(dir, "@pithy-sh/auth");
+    await link(dir, "@pithy-sh/secrets");
+    const calls: string[] = [];
+
+    const result = await uninstallPackage({
+      projectDir: dir,
+      pkg: "@pithy-sh/auth",
+      run: async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+      },
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.uninstalled).toBe(false);
+  });
+
+  test("a registry install is still uninstalled — that one has a declaration to remove", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await place(dir, "@pithy-sh/auth");
+    const calls: string[] = [];
+
+    const result = await uninstallPackage({
+      projectDir: dir,
+      pkg: "@pithy-sh/auth",
+      run: async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+      },
+    });
+
+    expect(result.uninstalled).toBe(true);
+    expect(calls).toEqual(["bun remove @pithy-sh/auth"]);
   });
 });
 

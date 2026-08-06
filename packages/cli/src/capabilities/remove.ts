@@ -259,8 +259,12 @@ export interface RemoveSteps {
   loadCapabilities: () => Promise<Capability[]>;
   /** Drop the removed capability's tables for an env (default: {@link dropCapabilityTables}). */
   dropTables: (capability: Capability, env: string) => Promise<DatabaseRun[]>;
-  /** Uninstall the package (default: {@link uninstallPackage}). */
-  uninstall: (pkg: string) => Promise<{ packageManager: string }>;
+  /**
+   * Uninstall the package (default: {@link uninstallPackage}). `uninstalled` is false when the step
+   * declined — a linked checkout provides the package, nothing declared it, and npm would prune the
+   * whole scope if asked to remove it.
+   */
+  uninstall: (pkg: string) => Promise<{ packageManager: string; uninstalled: boolean }>;
   /** Delete an ejected capability's local source tree (default: recursive `fs.rm`). */
   deleteSource: (dir: string) => Promise<void>;
   /** Whether `@pithy-sh/<cap>` is installed (default: a `node_modules` stat). */
@@ -341,6 +345,12 @@ export interface RemoveResult {
    * Empty when nothing else needs it — the case where `packageManager` names the uninstall that ran.
    */
   keptFor: string[];
+  /**
+   * True when the package stayed because a linked checkout provides it. Nothing declared it, so there is
+   * nothing to uninstall — and npm, asked anyway, prunes every linked sibling with it. Distinct from
+   * {@link RemoveResult.keptFor}, which is another Worker still needing a package that *is* declared.
+   */
+  keptLinked?: boolean;
   /** True when the capability's D1 tables were left in place (no `--drop`). */
   tablesRemain: boolean;
   /** True when a `--drop` confirmation was declined — nothing was changed. */
@@ -462,6 +472,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   const removedBindings = target ? await removeFromWrangler(workerDir, target, others) : [];
 
   let packageManager: string | undefined;
+  let keptLinked = false;
   if (ejected) {
     await steps.deleteSource(join(workerDir, EJECT_DIR, capability));
   } else if (installed && keptFor.length === 0 && !isSharedCapabilityPackage(pkg)) {
@@ -472,7 +483,13 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     // A shared package is never uninstalled at all. `controlplane` lives in `@pithy-sh/core`, which is
     // every capability's dependency and the runtime the app is built on: removing the seam unwires it,
     // and uninstalling core would take the project with it.
-    ({ packageManager } = await steps.uninstall(pkg));
+    //
+    // The step may still decline: a package a linked checkout provides has no declaration to remove, and
+    // npm asked to remove one prunes every linked sibling as extraneous. Only a removal that happened is
+    // reported as one — the manager is dropped rather than kept, so no surface can claim otherwise.
+    const outcome = await steps.uninstall(pkg);
+    if (outcome.uninstalled) packageManager = outcome.packageManager;
+    else keptLinked = true;
   }
 
   await audit({
@@ -481,7 +498,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     severity: "info",
     resourceType: "capability",
     resourceId: capability,
-    metadata: { ejected, packageManager: packageManager ?? null, removedBindings, keptFor },
+    metadata: { ejected, packageManager: packageManager ?? null, removedBindings, keptFor, keptLinked },
   });
 
   return {
@@ -492,6 +509,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     dropped,
     removedBindings,
     keptFor,
+    keptLinked,
     tablesRemain: tablesRemain(target, dropped),
   };
 }

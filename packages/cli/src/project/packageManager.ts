@@ -189,14 +189,34 @@ export interface UninstallPackageOptions {
   run?: InstallRunner;
 }
 
+/** What an uninstall did: the manager it would use, and whether it actually removed anything. */
+export interface UninstallOutcome {
+  /** The project's package manager — reported whether or not an uninstall ran, like {@link installPackage}. */
+  packageManager: PackageManager;
+  /** False when the package was left alone because a linked checkout provides it. */
+  uninstalled: boolean;
+}
+
 /**
  * Uninstall a package with the project's detected package manager — the inverse of {@link installPackage},
- * behind `pithy remove`. Returns which manager ran. The adopter's PM is always used.
+ * behind `pithy remove`. Returns which manager ran, and whether anything was removed. The adopter's PM is
+ * always used.
+ *
+ * A package a linked checkout provides is **not** uninstalled ({@link alreadyProvided}), exactly as the
+ * install skips it, and the asymmetry was the bug: nothing declared the package, so there is no
+ * declaration for a remove to take out — but every manager is asked anyway, and npm answers by pruning
+ * the *whole* linked scope as extraneous. One `pithy remove auth` unlinked `secrets` and `core` out from
+ * under the same worker's config, which still imports them. `detectPackageManager` returns npm for a
+ * project with no lockfile, so that is the default path here, not an edge.
+ *
+ * The alternative was to make the caller check first. It is the same predicate the install already owns,
+ * and a guard every call site must remember is a guard one of them forgets.
  */
-export async function uninstallPackage(options: UninstallPackageOptions): Promise<{ packageManager: PackageManager }> {
+export async function uninstallPackage(options: UninstallPackageOptions): Promise<UninstallOutcome> {
   const packageManager = await detectPackageManager(options.projectDir);
+  if (await alreadyProvided(options.projectDir, options.pkg)) return { packageManager, uninstalled: false };
   await (options.run ?? spawnInstall)(packageManager, uninstallArgs(packageManager, options.pkg), options.projectDir);
-  return { packageManager };
+  return { packageManager, uninstalled: true };
 }
 
 /**
