@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { HttpError } from "@pithy-sh/core/src/error/http";
-import { PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { KitErrorPayload, PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import {
@@ -38,10 +38,11 @@ describe("the testers error family", () => {
     }
   });
 
-  test("constructing one at all proves it is registered in core's closed union", () => {
-    // `PithyError`'s constructor runs `ErrorPayload.parse`, so an unregistered code cannot be thrown.
-    // That is what makes this file's existence a check rather than a declaration.
-    for (const { error: Vehicle } of FAMILY) expect(() => new Vehicle()).not.toThrow();
+  test("every code is registered in core's closed union", () => {
+    // Against `KitErrorPayload`, not `ErrorPayload`: the latter is open at its edge for an adopter's
+    // own codes, so a typo in a `testers/` code would parse there as somebody's custom error with a
+    // free-floating status. The closed union is what makes this file a check rather than a claim.
+    for (const { error: Vehicle } of FAMILY) expect(() => KitErrorPayload.parse(new Vehicle().payload)).not.toThrow();
   });
 
   test("every code is in the testers domain, matching the table prefix and the migration namespace", () => {

@@ -5,10 +5,12 @@ import { z } from "zod";
 
 /**
  * The error object model. One Zod schema is the whole definition of every failure Pithy
- * can emit: the discriminated union `ErrorPayload` is the closed taxonomy, keyed on a
- * machine-readable `code`. The `PithyError` class (./pithyError) is only the throw/catch
- * vehicle that carries one of these payloads; the surfaces (HTTP, terminal) are encoders
- * over this schema. `.describe()` on every field feeds the generated error catalog.
+ * can emit: the discriminated union `KitErrorPayload` is the kit's closed taxonomy, keyed on a
+ * machine-readable `code`, and a new capability's codes go there. `ErrorPayload` is that plus
+ * one open member for an adopter's own domains — see the seam at the foot of this file, and
+ * never switch exhaustively over it. The `PithyError` class (./pithyError) is only the
+ * throw/catch vehicle that carries one of these payloads; the surfaces (HTTP, terminal) are
+ * encoders over this schema. `.describe()` on every field feeds the generated error catalog.
  */
 
 /** A single field-level validation failure, mirrored from a Zod issue for the wire. */
@@ -96,6 +98,34 @@ const InternalPublic = z
   })
   .describe("An unexpected server-side failure (500).");
 
+const UpstreamFailedPublic = z
+  .object({
+    code: z
+      .literal("core/upstream_failed")
+      .describe(
+        "A service this one depends on and does not control failed: the connection was refused, the answer carried an error status, or the body could not be read as what it claimed to be. Deliberately distinct from `core/internal` — a 500 says this service broke, and reporting someone else's outage that way sends the operator to read the wrong logs.",
+      ),
+    status: z.literal(502).describe("Bad Gateway — the fault is upstream of this service."),
+    ...publicFields,
+  })
+  .describe("A dependency this service does not control failed (502).");
+
+const UpstreamTimeoutPublic = z
+  .object({
+    code: z
+      .literal("core/upstream_timeout")
+      .describe(
+        "A service this one depends on did not answer inside its deadline. Separate from `core/upstream_failed` because the two say different things to a caller: a failed call is answered, a timed-out one may still be applied upstream, so only this one makes a blind retry a question worth asking.",
+      ),
+    status: z
+      .literal(504)
+      .describe(
+        "Gateway Timeout — the hop ran out of time. Not 503: `Service Unavailable` claims *this* service is the one that cannot serve, which sends a caller (and every retry heuristic that reads it) at the wrong system. 503 stays for a dependency the capability cannot work without at all — see `payments/provider_unavailable`.",
+      ),
+    ...publicFields,
+  })
+  .describe("A dependency this service does not control did not answer in time (504).");
+
 // --- @pithy-sh/core: durable-job (Cloudflare Workflow) dispatch codes ---
 
 const InvalidWorkflowParamsPublic = z
@@ -131,6 +161,20 @@ const UnknownWorkflowPublic = z
     ...publicFields,
   })
   .describe("No registered workflow answers to the dispatch key (500).");
+
+// --- @pithy-sh/core: the `signed-webhook` verification strategy ---
+
+const WebhookUnverifiedPublic = z
+  .object({
+    code: z
+      .literal("core/webhook_unverified")
+      .describe(
+        "An inbound webhook did not prove it came from the sender that holds the signing secret. Deliberately one code for every failing step — no header, an unreadable one, a delivery outside the freshness window, or an HMAC that does not match these bytes — so a forger cannot use the response to learn which check it tripped. `detail` names the step for the log, and the HTTP codec strips it.",
+      ),
+    status: z.literal(401).describe("Unauthorized — the delivery did not prove its origin."),
+    ...publicFields,
+  })
+  .describe("An inbound webhook failed its signature check (401).");
 
 // --- @pithy-sh/cloudflare: out-of-Worker CF REST client codes ---
 
@@ -1246,11 +1290,12 @@ const TestersNotConfiguredPublic = z
   .describe("The testers capability is composed but incompletely configured (500).");
 
 /**
- * The public projection of every error: the wire shape clients receive. No `detail`. Parsing
- * strips any stray `detail` (Zod drops unknown keys), so this schema is itself a guard against
- * internal context leaking outward.
+ * The public projection of every error **the kit itself defines**: the wire shape clients receive.
+ * No `detail`. Parsing strips any stray `detail` (Zod drops unknown keys), so this schema is itself
+ * a guard against internal context leaking outward. `PublicErrorPayload` below widens it by the
+ * adopter seam; this one stays closed, because the code set is what makes it discriminated.
  */
-export const PublicErrorPayload = z
+export const KitPublicErrorPayload = z
   .discriminatedUnion("code", [
     InvalidInputPublic,
     InvalidTokenPublic,
@@ -1259,9 +1304,12 @@ export const PublicErrorPayload = z
     ConflictPublic,
     RateLimitPublic,
     InternalPublic,
+    UpstreamFailedPublic,
+    UpstreamTimeoutPublic,
     InvalidWorkflowParamsPublic,
     MissingWorkflowBindingPublic,
     UnknownWorkflowPublic,
+    WebhookUnverifiedPublic,
     CloudflareNotConfiguredPublic,
     CloudflareRequestFailedPublic,
     CloudflareInvalidResponsePublic,
@@ -1363,8 +1411,7 @@ export const PublicErrorPayload = z
     TestersWithdrawnPublic,
     TestersNotConfiguredPublic,
   ])
-  .describe("The public shape of every error Pithy emits — the closed set, safe for the wire.");
-export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
+  .describe("The public shape of every error the kit defines — the closed set, safe for the wire.");
 
 // The full members: each public member plus the internal `detail`. Built as explicit consts
 // (not mapped) so the `code`-literal discriminated-union types survive for `Extract` narrowing.
@@ -1375,6 +1422,8 @@ const NotFound = NotFoundPublic.extend(detailField).describe(NotFoundPublic.desc
 const Conflict = ConflictPublic.extend(detailField).describe(ConflictPublic.description ?? "");
 const RateLimit = RateLimitPublic.extend(detailField).describe(RateLimitPublic.description ?? "");
 const Internal = InternalPublic.extend(detailField).describe(InternalPublic.description ?? "");
+const UpstreamFailed = UpstreamFailedPublic.extend(detailField).describe(UpstreamFailedPublic.description ?? "");
+const UpstreamTimeout = UpstreamTimeoutPublic.extend(detailField).describe(UpstreamTimeoutPublic.description ?? "");
 const InvalidWorkflowParams = InvalidWorkflowParamsPublic.extend(detailField).describe(
   InvalidWorkflowParamsPublic.description ?? "",
 );
@@ -1382,6 +1431,9 @@ const MissingWorkflowBinding = MissingWorkflowBindingPublic.extend(detailField).
   MissingWorkflowBindingPublic.description ?? "",
 );
 const UnknownWorkflow = UnknownWorkflowPublic.extend(detailField).describe(UnknownWorkflowPublic.description ?? "");
+const WebhookUnverified = WebhookUnverifiedPublic.extend(detailField).describe(
+  WebhookUnverifiedPublic.description ?? "",
+);
 const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(detailField).describe(
   CloudflareNotConfiguredPublic.description ?? "",
 );
@@ -1659,10 +1711,11 @@ const SupportReplyFailed = SupportReplyFailedPublic.extend(detailField).describe
 );
 
 /**
- * Every error Pithy can emit, in full: the public fields plus the internal `detail`. This is
- * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
+ * Every error **the kit itself defines**, in full: the public fields plus the internal `detail`.
+ * The closed taxonomy, and the only union anything may switch over exhaustively. `ErrorPayload`
+ * below is this plus the adopter seam, and that is what a `PithyError` carries.
  */
-export const ErrorPayload = z
+export const KitErrorPayload = z
   .discriminatedUnion("code", [
     InvalidInput,
     InvalidToken,
@@ -1671,9 +1724,12 @@ export const ErrorPayload = z
     Conflict,
     RateLimit,
     Internal,
+    UpstreamFailed,
+    UpstreamTimeout,
     InvalidWorkflowParams,
     MissingWorkflowBinding,
     UnknownWorkflow,
+    WebhookUnverified,
     CloudflareNotConfigured,
     CloudflareRequestFailed,
     CloudflareInvalidResponse,
@@ -1775,8 +1831,128 @@ export const ErrorPayload = z
     TestersCopyNotAllowed,
     TestersNotConfigured,
   ])
+  .describe("Every error the kit defines, with internal detail. The closed taxonomy.");
+export type KitErrorPayload = z.infer<typeof KitErrorPayload>;
+
+/**
+ * The closed set of codes the kit defines. Exhaustive handling — a `switch` with no `default`, a
+ * lookup table keyed by code — belongs on this type, never on {@link ErrorCode}, which is open by
+ * construction and would make such a switch a lie the moment an adopter registers a code.
+ */
+export type KitErrorCode = KitErrorPayload["code"];
+
+// --- The adopter seam: codes the kit does not (and should not) define ---
+//
+// The taxonomy above is closed on purpose — a pinned `status` per `code`, a discriminator TypeScript
+// can narrow on, no way to typo a member into existence. But closed is not the same as complete. An
+// adopter's own domains (`connect/device_code_expired`, `keys/rotation_locked`) are unrepresentable
+// in it, and the choice we left them was to reuse a kit code that means something else or to abandon
+// `PithyError`. Both are worse than widening the union here.
+//
+// So `ErrorPayload` is the kit union **plus** one open member, and three properties keep the seam
+// from costing what the closed set bought:
+//
+//  1. **`detail` still never reaches a client.** An adopter member carries `detail` exactly like a
+//     kit member, and the public projection has no such field — so `PublicErrorPayload` strips it on
+//     parse and the HTTP codec drops it on encode, per code and without exception. That is the whole
+//     security boundary, and it is not per-member policy.
+//  2. **The kit's domains are reserved, exactly like the `pithy_` table prefix.** The open member
+//     refuses any code under a domain the closed union uses — not merely the codes it spells today.
+//     Refusing only the exact set would leave `auth/forbidden` with the wrong status failing, but
+//     `payments/verifcation_failed` passing: a capability's typo would stop being a hard failure and
+//     start shipping as a valid adopter code with a status nobody pinned. Reserving the domain also
+//     leaves the kit free to add codes under its own in a minor release without landing on top of
+//     an adopter's. So an adopter picks their own domain, and both sides stay out of each other's.
+//  3. **Kit narrowing survives.** The open code is branded, so `payload.code === "core/not_found"`
+//     still narrows to exactly that member. An unbranded `` `${string}/${string}` `` would sit in
+//     every narrowed union and break `.issues` on the validation member for every consumer.
+
+/** The `domain` half of a `domain/reason` code — everything before the first slash. */
+function domainOf(code: string): string {
+  const slash = code.indexOf("/");
+  return slash === -1 ? code : code.slice(0, slash);
+}
+
+/**
+ * Every `domain` the kit's own codes live under, at runtime. Derived from the union rather than
+ * listed, so a new capability's domain is reserved the moment its first code lands — there is no
+ * second list to forget. Read off `KitErrorPayload`, the union the open member is actually checked
+ * against; the public projection is kept in step by a parity test rather than by being the source.
+ */
+const KIT_ERROR_DOMAINS: ReadonlySet<string> = new Set(
+  KitErrorPayload.options.map((member) => domainOf(member.shape.code.value)),
+);
+
+/** The `domain` half of every code the kit defines, as a type. The reserved set, at compile time. */
+export type KitErrorDomain = KitErrorCode extends `${infer Domain}/${string}` ? Domain : never;
+
+/** One `domain` or `reason` segment: lower snake_case, opening on a letter. */
+const codeSegment = z.string().regex(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
+
+/**
+ * The most a `domain/reason` code may run to. Every kit code is a literal, so its length was fixed
+ * by construction; an adopter's is not, and this schema also runs on the **decode** side — on an
+ * error body parsed back from a service we do not control. Unbounded, a hostile or merely broken
+ * peer would choose how many bytes land in our log lines and audit rows. Sixty-four per segment is
+ * already twice the longest code the kit spells.
+ */
+const MAX_ERROR_CODE_LENGTH = 129;
+
+/**
+ * An adopter's code. Same `domain/reason` grammar the kit's own codes follow (CLAUDE.md §Errors),
+ * under a domain the kit does not use. Branded so the only way to hold one is to have parsed it —
+ * which is what keeps a kit literal out of the open member and every `code ===` narrow honest.
+ */
+export const ExtendedErrorCode = z
+  .templateLiteral([codeSegment, "/", codeSegment])
+  // The segment schemas above compile to a regex, and a regex has no length opinion — so the bound
+  // is a check on the whole code rather than a `.max()` on each half, which would be silently lost.
+  .check(z.maxLength(MAX_ERROR_CODE_LENGTH))
+  .refine((code) => !KIT_ERROR_DOMAINS.has(domainOf(code)), {
+    error: "That domain is the kit's. Namespace your codes under a domain of your own.",
+  })
+  .describe("An adopter-defined `domain/reason` code, outside the set the kit defines.")
+  .brand<"ExtendedErrorCode">();
+export type ExtendedErrorCode = z.output<typeof ExtendedErrorCode>;
+
+const ExtendedPublic = z
+  .object({
+    code: ExtendedErrorCode,
+    status: z
+      .int()
+      .min(400)
+      .max(599)
+      .describe(
+        "The HTTP status this code maps to. A kit member pins one literal status; an adopter's member cannot, so the bound is the range — an error is a 4xx or a 5xx, and nothing else may ride this union to the wire.",
+      ),
+    ...publicFields,
+  })
+  .describe("An error an adopter defined under their own domain, in the wire shape (no detail).");
+
+/**
+ * Every error that can reach a client, from the kit or from the adopter. `detail` is absent from
+ * both branches, so parsing a payload here strips it whatever defined the code.
+ */
+export const PublicErrorPayload = z
+  .union([KitPublicErrorPayload, ExtendedPublic])
+  .describe("The public shape of every error Pithy emits — kit and adopter alike, safe for the wire.");
+export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
+
+/** An adopter's own error, in full: their public fields plus the same internal `detail`. */
+export const ExtendedErrorPayload = ExtendedPublic.extend(detailField).describe(
+  "An error an adopter defined under their own domain, with internal detail.",
+);
+export type ExtendedErrorPayload = z.infer<typeof ExtendedErrorPayload>;
+
+/**
+ * Every error Pithy can carry, in full: the public fields plus the internal `detail`. This is
+ * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
+ * The kit branch is tried first, so a kit code is always validated against its pinned status.
+ */
+export const ErrorPayload = z
+  .union([KitErrorPayload, ExtendedErrorPayload])
   .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
 export type ErrorPayload = z.infer<typeof ErrorPayload>;
 
-/** The closed set of machine-readable error codes. */
+/** Every machine-readable error code: the kit's closed set, plus whatever an adopter registers. */
 export type ErrorCode = ErrorPayload["code"];

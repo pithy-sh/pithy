@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { KitErrorPayload, PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
 import {
   PaymentsEntitlementRequiredError,
@@ -41,10 +41,11 @@ describe("payments error family", () => {
     for (const { error } of FAMILY) expect(error().payload.code.startsWith("payments/")).toBe(true);
   });
 
-  test("constructing one at all proves the code is registered — PithyError parses its payload", () => {
-    // `PithyError`'s constructor runs `ErrorPayload.parse`, so an unregistered code cannot be thrown.
-    // That makes the loop above a real check that core's union and this file agree.
-    expect(() => FAMILY.map(({ error }) => error())).not.toThrow();
+  test("every code is registered in core's closed union, not merely well-formed", () => {
+    // Against `KitErrorPayload`, not `ErrorPayload`: the latter is open at its edge for an adopter's
+    // own codes, so a typo in a `payments/` code would parse there as somebody's custom error with a
+    // free-floating status. The closed union is what makes this file a check rather than a claim.
+    expect(() => FAMILY.map(({ error }) => KitErrorPayload.parse(error().payload))).not.toThrow();
   });
 
   test("detail never reaches a client — the public projection drops it", () => {

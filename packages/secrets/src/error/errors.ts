@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
- * `@pithy-sh/secrets` throw sugar. The `secrets/*` codes live in core's closed `ErrorPayload`
+ * `@pithy-sh/secrets` throw sugar. The `secrets/*` codes live in core's closed `KitErrorPayload`
  * union (CLAUDE.md §Errors: capabilities add their codes to the one union); these subclasses
  * are the package-local vehicles that set one of those members — the same pattern as core's
  * `NotFoundError` and `@pithy-sh/cloudflare`'s `CloudflareRequestError`. Runtime code in this

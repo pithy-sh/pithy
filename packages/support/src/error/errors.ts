@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
- * `@pithy-sh/support` throw sugar. The `support/*` codes live in core's closed `ErrorPayload` union
+ * `@pithy-sh/support` throw sugar. The `support/*` codes live in core's closed `KitErrorPayload` union
  * (CLAUDE.md §Errors: capabilities add their codes to the one union); these subclasses are the
  * package-local vehicles that set one of those members — the same pattern as `@pithy-sh/media` and
  * `@pithy-sh/payments`. Runtime code in this package throws one of these, never a plain `new Error`.

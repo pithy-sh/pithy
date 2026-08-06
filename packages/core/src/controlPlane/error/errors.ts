@@ -5,7 +5,7 @@ import { PithyError } from "../../error/pithyError";
 
 /**
  * The `control-plane` strategy's throw sugar. The `controlplane/*` codes live in core's closed
- * `ErrorPayload` union (CLAUDE.md §Errors); these subclasses are the vehicles that set one of them.
+ * `KitErrorPayload` union (CLAUDE.md §Errors); these subclasses are the vehicles that set one.
  *
  * The security posture here is stricter than elsewhere in the tree. Public `message` and `action` are
  * written for an operator reading a management client's logs, and say nothing a caller could use to

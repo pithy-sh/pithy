@@ -3,6 +3,7 @@
 
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { ErrorPayload, PublicErrorPayload } from "./payload";
 import { InternalError, PithyError, ValidationError } from "./pithyError";
@@ -13,12 +14,19 @@ import { InternalError, PithyError, ValidationError } from "./pithyError";
  * `detail`, so internal context can never land in an HTTP body.** `decode` (client SDK parses)
  * maps a wire body back to a payload. The one schema validates both directions, so the error a
  * server sends and the error an app receives are the same contract.
+ *
+ * The boundary is doubled, and deliberately: the function below removes `detail`, and Zod then
+ * validates the result against `PublicErrorPayload`, which has no such field and so strips any that
+ * survived. That second pass is what makes the boundary hold for an **adopter-defined** code as
+ * well — it is a property of the schema, not of a per-member encode anyone could forget to write.
  */
 export const HttpError = z.codec(PublicErrorPayload, ErrorPayload, {
   decode: (wire): ErrorPayload => wire,
   encode: (payload): PublicErrorPayload => {
     const { detail: _detail, ...wire } = payload;
-    return wire;
+    // A rest spread drops the brand off an adopter code, so TypeScript stops recognizing the member
+    // it came from. The value is unchanged, and Zod re-validates it against `PublicErrorPayload`.
+    return wire as PublicErrorPayload;
   },
 });
 
@@ -48,5 +56,8 @@ export function pithyErrorHandler(err: Error, c: Context): Response {
     err instanceof PithyError
       ? err
       : (translated ?? new InternalError({ detail: err instanceof Error ? err.message : String(err) }, { cause: err }));
-  return c.json({ error: HttpError.encode(pithy.payload) }, pithy.payload.status);
+  // A kit member pins a literal status; an adopter's carries a `number` the schema has already
+  // bounded to 400–599. Hono types the argument as its own literal union, and that is the one gap
+  // between the two — the value is validated, so the assertion narrows rather than trusts.
+  return c.json({ error: HttpError.encode(pithy.payload) }, pithy.payload.status as ContentfulStatusCode);
 }
