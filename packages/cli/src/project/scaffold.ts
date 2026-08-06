@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -13,7 +13,7 @@ import {
 } from "@pithy-sh/core/src/naming/resource";
 
 export interface ScaffoldOptions {
-  /** Directory to scaffold into. Created if missing; must be empty if present. */
+  /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
   targetDir: string;
   /** Application name, written into package.json and wrangler.jsonc. */
   appName: string;
@@ -32,10 +32,11 @@ function templateDir(): string {
 }
 
 /**
- * Throw if `targetDir` exists and isn't empty. This is the precondition
- * `pithy init` checks *before* prompting, so a doomed run fails fast instead of
- * after the user answers. A missing directory passes — `scaffoldProject`
- * creates it. `scaffoldProject` re-checks, so the guard holds even called direct.
+ * Throw if `targetDir` exists and isn't empty.
+ *
+ * This is the guard for a directory **Pithy owns outright** — `apps/<worker>`, which `scaffoldWorker`
+ * creates and fills. Nothing else may already live there, so emptiness is the right question. The
+ * project root is the adopter's directory and asks a narrower one: see {@link ensureScaffoldable}.
  */
 export async function ensureEmptyTarget(targetDir: string): Promise<void> {
   let existing: string[];
@@ -50,6 +51,129 @@ export async function ensureEmptyTarget(targetDir: string): Promise<void> {
       action: "Pick an empty directory. Run pithy init again.",
     });
   }
+}
+
+/** True if `path` exists. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True if `path` is anything other than a real directory — a file, or a symlink, even one pointing at a
+ * directory. Missing is fine: the scaffold creates it.
+ *
+ * `lstat`, not `stat`, because the symlink itself is the problem. `cp` refuses to copy a directory onto
+ * a symlinked one (`ERR_FS_CP_DIR_TO_NON_DIR`) and `rename` onto one is `ENOTDIR`, so following the link
+ * would answer a question nobody asked.
+ */
+async function blocksDirectory(path: string): Promise<boolean> {
+  try {
+    return !(await lstat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True unless `path` is missing or an empty directory — the question to ask of a path Pithy takes over
+ * outright, the way {@link ensureEmptyTarget} asks it of `apps/<worker>` under `pithy worker add`.
+ */
+async function occupied(path: string): Promise<boolean> {
+  try {
+    if (!(await lstat(path)).isDirectory()) return true;
+  } catch {
+    return false; // missing — nothing to take over
+  }
+  return (await readdir(path)).length > 0;
+}
+
+/**
+ * Every path {@link scaffoldProject} writes, relative to the target — walked from the template rather
+ * than listed here, so a file added to the starter is covered without anyone remembering to.
+ *
+ * Files and directories are separated because the two ask different questions. A file that already
+ * exists is a clobber. A directory that already exists is fine — `cp` merges into it — but a *file* or a
+ * symlink where one belongs kills `mkdir` and `cp` outright, and the gate has to see that before the
+ * copy starts rather than halfway through it.
+ *
+ * Two adjustments, both because the copy is not a straight copy. The template ships `gitignore`
+ * unprefixed (npm strips dotfiles from published packages) and it lands as `.gitignore`, so **both**
+ * names are checked: the copy writes over the shipped name and the rename then moves it away, which
+ * destroyed an adopter's own undotted `gitignore` without ever naming it. And the first worker is copied
+ * to `apps/api` and *then* renamed, so a run naming another worker also collides on `apps/<worker>`.
+ */
+async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
+  const root = templateDir();
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  const named = entries.map((entry) => ({
+    path: relative(root, join(entry.parentPath, entry.name)),
+    directory: entry.isDirectory(),
+  }));
+
+  const files = named
+    .filter((entry) => !entry.directory)
+    .flatMap(({ path }) => (path === "gitignore" ? [path, ".gitignore"] : [path]));
+  const directories = named.filter((entry) => entry.directory).map(({ path }) => path);
+  if (worker === DEFAULT_WORKER) return { files, directories };
+
+  const from = `apps${sep}${DEFAULT_WORKER}${sep}`;
+  const rename = (paths: string[]): string[] =>
+    paths.filter((path) => path.startsWith(from)).map((path) => `apps${sep}${worker}${sep}${path.slice(from.length)}`);
+  return {
+    files: [...files, ...rename(files)],
+    directories: [...directories, `apps${sep}${worker}`, ...rename(directories)],
+  };
+}
+
+/**
+ * Throw if the target already holds anything `pithy init` would write, naming what.
+ *
+ * **Collision, not emptiness.** A directory holding only `.git`, a README, a licence, a CLAUDE.md, or an
+ * editor config is not a project — and refusing it meant `pithy init` could not scaffold into a repo the
+ * adopter had just cloned, which is how projects normally start. What actually protects them is the
+ * narrower question: is anything I am about to write already there. That still refuses to clobber a real
+ * project, and stops caring about the rest.
+ *
+ * **Except where the scaffold moves rather than copies.** Naming a worker other than the default makes
+ * `scaffoldProject` rename `apps/api` onto `apps/<worker>`, and a rename is not a merge: it fails on an
+ * occupied destination and carries an occupied source wholesale into the new name. So those two paths
+ * are held to emptiness, not to collision. Get that wrong and the run dies on a raw `ENOTEMPTY` from
+ * `node:fs` — after the copy, with the root half-written, and outside the `PithyError` contract every
+ * other refusal here honours.
+ *
+ * The precondition `pithy init` checks *before* prompting, so a doomed run fails fast instead of after
+ * the user answers. A missing directory passes — `scaffoldProject` creates it, and re-checks, so the
+ * guard holds even called direct. The worker name is validated first, because every path below is built
+ * out of it and an illegal one would send the probe walking outside the project.
+ */
+export async function ensureScaffoldable(targetDir: string, worker?: string): Promise<void> {
+  const name = worker ?? DEFAULT_WORKER;
+  assertWorkerName(name);
+  const { files, directories } = await templatePaths(name);
+
+  const collisions = new Set<string>();
+  for (const path of files) {
+    if (await exists(join(targetDir, path))) collisions.add(path);
+  }
+  for (const path of directories) {
+    if (await blocksDirectory(join(targetDir, path))) collisions.add(path);
+  }
+  if (name !== DEFAULT_WORKER) {
+    for (const path of [join("apps", DEFAULT_WORKER), join("apps", name)]) {
+      if (await occupied(join(targetDir, path))) collisions.add(path);
+    }
+  }
+
+  if (collisions.size === 0) return;
+  throw new ConflictError({
+    message: `${targetDir} already has ${[...collisions].sort().join(", ")}.`,
+    action: "Move those aside, or pick a directory without them. Run pithy init again.",
+  });
 }
 
 /**
@@ -89,6 +213,21 @@ export const DEFAULT_WORKER = "api";
  * everywhere it is actually used. Divergence on purpose, not a stale copy.
  */
 export const WORKER_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Refuse a worker name that could not be a directory under `apps/`.
+ *
+ * Called by {@link ensureScaffoldable} as well as by {@link scaffoldProject}, because the gate builds
+ * `apps/<worker>/…` out of the name before anything else has looked at it: `--worker ../../etc` had it
+ * probing paths outside the project and reporting the hits back.
+ */
+function assertWorkerName(worker: string): void {
+  if (WORKER_NAME.test(worker)) return;
+  throw new ValidationError({
+    message: `Worker name must be kebab-case (got "${worker}").`,
+    action: "Use lowercase words joined by hyphens, e.g. api or admin-api.",
+  });
+}
 
 /** Stamp `appName` into a JSON file's `name` field, preserving the rest. */
 async function stampPackageName(path: string, name: string): Promise<void> {
@@ -134,21 +273,18 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
    */
   const project = kebab(options.appName);
 
+  // The template ships its first worker as `apps/<DEFAULT_WORKER>`; rename it when the caller chose
+  // another name, so the directory, the deploy name, and the capability namespace all agree. Resolved
+  // *before* the collision check, because the check has to know which `apps/<name>` the copy ends at.
+  const worker = options.worker ?? DEFAULT_WORKER;
+  assertWorkerName(worker);
+
   await mkdir(options.targetDir, { recursive: true });
-  await ensureEmptyTarget(options.targetDir);
+  await ensureScaffoldable(options.targetDir, worker);
 
   await cp(templateDir(), options.targetDir, { recursive: true });
   await rename(join(options.targetDir, "gitignore"), join(options.targetDir, ".gitignore"));
 
-  // The template ships its first worker as `apps/<DEFAULT_WORKER>`; rename it when the caller chose
-  // another name, so the directory, the deploy name, and the capability namespace all agree.
-  const worker = options.worker ?? DEFAULT_WORKER;
-  if (!WORKER_NAME.test(worker)) {
-    throw new ValidationError({
-      message: `Worker name must be kebab-case (got "${worker}").`,
-      action: "Use lowercase words joined by hyphens, e.g. api or admin-api.",
-    });
-  }
   const workerDir = join(options.targetDir, "apps", worker);
   if (worker !== DEFAULT_WORKER) {
     await rename(join(options.targetDir, "apps", DEFAULT_WORKER), workerDir);

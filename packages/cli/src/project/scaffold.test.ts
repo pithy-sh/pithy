@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ensureEmptyTarget, scaffoldProject } from "./scaffold";
+import { ensureEmptyTarget, ensureScaffoldable, scaffoldProject } from "./scaffold";
 
 let dir: string;
 beforeEach(async () => {
@@ -184,16 +184,184 @@ describe("scaffoldProject", () => {
     expect(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")).toContain('"name": "launch-2026-api"');
   });
 
-  test("refuses a non-empty target directory", async () => {
-    await writeFile(join(dir, "keep.txt"), "mine");
+  test("refuses a target that already holds a file it would write", async () => {
+    await writeFile(join(dir, "package.json"), "mine");
     await expect(scaffoldProject({ targetDir: dir, appName: "nope" })).rejects.toThrow(PithyError);
-    // Nothing was written next to the user's file.
-    await expect(readFile(join(dir, "package.json"), "utf8")).rejects.toThrow();
+    // The adopter's file is untouched.
+    expect(await readFile(join(dir, "package.json"), "utf8")).toBe("mine");
+    await expect(readFile(join(dir, "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
+  test("scaffolds into a freshly cloned repo — a clone is how a project normally starts", async () => {
+    // .git, a README, a licence, an editor config, and a CLAUDE.md. None of them is a project, and
+    // refusing them meant `pithy init` could not run in the repo the adopter had just made for it.
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await writeFile(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    await writeFile(join(dir, "README.md"), "# acme\n");
+    await writeFile(join(dir, "LICENSE"), "MIT\n");
+    await writeFile(join(dir, ".editorconfig"), "root = true\n");
+    await writeFile(join(dir, "CLAUDE.md"), "rules\n");
+
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).name).toBe("acme");
+    await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8");
+    // Everything that was there stays there.
+    expect(await readFile(join(dir, "README.md"), "utf8")).toBe("# acme\n");
+    expect(await readFile(join(dir, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+  });
+
+  test("merges into an existing apps/api rather than refusing it, and keeps what was there", async () => {
+    // The default worker is copied, not renamed, so a directory that already exists is merged into.
+    // Collision, not emptiness: only a file the template writes is in the way.
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "NOTES.md"), "mine\n");
+
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+
+    expect(await readFile(join(dir, "apps", "api", "NOTES.md"), "utf8")).toBe("mine\n");
+    expect(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")).toContain('"name": "acme-api"');
+  });
+
+  test("refuses an occupied apps/<worker> instead of crashing mid-copy, and leaves nothing behind", async () => {
+    // The rename target holds a file the template never writes, so no *file* collides — and the
+    // rename then died on ENOTEMPTY as a raw Error, after package.json and pithy.config.ts had
+    // already landed. A half-scaffolded repo, and a stack trace where the error envelope belongs.
+    await mkdir(join(dir, "apps", "edge"), { recursive: true });
+    await writeFile(join(dir, "apps", "edge", "NOTES.md"), "mine\n");
+
+    await expect(scaffoldProject({ targetDir: dir, appName: "acme", worker: "edge" })).rejects.toThrow(PithyError);
+
+    expect(await readdir(dir)).toEqual(["apps"]);
+    expect(await readdir(join(dir, "apps"))).toEqual(["edge"]);
+    expect(await readFile(join(dir, "apps", "edge", "NOTES.md"), "utf8")).toBe("mine\n");
+  });
+
+  test("refuses an occupied apps/api when another worker is named — the rename would sweep it along", async () => {
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "NOTES.md"), "mine\n");
+
+    await expect(scaffoldProject({ targetDir: dir, appName: "acme", worker: "edge" })).rejects.toThrow(PithyError);
+    expect(await readFile(join(dir, "apps", "api", "NOTES.md"), "utf8")).toBe("mine\n");
+  });
+
+  test("refuses a file where the scaffold needs a directory, and leaves nothing behind", async () => {
+    await writeFile(join(dir, "apps"), "mine\n");
+    await expect(scaffoldProject({ targetDir: dir, appName: "acme" })).rejects.toThrow(PithyError);
+    expect(await readdir(dir)).toEqual(["apps"]);
+    expect(await readFile(join(dir, "apps"), "utf8")).toBe("mine\n");
+  });
+
+  test("refuses an adopter's undotted gitignore — the template's copy lands on it, then renames it away", async () => {
+    await writeFile(join(dir, "gitignore"), "mine\n");
+    await expect(scaffoldProject({ targetDir: dir, appName: "acme" })).rejects.toThrow(PithyError);
+    expect(await readFile(join(dir, "gitignore"), "utf8")).toBe("mine\n");
+  });
+});
+
+describe("ensureScaffoldable", () => {
+  test("a missing directory is fine — scaffoldProject creates it", async () => {
+    await expect(ensureScaffoldable(join(dir, "nope"))).resolves.toBeUndefined();
+  });
+
+  test("an existing empty directory is fine", async () => {
+    await expect(ensureScaffoldable(dir)).resolves.toBeUndefined();
+  });
+
+  test("files the template never writes are fine — .git and a README are not a project", async () => {
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await writeFile(join(dir, "README.md"), "");
+    await writeFile(join(dir, ".editorconfig"), "");
+    await expect(ensureScaffoldable(dir)).resolves.toBeUndefined();
+  });
+
+  test("names every colliding path, so the adopter knows what is in the way", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), "mine");
+    await mkdir(join(dir, "apps", "api", "src"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "src", "index.ts"), "mine");
+
+    const error = await ensureScaffoldable(dir).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    const { message } = (error as PithyError).payload;
+    expect(message).toContain("pithy.config.ts");
+    expect(message).toContain(join("apps", "api", "src", "index.ts"));
+  });
+
+  test("the .gitignore the template lands as is checked under the name it lands under", async () => {
+    // The template ships it as `gitignore` (npm strips dotfiles) and it is renamed on the way in.
+    // Checking the shipped name would have waved an adopter's own .gitignore straight through.
+    await writeFile(join(dir, ".gitignore"), "node_modules\n");
+    await expect(ensureScaffoldable(dir)).rejects.toThrow(PithyError);
+  });
+
+  test("apps/api is checked whatever the first worker is called — the copy lands there, then renames", async () => {
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "wrangler.jsonc"), "mine");
+    await expect(ensureScaffoldable(dir, "edge")).rejects.toThrow(PithyError);
+    // And so is the name it will be renamed to.
+    await rm(join(dir, "apps", "api"), { recursive: true });
+    await mkdir(join(dir, "apps", "edge"), { recursive: true });
+    await writeFile(join(dir, "apps", "edge", "wrangler.jsonc"), "mine");
+    await expect(ensureScaffoldable(dir, "edge")).rejects.toThrow(PithyError);
+  });
+
+  test("an occupied apps/<worker> collides even when nothing in it is a template file", async () => {
+    // Pithy renames `apps/api` onto this path and owns it outright for the length of the operation,
+    // so emptiness is the question here — the file-by-file rule is the project root's, not this one's.
+    await mkdir(join(dir, "apps", "edge"), { recursive: true });
+    await writeFile(join(dir, "apps", "edge", "NOTES.md"), "mine");
+
+    const error = await ensureScaffoldable(dir, "edge").catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain(join("apps", "edge"));
+  });
+
+  test("an empty apps/<worker> is fine — the rename replaces it", async () => {
+    await mkdir(join(dir, "apps", "edge"), { recursive: true });
+    await expect(ensureScaffoldable(dir, "edge")).resolves.toBeUndefined();
+  });
+
+  test("an occupied apps/api collides when another worker is named — the rename would carry it along", async () => {
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "NOTES.md"), "mine");
+    await expect(ensureScaffoldable(dir, "edge")).rejects.toThrow(PithyError);
+    // The same directory is fine for the default worker: that copy merges, and nothing is swept anywhere.
+    await expect(ensureScaffoldable(dir)).resolves.toBeUndefined();
+  });
+
+  test("a file where a directory belongs collides — mkdir and cp both die on it", async () => {
+    await writeFile(join(dir, "apps"), "mine");
+    const error = await ensureScaffoldable(dir).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("apps");
+  });
+
+  test("a symlink where a directory belongs collides — cp refuses to copy a directory onto one", async () => {
+    await mkdir(join(dir, "elsewhere"), { recursive: true });
+    await symlink(join(dir, "elsewhere"), join(dir, "apps"), "dir");
+    await expect(ensureScaffoldable(dir)).rejects.toThrow(PithyError);
+  });
+
+  test("the template's undotted gitignore is checked too — the copy lands on it before the rename", async () => {
+    // `gitignore` (no dot) is a known git footgun and a file an adopter can genuinely have. The copy
+    // overwrote it and the rename then moved it to `.gitignore`: gone, silently, from a gate whose
+    // whole purpose is not to clobber.
+    await writeFile(join(dir, "gitignore"), "mine\n");
+    const error = await ensureScaffoldable(dir).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("gitignore");
+  });
+
+  test("an illegal worker name is refused before any path is probed", async () => {
+    // The gate builds `apps/<worker>/…` out of the name, so `pithy init --worker ../../etc` had it
+    // walking paths outside the project and echoing hits back. Validate first; probe after.
+    await expect(ensureScaffoldable(dir, "../../etc")).rejects.toThrow(PithyError);
+    await expect(ensureScaffoldable(dir, "")).rejects.toThrow(PithyError);
   });
 });
 
 describe("ensureEmptyTarget", () => {
-  test("a missing directory is fine — scaffoldProject creates it", async () => {
+  test("a missing directory is fine", async () => {
     await expect(ensureEmptyTarget(join(dir, "nope"))).resolves.toBeUndefined();
   });
 
@@ -201,8 +369,8 @@ describe("ensureEmptyTarget", () => {
     await expect(ensureEmptyTarget(dir)).resolves.toBeUndefined();
   });
 
-  test("a non-empty directory throws before any work — the pre-prompt gate", async () => {
-    await writeFile(join(dir, "keep.txt"), "mine");
+  test("anything at all in the directory refuses it — this guards a path Pithy owns outright", async () => {
+    await writeFile(join(dir, "README.md"), "not a project, still in the way");
     await expect(ensureEmptyTarget(dir)).rejects.toThrow(PithyError);
   });
 });

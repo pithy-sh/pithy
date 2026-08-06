@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -87,8 +87,13 @@ describe("root flags", () => {
 });
 
 describe("pithy init", () => {
-  test("scaffolds non-interactively and prints one JSON line", async () => {
+  test("scaffolds non-interactively into a cloned repo and prints one JSON line", async () => {
     const target = join(dir, "smoke");
+    // A freshly cloned repo — .git, a README, a licence. None of them is a project, and refusing them
+    // meant `pithy init` could not run in the repo the adopter had just made for it.
+    await mkdir(join(target, ".git"), { recursive: true });
+    await writeFile(join(target, "README.md"), "# smoke\n");
+    await writeFile(join(target, "LICENSE"), "MIT\n");
     const { stdout } = await run("bun", [bin, "init", "--name", "smoke", "--dir", target, "--json"]);
 
     const result = JSON.parse(stdout.trim()) as { command: string; appName: string; targetDir: string };
@@ -99,22 +104,23 @@ describe("pithy init", () => {
 
     const pkg = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as { name: string };
     expect(pkg.name).toBe("smoke");
+    expect(await readFile(join(target, "README.md"), "utf8")).toBe("# smoke\n");
   });
 
-  test("a non-empty target fails with problem and action lines, exit 1", async () => {
-    await writeFile(join(dir, "keep.txt"), "mine");
+  test("a target already holding a file init writes fails with problem and action lines, exit 1", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), "mine");
     const error = (await run("bun", [bin, "init", "--name", "x", "--dir", dir]).catch((e: unknown) => e)) as {
       code: number;
       stderr: string;
     };
     expect(error.code).toBe(1);
     const [problem, action] = error.stderr.trim().split("\n");
-    expect(problem).toContain("isn't empty.");
+    expect(problem).toContain("pithy.config.ts");
     expect(action).toContain("Run pithy init again.");
   });
 
   test("--json renders the error as a parseable envelope on stderr, exit 1", async () => {
-    await writeFile(join(dir, "keep.txt"), "mine");
+    await writeFile(join(dir, "pithy.config.ts"), "mine");
     const error = (await run("bun", [bin, "init", "--name", "x", "--dir", dir, "--json"]).catch((e: unknown) => e)) as {
       code: number;
       stdout: string;
@@ -126,10 +132,34 @@ describe("pithy init", () => {
       error: {
         code: "core/conflict",
         status: 409,
-        message: expect.stringContaining("isn't empty."),
+        message: expect.stringContaining("pithy.config.ts"),
         action: expect.stringContaining("Run pithy init again."),
       },
     });
+  });
+
+  test("an occupied apps/<worker> is refused as an envelope too, not as a stack trace", async () => {
+    // The rename target holds nothing the template writes, so the file-by-file rule sees no collision.
+    // Uncaught, `rename` threw a raw ENOTEMPTY: a stack trace on stderr instead of the envelope, and a
+    // half-scaffolded directory to hand-clean before a retry could even be attempted.
+    await mkdir(join(dir, "apps", "edge"), { recursive: true });
+    await writeFile(join(dir, "apps", "edge", "NOTES.md"), "mine");
+
+    const error = (await run("bun", [bin, "init", "--name", "x", "--worker", "edge", "--dir", dir, "--json"]).catch(
+      (e: unknown) => e,
+    )) as { code: number; stderr: string };
+
+    expect(error.code).toBe(1);
+    expect(JSON.parse(error.stderr.trim())).toEqual({
+      error: {
+        code: "core/conflict",
+        status: 409,
+        message: expect.stringContaining(join("apps", "edge")),
+        action: expect.stringContaining("Run pithy init again."),
+      },
+    });
+    // Nothing was written before the refusal.
+    await expect(readFile(join(dir, "package.json"), "utf8")).rejects.toThrow();
   });
 });
 
