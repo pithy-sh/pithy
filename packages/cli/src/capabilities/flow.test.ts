@@ -136,8 +136,35 @@ describe("runAdd", () => {
       databases,
       // auth declares no KV binding here, so there is nothing to propose a name for.
       kvNamespaces: [],
+      // Every binding auth needs is one `add` writes, so there is nothing left to say.
+      notes: [],
       eject: undefined,
     });
+  });
+
+  test("mints the secrets dev master key and reports it — `pithy dev` serves the moment add finishes", async () => {
+    const secrets = CapabilityManifest.parse({
+      name: "secrets",
+      package: "@pithy-sh/secrets",
+      requiredBindings: [
+        { type: "d1", name: "SECRETS" },
+        { type: "secret", name: "SECRETS_ENCRYPTION_KEYS" },
+      ],
+    });
+
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "secrets",
+      install: vi.fn(installManifest(secrets)),
+      migrate: vi.fn(async () => noMigrations),
+    });
+
+    // The project root's `.dev.vars`, which every worker symlinks to — not the worker directory.
+    const vars = await readFile(join(dir, ".dev.vars"), "utf8");
+    expect(vars).toMatch(/^SECRETS_ENCRYPTION_KEYS=\{"currentVersion":"1"/m);
+    expect(result.notes.join(" ")).toMatch(/pithy secrets provision/);
   });
 
   test("threads the project name through, so add proposes <project>-<env>-<binding>", async () => {

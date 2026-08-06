@@ -119,6 +119,8 @@ Provisioning reads **one** Cloudflare API token from `.dev.vars` (or `process.en
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | The broad bootstrap token — authenticates the deploy and the provisioning REST calls (create D1, write the store, deploy the manager Worker), **and mints the manager's own runtime token**. | Workers Scripts, D1, Secrets Store, Workflows — plus **Account API Tokens Write**, the permission that lets it mint the manager token. |
 
+`pithy add secrets` writes one more line there: `SECRETS_ENCRYPTION_KEYS`, this project's **dev** master key. It is the one binding value an adopter cannot invent — a JSON `EncryptionConfig`, not a string — and `wrangler.jsonc` has nowhere to hold it, so without it `pithy dev` refuses every request. It is generated per project, never a shipped literal: one key in a template is one key across every adopter. It is written **only when absent**, for the reason `ensureMasterKey` states — replacing it orphans every secret already stored — and it goes to `.dev.vars`, which is gitignored, never to the committed `.dev.vars.example`. It is local only. Deployed environments get theirs from `pithy secrets provision`.
+
 `pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `<project>-global-secrets-manager-cf-api-token`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
 
 ## The CLI

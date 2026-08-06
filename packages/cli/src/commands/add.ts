@@ -231,6 +231,11 @@ export default defineCommand({
       for (const kv of result.kvNamespaces) {
         process.stdout.write(`Name the ${kv.binding} namespace for ${kv.env}: ${kv.name}\n`);
       }
+      // What add finished off-config, and what only a provision command can supply. Printed here, at
+      // the moment the adopter is thinking about the capability — not left to the first 500.
+      for (const note of result.notes) {
+        process.stdout.write(`${note}\n`);
+      }
       if (result.eject) {
         // The fork lands beside the Worker's config, so report it project-relative: apps/<worker>/capabilities/<cap>.
         const path = relative(projectDir, join(target.dir, result.eject.path));

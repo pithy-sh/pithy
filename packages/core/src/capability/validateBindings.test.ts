@@ -38,4 +38,39 @@ describe("validateBindings", () => {
   test("ignores optional bindings", () => {
     expect(() => validateBindings({}, [{ type: "kv", name: "CACHE", optional: true }])).not.toThrow();
   });
+
+  test("names the missing bindings in the action, so the fix is the line itself", () => {
+    try {
+      validateBindings({}, [{ type: "kv", name: "SESSIONS", optional: false }]);
+      throw new Error("expected validateBindings to throw");
+    } catch (err) {
+      expect((err as PithyError).payload.action).toBe("Add kv:SESSIONS to wrangler.jsonc, then redeploy.");
+    }
+  });
+
+  test("a provisioned binding is not sent to wrangler.jsonc — nobody hand-writes a Secrets Store entry", () => {
+    try {
+      validateBindings({}, [{ type: "secret", name: "SECRETS_ENCRYPTION_KEYS", optional: false }]);
+      throw new Error("expected validateBindings to throw");
+    } catch (err) {
+      const action = (err as PithyError).payload.action ?? "";
+      expect(action).not.toMatch(/Add .* to wrangler\.jsonc/);
+      expect(action).toMatch(/Provision secret:SECRETS_ENCRYPTION_KEYS/);
+      expect(action).toMatch(/\.dev\.vars/);
+    }
+  });
+
+  test("a mixed set gets both answers, each naming only its own bindings", () => {
+    try {
+      validateBindings({}, [
+        { type: "d1", name: "DB", optional: false },
+        { type: "workflow", name: "EMAIL_SENDER", optional: false },
+      ]);
+      throw new Error("expected validateBindings to throw");
+    } catch (err) {
+      const action = (err as PithyError).payload.action ?? "";
+      expect(action).toMatch(/Add d1:DB to wrangler\.jsonc/);
+      expect(action).toMatch(/Provision workflow:EMAIL_SENDER/);
+    }
+  });
 });
