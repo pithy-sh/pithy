@@ -78,8 +78,10 @@ function renderHuman(record: LogRecord, palette?: LocalPalette): string {
  * `stderr` by default so a command's machine-readable stdout stays clean.
  */
 export function createLocalLogger(options: LocalLoggerOptions = {}): Logger {
-  // Default to console.error — stderr under Node (the CLI), the console elsewhere — so core stays free
-  // of `process`. The CLI passes its own `write` when it wants raw `process.stderr`.
+  // The one sanctioned `console` in the local adapter: this is the adapter, so console is the transport,
+  // not a shortcut past the `Logger` seam. Default to console.error — stderr under Node (the CLI), the
+  // console elsewhere — so core stays free of `process`. The CLI passes its own `write` when it wants raw
+  // `process.stderr`.
   const write = options.write ?? ((line: string) => console.error(line));
   return createLogger({
     level: options.level ?? "debug",

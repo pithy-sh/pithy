@@ -20,6 +20,18 @@ Levels rank `debug` < `info` < `warn` < `error`. A logger drops anything below i
 
 Log copy follows the brand voice. Short. No emoji, no filler. The message names what happened; every value goes in a field, where it stays queryable.
 
+## The console rule
+
+Reach for `c.var.log` in a request. Everywhere else — a Workflow, a Durable Object, a scheduled handler — build one with `createWorkerLogger()`, and in a Workflow wrap it in `bindWorkflowContext(log, { workflow, instance, env })` so every record carries the run.
+
+`console` is never the answer. A console line reaches Workers Logs as an unstructured string: no level to filter on, no name to scope it to a capability, no `request` or `instance` to correlate by, and a caught `PithyError` arriving as prose rather than lifted into the typed `error` field with its payload. It is a line you can read one at a time and cannot query.
+
+`plugins/no-console.grit` enforces it across `packages/*/src/**`. Two files are exempt, and in both `console` *is* the implementation: `logger/local.ts` sinks to `console.error`, and `logger/worker.ts` emits through `console.log`, which is how a record reaches Workers Logs at all. Banning the call there would ban the logger. Tests are exempt for a different reason — a test printing debris it reaped is output for a human at a terminal, not a log line.
+
+`plugins/no-process-io.grit` is the same gate for `process.stdout` and `process.stderr` — the Node habit that reaches for a stream rather than a logger. It carries the opposite scope, because `packages/cli` is the one place writing to stdout is correct: that is how a CLI emits, and `--json` on stdout is a contract every command owes an agent driving it. Both gates match the member access rather than the call, so `items.forEach(console.log)` and `const sink = console.error` are caught alongside `console.log(x)`.
+
+`pithy init` scaffolds both plugins and both `biome.jsonc` entries into a new project, scoped to `apps/*/src/**/*.ts` — the Worker's own program. Those files are yours. Narrow them, widen them, or drop an entry and delete its plugin with it.
+
 ## Mode 1 — local diagnostics
 
 One unified diagnostic layer for the CLI process and a Worker under `pithy dev`. Human-readable and colorized for a person at a terminal, or a `--json` structured line stream for agents and CI.

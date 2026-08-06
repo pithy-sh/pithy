@@ -9,10 +9,39 @@
   // The second glob reaches a seam that nests its own HTTP layer one level deeper —
   // `packages/core/src/controlPlane/http/**`. Without it the `control-plane` routes, which are the
   // highest-risk routes Pithy ships, would have been the only ones where `c.req.json(` stayed legal.
+  //
+  // Gate for structured logging. Scoped to the runtime source Pithy itself ships, and no further:
+  // `scripts/` are build-time tools whose whole job is terminal output, and an adopter's Worker is
+  // theirs to log from however they like.
+  //
+  // The two logger adapters are excluded because they are the thing console is banned in favour of —
+  // `logger/local.ts` sinks to `console.error` and `logger/worker.ts` emits through `console.log`,
+  // which is how a record reaches Workers Logs at all. Tests and `test-utils/` are excluded because a
+  // test harness printing debris it is reaping is output for a human at a terminal, not a log line.
+  //
+  // `no-process-io.grit` is the same gate for `process.stdout`/`process.stderr`, and it needs its own
+  // entry rather than two more patterns in the one above, because it needs the opposite scope: the CLI
+  // is the one package where writing to stdout is correct, since that is how a CLI emits and `--json`
+  // on stdout is a contract every command owes. There is nothing to fix outside it — the gate is free
+  // while the count is zero, which is the cheapest moment to add it.
   "plugins": [
     {
       "path": "plugins/no-raw-request-input.grit",
       "includes": ["**/packages/*/src/http/**", "**/packages/*/src/*/http/**"]
+    },
+    {
+      "path": "plugins/no-console.grit",
+      "includes": [
+        "**/packages/*/src/**",
+        "!**/packages/core/src/logger/local.ts",
+        "!**/packages/core/src/logger/worker.ts",
+        "!**/*.test.ts",
+        "!**/test-utils/**"
+      ]
+    },
+    {
+      "path": "plugins/no-process-io.grit",
+      "includes": ["**/packages/*/src/**", "!**/packages/cli/**", "!**/*.test.ts", "!**/test-utils/**"]
     }
   ],
   "formatter": {

@@ -3,7 +3,9 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
-import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
+import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { triggerWorkflow } from "@pithy-sh/core/src/workflow/dispatch";
 import { confirmUrl, optInUrl, optOutUrl, TestersConfig } from "../config/config";
 import type { NudgeKind } from "../data/enums";
@@ -11,7 +13,7 @@ import type { TestersMember } from "../data/member";
 import { testersDatabase } from "../data/tables";
 import type { EnqueueNudge } from "../nudge/send";
 import { type CohortPassResult, openCohortIds, runCohortPass } from "./daily";
-import { TestersDailyParams, testersWorkflowRegistry } from "./specs";
+import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from "./specs";
 
 /**
  * The prebuilt worker hosting the daily pass.
@@ -50,6 +52,36 @@ export interface TestersWorkerEnv {
   EMAIL_SUPPRESSIONS?: D1Database;
 }
 
+/**
+ * The pass's outcome, as one record. The run's only visible output: a pass whose findings are invisible
+ * is a pass nobody can tell has stopped working.
+ *
+ * Two levels, and the distinction is the whole reason this is not one flat `info`. A cohort carrying
+ * `nudgesSkipped` advanced its state and wrote its day but mailed nobody — the pass *looks* healthy and
+ * nobody is being chased, which is the one failure mode this capability cannot afford, because silence
+ * is also what success looks like. Everything else is routine, and a daily job that reports routine at
+ * `warn` teaches an operator to stop reading it.
+ */
+export function logPassComplete(log: Logger, results: readonly CohortPassResult[]): void {
+  const skipped = results.filter((result) => result.nudgesSkipped !== undefined).length;
+  log[skipped > 0 ? "warn" : "info"]("daily pass complete", { cohorts: results.length, skipped, results });
+}
+
+/**
+ * One cohort's failure, with its payload intact.
+ *
+ * A `PithyError` goes in the reserved `error` field so the record carries its code, its status and its
+ * throw-site `detail` — a log is an internal surface, the inverse of the HTTP codec that strips it.
+ * Anything else takes `reason`: a plain `Error`'s `message` and `stack` are non-enumerable, so the
+ * reserved field would serialize it to `{}` and lose the only thing it had to say.
+ */
+export function logCohortFailure(log: Logger, cohortId: string, error: unknown): void {
+  log.error("cohort pass failed", {
+    cohort: cohortId,
+    ...(error instanceof PithyError ? { error } : { reason: messageOf(error) }),
+  });
+}
+
 /** The daily pass over every open cohort. */
 export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, TestersDailyParams> {
   override async run(event: WorkflowEvent<TestersDailyParams>, step: WorkflowStep): Promise<CohortPassResult[]> {
@@ -60,6 +92,17 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
     const db = testersDatabase(this.env.DB);
     const now = new Date();
 
+    // A run has no request, so there is no `c.var.log` to inherit: the Workflow builds its own and binds
+    // the instance onto it. That id is what the dashboard and `wrangler workflows` key on, so binding it
+    // once here is what lets an operator read a whole pass — the tally and every failed cohort — as one
+    // correlated set. It is handed to the pass too, so a suppression list it could not read says so
+    // against the same instance.
+    const log = bindWorkflowContext(createWorkerLogger({ name: `${TESTERS_CAPABILITY}:daily` }), {
+      workflow: event.workflowName,
+      instance: event.instanceId,
+      env: this.env.ENVIRONMENT ?? "unknown",
+    });
+
     const enqueue: EnqueueNudge | undefined = params.skipNudges ? undefined : await buildEnqueue(this.env);
     const linkForKind = params.skipNudges ? undefined : linkFor(config);
 
@@ -69,6 +112,7 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
       config,
       now,
       newId: () => crypto.randomUUID(),
+      log,
       enqueue,
       linkFor: linkForKind,
       optOutLinkFor: (member: TestersMember) => optOutUrl(config, member.optInToken),
@@ -79,7 +123,7 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
     // the rest of the day's cohorts down with it, and a retried step re-runs an idempotent pass.
     if (params.cohortId) {
       const result = await step.do(`cohort-${params.cohortId}`, () => runCohortPass(deps, params.cohortId as string));
-      console.log("testers daily pass", JSON.stringify(result));
+      logPassComplete(log, [result]);
       return [result];
     }
 
@@ -98,10 +142,10 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
       try {
         results.push(await step.do(`cohort-${cohortId}`, () => runCohortPass(deps, cohortId)));
       } catch (error) {
-        console.error("testers daily pass: cohort failed", cohortId, error);
+        logCohortFailure(log, cohortId, error);
       }
     }
-    console.log("testers daily pass", JSON.stringify(results));
+    logPassComplete(log, results);
     return results;
   }
 }

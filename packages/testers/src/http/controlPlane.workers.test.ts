@@ -12,7 +12,8 @@ import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/contr
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
-import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { createLogger, type Logger, noopLogger } from "@pithy-sh/core/src/logger/logger";
+import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -110,7 +111,7 @@ function verifier(scopes: readonly ControlPlaneScope[]): ControlPlaneVerifier {
 }
 
 /** The app, with a live control-plane verifier and a capturing enqueue seam. */
-function makeApp(scopes: readonly ControlPlaneScope[], config = CONFIG) {
+function makeApp(scopes: readonly ControlPlaneScope[], config = CONFIG, log: Logger = noopLogger) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   const cpVerifier = verifier(scopes);
@@ -119,7 +120,9 @@ function makeApp(scopes: readonly ControlPlaneScope[], config = CONFIG) {
     c.set("controlPlane", null);
     c.set("controlPlaneVerifier", cpVerifier);
     c.set("emit", async (event: AuditEventInput) => void emitted.push(event));
-    c.set("log", noopLogger);
+    // Defaults to the no-op: most tests here read a JSON body. The one that asserts the request logger
+    // reaches the activity read passes its own.
+    c.set("log", log);
     await next();
   });
   registerTestersRoutes({
@@ -482,6 +485,38 @@ describe("GET /cohorts", () => {
       TESTERS_ROSTER_READ_SCOPE,
     );
     expect(await response.text()).toContain("ada@example.test");
+  });
+
+  test("hands the request's logger to the activity read, so a degraded roster says why", async () => {
+    // The dashboard's own call site. This suite stands up no auth tables, so the activity read throws
+    // inside `resolveActivity` and every tester comes back unobservable — behind a 200 that looks
+    // exactly like a cohort nobody has signed into. Without `c.var.log.child("testers")` on the
+    // `readCohort` line, that line goes to the no-op and the operator has nothing.
+    const cohort = await cohortWith();
+    await inviteMember(write(), { cohortId: cohort.id, email: "ada@example.test", maxRosterSize: 10 });
+    const records: LogRecord[] = [];
+    const log = createLogger({
+      level: "debug",
+      name: "app",
+      fields: { request: "req_1" },
+      sink: (record) => records.push(record),
+    });
+
+    const response = await call(
+      makeApp([TESTERS_ROSTER_READ_SCOPE], CONFIG, log),
+      "GET",
+      `/testers/cohorts?cohortId=${cohort.id}`,
+      TESTERS_ROSTER_READ_SCOPE,
+    );
+
+    expect(response.status).toBe(200);
+    const warned = records.filter((record) => record.level === "warn");
+    expect(warned).toHaveLength(1);
+    // `app:testers` is the `.child("testers")` on the call line, and `request` is the correlation the
+    // request logger already carried. A logger built inside the reader would have neither.
+    expect(warned[0]?.name).toBe("app:testers");
+    expect(warned[0]?.msg).toBe("activity unreadable, treating the roster as unobservable");
+    expect(warned[0]?.fields).toMatchObject({ request: "req_1", addresses: 1 });
   });
 });
 

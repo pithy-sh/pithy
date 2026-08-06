@@ -1,0 +1,29 @@
+// The sibling of `no-console.grit`, for the other way a line of output gets written by hand.
+// Scoped by biome.jsonc to packages/*/src/** with `packages/cli/**` excluded.
+//
+// In a Worker this is never the right channel. Every Worker Pithy scaffolds enables `nodejs_compat`
+// (see `templates/starter/apps/api/wrangler.jsonc`), so the call resolves rather than throwing — and
+// what it writes is an unstructured line with no level, no name, and no instance id, which is the same
+// hole `console.log` leaves, plus a dependency on a compatibility flag to not throw outright. Reach
+// for the logger; it is the only thing that produces a record anyone can query.
+//
+// The CLI is excluded, and that exclusion is the whole reason this is a second plugin rather than
+// two more patterns inside `no-console.grit`. A CLI writes to stdout — that is its product surface,
+// not a leak. Forty-odd call sites under `packages/cli/src` do it through `formatDone()`,
+// `formatJsonLine()` and the helpers in `terminal/style.ts`, and `docs/CLI.md` makes `--json` on
+// stdout a contract every command owes an agent driving it. Banning it there would break the thing.
+//
+// There are no violations to fix outside the CLI today. That is the point of adding it now: the gate
+// is free while the count is zero, and it stops the first one arriving quietly in a Workflow where
+// it would fail at runtime rather than in review.
+// The match is the member expression rather than the call, for the reason `no-console.grit` spells
+// out: a method handed off as a callback is the same accident as calling it, and matching only the
+// call form lets `items.forEach(process.stdout.write)` through.
+language js
+
+or {
+  `process.stdout.$method`,
+  `process.stderr.$method`
+} as $ref where {
+  register_diagnostic(span=$ref, message="Writing to stdout is the CLI's job, and only the CLI's. In a Worker this produces an unstructured line with no level, name, or instance id, and Workers Logs cannot filter it. Reach for c.var.log in a request, or createWorkerLogger() elsewhere.")
+}

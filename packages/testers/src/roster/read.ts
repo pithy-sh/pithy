@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { type Logger, noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { resolveActivity, type TesterActivity } from "../activity/resolve";
 import { dayKey, daysSince } from "../clock/days";
 import { type CohortClock, readClock } from "../clock/replay";
@@ -130,6 +131,11 @@ export async function countSnapshots(db: TestersDatabase, cohortId: string): Pro
  * The activity lookup is batched across the whole roster rather than run per tester, because this runs
  * inside a request as well as inside a Workflow, and a hundred-member cohort would otherwise be three
  * hundred round trips before the first byte of a response.
+ *
+ * `log` is the caller's logger, passed straight through to {@link resolveActivity}. An unreadable
+ * activity read degrades the whole roster to "never signed in", which is indistinguishable from a
+ * genuinely inactive cohort — so the caller's logger is the only thing that says why. Defaults to the
+ * no-op so a caller with nothing to log through still reads.
  */
 export async function readCohort(
   db: TestersDatabase,
@@ -137,6 +143,7 @@ export async function readCohort(
   cohort: TestersCohort,
   config: TestersConfig,
   now: Date,
+  log: Logger = noopLogger,
 ): Promise<CohortReading> {
   const members = await listMembers(db, cohort.id);
   const events = await listEvents(db, cohort.id);
@@ -161,6 +168,7 @@ export async function readCohort(
       activeSince: new Date(now.getTime() - config.activeWithinDays * MS_PER_DAY),
       unreachable,
     },
+    log,
   );
 
   const readings: MemberReading[] = members.map((member) => ({

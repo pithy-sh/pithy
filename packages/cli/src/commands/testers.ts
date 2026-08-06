@@ -7,6 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -19,6 +20,7 @@ import { loadProject, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
+import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim, saffron } from "../terminal/style";
 
@@ -132,6 +134,19 @@ function boundedName(value: string, limit: number, flag: string): string {
     });
   }
   return value;
+}
+
+/**
+ * The logger every read command hands to `readCohort`.
+ *
+ * Not optional in practice. When the activity read fails — auth resolvable but its tables absent, or a
+ * transient D1 error — the whole roster degrades to "never signed in", which reads exactly like a cohort
+ * nobody ever used. Without a logger that degradation reaches the terminal as a plausible answer with no
+ * trace of why. `createCliLogger` writes to `stderr` at `warn`, so the line shows without `--debug` and
+ * the `--json` contract on `stdout` is untouched.
+ */
+function readerLog(json: boolean): Logger {
+  return createCliLogger({ json }).child("testers");
 }
 
 /** Resolve the app D1 for an environment, plus the resolved testers config. */
@@ -498,7 +513,7 @@ const list = defineCommand({
         const cohorts = await modules.listCohorts(db);
         const rows = [];
         for (const cohort of cohorts) {
-          const reading = await modules.readCohort(db, d1, cohort, config, now);
+          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
           rows.push({
             id: cohort.id,
             name: cohort.name,
@@ -635,7 +650,7 @@ const roster = defineCommand({
           db,
           required(args.cohort, "a cohort", "pithy testers status closed-test"),
         );
-        const reading = await modules.readCohort(db, d1, cohort, config, now);
+        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
         const view = modules.toCohortView(
           reading,
           config,
@@ -692,7 +707,7 @@ const status = defineCommand({
           db,
           required(args.cohort, "a cohort", "pithy testers status closed-test"),
         );
-        const reading = await modules.readCohort(db, d1, cohort, config, now);
+        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
         const days = wholeNumber(args["trend-days"], "--trend-days", 30);
         const snapshots = await modules.listSnapshots(db, cohort.id, days);
         const view = modules.toCohortView(
@@ -841,6 +856,9 @@ const run = defineCommand({
           config,
           now: new Date(),
           newId: () => crypto.randomUUID(),
+          // The pass reports what it could not do — an unreadable suppression list, a roster it cannot
+          // see activity for. Same logger the read commands use, for the same reason.
+          log: readerLog(args.json),
           enqueue: args["skip-nudges"] ? undefined : enqueue,
           // The CLI resolves one database, the app `DB`. Without the suppression binding the pass leaves
           // deliverability flags alone rather than inferring a bounce from a table it cannot read.

@@ -4,6 +4,8 @@
 import { env } from "cloudflare:test";
 import { auth_0001_init } from "@pithy-sh/auth/src/migrations/0001_init";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { createLogger } from "@pithy-sh/core/src/logger/logger";
+import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { resolveActivity } from "./resolve";
@@ -207,5 +209,42 @@ describe("addresses", () => {
 
   test("an empty request is an empty answer rather than a query", async () => {
     expect((await resolveActivity(env.DB, [], OPTIONS)).size).toBe(0);
+  });
+});
+
+describe("when the auth tables cannot be read", () => {
+  test("every tester degrades to unobservable, and the caller's logger says why", async () => {
+    // The catch here swallows two very different things: a project that never composed auth, and a
+    // transient D1 failure that records a whole cohort as dark for a day. An operator reading a sudden
+    // coverage cliff needs somewhere to look, and `warn` is the level — the pass carried on.
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_auth_users");
+    const records: LogRecord[] = [];
+    const log = createLogger({
+      level: "debug",
+      name: "testers",
+      // The correlation a request logger carries. This reader runs inside `GET /testers/cohorts` as
+      // well as inside the Workflow, so it takes the caller's logger rather than building its own —
+      // otherwise the one line explaining an empty roster cannot be tied to the request that asked.
+      fields: { request: "req_1" },
+      sink: (record) => records.push(record),
+    });
+
+    const activity = await resolveActivity(env.DB, ["ada@example.test"], OPTIONS, log);
+
+    expect(activity.get("ada@example.test")?.observability).toBe("unobservable");
+    expect(records).toHaveLength(1);
+    const record = records[0];
+    if (!record) throw new Error("no record");
+    expect(record.level).toBe("warn");
+    expect(record.name).toBe("testers");
+    expect(record.fields).toMatchObject({ request: "req_1", addresses: 1 });
+    expect(String(record.fields?.reason)).toContain("pithy_auth_users");
+    expect(record.msg).not.toContain("{");
+  });
+
+  test("with no logger it still degrades rather than throwing", async () => {
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_auth_users");
+    const activity = await resolveActivity(env.DB, ["ada@example.test"], OPTIONS);
+    expect(activity.get("ada@example.test")?.observability).toBe("unobservable");
   });
 });

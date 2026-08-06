@@ -420,7 +420,9 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
       for (const cohort of cohorts) {
         const member = (await listMembers(db, cohort.id)).find((entry) => entry.email === userEmail);
         if (!member) continue;
-        const reading = await readCohort(db, d1, cohort, config, now);
+        // The request's own logger, namespaced to this capability. An activity read that degrades is
+        // then correlated to the request that asked, rather than being an orphaned line.
+        const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"));
         memberships.push({
           cohortName: cohort.name,
           state: member.state,
@@ -446,7 +448,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
         const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
         const views = [];
         for (const cohort of cohorts) {
-          const reading = await readCohort(db, d1, cohort, config, now);
+          const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"));
           // The latest snapshot is read even when the series is not, because it carries the
           // precomputed trend — recomputing the deltas here would let the card and the chart disagree.
           const snapshots = await listSnapshots(db, cohort.id, query.trend ? query.trendDays : 1);

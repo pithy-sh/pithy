@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { auth_0001_init } from "@pithy-sh/auth/src/migrations/0001_init";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
-import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { createLogger, noopLogger } from "@pithy-sh/core/src/logger/logger";
+import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -285,6 +287,64 @@ describe("the two-step join", () => {
     const html = await response.text();
     expect(html).not.toContain("<a href");
     expect(html).toContain("developer");
+  });
+});
+
+describe("the request's own logger reaches the activity read", () => {
+  /**
+   * `GET /testers/status` hands `c.var.log.child("testers")` to `readCohort`, which hands it to
+   * `resolveActivity`. Nothing else asserts that: every other test here sets `noopLogger` and reads a
+   * JSON body, so dropping the argument at the call site changes no response and no status.
+   *
+   * The setup is the one that separates the two reads. `pithy_auth_users` stands, so the handler
+   * resolves the caller's address and gets as far as `readCohort`; `pithy_auth_sessions` is gone, so
+   * the activity read throws where the handler cannot see it. That is the real failure — a degraded
+   * reading behind a 200.
+   */
+  test("so a degraded reading is correlated to the request that asked", async () => {
+    const untyped = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
+    for (const table of ["pithy_auth_devices", "pithy_auth_sessions", "pithy_auth_users"]) {
+      await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+    await auth_0001_init.up(untyped);
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_auth_sessions");
+
+    const { member } = await makeMember(DAY_ONE);
+    await env.DB.prepare(
+      "insert into pithy_auth_users (id, name, email, email_verified, created_at, updated_at) values (?, ?, ?, 1, ?, ?)",
+    )
+      .bind("u1", "Ada", member.email, DAY_ONE.toISOString(), DAY_ONE.toISOString())
+      .run();
+
+    const records: LogRecord[] = [];
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("auth", { userId: "u1", sessionId: "s1", scopes: [] });
+      c.set("controlPlane", null);
+      c.set("controlPlaneVerifier", null);
+      c.set("emit", async () => {});
+      c.set(
+        "log",
+        createLogger({ level: "debug", name: "app", fields: { request: "req_1" }, sink: (r) => records.push(r) }),
+      );
+      await next();
+    });
+    registerTestersRoutes({ config: CONFIG, now: () => DAY_ONE, newId: () => `id-${++sequence}` })(app);
+
+    const response = await app.request("/testers/status", undefined, env);
+
+    // A 200 with a membership in it. The response is exactly what it would be if the cohort were fine.
+    expect(response.status).toBe(200);
+    expect((await response.json<{ memberships: unknown[] }>()).memberships).toHaveLength(1);
+
+    const warned = records.filter((record) => record.level === "warn");
+    expect(warned).toHaveLength(1);
+    // `app:testers` is the `.child("testers")` on the call line; `request` is the correlation the
+    // request logger already carried. A logger built inside the reader would have neither.
+    expect(warned[0]?.name).toBe("app:testers");
+    expect(warned[0]?.msg).toBe("activity unreadable, treating the roster as unobservable");
+    expect(warned[0]?.fields).toMatchObject({ request: "req_1", addresses: 1 });
   });
 });
 

@@ -1,0 +1,26 @@
+// Gate for issue #134's structured logging. Scoped by biome.jsonc to packages/*/src/**.
+//
+// Biome ships `suspicious/noConsole`, and it matches exactly what this matches. It is not used,
+// because its message is fixed and names no replacement — it states the prohibition and stops.
+// A rule that only prohibits gets `biome-ignore`d by the next person who needs a line of output,
+// since the rule never told them where the line was supposed to go. A plugin can carry the answer,
+// so the diagnostic points at `c.var.log` and `createWorkerLogger()` by name. (Running both the
+// rule and this plugin double-reports every site, so `noConsole` stays off. It is not in the
+// `recommended` preset, so nothing has to disable it.)
+//
+// Deliberately NOT matched: an alias (`const c = console; c.log(...)`). Chasing it buys nothing —
+// someone routing around the gate has `biome-ignore` available, which no matcher can block, so the
+// alias case is evasion rather than accident and the gate is aimed at accident.
+//
+// The match is the MEMBER EXPRESSION, not the call. `console.log(x)` and `items.forEach(console.log)`
+// are the same accident, and an earlier version of this file matched only `console.$method($...)` —
+// so passing the method as a callback, or assigning it to a name, walked straight through the gate.
+// Matching the member access subsumes both: a call contains one, so it still reports exactly once.
+language js
+
+or {
+  `console.$method`,
+  `globalThis.console.$method`
+} as $ref where {
+  register_diagnostic(span=$ref, message="console is not the logger. Reach for c.var.log in a request, or createWorkerLogger() elsewhere — a console line carries no level, name, or request id, and Workers Logs cannot filter it.")
+}

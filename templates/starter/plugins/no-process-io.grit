@@ -1,0 +1,25 @@
+// The sibling of no-console.grit, for the other way a line of output gets written by hand.
+//
+// `process.stdout.write` and `process.stderr.write` are Node habits. Your Worker enables
+// `nodejs_compat`, so they resolve rather than throwing — and what they write is an unstructured line
+// with no level, no logger name, and no request id, which Workers Logs cannot filter. Same hole as
+// `console.log`, with the extra catch that it only works at all because of a compatibility flag.
+//
+// `c.var.log` inside a request handler, `createWorkerLogger()` anywhere else in the Worker.
+//
+// Scoped to `apps/*/src/**/*.ts` — your Worker code. If you add a build script or a Node CLI of your
+// own, writing to stdout there is correct and this gate should not reach it; that is why the scope is
+// the Worker's source and not the whole project.
+//
+// This file is yours. Narrow it, widen it, or delete the entry in biome.jsonc and this file with it.
+//
+// The match is the member access rather than the call, so a method handed off as a callback is caught
+// alongside a direct call. A call contains the member access, so each site reports exactly once.
+language js
+
+or {
+  `process.stdout.$method`,
+  `process.stderr.$method`
+} as $ref where {
+  register_diagnostic(span=$ref, message="A Worker log must be queryable. process.stdout writes an unstructured line with no level, name, or request id, and Workers Logs cannot filter it. Reach for c.var.log in a request, or createWorkerLogger() elsewhere.")
+}

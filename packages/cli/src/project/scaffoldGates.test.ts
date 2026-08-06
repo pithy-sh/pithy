@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,23 @@ describe("a freshly scaffolded project", () => {
     const { code, output } = await run(dir, biome(dir), ["check", "."]);
     expect(output).not.toMatch(/No configuration file found/);
     expect({ code, output }).toMatchObject({ code: 0 });
+  }, 60_000);
+
+  test("gates console in the worker's source, and names the replacement", async () => {
+    // "lints clean" proves the scaffolded plugin does not misfire. This proves it fires at all — a
+    // `path` or an `includes` that misses the scaffolded layout is a gate that passes everything,
+    // silently, and the scaffold would ship a file that does nothing.
+    //
+    // Written and removed inside the test: every later gate here compiles or runs `apps/api/src`.
+    const probe = join(dir, "apps", "api", "src", "probe.ts");
+    await writeFile(probe, 'export const probe = (): void => console.log("hi");\n');
+    try {
+      const { code, output } = await run(dir, biome(dir), ["check", "apps/api/src/probe.ts"]);
+      expect({ code, output }).not.toMatchObject({ code: 0 });
+      expect(output).toContain("createWorkerLogger()");
+    } finally {
+      await rm(probe, { force: true });
+    }
   }, 60_000);
 
   test("typechecks, through the solution file", async () => {

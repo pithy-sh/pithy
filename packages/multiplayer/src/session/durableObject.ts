@@ -3,7 +3,9 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { MultiplayerResult } from "../data/result";
 import { resultStore } from "../data/store";
 import { multiplayerDatabase } from "../data/tables";
@@ -40,6 +42,17 @@ const META_KEY = "meta";
 const OUTCOME_KEY = "outcome";
 const MODEL_STATE_KEY = "modelState";
 
+/**
+ * Any publish failure as a `PithyError`, so the log record carries a typed payload — code, message, and the
+ * cause text in `detail` — instead of a stringified throw. A `PithyError` from the leaderboard keeps its own
+ * code; a bare D1 error (a missing table, a busy database) has no meaningful public code, so it becomes
+ * `core/internal` (CLAUDE.md §Errors).
+ */
+function publishFailure(error: unknown): PithyError {
+  if (error instanceof PithyError) return error;
+  return new InternalError({ message: "The leaderboard publish failed.", detail: messageOf(error) }, { cause: error });
+}
+
 /** A message a client sends over the WebSocket — take an action, or ask for the current state. */
 interface ClientMessage {
   type: "action" | "state";
@@ -62,6 +75,13 @@ interface ClientMessage {
  * no-ops; the D1 write is a no-op on conflict).
  */
 export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
+  /**
+   * The session's own logger. `c.var.log` belongs to a `fetch` — a DO method called over RPC, and an alarm
+   * that fires with no caller at all, have no request to take one from — so the object builds its own, the
+   * way the support inbound handler does. The name scopes every record to this capability.
+   */
+  private readonly log: Logger = createWorkerLogger({ name: "multiplayer:session" });
+
   /** The DO's own id is the session id — stable, unguessable, and the D1 result's natural key. */
   private get sessionId(): string {
     return this.ctx.id.toString();
@@ -459,8 +479,14 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
       });
     } catch (error) {
       // A board misconfigured (or leaderboard not installed) must not fail a resolved session. The result is
-      // already durable in D1; only the leaderboard entry is lost.
-      console.error(`multiplayer: leaderboard publish failed for session ${meta.sessionId}`, error);
+      // already durable in D1; only the leaderboard entry is lost. Lost, and never retried — so this is a
+      // failure someone has to see and fix, not a degraded path that heals itself. It logs at `error`, and
+      // this record is the only trace it ever happened.
+      this.log.error("leaderboard publish failed", {
+        session: meta.sessionId,
+        board: leaderboard.board,
+        error: publishFailure(error),
+      });
     }
   }
 
