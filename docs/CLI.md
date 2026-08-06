@@ -35,7 +35,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy init` | Scaffold a new Pithy project in the current directory |
 | `pithy add <capability> [--worker <name>]` | Install a capability (auth, leaderboard, storage, vector) — installs the package, wires it into **that Worker's** `apps/<name>/pithy.config.ts` and `wrangler.jsonc`, scaffolds its **config** (you pick the mount path; handler source stays in the package), and runs its migrations. `--eject` copies the source into your repo — the only path that writes handler source (see `docs/EJECT.md`) |
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
-| `pithy worker <add\|list\|remove> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6) |
+| `pithy worker <add\|list\|remove\|sync> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see Section 6). `sync` writes the Worker's **app-declared** Workflows and cron triggers into its `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's (see Section 6.5) |
 | `pithy ui <add\|sync\|list> [--worker <name>]` | Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command. `sync` re-derives the asset routing after the Worker's capabilities change; `list` reports which Workers carry a UI (see Section 7 and `docs/UI.md`) |
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see Section 6) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
@@ -982,6 +982,24 @@ A feature environment *is* an environment, so `f<issue>-<slug>` simply occupies 
 ### 6.4 Voice
 
 All `pithy dev` output obeys the brand voice (Section 3 / `BRAND.md` §5): labeled lines, deliberate periods, no celebration. The ready banner is information, not confetti.
+
+### 6.5 App-declared Workflows (`pithy worker sync`)
+
+```
+pithy worker sync [--worker <name>] [--env <environment>] [--json]
+```
+
+A library capability's Workflows are provisioned: `pithy <capability> provision` deploys the host Worker and writes the cross-script binding into the app's `wrangler.jsonc`. A Workflow the **adopter's own app capability** declares had no such path, so its `workflows` array, its `triggers.crons`, and the repetition of both across every environment were written by hand — against `<project>-<env>-<capability>-<job>` and Cloudflare's segment rule, neither of which fails until deploy.
+
+`pithy worker sync` writes them. It reads the Worker's `app` capability, derives each job's name through the same helper the kit uses for a library capability's, and reconciles the result into `wrangler.jsonc`: the top-level stanza and every `env.<name>` the Worker already declares, or just the one `--env` names. It touches no Cloudflare account and runs no deploy.
+
+Three rules govern what it writes:
+
+- **The app's entries are replaced, not merged.** A job renamed or dropped leaves. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched.
+- **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler and it starts *every* job that declares a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is every job running again at a time nobody asked for.
+- **The class stays yours.** Cloudflare resolves `class_name` in the script the binding names, so the `WorkflowEntrypoint` subclass has to be exported from the Worker's `main`. That is five lines written once; the command names the classes it expects.
+
+Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change reports that nothing moved, and a stanza wrangler would reject aborts the run rather than leaving half a config behind.
 
 ---
 

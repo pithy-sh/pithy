@@ -31,9 +31,15 @@ describe("main", () => {
     );
   });
 
-  test("worker exposes add, list, and remove subcommands", async () => {
+  test("worker exposes add, list, remove, and sync subcommands", async () => {
     const worker = await subcommand("worker");
-    expect(Object.keys(worker.subCommands ?? {})).toEqual(expect.arrayContaining(["add", "list", "remove"]));
+    expect(Object.keys(worker.subCommands ?? {})).toEqual(expect.arrayContaining(["add", "list", "remove", "sync"]));
+  });
+
+  test("worker sync is agent-drivable — --worker, --env, and --json, no prompt required", async () => {
+    const worker = await subcommand("worker");
+    const sync = (worker.subCommands as Record<string, CommandDef>).sync;
+    expect(Object.keys(sync?.args ?? {})).toEqual(["worker", "env", "json"]);
   });
 
   test("the new commands are agent-drivable — every one supports --json", async () => {
