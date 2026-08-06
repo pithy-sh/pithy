@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assertValidProjectName,
   isReservedProjectName,
@@ -24,13 +25,40 @@ export interface ScaffoldOptions {
 }
 
 /**
- * The starter template directory. Resolved relative to this module — Phase 0
- * runs the CLI from the workspace, where `templates/starter` sits at the repo
- * root; publishing bundles the template into the package (a release concern).
+ * Where the starter template sits, relative to this module, in the order the two layouts are tried.
+ *
+ * Packaged first: `prepack` vendors `templates/starter` into the package, so an installed
+ * `@pithy-sh/cli` carries its own copy at `<package>/templates/starter`. Workspace second: a checkout
+ * keeps the source of truth at the repo root, four levels up and *outside* the package.
  */
+const TEMPLATE_LAYOUTS = [
+  ["..", "..", "templates", "starter"],
+  ["..", "..", "..", "..", "templates", "starter"],
+] as const;
+
+/**
+ * The starter template directory, resolved from `moduleDir`.
+ *
+ * Exported because the only honest way to test this is against an **extracted tarball**, not against
+ * the checkout the test runs in. This resolved the repo-root path and nothing else, which exists only
+ * in a workspace: a published CLI shipped no template at all and `pithy init` — the first command an
+ * adopter runs — could not work. Every scaffold test stayed green, because each one ran from the
+ * checkout where the missing path happened to be there.
+ */
+export function resolveTemplateDir(moduleDir: string): string {
+  for (const layout of TEMPLATE_LAYOUTS) {
+    const candidate = resolve(moduleDir, ...layout);
+    if (existsSync(join(candidate, "package.json"))) return candidate;
+  }
+  throw new InternalError({
+    message: "This pithy install is missing its starter template.",
+    action: "Reinstall @pithy-sh/cli. Report it if a fresh install does the same.",
+    detail: `no starter template under ${moduleDir} at ${TEMPLATE_LAYOUTS.map((l) => join(...l)).join(" or ")}`,
+  });
+}
+
 function templateDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "..", "..", "..", "..", "templates", "starter");
+  return resolveTemplateDir(dirname(fileURLToPath(import.meta.url)));
 }
 
 /**

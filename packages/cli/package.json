@@ -12,7 +12,14 @@
   "exports": {
     "./src/*": "./src/*.ts"
   },
+  "files": [
+    "src",
+    "templates",
+    "!src/**/*.test.ts"
+  ],
   "scripts": {
+    "prepack": "bun scripts/vendorTemplate.ts",
+    "postpack": "bun scripts/vendorTemplate.ts --clean",
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json",
     "test": "vitest run",
