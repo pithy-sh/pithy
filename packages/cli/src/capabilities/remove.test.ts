@@ -117,6 +117,22 @@ describe("unwireConfig", () => {
     expect(unwireConfig(source, "secrets", "@pithy-sh/secrets")).not.toContain("@pithy-sh/secrets");
   });
 
+  test("takes the capability out of a shared clause and leaves the adopter's other bindings", () => {
+    // Deleting the whole statement deleted bindings that were never ours. `hashPassword` still resolves
+    // here; if the uninstall then takes the package, that is a loud typecheck failure, not a silent
+    // deletion of code the adopter wrote.
+    const source = [
+      'import { auth, hashPassword } from "@pithy-sh/auth/src/index";',
+      "  capabilities: [",
+      "    auth(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    const out = unwireConfig(source, "auth", "@pithy-sh/auth");
+    expect(out).toContain('import { hashPassword } from "@pithy-sh/auth/src/index";');
+    expect(out).not.toContain("auth()");
+  });
+
   test("leaves an import of the same name from somewhere else alone", () => {
     // The adopter's own `auth`, which `add` would have refused to wire over. Not ours to delete.
     const source = ['import { auth } from "./lib/myAuth";', "  capabilities: [", "    // pithy:capabilities"].join(

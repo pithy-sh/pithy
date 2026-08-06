@@ -12,7 +12,7 @@ import { uninstallPackage } from "../project/packageManager";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
-import { findNamedImport, isCapabilityImport, withoutImport } from "./configImports";
+import { findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
 import { EJECT_DIR, ejectImportPath, isEjected } from "./eject";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
@@ -25,8 +25,9 @@ function escapeRegExp(text: string): string {
 
 /**
  * Remove a capability's import and registration from a Worker's `pithy.config.ts` — the inverse of `add`'s
- * managed-region wiring. Drops the import line (the package `@pithy-sh/<cap>/src/index` **or** the
- * ejected `./capabilities/<cap>`), then the `<cap>(),` registration — a one-liner, or the whole block
+ * managed-region wiring. Drops the capability's binding (imported from the package
+ * `@pithy-sh/<cap>/src/index` **or** the ejected `./capabilities/<cap>`), then the `<cap>(),`
+ * registration — a one-liner, or the whole block
  * form (`<cap>({ … }),`) when the capability carries config options. Idempotent: a config that never
  * had the capability is returned unchanged. Matches only the exact factory call, never a shared-prefix
  * name (`authpro` is left alone when removing `auth`).
@@ -63,12 +64,14 @@ export function unwireConfig(source: string, name: string, pkg: string): string 
   // Every one of them, not the first: a config wrecked by the old `add` — a hand-corrected specifier
   // and the broken one put back beside it — carries two, and leaving one is still unloadable once the
   // package goes.
+  // Only the capability's own binding goes with it. `import { auth, hashPassword } from …` is one
+  // statement holding two answers, and deleting it took the adopter's other name with it.
   const ejectPath = ejectImportPath(name);
   let rest = lines.join("\n");
   for (;;) {
     const found = findNamedImport(rest, name);
     if (!found || !isCapabilityImport(found.specifier, pkg, ejectPath)) return rest;
-    const next = withoutImport(rest, found);
+    const next = withoutBinding(rest, found);
     if (next === rest) return rest; // nothing was taken out; never spin on it
     rest = next;
   }

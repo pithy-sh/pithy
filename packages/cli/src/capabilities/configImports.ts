@@ -12,6 +12,16 @@ export interface ConfigImport {
   statement: string;
   /** The module specifier it imports from, unquoted. */
   specifier: string;
+  /** Where the statement starts in the source it was found in — the anchor every edit splices at. */
+  start: number;
+  /**
+   * The span to cut to drop this one binding: the name, plus the comma joining it to its neighbour.
+   * Meaningless on its own — {@link withoutBinding} is what reads it.
+   */
+  bindingStart: number;
+  bindingEnd: number;
+  /** True when the clause binds nothing else, so dropping the name drops the whole statement. */
+  soleBinding: boolean;
 }
 
 /**
@@ -115,6 +125,26 @@ function scanConfig(source: string): ScannedConfig {
   return { code, inLiteral };
 }
 
+/** One comma-separated name in an import clause, and where it sits in the source. */
+interface ClauseSegment {
+  /** The segment verbatim, padding and all — `" auth "` in `{ a, auth }`. */
+  text: string;
+  /** Its absolute span in the source. The commas are the gaps between one segment and the next. */
+  start: number;
+  end: number;
+}
+
+/** Split a clause on its commas, carrying each piece's offset. `offset` is where the clause starts. */
+function clauseSegments(clause: string, offset: number): ClauseSegment[] {
+  const segments: ClauseSegment[] = [];
+  let at = offset;
+  for (const text of clause.split(",")) {
+    segments.push({ text, start: at, end: at + text.length });
+    at += text.length + 1; // the comma
+  }
+  return segments;
+}
+
 /**
  * The named import that binds `name`, or `undefined` when nothing does.
  *
@@ -127,17 +157,31 @@ export function findNamedImport(source: string, name: string): ConfigImport | un
   const { code, inLiteral } = scanConfig(source);
   for (const match of code.matchAll(NAMED_IMPORT)) {
     if (inLiteral[match.index]) continue; // an import inside a string is a string
-    for (const clause of (match[1] ?? "").split(",")) {
-      const trimmed = clause.trim();
+    const clause = match[1] ?? "";
+    const segments = clauseSegments(clause, match.index + match[0].indexOf("{") + 1);
+    for (const [index, segment] of segments.entries()) {
+      const trimmed = segment.text.trim();
       if (trimmed === "" || trimmed.startsWith("type ")) continue;
       // `x as y` binds `y`; an alias means the adopter is using a different name, and this is not it.
       const parts = trimmed.split(/\s+as\s+/);
       if ((parts[1] ?? parts[0] ?? "").trim() !== name) continue;
+
+      // What an edit would cut. The first name takes the comma after it (`{ auth, b }` → `{ b }`); a
+      // later one takes the comma before it and stops at the name, so the clause keeps its padding
+      // (`{ a, auth }` → `{ a }`). A sole binding is cut whole and the statement goes with it.
+      const soleBinding = segments.every((other, at) => at === index || other.text.trim() === "");
+      const trailing = segment.text.length - segment.text.trimEnd().length;
+      const after = segments[index + 1]?.start ?? segment.end;
+      const before = segments[index - 1]?.end ?? segment.start;
       // Sliced from the source, not taken from the match: a comment inside the statement is blank in
       // `code`, and the statement callers edit is the one the adopter wrote.
       return {
         statement: source.slice(match.index, match.index + match[0].length),
         specifier: match[3] ?? "",
+        start: match.index,
+        bindingStart: soleBinding || index === 0 ? segment.start : before,
+        bindingEnd: soleBinding ? segment.end : index === 0 ? after : segment.end - trailing,
+        soleBinding,
       };
     }
   }
@@ -171,12 +215,20 @@ export function isCapabilityImport(specifier: string, pkg: string, ejectPath: st
 }
 
 /**
- * The source with an import statement taken out, including the newline it sat on so no blank line is
- * left behind. A no-op if the statement is not there.
+ * The source with one **binding** taken out — the whole statement only when that binding was the last
+ * name in the clause, including the newline it sat on so no blank line is left behind.
+ *
+ * The binding, not the statement, because `findNamedImport` deliberately matches one name inside a
+ * multi-name clause: deleting the statement took `import { auth, hashPassword } from …` down to
+ * nothing and left a config that no longer compiles, over bindings that were never the capability's.
+ * What remains may still import a package that is about to be uninstalled — that is a typecheck
+ * failure the adopter can read, which beats silently deleting code they wrote.
+ *
+ * A no-op if the statement is no longer where {@link ConfigImport} says it is.
  */
-export function withoutImport(source: string, found: ConfigImport): string {
-  const index = source.indexOf(found.statement);
-  if (index === -1) return source;
-  const end = index + found.statement.length;
-  return source.slice(0, index) + source.slice(source.startsWith("\n", end) ? end + 1 : end);
+export function withoutBinding(source: string, found: ConfigImport): string {
+  const end = found.start + found.statement.length;
+  if (source.slice(found.start, end) !== found.statement) return source;
+  if (!found.soleBinding) return source.slice(0, found.bindingStart) + source.slice(found.bindingEnd);
+  return source.slice(0, found.start) + source.slice(source.startsWith("\n", end) ? end + 1 : end);
 }

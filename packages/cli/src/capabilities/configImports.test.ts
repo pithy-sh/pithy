@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { capabilityImportSpecifier, findNamedImport, isCapabilityImport, withoutImport } from "./configImports";
+import { capabilityImportSpecifier, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
 
 describe("capabilityImportSpecifier", () => {
   test("is the package's src/index barrel", () => {
@@ -102,16 +102,53 @@ describe("isCapabilityImport", () => {
   });
 });
 
-describe("withoutImport", () => {
-  test("takes the statement out with the line it sat on", () => {
-    const source = 'import { auth } from "@pithy-sh/auth/src/index";\nexport default {};\n';
-    const found = findNamedImport(source, "auth");
-    expect(found && withoutImport(source, found)).toBe("export default {};\n");
+describe("withoutBinding", () => {
+  /** Take `name`'s binding out of `source` — the two calls every caller makes, as one. */
+  function without(source: string, name: string): string | undefined {
+    const found = findNamedImport(source, name);
+    return found && withoutBinding(source, found);
+  }
+
+  test("takes the statement out with the line it sat on when the name was all it bound", () => {
+    expect(without('import { auth } from "@pithy-sh/auth/src/index";\nexport default {};\n', "auth")).toBe(
+      "export default {};\n",
+    );
   });
 
   test("takes a multi-line statement out whole", () => {
-    const source = 'import {\n  auth,\n} from "@pithy-sh/auth/src/index";\nexport default {};\n';
-    const found = findNamedImport(source, "auth");
-    expect(found && withoutImport(source, found)).toBe("export default {};\n");
+    expect(without('import {\n  auth,\n} from "@pithy-sh/auth/src/index";\nexport default {};\n', "auth")).toBe(
+      "export default {};\n",
+    );
+  });
+
+  test("takes only the binding out of a clause that binds more than one name", () => {
+    // Deleting the statement took the adopter's other bindings with it and left a config that no longer
+    // compiles — a removal that breaks the file it was cleaning up.
+    expect(without('import { a, auth, b } from "@pithy-sh/auth/src/index";', "auth")).toBe(
+      'import { a, b } from "@pithy-sh/auth/src/index";',
+    );
+  });
+
+  test("takes the first name out without eating its neighbour's space", () => {
+    expect(without('import { auth, b } from "@pithy-sh/auth/src/index";', "auth")).toBe(
+      'import { b } from "@pithy-sh/auth/src/index";',
+    );
+  });
+
+  test("keeps a multi-line clause's shape", () => {
+    const source = 'import {\n  auth,\n  b,\n} from "@pithy-sh/auth/src/index";\n';
+    expect(without(source, "auth")).toBe('import {\n  b,\n} from "@pithy-sh/auth/src/index";\n');
+  });
+
+  test("keeps a type-only sibling — it binds a name the config still references", () => {
+    expect(without('import { auth, type AuthOptions } from "@pithy-sh/auth/src/index";', "auth")).toBe(
+      'import { type AuthOptions } from "@pithy-sh/auth/src/index";',
+    );
+  });
+
+  test("a trailing comma is not another name", () => {
+    expect(without('import { auth, } from "@pithy-sh/auth/src/index";\nexport default {};\n', "auth")).toBe(
+      "export default {};\n",
+    );
   });
 });
