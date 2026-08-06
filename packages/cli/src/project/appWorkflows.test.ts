@@ -186,6 +186,35 @@ describe("reconcileAppWorkflows", () => {
     expect(stanza?.triggers?.crons).toEqual(["0 4 * * *"]);
   });
 
+  test("dropping the last schedule writes an empty cron list, not an absent key", async () => {
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability(), env: "staging" });
+
+    const unscheduled = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: {
+        "key-rotation": { binding: "KEY_ROTATION", params: z.object({}), className: "KeyRotationWorkflow" },
+      },
+    });
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: unscheduled, env: "staging" });
+
+    // Wrangler reads an absent `crons` as "not declared" and leaves the deployed schedule alone, so a
+    // deleted key would leave yesterday's cron still firing the job that is left.
+    expect((await read()).env?.staging?.triggers?.crons).toEqual([]);
+  });
+
+  test("an app with no schedule at all gets no triggers block — nothing invented", async () => {
+    const unscheduled = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: { reindex: { binding: "REINDEX", params: z.object({}), className: "ReindexWorkflow" } },
+    });
+
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: unscheduled, env: "staging" });
+
+    expect((await read()).env?.staging?.triggers).toBeUndefined();
+  });
+
   test("a library capability's provisioned entry survives — it is bound to another script", async () => {
     await writeFile(
       join(dir, "wrangler.jsonc"),

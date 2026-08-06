@@ -170,12 +170,15 @@ function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): voi
  * carrying a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is
  * every job running again at a time nobody asked for. The declaration is therefore the whole truth, and a
  * schedule the adopter changes takes its old value with it.
+ *
+ * **An emptied schedule is written as `[]`, never as a deleted key.** Wrangler reads an absent `crons` as
+ * "not declared" and leaves the deployed Worker's schedule exactly as it was, so deleting the key when the
+ * app drops its last schedule would leave the old cron firing every job that remains — a reconcile that
+ * reports `Done.` and changes nothing where it matters. A stanza that never carried crons is still left
+ * alone, because a `triggers` block a project never had is noise in every config whose jobs all dispatch.
  */
 function setCrons(stanza: WorkflowStanza, crons: string[]): void {
-  if (crons.length === 0) {
-    if (stanza.triggers) delete stanza.triggers.crons;
-    return;
-  }
+  if (crons.length === 0 && stanza.triggers?.crons === undefined) return;
   stanza.triggers ??= {};
   stanza.triggers.crons = crons;
 }
