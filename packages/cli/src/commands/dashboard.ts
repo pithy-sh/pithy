@@ -8,7 +8,7 @@ import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlP
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
-import { type DashboardClient, type DeviceAuthorization, httpDashboardClient } from "../dashboard/api";
+import { httpDashboardClient } from "../dashboard/api";
 import {
   authorizeDashboard,
   type ConnectReport,
@@ -21,10 +21,12 @@ import {
   rotateDashboardKey,
   type StatusReport,
 } from "../dashboard/connect";
+import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { loadProject, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { isProductionEnv } from "../seed/safety";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -419,13 +421,21 @@ const connect = defineCommand({
       const granted: ControlPlaneScope[] | undefined =
         scopes.length > 0 ? scopes : interactive && !args.update ? await promptScopes() : undefined;
 
-      const project = args.project ?? requireProjectName(await loadProject(projectDir));
+      // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
+      // environment holds live data is the project's policy either way, and it is exactly the list that
+      // gates a destructive seed. Resolved here because this is where the CLI knows it — a management
+      // client guessing from the name gives an adopter who calls production `live` the safe-looking
+      // treatment on their real users.
+      const config = await loadProject(projectDir);
+      const project = args.project ?? requireProjectName(config);
+      const isProduction = isProductionEnv(args.env, config.seed?.productionEnvironments);
 
       const report = await withRegistry(args, (registry) =>
         connectDashboard({
           registry,
           project,
           environment: args.env,
+          isProduction,
           ...(workerUrl === undefined ? {} : { workerUrl }),
           ...(target === null ? {} : { basePath: target.basePath }),
           ...(granted === undefined ? {} : { scopes: granted }),

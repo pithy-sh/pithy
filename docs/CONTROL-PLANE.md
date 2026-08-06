@@ -93,6 +93,8 @@ Sibling Workers are not separately addressable, and that is deliberate: the data
 
 The seam is MIT and is not gated by anything. `--public-key <file>` registers a key you generated yourself, with no dashboard involved, so you can write your own management client and use every route on this page.
 
+The contract that client is held to is a module you can import: `@pithy-sh/cli/src/dashboard/contract` carries the six calls, the six response shapes, and the hosted origin. It reaches for no timer, no `fetch`, and nothing from node, so it compiles in a Worker as readily as in a build script — implement `DashboardClient` against it and let the compiler tell you what you owe, rather than copying the field sets into a test that can drift.
+
 ---
 
 ## 6. Rotation: append, prove, then expire

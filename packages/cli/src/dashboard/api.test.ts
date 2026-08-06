@@ -3,7 +3,8 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
-import { type DashboardFetch, type DashboardRequestInit, DEFAULT_DASHBOARD_ORIGIN, httpDashboardClient } from "./api";
+import { type DashboardFetch, type DashboardRequestInit, httpDashboardClient } from "./api";
+import { DEFAULT_DASHBOARD_ORIGIN } from "./contract";
 
 /** A public key that satisfies `Ed25519PublicJwk`. */
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
@@ -115,6 +116,7 @@ describe("httpDashboardClient — connections", () => {
     const issued = await httpDashboardClient({ fetch }).createConnection("ct_1", {
       project: "acme",
       environment: "prod",
+      isProduction: true,
       workerUrl: "https://api.example.com",
       basePath: "/control-plane",
       scopes: ["manifest:read"],
@@ -124,9 +126,12 @@ describe("httpDashboardClient — connections", () => {
     expect(issued.publicKeyJwk).toEqual(JWK);
     expect(calls[0]?.url).toBe(`${DEFAULT_DASHBOARD_ORIGIN}/api/cli/connections`);
     expect(calls[0]?.init.headers.authorization).toBe("Bearer ct_1");
+    // `isProduction` is on the wire, because the client cannot work it out: a project may call
+    // production `live`, and a client guessing from the name gives it the safe-looking treatment.
     expect(JSON.parse(calls[0]?.init.body ?? "{}")).toEqual({
       project: "acme",
       environment: "prod",
+      isProduction: true,
       workerUrl: "https://api.example.com",
       basePath: "/control-plane",
       scopes: ["manifest:read"],

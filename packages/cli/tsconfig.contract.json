@@ -1,0 +1,19 @@
+{
+  // The dashboard contract is a SECOND program, and this file is the gate that keeps it one.
+  //
+  // `src/dashboard/contract.ts` defines what a management client must implement, so the client has to be
+  // able to import it — and every client that could implement it is a Workers-typed program. The CLI's
+  // own tsconfig types both `@cloudflare/workers-types` and node, and node wins wherever the two disagree,
+  // so a node-only API in that file typechecks here and fails in every consumer. That is exactly how
+  // `timer.unref?.()` shipped in the module: the dashboard could not import it, hand-copied the field sets
+  // into a conformance test, and the schemas were free to drift from the implementation they specify.
+  //
+  // Workers types only, no node. The contract compiles the way it will where it is consumed.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/dashboard/contract.ts"]
+}
