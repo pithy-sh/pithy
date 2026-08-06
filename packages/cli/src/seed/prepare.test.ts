@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import { describe, expect, test } from "vitest";
+import { stateDir } from "../notifier/state";
 import { devPreferencesPath, devSecretReader, readDevPreferences, writeSeedArtifact } from "./prepare";
 
 async function tempDir(): Promise<string> {
@@ -14,41 +15,69 @@ async function tempDir(): Promise<string> {
 }
 
 describe("devPreferencesPath", () => {
-  test("respects XDG_CONFIG_HOME", () => {
-    expect(devPreferencesPath("acme", { XDG_CONFIG_HOME: "/xdg", HOME: "/home/dev" })).toBe("/xdg/acme/dev.json");
+  test("nests the project under the Pithy config directory, never directly under the config root", () => {
+    expect(devPreferencesPath("acme", { platform: "linux", homedir: "/home/dev", env: {} })).toBe(
+      "/home/dev/.config/pithy/acme/dev.json",
+    );
   });
 
-  test("falls back to ~/.config", () => {
-    expect(devPreferencesPath("acme", { HOME: "/home/dev" })).toBe("/home/dev/.config/acme/dev.json");
+  test("respects XDG_CONFIG_HOME", () => {
+    expect(
+      devPreferencesPath("acme", { platform: "linux", homedir: "/home/dev", env: { XDG_CONFIG_HOME: "/xdg" } }),
+    ).toBe("/xdg/pithy/acme/dev.json");
   });
 
   test("ignores an empty XDG_CONFIG_HOME rather than resolving against nothing", () => {
-    expect(devPreferencesPath("acme", { XDG_CONFIG_HOME: "", HOME: "/home/dev" })).toBe(
-      "/home/dev/.config/acme/dev.json",
+    expect(devPreferencesPath("acme", { platform: "linux", homedir: "/home/dev", env: { XDG_CONFIG_HOME: "" } })).toBe(
+      "/home/dev/.config/pithy/acme/dev.json",
     );
+  });
+
+  // Asserted here rather than left to the delegation: this is the branch that did not exist, so a Windows
+  // developer's file landed where nothing reads it. A test that only checked POSIX would have passed then too.
+  test("puts a Windows developer's file under %APPDATA%", () => {
+    expect(
+      devPreferencesPath("acme", {
+        platform: "win32",
+        homedir: "C:\\Users\\u",
+        env: { APPDATA: "C:\\Users\\u\\AppData\\Roaming" },
+      }),
+    ).toBe(join("C:\\Users\\u\\AppData\\Roaming", "pithy", "acme", "dev.json"));
+  });
+
+  test("resolves under the same root `pithy doctor` reports, on every platform", () => {
+    for (const options of [
+      { platform: "linux" as const, homedir: "/home/dev", env: {} },
+      { platform: "darwin" as const, homedir: "/Users/dev", env: { XDG_CONFIG_HOME: "/xdg" } },
+      { platform: "win32" as const, homedir: "C:\\Users\\u", env: { APPDATA: "C:\\AppData" } },
+    ]) {
+      expect(devPreferencesPath("acme", options)).toBe(join(stateDir(options), "acme", "dev.json"));
+    }
   });
 });
 
 describe("readDevPreferences", () => {
   test("is undefined when the developer has not opted in", async () => {
     const home = await tempDir();
-    expect(await readDevPreferences("acme", { XDG_CONFIG_HOME: home })).toBeUndefined();
+    expect(await readDevPreferences("acme", { env: { XDG_CONFIG_HOME: home }, platform: "linux" })).toBeUndefined();
   });
 
   test("reads the file the developer wrote", async () => {
     const home = await tempDir();
     const { mkdir } = await import("node:fs/promises");
-    await mkdir(join(home, "acme"), { recursive: true });
-    await writeFile(join(home, "acme", "dev.json"), '{ "user": "ada@example.com" }');
-    expect(await readDevPreferences("acme", { XDG_CONFIG_HOME: home })).toEqual({ user: "ada@example.com" });
+    await mkdir(join(home, "pithy", "acme"), { recursive: true });
+    await writeFile(join(home, "pithy", "acme", "dev.json"), '{ "user": "ada@example.com" }');
+    expect(await readDevPreferences("acme", { env: { XDG_CONFIG_HOME: home }, platform: "linux" })).toEqual({
+      user: "ada@example.com",
+    });
   });
 
   test("treats an unparseable file as absent — a half-typed preference never fails a seed", async () => {
     const home = await tempDir();
     const { mkdir } = await import("node:fs/promises");
-    await mkdir(join(home, "acme"), { recursive: true });
-    await writeFile(join(home, "acme", "dev.json"), "{ not json");
-    expect(await readDevPreferences("acme", { XDG_CONFIG_HOME: home })).toBeUndefined();
+    await mkdir(join(home, "pithy", "acme"), { recursive: true });
+    await writeFile(join(home, "pithy", "acme", "dev.json"), "{ not json");
+    expect(await readDevPreferences("acme", { env: { XDG_CONFIG_HOME: home }, platform: "linux" })).toBeUndefined();
   });
 });
 

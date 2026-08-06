@@ -182,7 +182,7 @@ It is a plan, not a query: no I/O, no credentials, and the same answer whether o
 
 `auth`'s `dev-session` set mints a **real** session for a seeded user and writes `logs/dev-login.json`. `pithy dev` reads it and prints, on the ready banner, a line you paste into the browser console to be signed in.
 
-It is opt-in per machine, not per repo. Create `~/.config/<project>/dev.json` (or `$XDG_CONFIG_HOME/<project>/dev.json`):
+It is opt-in per machine, not per repo. Create `~/.config/pithy/<project>/dev.json` — `$XDG_CONFIG_HOME/pithy/<project>/dev.json` when that variable is set, `%APPDATA%\pithy\<project>\dev.json` on Windows. It is the directory `pithy doctor` reports, and doctor names this file on its `Dev login:` line:
 
 ```json
 { "user": "jim@acme.dev" }

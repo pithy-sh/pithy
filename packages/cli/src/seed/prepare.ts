@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
+import { type StatePathOptions, stateDir } from "../notifier/state";
 
 /**
  * The CLI half of the prepared-set seam: everything a `SeedSet.prepare` hook needs from the machine, kept
@@ -15,20 +15,31 @@ import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
  * The hook gets values and callbacks; the disk stays on this side.
  */
 
-/** The environment variables the preference path is resolved from — injected so tests need no real `$HOME`. */
-export type ProcessEnv = Record<string, string | undefined>;
-
 /**
- * Where a developer states their machine-local preferences for one project: `$XDG_CONFIG_HOME/<project>/dev.json`,
- * falling back to `~/.config` when the variable is unset or empty (an empty value is not a directory, and
- * treating it as one would resolve the path against the filesystem root).
+ * Where a developer states their machine-local preferences for one project: `<stateDir()>/<project>/dev.json`
+ * — `%APPDATA%\pithy\<project>\dev.json` on Windows, `$XDG_CONFIG_HOME/pithy/<project>/dev.json` when that
+ * is set, else `~/.config/pithy/<project>/dev.json`.
  *
  * Outside the repo on purpose. A machine opts itself in with no commit and no per-run flag, and two
- * developers sharing one checkout can be different people.
+ * developers sharing one checkout can be different people. The project segment stays for the same reason
+ * one level down: a developer with two Pithy projects checked out wants to be a different user in each.
+ *
+ * **Under Pithy's own config directory, not straight under the config root.** This used to resolve
+ * `$XDG_CONFIG_HOME/<project>/dev.json`, which squatted on a namespace the CLI does not own: a Pithy project
+ * name is short and generic by design — `dash`, `api`, `web` — so `~/.config/dash/` is a plausible collision
+ * with an unrelated program, and the loser is whichever wrote second.
+ *
+ * **Resolved through {@link stateDir} rather than by hand.** The hand-rolled version had no `win32` branch
+ * at all, so a Windows developer's file landed where nothing reads it while the resolver three files away
+ * got it right. Delegating deletes that logic instead of adding a third copy of it, and it makes this the
+ * directory `pithy doctor` already reports — which is what lets doctor name this file at all.
+ *
+ * One behavioural consequence, taken deliberately: `stateDir` reads the home directory from `os.homedir()`,
+ * not from `$HOME`, so exporting `HOME` no longer relocates the preference file. That is the same rule the
+ * state file has always followed, and one rule is the point.
  */
-export function devPreferencesPath(project: string, env: ProcessEnv = process.env): string {
-  const configHome = env.XDG_CONFIG_HOME || join(env.HOME ?? homedir(), ".config");
-  return join(configHome, project, "dev.json");
+export function devPreferencesPath(project: string, options: StatePathOptions = {}): string {
+  return join(stateDir(options), project, "dev.json");
 }
 
 /**
@@ -38,9 +49,9 @@ export function devPreferencesPath(project: string, env: ProcessEnv = process.en
  * an unparseable one: this file is hand-edited, and a half-typed preference should not fail a whole seed
  * run. A file that parses but says the wrong thing is a different matter, and the set rejects it loudly.
  */
-export async function readDevPreferences(project: string, env: ProcessEnv = process.env): Promise<unknown> {
+export async function readDevPreferences(project: string, options: StatePathOptions = {}): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(devPreferencesPath(project, env), "utf8"));
+    return JSON.parse(await readFile(devPreferencesPath(project, options), "utf8"));
   } catch {
     return undefined;
   }

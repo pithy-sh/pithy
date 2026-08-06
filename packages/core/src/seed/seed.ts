@@ -168,10 +168,11 @@ export interface SeedPrepareContext {
    */
   secret: (name: string) => Promise<string | undefined>;
   /**
-   * The developer's machine-local preferences for this project (`$XDG_CONFIG_HOME/<project>/dev.json`,
-   * falling back to `~/.config`), parsed but unvalidated — `undefined` when the file is absent or
-   * unreadable. It is a per-machine opt-in, outside the repo, so two developers on one checkout can
-   * differ and neither has to commit anything. The set validates the shape it expects.
+   * The developer's machine-local preferences for this project, read from the Pithy config directory
+   * (`~/.config/pithy/<project>/dev.json`, or `%APPDATA%\pithy\<project>\dev.json` on Windows), parsed but
+   * unvalidated — `undefined` when the file is absent or unreadable. It is a per-machine opt-in, outside
+   * the repo, so two developers on one checkout can differ and neither has to commit anything. The set
+   * validates the shape it expects.
    */
   preferences: unknown;
   /**

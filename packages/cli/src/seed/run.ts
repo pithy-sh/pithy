@@ -130,8 +130,8 @@ export interface SeedProjectOptions {
   mediaUploader?: MediaUploader;
   /**
    * Seam: read the developer's machine-local preferences, handed to every prepared set. Defaults to
-   * `$XDG_CONFIG_HOME/<project>/dev.json`. Read once per run, so one hand-edited file cannot be observed
-   * in two states by two Workers of the same fan-out.
+   * `<pithy config dir>/<project>/dev.json` — `~/.config/pithy/<project>/dev.json` on POSIX. Read once per
+   * run, so one hand-edited file cannot be observed in two states by two Workers of the same fan-out.
    */
   preferences?: () => Promise<unknown>;
   /** Seam: resolve a secret for a prepared set. Defaults to the project's `.dev.vars` — local dev's own store. */

@@ -821,6 +821,85 @@ describe("project name", () => {
   });
 });
 
+describe("dev login", () => {
+  const prefs =
+    (over: Partial<DoctorReport["devPreferences"] & object> = {}) =>
+    async () => ({
+      state: "absent" as const,
+      path: "/home/u/.config/pithy/acme/dev.json",
+      user: null,
+      ...over,
+    });
+
+  test("names the resolved path, tilde-abbreviated, beside the other config paths", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: prefs() }));
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Dev login:  ~/.config/pithy/acme/dev.json — none yet; sign-in stays magic-link only",
+    );
+  });
+
+  test("no file never fails the exit — a magic-link-only project is the documented default", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: prefs() }));
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("a healthy file names its user and still does not fail the exit", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Dev login:  ~/.config/pithy/acme/dev.json — names ada@example.com");
+    // Doctor runs no seed, so it must never imply it checked the roster.
+    expect(text).not.toContain("seeded");
+  });
+
+  test("a file that will not parse fails the exit and drags the report verbose", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "unparseable" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain("Dev login:  ~/.config/pithy/acme/dev.json — will not parse");
+  });
+
+  test("a file naming no user fails the exit too", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "no-user" }) }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain('no "user"');
+  });
+
+  test("a healthy file keeps the terse report terse — it has nothing to say", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Dev login:");
+  });
+
+  test("outside a project there is no line at all — no config, no per-project path", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevPreferences: async () => null }));
+    expect(report.devPreferences).toBeNull();
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Dev login:");
+    expect((renderDoctorJson(report) as { devPreferences: unknown }).devPreferences).toBeNull();
+  });
+
+  test("--json carries the absolute path, the state, and the user the file names", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkDevPreferences: prefs({ state: "ok", user: "ada@example.com" }) }),
+    );
+    const json = renderDoctorJson(report) as {
+      devPreferences: { state: string; path: string; user: string | null; detail: string };
+    };
+    expect(json.devPreferences).toEqual({
+      state: "ok",
+      path: "/home/u/.config/pithy/acme/dev.json",
+      user: "ada@example.com",
+      detail: "names ada@example.com",
+    });
+  });
+});
+
 describe("worker names", () => {
   /** The hand-rename the dashboard did: `apps/board`, still deploying and stamping as `api`. */
   const handRenamed = {

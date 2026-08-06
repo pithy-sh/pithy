@@ -27,7 +27,7 @@ import { AUTH_SESSION_SECRET } from "../instance/secrets";
  * Four guard rails, because what this writes is a live credential:
  *
  * - `environments: ["dev"]` — it can never be composed into staging or production.
- * - No `~/.config/<project>/dev.json`, no session. The default stays "there is no way in but a magic link";
+ * - No `~/.config/pithy/<project>/dev.json`, no session. The default stays "there is no way in but a magic link";
  *   opting in is a per-machine file outside the repo, so two developers on one checkout can differ.
  * - The login file is transient, written under the gitignored `logs/` ({@link DEV_LOGIN_PATH}). A seeded
  *   cookie must never be committable.
@@ -68,7 +68,7 @@ const DEV_SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
 /** Bytes of the secret digest kept as the token's fingerprint — enough to separate secrets, short enough to read. */
 const FINGERPRINT_BYTES = 4;
 
-/** The developer's machine-local preferences for this project, read from `~/.config/<project>/dev.json`. */
+/** The developer's machine-local preferences for this project, read from `~/.config/pithy/<project>/dev.json`. */
 export const DevPreferences = z
   .object({
     user: z
@@ -78,7 +78,7 @@ export const DevPreferences = z
       ),
   })
   .describe(
-    "A developer's machine-local dev preferences (`$XDG_CONFIG_HOME/<project>/dev.json`, else `~/.config/...`) — outside the repo, so opting in needs no commit.",
+    "A developer's machine-local dev preferences, from the Pithy config directory (`~/.config/pithy/<project>/dev.json`, or `%APPDATA%\\pithy\\<project>\\dev.json` on Windows) — outside the repo, so opting in needs no commit.",
   );
 export type DevPreferences = z.output<typeof DevPreferences>;
 
