@@ -16,7 +16,7 @@ export const VerificationStrategy = z
     z
       .literal("signed-webhook")
       .describe(
-        "Inbound webhook authenticated by a timestamped HMAC signature over the exact received bytes; implemented by `requireSignedWebhook` (./signedWebhook).",
+        "Inbound webhook, authenticated by the sender's own proof over the exact received bytes — one name over several mechanisms (an HMAC, a signed JWS chain, an OIDC token), because the sender chooses it. `requireSignedWebhook` (./signedWebhook) implements the timestamped-HMAC form; a rail whose sender proves it differently implements its own.",
       ),
     z.literal("control-plane").describe("M2M admin via a customer-issued scoped credential; default-denied."),
     z.literal("public").describe("No authentication — the route is open. Must be a deliberate choice."),

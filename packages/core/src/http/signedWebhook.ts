@@ -111,7 +111,7 @@ export interface SignedWebhookScheme {
  * The secret(s) this endpoint accepts. An array is the receiver's own rotation overlap: both the outgoing and
  * the incoming secret verify until the sender is switched over. `secretsStore(…).getVersions(NAME)` is what
  * feeds it, through `Object.values(secret.versions)` — it returns `{ currentVersion, versions }`, not an array,
- * and only a `valueType: "string"` secret yields strings to pass here. (The sender's rotation is the other
+ * and only a `valueType: "text"` secret yields strings to pass here. (The sender's rotation is the other
  * axis — several signatures in one header — and needs nothing from the caller.)
  *
  * An entry that resolved to nothing is dropped rather than tried: a blank version is a configuration fault,
