@@ -123,6 +123,13 @@ export interface SecretRegistryEntrySeam {
   readonly rotatable: boolean;
   /** How a decrypted value is interpreted (`text` | `json`). */
   readonly valueType: string;
+  /**
+   * How a dev value for this secret may be minted (`random`), or absent when it may not be — because
+   * the value must match something outside the project (an OAuth app, a Stripe account). The
+   * capability that owns the secret decides; `pithy add` reads the same declaration off the manifest,
+   * which it can do without executing the package.
+   */
+  readonly devValue?: string;
 }
 
 /** A capability's secret-registry slice: secret name → {@link SecretRegistryEntrySeam}. */

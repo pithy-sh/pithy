@@ -56,7 +56,7 @@ No handler code lands in your repo. The logic lives in the package and upgrades 
 
 Through `@pithy-sh/secrets`, never an env literal.
 
-- `auth-session-secret` — the Better Auth signing and encryption secret. Create it:
+- `auth-session-secret` — the Better Auth signing and encryption secret. `pithy add auth` mints this project's **dev** value into `.dev.vars`, because nothing else names it: it is not a required binding, so without it the app boots healthy and fails at the first sign-in. Written only when absent — a new value signs out every live session. Deployed environments need their own:
   ```
   pithy secrets create auth-session-secret
   ```
@@ -90,7 +90,7 @@ Passwordless is right in production and a tax in development: every local sign-i
 
 So auth ships a `dev-session` seed set. `pithy seed` mints a **real** session for a seeded user and writes `logs/dev-login.json`; `pithy dev` prints, on its ready banner, the line you paste into the browser console to be signed in.
 
-Opt in per machine, never per repo — create `~/.config/<project>/dev.json`:
+Opt in per machine, never per repo — create `~/.config/pithy/<project>/dev.json` (`%APPDATA%\pithy\<project>\dev.json` on Windows):
 
 ```json
 { "user": "jim@acme.dev" }

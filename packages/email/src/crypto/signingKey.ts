@@ -15,7 +15,10 @@ export const EMAIL_LINK_SIGNING_KEY = "email-link-signing-key";
 
 /** The minimal registry email uses to resolve its signing key. Rotatable so old links verify after rotation. */
 export const emailSigningRegistry = defineSecretRegistry({
-  [EMAIL_LINK_SIGNING_KEY]: { backend: "d1", scope: "global", rotatable: true, valueType: "text" },
+  // Mintable for dev: the key signs links this app both mints and verifies, so any random string
+  // serves. Nothing else names it, so without `devValue` the first tracked link is the first anyone
+  // hears of it — and by then the mail is in an inbox.
+  [EMAIL_LINK_SIGNING_KEY]: { backend: "d1", scope: "global", rotatable: true, valueType: "text", devValue: "random" },
 });
 
 /**

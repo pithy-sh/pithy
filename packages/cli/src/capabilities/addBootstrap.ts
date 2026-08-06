@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
+import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -24,16 +26,17 @@ export interface AddBootstrapOptions {
 }
 
 /**
- * Finish `pithy add` for the bindings `add` itself cannot write, and say plainly what is left.
+ * Finish `pithy add` for the values `add` itself cannot write, and say plainly what is left.
  *
- * `add` writes every binding whose entry is knowable offline. The rest — a Secrets Store entry, a
- * Workflow, a Vectorize index — carry a provisioned value, so the file gets nothing and the Worker
- * refuses its first request naming what is absent. That refusal is right; leaving the adopter to invent
- * the value is not. Where a *dev* value can be generated honestly, it is generated here; where it
- * cannot, the command says which provision command creates it, at the moment the adopter is thinking
- * about the capability rather than in a doc they read later.
+ * Two kinds of gap, and only one of them is loud. A **binding** `add` cannot write — a Secrets Store
+ * entry, a Workflow, a Vectorize index — makes the Worker refuse its first request naming what is
+ * absent. A **registry secret** is read lazily, so the app boots healthy, `/health` is green, and the
+ * failure arrives at the first sign-in or the first tracked link as `secrets/not_found` on a name the
+ * adopter has never heard of. Both are handled here: where a *dev* value can be minted honestly, it is
+ * minted; where it cannot, the command names the provision command that creates it — at the moment the
+ * adopter is thinking about the capability rather than in a doc they read later.
  *
- * Returns the lines to print (`AddResult.notes`), in order. Nothing here ever prints a key.
+ * Returns the lines to print (`AddResult.notes`), in order. Nothing here ever prints a value.
  */
 export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions): Promise<string[]> {
   const notes: string[] = [];
@@ -44,6 +47,7 @@ export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions
     if (isMasterKey(manifest, binding)) notes.push(...(await ensureDevMasterKey(projectDir)));
     else notes.push(provisionNote(manifest.name, binding));
   }
+  notes.push(...(await ensureDevSecrets(projectDir, manifest.devSecrets)));
   return notes;
 }
 
@@ -88,4 +92,45 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
     `Minted a dev master key into .dev.vars as ${MASTER_KEY_BINDING}. Local only.`,
     "Deployed environments get theirs from pithy secrets provision.",
   ];
+}
+
+/**
+ * Mint a dev value for every secret this capability declares as generatable, unless one is already there.
+ *
+ * **The capability decides, not this file.** Each value comes from a `devSecrets` entry the capability
+ * ships in its own manifest, mirroring the `devValue` on the registry entry that owns the secret. A
+ * list of names here would drift the moment a capability shipped another one — and drift silently,
+ * because a missing lazily-read secret is invisible until the code path that reads it runs.
+ *
+ * **Only when absent.** A session secret replaced is every live session invalidated; a link-signing key
+ * replaced is every link already in an inbox broken. An *empty* value counts as absent — nothing was
+ * signed with it, and leaving it would leave the read failing.
+ *
+ * **`.dev.vars`, never `.dev.vars.example`.** The former is gitignored; the latter is committed.
+ *
+ * One write for the whole set, so a capability declaring several either lands them all or lands none.
+ */
+async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret[]): Promise<string[]> {
+  if (declared.length === 0) return [];
+  const path = join(projectDir, ".dev.vars");
+  const existing = parseDevVars(await readFile(path, "utf8").catch(() => ""));
+  const minted: Record<string, string> = {};
+  const notes: string[] = [];
+  for (const secret of declared) {
+    if (existing[secret.name]) {
+      notes.push(
+        `${secret.name} is already in .dev.vars. Left as it is — a new value invalidates what the old one signed.`,
+      );
+      continue;
+    }
+    // The name is the `.dev.vars` key: local dev resolves every secret from its injected string,
+    // whatever the registry backend says, so the key is the registry name and not a binding name.
+    minted[secret.name] = mintDevValue(secret.devValue);
+    notes.push(
+      `Minted a dev ${secret.name} into .dev.vars. Local only.`,
+      `Deployed environments need pithy secrets create ${secret.name}.`,
+    );
+  }
+  if (Object.keys(minted).length > 0) await upsertDevVars(path, minted);
+  return notes;
 }

@@ -141,6 +141,43 @@ describe("CapabilityManifest", () => {
     ).toThrow();
   });
 
+  test("defaults devSecrets to an empty array — a capability mints nothing until it says so", () => {
+    const parsed = CapabilityManifest.parse({ name: "payments", package: "@pithy-sh/payments", requiredBindings: [] });
+    expect(parsed.devSecrets).toEqual([]);
+  });
+
+  test("parses a declared dev secret", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      devSecrets: [{ name: "auth-session-secret", devValue: "random" }],
+    });
+    expect(parsed.devSecrets).toEqual([{ name: "auth-session-secret", devValue: "random" }]);
+  });
+
+  test("rejects a devValue the CLI has no way to mint", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        devSecrets: [{ name: "auth-session-secret", devValue: "keypair" }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects a dev secret with no name — there would be nothing to write it under", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        devSecrets: [{ name: "", devValue: "random" }],
+      }),
+    ).toThrow();
+  });
+
   test("rejects a configOption with no describe", () => {
     expect(() =>
       CapabilityManifest.parse({

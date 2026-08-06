@@ -98,7 +98,16 @@ export const GithubOAuthCredentials = z
 export type GithubOAuthCredentials = z.infer<typeof GithubOAuthCredentials>;
 
 export const authSecretsRegistry = defineSecretRegistry({
-  [AUTH_SESSION_SECRET]: { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+  // `devValue` is the whole difference between an app that runs after `pithy add auth` and one that
+  // signs nobody in: this secret is not a required binding, so nothing names it until the first
+  // sign-in. Any random string signs a session — nothing outside the project has to agree with it.
+  [AUTH_SESSION_SECRET]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: true,
+    valueType: "text",
+    devValue: "random",
+  },
   [AUTH_GOOGLE_CREDENTIALS]: {
     backend: "d1",
     scope: "environment",

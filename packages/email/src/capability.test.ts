@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { EMAIL_MIGRATION_ORDER, email, isEmailCapability } from "./capability";
+import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "./crypto/signingKey";
 
 const config = { fromAddress: "noreply@pithy.sh", baseUrl: "https://api.example.com" };
 
@@ -89,5 +93,27 @@ describe("email capability", () => {
       },
     ]);
     expect(registry.app).toBeDefined();
+  });
+});
+
+describe("pithy.manifest.json", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  test("its devSecrets are exactly the registry entries that declare a devValue — nothing else checks", () => {
+    // `pithy add` reads the manifest without executing this package, so the manifest carries the
+    // projection. Both directions: a registry entry marked generatable and left out of the manifest is
+    // never minted, and a manifest name the registry does not mark is a value written for nothing.
+    const entries: [string, SecretRegistryEntry][] = Object.entries(emailSigningRegistry);
+    const declared = entries
+      .filter(([, entry]) => entry.devValue)
+      .map(([name, entry]) => ({ name, devValue: entry.devValue }));
+    expect(manifest.devSecrets).toEqual(declared);
+    expect(manifest.devSecrets).toEqual([{ name: EMAIL_LINK_SIGNING_KEY, devValue: "random" }]);
+  });
+
+  test("claims nothing for EMAIL_SENDER — a Workflow binding has no local stand-in to mint", () => {
+    expect(manifest.devSecrets.map((secret) => secret.name)).not.toContain("EMAIL_SENDER");
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
@@ -55,6 +56,21 @@ interface SecretRegistryEntryBase {
    * same either way. Value rotation itself is deferred.
    */
   rotatable: boolean;
+  /**
+   * How this secret's **dev** value may be minted, when it may be minted at all.
+   *
+   * Set it when the value is *arbitrary* — a session signing key, a link signing key: any random
+   * string works, because nothing outside the project has to agree with it. Leave it off when the
+   * value must match something that already exists — an OAuth app's client secret, a Stripe key, a
+   * storage credential. A generated value there authenticates against nothing, and hides the real gap
+   * behind one that looks filled in.
+   *
+   * The declaration lives here, with the capability that owns the secret, so `pithy add` never carries
+   * a list of names that drifts as capabilities are added. It is mirrored into the capability's
+   * `pithy.manifest.json` as `devSecrets` — the CLI wires a capability without executing it — and the
+   * capability's own tests assert the two agree.
+   */
+  devValue?: DevSecretValue;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -145,6 +161,26 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
     }
     if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
       throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });
+    }
+    if (entry.devValue !== undefined) {
+      if (!DevSecretValue.safeParse(entry.devValue).success) {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" has an invalid devValue (${String(entry.devValue)}).`,
+        });
+      }
+      // A minted value is a random string, so only a `text` entry can hold one: a `json` entry's shape
+      // is the schema's, and nothing can invent a credential that satisfies it.
+      if (entry.valueType !== "text") {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" declares devValue but is not a text entry — a random value cannot satisfy a json schema.`,
+        });
+      }
+      // A keyspace has no single value to mint, and its members do not exist until runtime.
+      if (entry.keyed) {
+        throw new InternalError({
+          message: `secret registry: keyed entry "${name}" must not declare devValue — a keyspace has no one value.`,
+        });
+      }
     }
     if (entry.keyed !== undefined && typeof entry.keyed !== "boolean") {
       throw new InternalError({ message: `secret registry: entry "${name}" must declare keyed as a boolean.` });
