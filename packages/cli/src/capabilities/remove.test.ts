@@ -89,6 +89,42 @@ describe("unwireConfig", () => {
     expect(out).not.toContain("auth()");
   });
 
+  test("removes a hand-edited deep import of the capability's package", () => {
+    // `add` accepts any specifier into the capability's own package, so `remove` has to take the same
+    // set out. Leaving one behind while the package is uninstalled is a config that cannot load.
+    const source = [
+      'import { auth } from "@pithy-sh/auth/src/capability";',
+      "  capabilities: [",
+      "    auth(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    const out = unwireConfig(source, "auth", "@pithy-sh/auth");
+    expect(out).not.toContain("@pithy-sh/auth");
+    expect(out).not.toContain("auth()");
+  });
+
+  test("takes out every import of the capability, not just the first", () => {
+    // The wreckage the old `add` left behind: a hand-corrected specifier, plus the broken one put
+    // straight back on the next run. Removing one of the two still leaves the config unloadable.
+    const source = [
+      'import { secrets } from "@pithy-sh/secrets/src/capability";',
+      'import { secrets } from "@pithy-sh/secrets/src/index";',
+      "    secrets(),",
+      "    // pithy:capabilities",
+    ].join("\n");
+
+    expect(unwireConfig(source, "secrets", "@pithy-sh/secrets")).not.toContain("@pithy-sh/secrets");
+  });
+
+  test("leaves an import of the same name from somewhere else alone", () => {
+    // The adopter's own `auth`, which `add` would have refused to wire over. Not ours to delete.
+    const source = ['import { auth } from "./lib/myAuth";', "  capabilities: [", "    // pithy:capabilities"].join(
+      "\n",
+    );
+    expect(unwireConfig(source, "auth", "@pithy-sh/auth")).toBe(source);
+  });
+
   test("leaves a config that never had the capability unchanged", () => {
     const source = 'import { email } from "@pithy-sh/email/src/index";\n    email(),\n    // pithy:capabilities';
     expect(unwireConfig(source, "auth", "@pithy-sh/auth")).toBe(source);

@@ -105,6 +105,17 @@ describe("ejectCapability", () => {
     expect(config).toContain("turnstile(),");
   });
 
+  test("repoints a hand-edited deep import of the package as well as the barrel one", async () => {
+    const path = join(worker, "pithy.config.ts");
+    await writeFile(path, (await readFile(path, "utf8")).replace("/src/index", "/src/capability"));
+
+    await eject();
+
+    const config = await readFile(path, "utf8");
+    expect(config).toContain('import { turnstile } from "./capabilities/turnstile";');
+    expect(config).not.toContain("@pithy-sh/turnstile");
+  });
+
   test("promotes the package's third-party deps, filtering workspace: ones", async () => {
     let promoted: string[] = [];
     const result = await eject({

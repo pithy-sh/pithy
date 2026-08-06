@@ -12,6 +12,7 @@ import { uninstallPackage } from "../project/packageManager";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
+import { findNamedImport, isCapabilityImport, withoutImport } from "./configImports";
 import { EJECT_DIR, ejectImportPath, isEjected } from "./eject";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
@@ -54,11 +55,23 @@ export function unwireConfig(source: string, name: string, pkg: string): string 
     lines.splice(startIndex, endIndex - startIndex + 1);
   }
 
-  const importNeedles = new Set([
-    `import { ${name} } from "${pkg}/src/index";`,
-    `import { ${name} } from "${ejectImportPath(name)}";`,
-  ]);
-  return lines.filter((line) => !importNeedles.has(line.trim())).join("\n");
+  // The import is found by binding and taken out only if it comes from the capability itself — the
+  // same rule `add` writes by. Matching two exact lines instead left a hand-edited deep import
+  // standing while `removeCapability` uninstalled the package under it, which is a config that cannot
+  // load: the failure this command exists to undo. An import of the same name from the adopter's own
+  // module is not ours and stays.
+  // Every one of them, not the first: a config wrecked by the old `add` — a hand-corrected specifier
+  // and the broken one put back beside it — carries two, and leaving one is still unloadable once the
+  // package goes.
+  const ejectPath = ejectImportPath(name);
+  let rest = lines.join("\n");
+  for (;;) {
+    const found = findNamedImport(rest, name);
+    if (!found || !isCapabilityImport(found.specifier, pkg, ejectPath)) return rest;
+    const next = withoutImport(rest, found);
+    if (next === rest) return rest; // nothing was taken out; never spin on it
+    rest = next;
+  }
 }
 
 /**

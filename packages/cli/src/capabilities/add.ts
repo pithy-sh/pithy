@@ -5,10 +5,12 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { capabilityImportSpecifier, findNamedImport, isCapabilityImport } from "./configImports";
+import { ejectImportPath } from "./eject";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
 export type ConfigValue = string | number | boolean;
@@ -173,9 +175,24 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   }
 
   const lines = source.split("\n");
-  const importLine = `import { ${manifest.name} } from "${manifest.package}/src/index";`;
-  if (!lines.some((line) => line.trim() === importLine)) {
-    source = `${importLine}\n${source}`;
+  // Idempotency on the import is keyed on the *binding*, then checked against where it comes from.
+  // Keyed on the whole line, an adopter who corrected a specifier by hand — which `pithy add secrets`
+  // required, for as long as `@pithy-sh/secrets` shipped no `src/index` — got the original line back
+  // on the next run, and two bindings of one name is a redeclaration the config never loads past.
+  // Keyed on the binding alone, an adopter's own `auth` suppressed our import while `auth()` still
+  // went into the managed region, so the config composed their middleware and said nothing. One is
+  // loud and wrong, the other is silent and wrong. So: the name identifies the import, the specifier
+  // decides what to do about it, and a name bound to something else is refused before anything is
+  // written.
+  const existing = findNamedImport(source, manifest.name);
+  if (existing === undefined) {
+    source = `import { ${manifest.name} } from "${capabilityImportSpecifier(manifest.package)}";\n${source}`;
+  } else if (!isCapabilityImport(existing.specifier, manifest.package, ejectImportPath(manifest.name))) {
+    throw new ConflictError({
+      message: `${path} already imports ${manifest.name} from "${existing.specifier}".`,
+      action: `Rename that import, then run pithy add ${manifest.name} again.`,
+      detail: `Wiring ${manifest.name}() would have composed ${existing.specifier} as the capability.`,
+    });
   }
 
   // Idempotency anchors on the registration *call*, not an exact line: a block
