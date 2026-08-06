@@ -118,6 +118,22 @@ describe("verifySignedWebhook — the freshness window, in both directions", () 
   });
 });
 
+describe("verifySignedWebhook — a clock that is not a clock", () => {
+  test("an unreadable clock fails closed, and as our fault rather than the sender's", async () => {
+    // `Math.abs(NaN - t) > tolerance` is false, so an invalid Date would slip a delivery of any age through
+    // the one window in this file — the single check that could fail open. Only a caller-supplied clock can
+    // be one: the header's timestamp is regex-checked before it is a number.
+    const payload = await refusal(verify(BODY, await header(BODY, NOW), { now: new Date("not a date") }));
+    expect(payload.code).toBe("core/internal");
+    expect(payload.status).toBe(500);
+  });
+
+  test("a delivery outside the window is still refused when the clock is a clock", async () => {
+    const stale = await header(BODY, at(-(SIGNED_WEBHOOK_TOLERANCE_SECONDS + 1)));
+    expect((await refusal(verify(BODY, stale, { now: at(0) }))).code).toBe("core/webhook_unverified");
+  });
+});
+
 describe("verifySignedWebhook — the comparison", () => {
   test("compares through crypto.subtle.verify, never ===", async () => {
     const spy = vi.spyOn(crypto.subtle, "verify");

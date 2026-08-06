@@ -218,8 +218,8 @@ export type SignedWebhookRefusal =
  * each caller keeps its vocabulary, rather than the whole verifier existing twice with two sets of comments
  * to keep in step. Most callers want {@link verifySignedWebhook}.
  *
- * It still throws for **our** failure: an endpoint holding no usable secret is a configuration fault, not a
- * refusal, and every caller reports that the same way.
+ * It still throws for **our** failure: an endpoint holding no usable secret, or handed a clock that is not a
+ * clock, is a configuration fault rather than a refusal, and every caller reports that the same way.
  *
  * `body` must be the **exact received bytes**. A parsed-and-re-serialized object is different bytes — key
  * order alone changes it — and would never verify.
@@ -251,7 +251,20 @@ export async function checkSignedWebhook(
   if (parsed === undefined) return { reason: "unreadable" };
 
   const tolerance = options.toleranceSeconds ?? SIGNED_WEBHOOK_TOLERANCE_SECONDS;
-  const skew = Math.abs(Math.floor((options.now ?? new Date()).getTime() / 1000) - parsed.timestamp);
+  const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
+  // Fail closed on a clock that is not one. `Math.abs(NaN - t) > tolerance` is false, so an invalid Date would
+  // pass the window silently — the one check in this file that could fail open, in the file whose whole
+  // argument is that it fails closed. Comparing against a sentinel instead would still be a comparison against
+  // a number nobody chose. Only a caller-supplied `now` reaches here as NaN: the header's timestamp is a
+  // digit-checked string before it is a number, so this is our fault and takes our code, like the secret above.
+  if (!Number.isFinite(nowSeconds)) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: `Give the ${options.header} guard a valid clock.`,
+      detail: `The signed-webhook guard on ${options.header} was handed a clock that is not a valid Date, so no delivery's freshness can be judged.`,
+    });
+  }
+  const skew = Math.abs(nowSeconds - parsed.timestamp);
   if (skew > tolerance) return { reason: "stale", skew, tolerance };
 
   // The timestamp is signed with the body. That is what makes the window above a boundary: re-dating a
