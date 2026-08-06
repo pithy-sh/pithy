@@ -11,6 +11,7 @@ import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan 
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
 import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from "../notifier/state";
@@ -96,6 +97,12 @@ export interface DoctorReport {
    * is what keeps the two blocks from disputing whether there is a project here.
    */
   projectName: ProjectNameCheck | null;
+  /**
+   * Whether each Worker's three names still agree — its `apps/<dir>`, its deployed script name, and its
+   * `WORKER` var. `null` outside a readable project, on the same `loadProject` outcome as
+   * {@link DoctorReport.projectName}: with no project there are no Workers to name.
+   */
+  workerNames: WorkerNameCheck | null;
   os: { name: string; version: string };
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
@@ -173,6 +180,8 @@ export interface DoctorReportOptions {
   checkCloudflare?: (projectDir: string) => Promise<CloudflareAccess>;
   /** Project-name probe seam; defaults to {@link checkProjectName}. Injected so unit tests never call out. */
   checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
+  /** Worker-name agreement seam; defaults to {@link checkWorkerNames}. Reads files only — no account call. */
+  checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
 }
 
 /** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
@@ -212,6 +221,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
   const probeCloudflare = options.checkCloudflare ?? checkCloudflareAccess;
   const probeProjectName = options.checkProjectName ?? checkProjectName;
+  const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
@@ -300,6 +310,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // and the `Project:` block below already reports which of the two happened. Gated on the same `inProject`
   // that block is written from, so neither can contradict the other about whether a project is here.
   const projectName = inProject ? await probeProjectName(options.projectDir) : null;
+  // The same question one level down, and gated the same way. `checkProjectName` asks whether this
+  // project's name still names its resources; this asks whether each Worker's own three names still name
+  // one Worker. Files only, so it costs nothing and answers offline.
+  const workerNames = inProject ? await probeWorkerNames(options.projectDir) : null;
 
   return {
     cli,
@@ -313,6 +327,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectLoadError,
     cloudflare,
     projectName,
+    workerNames,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -342,6 +357,10 @@ export function doctorExitCode(report: DoctorReport): number {
   // any name, and `doctor` outside a project — to read the CLI version, the shell, the alias — must exit 0.
   const state = report.projectName?.state;
   if (state === "invalid" || state === "drifted" || state === "orphaned") return 1;
+  // Same standard once more, and it is met from local files alone: a Worker's directory and its own
+  // wrangler.jsonc contradict each other about which Worker this is. Nothing is inferred about the
+  // account, and `could-not-check` establishes nothing, so only `drifted` gates.
+  if (report.workerNames?.state === "drifted") return 1;
   return report.project && !report.project.health.ok ? 1 : 0;
 }
 
@@ -423,6 +442,28 @@ function healthBlock(health: ProjectHealth): string {
   return lines.join("\n");
 }
 
+/**
+ * The `Worker names` lines — shown only when a stamp contradicts its directory, grouped one block per
+ * Worker, on the health block's shape. A Worker whose names agree says nothing at all: there is no
+ * "names fine ✓" line, because unlike a health check this has no per-Worker section to sit in.
+ */
+function workerNamesBlock(check: WorkerNameCheck): string {
+  const lines = ["Worker names:"];
+  const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
+  for (const worker of workers) {
+    lines.push(`  ${worker}:`);
+    for (const mismatch of check.mismatches.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(mismatch.stamp, describeWorkerName(mismatch)));
+      if (mismatch.envs.length > 0) lines.push(`${HEALTH_CONT}env: ${mismatch.envs.join(", ")}`);
+    }
+  }
+  // No command is offered to fix this one, because none of them can: the directory has already moved, and
+  // `pithy worker rename` refuses a destination that exists. The fix is the two edits named above. The
+  // command is named anyway, for the next rename — it moves all three at once and this block stays empty.
+  lines.push(`${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.`);
+  return lines.join("\n");
+}
+
 /** The `Project capabilities` lines — collapsed to one line when everything is current. */
 function capabilitiesBlock(capabilities: CapabilityStatus[]): string {
   if (capabilities.length === 0 || capabilities.every((cap) => cap.state === "current")) {
@@ -455,6 +496,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // have would answer a question they did not put. `unconfigured` still forces verbose — there the file is
   // real and a key is missing from it, which is worth the ink.
   const projectNameOk = report.projectName === null || report.projectName.state === "ok";
+  // `could-not-check` keeps its silence here rather than forcing verbose: unlike an unreadable name, an
+  // unreadable `wrangler.jsonc` is already the health block's line to say, and it says it louder.
+  const workerNamesOk = !report.workerNames || report.workerNames.mismatches.length === 0;
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
   const terse =
     report.cli.state === "current" &&
@@ -462,6 +506,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     healthOk &&
     cloudflareOk &&
     projectNameOk &&
+    workerNamesOk &&
     !report.projectLoadError;
 
   const blocks: string[] = [];
@@ -537,6 +582,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // already said so, and this line has no name to reconcile.
   if (!terse && report.projectName) blocks.push(`Project name: ${describeProjectName(report.projectName)}`);
 
+  // The Workers' own names, and only when they disagree. A Worker whose three stamps agree has nothing to
+  // report — the block is the finding, the way `Project health` is.
+  if (report.workerNames && report.workerNames.mismatches.length > 0) {
+    blocks.push(workerNamesBlock(report.workerNames));
+  }
+
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
   const runtime =
@@ -581,6 +632,17 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           project: report.projectName.project,
           misnamed: report.projectName.misnamed,
           detail: describeProjectName(report.projectName),
+        }
+      : null,
+    // Same `null` discipline: no project, no Workers, no verdict. Each mismatch carries its own sentence
+    // so an agent fixing it never has to reproduce the wording from the fields.
+    workerNames: report.workerNames
+      ? {
+          state: report.workerNames.state,
+          mismatches: report.workerNames.mismatches.map((mismatch) => ({
+            ...mismatch,
+            detail: describeWorkerName(mismatch),
+          })),
         }
       : null,
     os: `${report.os.name} ${report.os.version}`,

@@ -4,11 +4,11 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { addWorker, listWorkers, removeWorker } from "./workerCommand";
+import { addWorker, type DeployedScriptProbe, listWorkers, removeWorker, renameWorker } from "./workerCommand";
 import type { WorkerTarget } from "./workers";
 
 /** A discover-workers seam over the current apps/ dirs, so tests fix the set without real discovery. */
@@ -206,5 +206,297 @@ describe("removeWorker", () => {
     await expect(
       removeWorker({ projectDir: dir, name: "ghost", mainRoot: dir, discoverWorkers: discover(dir, ["app"]) }),
     ).rejects.toThrow(NotFoundError);
+  });
+});
+
+describe("renameWorker", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-worker-rename-"));
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A scaffolded worker on disk: the directory, the deploy name, the `WORKER` var in every stanza. */
+  async function scaffold(name: string): Promise<string> {
+    const workerDir = join(dir, "apps", name);
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      `{
+  // The Worker's own directory — what tells two Workers' audit events apart.
+  "name": "acme-${name}",
+  "vars": { "ENVIRONMENT": "dev", "PROJECT": "acme", "WORKER": "${name}" },
+  "env": {
+    "staging": { "vars": { "ENVIRONMENT": "staging", "PROJECT": "acme", "WORKER": "${name}" } },
+    "prod": { "vars": { "ENVIRONMENT": "prod", "PROJECT": "acme", "WORKER": "${name}" } }
+  }
+}
+`,
+    );
+    await writeFile(
+      join(workerDir, "package.json"),
+      `${JSON.stringify({ name: `acme-${name}`, private: true, type: "module" }, null, 2)}\n`,
+    );
+    return workerDir;
+  }
+
+  /** An account that answers, holding exactly `live`. */
+  const account = (...live: string[]): DeployedScriptProbe => {
+    return async (_projectDir, scripts) => ({ live: scripts.filter((script) => live.includes(script)), checked: true });
+  };
+
+  /** An account nothing could be learned from — no credentials, offline, a refused listing. */
+  const unreachable: DeployedScriptProbe = async () => ({ live: [], checked: false });
+
+  /** The renamed worker's `wrangler.jsonc`, parsed. */
+  async function wranglerOf(name: string): Promise<{
+    name?: string;
+    vars?: Record<string, string>;
+    env?: Record<string, { vars?: Record<string, string> }>;
+  }> {
+    const raw = await readFile(join(dir, "apps", name, "wrangler.jsonc"), "utf8");
+    return parse(raw) as unknown as {
+      name?: string;
+      vars?: Record<string, string>;
+      env?: Record<string, { vars?: Record<string, string> }>;
+    };
+  }
+
+  test("moves the directory and reconciles all three stamps", async () => {
+    await scaffold("api");
+
+    const report = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    });
+
+    expect(report).toEqual({
+      from: "api",
+      to: "board",
+      dir: join(dir, "apps", "board"),
+      script: { from: "acme-api", to: "acme-board" },
+      orphaned: [],
+      accountChecked: true,
+      reconciled: false,
+    });
+
+    await expect(stat(join(dir, "apps", "api"))).rejects.toThrow();
+    const wrangler = await wranglerOf("board");
+    expect(wrangler.name).toBe("acme-board");
+    expect(wrangler.vars?.WORKER).toBe("board");
+    expect(wrangler.env?.staging?.vars?.WORKER).toBe("board");
+    expect(wrangler.env?.prod?.vars?.WORKER).toBe("board");
+    const pkg = JSON.parse(await readFile(join(dir, "apps", "board", "package.json"), "utf8")) as { name: string };
+    expect(pkg.name).toBe("acme-board");
+  });
+
+  test("keeps the comments in wrangler.jsonc", async () => {
+    await scaffold("api");
+    await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    });
+    expect(await readFile(join(dir, "apps", "board", "wrangler.jsonc"), "utf8")).toContain(
+      "// The Worker's own directory",
+    );
+  });
+
+  test("asks the account about every script name the old worker deploys under", async () => {
+    await scaffold("api");
+    let asked: string[] = [];
+    await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: async (_projectDir, scripts) => {
+        asked = scripts;
+        return { live: [], checked: true };
+      },
+    });
+    // The top-level name is the dev script; wrangler names an env stanza `<name>-<env>` unless it says otherwise.
+    expect(asked).toEqual(["acme-api", "acme-api-staging", "acme-api-prod"]);
+  });
+
+  test("refuses when a script is live under the old name, and moves nothing", async () => {
+    await scaffold("api");
+
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account("acme-api-prod"),
+      }),
+    ).rejects.toThrow(ConflictError);
+
+    // The refusal is the whole point: nothing has moved, so the deployed Worker still matches its source.
+    await stat(join(dir, "apps", "api"));
+    await expect(stat(join(dir, "apps", "board"))).rejects.toThrow();
+  });
+
+  test("the refusal names the script that would be left live", async () => {
+    await scaffold("api");
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account("acme-api-prod"),
+      }),
+    ).rejects.toThrow(/acme-api-prod/);
+  });
+
+  test("--force renames anyway and reports what it orphaned", async () => {
+    await scaffold("api");
+    const report = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      force: true,
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account("acme-api", "acme-api-prod"),
+    });
+    expect(report.orphaned).toEqual(["acme-api", "acme-api-prod"]);
+    expect(report.accountChecked).toBe(true);
+    await stat(join(dir, "apps", "board"));
+  });
+
+  test("an unreachable account does not block the rename, and the report says it was not checked", async () => {
+    await scaffold("api");
+    const report = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: unreachable,
+    });
+    // Degraded honestly: `orphaned` is empty because nothing was established, not because nothing is live.
+    expect(report).toMatchObject({ orphaned: [], accountChecked: false });
+    await stat(join(dir, "apps", "board"));
+  });
+
+  test("refuses a new name that is not kebab-case, on the rule scaffoldWorker uses", async () => {
+    await scaffold("api");
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "Admin_API",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account(),
+      }),
+    ).rejects.toThrow(ValidationError);
+    await stat(join(dir, "apps", "api"));
+  });
+
+  test("refuses a destination that already exists", async () => {
+    await scaffold("api");
+    await scaffold("board");
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api", "board"]),
+        probeDeployed: account(),
+      }),
+    ).rejects.toThrow(ConflictError);
+    await stat(join(dir, "apps", "api"));
+  });
+
+  test("throws NotFoundError when the worker does not exist", async () => {
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "ghost",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, []),
+        probeDeployed: account(),
+      }),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  test("leaves a script name the adopter chose alone, and says so", async () => {
+    // `my-service` was never composed from `<project>-<worker>`, so renaming it would rename a Worker the
+    // adopter named themselves — and, deployed, would strand it under a name pithy invented.
+    const workerDir = join(dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      `${JSON.stringify({ name: "my-service", vars: { WORKER: "api" } }, null, 2)}\n`,
+    );
+
+    const report = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: async () => [{ name: "my-service", dir: workerDir, hasWrangler: true }],
+      probeDeployed: account(),
+    });
+
+    expect(report.script).toBeNull();
+    expect((await wranglerOf("board")).name).toBe("my-service");
+    expect((await wranglerOf("board")).vars?.WORKER).toBe("board");
+  });
+
+  test("in a feature worktree it reconciles the port registry onto the new name", async () => {
+    const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
+    const worktree = join(mainRoot, ".worktrees", "73-demo");
+    await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    const workerDir = join(worktree, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: "acme-api", vars: { WORKER: "api" } }));
+    try {
+      const report = await renameWorker({
+        projectDir: worktree,
+        from: "api",
+        to: "board",
+        mainRoot,
+        branch: "feature/73-demo",
+        // Discovery answers from the tree, so the reconcile that runs after the move sees the new name —
+        // which is the point of running it: the old name's port is released and the new one takes it.
+        discoverWorkers: async () => {
+          const moved = await stat(join(worktree, "apps", "board")).then(
+            () => true,
+            () => false,
+          );
+          return moved
+            ? [{ name: "acme-board", dir: join(worktree, "apps", "board"), hasWrangler: true }]
+            : [{ name: "acme-api", dir: join(worktree, "apps", "api"), hasWrangler: true }];
+        },
+        probeDeployed: account(),
+      });
+
+      expect(report.reconciled).toBe(true);
+      const config = await readDevConfig(devConfigPath(worktree));
+      expect(config?.workers["acme-board"]?.port).toBeGreaterThanOrEqual(8787);
+      expect(config?.workers.api).toBeUndefined();
+    } finally {
+      await rm(mainRoot, { recursive: true, force: true });
+    }
   });
 });
