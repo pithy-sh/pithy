@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  alreadyProvided,
   detectPackageManager,
   execArgs,
   installArgs,
@@ -131,5 +132,105 @@ describe("installPackage", () => {
 
     expect(result.packageManager).toBe("pnpm");
     expect(calls).toEqual([{ command: "pnpm", args: ["add", "@pithy-sh/auth"], cwd: dir }]);
+  });
+
+  test("skips the registry when the package is already provided — a local checkout installs nothing", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await link(dir, "@pithy-sh/secrets");
+    const calls: string[] = [];
+
+    const result = await installPackage({
+      projectDir: dir,
+      pkg: "@pithy-sh/secrets",
+      run: async (command, args) => {
+        calls.push(`${command} ${args.join(" ")}`);
+      },
+    });
+
+    // The PM is still reported: `pithy add` names it, and the answer is the same either way.
+    expect(result.packageManager).toBe("bun");
+    expect(calls).toEqual([]);
+  });
+});
+
+/** A real directory under `<root>/node_modules/<pkg>` — what a registry install leaves behind. */
+async function place(root: string, pkg: string, manifest: { name: string } = { name: pkg }): Promise<string> {
+  const packageDir = join(root, "node_modules", ...pkg.split("/"));
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(join(packageDir, "package.json"), JSON.stringify(manifest));
+  return packageDir;
+}
+
+/** A checkout outside `node_modules`, symlinked in — what a workspace, `bun link`, or `file:` leaves behind. */
+async function link(root: string, pkg: string, name = pkg): Promise<string> {
+  const checkout = join(root, "checkouts", ...pkg.split("/"));
+  await mkdir(checkout, { recursive: true });
+  await writeFile(join(checkout, "package.json"), JSON.stringify({ name }));
+  const at = join(root, "node_modules", ...pkg.split("/"));
+  await mkdir(dirname(at), { recursive: true });
+  await symlink(checkout, at, "dir");
+  return checkout;
+}
+
+describe("alreadyProvided", () => {
+  test("false when nothing is installed", async () => {
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("true for a checkout symlinked in — that is how a project provides an unpublished package", async () => {
+    await link(dir, "@pithy-sh/vite");
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(true);
+  });
+
+  test("false for a real directory in node_modules — that is a registry install, and it has a version", async () => {
+    // Bun hoists transitive dependencies to the top level as real directories, and the scope depends on
+    // itself (`auth` → `email`, `secrets`, `turnstile`). Calling a hoisted copy "provided" made
+    // `pithy add email` after `pithy add auth` skip the install — so nothing declared it, and
+    // `pithy remove auth` pruned it out from under a config that still imported it.
+    await place(dir, "@pithy-sh/email");
+    expect(await alreadyProvided(dir, "@pithy-sh/email")).toBe(false);
+  });
+
+  test("false for a link that lands back inside node_modules — that is pnpm's store, not a checkout", async () => {
+    const store = join(dir, "node_modules", ".pnpm", "@pithy-sh+vite@0.0.0", "node_modules", "@pithy-sh", "vite");
+    await mkdir(store, { recursive: true });
+    await writeFile(join(store, "package.json"), JSON.stringify({ name: "@pithy-sh/vite" }));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(store, join(dir, "node_modules", "@pithy-sh", "vite"), "dir");
+
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("a bare directory is not a resolution — the manifest is what makes it importable", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "vite"), { recursive: true });
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("a manifest naming something else is not a resolution", async () => {
+    await link(dir, "@pithy-sh/vite", "@pithy-sh/core");
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("a dangling symlink resolves to nothing", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(join(dir, "gone"), join(dir, "node_modules", "@pithy-sh", "vite"), "dir");
+    expect(await alreadyProvided(dir, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("an ancestor's node_modules does not count — the CLI never looks there either", async () => {
+    // Node's own lookup walks up; this must not. `loadManifest` reads `projectDir/node_modules` and
+    // nothing above it, so an ancestor hit skipped the install and then reported the capability as not
+    // installed — telling the adopter to run the command that had just declined to run. Worse, `/tmp` and
+    // `$HOME` are ancestors anyone can plant a `node_modules` in, and the wired config is imported.
+    await link(dir, "@pithy-sh/vite");
+    const nested = join(dir, "apps", "api");
+    await mkdir(nested, { recursive: true });
+    expect(await alreadyProvided(nested, "@pithy-sh/vite")).toBe(false);
+  });
+
+  test("false for a package outside the scope, however well it resolves", async () => {
+    // react is on the registry. A range for it is correct and must keep being written.
+    await link(dir, "react");
+    expect(await alreadyProvided(dir, "react")).toBe(false);
   });
 });

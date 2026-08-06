@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
@@ -183,6 +183,30 @@ describe("runAdd", () => {
       }),
     ).rejects.toThrow(/ghost/);
     expect(migrateStub).not.toHaveBeenCalled();
+  });
+
+  test("a linked checkout installs nothing and still wires — the skip and the manifest read agree", async () => {
+    // The real install step, not a stub: `installPackage` must decline to spawn, and `loadManifest`
+    // must then find the manifest in the very directory the skip was decided from. When those two
+    // disagreed, `pithy add secrets` skipped the install and answered "No capability named secrets is
+    // installed. Run pithy add secrets to install it." — a dead end with no flag out of it.
+    const checkout = join(dir, "checkout", "auth");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/auth" }));
+    await writeFile(join(checkout, "pithy.manifest.json"), JSON.stringify(optionManifest));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "auth"), "dir");
+
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      migrate: vi.fn(async () => noMigrations),
+    });
+
+    expect(result.capability).toBe("auth");
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('from "@pithy-sh/auth/src/index"');
   });
 
   test("prompts for un-set options when a prompt seam is supplied", async () => {
