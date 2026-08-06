@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -590,6 +590,29 @@ describe("startDev — the .dev.vars link a checkout cannot inherit", () => {
       expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("API_ONLY_SECRET=super-secret-value\n");
       const said = h.stdoutLines.find((line) => line.includes(".dev.vars"));
       expect(said).toContain("api");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("says so when a worker's .dev.vars links elsewhere, rather than swinging it back in silence", async () => {
+    // This runs on every `pithy dev`. A link a developer deliberately pointed at another file decides
+    // which secrets that worker runs with, and undoing it daily without a word is the same substitution
+    // as replacing a real file — by another route.
+    const { dir, apiDir, options } = await project();
+    try {
+      await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
+      const elsewhere = join(dir, "team.dev.vars");
+      await writeFile(elsewhere, "TEAM_ONLY=1\n");
+      await symlink(elsewhere, join(dir, "apps", "api", ".dev.vars"));
+      const h = harness(options);
+
+      await startDev(h.options);
+
+      expect(await readlink(join(apiDir, ".dev.vars"))).toBe(elsewhere);
+      const said = h.stdoutLines.find((line) => line.includes(".dev.vars"));
+      expect(said).toContain("api");
+      expect(said).toContain(elsewhere);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

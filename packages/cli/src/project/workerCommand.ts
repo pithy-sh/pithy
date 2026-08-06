@@ -9,7 +9,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { wireFeatureDevVars } from "../feature/devVars";
+import { type KeptDevVars, wireFeatureDevVars } from "../feature/devVars";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
@@ -84,6 +84,13 @@ export interface AddWorkerReport {
   port: number | null;
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
+  /**
+   * The workers whose `.dev.vars` this left alone, and why — a real file of their own, or a link pointing
+   * somewhere else. This command wires *every* worker it discovers, not just the new one, so a sibling
+   * running on secrets the shared file does not have is a fact about the project the adopter has to be
+   * told. `pithy dev` names it on every run; the command that adds the worker used to say nothing.
+   */
+  kept: KeptDevVars[];
 }
 
 /** Options for {@link addWorker}. */
@@ -95,7 +102,7 @@ export interface AddWorkerOptions extends WorkerContext {
 
 /**
  * Everything `pithy worker add` does once `apps/<name>/` exists: link the worker's `.dev.vars`, take a
- * port when there is a block to take one from, and relink the workspace.
+ * port when there is a block to take one from, relink the workspace, and report what the wiring left alone.
  *
  * **The install goes last.** It used to run first, and it is the one step here that reaches the network —
  * so when it threw, the `.dev.vars` wiring below it never ran and every worker after the first came out
@@ -113,17 +120,20 @@ async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<
     const report = await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
     port = report.dev.workers[options.name]?.port ?? null;
     reconciled = true;
-  } else {
-    // No feature port block in a plain checkout — just link the new worker's .dev.vars at the shared file.
-    await wireFeatureDevVars({
-      mainRoot,
-      worktreePath: options.projectDir,
-      workers: await discoverWorkers(options.projectDir),
-    });
   }
 
+  // In a plain checkout this *is* the wiring — there is no feature port block to reconcile, so nothing
+  // else has run. In a worktree the sync above has already done it and this pass changes nothing: it is
+  // idempotent, and it is here because `SyncReport` does not carry what the wiring left alone. Dropping
+  // that list was how a sibling keeping its own `.dev.vars` went unmentioned by the command that found it.
+  const links = await wireFeatureDevVars({
+    mainRoot,
+    worktreePath: options.projectDir,
+    workers: await discoverWorkers(options.projectDir),
+  });
+
   if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
-  return { name: options.name, dir, port, reconciled };
+  return { name: options.name, dir, port, reconciled, kept: links.kept };
 }
 
 /**

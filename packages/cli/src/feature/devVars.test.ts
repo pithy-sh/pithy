@@ -50,17 +50,51 @@ describe("wireFeatureDevVars", () => {
     expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("SECRET=rotated\n");
   });
 
-  test("replaces a stale link at a target so a re-run re-points it", async () => {
+  test("re-points a link that points at nothing — a broken link is the failure this exists to end", async () => {
+    // The one link there is nothing to preserve in. An absolute link written before the relative-link
+    // fix dangles the moment the tree moves, and wrangler then reports every secret absent.
     await writeFile(join(mainRoot, ".dev.vars"), "SECRET=abc\n");
     const target = join(worktreePath, ".dev.vars");
-    await writeFile(join(dir, "elsewhere"), "STALE=1\n");
-    await symlink(join(dir, "elsewhere"), target);
+    await symlink(join(dir, "gone"), target);
 
     const result = await wireFeatureDevVars({ mainRoot, worktreePath, workers: [{ name: "app", dir: worktreePath }] });
 
     expect(result.wired).toEqual([worktreePath]);
     expect((await lstat(target)).isSymbolicLink()).toBe(true);
     expect(await readFile(target, "utf8")).toBe("SECRET=abc\n");
+  });
+
+  test("leaves a link that resolves elsewhere alone, and reports where it goes", async () => {
+    // A developer pointing a worker at another `.dev.vars` said something. Silently swinging it back to
+    // the shared file on the next `pithy dev` changes which secrets that worker runs with, without a word.
+    await writeFile(join(mainRoot, ".dev.vars"), "SHARED=abc\n");
+    const elsewhere = join(dir, "elsewhere");
+    await writeFile(elsewhere, "DELIBERATE=1\n");
+    const boardDir = join(worktreePath, "apps", "board");
+    await mkdir(boardDir, { recursive: true });
+    const target = join(boardDir, ".dev.vars");
+    await symlink(elsewhere, target);
+
+    const result = await wireFeatureDevVars({ mainRoot, worktreePath, workers: [{ name: "board", dir: boardDir }] });
+
+    expect(await readlink(target)).toBe(elsewhere);
+    expect(await readFile(target, "utf8")).toBe("DELIBERATE=1\n");
+    expect(result.kept).toEqual([{ dir: boardDir, reason: "link", points: elsewhere }]);
+    expect(result.wired).toEqual([worktreePath]);
+  });
+
+  test("leaves a link that already reaches the shared file exactly as it is", async () => {
+    // Idempotence without a window: unlinking and re-symlinking a correct link is a moment where the
+    // worker's `.dev.vars` does not exist, for no gain.
+    await writeFile(join(mainRoot, ".dev.vars"), "SECRET=abc\n");
+    const target = join(worktreePath, ".dev.vars");
+    await symlink("../../.dev.vars", target);
+
+    const result = await wireFeatureDevVars({ mainRoot, worktreePath, workers: [{ name: "app", dir: worktreePath }] });
+
+    expect(result.wired).toEqual([worktreePath]);
+    expect(result.kept).toEqual([]);
+    expect(await readlink(target)).toBe("../../.dev.vars");
   });
 
   test("leaves a real .dev.vars alone and reports it, rather than deleting the only copy", async () => {
@@ -80,7 +114,7 @@ describe("wireFeatureDevVars", () => {
 
     expect(await readFile(own, "utf8")).toBe("BOARD_ONLY_SECRET=super-secret-value\n");
     expect((await lstat(own)).isSymbolicLink()).toBe(false);
-    expect(result.kept).toEqual([boardDir]);
+    expect(result.kept).toEqual([{ dir: boardDir, reason: "file" }]);
     expect(result.wired).toEqual([worktreePath]);
   });
 

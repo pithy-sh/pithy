@@ -46,8 +46,52 @@ describe("addWorker", () => {
     });
 
     expect(installed).toBe(true);
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false });
+    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
     await stat(join(dir, "apps", "web", "wrangler.jsonc")); // the scaffold landed
+  });
+
+  test("reports the sibling that kept its own .dev.vars, rather than dropping the list on the floor", async () => {
+    // `worker add web` wires *every* worker it discovers. apps/board keeping its own secrets is the
+    // situation `pithy dev` now names out loud, and the command that caused it said nothing at all.
+    await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
+    const boardDir = join(dir, "apps", "board");
+    await mkdir(boardDir, { recursive: true });
+    await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
+
+    const report = await addWorker({
+      projectDir: dir,
+      name: "web",
+      mainRoot: dir,
+      skipInstall: true,
+      discoverWorkers: discover(dir, ["board", "web"]),
+    });
+
+    expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+    expect(await readFile(join(boardDir, ".dev.vars"), "utf8")).toBe("BOARD_ONLY=super-secret\n");
+  });
+
+  test("in a feature worktree it reports the kept list too — the sync that wires them does not carry it", async () => {
+    const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
+    const worktree = join(mainRoot, ".worktrees", "73-demo");
+    const boardDir = join(worktree, "apps", "board");
+    await mkdir(boardDir, { recursive: true });
+    await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    await writeFile(join(mainRoot, ".dev.vars"), "SHARED=abc\n");
+    await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
+    try {
+      const report = await addWorker({
+        projectDir: worktree,
+        name: "web",
+        mainRoot,
+        branch: "feature/73-demo",
+        skipInstall: true,
+        discoverWorkers: discover(worktree, ["board", "web"]),
+      });
+
+      expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+    } finally {
+      await rm(mainRoot, { recursive: true, force: true });
+    }
   });
 
   test("threads the root project name into the new worker's PROJECT var", async () => {
@@ -96,7 +140,7 @@ describe("addWorker", () => {
       },
       discoverWorkers: discover(dir, ["app", "web"]),
     });
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false });
+    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
     await stat(join(dir, "apps", "web", "wrangler.jsonc"));
   });
 

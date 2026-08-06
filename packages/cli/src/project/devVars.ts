@@ -4,6 +4,14 @@
 import { readFile } from "node:fs/promises";
 import { writeFileAtomic } from "./atomic";
 
+/**
+ * The mode a `.dev.vars` this module *creates* lands with. `pithy init` seeds the project's own at 0600;
+ * this is the same rule for every other one — a `.dev.vars.<env>`, or a shared file a checkout has not
+ * got yet — because the very next thing written into it is a Cloudflare API token or the master key. The
+ * umask is not a permission policy for a credential file. A file already there keeps its own mode.
+ */
+const DEV_VARS_MODE = 0o600;
+
 function detectEol(content: string): "\r\n" | "\n" {
   return content.includes("\r\n") ? "\r\n" : "\n";
 }
@@ -56,15 +64,18 @@ export function removeDevVarsContent(content: string, keys: string[]): string {
   return out.length === 0 ? "" : `${out.join(eol)}${eol}`;
 }
 
-/** Read a dev-vars file (empty if absent), upsert the keys, and write it back atomically. */
+/**
+ * Read a dev-vars file (empty if absent), upsert the keys, and write it back atomically — owner-only when
+ * it has to be created, and through the shared file's symlink when `path` is a worker's link at it.
+ */
 export async function upsertDevVars(path: string, vars: Record<string, string>): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => "");
-  await writeFileAtomic(path, upsertDevVarsContent(content, vars));
+  await writeFileAtomic(path, upsertDevVarsContent(content, vars), { mode: DEV_VARS_MODE });
 }
 
 /** Read a dev-vars file (no-op if absent), remove the keys, and write it back atomically. */
 export async function removeDevVars(path: string, keys: string[]): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => null);
   if (content === null) return;
-  await writeFileAtomic(path, removeDevVarsContent(content, keys));
+  await writeFileAtomic(path, removeDevVarsContent(content, keys), { mode: DEV_VARS_MODE });
 }

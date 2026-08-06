@@ -291,12 +291,18 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //
   //    `pithy dev` is the command that runs after the file exists, every time, and the one whose failure
   //    the missing link causes. Idempotent, and a no-op when the project has no `.dev.vars` at all, so it
-  //    costs a project that does not need it nothing. It never replaces a real file — a worker holding its
-  //    own `.dev.vars` keeps it, and is named here rather than passed over in silence.
+  //    costs a project that does not need it nothing. It never replaces anything that reaches a real file
+  //    — a worker holding its own `.dev.vars`, or pointing at one somewhere else, keeps it. Both are named
+  //    here rather than passed over: this runs on *every* `pithy dev`, so a swap nobody mentions is a
+  //    worker quietly running with different secrets than the developer put in front of it.
   const links = await wireFeatureDevVars({ mainRoot: projectDir, worktreePath: projectDir, workers: discovered });
-  for (const dir of links.kept) {
-    const worker = discovered.find((w) => w.dir === dir);
-    emitLine(`${worker?.name ?? dir}: keeping its own .dev.vars — the project's shared one is not wired here.`);
+  for (const keep of links.kept) {
+    const who = discovered.find((w) => w.dir === keep.dir)?.name ?? keep.dir;
+    emitLine(
+      keep.reason === "file"
+        ? `${who}: keeping its own .dev.vars — the project's shared one is not wired here.`
+        : `${who}: its .dev.vars points at ${keep.points} — left there, not re-pointed at the project's shared one.`,
+    );
   }
 
   // 3. Resolve pinned ports from the dev config — never probe. A project that has none yet (a plain
