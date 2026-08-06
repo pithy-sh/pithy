@@ -3,6 +3,7 @@
 
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
+import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { StorageObject } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase } from "../data/tables";
 import { isDerivedObjectKey, OBJECT_KEY_PREFIX } from "../object/key";
@@ -204,4 +205,22 @@ export async function sweepStorage(deps: SweepDeps): Promise<SweepResult> {
     truncated: objects.truncated,
     dryRun: deps.dryRun === true,
   };
+}
+
+/**
+ * Report a finished run. The tally is the sweep's only visible output — a sweep whose findings are
+ * invisible is a sweep nobody can tell has stopped working — so it goes out as fields, which is what
+ * makes "how much quota did we reclaim this month" a query rather than a grep.
+ *
+ * A truncated run is `warn`, not `info`. It succeeded and left part of the bucket unexamined, so the
+ * orphans it did not reach are paid for until a later pass gets to them. That is the one outcome an
+ * operator should be able to find without reading every run that went fine.
+ */
+export function reportSweep(log: Logger, result: SweepResult): void {
+  const fields = { ...result };
+  if (result.truncated) {
+    log.warn("storage sweep stopped at its page cap", fields);
+    return;
+  }
+  log.info("storage sweep complete", fields);
 }

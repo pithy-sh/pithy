@@ -4,6 +4,8 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
+import { messageOf } from "@pithy-sh/core/src/error/pithyError";
+import { type Logger, noopLogger } from "@pithy-sh/core/src/logger/logger";
 import type { TesterPlatform } from "../config/config";
 import type { ActivityState, Observability } from "../data/enums";
 
@@ -112,11 +114,19 @@ function blind(email: string, observability: Observability): TesterActivity {
  * Batched by address rather than looked up one tester at a time: a hundred-member roster would
  * otherwise be three hundred round trips inside a Workflow step. `chunkByBoundParameters` keeps each
  * `IN (…)` inside D1's statement limits.
+ *
+ * **`log` is the caller's logger, not one built here, because this reader has two callers of different
+ * shapes.** It runs inside the daily Workflow, and it runs inside `GET /testers/status` and
+ * `GET /testers/cohorts` — so a request reaches it, and a request logger already carries the
+ * correlation an operator needs. Building a fresh one here would emit the line that explains an empty
+ * roster with nothing tying it to the request that asked for it. Defaults to the no-op so a caller with
+ * no logger reads activity rather than null-checking.
  */
 export async function resolveActivity(
   d1: D1Database,
   emails: readonly string[],
   options: ActivityOptions,
+  log: Logger = noopLogger,
 ): Promise<Map<string, TesterActivity>> {
   const normalized = [...new Set(emails.map((email) => email.trim().toLowerCase()))];
   const results = new Map<string, TesterActivity>();
@@ -139,9 +149,11 @@ export async function resolveActivity(
     //
     // Logged rather than silent, because the other thing this catch swallows is a transient D1 failure,
     // and that records a cohort as entirely dark for a day with no trace of why. An operator reading a
-    // sudden coverage cliff needs somewhere to look.
-    console.warn("testers: activity unreadable, treating the roster as unobservable", {
-      reason: error instanceof Error ? error.message : String(error),
+    // sudden coverage cliff needs somewhere to look. `warn` rather than `error`: the reading degraded,
+    // the caller carried on, and a project that simply has no auth would otherwise page somebody.
+    log.warn("activity unreadable, treating the roster as unobservable", {
+      addresses: normalized.length,
+      reason: messageOf(error),
     });
   }
   return results;

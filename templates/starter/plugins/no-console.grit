@@ -1,0 +1,25 @@
+// Your project's logging gate. Scoped by biome.jsonc to each Worker's own `.ts` source.
+//
+// A console line carries no level, no logger name, and no request id. Workers Logs cannot filter it,
+// and nothing downstream can key on it — so it is output you can read once, live, and never again.
+// The replacement is already wired: `c.var.log` inside a request handler, bound to that request, and
+// `createWorkerLogger()` anywhere else in the Worker.
+//
+// Biome ships `suspicious/noConsole` and it matches the same code. This exists instead because its
+// message names the replacement — a rule that only prohibits gets ignored by the next person who
+// needs a line of output, since it never told them where the line was supposed to go.
+//
+// This file is yours. Narrow the `includes` in biome.jsonc, widen them, or delete both the entry and
+// this file. Pithy ships the practice; the code is yours.
+//
+// The match is the member access rather than the call, so `items.forEach(console.log)` and
+// `const sink = console.error` are caught alongside `console.log(x)`. A call contains the member
+// access, so each site still reports exactly once.
+language js
+
+or {
+  `console.$method`,
+  `globalThis.console.$method`
+} as $ref where {
+  register_diagnostic(span=$ref, message="console is not the logger. Reach for c.var.log in a request, or createWorkerLogger() elsewhere — a console line carries no level, name, or request id, and Workers Logs cannot filter it.")
+}

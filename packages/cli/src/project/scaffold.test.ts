@@ -87,6 +87,34 @@ describe("scaffoldProject", () => {
     await readFile(join(dir, "tsconfig.tools.json"), "utf8");
   });
 
+  test("ships the logging gate, registered in the project's own biome config", async () => {
+    // The gate is a scaffolded default, not something Pithy enforces from outside: both halves land in
+    // the adopter's repo, so they can narrow the scope or delete the pair. It ships on because a Worker
+    // that logs through console is a Worker whose logs cannot be filtered, and nobody discovers that
+    // until they need to.
+    await scaffoldProject({ targetDir: dir, appName: "logged" });
+
+    // The plugin file names the replacement — a gate that only prohibits gets ignored.
+    const plugin = await readFile(join(dir, "plugins", "no-console.grit"), "utf8");
+    expect(plugin).toContain("createWorkerLogger");
+
+    const biome = parse(await readFile(join(dir, "biome.jsonc"), "utf8")) as unknown as {
+      plugins: { path: string; includes: string[] }[];
+    };
+    const gate = biome.plugins.find((plugin) => plugin.path === "plugins/no-console.grit");
+    // `apps/<worker>/src`, never `packages/*` — a scaffolded project has no packages/ at all, and the
+    // Worker's own program is the `.ts` half of that directory. `.tsx` is the client.
+    expect(gate?.includes).toEqual(["**/apps/*/src/**/*.ts", "!**/*.test.ts"]);
+
+    // The sibling gate ships with it. `process.stdout.write` is the same hole reached through a Node
+    // habit rather than a browser one, and an adopter who gets one rule and not the other learns the
+    // convention half-way — which is how the second one arrives in a Workflow six months later.
+    const streams = await readFile(join(dir, "plugins", "no-process-io.grit"), "utf8");
+    expect(streams).toContain("createWorkerLogger");
+    const streamGate = biome.plugins.find((plugin) => plugin.path === "plugins/no-process-io.grit");
+    expect(streamGate?.includes).toEqual(["**/apps/*/src/**/*.ts", "!**/*.test.ts"]);
+  });
+
   test("points the solution file and the build state at the worker's real name", async () => {
     // Both strings name `apps/api` in the template. Left unstamped, `tsc -b` fails on a reference to a
     // directory that does not exist — so `--worker` alone would break the typecheck gate it just wrote.

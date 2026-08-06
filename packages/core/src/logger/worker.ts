@@ -41,6 +41,9 @@ export interface WorkerLoggerOptions {
  * transport is attached — tail/Logpush readiness is by construction.
  */
 export function createWorkerLogger(options: WorkerLoggerOptions = {}): Logger {
+  // The one sanctioned `console` in a Worker: this is the adapter, so console is the transport, not a
+  // shortcut past it. `console.log` *is* the Workers Logs ingest API — a structured line written here is
+  // what the dashboard indexes. Every other module logs through the `Logger` seam and lands here.
   const emit = options.emit ?? ((record: LogRecord) => console.log(serializeRecord(record)));
   const { transport } = options;
   return createLogger({
@@ -79,6 +82,34 @@ export function bindRequestContext(base: Logger, context: RequestContext): Logge
     request: context.request,
     method: context.method,
     path: context.path,
+    env: context.env,
+  };
+  if (context.version !== undefined) fields.version = context.version;
+  return base.child(undefined, fields);
+}
+
+/** The per-run correlation fields bound onto every record a Workflow emits. Resolved from the run's event and env. */
+export interface WorkflowContext {
+  /** The deployed Workflow name, from `event.workflowName`. */
+  workflow: string;
+  /** This run's instance id, from `event.instanceId` — what the dashboard and `wrangler workflows` key on. */
+  instance: string;
+  /** The environment name (`dev` | `staging` | `prod`), from the host's `ENVIRONMENT` var. */
+  env: string;
+  /** The deployed Worker version id, when the version-metadata binding is present. */
+  version?: string;
+}
+
+/**
+ * Derive a per-run logger by binding {@link WorkflowContext} onto `base` — the Workflow peer of
+ * {@link bindRequestContext}, so a durable run correlates the way a request already does. A run has no
+ * method or path; it has an instance, and that is the id anyone reading Workflows Logs searches by. Uses
+ * the nameless `child` form, leaving the logger's namespace free for a capability to claim.
+ */
+export function bindWorkflowContext(base: Logger, context: WorkflowContext): Logger {
+  const fields: LogFields = {
+    workflow: context.workflow,
+    instance: context.instance,
     env: context.env,
   };
   if (context.version !== undefined) fields.version = context.version;

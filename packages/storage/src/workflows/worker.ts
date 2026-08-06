@@ -3,14 +3,15 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { StorageConfig } from "../config/config";
 import { storageDatabase } from "../data/tables";
 import { objectStore } from "../object/store";
 import { STORAGE_R2_SECRET, storageSecretsRegistry } from "../secret/registry";
-import { StorageSweepParams } from "./specs";
-import { type SweepResult, sweepStorage } from "./sweep";
+import { STORAGE_CAPABILITY, StorageSweepParams } from "./specs";
+import { reportSweep, type SweepResult, sweepStorage } from "./sweep";
 
 /**
  * The prebuilt storage sweep worker. `pithy storage provision` deploys one per environment; the
@@ -52,6 +53,15 @@ export class StorageSweepWorkflow extends WorkflowEntrypoint<StorageWorkerEnv, S
     const params = StorageSweepParams.parse(event.payload ?? {});
     const config = StorageConfig.parse(this.env.STORAGE_CONFIG ? JSON.parse(this.env.STORAGE_CONFIG) : {});
 
+    // A run has no request to inherit a logger from, so it builds its own and binds the run context:
+    // every record carries the instance id, which is the id the dashboard and `wrangler workflows`
+    // search by — the difference between "the sweep is noisy" and "this run is."
+    const log = bindWorkflowContext(createWorkerLogger({ name: STORAGE_CAPABILITY }), {
+      workflow: event.workflowName,
+      instance: event.instanceId,
+      env: this.env.ENVIRONMENT ?? "unknown",
+    });
+
     // One durable step. A retry re-runs the whole reconciliation, which is safe precisely because the
     // sweep is idempotent — a second pass over a reconciled bucket finds nothing left to do.
     const result: SweepResult = await step.do("sweep", async () =>
@@ -69,9 +79,7 @@ export class StorageSweepWorkflow extends WorkflowEntrypoint<StorageWorkerEnv, S
       }),
     );
 
-    // The result is the run's only visible output, so it goes to the log — a sweep whose findings are
-    // invisible is a sweep nobody can tell has stopped working.
-    console.log("storage sweep", JSON.stringify(result));
+    reportSweep(log, result);
   }
 }
 

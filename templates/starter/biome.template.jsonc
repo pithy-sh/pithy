@@ -10,6 +10,28 @@
     "ignoreUnknown": true,
     "includes": ["**", "!**/dist", "!**/.wrangler", "!**/.worktrees"]
   },
+  // The logging gate. Scoped to each Worker's own `.ts` source, because that is the code that runs in
+  // the Worker, where `c.var.log` and `createWorkerLogger()` exist. A `.tsx` file is the client, and a
+  // browser console is not a Workers log. A test printing to a terminal is output for a human, not a
+  // log line, so tests are out too.
+  //
+  // `no-process-io.grit` is the same rule for `process.stdout` / `process.stderr` — the Node habit that
+  // reaches for a stream instead of a logger. Same scope, and for the same reason: it is the Worker's
+  // source that must stay queryable. A build script or a Node CLI of your own writing to stdout is
+  // correct, and neither lives under `apps/*/src`.
+  //
+  // Yours to change, like every other line here — narrow them, widen them, or drop an entry and delete
+  // its plugin file with it. Both plugin files say the same.
+  "plugins": [
+    {
+      "path": "plugins/no-console.grit",
+      "includes": ["**/apps/*/src/**/*.ts", "!**/*.test.ts"]
+    },
+    {
+      "path": "plugins/no-process-io.grit",
+      "includes": ["**/apps/*/src/**/*.ts", "!**/*.test.ts"]
+    }
+  ],
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

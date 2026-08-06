@@ -3,6 +3,8 @@
 
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { createLogger, noopLogger } from "@pithy-sh/core/src/logger/logger";
+import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { dayKey } from "../clock/days";
@@ -64,6 +66,9 @@ function deps(now: Date, overrides: Partial<DailyPassDeps> = {}): DailyPassDeps 
     // assertion is independent of a table they do not stand up. The reconciliation has its own block at
     // the foot of this file, which stands the table up and passes it in.
     suppressionD1: undefined,
+    // Most tests here assert on state rather than on output, so the pass logs nowhere. The two that
+    // care about what it said pass a capturing logger of their own.
+    log: noopLogger,
     optOutLinkFor: (member) => `https://api.example.test/testers/opt-out/${member.optInToken}`,
     linkFor: (kind, member) =>
       kind === "confirm"
@@ -480,6 +485,45 @@ describe("deliverability reconciliation", () => {
     await env.DB.prepare("delete from pithy_email_suppressions").run();
     await runCohortPass(deps(new Date("2026-06-02T05:00:00.000Z"), { suppressionD1: env.DB }), cohort.id);
     expect((await requireMember(testersDatabase(env.DB), member.member.id)).unreachable).toBe(false);
+  });
+
+  test("an unreadable list warns through the pass's own logger and leaves the flags alone", async () => {
+    // A bound database whose table is missing is the transient-failure shape: the pass must not infer a
+    // bounce from a read it could not make, and it must not go quiet about having guessed nothing.
+    // `warn`, because the pass carried on and still wrote its day.
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_email_suppressions");
+    const records: LogRecord[] = [];
+    const log = createLogger({ level: "debug", name: "testers:daily", sink: (record) => records.push(record) });
+    const cohort = await makeCohort();
+    const member = await inviteMember(write(DAY_ONE), {
+      cohortId: cohort.id,
+      email: "unknown@example.com",
+      maxRosterSize: 10,
+    });
+    await markUnreachable(write(DAY_ONE), member.member.id, true);
+
+    await runCohortPass(deps(DAY_ONE, { suppressionD1: env.DB, log }), cohort.id);
+
+    expect((await requireMember(testersDatabase(env.DB), member.member.id)).unreachable).toBe(true);
+    // Both degraded reads land on the pass's logger, and both are asserted. This suite stands up no
+    // auth tables, so the activity read fails too — and it reaches this logger only because
+    // `runCohortPass` hands `deps.log` to `readCohort`, which hands it to `resolveActivity`. Filtering
+    // that record out was how the threading came to be covered by nothing.
+    const warned = records.filter((record) => record.level === "warn");
+    expect(warned.map((record) => record.msg).sort()).toEqual([
+      "activity unreadable, treating the roster as unobservable",
+      "suppression list unreadable, leaving deliverability flags alone",
+    ]);
+    for (const record of warned) {
+      expect(record.name).toBe("testers:daily");
+      expect(record.fields).toMatchObject({ addresses: 1 });
+      // The fields are structured, never interpolated into the message.
+      expect(record.msg).not.toContain("{");
+    }
+    const suppression = warned.find((record) => record.msg.startsWith("suppression"));
+    expect(String(suppression?.fields?.reason)).toContain("pithy_email_suppressions");
+    const activity = warned.find((record) => record.msg.startsWith("activity"));
+    expect(String(activity?.fields?.reason)).toContain("pithy_auth_users");
   });
 
   test("with no suppression database the flags are left alone rather than guessed at", async () => {

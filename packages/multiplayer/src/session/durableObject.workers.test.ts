@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { MULTIPLAYER_MIGRATION_ORDER } from "../capability";
 import { resultStore } from "../data/store";
 import { multiplayerDatabase } from "../data/tables";
@@ -84,6 +85,28 @@ function tictactoe(over: Partial<GameSnapshot> = {}): GameSnapshot {
 function newSession() {
   const id = env.SESSIONS.newUniqueId();
   return { id, stub: env.SESSIONS.get(id) };
+}
+
+/**
+ * Capture the structured records the Worker logger emits while a test runs. The adapter's sink is one
+ * JSON line per record through `console.log` — the Workers Logs ingest itself — so parsing those lines
+ * back asserts on exactly what the dashboard would index. Anything that is not one of our records is
+ * ignored rather than failing the parse.
+ */
+function capturedRecords(): { records: LogRecord[]; restore: () => void } {
+  const records: LogRecord[] = [];
+  const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+    if (typeof line !== "string") return;
+    let json: unknown;
+    try {
+      json = JSON.parse(line);
+    } catch {
+      return;
+    }
+    const parsed = LogRecord.safeParse(json);
+    if (parsed.success) records.push(parsed.data);
+  });
+  return { records, restore: () => spy.mockRestore() };
 }
 
 type SimultaneousView = {
@@ -264,5 +287,37 @@ describe("leaderboard publish is best-effort", () => {
     expect(done.phase).toBe("resolved");
     const stored = await resultStore(multiplayerDatabase(env.DB)).get(id.toString());
     expect(stored?.status).toBe("resolved");
+  });
+
+  test("the swallowed failure is still visible: one structured error record, payload and all", async () => {
+    const { id, stub } = newSession();
+    const game = battle({
+      leaderboard: { board: "wins", direction: "desc", aggregation: "sum", points: { win: 3, draw: 1, loss: 0 } },
+    });
+    // The Worker adapter's sink is `console.log(serializeRecord(record))` — that line IS the Workers Logs
+    // ingest, so reading it back is reading what the dashboard would index.
+    const emitted = capturedRecords();
+    try {
+      await runInDurableObject(stub, (s: MultiplayerSession) => s.create(game, "alice"));
+      await runInDurableObject(stub, (s: MultiplayerSession) => s.join("bob"));
+      await runInDurableObject(stub, (s: MultiplayerSession) =>
+        s.action("alice", { offense: ["fire", "ice", "wind"], defense: ["guard-fire", "guard-ice", "guard-wind"] }),
+      );
+      await runInDurableObject(stub, (s: MultiplayerSession) =>
+        s.action("bob", { offense: ["ice", "wind", "stone"], defense: ["guard-ice", "guard-wind", "guard-stone"] }),
+      );
+    } finally {
+      emitted.restore();
+    }
+
+    const record = emitted.records.find((r) => r.name === "multiplayer:session");
+    expect(record).toBeDefined();
+    expect(record?.level).toBe("error");
+    expect(record?.msg).toBe("leaderboard publish failed");
+    expect(record?.fields).toMatchObject({ session: id.toString(), board: "wins" });
+    // The throw is a bare D1 error, so it rides the reserved `error` field as a wrapped PithyError — the
+    // cause text survives in `detail` rather than being stringified into the message.
+    expect(record?.error?.code).toBe("core/internal");
+    expect(record?.error?.detail).toMatch(/no such table/);
   });
 });

@@ -3,6 +3,8 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
+import { messageOf } from "@pithy-sh/core/src/error/pithyError";
+import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { ExpressionBuilder } from "kysely";
 import { addDays, type DayKey, dayKey, daysSince, endOfDay } from "../clock/days";
 import { readClock } from "../clock/replay";
@@ -57,6 +59,14 @@ export interface DailyPassDeps {
   readonly config: TestersConfig;
   readonly now: Date;
   readonly newId: () => string;
+  /**
+   * Where the pass reports what it could not do.
+   *
+   * Required rather than defaulted, because silence is this pass's worst failure mode and a default
+   * picks it. The Workflow hands over the run's logger, so every line carries the instance an operator
+   * searches by; the CLI hands over the process logger, so the same line reaches the terminal.
+   */
+  readonly log: Logger;
   /** The email enqueue seam. Absent means state still advances and the snapshot is still written. */
   readonly enqueue: EnqueueNudge | undefined;
   /**
@@ -255,8 +265,12 @@ async function readSuppressed(deps: DailyPassDeps, emails: readonly string[]): P
     }
     return found;
   } catch (error) {
-    console.warn("testers: suppression list unreadable, leaving deliverability flags alone", {
-      reason: error instanceof Error ? error.message : String(error),
+    // `warn`, not `error`: the pass carries on and still writes its day. But it must not go quiet —
+    // the same catch covers a transient D1 failure, and a roster whose bounces stopped being
+    // reconciled looks exactly like a roster with no bounces.
+    deps.log.warn("suppression list unreadable, leaving deliverability flags alone", {
+      addresses: emails.length,
+      reason: messageOf(error),
     });
     return undefined;
   }
@@ -276,7 +290,7 @@ export async function runCohortPass(deps: DailyPassDeps, cohortId: string): Prom
     });
   }
 
-  const reading = await readCohort(deps.db, deps.d1, cohort, deps.config, deps.now);
+  const reading = await readCohort(deps.db, deps.d1, cohort, deps.config, deps.now, deps.log);
 
   // 1. Reconcile deliverability against the suppression list — the only place that fact actually lives.
   //    Comparing `activity.observability === "unreachable"` here would compare the flag with itself:

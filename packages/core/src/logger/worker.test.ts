@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { LogRecord } from "./record";
-import { bindRequestContext, createWorkerLogger } from "./worker";
+import { bindRequestContext, bindWorkflowContext, createWorkerLogger } from "./worker";
 
 /** Capture emitted records (bypassing console) plus an optional transport spy. */
 function capture(options: Partial<Parameters<typeof createWorkerLogger>[0]> = {}) {
@@ -93,5 +93,49 @@ describe("bindRequestContext", () => {
     expect(emitted[0]?.name).toBe("auth");
     expect(emitted[0]?.fields).toEqual({ request: "r", method: "GET", path: "/", env: "dev" });
     expect(emitted[0]?.fields?.version).toBeUndefined();
+  });
+});
+
+describe("bindWorkflowContext", () => {
+  test("binds run-correlation fields onto every record, without a namespace", () => {
+    const { emitted, log } = capture();
+    const run = bindWorkflowContext(log, {
+      workflow: "acme-prod-email-send",
+      instance: "inst-1",
+      env: "prod",
+      version: "v9",
+    });
+    run.info("step done");
+    run.warn("retrying");
+    expect(emitted.map((r) => r.name)).toEqual([undefined, undefined]);
+    for (const record of emitted) {
+      expect(record.fields).toEqual({
+        workflow: "acme-prod-email-send",
+        instance: "inst-1",
+        env: "prod",
+        version: "v9",
+      });
+    }
+  });
+
+  test("omits version when there is none, and leaves the namespace free for a capability", () => {
+    const { emitted, log } = capture();
+    const run = bindWorkflowContext(log, { workflow: "acme-dev-media-enrich", instance: "i", env: "dev" });
+    run.child("media").info("ok");
+    expect(emitted[0]?.name).toBe("media");
+    expect(emitted[0]?.fields).toEqual({ workflow: "acme-dev-media-enrich", instance: "i", env: "dev" });
+    expect(emitted[0]?.fields?.version).toBeUndefined();
+  });
+
+  test("keeps the bound fields under a per-step child, which adds its own", () => {
+    const { emitted, log } = capture();
+    const run = bindWorkflowContext(log, { workflow: "acme-prod-payments-reconcile", instance: "i", env: "prod" });
+    run.child("payments").info("page done", { page: 3 });
+    expect(emitted[0]?.fields).toEqual({
+      workflow: "acme-prod-payments-reconcile",
+      instance: "i",
+      env: "prod",
+      page: 3,
+    });
   });
 });
