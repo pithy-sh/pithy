@@ -297,7 +297,11 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `wrangler` | ^4.115.0 | Deploy |
 | `@pithy-sh/vite` | matching your CLI | Serves the `virtual:pithy/*` modules |
 
-One exception to the table: if `@pithy-sh/vite` is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
+Two exceptions to the table, and `@pithy-sh/vite` is the only row either touches.
+
+The first is yours: if it is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
+
+The second is ours, and applies to every project until `@pithy-sh/*` publishes: there is no version to name yet, so the line is dropped for everyone. `pithy ui add` says so — the same notice `pithy init` and `pithy worker add` print — and the install it then tells you to run will succeed while the build fails on the missing plugin. Link the kit from a checkout before installing. The day the scope publishes, the range is written with no change on your side.
 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.48 peers on `vite ^6.1 || ^7 || ^8` and `wrangler ^4.115.0`. Downgrading one of them alone will not resolve.
 

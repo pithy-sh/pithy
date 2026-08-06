@@ -9,9 +9,10 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.genera
 import { VERSION_METADATA_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { reactStub } from "../ui/react";
 import { kitRange, scaffoldProject } from "./scaffold";
 import { hasVersionMetadata } from "./versionMetadata";
-import { scaffoldWorker } from "./workerScaffold";
+import { scaffoldWorker, WRANGLER_RANGE } from "./workerScaffold";
 
 /**
  * The two Worker producers, held together.
@@ -138,10 +139,33 @@ describe("both package.json producers", () => {
     }
   });
 
-  test("pin the same toolchain — a drifted wrangler is a Worker built by a different compiler", () => {
-    for (const key of ["@cloudflare/workers-types", "wrangler"]) {
-      expect(added.devDependencies?.[key], key).toBe(starter.devDependencies?.[key]);
+  test("declare the same dependency names, so a package added to one is added to both", () => {
+    // Named keys were all this compared, which left the set itself unwatched: a dependency added to the
+    // starter template and not to `workerScaffold.ts` drifted silently — the exact drift this file was
+    // written to catch, in the half nobody thought to name. `stampWorkerManifest` drops `@pithy-sh/core`
+    // from the starter while the scope is unpublished and `workerScaffold` omits it, so the sets agree on
+    // both sides of publication; a *second* kit dependency would not, and would fail here.
+    for (const field of ["dependencies", "devDependencies"] as const) {
+      expect(Object.keys(added[field] ?? {}).sort(), field).toEqual(Object.keys(starter[field] ?? {}).sort());
     }
+  });
+
+  test("pin the same toolchain — a drifted wrangler is a Worker built by a different compiler", () => {
+    // Every key, not a named few, now that the sets above are held equal. A pin is the one field where
+    // "close enough" deploys and then fails somewhere else.
+    for (const field of ["dependencies", "devDependencies"] as const) {
+      for (const key of Object.keys(starter[field] ?? {})) {
+        expect(added[field]?.[key], `${field}.${key}`).toBe(starter[field]?.[key]);
+      }
+    }
+  });
+
+  test("the ui stub pins the same wrangler — three producers of one pin, not two", () => {
+    // `pithy ui add` writes `wrangler` into the Worker's package.json too, and held between only the two
+    // Worker producers it could drift from both unnoticed. It is imported from `workerScaffold` rather
+    // than restated; this is what holds that constant to the template on disk.
+    expect(reactStub.devDependencies.wrangler).toBe(starter.devDependencies?.wrangler);
+    expect(reactStub.devDependencies.wrangler).toBe(WRANGLER_RANGE);
   });
 
   test("declare the same Node floor, so `npm install` refuses the same runtimes", () => {

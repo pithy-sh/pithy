@@ -9,7 +9,7 @@ import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ensureEmptyTarget, ensureScaffoldable, kitRange, scaffoldProject } from "./scaffold";
+import { ensureEmptyTarget, ensureScaffoldable, kitRange, scaffoldProject, unpublishedKitNotice } from "./scaffold";
 import { addWorker } from "./workerCommand";
 import { scaffoldWorker } from "./workerScaffold";
 
@@ -689,5 +689,32 @@ describe("a symlinked apps/<name>", () => {
     expect(error).not.toBeInstanceOf(InternalError); // refused by the gate, never by the install
     expect(await readdir(outside)).toEqual([]);
     expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe("unpublishedKitNotice", () => {
+  /** Every command that scaffolds a manifest `kitRange` can drop a `@pithy-sh/*` line from. */
+  const COMMANDS = ["../commands/init.ts", "../commands/worker.ts", "../commands/ui.ts"];
+
+  test("says something exactly when the scope is unpublished, and nothing when it is not", () => {
+    expect(unpublishedKitNotice() === null).toBe(kitRange(PACKAGE_VERSION) !== null);
+  });
+
+  test("is the wording all three commands print — the drift gate", async () => {
+    // `pithy init` printed this notice; `pithy worker add` and `pithy ui add` dropped the same kit line
+    // from the manifest they wrote and then said "Done." Three commands, one gap, one sentence.
+    //
+    // A source read rather than a captured run, because the third command needs a scaffolded project, a
+    // wired worker and a package manager to say anything at all — and what is on trial is the wording,
+    // which is a fact about the source. Each command either calls the function or holds the exact words:
+    // `init` still holds them, because folding it in belongs to whoever owns that file next. Say anything
+    // else and this goes red.
+    const lines = unpublishedKitNotice();
+    if (lines === null) return; // published: there is no notice to hold anything to
+    for (const command of COMMANDS) {
+      const source = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), command), "utf8");
+      const speaks = source.includes("unpublishedKitNotice") || lines.every((line) => source.includes(line));
+      expect(speaks, command).toBe(true);
+    }
   });
 });

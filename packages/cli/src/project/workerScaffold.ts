@@ -24,6 +24,19 @@ export function workerNamespace(name: string): string {
 }
 
 /**
+ * The wrangler every producer of a Worker manifest pins.
+ *
+ * Three write it: this file, `templates/starter/apps/api/package.json`, and the React stub `pithy ui add`
+ * merges into a Worker. `scaffoldParity.test.ts` held it between the first two only, so the third could
+ * drift from both unnoticed — a Worker whose front end and whose server deploy through different wrangler
+ * majors. Exported and imported rather than restated, so there is one literal and one test holding it to
+ * the template on disk.
+ *
+ * `@cloudflare/vite-plugin` peers on `wrangler ^4.115.0`; moving this alone will not resolve.
+ */
+export const WRANGLER_RANGE = "^4.115.0";
+
+/**
  * The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve).
  *
  * The deploy name is `<project>-<name>`, the same shape `scaffoldProject` gives the first Worker — a Worker
@@ -120,7 +133,7 @@ function workerFiles(name: string, project: string): Record<string, string> {
         "deploy:prod": "wrangler deploy --env prod",
       },
       dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.12.0" },
-      devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: "^4.115.0" },
+      devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: WRANGLER_RANGE },
     },
     null,
     2,

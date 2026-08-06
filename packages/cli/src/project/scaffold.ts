@@ -343,6 +343,29 @@ export function kitRange(version: string): string | null {
 }
 
 /**
+ * What to tell an adopter whose freshly written manifest declares no `@pithy-sh/*` dependency — or
+ * **null**, meaning there is nothing to say because the range was written.
+ *
+ * Three commands scaffold a manifest {@link kitRange} can drop a line from, and all three must say the
+ * same thing: `pithy init` (the worker's `@pithy-sh/core`), `pithy worker add` (the same), and
+ * `pithy ui add` (`@pithy-sh/vite`). Only `init` did. The other two dropped the line and then said
+ * "Done." — `worker add` scaffolding a `src/index.ts` that imports a package its `package.json` does not
+ * declare, `ui add` following up with "Install the packages: npm install. Then pithy dev.", which
+ * installs cleanly and then fails the build on a Vite plugin nothing asked for. A silent gap is worse
+ * than a loud one: the adopter meets it as an unresolved import on an unrelated command.
+ *
+ * One function rather than three literals, because the wording is the contract. Lines rather than a
+ * string, so each caller dims and places them itself.
+ */
+export function unpublishedKitNotice(): string[] | null {
+  if (kitRange(PACKAGE_VERSION) !== null) return null;
+  return [
+    "@pithy-sh/* isn't published yet, so this worker declares no kit dependency.",
+    "Link the kit from a checkout, then install.",
+  ];
+}
+
+/**
  * Stamp the scaffolded Worker's manifest: the package name, and the kit dependency at a range that can
  * actually resolve ({@link kitRange}).
  *
