@@ -124,7 +124,46 @@ A delivered apex message shows exactly this: `From: noreply@example.com`, `maile
 
 1. In the Cloudflare dashboard, open **Email** → **Email Sending**, **Add a domain**, enter `example.com` (or run `wrangler email sending enable example.com`). For a zone already on Cloudflare, Cloudflare adds the DKIM CNAMEs and the return-path subdomain automatically; for a zone elsewhere, it shows the records to add. Your apex SPF and MX are left alone.
 2. Wait for the domain to show **Verified** in the Email Sending dashboard. Until then, `From: @example.com` is rejected.
-3. To classify bounces/complaints in your own worker, add **Email Routing** on a dedicated **subdomain** (e.g. `bounce.example.com`, never the apex, so your provider keeps the apex MX) pointing at the production app worker — or skip it and rely on Cloudflare's account-wide auto-suppression plus the synchronous permanent-bounces this package already captures (one inbound worker per domain — see "Feature / staging / prod").
+3. To classify bounces/complaints in your own worker, add **Email Routing** on a dedicated **subdomain** (e.g. `bounce.example.com`, never the apex, so your provider keeps the apex MX — but read [Enabling Email Routing without losing your apex MX](#enabling-email-routing-without-losing-your-apex-mx) first, because Cloudflare configures the apex before it lets you pick a subdomain) pointing at the production app worker — or skip it and rely on Cloudflare's account-wide auto-suppression plus the synchronous permanent-bounces this package already captures (one inbound worker per domain — see "Feature / staging / prod").
+
+### Enabling Email Routing without losing your apex MX
+
+"Enable it on a subdomain, never the apex" is the right instruction and an incomplete one, because **Email Routing is a zone-level feature and you cannot start below the zone.**
+
+The zone is the master record keeper: every DNS record for a domain *and all its subdomains* lives in that zone, unless a subdomain is delegated to a zone of its own. So Email Routing is configured on a zone, and it configures that zone's **apex** by default — automatically creating *and locking* apex MX records plus an apex SPF `TXT`, before you have chosen anything. If that apex carries real mail, it has already moved.
+
+Which apex you end up configuring is therefore decided entirely by **which zone you added**. Two ways to end up in the right place.
+
+**A — a delegated subdomain zone.** Add `bounce.example.com` to Cloudflare as its own zone, by NS delegation from the parent, and enable Email Routing there. That zone's apex *is* the subdomain, so the records Cloudflare locks are exactly the ones you wanted. The parent zone is never touched, and there is nothing to clean up. Prefer this when you control the parent's DNS and don't mind a second zone.
+
+**B — a subdomain inside the parent zone.** Enable Email Routing on `example.com` itself and add `bounce.example.com` as a routing subdomain. This is the path most people take, and it is the one with the trap: the zone's apex is your real domain, so Cloudflare configures your real domain first and you undo it afterwards. The order matters:
+
+1. Enable Email Routing on the zone. Cloudflare adds and locks **apex** MX records and an apex SPF `TXT`.
+2. Add your subdomain (`bounce.example.com`) in the Email Routing UI. Cloudflare adds MX and SPF for the subdomain.
+3. **Unlock the apex records** from step 1. Unlocking is only ever about the apex.
+4. On the **DNS** page, delete the **apex** MX records and the **apex** SPF `TXT`. Leave every subdomain record alone.
+
+Between steps 1 and 4 your apex MX belongs to Cloudflare. Do this on a domain that is not carrying real mail, or accept a window of redirected inbound.
+
+**Never hand-edit the subdomain's records.** They are created automatically when you add the subdomain, and they cannot be unlocked — by design, because Email Routing owns them. Over the API they carry no `locked` field at all; they are marked `meta: { email_routing: true, read_only: true }`.
+
+**To stop routing a subdomain, delete the subdomain in the Email Routing UI.** Its records go with it, cleanly. There is no DNS surgery in that direction — the apex cleanup above exists only because Cloudflare configured the apex before you got to choose.
+
+**Do not delete `cf2024-1._domainkey`.** It is Email *Sending*'s DKIM key and has nothing to do with routing — deleting it breaks outbound signing, not inbound mail. It sits at the zone apex and looks like part of the same cleanup. It isn't.
+
+#### Afterwards the dashboard reports it wrong
+
+Once the apex records are gone, the zone's Email Routing page says **Disabled** and its DNS records read **Not Configured**. Neither is a problem, and only the second is even true — the apex genuinely has no routing records, because you deleted them on purpose. The signal that matters is on the same page: **"1 subdomain configured"**.
+
+The API is clearer, and it is what `pithy` reads:
+
+```
+GET /zones/{zone_id}/email/routing   →   { enabled: true, status: "unconfigured" }
+```
+
+**`enabled` is the truth. `status` is apex-only and will read `unconfigured` forever in this topology.** Never gate anything on `status`.
+
+One more default worth knowing: every zone carries a catch-all rule — no name, priority `2147483647`, `matchers: all`, `actions: drop` — created by Cloudflare whether or not you configure anything. Its `enabled` flag is a reliable "is routing on for this zone" signal. It also means that **until you add a Worker rule, mail to your routed subdomain is accepted and silently discarded.** A test message that vanishes at this stage is the default behaving correctly, not a fault.
 
 ## The suppression database, and provisioning
 
@@ -136,7 +175,7 @@ A dedicated `EMAIL_SUPPRESSIONS` database is the default and the recommendation.
 
 `--routing-zone`, `--inbound-address`, and `--app-worker` together create the **one** Email Routing rule that delivers bounce/complaint mail to your worker. They're opt-in (omit them and provisioning skips routing), and all three are required together:
 
-- **`--routing-zone`** — the Cloudflare **Zone ID** (the 32-char id on the zone's Overview page, *not* the domain name) of the zone whose inbound mail is routed. **Email Routing must already be enabled on this zone**, which points its MX at Cloudflare — so use a **subdomain** zone (e.g. the zone for `bounce.example.com`), never your apex, or you'd move your real inbound mail off your provider.
+- **`--routing-zone`** — the Cloudflare **Zone ID** (the 32-char id on the zone's Overview page, *not* the domain name) of the zone whose inbound mail is routed. **Email Routing must already be enabled on this zone**, which points MX at Cloudflare — so route a **subdomain** (e.g. `bounce.example.com`), never your apex, or you'd move your real inbound mail off your provider. Enabling routing configures the apex *first* whether you want it or not: see [Enabling Email Routing without losing your apex MX](#enabling-email-routing-without-losing-your-apex-mx) before you touch a domain that carries real mail. Note this id is the **zone**'s — with a routed subdomain inside a parent zone, that is the parent's id, not the subdomain's.
 - **`--inbound-address`** — the exact recipient address the rule matches, on that routed zone (e.g. `bounce@bounce.example.com`). Any mail addressed to it is handed to the app worker's `email()` handler, which classifies it (bounce / complaint / auto-reply) and updates suppression + events.
 - **`--app-worker`** — the deployed name of your **production** app worker — the one running `createEntrypoint`, which exports the `email()` bounce handler (e.g. `pithy-app-prod`). This is your app worker, not the prebuilt email/workflow worker.
 
