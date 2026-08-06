@@ -207,7 +207,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
 
   const assets = await wireAssets(options.workerDir, options.config);
   await wireManifest(options.workerDir, stub, packageManager);
-  const pkg = await wirePackage(options.workerDir, stub);
+  const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
 
   return {
     worker: options.worker,

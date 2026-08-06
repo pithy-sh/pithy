@@ -14,7 +14,7 @@ It scaffolds the client into `apps/api/`, beside the Worker that serves it, and 
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
 - **Joins the dev set.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
-- **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions.
+- **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions. A `@pithy-sh/*` package your project already provides from a linked checkout gets no range written — there is no published version to name, and writing one breaks your next install.
 
 ## What it does not do
 
@@ -267,6 +267,8 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `@cloudflare/vite-plugin` | ^1.48.0 | Runs the Worker in workerd inside the dev server; owns the build output |
 | `wrangler` | ^4.115.0 | Deploy |
 | `@pithy-sh/vite` | matching your CLI | Serves the `virtual:pithy/*` modules |
+
+One exception to the table: if `@pithy-sh/vite` is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.48 peers on `vite ^6.1 || ^7 || ^8` and `wrangler ^4.115.0`. Downgrading one of them alone will not resolve.
 

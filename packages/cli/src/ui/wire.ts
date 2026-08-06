@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import type { WorkerConfig } from "../project/config";
-import { execArgs, type PackageManager } from "../project/packageManager";
+import { alreadyProvided, execArgs, type PackageManager } from "../project/packageManager";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { deriveWorkerFirst } from "./routeAllowlist";
@@ -149,6 +149,23 @@ function mergeMissing(target: Record<string, string>, incoming: Record<string, s
   return added;
 }
 
+/**
+ * Drop every package the project already provides, so no unresolvable range is written.
+ *
+ * The stub pins `"@pithy-sh/vite": "^0.0.0"`, and nothing under that scope is published — against a local
+ * checkout the range 404s on the adopter's *next* install, long after `pithy ui add` said Done. The
+ * package resolves from the project root either way, so omitting the line costs nothing and the build
+ * still finds it. Same predicate `pithy add` skips its install on ({@link alreadyProvided}).
+ */
+async function withoutProvided(projectDir: string, packages: Record<string, string>): Promise<Record<string, string>> {
+  const kept: Record<string, string> = {};
+  for (const [name, range] of Object.entries(packages)) {
+    if (await alreadyProvided(projectDir, name)) continue;
+    kept[name] = range;
+  }
+  return kept;
+}
+
 /** What {@link wirePackage} added, for the command's report. */
 export interface PackageChange {
   /** Dependency names newly added (an existing pin is never touched, so never downgraded). */
@@ -166,8 +183,11 @@ export interface PackageChange {
  * downgraded: a dependency already declared keeps whatever version the adopter chose. The single
  * exception is the `dev` script when it still holds Pithy's own scaffolded `wrangler dev` — see
  * {@link REPLACEABLE_DEV_SCRIPT}.
+ *
+ * `projectDir` is the root, not the worker: it is where the packages resolve from, and a `@pithy-sh/*`
+ * one that already does gets no range written for it — see {@link withoutProvided}.
  */
-export async function wirePackage(workerDir: string, stub: UiStub): Promise<PackageChange> {
+export async function wirePackage(projectDir: string, workerDir: string, stub: UiStub): Promise<PackageChange> {
   const path = join(workerDir, "package.json");
   let pkg: WorkerPackage;
   try {
@@ -184,8 +204,8 @@ export async function wirePackage(workerDir: string, stub: UiStub): Promise<Pack
   pkg.devDependencies ??= {};
   pkg.scripts ??= {};
 
-  const dependencies = mergeMissing(pkg.dependencies, stub.dependencies);
-  const devDependencies = mergeMissing(pkg.devDependencies, stub.devDependencies);
+  const dependencies = mergeMissing(pkg.dependencies, await withoutProvided(projectDir, stub.dependencies));
+  const devDependencies = mergeMissing(pkg.devDependencies, await withoutProvided(projectDir, stub.devDependencies));
 
   if (pkg.scripts.dev === REPLACEABLE_DEV_SCRIPT) delete pkg.scripts.dev;
   const scripts = mergeMissing(pkg.scripts, stub.scripts);
