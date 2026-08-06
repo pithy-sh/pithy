@@ -34,9 +34,15 @@ export function registryFetch(versions: Record<string, string>): FetchLike {
   });
 }
 
-/** A clean plan for one Worker. */
+/**
+ * A clean plan for one Worker.
+ *
+ * `deployedAs` is derived rather than echoed, so every fixture built here has a directory and a deployed
+ * name that differ. A harness that set both to `worker` would let code reading the wrong one pass.
+ */
 export const cleanPlanFor = (worker: string): ReconcilePlan => ({
   worker,
+  deployedAs: `acme-${worker}`,
   env: "dev",
   perCapability: [],
   ejectedSkipped: [],

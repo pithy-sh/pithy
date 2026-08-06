@@ -30,6 +30,7 @@ describe("upgrade command", () => {
 
 const plan: ReconcilePlan = {
   worker: "api",
+  deployedAs: "acme-api",
   env: "dev",
   perCapability: [
     {
@@ -58,6 +59,7 @@ describe("plan rendering", () => {
   test("a clean worker says nothing to upgrade", () => {
     const clean: ReconcilePlan = {
       worker: "api",
+      deployedAs: "acme-api",
       env: "dev",
       perCapability: [],
       ejectedSkipped: [],
@@ -112,6 +114,7 @@ describe("worker grouping", () => {
   test("every worker gets a labelled block, its lines indented beneath", () => {
     const collab: ReconcilePlan = {
       worker: "collab",
+      deployedAs: "acme-collab",
       env: "dev",
       perCapability: [],
       ejectedSkipped: [],
@@ -148,6 +151,7 @@ describe("worker grouping", () => {
   test("a worker with nothing to do still appears — silence would read as skipped", () => {
     const clean: ReconcilePlan = {
       worker: "web",
+      deployedAs: "acme-web",
       env: "dev",
       perCapability: [],
       ejectedSkipped: [],

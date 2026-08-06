@@ -9,6 +9,7 @@ import { loadProject, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
+import { workerIdentity } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { targetWorker } from "./add";
@@ -196,7 +197,7 @@ const sync = defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.sync", worker: target.name, runs })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), runs })}\n`);
         return;
       }
       if (runs.length === 0) {

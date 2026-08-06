@@ -8,6 +8,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
+import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue, type ProposedName } from "./add";
 import { bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
@@ -175,10 +176,8 @@ export interface RunAddOptions {
   audit?: CliAuditEmit;
 }
 
-export interface AddResult {
+export interface AddResult extends WorkerIdentity {
   capability: string;
-  /** The Worker it was wired into — the one whose config, bindings, and migrations moved. */
-  worker: string;
   package: string;
   packageManager: string;
   databases: DatabaseRun[];
@@ -274,7 +273,11 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     return {
       capability: manifest.name,
-      worker,
+      // Both names, and the audit trail above keeps using the deployed one deliberately: an audit event
+      // records what was acted on in the account, where `dash-board` is the identifier that means
+      // something. The result is read by a human or a script holding the checkout, where the directory
+      // is. See `workerIdentity` for why the two are not interchangeable.
+      ...workerIdentity({ name: worker, dir: workerDir }),
       package: manifest.package,
       packageManager,
       databases,

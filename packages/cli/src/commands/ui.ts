@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { workerIdentity } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
 import { targetWorker } from "./add";
@@ -72,7 +73,7 @@ const add = defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
       const screens = [report.auth ? "sign-in" : null, report.payments ? "paywall" : null].filter(
@@ -130,7 +131,7 @@ const sync = defineCommand({
       if (report.uncovered.length > 0) process.exitCode = 1;
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
       if (args.check) {
