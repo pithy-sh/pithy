@@ -27,10 +27,10 @@ function escapeRegExp(text: string): string {
  * Remove a capability's import and registration from a Worker's `pithy.config.ts` — the inverse of `add`'s
  * managed-region wiring. Drops the capability's binding (imported from the package
  * `@pithy-sh/<cap>/src/index` **or** the ejected `./capabilities/<cap>`), then the `<cap>(),`
- * registration — a one-liner, or the whole block
- * form (`<cap>({ … }),`) when the capability carries config options. Idempotent: a config that never
- * had the capability is returned unchanged. Matches only the exact factory call, never a shared-prefix
- * name (`authpro` is left alone when removing `auth`).
+ * registration — a one-liner, or the whole block form (`<cap>({ … }),`) when the capability carries
+ * config options. Idempotent: a config that never had the capability is returned unchanged. Matches
+ * only the exact factory call, never a shared-prefix name (`authpro` is left alone when removing
+ * `auth`).
  *
  * A block registration whose closing `}),` line can't be found (a hand-edited or reformatted config)
  * **throws** rather than deleting to end-of-file — the function never returns a truncated config, so a
