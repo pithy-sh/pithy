@@ -29,6 +29,14 @@ import {
   EMAIL_SUPPRESSIONS_READ_SCOPE,
   EMAIL_SUPPRESSIONS_WRITE_SCOPE,
 } from "./guards";
+import type {
+  EmailJobResponse,
+  EmailJobRetryResponse,
+  EmailJobsResponse,
+  EmailSuppressionsResponse,
+  EmailSuppressResponse,
+  EmailUnsuppressResponse,
+} from "./responses";
 import { JobIdParam, JobsQuery, SuppressionsQuery, SuppressRequest, UnsuppressRequest } from "./schemas";
 import { jobDetailView, jobListView, suppressionView } from "./view";
 
@@ -52,6 +60,12 @@ import { jobDetailView, jobListView, suppressionView } from "./view";
  * tells an unverified caller which requests were well-formed — on this surface that is a live oracle
  * for the shape of the send log and, worse, a way to learn that a given address parses as one this
  * deployment would accept.
+ *
+ * **Every response has an exported schema**, in `responses.ts`, and each `c.json` below is
+ * `satisfies`-checked against its envelope. A management client imports the same object and validates
+ * with it rather than hand-writing a mirror that drifts. The check is at compile time on purpose:
+ * parsing every response would spend a validation pass on rows this Worker just read, and would turn a
+ * shape mistake into a 500 in production rather than a red build.
  *
  * **Removal is a POST with a body, not `DELETE /suppressions/:email`.** An address in a path is an
  * address in every access log, every proxy, every trace, and every referrer between the client and the
@@ -195,7 +209,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           },
         });
 
-        return c.json({ jobs: page.items.map(jobListView), nextCursor: page.nextCursor });
+        return c.json({ jobs: page.items.map(jobListView), nextCursor: page.nextCursor } satisfies EmailJobsResponse);
       },
     );
 
@@ -228,7 +242,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           metadata: { connectionId: who.connectionId, status: job.status, template: job.template },
         });
 
-        return c.json({ job: jobDetailView(job) });
+        return c.json({ job: jobDetailView(job) } satisfies EmailJobResponse);
       },
     );
 
@@ -266,7 +280,10 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           },
         });
 
-        return c.json({ job: jobDetailView(result.job), dispatched: result.dispatched });
+        return c.json({
+          job: jobDetailView(result.job),
+          dispatched: result.dispatched,
+        } satisfies EmailJobRetryResponse);
       },
     );
 
@@ -304,7 +321,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
         return c.json({
           suppressions: page.items.map((row) => suppressionView(row, now)),
           nextCursor: page.nextCursor,
-        });
+        } satisfies EmailSuppressionsResponse);
       },
     );
 
@@ -396,7 +413,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           },
         });
 
-        return c.json({ suppression: row ? suppressionView(row, now) : null }, 200);
+        return c.json({ suppression: row ? suppressionView(row, now) : null } satisfies EmailSuppressResponse, 200);
       },
     );
 
@@ -437,7 +454,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           },
         });
 
-        return c.json({ email, removed }, 200);
+        return c.json({ email, removed } satisfies EmailUnsuppressResponse, 200);
       },
     );
   };

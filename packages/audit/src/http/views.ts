@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
-import type { AuditActorType, AuditMetadata, AuditOutcome, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEventRow } from "../data/auditEvent";
+import type { AuditEventDetailView, AuditEventView } from "./responses";
 
 /**
  * What a management client is shown of an audit event — decided here, once, rather than by whichever
@@ -43,51 +43,15 @@ import type { AuditEventRow } from "../data/auditEvent";
  * trail is read for.
  */
 
-/** One event as the listing shows it — everything but the network identifiers and the metadata bag. */
-export interface AuditEventView {
-  /** The event's stable public id (the recorder's UUID). */
-  eventId: string;
-  /** When it happened, ISO-8601. */
-  occurredAt: string;
-  /** The `domain/reason` action code. */
-  action: string;
-  /** Whether it succeeded, failed, or was denied. */
-  outcome: AuditOutcome;
-  /** How serious it is, orthogonal to the outcome. */
-  severity: AuditSeverity;
-  /** The kind of principal that acted. */
-  actorType: AuditActorType;
-  /** The acting principal's stable id, or null. */
-  actorId: string | null;
-  /** The session the action belongs to — a row id, never a token — or null. */
-  sessionId: string | null;
-  /** The kind of thing acted on, or null. */
-  resourceType: string | null;
-  /** The thing acted on, or null. */
-  resourceId: string | null;
-  /** The request correlation id, or null. */
-  requestId: string | null;
-  /** The project the recorder stamped, or null when it recorded none. */
-  project: string | null;
-  /** The environment the recording Worker served, or null. */
-  environment: string | null;
-  /** The `apps/<name>` Worker that recorded it, or null for a CLI action. */
-  worker: string | null;
-  /** The Cloudflare build id that recorded it, or null. */
-  version: string | null;
-}
-
-/** One event in full — the listing view plus the three fields the detail scope is separate for. */
-export interface AuditEventDetailView extends AuditEventView {
-  /** The client IP the request came from, or null. Personal data; behind its own scope. */
-  ip: string | null;
-  /** The client user-agent, or null. A device fingerprint; behind its own scope. */
-  userAgent: string | null;
-  /** The capability's own structured detail, or null. Arbitrary payload; behind its own scope. */
-  metadata: AuditMetadata | null;
-}
-
-/** Project one row for the listing. */
+/**
+ * ## The field list lives in `responses.ts`
+ *
+ * Both view types are `z.output` of the Zod objects there, so there is one declaration of what a
+ * client receives rather than an interface here and a mirror of it in every management client. A
+ * field added to one and not the other does not compile.
+ *
+ * Project one row for the listing.
+ */
 export function auditEventView(row: AuditEventRow): AuditEventView {
   return {
     eventId: row.eventId,

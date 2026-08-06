@@ -43,7 +43,17 @@ import {
 } from "../roster/write";
 import { requireAuth, TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./guards";
 import { confirmOptOutPage, page, storePage } from "./pages";
-import { DISCLAIMER } from "./responses";
+import {
+  type CohortsResponse,
+  DISCLAIMER,
+  type InviteResponse,
+  type MembershipsResponse,
+  type MembershipView,
+  type NudgeDryRunResponse,
+  type NudgeResponse,
+  type RemoveResponse,
+  type ResendResponse,
+} from "./responses";
 import {
   CohortsQuery,
   InviteRequest,
@@ -403,10 +413,10 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
       // and not the cohort's forecast. What they legitimately want to know is whether their own
       // confirmation registered and how long is left.
       const userEmail = await resolveCallerEmail(d1, callerId(c));
-      if (!userEmail) return c.json({ memberships: [], disclaimer: DISCLAIMER }, 200);
+      if (!userEmail) return c.json({ memberships: [], disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
 
       const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
-      const memberships: unknown[] = [];
+      const memberships: MembershipView[] = [];
       for (const cohort of cohorts) {
         const member = (await listMembers(db, cohort.id)).find((entry) => entry.email === userEmail);
         if (!member) continue;
@@ -419,7 +429,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
           windowDays: cohort.windowDays,
         });
       }
-      return c.json({ memberships, disclaimer: DISCLAIMER }, 200);
+      return c.json({ memberships, disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
     });
 
     // ── control-plane: the dashboard's surface ────────────────────────────────
@@ -460,7 +470,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
             modelVersion: config.modelVersion,
             generatedAt: now.toISOString(),
             disclaimer: DISCLAIMER,
-          },
+          } satisfies CohortsResponse,
           200,
         );
       },
@@ -532,7 +542,14 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
           metadata: { connectionId: caller.connectionId, cohortId: cohort.id, email: member.email, created, jobId },
         });
 
-        return c.json({ member: { id: member.id, email: member.email, state: member.state }, created, jobId }, 200);
+        return c.json(
+          {
+            member: { id: member.id, email: member.email, state: member.state },
+            created,
+            jobId,
+          } satisfies InviteResponse,
+          200,
+        );
       },
     );
 
@@ -620,7 +637,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
         // three scopes are separated so a credential may mail or manage a roster it was never granted
         // permission to read, and echoing the address back on every write turned a list of ids (which
         // the dry-run hands out by design) into a list of real people's email addresses.
-        return c.json({ member: { id: member.id }, jobId: sent.jobId }, 200);
+        return c.json({ member: { id: member.id }, jobId: sent.jobId } satisfies ResendResponse, 200);
       },
     );
 
@@ -644,7 +661,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
           metadata: { connectionId: caller.connectionId, cohortId: member.cohortId, reason: input.reason ?? null },
         });
         // Id and state, not the address. See the resend route above.
-        return c.json({ member: { id: member.id, state: member.state } }, 200);
+        return c.json({ member: { id: member.id, state: member.state } } satisfies RemoveResponse, 200);
       },
     );
 
@@ -733,7 +750,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
               unreachable: split.unreachable.length,
               chasedOut: split.chasedOut.length,
               truncated,
-            },
+            } satisfies NudgeDryRunResponse,
             200,
           );
         }
@@ -824,7 +841,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
               truncated,
             },
             copySource: suppliedCopy ? "supplied" : "default",
-          },
+          } satisfies NudgeResponse,
           200,
         );
       },

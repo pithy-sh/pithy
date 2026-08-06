@@ -11,15 +11,25 @@ import type { SupportConfig } from "../config/config";
 import type { SupportAttachment } from "../data/attachment";
 import type { SupportCategories } from "../data/categories";
 import type { SupportDatabase } from "../data/tables";
-import type { SupportThread } from "../data/thread";
 import { SupportClassificationError, SupportNotFoundError } from "../error/errors";
-import { resolveSenderContext, type SenderContext } from "../link/sender";
+import { resolveSenderContext } from "../link/sender";
 import { sendReply } from "../reply/send";
 import type { SupportReplySnippets } from "../reply/snippets";
 import { repliesForCategory } from "../reply/snippets";
-import { listThreads, readThread, setArchived, setFlags, type ThreadPage } from "../store/threads";
+import { listThreads, readThread, setArchived, setFlags } from "../store/threads";
 import { latestInboundMessageId } from "../workflows/classify";
+import type {
+  SupportAttachmentView,
+  SupportFlagsResponse,
+  SupportReclassifiedResponse,
+  SupportReplySentResponse,
+  SupportReplyView,
+  SupportThreadResponse,
+  SupportThreadsResponse,
+  SupportThreadView,
+} from "./responses";
 import type { ArchiveThreadInput, FlagsInput, ListThreadsQuery, RepliesQuery, ReplyInput } from "./schemas";
+import { listedThreadView, messageView, senderView, threadView } from "./views";
 
 /**
  * The support handlers — every one of them behind the `control-plane` gate, and every one of them
@@ -62,8 +72,12 @@ export interface HandlerDeps {
 }
 
 /** List the inbox. */
-export async function listInbox(deps: HandlerDeps, query: ListThreadsQuery, viewer: string): Promise<ThreadPage> {
-  return listThreads(
+export async function listInbox(
+  deps: HandlerDeps,
+  query: ListThreadsQuery,
+  viewer: string,
+): Promise<SupportThreadsResponse> {
+  const page = await listThreads(
     deps.db,
     {
       archived: query.archived === "true",
@@ -77,18 +91,7 @@ export async function listInbox(deps: HandlerDeps, query: ListThreadsQuery, view
     },
     { fts: deps.fts, viewer, now: deps.now(), log: deps.log },
   );
-}
-
-/** One attachment, as a client receives it — metadata plus a short-lived URL, never the key. */
-interface AttachmentView {
-  id: string;
-  filename: string;
-  contentType: string;
-  size: number;
-  sha256: string;
-  inline: boolean;
-  /** A signed URL valid for a few minutes, or null when no credentials were available to sign one. */
-  url: string | null;
+  return { threads: page.threads.map(listedThreadView), nextCursor: page.nextCursor };
 }
 
 /**
@@ -101,7 +104,7 @@ interface AttachmentView {
 async function presentAttachments(
   deps: HandlerDeps,
   attachments: readonly SupportAttachment[],
-): Promise<AttachmentView[]> {
+): Promise<SupportAttachmentView[]> {
   return Promise.all(
     attachments.map(async (attachment) => {
       let url: string | null = null;
@@ -126,59 +129,8 @@ async function presentAttachments(
   );
 }
 
-/** A whole conversation, with the customer context and the replies worth offering on it. */
-export interface ThreadView {
-  thread: SupportThread;
-  messages: ReturnType<typeof stripInternal>[];
-  attachments: AttachmentView[];
-  /** What the app already knows about the sender. Derived at read time, so it is always current. */
-  sender: SenderContext;
-  /** The canned replies, ordered for this thread's category. */
-  replies: Array<{ key: string; label: string; category?: string; body: string }>;
-}
-
-/** Drop the fields a client has no use for and should not hold. */
-function stripInternal(message: {
-  id: string;
-  direction: string;
-  fromAddress: string;
-  fromName?: string | null;
-  toAddress: string;
-  subject: string;
-  textBody: string;
-  htmlBody?: string | null;
-  emailJobId?: string | null;
-  receivedAt: Date;
-}): {
-  id: string;
-  direction: string;
-  fromAddress: string;
-  fromName: string | null;
-  toAddress: string;
-  subject: string;
-  textBody: string;
-  htmlBody: string | null;
-  emailJobId: string | null;
-  receivedAt: Date;
-} {
-  return {
-    id: message.id,
-    direction: message.direction,
-    fromAddress: message.fromAddress,
-    fromName: message.fromName ?? null,
-    toAddress: message.toAddress,
-    subject: message.subject,
-    // Already sanitised at ingest. The raw original stays in R2 and is never served here — a client
-    // that wanted it would be asking for the one copy of this data that has had nothing done to it.
-    htmlBody: message.htmlBody ?? null,
-    textBody: message.textBody,
-    emailJobId: message.emailJobId ?? null,
-    receivedAt: message.receivedAt,
-  };
-}
-
 /** Read one conversation in full. */
-export async function readConversation(deps: HandlerDeps, threadId: string): Promise<ThreadView> {
+export async function readConversation(deps: HandlerDeps, threadId: string): Promise<SupportThreadResponse> {
   const detail = await readThread(deps.db, threadId);
   const [attachments, sender] = await Promise.all([
     presentAttachments(deps, detail.attachments),
@@ -188,10 +140,10 @@ export async function readConversation(deps: HandlerDeps, threadId: string): Pro
   ]);
 
   return {
-    thread: detail.thread,
-    messages: detail.messages.map((message) => stripInternal(message)),
+    thread: threadView(detail.thread),
+    messages: detail.messages.map(messageView),
     attachments,
-    sender,
+    sender: senderView(sender),
     replies: repliesForCategory(deps.snippets, detail.thread.category),
   };
 }
@@ -202,7 +154,7 @@ export async function archiveConversation(
   threadId: string,
   input: ArchiveThreadInput,
   viewer: string,
-): Promise<SupportThread> {
+): Promise<SupportThreadView> {
   const thread = await setArchived(deps.db, threadId, input.archived, viewer, deps.now());
 
   // The audit event is what makes "who marked this done" answerable, and it is exactly why the model
@@ -217,7 +169,7 @@ export async function archiveConversation(
     metadata: { archived: input.archived },
   });
 
-  return thread;
+  return threadView(thread);
 }
 
 /** Answer the customer. */
@@ -226,7 +178,7 @@ export async function replyToConversation(
   threadId: string,
   input: ReplyInput,
   viewer: string,
-): Promise<{ messageId: string; jobId: string }> {
+): Promise<SupportReplySentResponse> {
   const enqueue = deps.enqueue;
   if (!enqueue) {
     throw new (await import("../error/errors")).SupportReplyFailedError({
@@ -256,7 +208,7 @@ export async function reclassifyConversation(
   deps: HandlerDeps,
   threadId: string,
   viewer: string,
-): Promise<{ messageId: string }> {
+): Promise<SupportReclassifiedResponse> {
   const messageId = await latestInboundMessageId(deps.db, threadId);
   if (!messageId) {
     throw new SupportNotFoundError({
@@ -298,7 +250,7 @@ export async function updateFlags(
   threadId: string,
   input: FlagsInput,
   viewer: string,
-): Promise<{ ok: true }> {
+): Promise<SupportFlagsResponse> {
   await setFlags(deps.db, {
     threadId,
     viewer,
@@ -314,9 +266,6 @@ export async function updateFlags(
 }
 
 /** The canned reply catalog. */
-export function listReplies(
-  deps: HandlerDeps,
-  query: RepliesQuery,
-): Array<{ key: string; label: string; category?: string; body: string }> {
+export function listReplies(deps: HandlerDeps, query: RepliesQuery): SupportReplyView[] {
   return repliesForCategory(deps.snippets, query.category ?? "");
 }

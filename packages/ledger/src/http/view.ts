@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { LedgerAccount } from "../data/account";
-import type { LedgerTransaction, TransactionKind } from "../data/transaction";
+import type { LedgerTransaction } from "../data/transaction";
+import type { LedgerAccountView, LedgerTransactionView } from "./responses";
 
 /**
  * What a management client is shown. Deliberate projections, never a raw row.
@@ -38,41 +39,13 @@ import type { LedgerTransaction, TransactionKind } from "../data/transaction";
  * a JSON number would leave every client guessing which unit it was in.
  */
 
-/** One account, as a management client sees it. */
-export interface LedgerAccountView {
-  /** The account owner — the opaque user id the adopter's auth capability issued. */
-  userId: string;
-  /** The currency this balance is in. */
-  currency: string;
-  /** Total owned, in the currency's minor unit. */
-  balance: number;
-  /** The portion reserved by open holds. */
-  held: number;
-  /** Spendable now (`balance - held`). Computed, so a client never has to know the rule. */
-  available: number;
-  /** When the account was opened, ISO-8601. */
-  createdAt: string;
-  /** When the balance last changed, ISO-8601. */
-  updatedAt: string;
-}
-
-/** One ledger entry, as a management client sees it. */
-export interface LedgerTransactionView {
-  /** The caller-supplied idempotency key, unique across the ledger — the entry's stable identifier. */
-  ref: string;
-  /** What the movement was. */
-  kind: TransactionKind;
-  /** The currency the movement was in. */
-  currency: string;
-  /** The movement's magnitude in the minor unit — always positive; `kind` gives direction. */
-  amount: number;
-  /** The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone. */
-  relatedRef: string | null;
-  /** The adopter's own note on the movement, or null. */
-  memo: string | null;
-  /** When the movement was recorded, ISO-8601. */
-  createdAt: string;
-}
+/**
+ * ## The field lists live in `responses.ts`
+ *
+ * Both view types are `z.output` of the Zod objects there, so there is one declaration of what a
+ * client receives rather than an interface here and a hand-written mirror of it in every management
+ * client. A field added to one and not the other does not compile.
+ */
 
 /** Project one account row for a management client. */
 export function accountView(account: LedgerAccount): LedgerAccountView {

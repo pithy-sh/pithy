@@ -17,6 +17,7 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { EmailJob } from "../data/emailJob";
 import type { EmailJobStatus } from "../data/enums";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
@@ -30,6 +31,14 @@ import {
   EMAIL_SUPPRESSIONS_READ_SCOPE,
   EMAIL_SUPPRESSIONS_WRITE_SCOPE,
 } from "./guards";
+import {
+  EmailJobResponse,
+  EmailJobRetryResponse,
+  EmailJobsResponse,
+  EmailSuppressionsResponse,
+  EmailSuppressResponse,
+  EmailUnsuppressResponse,
+} from "./responses";
 import { registerEmailAdminRoutes } from "./routes";
 
 /**
@@ -793,5 +802,56 @@ describe("the five scopes are not interchangeable", () => {
       EMAIL_SUPPRESSIONS_READ_SCOPE,
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a management client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions — a field
+   * the schema does not know about is dropped and shows as a difference, and a field it declares
+   * wrongly fails the parse. That is what stops the two from drifting silently, and it is why a
+   * management client can import these objects instead of hand-writing a mirror of each.
+   */
+  async function contract<T>(
+    schema: z.ZodType<T>,
+    scope: ControlPlaneScope,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const response = await call(makeApp([scope]), method, path, scope, body);
+    expect(response.status, path).toBe(200);
+    const raw = await response.json();
+    expect(schema.parse(raw), path).toEqual(raw);
+    return schema.parse(raw);
+  }
+
+  test("every management route returns exactly its declared envelope", async () => {
+    const job = await failedJob({ campaignId: "camp-1", messageId: "msg-1", bounceCode: "5.1.1", bounceType: "hard" });
+    await seedJob();
+    await suppress(
+      emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+      { email: "blocked@example.com", reason: "hard_bounce", jobId: job.id, environment: "prod", detail: "5.1.1" },
+      NOW,
+    );
+
+    // A limit of one, so the paged branch is under test — a schema proven only on the last page says
+    // nothing about the cursor a client actually pages with.
+    const jobs = await contract(EmailJobsResponse, EMAIL_JOBS_READ_SCOPE, "GET", "/email/jobs?limit=1");
+    expect(jobs.nextCursor).not.toBeNull();
+
+    await contract(EmailJobResponse, EMAIL_JOBS_READ_SCOPE, "GET", `/email/jobs/${job.id}`);
+    await contract(EmailJobRetryResponse, EMAIL_JOBS_RETRY_SCOPE, "POST", `/email/jobs/${job.id}/retry`);
+    await contract(EmailSuppressionsResponse, EMAIL_SUPPRESSIONS_READ_SCOPE, "GET", "/email/suppressions");
+    await contract(EmailSuppressResponse, EMAIL_SUPPRESSIONS_WRITE_SCOPE, "POST", "/email/suppressions", {
+      email: "manual@example.com",
+      detail: "asked us to stop",
+    });
+    await contract(EmailUnsuppressResponse, EMAIL_SUPPRESSIONS_DELETE_SCOPE, "POST", "/email/suppressions/remove", {
+      email: "manual@example.com",
+    });
   });
 });

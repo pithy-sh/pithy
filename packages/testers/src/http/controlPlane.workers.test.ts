@@ -16,6 +16,7 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { TestersConfig } from "../config/config";
 import { testersDatabase } from "../data/tables";
 import { testers_0001_cohorts } from "../migrations/0001_cohorts";
@@ -29,6 +30,14 @@ import {
   type WriteDeps,
 } from "../roster/write";
 import { TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./guards";
+import {
+  CohortsResponse,
+  InviteResponse,
+  NudgeDryRunResponse,
+  NudgeResponse,
+  RemoveResponse,
+  ResendResponse,
+} from "./responses";
 import { registerTestersRoutes } from "./routes";
 
 /**
@@ -660,5 +669,89 @@ describe("POST /invite will not re-mail somebody who withdrew", () => {
     expect(response.status).toBe(409);
     expect(await errorCode(response)).toBe("testers/withdrawn");
     expect(sent).toEqual([]);
+  });
+});
+
+describe("the exported response schemas against the live routes", () => {
+  /**
+   * The binding between what a route returns and what a management client is told it returns.
+   *
+   * Parsing alone would not do it: a Zod object strips unknown keys, so a handler that grew a field
+   * would still parse. Comparing the parsed value with the raw body fails in both directions, which is
+   * what stops the schema and the handler from drifting apart silently.
+   */
+  async function contract<T>(
+    schema: z.ZodType<T>,
+    scope: ControlPlaneScope,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const response = await call(makeApp([scope]), method, path, scope, body);
+    expect(response.status, path).toBe(200);
+    const raw = await response.json();
+    expect(schema.parse(raw), path).toEqual(raw);
+    return schema.parse(raw);
+  }
+
+  test("every control-plane route returns exactly its declared envelope", async () => {
+    const cohort = await cohortWith();
+
+    // Invited with the mail, so the branch that returns a `jobId` is the one under test.
+    const mailed = await contract(InviteResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/invite", {
+      cohortId: cohort.id,
+      email: "ada@example.test",
+      name: "Ada",
+      sendInvitation: true,
+    });
+    expect(mailed.created).toBe(true);
+    expect(mailed.jobId).not.toBeNull();
+
+    // The next two are invited without mail, so neither is inside a cooldown: a resend and a nudge both
+    // obey it, and a tester who was just mailed is refused rather than answered.
+    const resendable = await contract(InviteResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/invite", {
+      cohortId: cohort.id,
+      email: "grace@example.test",
+      sendInvitation: false,
+    });
+    expect(resendable.jobId).toBeNull();
+    const nudgeable = await contract(InviteResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/invite", {
+      cohortId: cohort.id,
+      email: "alan@example.test",
+      sendInvitation: false,
+    });
+
+    await contract(ResendResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/resend", {
+      memberId: resendable.member.id,
+    });
+
+    // Members and the trend both on, so the schema is proven against the whole cohort view rather than
+    // the smallest one a caller can ask for.
+    const cohorts = await contract(
+      CohortsResponse,
+      TESTERS_ROSTER_READ_SCOPE,
+      "GET",
+      `/testers/cohorts?cohortId=${cohort.id}&members=true&trend=true`,
+    );
+    expect(cohorts.cohorts[0]?.members).toHaveLength(3);
+
+    const preview = await contract(NudgeDryRunResponse, TESTERS_NUDGE_SEND_SCOPE, "POST", "/testers/nudge", {
+      cohortId: cohort.id,
+      kind: "confirm",
+      memberIds: [nudgeable.member.id],
+      dryRun: true,
+    });
+    expect(preview.wouldSend).toEqual([{ id: nudgeable.member.id }]);
+
+    const nudged = await contract(NudgeResponse, TESTERS_NUDGE_SEND_SCOPE, "POST", "/testers/nudge", {
+      cohortId: cohort.id,
+      kind: "confirm",
+      memberIds: [nudgeable.member.id],
+    });
+    expect(nudged.sent).toHaveLength(1);
+
+    await contract(RemoveResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/remove", {
+      memberId: nudgeable.member.id,
+    });
   });
 });
