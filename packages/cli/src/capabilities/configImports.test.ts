@@ -50,6 +50,39 @@ describe("findNamedImport", () => {
   test("returns nothing when the name is not imported", () => {
     expect(findNamedImport("export default { capabilities: [] };", "auth")).toBeUndefined();
   });
+
+  test("does not read an import out of a block comment", () => {
+    // The decoy that bit: a commented-out line above the real binding answered for it. `add` read the
+    // capability as already wired and wrote nothing, leaving a config with no import and a call.
+    const source = [
+      "/*",
+      ' import { auth } from "@pithy-sh/auth/src/index";',
+      "*/",
+      'import { auth } from "./lib/myAuth";',
+    ].join("\n");
+    expect(findNamedImport(source, "auth")?.specifier).toBe("./lib/myAuth");
+  });
+
+  test("does not read an import out of a template literal", () => {
+    // A multi-line literal puts the decoy at the start of its own line, which is where the pattern looks.
+    const source = ["const doc = `", 'import { auth } from "@pithy-sh/auth/src/index";', "`;"].join("\n");
+    expect(findNamedImport(source, "auth")).toBeUndefined();
+  });
+
+  test("a block-comment opener inside a line comment opens nothing", () => {
+    const source = ["// /* not a comment opener", 'import { auth } from "@pithy-sh/auth/src/index";'].join("\n");
+    expect(findNamedImport(source, "auth")?.specifier).toBe("@pithy-sh/auth/src/index");
+  });
+
+  test("a comment inside the clause is not the absence of the binding", () => {
+    const source = 'import { /* the capability */ auth } from "@pithy-sh/auth/src/index";';
+    expect(findNamedImport(source, "auth")?.specifier).toBe("@pithy-sh/auth/src/index");
+  });
+
+  test("a comment opener inside a string does not blind the rest of the file", () => {
+    const source = ['const note = "/*";', 'import { auth } from "@pithy-sh/auth/src/index";'].join("\n");
+    expect(findNamedImport(source, "auth")?.specifier).toBe("@pithy-sh/auth/src/index");
+  });
 });
 
 describe("isCapabilityImport", () => {

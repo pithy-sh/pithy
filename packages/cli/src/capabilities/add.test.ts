@@ -117,6 +117,23 @@ describe("addCapability", () => {
     expect((await readFile(path, "utf8")).match(/import\s*\{\s*auth\s*\}/g)).toHaveLength(1);
   });
 
+  test("a commented-out import is not an import", async () => {
+    // The decoy that made the guard answer for a binding it never bound: a block comment above the
+    // managed region read as the capability already being imported, so `add` wrote the registration and
+    // no import at all — `auth()` against nothing, a config that fails to load.
+    const path = join(worker, "pithy.config.ts");
+    const commented = ["/*", 'import { auth } from "@pithy-sh/auth/src/index";', "*/", ""].join("\n");
+    await writeFile(path, `${commented}${await readFile(path, "utf8")}`);
+
+    await addCapability({ workerDir: worker, manifest });
+
+    // Two lines read as an import now: the adopter's comment, untouched, and the real one above it.
+    const after = await readFile(path, "utf8");
+    expect(after.match(/^import\s*\{\s*auth\s*\}/gm)).toHaveLength(2);
+    expect(after.slice(0, after.indexOf("/*"))).toContain('import { auth } from "@pithy-sh/auth/src/index";');
+    expect(after).toContain("auth(),");
+  });
+
   test("refuses when the name is already bound to something that is not the capability", async () => {
     // Keying idempotency on the binding alone was wrong in the other direction: an adopter's own
     // `auth` suppressed the capability's import while the registration went in anyway, so
