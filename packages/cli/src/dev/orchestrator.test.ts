@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -537,5 +537,75 @@ describe("startDev — entitlement composition check", () => {
     const h = harness({ checkEntitlements: async () => [] });
     await startDev(h.options);
     expect(h.stdoutLines.some((l) => l.includes("entitlement"))).toBe(false);
+  });
+});
+
+describe("startDev — the .dev.vars link a checkout cannot inherit", () => {
+  /** A real project on disk: `pithy dev` makes a real symlink, so nothing here is faked. */
+  async function project(): Promise<{ dir: string; apiDir: string; options: Partial<StartDevOptions> }> {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-dev-vars-"));
+    const apiDir = join(dir, "apps", "api");
+    await mkdir(apiDir, { recursive: true });
+    return {
+      dir,
+      apiDir,
+      options: {
+        projectDir: dir,
+        checkEntitlements: async () => [],
+        discoverWorkers: async () => [
+          { name: "api", dir: apiDir, hasWrangler: true, dev: { autostart: true, readySignal: "Ready on https?://" } },
+        ],
+        loadDevConfig: async () => ({ ...config, workers: { api: { port: 8787, origin: "http://localhost:8787" } } }),
+      },
+    };
+  }
+
+  test("a fresh clone gets the link made for it, since the link itself can never be committed", async () => {
+    // `.dev.vars` is git-ignored, and so is the link into each `apps/<worker>/`. So the second developer
+    // on a project clones, writes the `.dev.vars` the example tells them to, and wrangler reports every
+    // secret in it absent — the value present, unreachable, and nothing in the project re-making the link.
+    const { dir, apiDir, options } = await project();
+    try {
+      await writeFile(join(dir, ".dev.vars"), "SECRETS_ENCRYPTION_KEYS=k\n");
+      const h = harness(options);
+
+      await startDev(h.options);
+
+      expect((await lstat(join(apiDir, ".dev.vars"))).isSymbolicLink()).toBe(true);
+      expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("SECRETS_ENCRYPTION_KEYS=k\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("says so when a worker keeps its own .dev.vars, rather than wiring silently past it", async () => {
+    const { dir, apiDir, options } = await project();
+    try {
+      await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
+      await writeFile(join(apiDir, ".dev.vars"), "API_ONLY_SECRET=super-secret-value\n");
+      const h = harness(options);
+
+      await startDev(h.options);
+
+      expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("API_ONLY_SECRET=super-secret-value\n");
+      const said = h.stdoutLines.find((line) => line.includes(".dev.vars"));
+      expect(said).toContain("api");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a project with no shared .dev.vars starts silently — there is nothing to point at", async () => {
+    const { dir, apiDir, options } = await project();
+    try {
+      const h = harness(options);
+
+      await startDev(h.options);
+
+      await expect(lstat(join(apiDir, ".dev.vars"))).rejects.toThrow();
+      expect(h.stdoutLines.some((line) => line.includes(".dev.vars"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

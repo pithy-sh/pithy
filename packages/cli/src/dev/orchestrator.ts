@@ -16,6 +16,7 @@ import {
   scanPinnedBlocks,
   writeDevConfig,
 } from "../feature/devConfig";
+import { wireFeatureDevVars } from "../feature/devVars";
 import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
@@ -193,9 +194,9 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
  * Guarantee this project has pinned ports, then return them — the bootstrap behind `pithy dev`.
  *
  * `.dev.config.json` is written at feature creation, but a plain `pithy init` project is the main checkout,
- * which `pithy feature sync` deliberately refuses to touch (it would replace the repo's shared `.dev.vars`
- * with symlinks). So the scaffold's own `pithy dev` had no way to ever get one. This writes the port half —
- * and only the port half; `.dev.vars` stays exactly as it is.
+ * which `pithy feature sync` deliberately refuses to touch — the main checkout is not a feature. So the
+ * scaffold's own `pithy dev` had no way to ever get one. This writes the port half; the `.dev.vars` half is
+ * {@link startDev}'s own step, because the two are needed in different projects at different moments.
  *
  * The invariant is unchanged: ports are **assigned** here, from the same central registry under the same
  * file lock, then verified before anything binds — never probed at startup. Idempotent: a block is reused
@@ -279,7 +280,26 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     });
   }
 
-  // 2. Resolve pinned ports from the dev config — never probe. A project that has none yet (a plain
+  // 2. Point every worker at the project's shared `.dev.vars`, before anything reads one.
+  //
+  //    The file is git-ignored and so is the link into each `apps/<worker>/`, so neither survives a clone.
+  //    `pithy init` makes the link once, for the developer who created the project; every developer after
+  //    them clones, writes the `.dev.vars` the example tells them to, and gets nothing — wrangler reports
+  //    every secret in it absent while the file sits at the root, unread. Nothing in the project re-made
+  //    the link, which is what a `postinstall` cannot fix either: the usual order is clone, install, *then*
+  //    write `.dev.vars`, so the install that would have wired it ran before there was anything to wire.
+  //
+  //    `pithy dev` is the command that runs after the file exists, every time, and the one whose failure
+  //    the missing link causes. Idempotent, and a no-op when the project has no `.dev.vars` at all, so it
+  //    costs a project that does not need it nothing. It never replaces a real file — a worker holding its
+  //    own `.dev.vars` keeps it, and is named here rather than passed over in silence.
+  const links = await wireFeatureDevVars({ mainRoot: projectDir, worktreePath: projectDir, workers: discovered });
+  for (const dir of links.kept) {
+    const worker = discovered.find((w) => w.dir === dir);
+    emitLine(`${worker?.name ?? dir}: keeping its own .dev.vars — the project's shared one is not wired here.`);
+  }
+
+  // 3. Resolve pinned ports from the dev config — never probe. A project that has none yet (a plain
   //    `pithy init` checkout, which `pithy feature sync` refuses to touch) gets one bootstrapped here from
   //    the same central registry, so ports stay assigned-then-verified rather than probed at startup.
   const ensure = options.ensureDevConfig ?? ensureDevConfig;
@@ -302,11 +322,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     started.push({ worker, port: pinned.port, origin: pinned.origin });
   }
 
-  // 3. Stop a previous session, then reap orphaned workerd/wrangler still holding the pinned ports. This runs
+  // 4. Stop a previous session, then reap orphaned workerd/wrangler still holding the pinned ports. This runs
   //    BEFORE verification: a crashed prior session's orphan must be reaped, not treated as an external
   //    conflict that blocks startup (docs/CLI.md §6.2 — a crashed session can't block the next one). The
   //    sweep is scoped to our own orphans — the previous session's pids and workerd/wrangler-shaped
-  //    commands — so anything genuinely external falls through to step 4 and is reported, never killed.
+  //    commands — so anything genuinely external falls through to step 5 and is reported, never killed.
   const statePath = devStatePath(projectDir);
   const previous = await stopPreviousSession({ statePath, readState, isAlive, kill, sleep, emitLine });
   const sweep =
@@ -318,13 +338,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     previous?.childPids ?? [],
   );
 
-  // 4. Verify every pinned port is now free on both loopback families — one conflict (something genuinely
+  // 5. Verify every pinned port is now free on both loopback families — one conflict (something genuinely
   //    external still holds it) aborts the whole session with one error; it never drifts to another port.
   for (const { worker, port } of started) {
     await verifyPinnedPort(worker.name, port, bind);
   }
 
-  // 5. Resolve the wrangler launcher through the project's package manager (never a hardcoded global).
+  // 6. Resolve the wrangler launcher through the project's package manager (never a hardcoded global).
   const launchWrangler =
     options.launchWrangler ??
     (await (async () => {
@@ -332,7 +352,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       return (args: string[]) => execArgs(pm, "wrangler", args);
     })());
 
-  // 6. Open the log, wire the shared env, and spawn.
+  // 7. Open the log, wire the shared env, and spawn.
   const logPath = join(projectDir, "logs", "dev.log");
   // Read before anything spawns, so the banner never waits on the disk once the workers are up.
   const devLogin = await readDevLogin(projectDir);
@@ -474,7 +494,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     );
   }
 
-  // 7. Record the live session so a re-run can stop it and reap its children.
+  // 8. Record the live session so a re-run can stop it and reap its children.
   const state: DevState = {
     pid: ownPid,
     startedAt: now().toISOString(),
