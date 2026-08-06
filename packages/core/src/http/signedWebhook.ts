@@ -284,6 +284,29 @@ export async function checkSignedWebhook(
 }
 
 /**
+ * The kit's wording for each refusal, in one place — so the guard's early exit says exactly what the full
+ * check would have said, rather than a second sentence about the same finding.
+ */
+function webhookRefusal(refusal: SignedWebhookRefusal, scheme: SignedWebhookScheme): WebhookUnverifiedError {
+  const timestampKey = scheme.timestampKey ?? DEFAULT_TIMESTAMP_KEY;
+  const signatureKey = scheme.signatureKey ?? DEFAULT_SIGNATURE_KEY;
+  switch (refusal.reason) {
+    case "unreadable":
+      return new WebhookUnverifiedError({
+        detail: `The delivery carries no readable ${scheme.header} header with a ${timestampKey}= timestamp and a ${signatureKey}= HMAC.`,
+      });
+    case "stale":
+      return new WebhookUnverifiedError({
+        detail: `The delivery is dated ${refusal.skew}s from now, outside the ${refusal.tolerance}s tolerance. Check this Worker's clock, or a replayed delivery.`,
+      });
+    case "unmatched":
+      return new WebhookUnverifiedError({
+        detail: `No signature in the ${scheme.header} header matches these bytes under a configured signing secret. Check that the secret belongs to this endpoint and this environment.`,
+      });
+  }
+}
+
+/**
  * Verify one delivery. Resolves when a holder of the secret signed these exact bytes inside the window, and
  * throws `core/webhook_unverified` otherwise.
  */
@@ -293,29 +316,27 @@ export async function verifySignedWebhook(
   options: VerifySignedWebhookOptions,
 ): Promise<void> {
   const refusal = await checkSignedWebhook(body, header, options);
-  if (refusal === undefined) return;
-
-  const timestampKey = options.timestampKey ?? DEFAULT_TIMESTAMP_KEY;
-  const signatureKey = options.signatureKey ?? DEFAULT_SIGNATURE_KEY;
-  switch (refusal.reason) {
-    case "unreadable":
-      throw new WebhookUnverifiedError({
-        detail: `The delivery carries no readable ${options.header} header with a ${timestampKey}= timestamp and a ${signatureKey}= HMAC.`,
-      });
-    case "stale":
-      throw new WebhookUnverifiedError({
-        detail: `The delivery is dated ${refusal.skew}s from now, outside the ${refusal.tolerance}s tolerance. Check this Worker's clock, or a replayed delivery.`,
-      });
-    case "unmatched":
-      throw new WebhookUnverifiedError({
-        detail: `No signature in the ${options.header} header matches these bytes under a configured signing secret. Check that the secret belongs to this endpoint and this environment.`,
-      });
-  }
+  if (refusal !== undefined) throw webhookRefusal(refusal, options);
 }
 
 /**
  * The `signed-webhook` gate, as a route wears it: `app.post(path, requireSignedWebhook({…}), zValidator("json",
  * Body, validationHook), handler)`.
+ *
+ * ## Why the header is read before anything else
+ *
+ * The proof header is the cheapest thing to check and the commonest thing to be missing, so it is checked
+ * first. A delivery carrying no readable one is refused whatever the body holds — so resolving the secret (a
+ * D1 read and a decrypt) and buffering the body before looking would be unauthenticated work bought by an
+ * anonymous POST, on the one route whose whole purpose is to refuse unauthenticated callers.
+ *
+ * The header is then parsed a second time inside the full check rather than threaded through it. Parsing a
+ * short header twice costs nothing; two entry points into the verification, one of them holding a
+ * half-verified state, would cost the property that there is exactly one way through this scheme.
+ *
+ * One consequence, and it is the right one: an endpoint whose secret never resolved answers a proof-less POST
+ * with the same 401 every other endpoint gives it, and reports the configuration fault to the first delivery
+ * that actually carries a proof. A caller with nothing to verify learns nothing about our configuration.
  *
  * ## Why it reads the body itself, and with `c.req.text()`
  *
@@ -329,18 +350,26 @@ export async function verifySignedWebhook(
  */
 export function requireSignedWebhook(options: SignedWebhookGuardOptions): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
-    // Resolved per request, at the point of need — never cached in a module variable, never logged.
     const { secret: declared, now, ...scheme } = options;
+
+    // The cheapest possible rejection, ahead of every cost an anonymous caller could otherwise buy.
+    const proof = c.req.header(scheme.header) ?? null;
+    const readable =
+      proof !== null &&
+      parseSignedWebhookHeader(
+        proof,
+        scheme.timestampKey ?? DEFAULT_TIMESTAMP_KEY,
+        scheme.signatureKey ?? DEFAULT_SIGNATURE_KEY,
+      ) !== undefined;
+    if (!readable) throw webhookRefusal({ reason: "unreadable" }, scheme);
+
+    // Resolved per request, at the point of need — never cached in a module variable, never logged.
     const secret = typeof declared === "function" ? await declared(c.env as Record<string, unknown>) : declared;
 
     // The exact received bytes. Hono caches this read, so the route's json validator sees the same ones.
     const body = await c.req.text();
 
-    await verifySignedWebhook(body, c.req.header(options.header) ?? null, {
-      ...scheme,
-      secret,
-      now: now?.() ?? new Date(),
-    });
+    await verifySignedWebhook(body, proof, { ...scheme, secret, now: now?.() ?? new Date() });
 
     await next();
   };

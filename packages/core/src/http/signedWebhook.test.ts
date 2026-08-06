@@ -376,6 +376,35 @@ function guardedApp(overrides: Record<string, unknown> = {}) {
   return app;
 }
 
+/**
+ * A POST whose body is a stream nobody has pulled yet, so a test can ask whether the guard buffered it.
+ *
+ * A spy on `c.req.text` would prove the same call was made; this proves the bytes never left the socket, which
+ * is the property that matters when the caller chose the body's size.
+ */
+function streamedDelivery(headers: Record<string, string>): { request: Request; buffered: () => boolean } {
+  let buffered = false;
+  // `highWaterMark: 0`, deliberately: a default stream pulls once as soon as it starts, to fill a queue nobody
+  // asked for, and the probe would then report a read that never happened.
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        buffered = true;
+        controller.enqueue(new TextEncoder().encode(BODY));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const request = new Request("http://pithy.test/hooks/inbound", {
+    method: "POST",
+    headers,
+    body,
+    duplex: "half",
+  } as RequestInit);
+  return { request, buffered: () => buffered };
+}
+
 describe("requireSignedWebhook — the Hono guard", () => {
   test("a verified delivery reaches the handler, and the json validator sees identical bytes", async () => {
     const response = await guardedApp().request("/hooks/inbound", {
@@ -397,6 +426,52 @@ describe("requireSignedWebhook — the Hono guard", () => {
     const body = (await response.json()) as { error: Record<string, unknown> };
     expect(body.error.code).toBe("core/webhook_unverified");
     expect(body.error).not.toHaveProperty("detail");
+  });
+
+  test.each([
+    ["no proof header at all", {}],
+    ["a proof header that proves nothing", { [HEADER]: "garbage" }],
+  ])("%s is refused before the body is buffered and before a secret is resolved", async (_case, proof) => {
+    // The cheapest possible rejection, on the route whose whole purpose is to refuse unauthenticated callers.
+    // A delivery with no readable proof is refused whatever the body holds, so buffering it — and resolving a
+    // secret, which is a D1 read and a decrypt — would be unauthenticated work bought by an anonymous POST.
+    const resolver = vi.fn(() => SECRET);
+    const { request, buffered } = streamedDelivery({ "content-type": "application/json", ...proof });
+    const response = await guardedApp({ secret: resolver }).request(request);
+    expect(response.status).toBe(401);
+    expect(buffered()).toBe(false);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  test("an endpoint whose secret never resolved tells a proof-less caller nothing", async () => {
+    // The consequence of checking the header first, and the right one. A caller with nothing to verify gets
+    // the same 401 every endpoint gives it; the configuration fault surfaces on the first delivery that
+    // actually carries a proof, where an operator is the one reading it.
+    const app = guardedApp({ secret: "" });
+    const anonymous = await app.request("/hooks/inbound", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: BODY,
+    });
+    expect(anonymous.status).toBe(401);
+
+    const signed = await app.request("/hooks/inbound", {
+      method: "POST",
+      headers: { [HEADER]: await header(BODY, NOW), "content-type": "application/json" },
+      body: BODY,
+    });
+    expect(signed.status).toBe(500);
+  });
+
+  test("a readable proof header still buys the body read the scheme needs", async () => {
+    // The other half: the early exit must refuse the unreadable, never the unverified-but-well-formed.
+    const { request, buffered } = streamedDelivery({
+      [HEADER]: await header(BODY, NOW),
+      "content-type": "application/json",
+    });
+    const response = await guardedApp().request(request);
+    expect(response.status).toBe(200);
+    expect(buffered()).toBe(true);
   });
 
   test("reads the header the scheme names, not a hard-coded one", async () => {
