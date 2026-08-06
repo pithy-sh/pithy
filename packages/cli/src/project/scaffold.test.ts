@@ -5,11 +5,13 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink,
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ensureEmptyTarget, ensureScaffoldable, kitRange, scaffoldProject } from "./scaffold";
+import { addWorker } from "./workerCommand";
+import { scaffoldWorker } from "./workerScaffold";
 
 /** The template manifest the stamp rewrites — read directly, to hold the template to what the rule covers. */
 const TEMPLATE_WORKER_PACKAGE = resolve(
@@ -611,5 +613,81 @@ describe("ensureEmptyTarget", () => {
   test("anything at all in the directory refuses it — this guards a path Pithy owns outright", async () => {
     await writeFile(join(dir, "README.md"), "not a project, still in the way");
     await expect(ensureEmptyTarget(dir)).rejects.toThrow(PithyError);
+  });
+
+  test("a symlink is refused however empty its destination — the gate asks about the path", async () => {
+    // `readdir` follows the link and answers about the *destination*. A link at `apps/<name>` pointing at
+    // an empty directory therefore cleared the gate, and the whole worker was written through it, outside
+    // the project. Same class as the dangling-symlink escape above, in the sibling gate that fix missed.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    const link = join(dir, "apps", "escape");
+    await mkdir(dirname(link), { recursive: true });
+    await symlink(outside, link);
+
+    await expect(ensureEmptyTarget(link)).rejects.toThrow(PithyError);
+  });
+
+  test("a dangling symlink refuses through PithyError, never a raw ENOENT", async () => {
+    // The other half of the same fixture, and the reason the gate runs before `mkdir`: a recursive
+    // `mkdir` onto a dangling link is ENOENT, a raw node:fs error escaping the PithyError contract.
+    const link = join(dir, "apps", "gone");
+    await mkdir(dirname(link), { recursive: true });
+    await symlink(join(dir, "nowhere"), link);
+
+    await expect(ensureEmptyTarget(link)).rejects.toThrow(PithyError);
+  });
+});
+
+/**
+ * The escape {@link ensureEmptyTarget} exists to stop, driven through the two callers that reach it.
+ *
+ * Reproduced against the real CLI before it was fixed: `pithy init --name replay --worker board`, a
+ * symlink at `apps/escape` pointing anywhere on disk, then `pithy worker add escape`. Every file of the
+ * worker landed at the link's destination — outside the project — along with a `.dev.vars` symlink, and
+ * the command printed the escaped path and exited 0.
+ */
+describe("a symlinked apps/<name>", () => {
+  let outside: string;
+  let project: string;
+  let link: string;
+
+  beforeEach(async () => {
+    outside = join(dir, "outside");
+    project = join(dir, "project");
+    link = join(project, "apps", "escape");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(project, "apps"), { recursive: true });
+    await writeFile(join(project, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    await symlink(outside, link);
+  });
+
+  test("scaffoldWorker refuses it, and writes nothing through the link", async () => {
+    await expect(scaffoldWorker({ projectDir: project, name: "escape", project: "replay" })).rejects.toThrow(
+      PithyError,
+    );
+
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  test("the refusal leaves the adopter's link alone — there is nothing to roll back", async () => {
+    // #138's rollback made the escape worse, not better: `addWorker` removes `apps/<name>` on failure,
+    // and `rm` unlinks the *link* — so the escaped files stayed outside the project while the command
+    // reported a clean rollback. Refusing before anything is created is what makes that unreachable.
+    const failing = async () => {
+      throw new InternalError({ message: "install failed", action: "Retry." });
+    };
+    const error = await addWorker({
+      projectDir: project,
+      name: "escape",
+      mainRoot: project,
+      install: failing,
+      discoverWorkers: async () => [],
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error).not.toBeInstanceOf(InternalError); // refused by the gate, never by the install
+    expect(await readdir(outside)).toEqual([]);
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
   });
 });

@@ -62,25 +62,31 @@ function templateDir(): string {
 }
 
 /**
- * Throw if `targetDir` exists and isn't empty.
+ * Throw unless `targetDir` is missing or a real, empty directory.
  *
  * This is the guard for a directory **Pithy owns outright** — `apps/<worker>`, which `scaffoldWorker`
  * creates and fills. Nothing else may already live there, so emptiness is the right question. The
  * project root is the adopter's directory and asks a narrower one: see {@link ensureScaffoldable}.
+ *
+ * **Emptiness of the path, not of wherever it leads.** This used to be a bare `readdir`, which follows
+ * symlinks — so a link at `apps/<worker>` pointing at an empty directory anywhere on disk answered
+ * "empty", cleared the gate, and the whole worker was written *through* the link, outside the project,
+ * with a `.dev.vars` link beside it and an exit code of 0. That is the escape #111 closed at
+ * {@link exists} and {@link blocksDirectory}, in the sibling gate that fix did not reach; `lstat` is what
+ * asks about the path itself. {@link occupied} already asked it correctly, so this defers to it rather
+ * than restating the rule — one predicate, one place to get it wrong.
+ *
+ * It also makes the refusal survivable. `addWorker` rolls `apps/<worker>` back on failure, and `rm`
+ * unlinks a symlink rather than its destination — so the escaped files would have stayed outside the
+ * project while the command reported a clean rollback. Refusing before anything is created is what puts
+ * that path out of reach, which is why `scaffoldWorker` calls this *before* its `mkdir` and not after.
  */
 export async function ensureEmptyTarget(targetDir: string): Promise<void> {
-  let existing: string[];
-  try {
-    existing = await readdir(targetDir);
-  } catch {
-    return; // missing directory — nothing to clash with
-  }
-  if (existing.length > 0) {
-    throw new ConflictError({
-      message: `${targetDir} isn't empty.`,
-      action: "Pick an empty directory. Run pithy init again.",
-    });
-  }
+  if (!(await occupied(targetDir))) return;
+  throw new ConflictError({
+    message: `${targetDir} isn't an empty directory.`,
+    action: "Move what's there aside, or pick another name, and run the command again.",
+  });
 }
 
 /**
@@ -119,8 +125,12 @@ async function blocksDirectory(path: string): Promise<boolean> {
 }
 
 /**
- * True unless `path` is missing or an empty directory — the question to ask of a path Pithy takes over
- * outright, the way {@link ensureEmptyTarget} asks it of `apps/<worker>` under `pithy worker add`.
+ * True unless `path` is missing or a real, empty directory — the question to ask of a path Pithy takes
+ * over outright. {@link ensureEmptyTarget} is that question asked of `apps/<worker>` under
+ * `pithy worker add`; `ensureScaffoldable` asks it of the rename source and destination.
+ *
+ * `lstat` first, and that is the security half: a symlink is not a directory here however empty its
+ * destination reads, because the scaffold would write through it and land outside the project.
  *
  * Two `try`s, because the two calls fail for opposite reasons. A missing directory is nothing to take
  * over; a directory that cannot be *read* is certainly occupied. The read used to sit outside any `try`

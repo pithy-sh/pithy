@@ -235,9 +235,13 @@ export async function scaffoldWorker(options: {
     });
   }
 
+  // The gate runs **before** the directory is made, not after. A symlink at `apps/<name>` is refused
+  // rather than created through (see `ensureEmptyTarget`), and a *dangling* one is ENOENT to a recursive
+  // `mkdir` — a raw node:fs error escaping the PithyError contract `withErrorReporting` prints from.
+  // Nothing created also means `addWorker` has nothing to roll back, which is the other half of that fix.
   const dir = join(options.projectDir, "apps", options.name);
-  await mkdir(dir, { recursive: true });
   await ensureEmptyTarget(dir);
+  await mkdir(dir, { recursive: true });
 
   const files = workerFiles(options.name, options.project);
   for (const [rel, content] of Object.entries(files)) {
