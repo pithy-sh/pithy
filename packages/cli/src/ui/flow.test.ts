@@ -26,20 +26,29 @@ const WITH_AUTH: WorkerConfig = { capabilities: [routed("auth", "/auth")] };
 const WITHOUT_AUTH: WorkerConfig = { capabilities: [routed("leaderboard", "/leaderboard")] };
 const WITH_PAYMENTS: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("payments", "/payments")] };
 
+/** The target worker's directory — the `<name>` in `apps/<name>`. */
+const WORKER = "board";
+
+/** The same worker's deployed name, which is `<project>-<worker>` and never a path. */
+const DEPLOYED = "replay-board";
+
 describe("pithy ui", () => {
   let projectDir: string;
   let workerDir: string;
 
   beforeEach(async () => {
     projectDir = await mkdtemp(join(tmpdir(), "pithy-ui-flow-"));
-    workerDir = join(projectDir, "apps", "api");
+    // The two names a Worker has, deliberately different: it lives at `apps/board` and deploys as
+    // `replay-board`. A fixture where they agree cannot tell which one a path was built from.
+    workerDir = join(projectDir, "apps", WORKER);
     await mkdir(workerDir, { recursive: true });
-    await writeFile(join(workerDir, "wrangler.jsonc"), '{\n  "name": "api"\n}\n');
+    await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "${DEPLOYED}"\n}\n`);
     await writeFile(join(workerDir, "pithy.worker.jsonc"), '{\n  "dev": { "autostart": true }\n}\n');
     await writeFile(
       join(workerDir, "package.json"),
-      `${JSON.stringify({ name: "api", scripts: { dev: "wrangler dev" } }, null, 2)}\n`,
+      `${JSON.stringify({ name: DEPLOYED, scripts: { dev: "wrangler dev" } }, null, 2)}\n`,
     );
+    await writeFile(join(projectDir, "tsconfig.json"), `${JSON.stringify({ files: [], references: [] }, null, 2)}\n`);
   });
   afterEach(async () => {
     await rm(projectDir, { recursive: true, force: true });
@@ -47,7 +56,7 @@ describe("pithy ui", () => {
 
   /** The common half of every `runUiAdd` call in this file. */
   function options(config: WorkerConfig) {
-    return { projectDir, workerDir, worker: "api", config, framework: "react", packageManager: "bun" as const };
+    return { projectDir, workerDir, config, framework: "react", packageManager: "bun" as const };
   }
 
   test("lists the frameworks it can scaffold", () => {
@@ -86,6 +95,31 @@ describe("pithy ui", () => {
       "--port",
       "{port}",
     ]);
+  });
+
+  test("names the worker by its directory, never by the name it deploys under", async () => {
+    // A Worker deploys as `<project>-<worker>` and lives at `apps/<worker>`. Every string below is a
+    // path, so every one is the directory: `apps/replay-board/` does not exist, and a reference to it
+    // fails `tsc -b` with TS6053 and stops Vite from loading the worker's own config.
+    const report = await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
+    expect(report.worker).toBe(WORKER);
+
+    const solution = parse(await readFile(join(projectDir, "tsconfig.json"), "utf8")) as unknown as {
+      references: { path: string }[];
+    };
+    expect(solution.references.map((reference) => reference.path)).toEqual([
+      `./apps/${WORKER}/tsconfig.client.json`,
+      `./apps/${WORKER}/tsconfig.node.json`,
+    ]);
+
+    // The build-state files too: `pithy init` names the Worker's own after the directory, and two halves
+    // of one Worker writing `dist/board.server.tsbuildinfo` beside `dist/replay-board.client.tsbuildinfo`
+    // is the same confusion surviving somewhere it happens to still work.
+    for (const program of ["tsconfig.client.json", "tsconfig.node.json"]) {
+      const contents = await readFile(join(workerDir, program), "utf8");
+      expect(contents, program).toContain(`../../dist/${WORKER}.`);
+      expect(contents, program).not.toContain(DEPLOYED);
+    }
   });
 
   test("--json with no flags never blocks: it follows what the worker composes", async () => {
@@ -204,12 +238,12 @@ describe("pithy ui", () => {
   test("sync is idempotent and picks up a capability added after the scaffold", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
 
-    const same = await runUiSync({ workerDir, worker: "api", config: WITHOUT_AUTH });
+    const same = await runUiSync({ workerDir, config: WITHOUT_AUTH });
     expect(same.changed).toBe(false);
     expect(same.before).toEqual(same.after);
 
     const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
-    const changed = await runUiSync({ workerDir, worker: "api", config: grown });
+    const changed = await runUiSync({ workerDir, config: grown });
     expect(changed.changed).toBe(true);
     expect(changed.after.filter((path) => !changed.before.includes(path))).toEqual(["/ledger", "/ledger/*"]);
 
@@ -233,7 +267,7 @@ describe("pithy ui", () => {
         },
       }),
     };
-    const report = await runUiSync({ workerDir, worker: "api", config: grown, check: true });
+    const report = await runUiSync({ workerDir, config: grown, check: true });
 
     expect(report.uncovered).toEqual(["/api/organisations"]);
     expect(report.changed).toBe(true);
@@ -243,7 +277,7 @@ describe("pithy ui", () => {
 
   test("sync --check passes on a worker in sync", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
-    const report = await runUiSync({ workerDir, worker: "api", config: WITHOUT_AUTH, check: true });
+    const report = await runUiSync({ workerDir, config: WITHOUT_AUTH, check: true });
     expect(report.uncovered).toEqual([]);
     expect(report.changed).toBe(false);
   });
@@ -251,13 +285,13 @@ describe("pithy ui", () => {
   test("a sync that writes leaves nothing uncovered", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
     const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
-    expect((await runUiSync({ workerDir, worker: "api", config: grown })).uncovered).toEqual([]);
-    expect((await runUiSync({ workerDir, worker: "api", config: grown, check: true })).uncovered).toEqual([]);
+    expect((await runUiSync({ workerDir, config: grown })).uncovered).toEqual([]);
+    expect((await runUiSync({ workerDir, config: grown, check: true })).uncovered).toEqual([]);
   });
 
   test("sync on a worker with no front end says so", async () => {
     try {
-      await runUiSync({ workerDir, worker: "api", config: WITHOUT_AUTH });
+      await runUiSync({ workerDir, config: WITHOUT_AUTH });
       expect.unreachable("expected sync without a UI to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(PithyError);

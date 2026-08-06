@@ -14,7 +14,12 @@ import { reactStub } from "./react";
 
 /** What a stub is told about the Worker it is being scaffolded into. */
 export interface UiStubContext {
-  /** The target Worker's name — its `wrangler.jsonc` name, which is also the `apps/<name>` directory. */
+  /**
+   * The target Worker's **directory** name — the `<name>` in `apps/<name>`.
+   *
+   * Not its deployed name: a Worker deploys as `<project>-<worker>`, and every use of this value is a path
+   * or a build-state file that sits beside the ones `pithy init` already named after the directory.
+   */
   worker: string;
   /** Whether to write the auth template (the passwordless screens) on top of the bare SPA. */
   auth: boolean;

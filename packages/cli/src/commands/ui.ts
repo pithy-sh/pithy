@@ -64,7 +64,6 @@ const add = defineCommand({
       const report = await runUiAdd({
         projectDir,
         workerDir: target.dir,
-        worker: target.name,
         config: target.config,
         framework: args.framework,
         ...(args.auth === undefined ? {} : { auth: args.auth }),
@@ -123,7 +122,6 @@ const sync = defineCommand({
 
       const report = await runUiSync({
         workerDir: target.dir,
-        worker: target.name,
         config: target.config,
         check: args.check,
       });
