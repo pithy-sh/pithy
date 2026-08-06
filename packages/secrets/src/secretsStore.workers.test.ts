@@ -10,6 +10,7 @@ import { appendVersion, encodeVersionedValue, initialVersionedValue } from "./cr
 import { secretsTables } from "./data/tables";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretNotFoundError } from "./error/errors";
+import { keyedSecretName } from "./keyspace";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { defineSecretRegistry } from "./registry";
 import { secretsStore } from "./secretsStore";
@@ -152,5 +153,74 @@ describe("secretsStore — d1 backend", () => {
     });
 
     await expect(secretsStore(envWith(), registry)).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+});
+
+describe("secretsStore — a keyed entry over the real encrypted store", () => {
+  const ConnectionKey = z
+    .object({ privateKey: z.string().min(8).describe("PKCS#8 private key.") })
+    .describe("A customer connection's signing key.");
+
+  const registry = defineSecretRegistry({
+    CONNECTION_SIGNING_KEY: {
+      backend: "d1",
+      scope: "environment",
+      rotatable: true,
+      valueType: "json",
+      schema: ConnectionKey,
+      keyed: true,
+    },
+    "auth-signing-key": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+  });
+
+  /** Write one keyspace member the way an app does: the composed name, through the same store. */
+  async function putMember(key: string, privateKey: string): Promise<void> {
+    await store().put(
+      keyedSecretName("CONNECTION_SIGNING_KEY", key),
+      initialVersionedValue(JSON.stringify({ privateKey })),
+      "json",
+    );
+  }
+
+  test("a member is written and read back through the same encrypted store", async () => {
+    await store().put("auth-signing-key", initialVersionedValue("kid-1-key"));
+    await putMember("conn_a", "alpha-private-key");
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({ privateKey: "alpha-private-key" });
+    expect(secrets.get("auth-signing-key")).toBe("kid-1-key");
+  });
+
+  test("each tenant reads its own member and no other", async () => {
+    await store().put("auth-signing-key", initialVersionedValue("kid-1-key"));
+    await putMember("conn_a", "alpha-private-key");
+    await putMember("conn_b", "bravo-private-key");
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({ privateKey: "alpha-private-key" });
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_b")).toEqual({ privateKey: "bravo-private-key" });
+    await expect(secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_c")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+
+  test("a value stored under the bare keyspace name is not served to any key", async () => {
+    await store().put("auth-signing-key", initialVersionedValue("kid-1-key"));
+    // A mis-write, or a name left over from before the entry was keyed. It must not become every
+    // tenant's key: a member read resolves `<keyspace>/<key>` or nothing.
+    await store().put("CONNECTION_SIGNING_KEY", initialVersionedValue(JSON.stringify({ privateKey: "everyones" })));
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    await expect(secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+
+  test("a keyspace does not have to be provisioned for the accessor to build", async () => {
+    await store().put("auth-signing-key", initialVersionedValue("kid-1-key"));
+
+    // No member exists at all. The named d1 secret still resolves; the keyspace costs nothing until read.
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(secrets.get("auth-signing-key")).toBe("kid-1-key");
   });
 });

@@ -5,7 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "./env/bindings";
 import type { SecretRegistry, SecretRegistryEntry } from "./registry";
-import { type SecretsAccessor, secretsStore } from "./secretsStore";
+import { d1KeyedSource, type SecretsAccessor, secretsStore } from "./secretsStore";
 
 /**
  * The shared, per-invocation secrets accessor. Within one worker invocation many capabilities each
@@ -133,14 +133,17 @@ export async function sharedSecretsStore<R extends SecretRegistry>(
     }
   }
   const combined = await resolveCombined(env);
-  return combined.subset(registry);
+  // The combined accessor is cached across requests; a keyspace read is not cached at all, and runs
+  // real I/O. Bind it to *this* invocation's env so a member is never fetched through the binding of
+  // whichever earlier request happened to fill the cache.
+  return combined.subset(registry, d1KeyedSource(env));
 }
 
 /**
  * Merge every capability's {@link Capability.secretRegistry} slice into one combined registry — the
  * source of truth the shared accessor resolves. A secret name declared by more than one capability is
  * allowed only when the declarations agree on every axis (`backend`, `scope`, `valueType`,
- * `rotatable`); a divergent re-declaration is an author conflict and throws. The `secretsStore`
+ * `rotatable`, `keyed`); a divergent re-declaration is an author conflict and throws. The `secretsStore`
  * reader keys purely on the name, so identical re-declarations resolve the same stored value.
  */
 export function aggregateSecretRegistries(capabilities: readonly Capability[]): SecretRegistry {
@@ -158,11 +161,14 @@ export function aggregateSecretRegistries(capabilities: readonly Capability[]): 
           existing.backend !== entry.backend ||
           existing.scope !== entry.scope ||
           existing.valueType !== entry.valueType ||
-          existing.rotatable !== entry.rotatable
+          existing.rotatable !== entry.rotatable ||
+          // A keyspace and a name are not the same secret, whatever else agrees: one resolves
+          // `<name>/<key>`, the other `<name>`.
+          Boolean(existing.keyed) !== Boolean(entry.keyed)
         ) {
           throw new InternalError({
             message: `Secret "${name}" is declared incompatibly by capabilities "${owners[name]}" and "${cap.name}".`,
-            action: "Declare the same backend, scope, valueType, and rotatable for a shared secret name.",
+            action: "Declare the same backend, scope, valueType, rotatable, and keyed for a shared secret name.",
           });
         }
         continue;

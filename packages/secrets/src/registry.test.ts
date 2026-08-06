@@ -72,4 +72,62 @@ describe("defineSecretRegistry", () => {
       defineSecretRegistry(asRegistry({ "": { backend: "d1", scope: "global", rotatable: false, valueType: "text" } })),
     ).toThrow(InternalError);
   });
+
+  test("rejects a name carrying the keyspace separator — it would collide with a member", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({ "KEYSPACE/member": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" } }),
+      ),
+    ).toThrow(InternalError);
+  });
+});
+
+describe("defineSecretRegistry — keyed entries", () => {
+  test("accepts a keyed entry: a keyspace, not a name", () => {
+    const registry = defineSecretRegistry({
+      CONNECTION_SIGNING_KEY: {
+        backend: "d1",
+        scope: "environment",
+        rotatable: true,
+        valueType: "json",
+        schema: z.object({ privateKey: z.string().describe("PKCS#8 key.") }).describe("A connection signing key."),
+        keyed: true,
+      },
+    });
+    expect(registry.CONNECTION_SIGNING_KEY.keyed).toBe(true);
+  });
+
+  test("rejects a non-boolean keyed", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", keyed: "yes" },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a keyed cf-secrets-store entry — a binding cannot exist for a name that does not", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: false,
+            valueType: "text",
+            keyed: true,
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a global keyed entry — a member is written to one environment's store", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({ broken: { backend: "d1", scope: "global", rotatable: false, valueType: "text", keyed: true } }),
+      ),
+    ).toThrow(InternalError);
+  });
 });

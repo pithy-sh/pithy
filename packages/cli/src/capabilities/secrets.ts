@@ -6,6 +6,7 @@ import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { type AuditResult, auditSecrets, passesPromoteGate } from "@pithy-sh/secrets/src/cli/audit";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
+import { parseKeyedSecretName } from "@pithy-sh/secrets/src/keyspace";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -75,6 +76,15 @@ export async function runSecretWrite(
     });
   }
 
+  // A keyspace has no single value to write, and a write under its bare name would land somewhere no
+  // member read ever looks. Its members belong to the app that mints them, which writes them in-worker.
+  if (entry.keyed) {
+    throw new ValidationError({
+      message: `Secret '${command.name}' is a keyspace, not a secret.`,
+      action: "Its members are written by the application that owns them, one key at a time.",
+    });
+  }
+
   let value: string | undefined;
   if (command.mode !== "delete") {
     if (command.value === undefined || command.value === "") {
@@ -117,7 +127,7 @@ export async function runSecretWrite(
   }
 }
 
-/** The `ls` / `ls --check` view: the declared names, the audit against what's present, and the gate. */
+/** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */
 export interface SecretsListView {
   names: string[];
   audit: AuditResult;
@@ -126,6 +136,14 @@ export interface SecretsListView {
 
 export function runSecretsList(registry: SecretRegistry, presentNames: string[]): SecretsListView {
   const names = Object.keys(registry).sort();
-  const audit = auditSecrets(names, presentNames);
+  // A keyspace is expected to have no value of its own, and its stored members are expected to have no
+  // registry entry of their own. Counting either would make the promote gate unpassable the day an
+  // adopter declares their first per-tenant credential, and would report every tenant as junk.
+  const expected = names.filter((name) => !registry[name]?.keyed);
+  const present = presentNames.filter((stored) => {
+    const member = parseKeyedSecretName(stored);
+    return !(member && registry[member.name]?.keyed);
+  });
+  const audit = auditSecrets(expected, present);
   return { names, audit, promotable: passesPromoteGate(audit) };
 }

@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { appendVersion, initialVersionedValue, type VersionedValue } from "./crypto/versionedValue";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import { defineSecretRegistry } from "./registry";
-import { secretsStore } from "./secretsStore";
+import { type KeyedSecretSource, SecretsAccessor, secretsStore } from "./secretsStore";
 
 /** A CF-Secrets-Store-only registry needs no D1, so the env only carries the named bindings. */
 function envWith(bindings: Record<string, unknown>): SecretsStoreEnv {
@@ -177,5 +179,177 @@ describe("SecretsAccessor.subset", () => {
     });
     const view = store.subset(wantsMissing);
     expect(() => view.get("C")).toThrow(SecretNotFoundError);
+  });
+});
+
+describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
+  const ConnectionKey = z
+    .object({ privateKey: z.string().min(8).describe("PKCS#8 private key.") })
+    .describe("A customer connection's signing key.");
+
+  const keyspace = defineSecretRegistry({
+    CONNECTION_SIGNING_KEY: {
+      backend: "d1",
+      scope: "environment",
+      rotatable: true,
+      valueType: "json",
+      schema: ConnectionKey,
+      keyed: true,
+    },
+  });
+
+  const named = defineSecretRegistry({
+    NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+  });
+
+  /** Call `getKeyed` with a name the types refuse — the runtime guard is what is under test. */
+  function loosely(accessor: object): { getKeyed(name: string, key: string): Promise<unknown> } {
+    return accessor as { getKeyed(name: string, key: string): Promise<unknown> };
+  }
+
+  /** A source over stored names, so a test asserts exactly which name a read asked for. */
+  function sourceOver(stored: Record<string, VersionedValue>) {
+    return vi.fn<KeyedSecretSource>(async (name) => stored[name]);
+  }
+
+  test("getKeyed resolves one member, composed as <keyspace>/<key>", async () => {
+    const source = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "alpha-key" })),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({ privateKey: "alpha-key" });
+    expect(source).toHaveBeenCalledWith("CONNECTION_SIGNING_KEY/conn_a");
+  });
+
+  test("one tenant's key never resolves another tenant's member", async () => {
+    const source = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "alpha-key" })),
+      "CONNECTION_SIGNING_KEY/conn_b": initialVersionedValue(JSON.stringify({ privateKey: "bravo-key" })),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({ privateKey: "alpha-key" });
+    expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_b")).toEqual({ privateKey: "bravo-key" });
+  });
+
+  test("a key carrying the separator is refused before the store is touched", async () => {
+    const source = sourceOver({ "OTHER_KEYSPACE/victim": initialVersionedValue("{}") });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    await expect(secrets.getKeyed("CONNECTION_SIGNING_KEY", "../OTHER_KEYSPACE/victim")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(source).not.toHaveBeenCalled();
+  });
+
+  test("an unstored member fails closed, and the refusal never echoes the key", async () => {
+    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+
+    const error = await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_missing").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SecretNotFoundError);
+    expect(JSON.stringify((error as SecretNotFoundError).payload)).not.toContain("conn_missing");
+  });
+
+  test("a member failing its schema throws without echoing the material or the key", async () => {
+    const source = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "SHORT" })),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    const error = await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SecretInvalidValueError);
+    const serialized = JSON.stringify((error as SecretInvalidValueError).payload);
+    expect(serialized).toContain("privateKey:too_small");
+    expect(serialized).not.toContain("SHORT");
+    expect(serialized).not.toContain("conn_a");
+  });
+
+  test("getKeyedVersions exposes the pointer and every still-valid version of one member", async () => {
+    const source = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": appendVersion(
+        initialVersionedValue(JSON.stringify({ privateKey: "old-key-1" })),
+        JSON.stringify({ privateKey: "new-key-2" }),
+      ),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    expect(await secrets.getKeyedVersions("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({
+      currentVersion: "2",
+      versions: { "1": { privateKey: "old-key-1" }, "2": { privateKey: "new-key-2" } },
+    });
+  });
+
+  test("get refuses a keyspace — it has no single value", async () => {
+    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+    expect(() => (secrets.get as (name: string) => unknown)("CONNECTION_SIGNING_KEY")).toThrow(InternalError);
+  });
+
+  test("getKeyed refuses a named entry — a named secret is not a keyspace", async () => {
+    const secrets = new SecretsAccessor(named, {
+      NPM_TOKEN: { current: "npm-abc", currentVersion: "1", versions: {} },
+    });
+    await expect(loosely(secrets).getKeyed("NPM_TOKEN", "conn_a")).rejects.toBeInstanceOf(InternalError);
+  });
+
+  test("getKeyed refuses an undeclared keyspace", async () => {
+    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+    await expect(loosely(secrets).getKeyed("NOT_DECLARED", "conn_a")).rejects.toBeInstanceOf(SecretNotFoundError);
+  });
+
+  test("an accessor with no source fails closed rather than resolving nothing", async () => {
+    const secrets = new SecretsAccessor(keyspace, {});
+    await expect(secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).rejects.toBeInstanceOf(InternalError);
+  });
+
+  test("toJSON still redacts after a member has been read", async () => {
+    const source = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "REDACT_ME_KEY" })),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, source);
+
+    await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a");
+
+    const serialized = JSON.stringify(secrets);
+    expect(serialized).toBe('"[Secrets declared=1]"');
+    expect(serialized).not.toContain("REDACT_ME_KEY");
+  });
+
+  test("subset keeps the keyspace readable, and rebinds the source when given one", async () => {
+    const stale = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "stale-key" })),
+    });
+    const fresh = sourceOver({
+      "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "fresh-key" })),
+    });
+    const secrets = new SecretsAccessor(keyspace, {}, stale);
+
+    expect(await secrets.subset(keyspace).getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({
+      privateKey: "stale-key",
+    });
+    expect(await secrets.subset(keyspace, fresh).getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({
+      privateKey: "fresh-key",
+    });
+  });
+});
+
+describe("secretsStore — keyed entries are resolved at read, not up front", () => {
+  const keyspace = defineSecretRegistry({
+    CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+    NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+  });
+
+  test("a keyspace needs no binding and no row in dev — a named entry alongside it still does", async () => {
+    const secrets = await secretsStore(envWith({ NPM_TOKEN: "npm-abc" }), keyspace);
+    expect(secrets.get("NPM_TOKEN")).toBe("npm-abc");
+  });
+
+  test("a keyspace is not fetched from the store when the accessor is built, deployed or not", async () => {
+    // No SECRETS D1 and no master key here: building the accessor would throw if a keyspace were
+    // batched into the deployed d1 read. Members are fetched one at a time, at the read.
+    const onlyKeyspace = defineSecretRegistry({
+      CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+    });
+    await expect(secretsStore(envWith({ ENVIRONMENT: "prod" }), onlyKeyspace)).resolves.toBeInstanceOf(SecretsAccessor);
   });
 });
