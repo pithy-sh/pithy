@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { basename, join, resolve } from "node:path";
+import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { defineCommand } from "citty";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { renderDomainsBlock } from "../project/domainPrompt";
-import { DEFAULT_WORKER, ensureScaffoldable, scaffoldProject } from "../project/scaffold";
+import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { installAlias } from "./alias";
@@ -111,6 +112,15 @@ export default defineCommand({
       if (wrote && !wrote.declared && asked.domains) {
         process.stdout.write(
           `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+        );
+      }
+      // The scaffolded worker declares no kit dependency while nothing under `@pithy-sh/*` is published
+      // ({@link kitRange}), so say where the kit comes from instead. Unsaid, the adopter meets the gap as
+      // an unresolved import at the first typecheck — which is a worse introduction than a sentence here,
+      // and the only alternative is the range that 404s their first install.
+      if (kitRange(PACKAGE_VERSION) === null) {
+        process.stdout.write(
+          `${dim("@pithy-sh/* isn't published yet, so this worker declares no kit dependency.")}\n${dim("Link the kit from a checkout, then install.")}\n`,
         );
       }
       // Set Done. off from the prompt's gutter; a flagged run has nothing above it.

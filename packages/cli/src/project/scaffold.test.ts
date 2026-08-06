@@ -3,11 +3,24 @@
 
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ensureEmptyTarget, ensureScaffoldable, scaffoldProject } from "./scaffold";
+import { ensureEmptyTarget, ensureScaffoldable, kitRange, scaffoldProject } from "./scaffold";
+
+/** The template manifest the stamp rewrites — read directly, to hold the template to what the rule covers. */
+const TEMPLATE_WORKER_PACKAGE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../templates/starter/apps/api/package.json",
+);
+
+/** The `@pithy-sh/*` dependency names in a manifest's `dependencies`. */
+function kitDependencies(manifest: { dependencies?: Record<string, string> }): string[] {
+  return Object.keys(manifest.dependencies ?? {}).filter((name) => name.startsWith("@pithy-sh/"));
+}
 
 let dir: string;
 beforeEach(async () => {
@@ -356,6 +369,50 @@ describe("scaffoldProject", () => {
     await writeFile(join(dir, "gitignore"), "mine\n");
     await expect(scaffoldProject({ targetDir: dir, appName: "acme" })).rejects.toThrow(PithyError);
     expect(await readFile(join(dir, "gitignore"), "utf8")).toBe("mine\n");
+  });
+
+  test("writes a kit range that resolves, or none at all — the first bun install must not 404", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "acme", worker: "board" });
+
+    const pkg = JSON.parse(await readFile(join(dir, "apps", "board", "package.json"), "utf8")) as {
+      name: string;
+      dependencies: Record<string, string>;
+    };
+
+    // Asserted through `kitRange`, not as the literal `[]` today's unpublished kit produces. The rule is
+    // "never write a range that cannot resolve", and it has two sides: no dependency while `PACKAGE_VERSION`
+    // is `0.0.0`, and the real range the moment a release moves it. Pinning the empty half would turn this
+    // suite red on the release commit — the one commit least able to absorb a mystery failure — and the
+    // fix would look like deleting the assertion that was doing its job.
+    const range = kitRange(PACKAGE_VERSION);
+    if (range === null) expect(kitDependencies(pkg)).toEqual([]);
+    else {
+      expect(kitDependencies(pkg)).toEqual([PACKAGE_NAME]);
+      expect(pkg.dependencies[PACKAGE_NAME]).toBe(range);
+    }
+    // Only the unresolvable range goes. Everything else the worker declares is untouched.
+    expect(pkg.dependencies.hono).toBeDefined();
+    expect(pkg.name).toBe("acme-board");
+  });
+
+  test("the template declares only the kit package the stamp knows a version for", async () => {
+    // The rule is narrow on purpose: Changesets versions these packages independently, so core's version
+    // is a fact about core alone. A second kit dependency in the template would be stamped with a version
+    // that is not its own — this fails first, and whoever adds it teaches the stamp that package's version.
+    const template = JSON.parse(await readFile(TEMPLATE_WORKER_PACKAGE, "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(kitDependencies(template)).toEqual([PACKAGE_NAME]);
+  });
+});
+
+describe("kitRange", () => {
+  test("no range while the kit is unpublished — 0.0.0 is on no registry", () => {
+    expect(kitRange("0.0.0")).toBeNull();
+  });
+
+  test("the day the packages publish, the range is the version this CLI ships against", () => {
+    expect(kitRange("1.4.2")).toBe("^1.4.2");
   });
 });
 

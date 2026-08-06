@@ -11,6 +11,7 @@ import {
   kebab,
   RESERVED_TEST_PREFIX,
 } from "@pithy-sh/core/src/naming/resource";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 
 export interface ScaffoldOptions {
   /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
@@ -272,6 +273,54 @@ async function stampPackageName(path: string, name: string): Promise<void> {
   await writeFile(path, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
+/** The version every package in this workspace carries until Changesets cuts a release. */
+const UNPUBLISHED = "0.0.0";
+
+/**
+ * The range a scaffolded Worker should declare for the kit at `version` — or **null**, meaning declare
+ * nothing at all.
+ *
+ * This is the {@link https://github.com/pithy-sh/pithy/issues/112 #112} rule, applied to the template.
+ * Nothing under `@pithy-sh/*` is published, so a range is a promise the registry cannot keep: the
+ * template's `"^0.0.0"` 404s the very first `bun install` a new project runs, before any of the tooling
+ * that would have helped gets to run at all. A project consuming the kit from a checkout resolves it
+ * from `node_modules` either way — the same reason `pithy ui add` omits `@pithy-sh/vite` — so the
+ * absent line costs that project nothing and the failed install costs it everything.
+ *
+ * **The day the packages publish this inverts, and the same line handles it.** `version` is core's own,
+ * stamped by `scripts/stampVersions.ts` from the package.json Changesets rewrites — so the first release
+ * makes it real, the range gets written, and a scaffolded project installs the kit from npm with no code
+ * change here. `0.0.0` is not a version anyone releases; it is precisely the marker for "not released",
+ * which is why the whole rule fits in one comparison.
+ */
+export function kitRange(version: string): string | null {
+  return version === UNPUBLISHED ? null : `^${version}`;
+}
+
+/**
+ * Stamp the scaffolded Worker's manifest: the package name, and the kit dependency at a range that can
+ * actually resolve ({@link kitRange}).
+ *
+ * One read-modify-write for both, because they are one file — a second pass over it is a second chance to
+ * leave it half-stamped.
+ *
+ * Only core is touched, keyed on the name core reports for itself rather than a literal. Changesets
+ * versions these packages independently (`.changeset/config.json` links and fixes nothing), so core's
+ * version is a fact about core alone and there is no honest range to invent for a sibling from it.
+ * `scaffold.test.ts` holds the template to exactly that: declare a second `@pithy-sh/*` dependency and it
+ * fails until this function is taught that package's version.
+ */
+async function stampWorkerManifest(path: string, name: string): Promise<void> {
+  const pkg = JSON.parse(await readFile(path, "utf8")) as { name: string; dependencies?: Record<string, string> };
+  pkg.name = name;
+  const range = kitRange(PACKAGE_VERSION);
+  if (pkg.dependencies && PACKAGE_NAME in pkg.dependencies) {
+    if (range === null) delete pkg.dependencies[PACKAGE_NAME];
+    else pkg.dependencies[PACKAGE_NAME] = range;
+  }
+  await writeFile(path, `${JSON.stringify(pkg, null, 2)}\n`);
+}
+
 /**
  * Copy the starter template into `targetDir` and stamp the app name — the pure logic behind `pithy init`.
  *
@@ -332,7 +381,7 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   }
 
   await stampPackageName(join(options.targetDir, "package.json"), project);
-  await stampPackageName(join(workerDir, "package.json"), `${project}-${worker}`);
+  await stampWorkerManifest(join(workerDir, "package.json"), `${project}-${worker}`);
 
   // The project's identity — the prefix every feature resource name derives from.
   const configPath = join(options.targetDir, "pithy.config.ts");
