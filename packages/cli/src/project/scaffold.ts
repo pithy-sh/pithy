@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -141,6 +141,11 @@ const RENAMED_ON_LANDING: Record<string, string> = {
  * away, which destroyed an adopter's own undotted `gitignore` without ever naming it. And the first
  * worker is copied to `apps/api` and *then* renamed, so a run naming another worker also collides on
  * `apps/<worker>`.
+ *
+ * And one path is added that the template cannot carry. The scaffold links `apps/<worker>/.dev.vars` at
+ * the project's shared file, but the template ships only `.dev.vars.example` — so the one path `init`
+ * writes that holds secrets was the one path this walk could not see. A pre-existing worker `.dev.vars`
+ * was replaced with a link, and since the file is git-ignored there was no copy of it anywhere.
  */
 async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
   const root = templateDir();
@@ -157,6 +162,7 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
       return landed ? [path, landed] : [path];
     });
   const directories = named.filter((entry) => entry.directory).map(({ path }) => path);
+  files.push(join("apps", worker, ".dev.vars"));
   if (worker === DEFAULT_WORKER) return { files, directories };
 
   const from = `apps${sep}${DEFAULT_WORKER}${sep}`;
@@ -333,11 +339,21 @@ async function stampWorkerManifest(path: string, name: string): Promise<void> {
  *
  * A `.dev.vars` already in the target is the adopter's, holds their credentials, and is never a template
  * path — so nothing else in this module would have refused the run over it. It is left exactly as it is.
+ * `doctor` reads credentials from that file before a project exists, so arriving with one is a normal way
+ * to start; the worker's copy is the opposite case and {@link ensureScaffoldable} refuses the run over it,
+ * because there the scaffold writes a link and would otherwise have written it *through* their secrets.
+ *
+ * **Owner-only from the moment it exists.** `cp` copies the source file's mode, so the project's one
+ * credential file landed 0664 whatever the umask said — world-readable, before `pithy add` and
+ * `pithy token mint` write `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into it. The mode is set
+ * on the copy this makes and never on a file that was already there: that one is the adopter's, and its
+ * permissions are their decision.
  */
 async function seedDevVars(targetDir: string): Promise<void> {
   const path = join(targetDir, ".dev.vars");
   if (await exists(path)) return;
   await cp(join(targetDir, ".dev.vars.example"), path);
+  await chmod(path, 0o600);
 }
 
 /**

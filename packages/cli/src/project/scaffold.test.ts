@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
@@ -406,6 +406,30 @@ describe("scaffoldProject", () => {
     // Read through it, not at it: what the worker sees is the one file the project shares.
     await writeFile(join(dir, ".dev.vars"), "SECRETS_ENCRYPTION_KEYS=k\n");
     expect(await readFile(link, "utf8")).toBe("SECRETS_ENCRYPTION_KEYS=k\n");
+    // Relative, so the project survives being moved, copied or built in a container. An absolute link
+    // into someone's home directory dangles the moment the tree does, and a dangling `.dev.vars` reads
+    // as "every secret absent" — the failure this link exists to prevent.
+    expect(isAbsolute(await readlink(link))).toBe(false);
+  });
+
+  test("the .dev.vars it creates is readable only by its owner", async () => {
+    // `cp` carries the template's own mode, so the project's credential file landed 0664 whatever the
+    // umask said. `pithy add` and `pithy token mint` write CLOUDFLARE_API_TOKEN and the secrets
+    // encryption keys into this file.
+    await scaffoldProject({ targetDir: dir, appName: "acme" });
+    expect((await lstat(join(dir, ".dev.vars"))).mode & 0o777).toBe(0o600);
+  });
+
+  test("refuses when the worker already holds a .dev.vars — that file is git-ignored and has no other copy", async () => {
+    const own = join(dir, "apps", "api", ".dev.vars");
+    await mkdir(dirname(own), { recursive: true });
+    await writeFile(own, "API_ONLY_SECRET=super-secret-value\n");
+
+    const failure = await scaffoldProject({ targetDir: dir, appName: "acme" }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.message).toContain(join("apps", "api", ".dev.vars"));
+    expect(await readFile(own, "utf8")).toBe("API_ONLY_SECRET=super-secret-value\n");
   });
 
   test("seeds the shared .dev.vars from the example, since a link needs a file to point at", async () => {
