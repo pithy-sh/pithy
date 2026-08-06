@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -252,6 +252,20 @@ describe("scaffoldProject", () => {
     expect(await readFile(join(dir, "apps"), "utf8")).toBe("mine\n");
   });
 
+  test("refuses a dangling symlink at a template path, and writes nothing outside the target", async () => {
+    // The severity is the write, not the trigger: with the gate following the link, `cp` and
+    // `stampPackageName` wrote the scaffolded package.json to wherever the link pointed — outside
+    // targetDir — while the run reported success.
+    const outside = join(dir, "outside", "package.json");
+    await mkdir(join(dir, "outside"), { recursive: true });
+    const target = join(dir, "my-app");
+    await mkdir(target, { recursive: true });
+    await symlink(outside, join(target, "package.json"));
+
+    await expect(scaffoldProject({ targetDir: target, appName: "my-app" })).rejects.toThrow(PithyError);
+    await expect(readFile(outside, "utf8")).rejects.toThrow();
+  });
+
   test("refuses an adopter's undotted gitignore — the template's copy lands on it, then renames it away", async () => {
     await writeFile(join(dir, "gitignore"), "mine\n");
     await expect(scaffoldProject({ targetDir: dir, appName: "acme" })).rejects.toThrow(PithyError);
@@ -350,6 +364,39 @@ describe("ensureScaffoldable", () => {
     const error = await ensureScaffoldable(dir).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.message).toContain("gitignore");
+  });
+
+  test("a dangling symlink where a template file belongs collides — the copy writes through it", async () => {
+    // `access` follows the link, so a dangling one read as "does not exist", cleared the gate, and was
+    // never named in the refusal. Then `cp` and `stampPackageName` both wrote *through* it: the
+    // scaffolded package.json landed outside targetDir. `lstat`, for the reason blocksDirectory gives —
+    // the symlink itself is the problem. Node and Bun disagree on the copy here, which is worse, not
+    // better: the unit tests and the shipped CLI would answer differently on the same input.
+    const outside = join(dir, "outside", "package.json");
+    await mkdir(dirname(outside), { recursive: true });
+    const target = join(dir, "app");
+    await mkdir(target, { recursive: true });
+    await symlink(outside, join(target, "package.json"));
+
+    const error = await ensureScaffoldable(target).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("package.json");
+  });
+
+  test("an unreadable directory refuses through PithyError, never a raw node:fs error", async () => {
+    // `occupied` read the directory outside its try, so an EACCES escaped the PithyError contract this
+    // module promises: `pithy init --json` printed a stack trace where a CI wrapper parses {"error":{…}}.
+    // A directory that cannot be read is certainly occupied. Relies on the test NOT running as root,
+    // where chmod has no effect — standard CI and dev are fine.
+    const edge = join(dir, "apps", "edge");
+    await mkdir(edge, { recursive: true });
+    await chmod(edge, 0o000);
+
+    const error = await ensureScaffoldable(dir, "edge").catch((cause: unknown) => cause);
+    await chmod(edge, 0o755); // restore before asserting, so the temp dir is removable either way
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain(join("apps", "edge"));
   });
 
   test("an illegal worker name is refused before any path is probed", async () => {

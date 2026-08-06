@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -53,10 +53,19 @@ export async function ensureEmptyTarget(targetDir: string): Promise<void> {
   }
 }
 
-/** True if `path` exists. */
+/**
+ * True if anything is at `path` — including a symlink whose target is gone.
+ *
+ * `lstat`, not `access`, for the reason {@link blocksDirectory} gives: the link itself is the thing in
+ * the way. `access` follows it, so a **dangling** symlink at a template file path answered "does not
+ * exist", cleared the gate, and was never named in the refusal — and then `cp` and `stampPackageName`
+ * both wrote *through* the link, landing the scaffolded file outside `targetDir` while the run reported
+ * success. Node and Bun do not even agree on that copy, which makes it worse rather than narrower: the
+ * unit tests and the shipped CLI would answer differently on one input.
+ */
 async function exists(path: string): Promise<boolean> {
   try {
-    await access(path);
+    await lstat(path);
     return true;
   } catch {
     return false;
@@ -82,6 +91,12 @@ async function blocksDirectory(path: string): Promise<boolean> {
 /**
  * True unless `path` is missing or an empty directory — the question to ask of a path Pithy takes over
  * outright, the way {@link ensureEmptyTarget} asks it of `apps/<worker>` under `pithy worker add`.
+ *
+ * Two `try`s, because the two calls fail for opposite reasons. A missing directory is nothing to take
+ * over; a directory that cannot be *read* is certainly occupied. The read used to sit outside any `try`
+ * at all, so an unreadable `apps/<worker>` threw a raw `node:fs` error straight through the `PithyError`
+ * contract this module and `withErrorReporting` both promise — `pithy init --json` printed a stack trace
+ * where a CI wrapper parses `{"error":{…}}`.
  */
 async function occupied(path: string): Promise<boolean> {
   try {
@@ -89,7 +104,11 @@ async function occupied(path: string): Promise<boolean> {
   } catch {
     return false; // missing — nothing to take over
   }
-  return (await readdir(path)).length > 0;
+  try {
+    return (await readdir(path)).length > 0;
+  } catch {
+    return true; // unreadable — not empty as far as anyone can tell, and not ours to take
+  }
 }
 
 /**
