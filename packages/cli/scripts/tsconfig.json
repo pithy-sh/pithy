@@ -1,0 +1,15 @@
+{
+  // A third program, for the same reason `tsconfig.contract.json` is a second one: these files are
+  // outside `src`, so the package's own tsconfig — `rootDir: "src"` — cannot include them without
+  // moving its emit root. They were therefore in no program at all, and the script that decides
+  // whether a published CLI can run its first command was never typechecked. `bun` ran it anyway.
+  //
+  // Node only. Nothing here executes in a Worker; it runs on the machine doing the packing.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}

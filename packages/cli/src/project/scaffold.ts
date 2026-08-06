@@ -3,7 +3,7 @@
 
 import { existsSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -27,14 +27,33 @@ export interface ScaffoldOptions {
 /**
  * Where the starter template sits, relative to this module, in the order the two layouts are tried.
  *
- * Packaged first: `prepack` vendors `templates/starter` into the package, so an installed
- * `@pithy-sh/cli` carries its own copy at `<package>/templates/starter`. Workspace second: a checkout
- * keeps the source of truth at the repo root, four levels up and *outside* the package.
+ * **The checkout first**, and only when this module really is inside `packages/cli` of a repo root —
+ * see {@link workspaceTemplate}. There the repo root's `templates/starter` is the single source of
+ * truth, and preferring it means a `packages/cli/templates/starter` left behind by a pack that failed
+ * after `prepack` cannot shadow it. That copy is gitignored, so `git status` says nothing while every
+ * later run in the checkout scaffolds from a stale template.
+ *
+ * The package second: `prepack` vendors the starter in, so an installed `@pithy-sh/cli` carries its own
+ * copy at `<package>/templates/starter`. That is the layout an adopter has, and the only one they have.
  */
-const TEMPLATE_LAYOUTS = [
-  ["..", "..", "templates", "starter"],
-  ["..", "..", "..", "..", "templates", "starter"],
-] as const;
+const PACKAGED_LAYOUT = ["..", "..", "templates", "starter"] as const;
+
+/**
+ * The repo root's template, or nothing — and *nothing* unless `moduleDir` sits under that root's
+ * `packages/cli`.
+ *
+ * Four levels up from `src/project` is the repo root in a checkout. In an installed package it is
+ * `<node_modules>/templates/starter` — a path owned by any dependency called `templates`, an adopter's
+ * own or a squatter's, and `pithy init` would have scaffolded the customer's project out of it. The
+ * layout check is what makes that unreachable: `node_modules/@pithy-sh/cli/src/project` is not inside
+ * `node_modules/packages/cli`, whatever anybody installs.
+ */
+function workspaceTemplate(moduleDir: string): string | null {
+  const root = resolve(moduleDir, "..", "..", "..", "..");
+  const within = relative(join(root, "packages", "cli"), moduleDir);
+  if (within.length === 0 || within.startsWith("..") || isAbsolute(within)) return null;
+  return join(root, "templates", "starter");
+}
 
 /**
  * The starter template directory, resolved from `moduleDir`.
@@ -46,14 +65,17 @@ const TEMPLATE_LAYOUTS = [
  * checkout where the missing path happened to be there.
  */
 export function resolveTemplateDir(moduleDir: string): string {
-  for (const layout of TEMPLATE_LAYOUTS) {
-    const candidate = resolve(moduleDir, ...layout);
+  const here = resolve(moduleDir);
+  const candidates = [workspaceTemplate(here), resolve(here, ...PACKAGED_LAYOUT)].filter(
+    (candidate) => candidate !== null,
+  );
+  for (const candidate of candidates) {
     if (existsSync(join(candidate, "package.json"))) return candidate;
   }
   throw new InternalError({
     message: "This pithy install is missing its starter template.",
     action: "Reinstall @pithy-sh/cli. Report it if a fresh install does the same.",
-    detail: `no starter template under ${moduleDir} at ${TEMPLATE_LAYOUTS.map((l) => join(...l)).join(" or ")}`,
+    detail: `no starter template under ${here} at ${candidates.join(" or ")}`,
   });
 }
 

@@ -185,6 +185,16 @@ jobs:
         working-directory: packages/cli
         run: bunx vitest run src/migrations/orders.test.ts
 
+      # `files` does not fail on a missing path. Pack the CLI with lifecycle scripts disabled and the
+      # starter template is simply absent from the tarball — silently, exit 0 — which is the defect
+      # `prepack` was added to close, reappearing through the one door `prepack` cannot watch. No script
+      # our manifest declares can run during a pack that refuses to run scripts, so the post-condition
+      # has to sit on the artefact instead. This is it: pack, then hold the tarball to the git index.
+      # Whatever publishes runs the same check on the file it is about to push.
+      - name: Pack the CLI
+        working-directory: packages/cli
+        run: bun run pack:verify
+
       - name: Typecheck
         run: bun run typecheck
 
