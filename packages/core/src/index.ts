@@ -46,7 +46,6 @@ export {
 } from "./controlPlane/discovery/adminRoute";
 export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discovery/drift";
 export { requireControlPlane } from "./controlPlane/http/guard";
-export { CONTROL_PLANE_HEADER } from "./controlPlane/http/verify";
 export {
   ANY_VERIFIED_CALLER,
   type ControlPlaneRequirement,
@@ -56,3 +55,7 @@ export {
   SEAM_SCOPES,
 } from "./controlPlane/scope/scope";
 export { exportPublicJwk, type MintControlPlaneToken, mintControlPlaneToken } from "./controlPlane/token/mint";
+// The wire contract, from the module that imports nothing: a management client is often a browser
+// calling the adopter's Worker directly, and it must be able to name these headers without dragging
+// the verifier — and WebCrypto with it — into a DOM-typed build.
+export { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./controlPlane/wire";

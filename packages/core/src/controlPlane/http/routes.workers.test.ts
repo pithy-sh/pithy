@@ -15,7 +15,7 @@ import { ControlPlaneManifest } from "../discovery/adminRoute";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./verify";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 
 /**
  * The seam end to end, in workerd: a real composed backend, real D1, real KV, real Ed25519 tokens.

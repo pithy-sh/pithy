@@ -12,9 +12,9 @@ import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connectio
 import type { ReplayGuard } from "../replay/guard";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
+import { CONTROL_PLANE_HEADER } from "../wire";
 import { type ControlPlaneVerifier, createControlPlaneVerifier, requireControlPlane } from "./guard";
 import { RegisterKeyRequest } from "./schemas";
-import { CONTROL_PLANE_HEADER } from "./verify";
 
 /**
  * The gate and the verifier it consumes, against a real Hono app.
