@@ -217,6 +217,44 @@ describe("pithy ui", () => {
     await expect(readFile(join(workerDir, "src", "routes", "pithy", "sign-in.tsx"), "utf8")).rejects.toThrow();
   });
 
+  test("sync --check reports the routes the SPA shell is answering, and writes nothing", async () => {
+    await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
+    const written = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+
+    // The reported failure: the adopter mounts routes on their own app capability after the scaffold.
+    // No `pithy add` runs, so nothing re-derives, and every one of them comes back 200 text/html.
+    const grown: WorkerConfig = {
+      ...WITHOUT_AUTH,
+      app: defineCapability({
+        name: "api",
+        requiredBindings: [],
+        routes: (app) => {
+          app.get("/api/organisations", (c) => c.json({}));
+        },
+      }),
+    };
+    const report = await runUiSync({ workerDir, worker: "api", config: grown, check: true });
+
+    expect(report.uncovered).toEqual(["/api/organisations"]);
+    expect(report.changed).toBe(true);
+    // A check that repairs the thing it is checking cannot be run twice for the same answer.
+    expect(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")).toBe(written);
+  });
+
+  test("sync --check passes on a worker in sync", async () => {
+    await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
+    const report = await runUiSync({ workerDir, worker: "api", config: WITHOUT_AUTH, check: true });
+    expect(report.uncovered).toEqual([]);
+    expect(report.changed).toBe(false);
+  });
+
+  test("a sync that writes leaves nothing uncovered", async () => {
+    await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
+    const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
+    expect((await runUiSync({ workerDir, worker: "api", config: grown })).uncovered).toEqual([]);
+    expect((await runUiSync({ workerDir, worker: "api", config: grown, check: true })).uncovered).toEqual([]);
+  });
+
   test("sync on a worker with no front end says so", async () => {
     try {
       await runUiSync({ workerDir, worker: "api", config: WITHOUT_AUTH });

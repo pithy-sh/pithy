@@ -3,7 +3,8 @@
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
-import { deriveWorkerFirst, firstSegment, workerFirstPatterns } from "./routeAllowlist";
+import type { WorkerConfig } from "../project/config";
+import { deriveWorkerFirst, firstSegment, uncoveredRoutes, workerFirstPatterns } from "./routeAllowlist";
 
 /** A capability that mounts routes under `base` and nothing else. */
 function routed(name: string, base: string) {
@@ -86,5 +87,47 @@ describe("deriveWorkerFirst", () => {
 
   test("a worker composing nothing still keeps /health worker-first", () => {
     expect(deriveWorkerFirst({ capabilities: [] })).toEqual(["/health", "/health/*"]);
+  });
+});
+
+describe("uncoveredRoutes", () => {
+  const scaffoldTime = ["/health", "/health/*"];
+
+  test("reports the routes an allowlist written earlier no longer covers", () => {
+    // The reported failure, exactly: the list was derived when /health was the only route, and the
+    // worker has grown its own since. Each of these comes back 200 text/html, having never run.
+    const config: WorkerConfig = {
+      capabilities: [],
+      app: defineCapability({
+        name: "api",
+        requiredBindings: [],
+        routes: (app) => {
+          app.get("/api/organisations", (c) => c.json({}));
+          app.post("/api/cli/device/start", (c) => c.json({}));
+        },
+      }),
+    };
+    expect(uncoveredRoutes(config, scaffoldTime)).toEqual(["/api/cli/device/start", "/api/organisations"]);
+  });
+
+  test("a list that covers the route table reports nothing", () => {
+    const config: WorkerConfig = { capabilities: [routed("auth", "/auth")] };
+    expect(uncoveredRoutes(config, deriveWorkerFirst(config))).toEqual([]);
+  });
+
+  test("a route no allowlist can express is not drift", () => {
+    // core mounts `app.use("*")`, and `/` is the app shell by design. Reporting either would make
+    // every project permanently drifted, which is how a check gets ignored.
+    const config: WorkerConfig = {
+      capabilities: [],
+      app: defineCapability({
+        name: "api",
+        requiredBindings: [],
+        routes: (app) => {
+          app.get("/", (c) => c.json({}));
+        },
+      }),
+    };
+    expect(uncoveredRoutes(config, scaffoldTime)).toEqual([]);
   });
 });

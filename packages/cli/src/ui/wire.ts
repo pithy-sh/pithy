@@ -45,6 +45,23 @@ export interface AssetsChange {
 const SPA_NOT_FOUND = "single-page-application";
 
 /**
+ * The `assets` stanza as the file currently holds it, without touching it — what `pithy ui sync
+ * --check` reads. A missing stanza, or a `run_worker_first` that is not an array, both come back as an
+ * empty list: neither is a list this Worker is relying on.
+ *
+ * Separate from {@link wireAssets} rather than a flag on it, because a check that can write is a check
+ * nobody can run twice for the same answer.
+ */
+export async function readAssets(workerDir: string): Promise<{ runWorkerFirst: string[]; notFoundHandling?: string }> {
+  const document = (await readWranglerConfig(workerDir)) as { assets?: AssetsStanza };
+  const assets = document.assets;
+  return {
+    runWorkerFirst: Array.isArray(assets?.run_worker_first) ? [...assets.run_worker_first] : [],
+    ...(assets?.not_found_handling === undefined ? {} : { notFoundHandling: assets.not_found_handling }),
+  };
+}
+
+/**
  * Write the `assets` stanza into a worker's `wrangler.jsonc`.
  *
  * `assets.directory` is deliberately **not** written. Under the Vite plugin it is supplied by the

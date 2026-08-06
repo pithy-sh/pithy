@@ -55,8 +55,11 @@ describe("ui command", () => {
     }
   });
 
-  test("sync takes the same --worker resolution as add", () => {
-    expect(Object.keys(args("sync"))).toEqual(["worker", "json"]);
+  test("sync takes the same --worker resolution as add, plus the --check CI gate", () => {
+    expect(Object.keys(args("sync"))).toEqual(["worker", "check", "json"]);
+    // Defaulted, and defaulted to writing: a stale allowlist answers with the SPA shell and a 200, so
+    // the repair is the ordinary run and the check is the one you ask for.
+    expect(args("sync").check).toMatchObject({ type: "boolean", default: false });
   });
 
   test("pithy registers it, lazily", async () => {

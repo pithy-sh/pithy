@@ -1033,7 +1033,7 @@ What it does not touch is everything outside the worker's own directory: the roo
 
 ```
 pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--json]
-pithy ui sync [--worker <name>] [--json]
+pithy ui sync [--worker <name>] [--check] [--json]
 pithy ui list [--json]
 ```
 
@@ -1041,6 +1041,7 @@ pithy ui list [--json]
 |---|---|---|---|
 | `<framework>` | `add` | required | The stub to scaffold. `react` is the only stub Pithy ships |
 | `--worker <name>` | `add`, `sync` | resolved — see 7.2 | The Worker under `apps/` to scaffold into, or to re-derive |
+| `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
 | `--auth` / `--no-auth` | `add` | see 7.3 | Scaffold the sign-in screens, or leave them out |
 | `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set |
 
@@ -1104,7 +1105,7 @@ Three files are edited.
 
 `assets.directory` is **not** written. Under the Vite plugin the directory is the plugin's to set — it overwrites the key silently rather than erroring, so a value there would be a lie in the adopter's own config.
 
-The array form of `run_worker_first` also turns off Cloudflare's automatic `Sec-Fetch-Mode: navigate` detection, which is the point: `not_found_handling` then applies only to requests no worker-first pattern matched, so an API route can never be answered with the SPA shell.
+The array form of `run_worker_first` is what sets `has_static_routing`, and that is the whole mechanism. With it, `not_found_handling` applies to every request no worker-first pattern matched — so a listed route always reaches the Worker, and an unlisted one always gets the SPA shell, whatever the method. Without it, the asset worker overrides `not_found_handling` to `"none"` for every request that is not a `Sec-Fetch-Mode: navigate` navigation, which sends `fetch` and `curl` to the Worker and still hands the shell to a magic-link click or an OAuth callback. Both halves of that trade are silent 200s; the list is the half that can be checked, and `pithy ui sync --check` is what checks it (7.6).
 
 **`pithy.worker.jsonc` — the `dev` and `ui` blocks.**
 
@@ -1121,9 +1122,21 @@ The array form of `run_worker_first` also turns off Cloudflare's automatic `Sec-
 
 ### 7.6 `pithy ui sync`
 
-`run_worker_first` is derived from the route table, and the route table changes when the Worker's capabilities do. `pithy ui sync` re-derives it and rewrites that one key. Run it after `pithy add <capability>` or `pithy remove <capability>` on a Worker that carries a UI — otherwise the new capability's routes are shadowed by the SPA shell, and a removed one's stay allowlisted.
+`run_worker_first` is derived from the route table, and the route table changes whenever a route is mounted: by `pithy add <capability>`, by `pithy remove <capability>`, and by the adopter writing one into their own app capability. **That last one runs no command**, which is how the list goes stale without anyone touching it. `pithy ui sync` re-derives it and rewrites that one key.
 
 `sync` touches nothing else. No file is created, no dependency moves, no scaffolded screen is regenerated. It is idempotent: a run with nothing to change reports that nothing moved.
+
+`--check` writes nothing and reports what the list no longer covers. A shadowed route answers `200 text/html` from the SPA shell with the handler never invoked, and no adopter test suite sees it — tests call handlers directly, so the asset router is never in the picture. So the check exits non-zero and belongs in CI, beside `pithy doctor`:
+
+```
+$ pithy ui sync --check --worker api
+api: the SPA shell is answering these, not the worker.
+  /api/cli/device/start
+  /api/organisations
+Run pithy ui sync --worker api.
+```
+
+A route the allowlist cannot express is never reported: `core`'s own `app.use("*")`, and a route mounted at `/`, are paths the derivation deliberately leaves to the shell (7.5). A check that flagged them would mark every project drifted forever.
 
 ### 7.7 `--json`
 
@@ -1138,10 +1151,10 @@ $ pithy ui add react --worker api --json
 
 ```
 $ pithy ui sync --worker api --json
-{"command":"ui.sync","worker":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"notFoundHandling":"single-page-application"}
+{"command":"ui.sync","worker":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"uncovered":[],"notFoundHandling":"single-page-application"}
 ```
 
-`before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
+`before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `uncovered` names the routes the list **in the file** does not cover: always empty after a write, and under `--check` it is the finding, the one thing that fails the exit. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
 
 ```
 $ pithy ui list --json

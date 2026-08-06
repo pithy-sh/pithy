@@ -237,18 +237,41 @@ Two rules the derivation follows:
 - **Both forms, every time.** `"/auth/*"` does not match a bare `"/auth"`, so each base path is emitted as the pair `"/auth"` and `"/auth/*"`.
 - **Never a bare-prefix glob.** `"/media*"` would also capture `/mediafoo`. The pair `"/media"` + `"/media/*"` captures the route table and nothing beyond it.
 
-Because it is derived, it goes stale when the route table changes:
+### It is derived once, and every route you mount afterwards is yours to re-derive
+
+This is the sharp edge, and it has cut. The list is written at `pithy ui add`, from the route table as it stood that day. Every route mounted after it — by `pithy add <capability>`, and by **you, writing a route into your own app capability** — is outside the list until something re-derives it. A route outside the list is answered by the SPA shell: `200`, `text/html`, and your handler never ran. Not a 404, not a 500. The wrong body with the right status.
+
+Nothing in your test suite catches that. Tests call handlers directly; the asset router is not in the picture. So the check is a command, and it belongs in CI:
 
 ```bash
-pithy add leaderboard --worker api
-pithy ui sync --worker api
+pithy ui sync --check --worker api     # writes nothing, exits 1 on a shadowed route
+pithy ui sync --worker api             # re-derives and rewrites that one key
 ```
 
-`pithy ui sync` re-derives the allowlist from the Worker's current capabilities and rewrites that one key. It creates no files and regenerates no screens. Run it after any `pithy add` or `pithy remove` on a Worker that carries a UI — otherwise the new capability's routes are shadowed by the SPA shell, and a removed one's stay allowlisted.
+```
+$ pithy ui sync --check --worker api
+api: the SPA shell is answering these, not the worker.
+  /api/cli/device/start
+  /api/organisations
+Run pithy ui sync --worker api.
+```
+
+`pithy ui sync` creates no files and regenerates no screens. Run it after any `pithy add` or `pithy remove`, and after you mount a route of your own.
 
 **One key** is literal. `not_found_handling` is written once, when `pithy ui add` finds no `assets` stanza, and from then on it is yours like any other file Pithy authored — `sync` reads it and reports it, and never rewrites it. If you set it to something other than `single-page-application`, client-side deep links stop being served the app shell and reach your Worker instead, where Hono 404s them; `sync` will tell you what the value is, not argue with it.
 
-One more detail, in case you were counting on it: passing `run_worker_first` as an array disables Cloudflare's automatic `Sec-Fetch-Mode: navigate` detection. That is deliberate. `not_found_handling` then applies only to requests no worker-first pattern matched, which is the behaviour that makes the split reliable.
+### Why there is a list at all
+
+The obvious repair for a list that goes stale is to delete it. Try it and the API comes back to life: `curl /api/organisations` reaches the Worker, and deep links still serve the app shell. It looks free. It is not, and the reason is one line in Cloudflare's asset worker:
+
+```js
+if (!(has_static_routing || (navigateFlag && request.headers.get("Sec-Fetch-Mode") === "navigate")))
+  configuration = { ...configuration, not_found_handling: "none" };
+```
+
+An array `run_worker_first` is what sets `has_static_routing`. With it, a path the list misses gets the shell whatever the method — the failure above. Without it, every **non**-navigation falls through to the Worker, which is why `curl` and `fetch` look fixed. The navigation half does not change: a request carrying `Sec-Fetch-Mode: navigate` still gets the shell.
+
+Two of those requests are ones Pithy's sign-in depends on. A magic-link click lands on `/auth/magic-link/verify`, and an OAuth provider redirects to `/auth/callback/<provider>` — both top-level navigations, both onto the Worker. Delete the list and they are answered by the app shell, silently, exactly the way the stale list answered `/api/organisations`. So the list stays, and `--check` is what keeps it honest.
 
 One route is deliberately never allowlisted: one your app capability mounts at **`/`**. In a Worker that serves a SPA, `/` is the app shell — that is what `not_found_handling` is for — so a root API route loses to the front end rather than shadowing it. If you need both, move the API route under a prefix (`/api/status` rather than `/`) and `pithy ui sync` will pick it up.
 
