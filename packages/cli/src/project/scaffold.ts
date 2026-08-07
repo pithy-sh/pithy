@@ -57,7 +57,22 @@ function workspaceTemplate(moduleDir: string): string | null {
 }
 
 /**
- * The starter template directory, resolved from `moduleDir`.
+ * Where the starter came from, and — the part that matters — **which of the two layouts it is**.
+ *
+ * The layout is the only honest way to tell "git could not answer" from "there is nothing to ask": a
+ * checkout's `templates/starter` is tracked and always has an index, and the copy `prepack` vendored into
+ * the package never does. {@link templateContents} turns that into two different decisions about the same
+ * `null`, and getting it from the resolver means nothing has to guess later.
+ */
+export interface TemplateSource {
+  /** The starter template directory. */
+  dir: string;
+  /** True for the copy `prepack` vendored into the package — the layout with no `.git` beside it. */
+  vendored: boolean;
+}
+
+/**
+ * The starter template, resolved from `moduleDir`, with the layout it was found in.
  *
  * Exported because the only honest way to test this is against an **extracted tarball**, not against
  * the checkout the test runs in. This resolved the repo-root path and nothing else, which exists only
@@ -65,27 +80,34 @@ function workspaceTemplate(moduleDir: string): string | null {
  * adopter runs — could not work. Every scaffold test stayed green, because each one ran from the
  * checkout where the missing path happened to be there.
  */
-export function resolveTemplateDir(moduleDir: string): string {
+export function resolveTemplateSource(moduleDir: string): TemplateSource {
   const here = resolve(moduleDir);
-  const candidates = [workspaceTemplate(here), resolve(here, ...PACKAGED_LAYOUT)].filter(
-    (candidate) => candidate !== null,
-  );
+  const workspace = workspaceTemplate(here);
+  const candidates: TemplateSource[] = [
+    ...(workspace === null ? [] : [{ dir: workspace, vendored: false }]),
+    { dir: resolve(here, ...PACKAGED_LAYOUT), vendored: true },
+  ];
   // `lstatSync`, not `existsSync`, and the reason is the module's own rule rather than a threat model:
   // this file writes, and a writing module answers "is something at this path" one way — about the path
   // itself. An exception here would be an exception somebody has to remember, and the escape this module
   // exists to stop has five producers because nobody did. `throwIfNoEntry` off, so missing is a value.
   for (const candidate of candidates) {
-    if (lstatSync(join(candidate, "package.json"), { throwIfNoEntry: false })) return candidate;
+    if (lstatSync(join(candidate.dir, "package.json"), { throwIfNoEntry: false })) return candidate;
   }
   throw new InternalError({
     message: "This pithy install is missing its starter template.",
     action: "Reinstall @pithy-sh/cli. Report it if a fresh install does the same.",
-    detail: `no starter template under ${here} at ${candidates.join(" or ")}`,
+    detail: `no starter template under ${here} at ${candidates.map((candidate) => candidate.dir).join(" or ")}`,
   });
 }
 
-function templateDir(): string {
-  return resolveTemplateDir(dirname(fileURLToPath(import.meta.url)));
+/** {@link resolveTemplateSource}, for the callers that only want the path. */
+export function resolveTemplateDir(moduleDir: string): string {
+  return resolveTemplateSource(moduleDir).dir;
+}
+
+function templateSource(): TemplateSource {
+  return resolveTemplateSource(dirname(fileURLToPath(import.meta.url)));
 }
 
 /**
@@ -338,13 +360,24 @@ export const RENAMED_ON_LANDING: Record<string, string> = {
  * #145 read the index for the *published tarball* and stopped at the packer. This is the same rule for
  * the other reader of the same directory.
  *
- * **No index means the vendored copy**, which is what an installed `@pithy-sh/cli` has: `prepack` built
- * it from this same allowlist, and there is no `.git` beside it to ask. So the directory is taken as it
- * stands. Falling back the other way — refusing — would break `pithy init` for every adopter to protect
- * a checkout none of them have.
+ * **No index is two different facts, and only one of them is safe.** `committedFiles` answers `null` for
+ * "this is not a checkout" *and* for "git is not installed", "the repository is broken", "nothing here is
+ * tracked yet". #145's fix read them all as the first, so on a real checkout where git failed for any
+ * reason at all, `pithy init` went straight back to copying whatever the maintainer's working tree held —
+ * `.dev.vars` included — silently, and only on the machines where that is hardest to notice.
+ *
+ * {@link TemplateSource.vendored} is what tells them apart, and it comes from the layout rather than from
+ * a probe: the copy an installed `@pithy-sh/cli` carries was built by `prepack` from this same allowlist
+ * and has no `.git` beside it to ask, so it is taken as it stands. A checkout's template is tracked and
+ * always has an index — so `null` there means the question failed, and the run refuses rather than
+ * guessing. Refusing the vendored case too would break `pithy init` for every adopter to protect a
+ * checkout none of them have; excusing the checkout case is how the leak came back.
+ *
+ * Exported for the test: the branch that matters is the one that only happens on a machine where git is
+ * broken, and a suite that runs in a healthy checkout can never reach it any other way.
  */
-async function templateContents(root: string): Promise<{ files: string[]; directories: string[] }> {
-  const committed = committedFiles(root);
+export async function templateContents(source: TemplateSource): Promise<{ files: string[]; directories: string[] }> {
+  const committed = committedFiles(source.dir);
   if (committed !== null) {
     const directories = new Set<string>();
     for (const path of committed) {
@@ -353,9 +386,18 @@ async function templateContents(root: string): Promise<{ files: string[]; direct
     return { files: committed, directories: [...directories].sort() };
   }
 
-  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  if (!source.vendored) {
+    throw new InternalError({
+      message: "Pithy couldn't ask git what the starter template ships.",
+      action:
+        "Install git and run this from a complete checkout — or install @pithy-sh/cli, which carries its own template. Pithy won't copy the template directory unread.",
+      detail: `git listed nothing committed under ${source.dir}, and that path is a checkout's template, not a vendored one`,
+    });
+  }
+
+  const entries = await readdir(source.dir, { recursive: true, withFileTypes: true });
   const named = entries.map((entry) => ({
-    path: relative(root, join(entry.parentPath, entry.name)),
+    path: relative(source.dir, join(entry.parentPath, entry.name)),
     directory: entry.isDirectory(),
   }));
   return {
@@ -385,7 +427,7 @@ async function templateContents(root: string): Promise<{ files: string[]; direct
  * was replaced with a link, and since the file is git-ignored there was no copy of it anywhere.
  */
 async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
-  const contents = await templateContents(templateDir());
+  const contents = await templateContents(templateSource());
 
   const files = contents.files.flatMap((path) => {
     const landed = RENAMED_ON_LANDING[path];
@@ -417,13 +459,13 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
  * `pithy init` that cannot run in a directory it has no quarrel with.
  */
 async function copyTemplate(targetDir: string): Promise<void> {
-  const root = templateDir();
-  const contents = await templateContents(root);
+  const source = templateSource();
+  const contents = await templateContents(source);
   const allowed = new Set([...contents.files, ...contents.directories]);
-  await cp(root, targetDir, {
+  await cp(source.dir, targetDir, {
     recursive: true,
-    filter: (source) => {
-      const path = relative(root, source);
+    filter: (candidate) => {
+      const path = relative(source.dir, candidate);
       return path.length === 0 || allowed.has(path);
     },
   });

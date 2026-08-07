@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
+import { pathExists } from "../project/scaffold";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
@@ -117,16 +117,6 @@ export interface UiAddReport {
   scripts: string[];
 }
 
-/** True if `path` exists. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Whether to write one capability's screens. `--auth`/`--no-auth` and `--payments`/`--no-payments` decide
  * outright. With neither, a human is asked (defaulting to yes when the capability is composed on this
@@ -189,9 +179,14 @@ async function planFiles(
     });
   }
 
+  // `pathExists`, the shared `lstat`, and not the local `access` this used to roll. `access` follows a
+  // link, so a dangling one planted at a template path answered "nothing there" — the file counted as
+  // fresh, and the plan handed it to `scaffoldFiles` to write. That is the same predicate five other
+  // modules got wrong, in the one module the tripwire could not see because it imports no writer of its
+  // own. One question, one implementation.
   let fresh = 0;
   for (const rel of Object.keys(files)) {
-    if (!(await exists(join(options.workerDir, rel)))) fresh += 1;
+    if (!(await pathExists(join(options.workerDir, rel)))) fresh += 1;
   }
   if (fresh === 0) {
     throw new ConflictError({

@@ -11,6 +11,7 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ejectCapability } from "../capabilities/eject";
 import { defaultRemoveSteps } from "../capabilities/remove";
+import { wireFeatureDevVars } from "../feature/devVars";
 import { scaffoldFiles } from "../ui/scaffold";
 import {
   ensureEmptyTarget,
@@ -20,7 +21,9 @@ import {
   pathExists,
   RENAMED_ON_LANDING,
   removeScaffoldPath,
+  resolveTemplateSource,
   scaffoldProject,
+  templateContents,
   unpublishedKitNotice,
 } from "./scaffold";
 import { committedFiles } from "./templateFiles";
@@ -865,9 +868,15 @@ describe("ensureEmptyTarget", () => {
  * `access` does; {@link ensureScaffoldPath}'s own docstring names two of them. So the rule is the whole
  * class now, and a module that follows on purpose says so in {@link FOLLOWS_ON_PURPOSE}, in writing.
  *
+ * **And "a module that writes" was `node:fs`, which is not what it means.** `ui/flow.ts` probed with
+ * `access` and then handed the answer to `scaffoldFiles`, which writes — and the rule never looked at it,
+ * because it imports no writer of its own. A module that writes *through* this package's own writers writes
+ * exactly as much as one calling `writeFile`, so {@link LOCAL_WRITES} names them and they count the same.
+ * That is the seventh producer's shape, closed before it had one.
+ *
  * **Why a test and not a Biome grit plugin.** The rule that holds with no exemptions is a conditional —
  * a follower is wrong in a module that *writes*, and unremarkable in one that only reads. `config.ts`,
- * `workerScope.ts`, `packageManager.ts`, `ui/flow.ts` and `feature/sync.ts` all probe for a file they are
+ * `workerScope.ts` and `packageManager.ts` probe for a file they are
  * only going to read; following a link there decides nothing and leaks nothing. That conjunction is a fact
  * about a whole module, and Biome's grit plugins match expressions — the three this repo already ships
  * (`no-console`, `no-process-io`, `no-raw-request-input`) are all "never, anywhere in this scope" rules,
@@ -943,6 +952,10 @@ describe("the gate on the gate", () => {
       probes: "stat",
       why: "Reads `mtimeMs` off a lock file it created itself, to age it out. Not an existence probe.",
     },
+    "feature/sync.ts": {
+      probes: "access",
+      why: "Asks whether a worktree directory and its gitlink are still there, to decide whether a pinned port block belongs to a live feature. Nothing is composed from that answer and nothing is written through it.",
+    },
     "feature/worktree.ts": {
       probes: "existsSync",
       why: "Asks about a git worktree directory before handing it to `git worktree add`, which does its own refusing. Nothing is composed and written through the answer.",
@@ -953,19 +966,47 @@ describe("the gate on the gate", () => {
     },
   };
 
+  /**
+   * This package's own writers. A module reaching one of these puts bytes on disk as surely as one calling
+   * `writeFile`, and the rule was blind to every module that only did it this way — `ui/flow.ts` probed
+   * with `access` and wrote through `scaffoldFiles`, and was never even in the set being examined.
+   *
+   * Gates are deliberately absent. `ensureScaffoldPath` and `pathExists` are the answer to the question,
+   * not a way of writing, and a module that imports one has already done the right thing.
+   */
+  const LOCAL_WRITES = new Set(["removeScaffoldPath", "scaffoldFiles", "wireFeatureDevVars", "writeFileAtomic"]);
+
+  /** Every `import { … } from "…"` in a module: the specifier, and the names it binds. */
+  function namedImports(source: string): { specifier: string; names: string[] }[] {
+    const found: { specifier: string; names: string[] }[] = [];
+    for (const statement of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"([^"]+)"/g)) {
+      const names = (statement[1] ?? "")
+        .split(",")
+        .map((clause) =>
+          clause
+            .trim()
+            .split(/\s+as\s+/)[0]
+            ?.trim(),
+        )
+        .filter((name): name is string => Boolean(name));
+      found.push({ specifier: statement[2] ?? "", names });
+    }
+    return found;
+  }
+
   /** The names a module imports from `node:fs` or `node:fs/promises`, local aliases resolved to the original. */
   function fsImports(source: string): string[] {
-    const names: string[] = [];
-    for (const statement of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"node:fs(?:\/promises)?"/g)) {
-      for (const clause of (statement[1] ?? "").split(",")) {
-        const imported = clause
-          .trim()
-          .split(/\s+as\s+/)[0]
-          ?.trim();
-        if (imported) names.push(imported);
-      }
-    }
-    return names;
+    return namedImports(source)
+      .filter(({ specifier }) => /^node:fs(\/promises)?$/.test(specifier))
+      .flatMap(({ names }) => names);
+  }
+
+  /** Whether a module puts bytes on disk — through `node:fs`, or through one of this package's writers. */
+  function writes(source: string): boolean {
+    if (fsImports(source).some((name) => WRITES.has(name))) return true;
+    return namedImports(source).some(
+      ({ specifier, names }) => specifier.startsWith(".") && names.some((name) => LOCAL_WRITES.has(name)),
+    );
   }
 
   /** Every module this rule covers: the CLI's shipped source, tests and their harnesses excluded. */
@@ -982,11 +1023,11 @@ describe("the gate on the gate", () => {
   async function followers(): Promise<Record<string, string>> {
     const found: Record<string, string> = {};
     for (const path of await modules()) {
-      const imported = fsImports(await readFile(path, "utf8"));
-      const probes = imported.filter((name) => FOLLOWS.has(name)).sort();
-      if (probes.length > 0 && imported.some((name) => WRITES.has(name))) {
-        found[relative(CLI_SRC, path)] = probes.join(", ");
-      }
+      const source = await readFile(path, "utf8");
+      const probes = fsImports(source)
+        .filter((name) => FOLLOWS.has(name))
+        .sort();
+      if (probes.length > 0 && writes(source)) found[relative(CLI_SRC, path)] = probes.join(", ");
     }
     return found;
   }
@@ -1008,6 +1049,42 @@ describe("the gate on the gate", () => {
     // A reason nobody wrote is a reason nobody reviewed, and the list is only worth having if adding to
     // it costs an argument.
     for (const [path, { why }] of Object.entries(FOLLOWS_ON_PURPOSE)) {
+      expect(why.trim().length, path).toBeGreaterThan(40);
+    }
+  });
+
+  /**
+   * The modules allowed to call a recursive delete themselves: path → why.
+   *
+   * Not a second convention — the same one, asked of the other half. The previous rounds banned a probe
+   * that follows and a hand-rolled temp-plus-rename, and neither noticed an `rm -rf` on a path built out
+   * of a name. That is what #158's two producers were, and it is the shape the seventh will take unless
+   * this is here.
+   */
+  const REMOVES_ON_PURPOSE: Record<string, string> = {
+    "capabilities/eject.ts":
+      "Discards the fork it is about to re-copy under `--force`, on the exact path `ensureScaffoldPath(projectDir, dest)` cleared on the line above and `pathExists` then confirmed with an `lstat`. The gate is there; only the `rm` is local.",
+  };
+
+  test("no module runs its own recursive delete on a path it composed", async () => {
+    // `rm` itself is not banned: `feature/destroy.ts` and `feature/provision.ts` each remove one named
+    // file, which unlinks exactly what it names. What escapes is the recursive form — it walks whatever
+    // the path resolves to, so one symlink anywhere above it takes an unrelated tree with it.
+    const found: string[] = [];
+    for (const path of await modules()) {
+      // The primitive's own module. `removeScaffoldPath` is where the `rm` is supposed to be.
+      if (path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")) continue;
+      const source = await readFile(path, "utf8");
+      if (/\brm(?:Sync)?\(\s*[^;]{0,200}?recursive:\s*true/.test(source)) found.push(relative(CLI_SRC, path));
+    }
+
+    expect(found.sort(), "route it through removeScaffoldPath, or say why it deletes its own way").toEqual(
+      Object.keys(REMOVES_ON_PURPOSE).sort(),
+    );
+  });
+
+  test("and every recursive delete that stays says why", () => {
+    for (const [path, why] of Object.entries(REMOVES_ON_PURPOSE)) {
       expect(why.trim().length, path).toBeGreaterThan(40);
     }
   });
@@ -1148,6 +1225,29 @@ describe("a symlink above the file being written", () => {
     expect(await readdir(join(outside, "board"))).toEqual([]);
     expect(await readdir(outside)).toEqual(["board"]);
   });
+
+  test("pithy worker add refuses to wire a .dev.vars through a symlinked apps/<worker>", async () => {
+    // The sixth exit, and it is not the worker being added. `scaffoldWorker` refuses the directory it
+    // creates, but the wiring runs over *every worker discovered* — and discovery reads `apps/` through
+    // whatever is there. Reproduced with the real CLI: `pithy worker add web`, with `apps/other` a link
+    // to a directory outside the project, wrote a `.dev.vars` symlink into that directory. Where the
+    // shared file is outside the tree — a worktree, which is the case `linkPath` writes absolute for —
+    // the planted link points straight at it, and reading `CLOUDFLARE_API_TOKEN` through it was one
+    // `cat` away. `pithy dev` runs the same wiring on every run, so the plant needs no unusual command.
+    await mkdir(join(project, "apps"), { recursive: true });
+    await writeFile(join(project, ".dev.vars"), "CLOUDFLARE_API_TOKEN=live\n");
+    await symlink(outside, join(project, "apps", "other"));
+
+    await expect(
+      wireFeatureDevVars({
+        mainRoot: project,
+        worktreePath: project,
+        workers: [{ name: "other", dir: join(project, "apps", "other") }],
+      }),
+    ).rejects.toThrow(PithyError);
+
+    expect(await pathExists(join(outside, ".dev.vars"))).toBe(false);
+  });
 });
 
 /**
@@ -1196,6 +1296,64 @@ describe("the template copy", () => {
       const landed = RENAMED_ON_LANDING[path] ?? path.replace(`apps${sep}api${sep}`, `apps${sep}board${sep}`);
       expect(await pathExists(join(dir, landed)), landed).toBe(true);
     }
+  });
+});
+
+/**
+ * `null` from the index reader means **git could not answer**, and that is not the same fact as "this is
+ * the vendored copy".
+ *
+ * #145's fix read the same `null` as permission to copy the directory wholesale, which is right for one of
+ * the two states and puts the whole leak back for the other: in a real checkout where git is missing, or
+ * the repository is broken, or `templates/starter` has been added but not committed, `pithy init` went
+ * straight back to copying whatever the maintainer's working tree happened to hold — `.dev.vars` included.
+ * Silently, and only on the machines where it is hardest to notice.
+ *
+ * The two states are told apart by **which layout the template was resolved from**, which is a fact the
+ * resolver already has. A checkout's `templates/starter` always has an index; the copy `prepack` vendored
+ * into the package never does, and it was built from this same allowlist when there was one to read.
+ */
+describe("the starter's allowlist when git cannot answer", () => {
+  test("a checkout with no index is refused rather than copied wholesale", async () => {
+    const starter = join(dir, "starter");
+    await mkdir(starter, { recursive: true });
+    await writeFile(join(starter, ".dev.vars"), "CLOUDFLARE_API_TOKEN=a-maintainers-real-token\n");
+    await writeFile(join(starter, "package.json"), "{}\n");
+
+    // Not a repository, so the reader answers `null` exactly as a broken git would.
+    expect(committedFiles(starter)).toBeNull();
+    await expect(templateContents({ dir: starter, vendored: false })).rejects.toThrow(PithyError);
+  });
+
+  test("the vendored copy has no index by construction, and is taken as it stands", async () => {
+    const starter = join(dir, "starter");
+    await mkdir(join(starter, "apps", "api"), { recursive: true });
+    await writeFile(join(starter, "package.json"), "{}\n");
+    await writeFile(join(starter, "apps", "api", "package.json"), "{}\n");
+
+    const contents = await templateContents({ dir: starter, vendored: true });
+    expect(contents.files.sort()).toEqual([join("apps", "api", "package.json"), "package.json"]);
+    expect(contents.directories).toContain(join("apps", "api"));
+  });
+
+  test("the layout is what says which one it is", async () => {
+    // A checkout: `<root>/packages/cli/src/project` with the source of truth at `<root>/templates/starter`.
+    const checkout = join(dir, "checkout");
+    const moduleDir = join(checkout, "packages", "cli", "src", "project");
+    await mkdir(moduleDir, { recursive: true });
+    await mkdir(join(checkout, "templates", "starter"), { recursive: true });
+    await writeFile(join(checkout, "templates", "starter", "package.json"), "{}\n");
+    expect(resolveTemplateSource(moduleDir)).toEqual({ dir: join(checkout, "templates", "starter"), vendored: false });
+
+    // An install: `<node_modules>/@pithy-sh/cli/src/project`, with the template `prepack` vendored in.
+    const installed = join(dir, "installed", "node_modules", "@pithy-sh", "cli");
+    await mkdir(join(installed, "src", "project"), { recursive: true });
+    await mkdir(join(installed, "templates", "starter"), { recursive: true });
+    await writeFile(join(installed, "templates", "starter", "package.json"), "{}\n");
+    expect(resolveTemplateSource(join(installed, "src", "project"))).toEqual({
+      dir: join(installed, "templates", "starter"),
+      vendored: true,
+    });
   });
 });
 

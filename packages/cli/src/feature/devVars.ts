@@ -3,6 +3,11 @@
 
 import { lstat, readlink, stat, symlink, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+// `project/scaffold` imports this module back, for `pithy init`'s own wiring. The cycle is real and it is
+// harmless: both sides reach across only from inside a function body, so neither is evaluated before the
+// other has finished. The alternative was a second copy of the gate, which is the mistake this whole
+// series has been undoing.
+import { ensureScaffoldPath } from "../project/scaffold";
 import type { WorkerTarget } from "../project/workers";
 
 /**
@@ -83,6 +88,16 @@ export async function wireFeatureDevVars(options: {
   const targets = [options.worktreePath, ...options.workers.map((worker) => worker.dir)];
   for (const dir of new Set(targets)) {
     if (dir === options.mainRoot) continue; // never link the shared file to itself.
+    // The directory, gated before anything is written into it. `discoverWorkers` builds `apps/<name>`
+    // out of a `readdir` that follows whatever `apps` is, so a symlink there or at `apps/<name>` had this
+    // planting a `.dev.vars` symlink — pointing at the project's shared credential file — inside a
+    // directory outside the project. Whoever can write that directory then reads the team's secrets
+    // through it. And the wiring runs over *every* discovered worker, not just the one a command names,
+    // so `pithy worker add web` was enough, and `pithy dev` repeats it on every run.
+    //
+    // The check stops at the directory, never at `.dev.vars` itself: a symlink there is what this
+    // function is for, and the policy for that one is below — a real file and a live link are kept.
+    await ensureScaffoldPath(options.worktreePath, dir);
     const target = join(dir, ".dev.vars");
     const outcome = await link({ source, target, mainRoot: options.mainRoot });
     if (outcome === null) wired.push(dir);
