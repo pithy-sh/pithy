@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -9,6 +9,7 @@ import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyErro
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { uninstallPackage } from "../project/packageManager";
+import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
@@ -306,8 +307,12 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     dropTables: (capability, env) =>
       dropCapabilityTables({ capability, workerDir, persistRoot: projectDir, env, project: options.project }),
     uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
-    // fs.rm (recursive) unlinks contents then removes the dir — the node API, not shell `rm -rf`.
-    deleteSource: (dir) => rm(dir, { recursive: true, force: true }),
+    // Gated (#158). This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of
+    // names — handed to a recursive delete. A symlink at any of them carried the delete onto whatever
+    // the link pointed at, outside the project, with nothing to recover afterwards. `removeScaffoldPath`
+    // refuses a link at every component and refuses a path that resolves outside `projectDir`, then does
+    // the `rm` itself, so the gate cannot be skipped by editing this line.
+    deleteSource: (dir) => removeScaffoldPath(projectDir, dir),
     packageInstalled: (pkg) => exists(join(projectDir, "node_modules", pkg)),
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
   };

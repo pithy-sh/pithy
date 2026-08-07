@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { lstatSync } from "node:fs";
-import { chmod, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -140,7 +140,7 @@ function descent(root: string, target: string): string[] {
  * `rename` all die on it with a raw `node:fs` ENOTDIR — outside the `PithyError` contract `withErrorReporting`
  * prints from and `--json` callers parse — and by then the run is usually half-written.
  */
-export async function ensureScaffoldPath(root: string, target: string): Promise<void> {
+export async function ensureScaffoldPath(root: string, target: string, intent: PathIntent = "write"): Promise<void> {
   for (const step of descent(root, target)) {
     const entry = await lstat(step).catch(() => null);
     if (entry === null) return; // missing, and so is everything below it
@@ -152,7 +152,9 @@ export async function ensureScaffoldPath(root: string, target: string): Promise<
         ? {
             message: `${named} is a symlink.`,
             action:
-              "Pithy won't scaffold through a link — the files would land outside the project. Remove it, or pick another name, and run the command again.",
+              intent === "delete"
+                ? "Pithy won't delete through a link — the tree removed would be outside the project. Remove the link, or check the name, and run the command again."
+                : "Pithy won't scaffold through a link — the files would land outside the project. Remove it, or pick another name, and run the command again.",
             detail: `refusing to reach ${target} through the symlink at ${step}`,
           }
         : {
@@ -162,6 +164,60 @@ export async function ensureScaffoldPath(root: string, target: string): Promise<
           },
     );
   }
+}
+
+/**
+ * What the caller is about to do to the path — the only thing the two refusals differ by.
+ *
+ * A delete borrowing the write refusal told the adopter "the files would land outside the project" about a
+ * command that was writing nothing, which is the one sentence they would act on and the one that was
+ * false. The *rule* is identical for both, so it stays in one walk; only the sentence moves.
+ */
+type PathIntent = "write" | "delete";
+
+/**
+ * Delete `target` and everything under it — **the one answer to "may this path be removed", and the `rm`
+ * is inside it so no caller can route around it.**
+ *
+ * This escape had two producers and both were deletes: `pithy worker remove` on `apps/<name>` and
+ * `pithy remove <capability>` on an ejected `apps/<worker>/capabilities/<cap>`. Reproduced with the real
+ * CLI — a symlink at `apps` pointing at a canary directory, and `pithy worker remove board` removed the
+ * canary's whole `board/` tree and printed "Done."
+ *
+ * **The gate is stricter than {@link ensureScaffoldPath}, and it has to be.** Every other producer in this
+ * series writes a file somewhere it should not, and recovery is deleting the file; these remove a tree and
+ * there is nothing to recover. So two questions are asked rather than one:
+ *
+ * - Every component between the root and the target is a real directory or missing — the write gate,
+ *   unchanged, so a link at `apps` or at `apps/<name>` is refused and named.
+ * - **And the path actually lands inside the project.** `ensureScaffoldPath` judges components one at a
+ *   time and stops at the first missing one; this asks the kernel where the whole thing resolves to. A
+ *   bind mount, a hard-linked directory, and a link swapped in between the walk and the `rm` all end here
+ *   instead of in a recursive delete. The root itself is resolved the same way, because a project kept
+ *   behind a symlink is the adopter's arrangement and none of our business.
+ *
+ * **The root is never the target.** A gate that permits deleting the directory it is containing to permits
+ * everything, and no command here has any business removing the project.
+ *
+ * A target that is not there is not a delete: `rm` is `force`, so a caller rolling back a step that never
+ * ran gets a clean no-op rather than a refusal it would have to special-case.
+ */
+export async function removeScaffoldPath(root: string, target: string): Promise<void> {
+  await ensureScaffoldPath(root, target, "delete");
+
+  const doomed = await realpath(target).catch(() => null);
+  if (doomed === null) return; // nothing there, or it went away under us — either way nothing to remove
+  const anchor = await realpath(root).catch(() => null);
+  const within = anchor === null ? "" : relative(anchor, doomed);
+  if (anchor === null || within.length === 0 || within.startsWith("..") || isAbsolute(within)) {
+    throw new ConflictError({
+      message: `Refusing to delete ${relative(root, target) || target}: it isn't inside the project.`,
+      action: "Check what apps/ points at. If you didn't put it there, treat it as hostile.",
+      detail: `${target} resolves to ${doomed}, which is not under ${anchor ?? root}`,
+    });
+  }
+
+  await rm(target, { recursive: true, force: true });
 }
 
 /**

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -14,7 +14,7 @@ import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
-import { ensureScaffoldPath, pathExists, WORKER_NAME } from "./scaffold";
+import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -171,7 +171,13 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   } catch (cause) {
     // Only `dir`, and only the one this call just created — never a sibling, and never a path that was
     // there before `scaffoldWorker` ran, which it would have refused.
-    await rm(dir, { recursive: true, force: true });
+    //
+    // Gated even here (#158): a rollback is still a recursive delete of a path built out of a name, and
+    // "we made it a moment ago" is an assumption about a tree that another process shares. A refusal is
+    // swallowed rather than thrown, because it would replace the failure being reported with a second
+    // one — and `scaffoldWorker` already refused every layout this gate catches, so a refusal at this
+    // point means the tree changed mid-run and the original cause is still the more useful answer.
+    await removeScaffoldPath(options.projectDir, dir).catch(() => {});
     throw cause;
   }
 }
@@ -236,7 +242,10 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
     });
   }
 
-  await rm(target.dir, { recursive: true, force: true });
+  // Gated, and the gate is stricter than the one a write gets (#158). `target.dir` is `apps/<name>`,
+  // composed from a name and handed to a recursive delete: a symlink at `apps` carried that delete onto a
+  // canary tree outside the project, reproduced with the real CLI, and the command said "Done."
+  await removeScaffoldPath(options.projectDir, target.dir);
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
   if (!inWorktree) return { name: target.name, dir: target.dir, reconciled: false };

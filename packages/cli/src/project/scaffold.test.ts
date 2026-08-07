@@ -10,6 +10,7 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.genera
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ejectCapability } from "../capabilities/eject";
+import { defaultRemoveSteps } from "../capabilities/remove";
 import { scaffoldFiles } from "../ui/scaffold";
 import {
   ensureEmptyTarget,
@@ -18,11 +19,12 @@ import {
   kitRange,
   pathExists,
   RENAMED_ON_LANDING,
+  removeScaffoldPath,
   scaffoldProject,
   unpublishedKitNotice,
 } from "./scaffold";
 import { committedFiles } from "./templateFiles";
-import { addWorker } from "./workerCommand";
+import { addWorker, removeWorker } from "./workerCommand";
 import { scaffoldWorker } from "./workerScaffold";
 
 /** The template manifest the stamp rewrites — read directly, to hold the template to what the rule covers. */
@@ -681,6 +683,124 @@ describe("ensureScaffoldPath", () => {
     // Nothing would be checked: the walk would leave the loop at the filesystem root. A caller that builds
     // such a path has already lost the argument, so it fails loudly here instead of passing quietly.
     await expect(ensureScaffoldPath(join(dir, "project"), join(dir, "elsewhere"))).rejects.toThrow(InternalError);
+  });
+});
+
+/**
+ * The delete gate, and it is deliberately stricter than the write gate above it.
+ *
+ * Every other producer in this series writes a file where it should not, and recovery is deleting the
+ * file. These remove a tree, and there is nothing to recover — so the answer to "may this path be
+ * removed" is its own function, and the `rm` lives inside it where no caller can forget it.
+ */
+describe("removeScaffoldPath", () => {
+  test("removes a real directory under the root, and everything in it", async () => {
+    const target = join(dir, "apps", "board");
+    await mkdir(join(target, "src"), { recursive: true });
+    await writeFile(join(target, "src", "index.ts"), "export default {};\n");
+
+    await removeScaffoldPath(dir, target);
+    expect(await pathExists(target)).toBe(false);
+    expect(await pathExists(join(dir, "apps"))).toBe(true);
+  });
+
+  test("a missing target is not a delete — nothing there, nothing to refuse", async () => {
+    await expect(removeScaffoldPath(dir, join(dir, "apps", "gone"))).resolves.toBeUndefined();
+  });
+
+  test("refuses a symlink between the root and the target, and deletes nothing through it", async () => {
+    // #158. `pithy worker remove board` with `apps` linked outside the project deleted the link's
+    // destination recursively and printed "Done." — reproduced with the real CLI against a canary tree.
+    const outside = join(dir, "outside");
+    await mkdir(join(outside, "board"), { recursive: true });
+    await writeFile(join(outside, "board", "photos.txt"), "the adopter's\n");
+    await symlink(outside, join(dir, "apps"));
+
+    const error = await removeScaffoldPath(dir, join(dir, "apps", "board")).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    // The refusal says what this command was doing. Borrowing the write wording told an adopter "the
+    // files would land outside the project" about a command that writes nothing.
+    expect((error as PithyError).payload.action).toContain("delete through a link");
+    expect(await readdir(join(outside, "board"))).toEqual(["photos.txt"]);
+  });
+
+  test("refuses a symlink at the target itself, and leaves the link standing", async () => {
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, "apps"), { recursive: true });
+    const link = join(dir, "apps", "board");
+    await symlink(outside, link);
+
+    await expect(removeScaffoldPath(dir, link)).rejects.toThrow(PithyError);
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  });
+
+  test("refuses a target that resolves outside the root even with no link on the way", async () => {
+    // The half a write gate does not have. `ensureScaffoldPath` judges each component and stops at the
+    // first missing one; this asks the kernel where the whole path actually lands. A bind mount, a
+    // hard-linked directory, or a link swapped in after the walk all end here rather than in an `rm -rf`.
+    const root = join(dir, "project");
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, root); // the root itself may be a link — that is the adopter's arrangement
+
+    await expect(removeScaffoldPath(root, join(dir, "outside", "board"))).rejects.toThrow(PithyError);
+  });
+
+  test("refuses the project root itself — a delete gate that permits that permits everything", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
+    await expect(removeScaffoldPath(dir, dir)).rejects.toThrow(PithyError);
+    expect(await pathExists(join(dir, "pithy.config.ts"))).toBe(true);
+  });
+});
+
+/**
+ * #158, driven through the two commands that delete: `pithy worker remove` and `pithy remove <cap>` on an
+ * ejected capability. Both built `apps/…` out of a name and handed it straight to a recursive `rm`.
+ *
+ * Reproduced with the real CLI before the fix. A project scaffolded `--name replay --worker board`, `apps`
+ * replaced with a symlink to a canary directory holding a `board/` of ordinary files, then
+ * `pithy worker remove board`: the canary's `board/` and everything under it was gone, and the command
+ * printed "Removed replay-board." and "Done."
+ */
+describe("a symlinked apps/ in front of a delete", () => {
+  let outside: string;
+  let project: string;
+
+  beforeEach(async () => {
+    outside = join(dir, "outside");
+    project = join(dir, "project");
+    await mkdir(join(outside, "board", "deep"), { recursive: true });
+    await writeFile(join(outside, "board", "photos.txt"), "the adopter's\n");
+    await mkdir(project, { recursive: true });
+    await symlink(outside, join(project, "apps"));
+  });
+
+  test("pithy worker remove refuses it, and the canary tree is untouched", async () => {
+    const error = await removeWorker({
+      projectDir: project,
+      name: "board",
+      mainRoot: project,
+      discoverWorkers: async () => [{ name: "replay-board", dir: join(project, "apps", "board") }],
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(await readdir(join(outside, "board"))).toEqual(["deep", "photos.txt"]);
+  });
+
+  test("pithy remove on an ejected capability refuses it too", async () => {
+    // The same shape one directory lower: `apps/<worker>/capabilities/<cap>`, deleted for a capability
+    // the config says was ejected. The steps are the real ones — this is the seam `pithy remove` uses.
+    const workerDir = join(project, "apps", "board");
+    const steps = defaultRemoveSteps({
+      projectDir: project,
+      workerDir,
+      loadCapabilities: async () => [],
+      project: "replay",
+    });
+
+    await expect(steps.deleteSource(join(workerDir, "capabilities", "turnstile"))).rejects.toThrow(PithyError);
+    expect(await readdir(join(outside, "board"))).toEqual(["deep", "photos.txt"]);
   });
 });
 
