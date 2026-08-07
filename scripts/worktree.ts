@@ -15,7 +15,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 
 /** Run git, return trimmed stdout. Throws on a non-zero exit. */
@@ -72,7 +72,13 @@ function setup(issue: string, slug: string): void {
   const { branch, wtPath, root } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
+    // Re-wire rather than return. A worktree outlives the links into it: renaming the main checkout,
+    // or minting a secrets file after the worktree was made, leaves it pointing at nothing or at
+    // nothing at all — and re-running `setup` is the obvious thing to reach for. It used to be the one
+    // thing that could not fix it. The install is skipped, because that is the slow half and an
+    // existing worktree has already had it.
     console.log(`Worktree exists. ${wtPath}`);
+    wireShared(wtPath, root);
     return;
   }
 
@@ -92,22 +98,61 @@ function setup(issue: string, slug: string): void {
 
 /**
  * Configure a freshly-created worktree so the gates and integration tests run inside it: install
- * deps, then share the main checkout's `.dev.vars` — link the worktree's to the root file, and
- * symlink each package's to the worktree root (the `vars:local` turbo task) so wrangler and the
- * `*.integration.test.ts` files resolve the shared secrets. Idempotent; the `.dev.vars` steps
- * no-op when the main checkout has none.
+ * deps, then share the main checkout's two dev-secret files.
+ *
+ * **`.dev.vars` is per-package, `.dev.secrets.jsonc` is root-only, and the difference is wrangler's.**
+ * Wrangler reads `.dev.vars` from the worker's own directory, so it is linked at the worktree root and
+ * again into each package by the `vars:local` turbo task. Nothing but our own CLI reads the secrets
+ * file, and the CLI runs at the project root — so one link, at the root, is the whole story.
+ *
+ * **Shared, never copied.** A worktree is its own project root, so without this it has no secrets at
+ * all: `pithy dev` there would mint a *second* set and diverge from the main checkout silently. A copy
+ * would drift the same way the moment either side minted anything. Per-feature isolated secrets are a
+ * real thing to want, but they are a deliberate feature and not the default.
+ *
+ * Idempotent, and each file is independent: a checkout with one and not the other wires the one it has.
  */
 function configure(wtPath: string, root: string): void {
   // Install so typecheck/biome/vitest run inside the tree.
   execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
+  wireShared(wtPath, root);
+}
 
-  const rootDevVars = join(root, ".dev.vars");
-  if (!existsSync(rootDevVars)) return;
+/**
+ * Point the worktree at the main checkout's dev-secret files. Separate from {@link configure} because
+ * this half is idempotent and cheap, so `setup` can run it against a worktree that already exists to
+ * repair its links without paying for a second install.
+ */
+function wireShared(wtPath: string, root: string): void {
+  if (share(root, wtPath, ".dev.vars")) {
+    execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
+    console.log("Linked .dev.vars (root + per-package via vars:local).");
+  }
+  if (share(root, wtPath, ".dev.secrets.jsonc")) console.log("Linked .dev.secrets.jsonc.");
+}
 
-  const wtDevVars = join(wtPath, ".dev.vars");
-  if (!existsSync(wtDevVars)) symlinkSync(rootDevVars, wtDevVars);
-  execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
-  console.log("Linked .dev.vars (root + per-package via vars:local).");
+/**
+ * Link `name` in the worktree to the main checkout's copy. Returns whether the worktree ended up with
+ * one — false when the main checkout has none, which is the normal state of a fresh clone.
+ *
+ * `lstatSync` rather than `existsSync` for the target, because `existsSync` follows the link: a stale
+ * one left by a renamed or deleted main checkout reads as *absent*, and `symlinkSync` then fails
+ * `EEXIST` on a path that resolves to nothing. Replacing it is the repair, and it is why a re-run over
+ * an existing worktree is worth something.
+ */
+function share(root: string, wtPath: string, name: string): boolean {
+  const source = join(root, name);
+  if (!existsSync(source)) return false;
+
+  const target = join(wtPath, name);
+  try {
+    lstatSync(target);
+    rmSync(target, { force: true });
+  } catch {
+    // Nothing there. Fine.
+  }
+  symlinkSync(source, target);
+  return true;
 }
 
 function teardown(issue: string, slug: string): void {
