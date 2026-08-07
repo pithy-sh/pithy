@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { existsSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,8 +69,12 @@ export function resolveTemplateDir(moduleDir: string): string {
   const candidates = [workspaceTemplate(here), resolve(here, ...PACKAGED_LAYOUT)].filter(
     (candidate) => candidate !== null,
   );
+  // `lstatSync`, not `existsSync`, and the reason is the module's own rule rather than a threat model:
+  // this file writes, and a writing module answers "is something at this path" one way — about the path
+  // itself. An exception here would be an exception somebody has to remember, and the escape this module
+  // exists to stop has five producers because nobody did. `throwIfNoEntry` off, so missing is a value.
   for (const candidate of candidates) {
-    if (existsSync(join(candidate, "package.json"))) return candidate;
+    if (lstatSync(join(candidate, "package.json"), { throwIfNoEntry: false })) return candidate;
   }
   throw new InternalError({
     message: "This pithy install is missing its starter template.",

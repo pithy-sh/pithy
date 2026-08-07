@@ -9,6 +9,8 @@ import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { ejectCapability } from "../capabilities/eject";
+import { scaffoldFiles } from "../ui/scaffold";
 import {
   ensureEmptyTarget,
   ensureScaffoldable,
@@ -726,15 +728,22 @@ describe("ensureEmptyTarget", () => {
 });
 
 /**
- * The gate on the gate: **a module that writes to the filesystem may not decide where with `access`.**
+ * The gate on the gate: **a module that writes to the filesystem may not decide where with a probe that
+ * follows links.**
  *
- * This escape has had four producers, each one a hand-rolled `exists()` over `access` or a `readdir` that
- * followed a link, and each one found by review after the last fix shipped. {@link ensureScaffoldPath} is
- * the answer; this is what stops a fifth from being written beside it. Without it the primitive is a
- * convention, and a convention is what the last four fixes already were.
+ * This escape has had five producers, each one a hand-rolled `exists()` over a following probe or a
+ * `readdir` that followed a link, and each one found by review after the last fix shipped.
+ * {@link ensureScaffoldPath} is the answer; this is what stops a sixth from being written beside it.
+ * Without it the primitive is a convention, and a convention is what the last five fixes already were.
+ *
+ * **The tripwire had the blind spot of the sweep that missed the bug.** It banned `access` and
+ * `accessSync` and nothing else, so it went green on `capabilities/eject.ts` — the fifth producer, which
+ * asked with `stat`. `stat`, `statSync` and `existsSync` follow a symlink exactly as completely as
+ * `access` does; {@link ensureScaffoldPath}'s own docstring names two of them. So the rule is the whole
+ * class now, and a module that follows on purpose says so in {@link FOLLOWS_ON_PURPOSE}, in writing.
  *
  * **Why a test and not a Biome grit plugin.** The rule that holds with no exemptions is a conditional —
- * `access` is wrong in a module that *writes*, and unremarkable in one that only reads. `config.ts`,
+ * a follower is wrong in a module that *writes*, and unremarkable in one that only reads. `config.ts`,
  * `workerScope.ts`, `packageManager.ts`, `ui/flow.ts` and `feature/sync.ts` all probe for a file they are
  * only going to read; following a link there decides nothing and leaks nothing. That conjunction is a fact
  * about a whole module, and Biome's grit plugins match expressions — the three this repo already ships
@@ -779,8 +788,47 @@ describe("the gate on the gate", () => {
     "writeFileSync",
   ]);
 
-  /** The link-following existence probes. `lstat` is the one that answers about the path itself. */
-  const FOLLOWS = new Set(["access", "accessSync"]);
+  /**
+   * The link-following probes. Every one of them answers about a symlink's *destination*, so a dangling
+   * link reads as missing and clears any gate that asks. `lstat` answers about the path itself.
+   */
+  const FOLLOWS = new Set(["access", "accessSync", "existsSync", "stat", "statSync"]);
+
+  /**
+   * The writing modules that follow a link on purpose: path → the probes it may import, and why.
+   *
+   * An entry is a claim, and the test holds it to both halves — an unlisted follower fails, and a listed
+   * one that stopped following, or that swapped its probe for another, fails too. So the list cannot go
+   * stale and cannot quietly widen. Adding a line is the reviewable act; that is the point of it.
+   *
+   * Every entry here is a module asking about a path it does **not** compose and then write to. That is
+   * the whole distinction: the escape is a probe answering for a link's destination while the write lands
+   * on the link's own path. A `stat` read for a mode or an mtime is a different question, and following
+   * is sometimes the only correct answer to it — `node_modules/<pkg>` is a symlink under every package
+   * manager that shares a store.
+   */
+  const FOLLOWS_ON_PURPOSE: Record<string, { probes: string; why: string }> = {
+    "capabilities/remove.ts": {
+      probes: "stat",
+      why: "Asks whether `node_modules/<pkg>` is installed. Nothing is written there, and following is the right answer — a shared-store package manager links that path.",
+    },
+    "feature/devVars.ts": {
+      probes: "stat",
+      why: "The destination *is* the question: it compares what the worker's link reaches with the project's shared file, behind an `lstat` that answers about the link.",
+    },
+    "feature/ports.ts": {
+      probes: "stat",
+      why: "Reads `mtimeMs` off a lock file it created itself, to age it out. Not an existence probe.",
+    },
+    "feature/worktree.ts": {
+      probes: "existsSync",
+      why: "Asks about a git worktree directory before handing it to `git worktree add`, which does its own refusing. Nothing is composed and written through the answer.",
+    },
+    "platform/rc.ts": {
+      probes: "existsSync, statSync",
+      why: "Follows deliberately, and documents it: an `lstatSync` escape guard refuses a link out of the home directory first, and the mode behind it is then the real file's.",
+    },
+  };
 
   /** The names a module imports from `node:fs` or `node:fs/promises`, local aliases resolved to the original. */
   function fsImports(source: string): string[] {
@@ -807,17 +855,38 @@ describe("the gate on the gate", () => {
       .sort();
   }
 
-  test("no module that writes to the filesystem probes with access", async () => {
-    const offenders: string[] = [];
+  /** Every writing module that imports a link-following probe: path → the probes, sorted. */
+  async function followers(): Promise<Record<string, string>> {
+    const found: Record<string, string> = {};
     for (const path of await modules()) {
       const imported = fsImports(await readFile(path, "utf8"));
-      const probe = imported.find((name) => FOLLOWS.has(name));
-      if (probe && imported.some((name) => WRITES.has(name))) {
-        offenders.push(`${relative(CLI_SRC, path)} (${probe})`);
+      const probes = imported.filter((name) => FOLLOWS.has(name)).sort();
+      if (probes.length > 0 && imported.some((name) => WRITES.has(name))) {
+        found[relative(CLI_SRC, path)] = probes.join(", ");
       }
     }
+    return found;
+  }
 
-    expect(offenders, "route the check through ensureScaffoldPath/pathExists in project/scaffold.ts").toEqual([]);
+  test("no module that writes to the filesystem probes with something that follows a link", async () => {
+    const found = await followers();
+    const declared = Object.fromEntries(Object.entries(FOLLOWS_ON_PURPOSE).map(([path, { probes }]) => [path, probes]));
+
+    // One equality, and it fails from both sides. A writing module that starts following is not in
+    // `declared` and shows up; a listed one that stopped, or swapped `stat` for `existsSync`, no longer
+    // matches and shows up too. The message is for the first case, which is the one that ships a bug.
+    expect(
+      found,
+      "route the check through ensureScaffoldPath/pathExists in project/scaffold.ts, or say why it follows in FOLLOWS_ON_PURPOSE",
+    ).toEqual(declared);
+  });
+
+  test("and every exemption says why, in a sentence somebody has to disagree with", async () => {
+    // A reason nobody wrote is a reason nobody reviewed, and the list is only worth having if adding to
+    // it costs an argument.
+    for (const [path, { why }] of Object.entries(FOLLOWS_ON_PURPOSE)) {
+      expect(why.trim().length, path).toBeGreaterThan(40);
+    }
   });
 
   test("and none of them reaches node:fs sideways, which would make the check above blind", async () => {
@@ -884,6 +953,77 @@ describe("a symlinked apps/<name>", () => {
     expect(error).not.toBeInstanceOf(InternalError); // refused by the gate, never by the install
     expect(await readdir(outside)).toEqual([]);
     expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  });
+});
+
+/**
+ * The same escape one directory higher, driven through the two commands that write *inside* an existing
+ * worker. Both reached {@link ensureScaffoldPath} already; both handed it a root too low to see the link.
+ *
+ * Reproduced against the real CLI. `pithy init --name replay --worker board`, then `apps` replaced by a
+ * symlink to a directory outside the project, then `pithy ui add react --worker board`: ten files of a
+ * React front end landed outside the project and the command printed "10 files created." and "Done."
+ * `pithy add turnstile --worker board --eject` does the same with `apps/board/capabilities` linked — its
+ * `exists()` asked `stat`, which follows, so the fork read as absent and `cp` wrote through the link.
+ *
+ * Driven here rather than from each module's own suite because the escape is one bug with two exits, and
+ * splitting it across two files is how the last four fixes each covered one producer.
+ */
+describe("a symlink above the file being written", () => {
+  let outside: string;
+  let project: string;
+  let workerDir: string;
+
+  beforeEach(async () => {
+    outside = join(dir, "outside");
+    project = join(dir, "project");
+    workerDir = join(project, "apps", "board");
+    await mkdir(join(outside, "board"), { recursive: true });
+    await mkdir(project, { recursive: true });
+  });
+
+  test("pithy ui add refuses to write a front end through a symlinked apps/", async () => {
+    await symlink(outside, join(project, "apps"));
+
+    await expect(
+      scaffoldFiles({ workerDir, files: { "index.html": "<!doctype html>\n", "src/client.tsx": "theirs\n" } }),
+    ).rejects.toThrow(PithyError);
+
+    expect(await readdir(join(outside, "board"))).toEqual([]);
+  });
+
+  test("pithy ui add refuses a symlinked apps/<worker> too — the segment between the two old roots", async () => {
+    await mkdir(join(project, "apps"), { recursive: true });
+    await symlink(join(outside, "board"), workerDir);
+
+    await expect(scaffoldFiles({ workerDir, files: { "index.html": "<!doctype html>\n" } })).rejects.toThrow(
+      PithyError,
+    );
+
+    expect(await readdir(join(outside, "board"))).toEqual([]);
+  });
+
+  test("pithy add --eject refuses to fork a capability through a symlinked capabilities/", async () => {
+    await mkdir(workerDir, { recursive: true });
+    await mkdir(join(project, "node_modules", "@pithy-sh", "turnstile", "src"), { recursive: true });
+    await writeFile(
+      join(project, "node_modules", "@pithy-sh", "turnstile", "src", "index.ts"),
+      "export const turnstile = 1;\n",
+    );
+    await symlink(outside, join(workerDir, "capabilities"));
+
+    await expect(
+      ejectCapability({
+        projectDir: project,
+        workerDir,
+        capability: "turnstile",
+        package: "@pithy-sh/turnstile",
+        promoteDeps: async () => {},
+      }),
+    ).rejects.toThrow(PithyError);
+
+    expect(await readdir(join(outside, "board"))).toEqual([]);
+    expect(await readdir(outside)).toEqual(["board"]);
   });
 });
 

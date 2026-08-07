@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
@@ -18,6 +18,32 @@ import { ensureScaffoldPath, pathExists } from "../project/scaffold";
  * The check runs over **every** path before anything is written, so a collision is a clean error
  * rather than a half-written directory.
  */
+
+/** The directory every Worker lives under, and the segment `pithy ui add` composes a path through. */
+const APPS_DIR = "apps";
+
+/**
+ * The boundary {@link ensureScaffoldPath} walks down from: **the project root**, not the worker.
+ *
+ * The primitive checks every path from its root down to the target, and skips the root itself — the root
+ * is the adopter's directory, which they may legitimately keep behind a symlink. Bounding it at
+ * `workerDir` therefore put `apps` *and* `apps/<worker>` above the walk, where nothing looked at them,
+ * and a symlink at either carried the whole front end out of the project. Reproduced: `pithy ui add
+ * react --worker board` with `apps` linked outside wrote ten files there and printed "Done."
+ *
+ * `apps/<worker>` is a path **Pithy composed**, out of a name, exactly like the directories under it. So
+ * it belongs inside the walk, and the way to put it there is to start one directory above `apps`.
+ *
+ * The layout is read from the path rather than guessed at: this is only the boundary when the worker
+ * really does sit at `apps/<name>`, which is the shape `pithy ui add` resolves and the shape every other
+ * function in this flow assumes (`workerName` is `basename(workerDir)`). Handed anything else — a bare
+ * directory, as the unit tests pass — there is no `apps` segment Pithy invented, nothing above the
+ * directory is ours to judge, and the boundary is the directory itself.
+ */
+function scaffoldRoot(workerDir: string): string {
+  const here = resolve(workerDir);
+  return basename(dirname(here)) === APPS_DIR ? resolve(here, "..", "..") : here;
+}
 
 /** What one scaffold run wrote. */
 export interface ScaffoldResult {
@@ -47,6 +73,7 @@ export async function scaffoldFiles(options: {
   strict?: boolean;
 }): Promise<ScaffoldResult> {
   const entries = Object.entries(options.files).sort(([a], [b]) => a.localeCompare(b));
+  const root = scaffoldRoot(options.workerDir);
 
   const skipped: string[] = [];
   for (const [rel] of entries) {
@@ -56,10 +83,13 @@ export async function scaffoldFiles(options: {
     // `apps/<worker>/src` read as "src/client.tsx is missing", cleared the gate, and `pithy ui add react`
     // wrote six files of the front end outside the project and exited 0. Reproduced against the real CLI.
     //
+    // From {@link scaffoldRoot}, not from `workerDir`: bounded at the worker, the two segments above it
+    // were outside the walk and a link at either escaped just as completely.
+    //
     // The refusal covers the backfill (`strict: false`) too, and that is not the same rule as the skip
     // below. A file already *there* is safe to skip because nothing is written to it. A link where a
     // directory belongs is the opposite: the file under it does not exist, so the backfill writes — outside.
-    await ensureScaffoldPath(options.workerDir, dirname(path));
+    await ensureScaffoldPath(root, dirname(path));
     if (await pathExists(path)) skipped.push(rel);
   }
 
