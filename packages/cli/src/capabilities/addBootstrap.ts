@@ -17,7 +17,7 @@ import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisio
 import { writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { ownProperties } from "../devSecrets/records";
-import { renderDevSecretsNotes } from "../devSecrets/report";
+import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, ourOwnInjection, seedProjectDevSecrets } from "../devSecrets/seed";
 
 export interface AddBootstrapOptions {
@@ -124,10 +124,15 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
     projectDir,
     values: { [MASTER_KEY_BINDING]: JSON.stringify(await initialMasterKeyConfig()) },
   });
-  if (wrote.written.length === 0) return wrote.refused;
+  // Everything the write has to say, not only its refusals. A Worker shadowing the project's `.dev.vars`
+  // or one the link could not be made into is a Worker with no master key, and this used to mint one,
+  // announce it, and say nothing about the Worker that never got it.
+  const delivery = renderDevVarsNotes(wrote);
+  if (wrote.written.length === 0) return delivery;
   return [
     `Minted a dev master key into .dev.vars as ${MASTER_KEY_BINDING}. Local only.`,
     "Deployed environments get theirs from pithy secrets provision.",
+    ...delivery,
   ];
 }
 
@@ -236,5 +241,7 @@ async function injectDevSecrets(projectDir: string, file: DevSecretsFile): Promi
   }
   if (Object.keys(vars).length === 0) return [];
   const wrote = await writeDevVars({ projectDir, values: vars });
-  return wrote.refused;
+  // The whole delivery report, for the same reason the master key's is: dev reads this copy and nothing
+  // else until #153, so a Worker the copy did not reach has the secret in two files and none of them.
+  return renderDevVarsNotes(wrote);
 }

@@ -35,17 +35,49 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   for (const { worker, reason } of report.skipped) {
     lines.push(`${worker}: secrets not seeded. ${reason}`);
   }
-  // Both of these describe a value that is in the file, is in the store, and still will not resolve in
-  // dev — which until #153 is the only thing that matters. They are run outcomes, not standing states:
-  // a project with neither hears nothing, and a project with either hears it every run until it is fixed.
-  for (const reason of report.devVarsRefused ?? []) lines.push(reason);
-  for (const dir of report.shadowed ?? []) {
-    lines.push(`${dir} reads a .dev.vars of its own. wrangler opens that one, so nothing seeded reaches it.`);
-  }
-  for (const reason of report.undelivered ?? []) lines.push(reason);
+  // These describe a value that is in the file, is in the store, and still will not resolve in dev —
+  // which until #153 is the only thing that matters. They are run outcomes, not standing states: a
+  // project with none hears nothing, and a project with any hears it every run until it is fixed.
+  lines.push(
+    ...renderDevVarsNotes({
+      refused: report.devVarsRefused ?? [],
+      ...(report.shadowed !== undefined ? { shadowed: report.shadowed } : {}),
+      ...(report.undelivered !== undefined ? { undelivered: report.undelivered } : {}),
+    }),
+  );
   // Last, and never silent. A refusal is the one line here that describes something the adopter has to
   // do before the command can finish its job — every other line reports work already done.
   if (report.refused) lines.push(report.refused);
+  return lines;
+}
+
+/** The three ways a `.dev.vars` write does not reach a Worker. Structurally a {@link WriteDevVarsResult}. */
+export interface DevVarsDelivery {
+  /** One sentence per value no quoting survives. See `encodeDevVarsValue`. */
+  refused: readonly string[];
+  /** Worker directories reading a `.dev.vars` that is not the one written. */
+  shadowed?: readonly string[];
+  /** One sentence per Worker directory that will open no `.dev.vars` at all. */
+  undelivered?: readonly string[];
+}
+
+/**
+ * What one `.dev.vars` write says out loud.
+ *
+ * **Shared, because a caller that reads only `refused` puts the defect back.** `writeDevVars` grew
+ * `shadowed` and `undelivered` to end a run reporting a delivery that did not happen; `pithy add`'s two
+ * direct calls then took `.refused` off the result and dropped the rest, so `pithy add secrets` printed
+ * "Minted a dev master key" while the Worker answered `Missing required bindings`. One renderer means
+ * the next caller gets every list by taking the only thing there is to take.
+ *
+ * A value never appears here. Names and directories only — these lines reach a terminal scrollback.
+ */
+export function renderDevVarsNotes(delivery: DevVarsDelivery): string[] {
+  const lines = [...delivery.refused];
+  for (const dir of delivery.shadowed ?? []) {
+    lines.push(`${dir} reads a .dev.vars of its own. wrangler opens that one, so nothing written reaches it.`);
+  }
+  for (const reason of delivery.undelivered ?? []) lines.push(reason);
   return lines;
 }
 

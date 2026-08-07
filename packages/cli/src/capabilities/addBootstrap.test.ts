@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
@@ -317,5 +317,34 @@ describe("bootstrapAdd", () => {
     expect(notes.join("\n")).toContain("where secrets no longer live");
     expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
     expect(await devVar(dir, "auth-session-secret")).toBe("written-by-hand");
+  });
+
+  test("a Worker reading a .dev.vars of its own is named — the minted key never reached it", async () => {
+    // `writeDevVars` grew `shadowed` and `undelivered` precisely so a delivery that did not happen stops
+    // being reported as one. Both direct calls here took `.refused` off the result and dropped the rest,
+    // so the defect survived at the caller: `pithy add secrets` printed "Minted a dev master key" and
+    // the Worker still answered `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`.
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
+    await writeFile(join(dir, "apps", "board", ".dev.vars"), "MINE=1\n");
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets"), seed: emptySeed });
+
+    expect(notes.join("\n")).toContain(join(dir, "apps", "board"));
+    expect(notes.join("\n")).toMatch(/wrangler opens that one/);
+  });
+
+  test("a Worker the injected copy could not be linked into is named, never counted as delivered", async () => {
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
+    await chmod(join(dir, "apps", "board"), 0o500);
+    try {
+      const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+
+      expect(notes.join("\n")).toContain("could not be linked");
+      expect(notes.join("\n")).toContain(join(dir, "apps", "board"));
+    } finally {
+      await chmod(join(dir, "apps", "board"), 0o700);
+    }
   });
 });
