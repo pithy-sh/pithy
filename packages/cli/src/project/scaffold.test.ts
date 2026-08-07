@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ensureEmptyTarget, ensureScaffoldable, scaffoldProject } from "./scaffold";
@@ -44,6 +45,30 @@ describe("scaffoldProject", () => {
     // gitignore ships unprefixed (npm strips dotfiles) and lands as .gitignore.
     expect(await readFile(join(target, ".gitignore"), "utf8")).toContain(".dev.vars");
     await readFile(join(target, ".dev.vars.example"), "utf8");
+  });
+
+  test("ships the dev-secrets example, and ignores the real file under every project name", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "my-app" });
+
+    // The committed half — the one an adopter reads to learn the envelope before they hand-write one.
+    const example = await readFile(join(dir, ".dev.secrets.example.jsonc"), "utf8");
+    expect(example).toContain("currentVersion");
+    expect(example).toContain("versions");
+
+    // The ignored half. Both lines, and in this order: the negation only re-includes the example if the
+    // pattern above it did not already swallow it, and a project named anything at all gets the same two.
+    const ignored = await readFile(join(dir, ".gitignore"), "utf8");
+    expect(ignored).toMatch(/^\.dev\.secrets\.jsonc$/m);
+    expect(ignored).toMatch(/^!\.dev\.secrets\.example\.jsonc$/m);
+    expect(ignored.indexOf(".dev.secrets.jsonc")).toBeLessThan(ignored.indexOf("!.dev.secrets.example.jsonc"));
+  });
+
+  test("the example carries no value — a committed file with a secret in it is a leaked secret", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "my-app" });
+    // Every line is a comment or structural. `loadDevSecrets` parsing it to `{}` is the assertion: a
+    // real value could only be there as a real entry, and there are none.
+    const example = await readFile(join(dir, ".dev.secrets.example.jsonc"), "utf8");
+    expect(loadDevSecrets(example, { path: ".dev.secrets.example.jsonc" })).toEqual({});
   });
 
   test("writes the three gates, and a solution file that keeps the type worlds apart", async () => {

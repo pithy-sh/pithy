@@ -10,6 +10,7 @@ import { defineCommand } from "citty";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
+import { checkDevSecrets, type DevSecretsCheck, describeDevSecrets, devSecretsHealthy } from "../doctor/devSecrets";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
@@ -114,6 +115,16 @@ export interface DoctorReport {
    * found nothing, correctly.
    */
   devPreferences: DevPreferencesCheck | null;
+  /**
+   * Whether any declared `d1`-backed secret is still sitting in `.dev.vars`, and whether the secrets file
+   * is readable by anyone but its owner. `null` outside a project that composes `secrets` — with no
+   * registry there is no declared name, and so no misplaced one.
+   *
+   * It reports and never fails the exit. Every project that predates `.dev.secrets.jsonc` has misplaced
+   * secrets by definition, and an upgrade that turns a green `pithy doctor` red in CI over a file that
+   * still works is a surprise rather than a diagnosis. Migration is told, not enforced.
+   */
+  devSecrets: DevSecretsCheck | null;
   os: { name: string; version: string };
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
@@ -198,6 +209,8 @@ export interface DoctorReportOptions {
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
    */
   checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
+  /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
+  checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
 }
 
 /** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
@@ -241,6 +254,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
+  const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
@@ -336,6 +350,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
   // there is no path to resolve and no file to look for. Files only, no account, no seed run.
   const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
+  // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
+  // database, no seed run — so it answers offline, in the project that is not working.
+  const devSecrets = inProject ? await probeDevSecrets(options.projectDir).catch(() => null) : null;
 
   return {
     cli,
@@ -351,6 +368,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     devPreferences,
+    devSecrets,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -533,6 +551,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
   const devPreferencesState = report.devPreferences?.state;
   const devPreferencesOk = devPreferencesState !== "unparseable" && devPreferencesState !== "no-user";
+  // A misplaced secret keeps the report verbose without failing the exit: it is worth the ink, and it is
+  // the state every project that predates `.dev.secrets.jsonc` starts in. A *missing* one does not — the
+  // four OAuth pairs auth declares are unset in almost every project, and treating that as a fault would
+  // drag every report in the world verbose. `devSecretsHealthy` draws that line; the block still prints.
+  const devSecretsOk = !report.devSecrets || devSecretsHealthy(report.devSecrets);
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
   const terse =
     report.cli.state === "current" &&
@@ -542,6 +565,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     devPreferencesOk &&
+    devSecretsOk &&
     !report.projectLoadError;
 
   const blocks: string[] = [];
@@ -626,6 +650,15 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(workerNamesBlock(report.workerNames));
   }
 
+  // Dev secrets, and only when something is wrong with them. The block is the finding: a project whose
+  // secrets are in the file they belong in needs no line saying so, and every project that predates
+  // `.dev.secrets.jsonc` needs one every run until it moves them. Nothing here fails the exit — see
+  // {@link DoctorReport.devSecrets}.
+  if (report.devSecrets) {
+    const lines = describeDevSecrets(report.devSecrets);
+    if (lines.length > 0) blocks.push(["Dev secrets:", ...lines.map((line) => `  ${line}`)].join("\n"));
+  }
+
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
   const runtime =
@@ -687,6 +720,20 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // a path they can open, not one a human recognises. The same `null` discipline as the two above.
     devPreferences: report.devPreferences
       ? { ...report.devPreferences, detail: describeDevPreferences(report.devPreferences) }
+      : null,
+    // Same `null` discipline, and each finding carries its own sentence so an agent fixing it never has to
+    // reproduce the wording from the fields. `mode` is octal-formatted here for the same reason: `420` is
+    // not a permission anybody recognises.
+    devSecrets: report.devSecrets
+      ? {
+          path: report.devSecrets.path,
+          misplaced: report.devSecrets.misplaced,
+          missing: report.devSecrets.missing,
+          undeclared: report.devSecrets.undeclared,
+          mode: report.devSecrets.mode === null ? null : report.devSecrets.mode.toString(8),
+          unreadable: report.devSecrets.unreadable,
+          detail: describeDevSecrets(report.devSecrets),
+        }
       : null,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,

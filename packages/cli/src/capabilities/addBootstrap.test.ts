@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { devSecretsPath, readDevSecrets } from "../devSecrets/file";
 import { bootstrapAdd } from "./addBootstrap";
 
 /**
@@ -29,6 +30,12 @@ async function devVar(dir: string, name: string): Promise<string | undefined> {
 /** The master key `.dev.vars` holds in `dir`, or `undefined` when nothing was written. */
 async function devMasterKey(dir: string): Promise<string | undefined> {
   return devVar(dir, "SECRETS_ENCRYPTION_KEYS");
+}
+
+/** The current-version value `.dev.secrets.jsonc` holds for `name`, or `undefined` when it has none. */
+async function devSecret(dir: string, name: string): Promise<unknown> {
+  const envelope = (await readDevSecrets(dir))[name];
+  return envelope?.versions[envelope.currentVersion];
 }
 
 describe("bootstrapAdd", () => {
@@ -123,23 +130,44 @@ describe("bootstrapAdd", () => {
     // this one and fails at the first sign-in with `secrets/not_found`. Minting it is the difference.
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
-    const value = await devVar(dir, "auth-session-secret");
-    expect(value).toBeDefined();
-    expect((value ?? "").length).toBeGreaterThanOrEqual(32);
+    const value = await devSecret(dir, "auth-session-secret");
+    expect(typeof value).toBe("string");
+    expect(String(value).length).toBeGreaterThanOrEqual(32);
     expect(notes.join(" ")).toContain("auth-session-secret");
     expect(notes.join(" ")).toContain("pithy secrets create auth-session-secret");
     expect(notes.join(" ")).toMatch(/local/i);
     // Never the value — a printed secret ends up in a terminal scrollback and a CI log.
-    expect(notes.join(" ")).not.toContain(value);
+    expect(notes.join(" ")).not.toContain(String(value));
+  });
+
+  test("the secret lands in .dev.secrets.jsonc, not .dev.vars — the two namespaces separate here", async () => {
+    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+
+    expect(await devVar(dir, "auth-session-secret")).toBeUndefined();
+    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
+    expect((await readFile(devSecretsPath(dir), "utf8")).includes("auth-session-secret")).toBe(true);
+  });
+
+  test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
+    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+
+    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    expect(envelope?.currentVersion).toBe("1");
+    expect(Object.keys(envelope?.versions ?? {})).toEqual(["1"]);
+  });
+
+  test("the file it writes is 0600 — it will hold OAuth client secrets next to this one", async () => {
+    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
   });
 
   test("mints the email link-signing key beside the note about EMAIL_SENDER", async () => {
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("email") });
 
-    const value = await devVar(dir, "email-link-signing-key");
+    const value = await devSecret(dir, "email-link-signing-key");
     expect(value).toBeDefined();
     expect(notes.join(" ")).toContain("pithy secrets create email-link-signing-key");
-    expect(notes.join(" ")).not.toContain(value);
+    expect(notes.join(" ")).not.toContain(String(value));
   });
 
   test("a minted secret is random per project — one shipped literal would sign every adopter's sessions", async () => {
@@ -148,43 +176,62 @@ describe("bootstrapAdd", () => {
       const manifest = await shippedManifest("auth");
       await bootstrapAdd({ projectDir: dir, manifest });
       await bootstrapAdd({ projectDir: other, manifest });
-      expect(await devVar(dir, "auth-session-secret")).not.toBe(await devVar(other, "auth-session-secret"));
+      expect(await devSecret(dir, "auth-session-secret")).not.toBe(await devSecret(other, "auth-session-secret"));
     } finally {
       await rm(other, { recursive: true, force: true });
     }
   });
 
   test("an existing dev secret survives a re-run — a new session secret signs nobody out politely", async () => {
+    const manifest = await shippedManifest("auth");
+    await bootstrapAdd({ projectDir: dir, manifest });
+    const minted = await devSecret(dir, "auth-session-secret");
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest });
+
+    expect(await devSecret(dir, "auth-session-secret")).toBe(minted);
+    expect(notes.join(" ")).toMatch(/already/i);
+  });
+
+  test("a secret still in .dev.vars is left there and named, never rewritten and never re-minted", async () => {
+    // The migration case. An existing project has the value in `.dev.vars`, where dev still reads it.
+    // Minting a second one into the new file would give the project two values and no way to tell
+    // which one signed what; rewriting their file behind their back is worse. So: say it, change nothing.
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=already-mine\n");
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
     expect(await devVar(dir, "auth-session-secret")).toBe("already-mine");
-    expect(notes.join(" ")).toMatch(/already/i);
+    expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
+    expect(notes.join(" ")).toContain(".dev.vars");
+    expect(notes.join(" ")).toContain(".dev.secrets.jsonc");
   });
 
-  test("a dev secret goes to .dev.vars, never the committed .dev.vars.example", async () => {
+  test("a dev secret goes to .dev.secrets.jsonc, never a committed example file", async () => {
     const example = "CLOUDFLARE_ACCOUNT_ID=\nCLOUDFLARE_API_TOKEN=\n";
     await writeFile(join(dir, ".dev.vars.example"), example);
+    await writeFile(join(dir, ".dev.secrets.example.jsonc"), "{}\n");
 
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
     expect(await readFile(join(dir, ".dev.vars.example"), "utf8")).toBe(example);
-    expect(await devVar(dir, "auth-session-secret")).toBeDefined();
+    expect(await readFile(join(dir, ".dev.secrets.example.jsonc"), "utf8")).toBe("{}\n");
+    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
   });
 
   test("nothing is invented for a secret whose value must match a third party", async () => {
     // The four OAuth credential pairs are registered with a provider; payments' is a Stripe key. A
     // generated value for either is a value that authenticates against nothing, hiding the real gap.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    const file = await readDevSecrets(dir);
     for (const name of ["google", "apple", "facebook", "github"]) {
-      expect(await devVar(dir, `auth-${name}-credentials`)).toBeUndefined();
+      expect(file[`auth-${name}-credentials`]).toBeUndefined();
     }
 
     const payments = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
     try {
       expect(await bootstrapAdd({ projectDir: payments, manifest: await shippedManifest("payments") })).toEqual([]);
-      await expect(readFile(join(payments, ".dev.vars"), "utf8")).rejects.toThrow();
+      await expect(readFile(devSecretsPath(payments), "utf8")).rejects.toThrow();
     } finally {
       await rm(payments, { recursive: true, force: true });
     }

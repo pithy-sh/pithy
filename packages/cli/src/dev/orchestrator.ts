@@ -5,9 +5,11 @@ import { execFile, spawn as spawnChild } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
+import { renderDevSecretsNotes } from "../devSecrets/report";
+import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import {
   buildDevConfig,
   type DevConfig,
@@ -77,6 +79,8 @@ export interface StartDevOptions {
   json?: boolean;
   /** Test seam: the entitlement composition check, without loading a real `pithy.config.ts`. */
   checkEntitlements?: (workerDir: string) => Promise<string[]>;
+  /** Seam: seed `.dev.secrets.jsonc` into the local `SECRETS` store before anything spawns. */
+  seedSecrets?: (projectDir: string) => Promise<DevSecretsSeedReport>;
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
   /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
@@ -415,6 +419,22 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     emitLine(`${worker.name}: routes gate on an entitlement, but no capability resolves one — they will deny.`);
     for (const gate of gates) emitLine(dim(`  ${gate}`));
     emitLine(dim("  run: pithy add payments"));
+  }
+
+  // Secrets are seeded before anything spawns, for the same reason the `.dev.vars` link is wired before
+  // anything spawns (#139): a Worker reads its secrets on the first request, and a store seeded after
+  // startup is a store the first sign-in of the session missed. Idempotent, so this is silent on every
+  // run but the one that changed something.
+  //
+  // Non-fatal, in both directions. A project that never composed `secrets` has nothing to seed and
+  // hears nothing. A `.dev.secrets.jsonc` that will not parse is said out loud and the session still
+  // starts — refusing to run every Worker over one malformed file would be a worse trade than letting
+  // the capability that needs the secret fail with its own error.
+  const seedSecrets = options.seedSecrets ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir }));
+  try {
+    for (const line of renderDevSecretsNotes(await seedSecrets(projectDir))) emitLine(line);
+  } catch (error) {
+    emitLine(`Secrets not seeded. ${messageOf(error)}`);
   }
 
   emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);

@@ -539,3 +539,68 @@ describe("startDev — entitlement composition check", () => {
     expect(h.stdoutLines.some((l) => l.includes("entitlement"))).toBe(false);
   });
 });
+
+describe("startDev — dev secrets", () => {
+  /** An empty seeding report — the state of a project whose secrets are all already where they belong. */
+  const quiet = {
+    seeded: [],
+    unchanged: [],
+    minted: [],
+    devVars: [],
+    missing: [],
+    undeclared: [],
+    skipped: [],
+  };
+
+  test("seeds before anything spawns — a store filled after startup missed the first sign-in", async () => {
+    const order: string[] = [];
+    const h = harness({
+      seedSecrets: async (dir) => {
+        order.push(`seed:${dir}`);
+        return { ...quiet, seeded: ["auth-session-secret"] };
+      },
+    });
+    const spawn = h.options.spawn;
+    h.options.spawn = (command, args, opts) => {
+      order.push("spawn");
+      return (spawn as NonNullable<typeof spawn>)(command, args, opts);
+    };
+
+    await startDev(h.options);
+
+    expect(order[0]).toBe("seed:/proj");
+    expect(order).toContain("spawn");
+    expect(h.stdoutLines.some((l) => l.includes("Seeded auth-session-secret"))).toBe(true);
+    // Before the Starting line, so it is read rather than buried under worker output.
+    expect(h.stdoutLines.findIndex((l) => l.startsWith("Starting "))).toBeGreaterThan(
+      h.stdoutLines.findIndex((l) => l.includes("Seeded")),
+    );
+  });
+
+  test("a run that changed nothing is silent — pithy dev seeds on every start", async () => {
+    const h = harness({ seedSecrets: async () => ({ ...quiet, unchanged: ["auth-session-secret"] }) });
+    await startDev(h.options);
+    expect(h.stdoutLines.some((l) => l.toLowerCase().includes("secret"))).toBe(false);
+  });
+
+  test("a malformed secrets file is said out loud and the session still starts", async () => {
+    const h = harness({
+      seedSecrets: async () => {
+        throw new ValidationError({ message: ".dev.secrets.jsonc is not valid JSONC." });
+      },
+    });
+    await startDev(h.options);
+
+    expect(h.stdoutLines.some((l) => l.includes("Secrets not seeded"))).toBe(true);
+    // One malformed file must not stop every Worker. The capability that needs the secret has its own error.
+    expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/api", "/proj/apps/web"]);
+  });
+
+  test("a Worker whose store cannot be opened is named with the one thing it needs", async () => {
+    const h = harness({
+      seedSecrets: async () => ({ ...quiet, skipped: [{ worker: "api", reason: "Run pithy migrate." }] }),
+    });
+    await startDev(h.options);
+    expect(h.stdoutLines.some((l) => l === "api: secrets not seeded. Run pithy migrate.")).toBe(true);
+  });
+});

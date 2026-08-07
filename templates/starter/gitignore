@@ -19,6 +19,8 @@ logs/
 .pithy-feature.json
 
 # env & secrets
+.dev.secrets.jsonc
+!.dev.secrets.example.jsonc
 .env
 .env.*
 !.env.example

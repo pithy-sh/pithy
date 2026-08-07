@@ -17,6 +17,8 @@ dist/
 !.dev.vars.example
 
 # env & secrets
+.dev.secrets.jsonc
+!.dev.secrets.example.jsonc
 .env
 .env.*
 !.env.example

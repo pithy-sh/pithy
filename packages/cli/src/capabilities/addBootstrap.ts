@@ -8,10 +8,14 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { DEV_SECRETS_FILE, type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
+import { renderDevSecretsNotes } from "../devSecrets/report";
+import { seedProjectDevSecrets } from "../devSecrets/seed";
 import { upsertDevVars } from "../project/devVars";
 
 export interface AddBootstrapOptions {
@@ -48,6 +52,11 @@ export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions
     else notes.push(provisionNote(manifest.name, binding));
   }
   notes.push(...(await ensureDevSecrets(projectDir, manifest.devSecrets)));
+  // Last, and over the whole project rather than this capability: the value just minted has to reach the
+  // local `SECRETS` store to be worth anything, and so does every value already in the file that a
+  // previous run could not seed — `pithy add secrets` is exactly the run that makes the store openable.
+  // Never fatal. A project whose store is not wired yet gets a reason, not a failed `pithy add`.
+  notes.push(...renderDevSecretsNotes(await seedProjectDevSecrets({ projectDir })));
   return notes;
 }
 
@@ -102,35 +111,48 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
  * list of names here would drift the moment a capability shipped another one — and drift silently,
  * because a missing lazily-read secret is invisible until the code path that reads it runs.
  *
- * **Only when absent.** A session secret replaced is every live session invalidated; a link-signing key
- * replaced is every link already in an inbox broken. An *empty* value counts as absent — nothing was
- * signed with it, and leaving it would leave the read failing.
+ * **`.dev.secrets.jsonc`, not `.dev.vars` (#149).** Only the destination changed; the declaration and
+ * the minting are the ones `pithy add` has always done. `.dev.vars` is wrangler's file — env bindings,
+ * `UPPER_SNAKE` — and a kebab secret name sitting in it taught every adopter that one of the two
+ * conventions was a mistake. The value is written as a full version-1 envelope, which is the shape the
+ * store actually holds, so dev stops being a shape production never sees.
  *
- * **`.dev.vars`, never `.dev.vars.example`.** The former is gitignored; the latter is committed.
+ * **Only when absent, from either file.** A session secret replaced is every live session invalidated;
+ * a link-signing key replaced is every link already in an inbox broken.
+ *
+ * **A name still in `.dev.vars` is named, never moved.** That is the migration case: an existing
+ * project has the value there, local dev still reads it, and minting a second one into the new file
+ * would leave the project holding two values with nothing to say which signed what. Rewriting their
+ * `.dev.vars` unasked is worse. So the note says where it is and where it belongs, and `pithy doctor`
+ * repeats it every run until they move it.
  *
  * One write for the whole set, so a capability declaring several either lands them all or lands none.
  */
 async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret[]): Promise<string[]> {
   if (declared.length === 0) return [];
-  const path = join(projectDir, ".dev.vars");
-  const existing = parseDevVars(await readFile(path, "utf8").catch(() => ""));
-  const minted: Record<string, string> = {};
+  const inDevVars = parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => ""));
+  const stated = await readDevSecrets(projectDir);
+  const minted: DevSecretsFile = {};
   const notes: string[] = [];
   for (const secret of declared) {
-    if (existing[secret.name]) {
+    if (inDevVars[secret.name]) {
       notes.push(
-        `${secret.name} is already in .dev.vars. Left as it is — a new value invalidates what the old one signed.`,
+        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
       );
       continue;
     }
-    // The name is the `.dev.vars` key: local dev resolves every secret from its injected string,
-    // whatever the registry backend says, so the key is the registry name and not a binding name.
-    minted[secret.name] = mintDevValue(secret.devValue);
+    if (stated[secret.name]) {
+      notes.push(
+        `${secret.name} is already in ${DEV_SECRETS_FILE}. Left as it is — a new value invalidates what the old one signed.`,
+      );
+      continue;
+    }
+    minted[secret.name] = initialDevSecret(mintDevValue(secret.devValue));
     notes.push(
-      `Minted a dev ${secret.name} into .dev.vars. Local only.`,
+      `Minted a dev ${secret.name} into ${DEV_SECRETS_FILE}. Local only.`,
       `Deployed environments need pithy secrets create ${secret.name}.`,
     );
   }
-  if (Object.keys(minted).length > 0) await upsertDevVars(path, minted);
+  await writeDevSecrets(projectDir, minted);
   return notes;
 }
