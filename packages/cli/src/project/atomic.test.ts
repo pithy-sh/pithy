@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Buffer } from "node:buffer";
-import type { Mode, PathLike, Stats } from "node:fs";
+import type { Mode, OpenMode, PathLike, Stats } from "node:fs";
 import {
   chmod,
   lstat,
@@ -42,11 +42,17 @@ vi.mock("node:crypto", async (importOriginal) => {
 });
 
 /**
- * The mode the temp file *already had* when the chmod ran. A write that creates the file at the umask
- * default and tightens it afterwards leaves a window where a plaintext credential is world-readable, and
- * the finished file looks identical either way — this is the only place the difference is observable.
+ * What the write did *while it was doing it*, which the finished file cannot show. A file created at the
+ * umask default and tightened afterwards is indistinguishable at the end from one born restricted, and a
+ * temp file swapped under the write is indistinguishable from one that survived it. The exclusive `open`
+ * is the seam that sees both: `birthMode` is the mode the temp file was created with, and `afterOpen`
+ * runs in the window between that create and everything after it — the window the path-based `chmod`
+ * used to sit in.
  */
-const observed = vi.hoisted(() => ({ modeAtChmod: null as number | null }));
+const staged = vi.hoisted(() => ({
+  birthMode: null as number | null,
+  afterOpen: null as ((path: string) => Promise<void>) | null,
+}));
 
 /**
  * Who owns a symlink is the whole containment rule, and a test cannot make a link it does not own:
@@ -60,9 +66,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    chmod: async (path: PathLike, mode: Mode) => {
-      observed.modeAtChmod = (await actual.stat(path)).mode & 0o777;
-      await actual.chmod(path, mode);
+    open: async (path: PathLike, flags?: OpenMode, mode?: Mode) => {
+      const handle = await actual.open(path, flags, mode);
+      staged.birthMode = (await handle.stat()).mode & 0o777;
+      await staged.afterOpen?.(String(path));
+      return handle;
     },
     lstat: async (path: PathLike) => {
       const real = await actual.lstat(path);
@@ -81,7 +89,8 @@ let dir: string;
 beforeEach(async () => {
   dir = await realpath(await mkdtemp(join(tmpdir(), "pithy-atomic-")));
   pinned.suffix = null;
-  observed.modeAtChmod = null;
+  staged.birthMode = null;
+  staged.afterOpen = null;
   owner.byPath.clear();
 });
 afterEach(async () => {
@@ -277,12 +286,55 @@ describe("writeFileAtomic — the temp file", () => {
 
   test("creates the temp file already restricted, never widening it after the write", async () => {
     const path = join(dir, ".dev.vars.prod");
-    observed.modeAtChmod = null;
 
     await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
 
-    expect(observed.modeAtChmod).toBe(0o600);
+    // Born no wider than asked — the umask can only clear bits — and exact by the end. There is no
+    // interval in between where a plaintext credential sits on disk readable by anyone else.
+    expect(staged.birthMode).not.toBeNull();
+    expect((staged.birthMode as number) & ~0o600).toBe(0);
     expect(await modeOf(path)).toBe("600");
+  });
+
+  test("chmods the descriptor it opened, never the temp file's name", async () => {
+    // The exclusive create closed the *write* half of the temp path and left the *chmod* half open.
+    // `chmod` takes a name, and a name can be made to mean something else after the open: swap the temp
+    // file for a symlink and the mode lands on the link's destination. That is an arbitrary chmod on any
+    // file this user owns, and at 0666 it is an arbitrary disclosure. The fix is to stop naming the file
+    // at all — `fchmod` through the descriptor cannot be redirected, because there is no name to resolve.
+    const victim = join(dir, "id_ed25519");
+    await writeFile(victim, "PRIVATE KEY\n");
+    await chmod(victim, 0o600);
+    staged.afterOpen = async (tmp) => {
+      await rm(tmp);
+      await symlink(victim, tmp);
+    };
+
+    await writeFileAtomic(join(dir, ".dev.vars"), "TOKEN=live\n", { mode: 0o666 }).catch(() => {});
+
+    expect(await modeOf(victim)).toBe("600");
+    expect(await readFile(victim, "utf8")).toBe("PRIVATE KEY\n");
+  });
+
+  test("refuses to rename a temp file that is no longer the one it wrote", async () => {
+    // `rename` is the last path-based step and Node offers no descriptor-relative form of it, so the swap
+    // above still had one thing left to take: the rename would install the planted link over the target,
+    // and every later write of `.dev.vars` would follow it. The inode the bytes went into is compared
+    // against the inode at the name first. Narrower race, not no race — see `ensureUnswapped`.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "OLD=1\n");
+    const loot = join(outside, "loot");
+    staged.afterOpen = async (tmp) => {
+      await rm(tmp);
+      await symlink(loot, tmp);
+    };
+
+    const error = await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    await expect(stat(loot)).rejects.toThrow();
+    expect((await lstat(path)).isFile()).toBe(true);
+    expect(await readFile(path, "utf8")).toBe("OLD=1\n");
   });
 
   test("a dangling link into a directory that does not exist fails as a PithyError, not a raw ENOENT", async () => {
@@ -401,6 +453,120 @@ describe("writeFileAtomic — a symlink somebody else planted", () => {
 });
 
 /**
+ * Keeping the target's mode is what respects an adopter's deliberate 0640 — and it is also an instruction
+ * read out of a file, which means whoever wrote the file wrote the instruction. The attacker's position
+ * here is fixed and known: they can write the project directory, they cannot read the 0600 file in it.
+ * From there, pre-creating the target is trivial, and the mode is the one thing about it we obeyed.
+ */
+describe("writeFileAtomic — a target somebody else left in the way", () => {
+  let foreign: number;
+  beforeEach(() => {
+    foreign = (process.geteuid?.() ?? 0) + 1;
+  });
+
+  test("does not adopt the mode of a target somebody else owns", async () => {
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "");
+    await chmod(path, 0o666);
+    owner.byPath.set(path, foreign);
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    expect(await modeOf(path)).toBe("600");
+  });
+
+  test("does not adopt a root-owned mode either, unlike a root-owned link", async () => {
+    // Deliberately stricter than `ensureOurs`. A root-owned link sends the write somewhere root chose,
+    // and root reads our files regardless — nothing is given away by following it. A root-owned 0666
+    // gives the file to everybody else, which is not root's to hand out on our behalf.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "");
+    await chmod(path, 0o666);
+    owner.byPath.set(path, 0);
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    expect(await modeOf(path)).toBe("600");
+  });
+
+  test("still keeps the mode of a target that is ours", async () => {
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "");
+    await chmod(path, 0o640);
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    expect(await modeOf(path)).toBe("640");
+  });
+});
+
+/**
+ * The walk resolved what exists and then handed the rest to `join`, which collapses `..` **lexically**.
+ * `missing/../apps/.dev.vars` came back as `apps/.dev.vars`: a path the kernel would have refused outright,
+ * rewritten into one it will happily walk — and the components that survived the collapse were then
+ * traversed by the open with nothing asked about any of them. The gate above is component by component
+ * precisely so that cannot happen, and this is the door beside it.
+ *
+ * Do not lexically normalise a path you are about to hand to a syscall. Past the first component that is
+ * not there, the walk resolves nothing and lets the syscall judge the path it was actually given.
+ */
+describe("writeFileAtomic — a path through something that is not there", () => {
+  let outside: string;
+  let foreign: number;
+  beforeEach(async () => {
+    outside = await realpath(await mkdtemp(join(tmpdir(), "pithy-atomic-missing-")));
+    foreign = (process.geteuid?.() ?? 0) + 1;
+  });
+  afterEach(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  /** `join` normalises, so the paths under test have to be spelled without it. That is the whole point. */
+  function literal(...parts: string[]): string {
+    return parts.join(sep);
+  }
+
+  test("does not collapse `..` onto a link somebody else owns", async () => {
+    const elsewhere = join(outside, "elsewhere");
+    await mkdir(elsewhere);
+    const apps = join(dir, "apps");
+    await symlink(elsewhere, apps);
+    owner.byPath.set(apps, foreign);
+
+    const path = literal(dir, "missing", "..", "apps", ".dev.vars");
+    const error = await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    await expect(stat(join(elsewhere, ".dev.vars"))).rejects.toThrow();
+  });
+
+  test("refuses a `..` past a directory that does not exist, rather than inventing a reachable path", async () => {
+    const path = literal(dir, "missing", "..", "file.txt");
+
+    await expect(writeFileAtomic(path, "x", { mode: 0o600 })).rejects.toThrow(PithyError);
+
+    await expect(stat(join(dir, "file.txt"))).rejects.toThrow();
+  });
+
+  test("still resolves `..` above the first missing component", async () => {
+    // The rule is about what cannot be resolved, not about `..`. Everything to the left of the first
+    // missing component has been walked and had its links expanded, so its parent is the kernel's parent.
+    const sub = join(dir, "sub");
+    await mkdir(sub);
+
+    await writeFileAtomic(literal(sub, "..", "file.txt"), "content\n");
+
+    expect(await readFile(join(dir, "file.txt"), "utf8")).toBe("content\n");
+  });
+
+  test("still creates a file whose own name is the only thing missing", async () => {
+    const path = join(dir, "fresh");
+    await writeFileAtomic(path, "TOKEN=abc\n", { mode: 0o600 });
+    expect(await readFile(path, "utf8")).toBe("TOKEN=abc\n");
+  });
+});
+
+/**
  * The random suffix that closed the plantable temp name opened a leak: every killed run leaves a *distinct*
  * `.dev.vars.<rand>.tmp` holding the whole plaintext credential file, and nothing reclaimed them. The old
  * fixed name was at least overwritten by the next run. `*.tmp` keeps them out of git and out of `npm pack`;
@@ -489,36 +655,116 @@ function outsideOf(path: string): string {
  * write; this is what stops a sixth from being written beside it.
  *
  * A hand-rolled temp-file-plus-rename gets none of what is above it: no exclusive create, no unguessable
- * name, no ownership check on the links it writes through, no mode carried onto the temp file, and no sweep
- * of what a killed run leaves. Every one of those was a shipped bug here.
+ * name, no ownership check on the links it writes through, no descriptor held across the chmod, no mode
+ * carried onto the temp file, and no sweep of what a killed run leaves. Every one of those was a shipped
+ * bug here.
  *
- * `rename` itself is not banned — `worker rename` moves a directory, which is its ordinary use. The shape
- * this looks for is `rename` plus a `.tmp` path, which is the atomic-write idiom and nothing else.
+ * **The previous version of this asked the wrong question and got the wrong answer three ways on the first
+ * try.** It looked for `rename` *and* a `.tmp` literal, in `packages/cli/src` only, so `renameSync` walked
+ * past it, a temp name built any other way walked past it, and the identical code one directory outside
+ * `src` was never read. A regex hunting an idiom is guessing at intent, and intent is exactly what an
+ * evader controls.
+ *
+ * The question here is the one that is actually decidable: **which modules can reach a rename at all.** A
+ * module's imports are a fact about it, not a guess about what it meant, and the answer across the whole
+ * repository is four files. `rename` is not banned — `worker rename` moves a directory, `scaffold` moves
+ * template files into place — but a fifth file acquiring it now has to be written down here with a reason,
+ * which is precisely the review that the four rounds of this bug never got.
+ *
+ * **This is still a scan over source text, and that is a heuristic.** Two better homes were checked and are
+ * not available: TypeScript 7's npm package ships no parser API (`ts.createSourceFile` is gone, so there is
+ * no AST to walk), and Biome's `noRestrictedImports` with a per-path override is where this rule belongs
+ * outright — but that lives in `biome.jsonc`, not here. Move it there when the chance comes. Until then the
+ * scan reads import *clauses* rather than idioms, which is what makes aliasing (`rename as mv`), namespace
+ * and default bindings, `promises` off `node:fs`, `require`, and dynamic `import` all count. What it cannot
+ * see is a rename reached through a module that re-exports one.
  */
 describe("the gate on the gate", () => {
-  const CLI_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  /** `packages/cli/src/project` → the repository. Asserted below, so a moved file fails loudly. */
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+  const NOT_SOURCE = new Set(["node_modules", "dist", ".turbo", ".git", "coverage", ".changeset"]);
 
-  test("no module rolls its own temp-file-plus-rename", async () => {
-    const entries = await readdir(CLI_SRC, { recursive: true, withFileTypes: true });
-    const handRolled: string[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
-      const path = join(entry.parentPath, entry.name);
-      if (
-        path.includes(`${sep}test-utils${sep}`) ||
-        path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")
-      )
+  /**
+   * Every module in the repository that may reach a rename, and why it is not an atomic file write.
+   * Adding a line here is the review. Deleting one is the fix.
+   */
+  const ALLOWED = new Map<string, string>([
+    ["packages/cli/src/project/atomic.ts", "This module. It is the one that is allowed to."],
+    ["packages/cli/src/project/scaffold.ts", "Moves scaffolded template files into place after the copy."],
+    ["packages/cli/src/project/workerCommand.ts", "`worker rename` moves a directory. Not a file write."],
+    [
+      "packages/cli/src/seed/media.ts",
+      "The fifth producer, found while closing the fourth. Its sidecar is an asset-id manifest rather than a credential, so it is listed rather than left silent — route it through writeFileAtomic and delete this line.",
+    ],
+  ]);
+
+  /**
+   * Why `source` can reach a rename, or null. Every static import of `node:fs` or `node:fs/promises` is
+   * read: a named clause counts when it binds `rename`, `renameSync`, or `promises` — the export name is
+   * to the left of any `as`, so an alias hides nothing — and anything that is not a named clause is a
+   * namespace or default binding, which carries the whole module. `require` and dynamic `import` hand over
+   * the whole module too.
+   */
+  function renameReach(source: string): string | null {
+    const found = new Set<string>();
+    // The clause may span lines but never a quote or a semicolon: those end the statement before it, so
+    // the match cannot start at an earlier `import` and swallow everything down to this one's specifier.
+    for (const [, clause] of source.matchAll(
+      /\bimport\s+(?:type\s+)?([^;"']*?)\s*from\s*["']node:fs(?:\/promises)?["']/g,
+    )) {
+      // The group is not optional, so this is unreachable — and if it ever is reached, the safe reading of
+      // an import clause we could not see is that it binds everything.
+      const binding = clause?.trim() ?? "*";
+      if (!binding.startsWith("{")) {
+        found.add("the whole module namespace");
         continue;
-      const source = await readFile(path, "utf8");
-      const importsRename = /import\s+\{[^}]*\brename\b[^}]*\}\s+from\s+"node:fs(?:\/promises)?"/.test(source);
-      if (importsRename && /\.tmp[`"']/.test(source)) handRolled.push(relative(CLI_SRC, path));
+      }
+      for (const name of binding.slice(1, -1).split(",")) {
+        const exported = name
+          .trim()
+          .split(/\s+as\s+/)[0]
+          ?.trim();
+        if (exported === "rename" || exported === "renameSync" || exported === "promises") found.add(exported);
+      }
+    }
+    if (/\brequire\(\s*["'](?:node:)?fs(?:\/promises)?["']\s*\)/.test(source)) found.add("require");
+    if (/\bimport\(\s*["'](?:node:)?fs(?:\/promises)?["']\s*\)/.test(source)) found.add("a dynamic import");
+    return found.size === 0 ? null : [...found].join(", ");
+  }
+
+  /** Every `.ts` file in the repository that ships, test files and generated output excluded. */
+  async function sources(directory: string, into: string[]): Promise<string[]> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!NOT_SOURCE.has(entry.name)) await sources(path, into);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+      if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".d.ts")) continue;
+      into.push(path);
+    }
+    return into;
+  }
+
+  test("scans the repository, not one directory of it", async () => {
+    // The old version read `packages/cli/src` and nothing else, so the same code one directory out was
+    // invisible to it. A silent walk that finds nothing would pass every assertion below, so the walk is
+    // asserted before the rule is.
+    expect(await stat(join(REPO_ROOT, "packages"))).toBeDefined();
+    expect(await stat(join(REPO_ROOT, "biome.jsonc"))).toBeDefined();
+    expect((await sources(REPO_ROOT, [])).length).toBeGreaterThan(500);
+  });
+
+  test("only the modules written down here can reach a rename", async () => {
+    const reached = new Map<string, string>();
+    for (const path of await sources(REPO_ROOT, [])) {
+      const why = renameReach(await readFile(path, "utf8"));
+      if (why !== null) reached.set(relative(REPO_ROOT, path).split(sep).join("/"), why);
     }
 
-    // `seed/media.ts` is the fifth producer, found while closing the fourth. Its sidecar is an asset-id
-    // manifest rather than a credential, so it is listed rather than left silent — and this fails the day
-    // somebody routes it through `writeFileAtomic`, which is the day to delete the line.
-    expect(handRolled.sort(), "route it through writeFileAtomic, then delete it from this list").toEqual([
-      join("seed", "media.ts"),
-    ]);
+    expect([...reached.keys()].sort(), "write down why, or route the write through writeFileAtomic").toEqual(
+      [...ALLOWED.keys()].sort(),
+    );
   });
 });

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { randomBytes } from "node:crypto";
-import { chmod, lstat, readdir, readlink, rename, unlink, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { lstat, open, readdir, readlink, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { ConflictError, InternalError, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 
@@ -25,8 +27,9 @@ const STALE_TEMP_MS = 60_000;
 export interface AtomicWriteOptions {
   /**
    * The mode a **newly created** file lands with — for the files that hold credentials, where the umask
-   * is not a permission policy. Ignored when the target already exists: those permissions are the
-   * adopter's, tighter or looser than ours, and a write is not the moment to overrule them.
+   * is not a permission policy. Ignored when the target already exists *and is ours*: those permissions
+   * are the adopter's, tighter or looser than ours, and a write is not the moment to overrule them. A
+   * target somebody else owns has its mode ignored instead — see {@link adoptableModeOf}.
    */
   mode?: number;
 }
@@ -40,7 +43,9 @@ export interface AtomicWriteOptions {
  * Its **mode**. `pithy init` chmods `.dev.vars` to 0600, and the first `pithy add` or `pithy token mint
  * --store dev-vars` wrote through here and handed it back the temp file's 0644 — at exactly the moment
  * it started holding `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS`. An existing target's mode is
- * kept; `options.mode` is the mode for creating one that is not there yet.
+ * kept; `options.mode` is the mode for creating one that is not there yet. Kept only from a target that is
+ * *ours*, though — a mode read off a file is an instruction taken from a file, and pre-creating `.dev.vars`
+ * at 0666 is one line of work for anyone who can write the directory. See {@link adoptableModeOf}.
  *
  * Its **link**. `apps/<worker>/.dev.vars` is a symlink to the project's shared file, and a rename over a
  * symlink does not follow it — it deletes it and leaves a private regular file holding a stale copy.
@@ -55,6 +60,17 @@ export interface AtomicWriteOptions {
  * — so `.dev.vars` and every later write of it went wherever the planter chose. There was no race to win.
  * The name now carries {@link TEMP_SUFFIX_BYTES} random bytes, and the file is created **exclusively**, so
  * anything already at the path fails the open instead of being written through.
+ *
+ * **And the temp file is only ever touched through the descriptor that created it.** The exclusive create
+ * closed the *write* half of that and left the *chmod* half open: `chmod(tmp, mode)` resolves the name a
+ * second time, so swapping the temp file for a symlink in the window after the open chmod'd the link's
+ * destination instead — an arbitrary chmod on any file the invoking user owns, which for a mode of 0666 is
+ * an arbitrary disclosure. A path-based operation after a path-based create is the shape of the bug, every
+ * time. The handle is held: `fchmod` and the write both go through the descriptor, so there is no second
+ * resolution of the name to win. What remains path-based is the `rename` itself, which Node gives no
+ * descriptor-relative form of — so before it runs, the inode at the name is checked against the inode the
+ * bytes actually went into ({@link ensureUnswapped}). That turns a reliable swap into the same narrow race
+ * the walk below already documents; it does not close it.
  *
  * **And the link is only followed when we could have made it.** Closing the temp path moved that same
  * escape one step earlier rather than shutting it: plant the link at `.dev.vars` instead of at its temp
@@ -71,24 +87,45 @@ export interface AtomicWriteOptions {
  */
 export async function writeFileAtomic(path: string, content: string, options?: AtomicWriteOptions): Promise<void> {
   const target = await resolveWritePath(path);
-  const mode = (await modeOf(target)) ?? options?.mode;
+  const mode = (await adoptableModeOf(target)) ?? options?.mode;
   const tmp = `${target}.${randomBytes(TEMP_SUFFIX_BYTES).toString("hex")}${TEMP_SUFFIX}`;
+
+  let handle: FileHandle;
   try {
-    // `wx` is O_CREAT|O_EXCL: the file is always brand new, so the mode below is the mode it is *born*
+    // `wx` is O_CREAT|O_EXCL: the file is always brand new, so the mode here is the mode it is *born*
     // with rather than one it is widened to afterwards. Both halves matter. Exclusivity is the guard —
     // a planted file or symlink fails the open rather than being followed. Creating restricted is the
-    // window — a chmod after the write leaves an interval where a plaintext credential is on disk at
-    // the umask default, and a crashed run's leftover would have kept its own mode through O_CREAT.
-    await writeFile(tmp, content, { flag: "wx", mode: mode ?? 0o666 });
+    // window — a file created at the umask default and tightened later spends an interval holding a
+    // plaintext credential world-readable, and a crashed run's leftover would have kept its own mode
+    // through O_CREAT.
+    handle = await open(tmp, "wx", mode ?? 0o666);
   } catch (err) {
     // Nothing is unlinked here: we did not create it, so removing it would be a write to the very path
     // we just refused — and if the open failed for any other reason, that file is somebody else's.
     throw writeFailure(target, tmp, err);
   }
+
+  let written: Stats;
   try {
-    // The umask above can only clear bits, so it can have cleared one the target actually had. This is
-    // what makes the mode exact, including a target deliberately wider than the umask allows.
-    if (mode !== undefined) await chmod(tmp, mode);
+    // `fchmod`, before a byte is written and through the descriptor rather than the name. Before,
+    // because the umask can only clear bits and may have cleared one the target actually had, so this
+    // is what makes the mode exact — and doing it while the file is still empty means the content never
+    // exists at a mode wider than asked for. Through the descriptor, because the name is the attacker's
+    // to change and the inode is not.
+    if (mode !== undefined) await handle.chmod(mode);
+    await handle.writeFile(content);
+    // `fstat` before the close. This is the inode the bytes are in, and the only way to ask later
+    // whether the name still refers to it.
+    written = await handle.stat();
+    await handle.close();
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await unlink(tmp).catch(() => {});
+    throw writeFailure(target, tmp, err);
+  }
+
+  await ensureUnswapped(tmp, target, written);
+  try {
     await rename(tmp, target);
   } catch (err) {
     await unlink(tmp).catch(() => {});
@@ -97,6 +134,30 @@ export async function writeFileAtomic(path: string, content: string, options?: A
   // After the rename, never before: the bytes are already in place, so a sweep that cannot run costs the
   // caller nothing. It never throws for the same reason.
   await sweepStaleTemps(target);
+}
+
+/**
+ * Refuse to rename a temp file that is no longer the one this write created.
+ *
+ * `rename` is the last path-based step and there is no descriptor-relative form of it in Node, so the
+ * name is resolved once more here whatever we do. Comparing the inode at the name against the inode the
+ * bytes went into means a swap has to land inside the gap between this check and the rename rather than
+ * anywhere in the whole write — the same narrow race {@link ensureOurs} already records, not a closure of
+ * it. Left unchecked it is not a race at all: replace the temp file with a symlink any time before the
+ * rename and the link gets installed over the target, which is exactly the escape the random name and the
+ * exclusive create were meant to end.
+ */
+async function ensureUnswapped(tmp: string, target: string, written: Stats): Promise<void> {
+  const now = await lstat(tmp).catch(() => undefined);
+  if (now !== undefined && now.dev === written.dev && now.ino === written.ino) return;
+  // Nothing is unlinked. Whatever is at that name now is not ours to remove — and our own inode already
+  // is unlinked, because replacing the name is what did it, so the close above reclaimed it and the
+  // plaintext with it.
+  throw new ConflictError({
+    message: `Refusing to write ${target}: its temporary file ${tmp} was replaced while it was being written.`,
+    action: "Run this again. If nothing of yours could have done that, treat it as hostile.",
+    detail: now === undefined ? `${tmp} no longer exists.` : `${tmp} is a different inode than the one written.`,
+  });
 }
 
 /**
@@ -146,13 +207,31 @@ function errnoOf(err: unknown): string | undefined {
 }
 
 /**
- * The permission bits of the file at `path`, or undefined when nothing is there to read them from.
+ * The permission bits worth carrying onto the temp file, or undefined when there are none to take.
+ *
  * `lstat`, not `stat`: `path` comes out of {@link resolveWritePath} with every link already followed and
  * checked, so a link here would be one that appeared since — not one to read a mode through.
+ *
+ * **Only from a file we own.** Adopting the target's mode is what keeps an adopter's deliberate 0640, but
+ * it is also an instruction taken from a file, and whoever wrote the file wrote the instruction. Someone
+ * who can write the project directory but not read the 0600 file in it — the position every attack here is
+ * launched from — pre-creates `.dev.vars` at 0666, and the freshly minted `CLOUDFLARE_API_TOKEN` lands
+ * world-readable with the write reporting nothing wrong. A mode is only adopted from a file whose uid is
+ * ours; otherwise the caller's mode stands, which is the mode that knows what it is about to write.
+ *
+ * Deliberately stricter than {@link ensureOurs}, which allows root. A root-owned *link* sends a write
+ * somewhere root chose, and root can read anything of ours regardless — nothing is given away. A root-owned
+ * *mode* of 0666 gives it to everybody else, which is not root's to hand out on our behalf.
+ *
+ * The same limit as {@link ensureOurs} applies: a platform with no uid model — Windows — has nothing to
+ * compare and adopts unconditionally.
  */
-async function modeOf(path: string): Promise<number | undefined> {
+async function adoptableModeOf(path: string): Promise<number | undefined> {
   try {
-    return (await lstat(path)).mode & 0o7777;
+    const entry = await lstat(path);
+    const us = process.geteuid?.();
+    if (us !== undefined && entry.uid !== us) return undefined;
+    return entry.mode & 0o7777;
   } catch {
     return undefined;
   }
@@ -217,17 +296,36 @@ function partsOf(path: string): string[] {
  * pointing at it. A missing directory resolves to the literal path below it and the write reports it. A
  * cycle is refused: following it never ends, and picking one link in it to overwrite would be a guess at
  * what the caller meant.
+ *
+ * **Nothing below a component that does not exist is normalised.** The walk used to hand the remainder to
+ * `join`, which collapses `..` *lexically* — `missing/../apps/.dev.vars` came back as `apps/.dev.vars`,
+ * a path the kernel would have refused outright and, worse, one whose surviving components were then
+ * traversed by the open with no ownership check on them at all. Plant the link at `apps` and it is
+ * followed. Do not lexically normalise a path you are about to hand to a syscall — that is the same
+ * mistake as following a link because the name looked fine. Past the first missing component the walk
+ * resolves nothing: components are appended verbatim, `..` included, and the syscall judges the path it
+ * was actually given.
  */
 async function resolveWritePath(path: string): Promise<string> {
   const absolute = isAbsolute(path) ? path : join(process.cwd(), path);
   let resolved = parse(absolute).root;
   let pending = partsOf(absolute);
   let hops = 0;
+  /** Set the moment a component turns out not to be there. Nothing after it can be resolved. */
+  let missing = false;
 
   while (pending.length > 0) {
     const part = pending.shift() as string;
     if (part === ".") continue;
+    if (missing) {
+      // Verbatim, not `join`. `join` would collapse a `..` here against a directory that does not exist,
+      // inventing a path the caller never named and the kernel would never have reached.
+      resolved = `${resolved}${sep}${part}`;
+      continue;
+    }
     if (part === "..") {
+      // Safe only here, above the first missing component: every directory to the left has been walked
+      // and every link in it expanded, so `resolved` is physical and its parent is the kernel's parent.
       resolved = dirname(resolved);
       continue;
     }
@@ -246,7 +344,9 @@ async function resolveWritePath(path: string): Promise<string> {
       if (err instanceof PithyError) throw err;
       // Nothing here, or it stopped being a link between the two calls. Either way there is no link left
       // to follow: the rest is taken literally and the write reports whatever it finds.
-      return join(next, ...pending);
+      resolved = next;
+      missing = true;
+      continue;
     }
 
     hops += 1;
