@@ -36,8 +36,10 @@ import {
   removeScaffoldPath,
   resolveTemplateSource,
   scaffoldProject,
+  survivorsOf,
   templateContents,
   unpublishedKitNotice,
+  whatSurvived,
 } from "./scaffold";
 import { committedFiles } from "./templateFiles";
 import { addWorker, removeWorker } from "./workerCommand";
@@ -790,6 +792,47 @@ describe("removeScaffoldPath", () => {
     // The errno is throw-site context, not client copy — the HTTP codec strips `detail`, and the
     // adopter is told what is still on their disk instead.
     expect(payload.detail).toContain("EACCES");
+  });
+
+  test("says it could not read the tree back, rather than that nothing of it is left", async () => {
+    // The lie #160's round found. `survivorsOf` read a failed scan as an empty tree, so the one case
+    // where the adopter is told *least* was the case where the whole tree survived: an unreadable target
+    // fails the `rm` and fails the scan alike, and the failure printed "Nothing of it is left." The
+    // adopter moves on and the worker stays on disk, entire.
+    const target = join(dir, "apps", "board");
+    await mkdir(join(target, "src"), { recursive: true });
+    await writeFile(join(target, "src", "index.ts"), "export default {};\n");
+    await chmod(target, 0o300); // -wx: the `rm` cannot list it, and neither can the scan that follows
+
+    const error = await removeScaffoldPath(dir, target).catch((cause: unknown) => cause);
+    await chmod(target, 0o700);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).not.toContain("Nothing of it is left");
+    expect(payload.message).toContain("could not read it back");
+    // Both errnos are throw-site context: the one that failed the delete, and the one that failed the
+    // scan. Neither is client copy, and the adopter is told plainly that the answer is unknown.
+    expect(payload.detail).toContain("EACCES");
+    // The tree really is entire — the assertion the old message contradicted.
+    expect(await readdir(join(target, "src"))).toEqual(["index.ts"]);
+  });
+
+  test("tells the three states apart, and only the empty one reads as nothing left", async () => {
+    // The states the one `null` used to carry. "Gone" is the only one the old sentence was ever true
+    // for, and it is the one a real `rm` almost never reaches — it needs the target to vanish under us —
+    // so it is asserted here rather than left to a race nobody can stage.
+    const gone = join(dir, "apps", "never-existed");
+    expect(await survivorsOf(gone)).toEqual({ state: "gone" });
+    expect(whatSurvived({ state: "gone" })).toContain("Nothing of it is left");
+
+    const unreadable = join(dir, "apps", "board");
+    await mkdir(unreadable, { recursive: true });
+    await chmod(unreadable, 0o300);
+    const scan = await survivorsOf(unreadable);
+    await chmod(unreadable, 0o700);
+    expect(scan).toEqual({ state: "unknown", reason: "EACCES" });
+    expect(whatSurvived(scan)).not.toContain("Nothing of it is left");
   });
 });
 

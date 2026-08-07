@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -85,14 +85,59 @@ describe("devSecretReader", () => {
   test("resolves a secret from the project's .dev.vars", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, ".dev.vars"), "# a comment\nauth-session-secret=s3cr3t\n");
-    expect(await devSecretReader(dir)("auth-session-secret")).toBe("s3cr3t");
+    expect(await devSecretReader({ projectDir: dir, env: "dev" })("auth-session-secret")).toBe("s3cr3t");
   });
 
   test("is undefined for a name the file does not set, and when there is no file", async () => {
     const dir = await tempDir();
-    expect(await devSecretReader(dir)("auth-session-secret")).toBeUndefined();
+    expect(await devSecretReader({ projectDir: dir, env: "dev" })("auth-session-secret")).toBeUndefined();
     await writeFile(join(dir, ".dev.vars"), "OTHER=1\n");
-    expect(await devSecretReader(dir)("auth-session-secret")).toBeUndefined();
+    expect(await devSecretReader({ projectDir: dir, env: "dev" })("auth-session-secret")).toBeUndefined();
+  });
+
+  test("refuses outside dev, and never opens the file — #159's rule, on the reading half", async () => {
+    // `.dev.vars` is on the operator's disk in every environment, so a reader that only asks the
+    // filesystem happily hands a prepared set a live dev secret under `--env prod` and writes it into
+    // production rows. A reader that reads dev secrets for a managed environment is the same hole as a
+    // writer, and #159 is absolute: the rule lives in the reader, not in whoever calls it.
+    const dir = await tempDir();
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=s3cr3t\n");
+    for (const env of ["staging", "prod"]) {
+      const failure = await devSecretReader({ projectDir: dir, env })("auth-session-secret").catch(
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(PithyError);
+      expect((failure as PithyError).payload.message).toContain(env);
+      // The value never appears in the refusal, in `message` or in `detail`.
+      expect(JSON.stringify((failure as PithyError).payload)).not.toContain("s3cr3t");
+    }
+  });
+
+  test("refuses an environment it cannot place — permissive-by-default is the bug", async () => {
+    // Not "unless it is prod". Unless it is provably dev. An unknown environment, an empty one, or a
+    // spelling nothing resolves refuses, because the dangerous default is the permissive one.
+    const dir = await tempDir();
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=s3cr3t\n");
+    for (const env of ["", "Dev", "development", "local"]) {
+      await expect(devSecretReader({ projectDir: dir, env })("auth-session-secret")).rejects.toThrow(PithyError);
+    }
+  });
+
+  test("an unreadable .dev.vars is not an absent one — only ENOENT answers undefined", async () => {
+    // The `catch(() => undefined)` shape that cost `.dev.vars` its contents twice elsewhere. Here it
+    // costs a prepared set its secret: the set writes a row against `undefined` and the run says nothing.
+    const dir = await tempDir();
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "auth-session-secret=s3cr3t\n");
+    await chmod(path, 0o200);
+
+    const failure = await devSecretReader({ projectDir: dir, env: "dev" })("auth-session-secret").catch(
+      (error: unknown) => error,
+    );
+    await chmod(path, 0o600);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.detail).toContain("EACCES");
   });
 });
 

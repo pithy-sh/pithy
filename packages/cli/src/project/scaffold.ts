@@ -270,32 +270,72 @@ const SURVIVOR_SAMPLE = 5;
 async function removeFailure(root: string, target: string, err: unknown): Promise<PithyError> {
   if (err instanceof PithyError) return err;
   const named = relative(root, target) || target;
+  const left = await survivorsOf(target);
   return new InternalError(
     {
-      message: `Could not finish deleting ${named}. ${whatSurvived(await survivorsOf(target))}`,
+      message: `Could not finish deleting ${named}. ${whatSurvived(left)}`,
       action: "Something blocked it — a permission, or a file in use. Clear that and run the command again.",
-      detail: `${errnoOf(err) ?? "unknown error"} while removing ${target}`,
+      // Two errnos when the scan failed too, because they are two different failures and the adopter's
+      // copy above deliberately carries neither: the one that stopped the delete, and the one that
+      // stopped us finding out what it left.
+      detail:
+        `${errnoOf(err) ?? "unknown error"} while removing ${target}` +
+        (left.state === "unknown" ? `; ${left.reason} while reading it back` : ""),
     },
     { cause: err },
   );
 }
 
-/** What is still under `target`, relative to it — or `null` when the target itself is gone. */
-async function survivorsOf(target: string): Promise<string[] | null> {
+/**
+ * What a failed delete left behind — **three states, never two.**
+ *
+ * The bug this shape exists to make unrepresentable: one `null` carried both "the target is gone" and
+ * "the scan threw", and {@link whatSurvived} rendered the pair as *"Nothing of it is left"*. An unreadable
+ * directory fails the `rm` and fails the scan for the same reason, so the one case where the adopter is
+ * told least was the case where the whole tree survived — and they were told the opposite of the truth.
+ * An error path that lies is worse than the raw errno it replaced: the adopter reads it, moves on, and
+ * the half-deleted worker stays on their disk.
+ *
+ * `unknown` carries the errno so the failure can say *why* it cannot answer, in `detail` where every
+ * other throw-site fact in this module lives.
+ */
+export type Survivors =
+  | { readonly state: "gone" }
+  | { readonly state: "left"; readonly paths: readonly string[] }
+  | { readonly state: "unknown"; readonly reason: string };
+
+/**
+ * Read back what is still under `target`, relative to it.
+ *
+ * `lstat` first, and it is the whole distinction: only `ENOENT` means gone. Anything else the probe
+ * cannot answer — `EACCES`, `ELOOP`, a mount that went away — is `unknown`, and so is a listing that
+ * throws. Best effort about *what* is left, never about *whether* something is.
+ *
+ * A target that is there but not a directory is left with no paths under it: it is still there, which is
+ * the fact the adopter acts on.
+ *
+ * Exported for the test. `gone` needs the target to vanish between the `rm` and this call — a race no
+ * suite can stage against a real `rm`, and the only state the old sentence was ever true for.
+ */
+export async function survivorsOf(target: string): Promise<Survivors> {
+  const entry = await lstat(target).catch((err: unknown) => errnoOf(err) ?? "unknown error");
+  if (typeof entry === "string") return entry === "ENOENT" ? { state: "gone" } : { state: "unknown", reason: entry };
+  if (!entry.isDirectory()) return { state: "left", paths: [] };
   try {
-    return (await readdir(target, { recursive: true })).sort();
-  } catch {
-    return null;
+    return { state: "left", paths: (await readdir(target, { recursive: true })).sort() };
+  } catch (err) {
+    return { state: "unknown", reason: errnoOf(err) ?? "unknown error" };
   }
 }
 
-/** The sentence that tells the adopter which half of the tree they are holding. */
-function whatSurvived(left: string[] | null): string {
-  if (left === null) return "Nothing of it is left, but the delete did not report finishing.";
-  if (left.length === 0) return "It is empty, and still there.";
-  const rest = left.length - SURVIVOR_SAMPLE;
-  const shown = left.slice(0, SURVIVOR_SAMPLE).join(", ");
-  const counted = left.length === 1 ? "1 path is" : `${left.length} paths are`;
+/** The sentence that tells the adopter which half of the tree they are holding. Exported with {@link survivorsOf}. */
+export function whatSurvived(left: Survivors): string {
+  if (left.state === "gone") return "Nothing of it is left, but the delete did not report finishing.";
+  if (left.state === "unknown") return "Pithy could not read it back, so what is left of it is unknown. Check it.";
+  if (left.paths.length === 0) return "It is empty, and still there.";
+  const rest = left.paths.length - SURVIVOR_SAMPLE;
+  const shown = left.paths.slice(0, SURVIVOR_SAMPLE).join(", ");
+  const counted = left.paths.length === 1 ? "1 path is" : `${left.paths.length} paths are`;
   return `${counted} still there: ${shown}${rest > 0 ? `, and ${rest} more` : ""}.`;
 }
 

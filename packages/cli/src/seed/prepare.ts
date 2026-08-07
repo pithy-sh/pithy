@@ -4,11 +4,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { type StatePathOptions, stateDir } from "../notifier/state";
-import { writeFileAtomic } from "../project/atomic";
+import { errnoOf, writeFileAtomic } from "../project/atomic";
 
 /**
  * The CLI half of the prepared-set seam: everything a `SeedSet.prepare` hook needs from the machine, kept
@@ -59,22 +59,86 @@ export async function readDevPreferences(project: string, options: StatePathOpti
 }
 
 /**
- * Read a named secret out of the project's `.dev.vars`.
+ * The one environment whose secrets are on the operator's disk. Everything else is a managed environment
+ * and gets its secrets from its own store — see {@link devSecretReader}.
+ */
+const LOCAL_ENVIRONMENT = "dev";
+
+/** What a prepared set needs to build a dev-only reader: the project, and which environment it is seeding. */
+export interface DevSecretReaderOptions {
+  /** The project root, whose `.dev.vars` local dev resolves every secret from. */
+  projectDir: string;
+  /**
+   * The environment this seed run is writing to. **Required, and that is the structural half of the rule
+   * (#159).** A caller cannot build a dev-secrets reader without stating where the rows are going, so
+   * there is no signature left that reads `.dev.vars` for an environment nobody named.
+   */
+  env: string;
+}
+
+/**
+ * Read a named secret out of the project's `.dev.vars` — **in `dev`, and in no other environment.**
  *
  * That is where local dev's secrets genuinely live: `secretsStore` resolves every secret from an injected
  * `.dev.vars` string when `ENVIRONMENT` is not a managed environment, whatever the registry backend says.
  * So this reads the same value the running Worker will, from the same place — no store, no master key.
  *
- * A deployed environment's secrets are not on the operator's disk, so this answers `undefined` there. A set
- * that needs a secret is therefore a `dev`-only set, which is exactly the guard rail the one caller wants.
+ * **The environment gate is structural, not a caller's courtesy (#159).** The old reader's doc said a
+ * deployed environment's secrets are not on the operator's disk, so it would answer `undefined` there.
+ * That was never true of the operator's *own* machine: `.dev.vars` sits in the project under every `--env`,
+ * so `pithy seed --env prod` handed a prepared set a live local dev secret and wrote it into production
+ * rows. #159's rule is absolute and the adopter cannot opt out — dev secrets never reach a managed
+ * environment — and a reader that leaks them is the same hole as a writer that plants them. So outside
+ * `dev` the reading closure is never built: the caller gets a reader that refuses, and the file is never
+ * opened at all.
+ *
+ * **Provably dev, not merely not-prod.** An unknown, misspelled, or empty environment refuses too. The
+ * permissive default is the entire bug.
+ *
+ * **And only `ENOENT` is an absent file.** A `.dev.vars` that cannot be read is not one that says nothing:
+ * swallowing `EACCES` handed the set `undefined` and let it seed a row against a secret it never got.
  */
-export function devSecretReader(projectDir: string): (name: string) => Promise<string | undefined> {
+export function devSecretReader(options: DevSecretReaderOptions): (name: string) => Promise<string | undefined> {
+  const path = join(options.projectDir, ".dev.vars");
+  if (options.env !== LOCAL_ENVIRONMENT) return refuseOutsideDev(options.env, path);
   return async (name: string) => {
+    let content: string;
     try {
-      return parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8"))[name];
-    } catch {
-      return undefined;
+      content = await readFile(path, "utf8");
+    } catch (err) {
+      const code = errnoOf(err);
+      if (code === "ENOENT") return undefined;
+      throw new ConflictError(
+        {
+          message: `Cannot read the dev secret "${name}": ${path} could not be read.`,
+          action: "Fix the file's permissions and run the command again.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause: err },
+      );
     }
+    return parseDevVars(content)[name];
+  };
+}
+
+/**
+ * The reader a managed environment gets: one that refuses by name and reads nothing.
+ *
+ * It refuses when a set *asks*, not when the run starts — `pithy seed --env prod` is a legitimate command,
+ * and a set that never wants a secret is none of this rule's business. A set that does want one is a
+ * `dev`-only set, and this is where it finds that out, loudly, before a row is written.
+ *
+ * The secret's name is in the message because it is a registry key an adopter wrote; its value never is,
+ * in `message` or in `detail`, because this function has not read one and never will.
+ */
+function refuseOutsideDev(env: string, path: string): (name: string) => Promise<string | undefined> {
+  return async (name: string) => {
+    throw new ConflictError({
+      message: `Refusing to read the dev secret "${name}" while seeding ${env}.`,
+      action:
+        "Dev secrets are local only. Mark this set dev-only, or set the value for that environment with pithy secrets set.",
+      detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from disk`,
+    });
   };
 }
 

@@ -607,7 +607,10 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     // One inventory for the whole run, not one per Worker: a set deduped onto another Worker still writes
     // its rows, so a prepared set must be able to see them wherever the fan-out put them.
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
-    secret: options.secret ?? devSecretReader(options.projectDir),
+    // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything from
+    // `.dev.vars` unless this says `dev` (#159). The rule is inside the reader — this only tells it where
+    // the rows are going.
+    secret: options.secret ?? devSecretReader({ projectDir: options.projectDir, env: options.env }),
     writeArtifact:
       options.writeArtifact ??
       (async (artifact) => {
