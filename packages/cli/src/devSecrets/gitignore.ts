@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFile } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { writeFileAtomic } from "../project/atomic";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * The guarantee that stands between a minted secret and a commit: **`.dev.secrets.jsonc` is ignored
@@ -20,10 +24,16 @@ import { writeFileAtomic } from "../project/atomic";
  * `.dev.vars`'s sibling and nothing covered this one — and a `.dev.secrets.jsonc.tmp` left behind by a
  * SIGINT holds the full plaintext, which is the #145 leak class exactly.
  *
+ * **A pattern is only half of it.** `.gitignore` has no effect on a path git is *already tracking*, so
+ * a `.dev.secrets.jsonc` somebody committed once satisfies every rule below and still lands in the next
+ * commit. The index is checked too, and a tracked file is a refusal naming the `git rm --cached` that
+ * fixes it.
+ *
  * **Conservative on purpose.** A pattern this cannot prove covers the file is treated as if it does
  * not, so the worst case is a redundant line in a `.gitignore` rather than a secret in a repository.
  * Full gitignore semantics are not reimplemented here: literal entries and a simple trailing-`*` glob
- * are recognised, negation is honoured, and last match wins as git specifies.
+ * are recognised, negation is honoured, leading whitespace is significant exactly as git treats it, and
+ * last match wins as git specifies.
  */
 
 /** Every path that must be ignored before a dev secret is written — the file, and its atomic-write temp. */
@@ -60,16 +70,49 @@ export async function ensureDevSecretsIgnored(projectDir: string): Promise<DevSe
   if (content === null && (await exists(path))) return refusal();
 
   const missing = DEV_SECRETS_IGNORED.filter((name) => !ignores(content ?? "", name));
-  if (missing.length === 0) return { covered: true, added: [], reason: null };
-
-  const body = content ?? "";
-  const separator = body.length === 0 || body.endsWith("\n") ? "" : "\n";
-  try {
-    await writeFileAtomic(path, `${body}${separator}\n${HEADER}\n${missing.join("\n")}\n`);
-  } catch {
-    return refusal();
+  const added: string[] = [];
+  if (missing.length > 0) {
+    const body = content ?? "";
+    const separator = body.length === 0 || body.endsWith("\n") ? "" : "\n";
+    try {
+      await writeFileAtomic(path, `${body}${separator}\n${HEADER}\n${missing.join("\n")}\n`);
+    } catch {
+      return refusal();
+    }
+    added.push(...missing);
   }
-  return { covered: true, added: [...missing], reason: null };
+
+  // The pattern is only half the guarantee. `.gitignore` has **no effect on a path git already tracks**,
+  // so a `.dev.secrets.jsonc` someone committed once reads as covered by every rule above and the mint
+  // lands in a file the next `git commit -a` carries — a live session-signing key, in the repository.
+  const tracked = await trackedPaths(projectDir);
+  if (tracked.length > 0) {
+    return {
+      covered: false,
+      added,
+      reason: `git already tracks ${tracked.join(" and ")}, so .gitignore does nothing for it. Run git rm --cached ${tracked.join(" ")}, then run the command again.`,
+    };
+  }
+  return { covered: true, added, reason: null };
+}
+
+/**
+ * Which of {@link DEV_SECRETS_IGNORED} git has in its index for this project.
+ *
+ * `git ls-files` from the project directory, so a project nested inside a larger repository is judged
+ * against the repository that would actually commit it. Anything that is not a clean answer — no git on
+ * the machine, no repository, a broken index — is no tracked paths: there is no index to commit into,
+ * and refusing to mint over an absent `git` would break every adopter who does not use one.
+ */
+async function trackedPaths(projectDir: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["ls-files", "-z", "--", ...DEV_SECRETS_IGNORED], {
+      cwd: projectDir,
+    });
+    return stdout.split("\0").filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** The one thing to do by hand when this cannot do it. Names both paths — the temp file is the one nobody thinks of. */
@@ -97,7 +140,12 @@ function exists(path: string): Promise<boolean> {
 export function ignores(content: string, name: string): boolean {
   let ignored = false;
   for (const line of content.split("\n")) {
-    const trimmed = line.trim();
+    // **Trailing whitespace only.** Git strips trailing whitespace from a pattern (unless it is escaped)
+    // and keeps leading whitespace, which is part of the pattern. `line.trim()` read an indented
+    // `  .dev.secrets.jsonc` as covering the file; git reads it as a pattern for a file whose name
+    // begins with two spaces. So the mint proceeded on the strength of a line covering nothing.
+    // The `\r` of a CRLF file goes with it, which is also what git does.
+    const trimmed = line.replace(/\s+$/, "");
     if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
     const negated = trimmed.startsWith("!");
     const pattern = negated ? trimmed.slice(1) : trimmed;

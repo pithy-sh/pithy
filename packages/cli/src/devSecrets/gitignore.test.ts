@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ensureDevSecretsIgnored } from "./gitignore";
+
+const execFileAsync = promisify(execFile);
 
 let dir: string;
 beforeEach(async () => {
@@ -107,5 +111,67 @@ describe("ensureDevSecretsIgnored", () => {
     expect(result.reason).toContain(DEV_SECRETS_FILE);
     expect(result.reason).toContain(`${DEV_SECRETS_FILE}.tmp`);
     expect(result.reason).toContain(".gitignore");
+  });
+});
+
+describe("indented patterns", () => {
+  test("an indented rule covers nothing — git does not strip a pattern's leading whitespace", async () => {
+    // `line.trim()` read `  .dev.secrets.jsonc` as the pattern `.dev.secrets.jsonc`. Git reads it as a
+    // pattern for a file whose name starts with two spaces, which no project has. So the mint went
+    // ahead into a file git will commit, on the strength of a line that covers nothing.
+    await writeFile(join(dir, ".gitignore"), `  ${DEV_SECRETS_FILE}\n  ${DEV_SECRETS_FILE}.tmp\n`);
+
+    const result = await ensureDevSecretsIgnored(dir);
+
+    expect(result.added).toEqual([DEV_SECRETS_FILE, `${DEV_SECRETS_FILE}.tmp`]);
+    expect(result.covered).toBe(true);
+  });
+
+  test("trailing whitespace is stripped, because git strips it too", async () => {
+    await writeFile(join(dir, ".gitignore"), `${DEV_SECRETS_FILE}  \n${DEV_SECRETS_FILE}.tmp\t\n`);
+
+    expect(await ensureDevSecretsIgnored(dir)).toEqual({ covered: true, added: [], reason: null });
+  });
+
+  test("a CRLF file is not read as patterns ending in a carriage return", async () => {
+    await writeFile(join(dir, ".gitignore"), `${DEV_SECRETS_FILE}\r\n${DEV_SECRETS_FILE}.tmp\r\n`);
+
+    expect((await ensureDevSecretsIgnored(dir)).added).toEqual([]);
+  });
+});
+
+describe("a file git already tracks", () => {
+  /** Run a git command in the temp project, or skip the suite when there is no git to run. */
+  async function git(...args: string[]): Promise<void> {
+    await execFileAsync("git", args, { cwd: dir });
+  }
+
+  test("a tracked secrets file is refused, because .gitignore has no effect on one", async () => {
+    // The pattern check answers "covered" and the mint lands in a file that is already in the index —
+    // the next `git commit -a` carries a live session-signing key. `.gitignore` does nothing for a path
+    // git is already tracking, so the pattern alone was never the guarantee it was written to be.
+    await git("init", "-q");
+    await writeFile(join(dir, ".gitignore"), `${DEV_SECRETS_FILE}\n${DEV_SECRETS_FILE}.tmp\n`);
+    await writeFile(join(dir, DEV_SECRETS_FILE), "{}\n");
+    await git("add", "-f", DEV_SECRETS_FILE);
+
+    const result = await ensureDevSecretsIgnored(dir);
+
+    expect(result.covered).toBe(false);
+    expect(result.reason).toContain("git rm --cached");
+    expect(result.reason).toContain(DEV_SECRETS_FILE);
+  });
+
+  test("an untracked file in a real repository is covered", async () => {
+    await git("init", "-q");
+    await writeFile(join(dir, DEV_SECRETS_FILE), "{}\n");
+
+    expect((await ensureDevSecretsIgnored(dir)).covered).toBe(true);
+  });
+
+  test("a project that is not a repository at all has no index to commit into", async () => {
+    await writeFile(join(dir, ".gitignore"), `${DEV_SECRETS_FILE}\n${DEV_SECRETS_FILE}.tmp\n`);
+
+    expect(await ensureDevSecretsIgnored(dir)).toEqual({ covered: true, added: [], reason: null });
   });
 });
