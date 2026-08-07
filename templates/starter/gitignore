@@ -19,17 +19,14 @@ logs/
 .pithy-feature.json
 
 # env & secrets
-.dev.secrets.jsonc
-# The atomic write's temp file. `.dev.vars.*` covers its sibling; nothing covered this one, and a
-# SIGINT between the write and the rename leaves it behind holding full plaintext.
-.dev.secrets.jsonc.tmp
-!.dev.secrets.example.jsonc
+# No dev secrets line. They live at <config>/<project>/secrets.jsonc, outside every checkout, so there
+# is nothing here to ignore — and `.dev.secrets.example.jsonc` is committed documentation. See #156.
 .env
 .env.*
 !.env.example
 
-# atomic-write temp siblings (.dev.vars.<rand>.tmp, .dev.secrets.jsonc.<rand>.tmp, …). A write
-# interrupted by SIGINT leaves one holding the full plaintext; it must never be committable.
+# atomic-write temp siblings (.dev.vars.<rand>.tmp, …). A write interrupted by SIGINT leaves one
+# holding the full plaintext; it must never be committable.
 *.tmp
 
 # editor / os

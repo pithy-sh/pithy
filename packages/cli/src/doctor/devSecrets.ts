@@ -1,20 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { encodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
-import { DEV_SECRETS_FILE, type DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { devSecretsPath } from "../devSecrets/file";
+import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
+import { type StatePathOptions, stateDir } from "../notifier/state";
 
 /**
  * Whether this project's secrets are in the file they belong in — the migration notice for every project
- * that predates `.dev.secrets.jsonc` (#149).
+ * that predates the dev secrets file (#149).
+ *
+ * **Every line names the absolute path.** The file is outside the checkout since #156, so
+ * "your secrets file will not parse" named a file the reader could not find — see
+ * {@link checkDevSecretsLocation}, which prints the path on every run whether or not anything is wrong.
  *
  * **Reported, never fixed.** `pithy add` does not move an adopter's `.dev.vars` line and neither does
  * this: rewriting a file someone hand-maintains, over a convention they have not read about yet, is how
@@ -40,7 +45,7 @@ import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
 /** Why a declared `d1` secret is sitting in `.dev.vars`. Three states, three different answers. */
 export type MisplacedDevSecretState =
   /**
-   * pithy put it there, and it matches `.dev.secrets.jsonc` exactly. **Not a fault.** Dev resolves
+   * pithy put it there, and it matches the secrets file exactly. **Not a fault.** Dev resolves
    * every secret from its injected binding whatever its backend, so the seeder writes this copy on
    * every run and deleting it is the one action that breaks dev before #153 lands.
    */
@@ -64,7 +69,7 @@ export interface MisplacedDevSecret {
 
 /** What doctor learned about this project's dev secrets. */
 export interface DevSecretsCheck {
-  /** The resolved `.dev.secrets.jsonc` path — the answer to "where does this go", file or no file. */
+  /** The resolved absolute secrets-file path — the answer to "where does this go", file or no file. */
   path: string;
   /**
    * Declared `d1`-backed secrets sitting in `.dev.vars`. Empty is the healthy state — and also the
@@ -81,7 +86,7 @@ export interface DevSecretsCheck {
    */
   missing: string[];
   /**
-   * Names in `.dev.secrets.jsonc` that no capability declares — the residue of a removed capability, or a
+   * Names in the secrets file that no capability declares — the residue of a removed capability, or a
    * typo. **Not a fault either**, and never fatal to a seed: a stale line must not brick dev. Reported so
    * a value nobody reads can be deleted rather than maintained.
    */
@@ -98,6 +103,8 @@ export interface CheckDevSecretsOptions {
   projectDir: string;
   /** The Workers whose registries declare the secrets. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
+  paths?: StatePathOptions;
 }
 
 /**
@@ -109,7 +116,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
   const targets = options.targets ?? (await devSecretsTargets(options.projectDir));
   if (targets.length === 0) return null;
 
-  const path = devSecretsPath(options.projectDir);
+  const path = await resolveDevSecretsFile(options.projectDir, options.paths ?? {});
   const inDevVars = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
 
   const source = await readFile(path, "utf8").catch(() => null);
@@ -225,14 +232,14 @@ export function devSecretsHealthy(check: DevSecretsCheck): boolean {
 export function describeDevSecrets(check: DevSecretsCheck): string[] {
   const lines: string[] = [];
   if (check.unreadable) {
-    lines.push(`${DEV_SECRETS_FILE} will not parse. Run pithy seed to see which secret and why.`);
+    lines.push(`${check.path} will not parse. Run pithy seed to see which secret and why.`);
   }
   for (const { name, state } of check.misplaced) {
-    lines.push(describeMisplaced(name, state));
+    lines.push(describeMisplaced(name, state, check.path));
   }
   if (check.undeclared.length > 0) {
     lines.push(
-      `${DEV_SECRETS_FILE} carries ${check.undeclared.join(", ")}, which no capability declares. Nothing reads them.`,
+      `${check.path} carries ${check.undeclared.join(", ")}, which no capability declares. Nothing reads them.`,
     );
   }
   if (check.missing.length > 0) {
@@ -242,7 +249,7 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
   }
   if (wideOpen(check.mode)) {
     lines.push(
-      `${DEV_SECRETS_FILE} is mode ${(check.mode ?? 0).toString(8)}. It holds OAuth client secrets. Run chmod 600 on it.`,
+      `${check.path} is mode ${(check.mode ?? 0).toString(8)}. It holds OAuth client secrets. Run chmod 600 on it.`,
     );
   }
   return lines;
@@ -256,13 +263,92 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
  * one thing that breaks dev before #153 lands, in the same run that put the line there. A diagnostic
  * that argues with its own toolchain is worse than one that says nothing.
  */
-function describeMisplaced(name: string, state: MisplacedDevSecretState): string {
+function describeMisplaced(name: string, state: MisplacedDevSecretState, path: string): string {
   switch (state) {
     case "injected":
-      return `${name} is also in .dev.vars, injected by pithy: dev resolves every secret from its binding until #153. Leave it — ${DEV_SECRETS_FILE} is the source of truth.`;
+      return `${name} is also in .dev.vars, injected by pithy: dev resolves every secret from its binding until #153. Leave it — ${path} is the source of truth.`;
     case "stale":
-      return `${name} is in both .dev.vars and ${DEV_SECRETS_FILE}, and they disagree. Run pithy seed — it rewrites the .dev.vars copy from the file.`;
+      return `${name} is in both .dev.vars and ${path}, and they disagree. Run pithy seed — it rewrites the .dev.vars copy from the file.`;
     case "unmoved":
-      return `${name} is in .dev.vars. It belongs in ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
+      return `${name} is in .dev.vars. It belongs in ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
   }
+}
+
+/**
+ * Where this project's secrets file is, whether it is there, and which sibling project directories
+ * hold one — the block that exists because the file no longer does (#156).
+ *
+ * **The path prints on every run, healthy or not.** Everything else in `pithy doctor` reports a fault;
+ * this reports a location, because a file outside the checkout is invisible otherwise. Nothing in the
+ * project names it, `ls` will not find it, and "where are my dev secrets" has no other answer.
+ *
+ * **The orphan list is the rename trail.** The directory is keyed on the project's `name`, so renaming
+ * a project — or scaffolding a second one that happens to share a name — silently changes which file
+ * every command reads. The old one is still there with every value in it, and nothing would ever
+ * mention it again. Listed **only when this project has no file of its own**, which is exactly the
+ * shape a rename leaves and is silence for every developer whose project is working: a machine with
+ * six projects on it should not hear about five of them on every run.
+ */
+export interface DevSecretsLocationCheck {
+  /** The resolved absolute path — `<config>/<project>/secrets.jsonc`. Always set, file or no file. */
+  path: string;
+  /** Whether anything is at {@link path}. `false` is the ordinary state of a project with no secrets. */
+  present: boolean;
+  /**
+   * Other project names under the config directory that do have a secrets file, sorted. Empty unless
+   * this project has none of its own — see above. Names, never paths and never values.
+   */
+  orphans: string[];
+}
+
+/**
+ * Resolve the path and look around it. Never throws — a diagnostic has to work in the broken
+ * environment it exists to diagnose. `null` means there is no project name to key on, which is the
+ * same condition {@link checkDevPreferences} declines to answer under, and the `Project:` block above
+ * has already said which of the two it is.
+ */
+export async function checkDevSecretsLocation(
+  projectDir: string,
+  options: StatePathOptions = {},
+): Promise<DevSecretsLocationCheck | null> {
+  let path: string;
+  try {
+    path = await resolveDevSecretsFile(projectDir, options);
+  } catch {
+    return null;
+  }
+  const present = (await stat(path).catch(() => null)) !== null;
+  return { path, present, orphans: present ? [] : await siblingsWithSecrets(stateDir(options), path) };
+}
+
+/**
+ * Project directories under the config root that carry a secrets file, minus this project's own.
+ *
+ * `readdir` and one `stat` each — no config is loaded, because these are other checkouts' projects and
+ * this machine may no longer have any of them. That is the whole point: a directory whose project is
+ * gone is exactly the one nothing else can report.
+ */
+async function siblingsWithSecrets(configDir: string, ours: string): Promise<string[]> {
+  const entries = await readdir(configDir, { withFileTypes: true }).catch(() => []);
+  const found: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(configDir, entry.name, DEV_SECRETS_FILE_NAME);
+    if (candidate === ours) continue;
+    if ((await stat(candidate).catch(() => null)) !== null) found.push(entry.name);
+  }
+  return found.sort();
+}
+
+/**
+ * The verdict half of the `Secrets:` line — the path is the caller's to render, because the text report
+ * abbreviates it against `$HOME` and `--json` does not. `null` when there is nothing to add: a file
+ * that is there and a config directory with nothing else in it need no sentence at all.
+ */
+export function describeDevSecretsLocation(check: DevSecretsLocationCheck): string | null {
+  if (check.present) return null;
+  if (check.orphans.length === 0) return "no file yet; pithy add mints one when a capability needs it";
+  // Named rather than diagnosed. This cannot tell a rename from two unrelated projects on one machine,
+  // and guessing which would be worse than listing what is there and letting the reader recognise it.
+  return `no file yet; secrets exist for ${check.orphans.join(", ")} — a renamed project leaves its old name here`;
 }

@@ -2,27 +2,41 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { DEV_SECRETS_FILE, type DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
-import { ensureDevSecretsIgnored } from "./gitignore";
-import { tightenMode } from "./mode";
+import { DEV_SECRETS_FILE_NAME, ensureDevSecretsDir } from "./location";
+import { tightenDirMode, tightenMode } from "./mode";
 import { ownProperties } from "./records";
 
 /**
- * `.dev.secrets.jsonc` as a file on disk — the bytes half of the seam `@pithy-sh/secrets` deliberately
- * left open. That package is Workers-runtime code with no `node:` imports: it parses text and returns
- * what should be written. Reading, writing, the mode, and "absent means no secrets" are the CLI's.
+ * The dev secrets file as bytes on disk — the seam `@pithy-sh/secrets` deliberately left open. That
+ * package is Workers-runtime code with no `node:` imports: it parses text and returns what should be
+ * written. Reading, writing, the mode, and "absent means no secrets" are the CLI's.
+ *
+ * **Every function here takes the resolved absolute path, never a project root** (#156). The file
+ * lives at `<config>/<project>/secrets.jsonc`, outside the checkout — see `location.ts`, which owns
+ * the one resolution — so "the project's directory" is no longer the answer to where it is, and a
+ * second module deriving it would be the second answer to a question that must have one.
  *
  * **The mode is not a detail.** The file holds OAuth client secrets, Stripe keys, and whatever else a
- * capability needs that cannot be minted. It is written `0600` on creation *and on every rewrite* — see
- * {@link writeFileAtomic}, where the rename is what used to widen it back to the umask default — and
- * narrowed on every write path whether or not a write was needed, which is the case the `mode` option
- * cannot reach: a file somebody else created at the umask, that a re-run has nothing to add to. See
- * {@link tightenMode}, shared with `.dev.vars` because the rule is about the contents, not the name.
+ * capability needs that cannot be minted. It is written `0600` on creation *and on every rewrite* —
+ * see {@link writeFileAtomic}, where the rename is what used to widen it back to the umask default —
+ * and narrowed on every write path whether or not a write was needed, which is the case the `mode`
+ * option cannot reach: a file somebody else created at the umask that a re-run has nothing to add to.
+ * The directory is held to `0700` on the same terms: its listing is the inventory of every secret name
+ * this project has, and `mkdir`'s mode only applies to a directory it creates. See {@link tightenMode}
+ * and {@link tightenDirMode}.
+ *
+ * **Nothing about `.gitignore` remains, because nothing is in the repository to ignore.** This module
+ * used to verify an ignore rule before writing a byte — the guarantee that stood between a minted
+ * session key and a commit. Moving the file out of the checkout removes the hazard rather than
+ * guarding it: there is no path in the project, no `.tmp` sibling in the project, and nothing for a
+ * `git add -A` to reach. `.dev.vars` still lives in the project and its ignore lines stay in the
+ * template.
  *
  * **Writes merge, they never replace.** The file is hand-edited: comments say where a value came from,
  * and a trailing comma is the residue of deleting a line. So a write re-parses the adopter's own text
@@ -35,27 +49,16 @@ import { ownProperties } from "./records";
  *
  * **Nothing thrown from here carries a byte of the file.** `comment-json` puts the whole source in its
  * `SyntaxError.message`, so every parse goes through {@link parseTree} — see there for what that cost.
- *
- * **Every write goes to the path the project names, links and all — and that is the atomic writer's
- * problem, not this file's.** `scripts/worktree.ts` symlinks a worktree's `.dev.secrets.jsonc` at the
- * main checkout's, so an atomic rename over that name detaches the worktree into a private copy and the
- * share stops, silently, in a layout we create ourselves. Resolving the link here is *not* the fix: it
- * would put a second symlink-following write in the CLI with no rule about whose link it is, and a
- * planted one would send the whole secrets file wherever it pointed. `writeFileAtomic` on
- * `fix/scaffold-cannot-run` resolves the chain and refuses any link a different uid made — one rule, one
- * place, every caller. This branch rebases onto it and this paragraph goes with the rebase.
+ * What it does carry is the **absolute path**, in every error: the file is outside the checkout now, so
+ * "your secrets file is malformed" names nothing the reader can open.
  */
-
-/** The `.dev.secrets.jsonc` path for a project root. */
-export function devSecretsPath(projectDir: string): string {
-  return join(projectDir, DEV_SECRETS_FILE);
-}
 
 /**
- * The header a file this command creates leads with. Two lines, because two things are not obvious from
- * the contents: that the file is gitignored, and that the outer object is always the envelope.
+ * The header a file this command creates leads with. Three lines, because three things are not obvious
+ * from the contents: where the file is (nothing in the project points at it), that the outer object is
+ * always the envelope, and that the keys are registry names rather than env bindings.
  */
-const HEADER = `// Local dev secret values. Gitignored. Never committed, never deployed.
+const HEADER = `// Local dev secret values. Machine-local, outside every checkout — nothing in the project points here.
 // Keys are registry secret names — <capability>-<what>. The registry decides where each one is seeded.
 // Every value is a full envelope: { "currentVersion": "1", "versions": { "1": <value> } }.
 `;
@@ -63,10 +66,9 @@ const HEADER = `// Local dev secret values. Gitignored. Never committed, never d
 /**
  * The project's dev secrets, validated. An absent file is `{}` — a project has none until a capability
  * needs one, and that is not a fault. A file that is *there* and malformed is, and comes back as the
- * loader's `ValidationError` naming this project's real path rather than the bare default.
+ * loader's `ValidationError` naming this project's real absolute path.
  */
-export async function readDevSecrets(projectDir: string): Promise<DevSecretsFile> {
-  const path = devSecretsPath(projectDir);
+export async function readDevSecrets(path: string): Promise<DevSecretsFile> {
   const source = await readSource(path);
   // Prototype-free, both branches. Every caller reads it as `file[name]` for a name the adopter typed,
   // and `{}` is the one an empty project hands to every lookup. See {@link ownProperties}.
@@ -93,8 +95,8 @@ async function readSource(path: string): Promise<string | null> {
     if (code === "ENOENT") return null;
     throw new InternalError(
       {
-        message: `${DEV_SECRETS_FILE} is there and could not be read.`,
-        action: `Check ${path} and its permissions. It should be a file, mode 600.`,
+        message: `${path} is there and could not be read.`,
+        action: `Check that path and its permissions. It should be a file, mode 600.`,
         detail: `dev secrets file '${path}' failed to read: ${code ?? "unknown error"}`,
       },
       { cause },
@@ -107,8 +109,8 @@ async function readSource(path: string): Promise<string | null> {
  * Pure — the caller owns the read and the write.
  *
  * Returns the source unchanged when there is nothing to add, so a re-run rewrites no bytes: the file's
- * mtime is what an adopter's editor and `git status` watch, and churning it on every `pithy dev` would
- * make the idempotence the seeder works for invisible.
+ * mtime is what an adopter's editor watches, and churning it on every `pithy dev` would make the
+ * idempotence the seeder works for invisible.
  */
 export function mergeDevSecretsContent(content: string, added: DevSecretsFile): string {
   return mergeDevSecrets(content, added).content;
@@ -133,8 +135,8 @@ function parseTree(source: string, path: string): Record<string, unknown> | null
     loadDevSecrets(source, { path });
     // Unreachable in practice: the same source that just failed `parse` fails the loader's parse too.
     throw new InternalError({
-      message: `${DEV_SECRETS_FILE} could not be parsed.`,
-      action: `Fix the syntax in ${path} and run the command again.`,
+      message: `${path} could not be parsed.`,
+      action: `Fix the syntax in that file and run the command again.`,
       detail: `dev secrets file '${path}' failed to parse on the write path`,
     });
   }
@@ -145,7 +147,7 @@ function mergeDevSecrets(
   content: string,
   added: DevSecretsFile,
   replace = false,
-  path: string = DEV_SECRETS_FILE,
+  path: string = DEV_SECRETS_FILE_NAME,
 ): { content: string; added: string[] } {
   const source = content.trim().length === 0 ? `${HEADER}{}\n` : content;
   const tree = parseTree(source, path);
@@ -168,17 +170,6 @@ function same(current: unknown, next: unknown): boolean {
   return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
 
-/** What one write did: the names that landed, and the one thing that stopped it if none did. */
-export interface DevSecretsWrite {
-  /** The secrets actually added to the file. Empty when there was nothing to add, or nothing was written. */
-  added: string[];
-  /**
-   * Why nothing was written, when something should have been — today only an unignorable project. A
-   * line for the caller to print verbatim; never a value. `null` when the write went through.
-   */
-  refused: string | null;
-}
-
 /**
  * Add every secret in `added` that the file does not already carry, and return the names that landed.
  *
@@ -186,45 +177,42 @@ export interface DevSecretsWrite {
  * only for what it actually minted, and says "left as it is" for the rest. Assuming the write happened
  * is how a command claims to have minted a value it did not.
  *
- * Nothing to add writes nothing at all — an empty `.dev.secrets.jsonc` conjured by a no-op `pithy add`
- * would be one more file to explain, and an adopter's `.gitignore` is not touched over a no-op either.
+ * Nothing to add writes nothing at all, and creates no directory: an empty `secrets.jsonc` conjured by
+ * a no-op `pithy add` would be one more thing to explain.
  *
- * **The ignore is verified before the bytes are, every time.** This is the one funnel every dev secret
- * passes through — `pithy add`'s mint, the seeder's mint, a hand-written value on its way back — so
- * the guarantee lives here rather than at each call site, where one of them would forget it. A project
- * whose `.gitignore` cannot be made to cover the file gets **no value written at all** and the sentence
- * saying what to add: minting first and hoping is how a live signing secret ends up in a repository.
+ * **The mint is unconditional now, and that is the point of the move.** This used to verify the
+ * project's `.gitignore` covered the file before writing a byte, and refuse the whole set when it could
+ * not. There is nothing left to refuse: the file is not in the checkout, so no `.gitignore` governs it
+ * and no commit can reach it.
  */
 export async function writeDevSecrets(
-  projectDir: string,
+  path: string,
   added: DevSecretsFile,
   options: WriteDevSecretsOptions = {},
-): Promise<DevSecretsWrite> {
-  const path = devSecretsPath(projectDir);
+): Promise<string[]> {
   try {
-    if (Object.keys(added).length === 0) return { added: [], refused: null };
+    if (Object.keys(added).length === 0) return [];
     // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
     // merging into an empty base is how a write replaces a file of secrets with the one it is adding.
     const content = (await readSource(path)) ?? "";
     const merged = mergeDevSecrets(content, added, options.replace === true, path);
-    if (merged.added.length === 0) return { added: [], refused: null };
+    if (merged.added.length === 0) return [];
 
-    const ignored = await ensureDevSecretsIgnored(projectDir);
-    if (!ignored.covered) return { added: [], refused: ignored.reason };
-
+    await ensureDevSecretsDir(path);
     await writeFileAtomic(path, merged.content, { mode: 0o600 });
-    return { added: merged.added, refused: null };
+    return merged.added;
   } finally {
     // Unconditionally, whatever happened above, and including the no-op return. The `mode` on the write
     // is right and it left the mode to a write that mostly never happens: every caller filters what is
     // already there first, so a re-run of `pithy add` reaches this function with nothing to add at all —
     // and a file created at the umask by an older pithy, an editor, or a `cp` kept 0644 forever while
-    // holding the OAuth client secrets `.dev.vars` only carries a copy of. Verified with the real CLI:
-    // `pithy add auth` twice, `chmod 644` between, and the second run left it 644.
+    // holding the OAuth client secrets `.dev.vars` only carries a copy of.
     //
-    // No file is still no file — {@link tightenMode} stats and returns — so a no-op add conjures nothing
-    // and the adopter's `.gitignore` is still untouched. Narrowing only, so a deliberate 0400 survives.
+    // No file is still no file — {@link tightenMode} stats and returns — so a no-op add conjures
+    // nothing. Narrowing only, so a deliberate 0400 survives. The directory is held the same way, for
+    // the same reason: its listing names every secret this project has.
     await tightenMode(path);
+    await tightenDirMode(dirname(path));
   }
 }
 
@@ -254,9 +242,8 @@ export interface WriteDevSecretsOptions {
  * file is hand-maintained, and the note saying where a value came from is the useful part of it. No
  * file, or no name present, writes nothing at all.
  */
-export async function removeDevSecrets(projectDir: string, names: readonly string[]): Promise<string[]> {
+export async function removeDevSecrets(path: string, names: readonly string[]): Promise<string[]> {
   if (names.length === 0) return [];
-  const path = devSecretsPath(projectDir);
   const content = await readSource(path);
   if (content === null || content.trim().length === 0) return [];
 

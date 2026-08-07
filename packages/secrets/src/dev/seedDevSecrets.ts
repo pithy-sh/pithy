@@ -8,7 +8,7 @@ import type { SecretRegistry, SecretRegistryEntry, SecretValueType } from "../re
 import { DEV_SECRETS_FILE, type DevSecretEnvelope, type DevSecretsFile, initialDevSecret } from "./devSecretsFile";
 
 /**
- * Seed a project's local dev secrets from `.dev.secrets.jsonc`, with the **registry** deciding each
+ * Seed a project's local dev secrets from the dev secrets file, with the **registry** deciding each
  * secret's destination. The file states values; it never states where one goes. The registry already
  * knows `backend`, so there is one source of truth and the two cannot disagree.
  *
@@ -42,13 +42,13 @@ export interface DevSecretsStore {
 
 /** What {@link seedDevSecrets} needs: the loaded file, the project's registry, and the local store. */
 export interface SeedDevSecretsInput {
-  /** The parsed `.dev.secrets.jsonc`, as `loadDevSecrets` returns it. */
+  /** The parsed dev secrets file, as `loadDevSecrets` returns it. */
   file: DevSecretsFile;
   /** The project's combined secret registry — the authority on backend, value type, and schema. */
   registry: SecretRegistry;
   /** The local `SECRETS` D1 store, for `d1`-backed secrets. */
   store: DevSecretsStore;
-  /** The path to name in errors. Defaults to `.dev.secrets.jsonc`. */
+  /** The absolute path to name in errors. Defaults to the file's bare name — see {@link DEV_SECRETS_FILE}. */
   path?: string;
 }
 
@@ -60,7 +60,7 @@ export interface DevSecretsSeedResult {
   unchanged: readonly string[];
   /** `cf-secrets-store` secrets, as the `.dev.vars` lines the CLI should write. Never a file write here. */
   devVars: Readonly<Record<string, string>>;
-  /** Values minted this run, for the CLI to write back into `.dev.secrets.jsonc` as version-1 envelopes. */
+  /** Values minted this run, for the CLI to write back into the dev secrets file as version-1 envelopes. */
   minted: DevSecretsFile;
   /** Declared secrets with no value and nothing honest to mint — the CLI names them and says where they come from. */
   missing: readonly string[];
@@ -139,7 +139,7 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
  * **nothing written anywhere**. The one place that decides what a mint is, so `seedDevSecrets` and a
  * caller that needs the values before seeding cannot drift into two rules.
  *
- * That ordering is the point of exporting it. The CLI mints, persists `.dev.secrets.jsonc`, then
+ * That ordering is the point of exporting it. The CLI mints, persists the dev secrets file, then
  * seeds: a store write that lands before the file does leaves a row no file explains, and the next
  * run mints a different value and overwrites it — a session secret that changes on every `pithy dev`
  * for as long as the file write keeps failing.

@@ -2,9 +2,9 @@
 "@pithy-sh/cli": minor
 ---
 
-`.dev.secrets.jsonc` is a first-class citizen of the CLI. `.dev.vars` is env bindings again.
+the dev secrets file is a first-class citizen of the CLI. `.dev.vars` is env bindings again.
 
-`pithy init` writes `.dev.secrets.example.jsonc` and gitignores the real file. `pithy add <capability>` mints that capability's generatable secrets into `.dev.secrets.jsonc` as version-1 envelopes instead of `.dev.vars` — the declaration and the minting are unchanged, only the destination. `pithy seed` seeds the file into the local `SECRETS` D1, deriving each secret's destination from the registry's `backend` and never from the file. `pithy dev` seeds before any Worker starts, for the same reason it wires the shared `.dev.vars` link before starting: a store filled after startup missed the session's first sign-in. All three call one seeder, so there is one seeding path rather than three that drift.
+`pithy init` writes `.dev.secrets.example.jsonc`. `pithy add <capability>` mints that capability's generatable secrets into the dev secrets file as version-1 envelopes instead of `.dev.vars` — the declaration and the minting are unchanged, only the destination. `pithy seed` seeds the file into the local `SECRETS` D1, deriving each secret's destination from the registry's `backend` and never from the file. `pithy dev` seeds before any Worker starts, for the same reason it wires the shared `.dev.vars` link before starting: a store filled after startup missed the session's first sign-in. All three call one seeder, so there is one seeding path rather than three that drift.
 
 The file is written `0600` on creation **and on every rewrite**. An atomic write is a rename, so the mode that survives is the temp file's — `writeFileAtomic` now takes the mode and applies it before the rename, or the second write would silently widen a file holding OAuth client secrets back to the umask default.
 

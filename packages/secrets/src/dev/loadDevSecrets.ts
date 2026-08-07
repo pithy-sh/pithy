@@ -6,7 +6,7 @@ import { parse } from "comment-json";
 import { DEV_SECRETS_FILE, DevSecretEnvelope, DevSecretsFile } from "./devSecretsFile";
 
 /**
- * The `.dev.secrets.jsonc` boundary. Text in, a validated {@link DevSecretsFile} out — and every way
+ * The dev secrets file boundary. Text in, a validated {@link DevSecretsFile} out — and every way
  * the text can be wrong comes back as a `ValidationError` that names **which secret** and what to do.
  * A Zod dump is not an answer to "my app will not start": the adopter hand-writes this file, so the
  * error has to read like the fix.
@@ -38,7 +38,7 @@ export interface LoadDevSecretsOptions {
 const ENVELOPE_SHAPE = '{ "currentVersion": "1", "versions": { "1": <value> } }';
 
 /**
- * Parse and validate `.dev.secrets.jsonc`. Throws `validation/invalid_input` naming the offending
+ * Parse and validate the dev secrets file. Throws `validation/invalid_input` naming the offending
  * secret. Nothing thrown from here carries a value: `message`, `action` and `detail` all reach a
  * terminal or a log, and the file holds OAuth client secrets.
  */
@@ -46,8 +46,8 @@ export function loadDevSecrets(source: string, options: LoadDevSecretsOptions = 
   const path = options.path ?? DEV_SECRETS_FILE;
 
   // A file with nothing in it is a project with no secrets yet — the same answer an absent file gets,
-  // and the same one the write path already gives when it merges a mint into empty content. `touch
-  // .dev.secrets.jsonc` used to fail `pithy add` outright, which is one state with two answers.
+  // and the same one the write path already gives when it merges a mint into empty content. A
+  // `touch`ed file used to fail `pithy add` outright, which is one state with two answers.
   if (source.trim().length === 0) return {};
 
   let parsed: unknown;

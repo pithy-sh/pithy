@@ -4,7 +4,7 @@
 
 Dev secrets cannot reach a managed environment, whatever the caller asks.
 
-`.dev.secrets.jsonc` holds minted random dev values. Seeding it into staging or production would not
+the dev secrets file holds minted random dev values. Seeding it into staging or production would not
 set some secrets — it would rotate every one at once: every session invalidated, every signed link
 broken, every OAuth credential replaced with a value the provider has never seen, and no undo, because
 the values it overwrote were the only copies.

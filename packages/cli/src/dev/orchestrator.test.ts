@@ -586,7 +586,7 @@ describe("startDev — dev secrets", () => {
   test("a malformed secrets file is said out loud and the session still starts", async () => {
     const h = harness({
       seedSecrets: async () => {
-        throw new ValidationError({ message: ".dev.secrets.jsonc is not valid JSONC." });
+        throw new ValidationError({ message: "/cfg/pithy/acme/secrets.jsonc is not valid JSONC." });
       },
     });
     await startDev(h.options);

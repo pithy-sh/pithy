@@ -1,14 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { devSecretsPath } from "../devSecrets/file";
+import { devSecretsFile } from "../devSecrets/location";
 import type { DevSecretsTarget } from "../devSecrets/seed";
-import { checkDevSecrets, describeDevSecrets, devSecretsHealthy } from "./devSecrets";
+import type { StatePathOptions } from "../notifier/state";
+import {
+  checkDevSecrets,
+  checkDevSecretsLocation,
+  describeDevSecrets,
+  describeDevSecretsLocation,
+  devSecretsHealthy,
+} from "./devSecrets";
 
 const registry = defineSecretRegistry({
   "auth-session-secret": {
@@ -27,11 +34,26 @@ const registry = defineSecretRegistry({
 });
 
 let dir: string;
+let config: string;
+/** The resolved secrets file for this test's project. Outside `dir` — that is the point of #156. */
+let path: string;
+
+/** The config seams. Fresh per test, so nothing here can read or write the operator's own file. */
+function paths(): StatePathOptions {
+  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } };
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-doctor-secrets-"));
+  config = await mkdtemp(join(tmpdir(), "pithy-doctor-config-"));
+  // The check resolves the file from the project's name, so the project needs a `pithy.config.ts`.
+  await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "clinic" };\n');
+  path = devSecretsFile("clinic", paths());
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+  await rm(config, { recursive: true, force: true });
 });
 
 /** One Worker composing `secrets`, resolved against the per-test directory. */
@@ -40,12 +62,12 @@ function board(): DevSecretsTarget {
 }
 
 function check() {
-  return checkDevSecrets({ projectDir: dir, targets: [board()] });
+  return checkDevSecrets({ projectDir: dir, targets: [board()], paths: paths() });
 }
 
 describe("checkDevSecrets", () => {
   test("a project no Worker composes secrets in has no question to answer", async () => {
-    expect(await checkDevSecrets({ projectDir: dir, targets: [] })).toBeNull();
+    expect(await checkDevSecrets({ projectDir: dir, targets: [], paths: paths() })).toBeNull();
   });
 
   test("names a d1-backed secret found in .dev.vars — this is the whole migration notice", async () => {
@@ -68,11 +90,8 @@ describe("checkDevSecrets", () => {
     // The CLI writes this line itself, every `pithy dev`, because dev resolves every secret from its
     // binding whatever its backend (#153). Doctor told every project on this branch to delete the one
     // line that keeps dev working — the branch and the diagnostic disagreeing about the same file.
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }',
-    );
-    await chmod(devSecretsPath(dir), 0o600);
+    await writeFile(path, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }');
+    await chmod(path, 0o600);
     await writeFile(join(dir, ".dev.vars"), `auth-session-secret={"currentVersion":"1","versions":{"1":"n"}}\n`);
 
     const result = await check();
@@ -83,10 +102,7 @@ describe("checkDevSecrets", () => {
 
   test("a copy that disagrees with the file is stale, and the seeder is what fixes it", async () => {
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=old\n");
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }',
-    );
+    await writeFile(path, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }');
     const result = await check();
     expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "stale" }]);
   });
@@ -98,8 +114,8 @@ describe("checkDevSecrets", () => {
   });
 
   test("reports the file's mode, so a world-readable secrets file is caught before it matters", async () => {
-    await writeFile(devSecretsPath(dir), "{}");
-    await chmod(devSecretsPath(dir), 0o644);
+    await writeFile(path, "{}");
+    await chmod(path, 0o644);
     expect((await check())?.mode).toBe(0o644);
   });
 
@@ -110,8 +126,8 @@ describe("checkDevSecrets", () => {
   });
 
   test("never throws on a malformed file — a diagnostic runs in the environment it diagnoses", async () => {
-    await writeFile(devSecretsPath(dir), "{ nope");
-    await chmod(devSecretsPath(dir), 0o600);
+    await writeFile(path, "{ nope");
+    await chmod(path, 0o600);
     const result = await check();
     expect(result?.unreadable).toBe(true);
   });
@@ -128,25 +144,19 @@ describe("checkDevSecrets", () => {
   });
 
   test("a name no capability declares is reported here, where the config is loaded fresh", async () => {
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }',
-    );
+    await writeFile(path, '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }');
     expect((await check())?.undeclared).toEqual(["gone-capability-key"]);
   });
 
   test("an undeclared name is not a fault — a stale line must not turn a green report red", async () => {
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }',
-    );
-    await chmod(devSecretsPath(dir), 0o600);
+    await writeFile(path, '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }');
+    await chmod(path, 0o600);
     const result = await check();
     expect(result && devSecretsHealthy(result)).toBe(true);
   });
 
   test("a malformed file reports nothing missing — it would name every declared secret, over one fault", async () => {
-    await writeFile(devSecretsPath(dir), "{ nope");
+    await writeFile(path, "{ nope");
     const result = await check();
     expect(result?.unreadable).toBe(true);
     expect(result?.missing).toEqual([]);
@@ -158,7 +168,7 @@ describe("checkDevSecrets", () => {
     // fell through to `unmoved`, and doctor told the adopter to go move it. A broken file is its own
     // diagnosis; every other sentence it produces is a guess.
     await writeFile(join(dir, ".dev.vars"), `auth-session-secret={"currentVersion":"1","versions":{"1":"n"}}\n`);
-    await writeFile(devSecretsPath(dir), "{ nope");
+    await writeFile(path, "{ nope");
 
     const result = await check();
 
@@ -170,7 +180,7 @@ describe("checkDevSecrets", () => {
 
 describe("devSecretsHealthy", () => {
   const clean = {
-    path: "/p/.dev.secrets.jsonc",
+    path: "/home/u/.config/pithy/acme/secrets.jsonc",
     misplaced: [],
     missing: [],
     undeclared: [],
@@ -197,7 +207,7 @@ describe("devSecretsHealthy", () => {
 describe("describeDevSecrets", () => {
   test("a healthy project says one line and asks nothing", () => {
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
       undeclared: [],
@@ -209,7 +219,7 @@ describe("describeDevSecrets", () => {
 
   test("a misplaced secret is told where it belongs and that nothing was moved for them", () => {
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [{ name: "auth-session-secret", state: "unmoved" }],
       missing: [],
       undeclared: [],
@@ -218,12 +228,12 @@ describe("describeDevSecrets", () => {
     });
     expect(lines.join("\n")).toContain("auth-session-secret");
     expect(lines.join("\n")).toContain(".dev.vars");
-    expect(lines.join("\n")).toContain(".dev.secrets.jsonc");
+    expect(lines.join("\n")).toContain("/home/u/.config/pithy/acme/secrets.jsonc");
   });
 
   test("a stale copy names the command that rewrites it, rather than telling anyone to delete it", () => {
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [{ name: "auth-session-secret", state: "stale" }],
       missing: [],
       undeclared: [],
@@ -236,7 +246,7 @@ describe("describeDevSecrets", () => {
   test("the injected copy is explained, and nobody is told to delete it", () => {
     // Deleting it is the one action that breaks dev before #153 lands.
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [{ name: "auth-session-secret", state: "injected" }],
       missing: [],
       undeclared: [],
@@ -250,7 +260,7 @@ describe("describeDevSecrets", () => {
 
   test("a mode wider than 0600 is named in the mode people write it in", () => {
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
       undeclared: [],
@@ -263,7 +273,7 @@ describe("describeDevSecrets", () => {
 
   test("an unreadable file says so rather than reporting a clean project", () => {
     const lines = describeDevSecrets({
-      path: "/p/.dev.secrets.jsonc",
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
       undeclared: [],
@@ -271,5 +281,51 @@ describe("describeDevSecrets", () => {
       unreadable: true,
     });
     expect(lines.join("\n")).toMatch(/will not parse|unreadable/i);
+  });
+});
+
+describe("checkDevSecretsLocation", () => {
+  test("reports the resolved path even when there is no file — nothing else in the run names it", async () => {
+    // Not a fault, and that is why it is a separate check: the path is the answer to "where do my dev
+    // secrets go", and since #156 there is no file in the checkout to find it by.
+    const check = await checkDevSecretsLocation(dir, paths());
+    expect(check).toEqual({ path, present: false, orphans: [] });
+    expect(describeDevSecretsLocation(check as NonNullable<typeof check>)).toContain("no file yet");
+  });
+
+  test("a file that is there needs no sentence — the path is the whole answer", async () => {
+    await writeFile(path, "{}\n");
+    const check = await checkDevSecretsLocation(dir, paths());
+    expect(check).toEqual({ path, present: true, orphans: [] });
+    expect(describeDevSecretsLocation(check as NonNullable<typeof check>)).toBeNull();
+  });
+
+  test("a project with no file names the directories that do have one — a rename leaves a trail", async () => {
+    // The directory is keyed on the project's `name`, so renaming a project silently changes which
+    // file every command reads and leaves the old one behind with every value in it. Nothing else
+    // could ever mention it: the old name is in no file this checkout still has.
+    await mkdir(join(config, "clinic-old"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "clinic-old", "secrets.jsonc"), "{}\n");
+    await mkdir(join(config, "no-secrets-here"), { recursive: true, mode: 0o700 });
+
+    const check = await checkDevSecretsLocation(dir, paths());
+
+    expect(check?.orphans).toEqual(["clinic-old"]);
+    expect(describeDevSecretsLocation(check as NonNullable<typeof check>)).toContain("clinic-old");
+  });
+
+  test("a project that has its own file hears about nobody else's", async () => {
+    // A machine with six projects on it must not hear about five of them on every run. The list is
+    // for the one shape it diagnoses — this project has no file, and one of those is probably why.
+    await mkdir(join(config, "clinic-old"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "clinic-old", "secrets.jsonc"), "{}\n");
+    await writeFile(path, "{}\n");
+
+    expect((await checkDevSecretsLocation(dir, paths()))?.orphans).toEqual([]);
+  });
+
+  test("no project name is no question — it declines rather than guessing a directory", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
+    expect(await checkDevSecretsLocation(dir, paths())).toBeNull();
   });
 });

@@ -1,18 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
-import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { readDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 
 /** A fake CloudflareClients exposing only the turnstile methods the (de)provisioner touches. */
@@ -45,23 +44,33 @@ const dirs: string[] = [];
  * A project in the per-Worker layout: the root owns the shared `.dev.vars`, and `apps/api/` owns the
  * `wrangler.jsonc` the sitekey vars are written into.
  */
+let projects = 0;
 async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir: string }> {
   const projectDir = await mkdtemp(join(tmpdir(), "pithy-turnstile-"));
   dirs.push(projectDir);
+  // The dev secrets file is keyed on the project's `name` (#156), and a distinct one per call keeps
+  // two tests from sharing a file. `vitest.setup.ts` keeps all of them out of the real config dir.
+  projects += 1;
+  await writeFile(join(projectDir, "pithy.config.ts"), `export default { name: "turnstile-${projects}" };\n`);
   const workerDir = join(projectDir, "apps", "api");
   await mkdir(workerDir, { recursive: true });
   await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
   return { projectDir, workerDir };
 }
 
+/** What the dev secrets file holds for this project — outside the checkout, resolved as the CLI does. */
+async function devSecrets(projectDir: string) {
+  return readDevSecrets(await resolveDevSecretsFile(projectDir));
+}
+
 afterEach(() => vi.clearAllMocks());
 
 describe("CloudflareTurnstileProvisioner", () => {
-  test("writeDev puts the secret in .dev.secrets.jsonc and the sitekeys in .dev.vars", async () => {
+  test("writeDev puts the secret in the dev secrets file and the sitekeys in .dev.vars", async () => {
     // `turnstile-secret-keys` is a `d1` registry secret. It was going straight into `.dev.vars`,
-    // bypassing `writeDevSecrets` and with it the guarantee that the file is gitignored before a value
-    // is written into it — the fifth producer of that same defect (#149). The sitekeys are public,
-    // UPPER_SNAKE env vars, and stay where wrangler's namespace belongs.
+    // bypassing `writeDevSecrets` and with it the envelope format and the 0600 mode — the fifth
+    // producer of that same defect (#149). The sitekeys are public, UPPER_SNAKE env vars, and stay
+    // where wrangler's namespace belongs.
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -69,7 +78,7 @@ describe("CloudflareTurnstileProvisioner", () => {
 
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
 
-    expect(await readDevSecrets(projectDir)).toEqual({
+    expect(await devSecrets(projectDir)).toEqual({
       [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"1x"}}' } },
     });
     const content = await readFile(join(projectDir, ".dev.vars"), "utf8");
@@ -81,7 +90,10 @@ describe("CloudflareTurnstileProvisioner", () => {
     );
   });
 
-  test("writeDev makes the .gitignore cover the secrets file before it writes the secret", async () => {
+  test("writeDev leaves nothing about the secret in the checkout, and no .gitignore line either", async () => {
+    // This used to write the project's `.gitignore` before placing the value, and fail the whole
+    // provision when it could not. The widget secret is at `<config>/<project>/secrets.jsonc` now, so
+    // there is nothing in the repository to ignore and nothing for a commit to reach (#156).
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -89,22 +101,10 @@ describe("CloudflareTurnstileProvisioner", () => {
 
     await p.writeDev('{"visible":{"key":"1x"}}', {});
 
-    expect(await readFile(join(projectDir, ".gitignore"), "utf8")).toContain(DEV_SECRETS_FILE);
-  });
-
-  test("writeDev refuses outright when the secret cannot be written to an ignored file", async () => {
-    // Fail closed. A widget secret written into a committable file is worse than a provision that
-    // stopped and said which two lines to add.
-    const { cf } = fakeCf();
-    const { dispatcher } = fakeDispatcher();
-    const { projectDir, workerDir } = await project();
-    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
-    await chmod(projectDir, 0o500);
-    try {
-      await expect(p.writeDev('{"visible":{"key":"1x"}}', {})).rejects.toThrow(PithyError);
-    } finally {
-      await chmod(projectDir, 0o700);
-    }
+    await expect(readFile(join(projectDir, ".gitignore"), "utf8")).rejects.toThrow();
+    expect(await devSecrets(projectDir)).toEqual({
+      [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"1x"}}' } },
+    });
   });
 
   test("a re-provision replaces the value rather than keeping the first widget's secret", async () => {
@@ -116,7 +116,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     await p.writeDev('{"visible":{"key":"first"}}', {});
     await p.writeDev('{"visible":{"key":"second"}}', {});
 
-    expect(await readDevSecrets(projectDir)).toEqual({
+    expect(await devSecrets(projectDir)).toEqual({
       [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"second"}}' } },
     });
   });
@@ -453,7 +453,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     expect(await readFile(join(projectDir, ".dev.vars"), "utf8")).toBe("CLOUDFLARE_ACCOUNT_ID=acct\n");
   });
 
-  test("clearDev takes the secret out of .dev.secrets.jsonc too", async () => {
+  test("clearDev takes the secret out of the dev secrets file too", async () => {
     // Otherwise the next `pithy dev` seeds and re-injects a key for a widget that no longer exists, and
     // every place anyone would look says turnstile is configured.
     const { cf } = fakeCf();
@@ -465,7 +465,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
 
     await d.clearDev(["visible"]);
 
-    expect(await readDevSecrets(projectDir)).toEqual({});
+    expect(await devSecrets(projectDir)).toEqual({});
     expect(parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8"))).toEqual({});
   });
 });

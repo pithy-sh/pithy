@@ -1,41 +1,47 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { devSecretsPath, mergeDevSecretsContent, readDevSecrets, removeDevSecrets, writeDevSecrets } from "./file";
+import { mergeDevSecretsContent, readDevSecrets, removeDevSecrets, writeDevSecrets } from "./file";
+import { devSecretsFile } from "./location";
 
-let dir: string;
+let config: string;
+/** The resolved absolute path every function here takes — `<config>/replay/secrets.jsonc`. */
+let path: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "pithy-dev-secrets-"));
+  config = await mkdtemp(join(tmpdir(), "pithy-dev-secrets-"));
+  path = devSecretsFile("replay", { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } });
 });
 afterEach(async () => {
-  await chmod(dir, 0o700).catch(() => {});
-  await rm(dir, { recursive: true, force: true });
+  await chmod(config, 0o700).catch(() => {});
+  await chmod(dirname(path), 0o700).catch(() => {});
+  await rm(config, { recursive: true, force: true });
 });
+
+/** Put a file at the resolved path, creating the project directory the CLI would have created. */
+async function seedFile(contents: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, contents);
+}
 
 describe("readDevSecrets", () => {
   test("an absent file is no secrets, not an error — a project starts without one", async () => {
-    expect(await readDevSecrets(dir)).toEqual({});
+    expect(await readDevSecrets(path)).toEqual({});
   });
 
   test("reads envelopes through the loader's validation", async () => {
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "abc" } } }',
-    );
-    expect(await readDevSecrets(dir)).toEqual({
+    await seedFile('{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "abc" } } }');
+    expect(await readDevSecrets(path)).toEqual({
       "auth-session-secret": { currentVersion: "1", versions: { "1": "abc" } },
     });
   });
 
   test("comments and a trailing comma are the point of JSONC — both parse", async () => {
-    await writeFile(
-      devSecretsPath(dir),
+    await seedFile(
       `// The session key.
 {
   // Minted by pithy add auth.
@@ -43,39 +49,39 @@ describe("readDevSecrets", () => {
 }
 `,
     );
-    expect(Object.keys(await readDevSecrets(dir))).toEqual(["auth-session-secret"]);
+    expect(Object.keys(await readDevSecrets(path))).toEqual(["auth-session-secret"]);
   });
 
   test("an unreadable file is not an absent one — only ENOENT means there are no secrets", async () => {
     // `.catch(() => null)` answered `{}` for every errno. An EACCES or EIO then merged into an empty
     // base, and the file's real contents were gone — silently, on a file holding OAuth client secrets.
-    await mkdir(devSecretsPath(dir));
+    await mkdir(path, { recursive: true });
 
-    const error = await readDevSecrets(dir).catch((e: unknown) => e);
+    const error = await readDevSecrets(path).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(PithyError);
-    expect((error as PithyError).payload.message).toContain(DEV_SECRETS_FILE);
+    expect((error as PithyError).payload.message).toContain(path);
   });
 
   test("a zero-byte file is no secrets, the same answer the write path gives", async () => {
-    // `touch .dev.secrets.jsonc` failed `pithy add` with exit 1 while `mergeDevSecretsContent` was
-    // deciding that empty content meant `{}`. One state, two answers, in one module.
-    await writeFile(devSecretsPath(dir), "");
-    expect(await readDevSecrets(dir)).toEqual({});
+    // `touch` on the file failed `pithy add` with exit 1 while `mergeDevSecretsContent` was deciding
+    // that empty content meant `{}`. One state, two answers, in one module.
+    await seedFile("");
+    expect(await readDevSecrets(path)).toEqual({});
   });
 
-  test("a malformed file names the real path, not the default", async () => {
-    await writeFile(devSecretsPath(dir), "{ nope }");
-    const error = await readDevSecrets(dir).catch((e: unknown) => e);
+  test("a malformed file names the absolute path — it is outside the checkout and nothing else names it", async () => {
+    await seedFile("{ nope }");
+    const error = await readDevSecrets(path).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(PithyError);
-    expect((error as PithyError).payload.message).toContain(join(dir, DEV_SECRETS_FILE));
+    expect((error as PithyError).payload.message).toContain(path);
   });
 });
 
 describe("mergeDevSecretsContent", () => {
   test("an empty file is written with the header that says what belongs here", () => {
     const out = mergeDevSecretsContent("", { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
-    expect(out).toContain("Gitignored");
+    expect(out).toContain("outside every checkout");
     expect(out).toContain('"auth-session-secret"');
   });
 
@@ -118,29 +124,47 @@ describe("mergeDevSecretsContent", () => {
 });
 
 describe("writeDevSecrets", () => {
-  test("the file it creates is 0600 — it holds OAuth client secrets", async () => {
-    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+  test("the file it creates is 0600 and its directory 0700 — both hold OAuth client secrets", async () => {
+    await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
+  });
+
+  test("it creates the project directory itself — nothing else in the run has been there", async () => {
+    // The file is outside the checkout, so no scaffold, no `pithy init`, and no worktree setup has
+    // made this directory. A first `pithy add` on a fresh machine is the only thing that will.
+    await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    expect(await readdir(config)).toEqual(["replay"]);
   });
 
   test("0600 survives the second write, which is where the atomic rename used to widen it", async () => {
-    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
-    await writeDevSecrets(dir, { "email-link-signing-key": { currentVersion: "1", versions: { "1": "k" } } });
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+    await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    await writeDevSecrets(path, { "email-link-signing-key": { currentVersion: "1", versions: { "1": "k" } } });
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   test("a file already world-readable is tightened, even when its content needs no write", async () => {
-    // `.dev.vars` got this and its sibling did not, so a `.dev.secrets.jsonc` created at the umask —
-    // by an older pithy, an editor, a `cp` — stayed 0644 forever while holding OAuth client secrets.
-    // The one thing that set the mode was a write, and a re-run's write never has to happen.
+    // `.dev.vars` got this and its sibling did not, so a secrets file created at the umask — by an
+    // older pithy, an editor, a `cp` — stayed 0644 forever while holding OAuth client secrets. The one
+    // thing that set the mode was a write, and a re-run's write never has to happen.
     const envelope = { currentVersion: "1", versions: { "1": "s" } };
-    await writeDevSecrets(dir, { "auth-session-secret": envelope });
-    await chmod(devSecretsPath(dir), 0o644);
+    await writeDevSecrets(path, { "auth-session-secret": envelope });
+    await chmod(path, 0o644);
 
-    const result = await writeDevSecrets(dir, { "auth-session-secret": envelope });
+    expect(await writeDevSecrets(path, { "auth-session-secret": envelope })).toEqual([]);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
 
-    expect(result.added).toEqual([]);
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+  test("a directory left at 0755 is narrowed on a later write — its listing names every secret", async () => {
+    // `mkdir`'s `mode` applies only to a directory it creates, so a project directory made by an older
+    // pithy, a `cp -r`, or a restore keeps 0755 forever while `ls` on it names the provider and the
+    // vendor of every credential in the project.
+    await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    await chmod(dirname(path), 0o755);
+
+    await writeDevSecrets(path, { "email-link-signing-key": { currentVersion: "1", versions: { "1": "k" } } });
+
+    expect((await stat(dirname(path))).mode & 0o777).toBe(0o700);
   });
 
   test("a file already world-readable is tightened when the caller has nothing to add at all", async () => {
@@ -148,91 +172,78 @@ describe("writeDevSecrets", () => {
     // this an empty set, so a re-run never reaches the merge. Tightening only past that point left the
     // most common run of all doing nothing — `pithy add auth` twice, with a `chmod 644` between, and
     // the file stayed 644.
-    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
-    await chmod(devSecretsPath(dir), 0o644);
+    await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    await chmod(path, 0o644);
 
-    await writeDevSecrets(dir, {});
+    await writeDevSecrets(path, {});
 
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   test("a deliberately tighter mode survives — this narrows, it never widens", async () => {
     const envelope = { currentVersion: "1", versions: { "1": "s" } };
-    await writeDevSecrets(dir, { "auth-session-secret": envelope });
-    await chmod(devSecretsPath(dir), 0o400);
+    await writeDevSecrets(path, { "auth-session-secret": envelope });
+    await chmod(path, 0o400);
     try {
-      await writeDevSecrets(dir, { "auth-session-secret": envelope });
-      expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o400);
+      await writeDevSecrets(path, { "auth-session-secret": envelope });
+      expect((await stat(path)).mode & 0o777).toBe(0o400);
     } finally {
-      await chmod(devSecretsPath(dir), 0o600);
+      await chmod(path, 0o600);
     }
   });
 
-  test("writes nothing when there is nothing to add — no empty file appears from a no-op add", async () => {
-    await writeDevSecrets(dir, {});
-    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+  test("writes nothing when there is nothing to add — no empty file, and no directory either", async () => {
+    await writeDevSecrets(path, {});
+    await expect(readFile(path, "utf8")).rejects.toThrow();
+    expect(await readdir(config)).toEqual([]);
   });
 
   test("what it writes reads back through the loader", async () => {
-    await writeDevSecrets(dir, {
+    await writeDevSecrets(path, {
       "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "a", clientSecret: "b" } } },
     });
-    expect(await readDevSecrets(dir)).toEqual({
+    expect(await readDevSecrets(path)).toEqual({
       "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "a", clientSecret: "b" } } },
     });
   });
 
   test("returns the names it actually added, so the caller reports minting rather than assuming it", async () => {
-    const first = await writeDevSecrets(dir, {
+    const first = await writeDevSecrets(path, {
       "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } },
     });
-    const second = await writeDevSecrets(dir, {
+    const second = await writeDevSecrets(path, {
       "auth-session-secret": { currentVersion: "1", versions: { "1": "other" } },
     });
-    expect(first).toEqual({ added: ["auth-session-secret"], refused: null });
-    expect(second).toEqual({ added: [], refused: null });
+    expect(first).toEqual(["auth-session-secret"]);
+    expect(second).toEqual([]);
   });
 
-  test("the project's .gitignore is made to cover the file before a value goes into it", async () => {
-    await writeFile(join(dir, ".gitignore"), "node_modules/\n");
-
-    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
-
-    const ignore = await readFile(join(dir, ".gitignore"), "utf8");
-    expect(ignore).toContain(DEV_SECRETS_FILE);
-    expect(ignore).toContain(`${DEV_SECRETS_FILE}.tmp`);
-  });
-
-  test("a project whose .gitignore cannot be fixed gets no secret at all, and is told what to add", async () => {
-    // Mint first and hope is not a guarantee. The value never leaves memory: a live signing secret in
-    // a file git will commit is worse than a `pithy add` that stopped and said one sentence.
-    await chmod(dir, 0o500);
+  test("a project whose checkout cannot be written to still gets its secret — the file is not in it", async () => {
+    // This is the acceptance criterion of the move, stated as a behaviour. The write used to be gated
+    // on making the project's `.gitignore` cover the file, so a read-only checkout refused the mint
+    // outright. There is nothing in the repository to ignore now, and nothing in the repository to
+    // write, so the checkout's state has no say at all.
+    const project = await mkdtemp(join(tmpdir(), "pithy-dev-secrets-ro-"));
+    await chmod(project, 0o500);
     try {
-      const result = await writeDevSecrets(dir, {
-        "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } },
-      });
-
-      expect(result.added).toEqual([]);
-      expect(result.refused).toContain(DEV_SECRETS_FILE);
-      await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+      expect(
+        await writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } }),
+      ).toEqual(["auth-session-secret"]);
+      expect(await readdir(project)).toEqual([]);
     } finally {
-      await chmod(dir, 0o700);
+      await chmod(project, 0o700);
+      await rm(project, { recursive: true, force: true });
     }
   });
 
   test("a write over an unreadable file refuses rather than replacing it with the new value alone", async () => {
     // The merge base comes from that read. Treating a failed read as empty content is how a write
     // replaces a file of secrets with the one value it happened to be adding.
-    await mkdir(devSecretsPath(dir));
+    await mkdir(path, { recursive: true });
 
     await expect(
-      writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } }),
+      writeDevSecrets(path, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } }),
     ).rejects.toThrow(PithyError);
-  });
-
-  test("nothing to add checks nothing — a no-op add does not touch the adopter's .gitignore", async () => {
-    await writeDevSecrets(dir, {});
-    await expect(readFile(join(dir, ".gitignore"), "utf8")).rejects.toThrow();
   });
 });
 
@@ -240,49 +251,43 @@ describe("writeDevSecrets({ replace })", () => {
   test("a provisioned value replaces the one in the file — it is issued, not minted", async () => {
     // `pithy turnstile provision` receives the widget secret from Cloudflare. Keeping the old value
     // because one is already there would leave the project verifying against a widget it no longer has.
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "old" } } }',
-    );
+    await seedFile('{ "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "old" } } }');
 
-    const result = await writeDevSecrets(
-      dir,
+    const added = await writeDevSecrets(
+      path,
       { "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "new" } } },
       { replace: true },
     );
 
-    expect(result.added).toEqual(["turnstile-secret-keys"]);
-    expect(await readDevSecrets(dir)).toEqual({
+    expect(added).toEqual(["turnstile-secret-keys"]);
+    expect(await readDevSecrets(path)).toEqual({
       "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "new" } },
     });
   });
 
   test("replacing a value with itself writes nothing — a re-provision must not churn the file", async () => {
     const content = '{ "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "same" } } }';
-    await writeFile(devSecretsPath(dir), content);
+    await seedFile(content);
 
-    const result = await writeDevSecrets(
-      dir,
+    const added = await writeDevSecrets(
+      path,
       { "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "same" } } },
       { replace: true },
     );
 
-    expect(result.added).toEqual([]);
-    expect(await readFile(devSecretsPath(dir), "utf8")).toBe(content);
+    expect(added).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe(content);
   });
 
   test("without replace a present value still wins — a mint never overwrites", async () => {
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "old" } } }',
-    );
+    await seedFile('{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "old" } } }');
 
-    const result = await writeDevSecrets(dir, {
+    const added = await writeDevSecrets(path, {
       "auth-session-secret": { currentVersion: "1", versions: { "1": "new" } },
     });
 
-    expect(result.added).toEqual([]);
-    expect(await readDevSecrets(dir)).toEqual({
+    expect(added).toEqual([]);
+    expect(await readDevSecrets(path)).toEqual({
       "auth-session-secret": { currentVersion: "1", versions: { "1": "old" } },
     });
   });
@@ -290,8 +295,7 @@ describe("writeDevSecrets({ replace })", () => {
 
 describe("removeDevSecrets", () => {
   test("a deprovisioned secret leaves the file, comments and siblings intact", async () => {
-    await writeFile(
-      devSecretsPath(dir),
+    await seedFile(
       `{
   // minted by pithy add auth
   "auth-session-secret": { "currentVersion": "1", "versions": { "1": "keep" } },
@@ -300,24 +304,24 @@ describe("removeDevSecrets", () => {
 `,
     );
 
-    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual(["turnstile-secret-keys"]);
+    expect(await removeDevSecrets(path, ["turnstile-secret-keys"])).toEqual(["turnstile-secret-keys"]);
 
-    const content = await readFile(devSecretsPath(dir), "utf8");
+    const content = await readFile(path, "utf8");
     expect(content).toContain("minted by pithy add auth");
-    expect(Object.keys(await readDevSecrets(dir))).toEqual(["auth-session-secret"]);
+    expect(Object.keys(await readDevSecrets(path))).toEqual(["auth-session-secret"]);
   });
 
   test("a name that is not there writes nothing at all — teardown is idempotent", async () => {
     const content = '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "keep" } } }';
-    await writeFile(devSecretsPath(dir), content);
+    await seedFile(content);
 
-    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual([]);
-    expect(await readFile(devSecretsPath(dir), "utf8")).toBe(content);
+    expect(await removeDevSecrets(path, ["turnstile-secret-keys"])).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe(content);
   });
 
   test("no file is nothing to remove — a deprovision on a project that never had one is silent", async () => {
-    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual([]);
-    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+    expect(await removeDevSecrets(path, ["turnstile-secret-keys"])).toEqual([]);
+    await expect(readFile(path, "utf8")).rejects.toThrow();
   });
 });
 
@@ -328,29 +332,28 @@ describe("a malformed file on the write path", () => {
     return [e.message, e.action, e.detail, e.stack].filter(Boolean).join("\n");
   }
 
-  test("prints no secret it could not parse", async () => {
+  test("prints no secret it could not parse, and names the absolute path it could not parse", async () => {
     // `comment-json`'s SyntaxError reads `Unexpected token … "<the entire file>" is not valid JSON`.
     // The write path re-parsed with a bare `parse` and no catch, so one missing brace put every OAuth
     // client secret in the file onto the terminal — the opposite of what this module's docstring says
     // it does, and the loader had already been taught not to.
-    await writeFile(
-      devSecretsPath(dir),
+    await seedFile(
       `{ "auth-google-credentials": { "currentVersion": "1", "versions": { "1": "SUPER-SECRET-VALUE" } } oops }`,
     );
 
-    const error = await writeDevSecrets(dir, {
+    const error = await writeDevSecrets(path, {
       "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } },
     }).catch((thrown: unknown) => thrown);
 
     expect(error).toBeInstanceOf(PithyError);
     expect(surfaces(error)).not.toContain("SUPER-SECRET-VALUE");
-    expect(surfaces(error)).toContain(DEV_SECRETS_FILE);
+    expect(surfaces(error)).toContain(path);
   });
 
   test("removeDevSecrets is the same boundary, and says the same thing", async () => {
-    await writeFile(devSecretsPath(dir), `{ "turnstile-secret-keys": "SUPER-SECRET-VALUE" oops }`);
+    await seedFile(`{ "turnstile-secret-keys": "SUPER-SECRET-VALUE" oops }`);
 
-    const error = await removeDevSecrets(dir, ["turnstile-secret-keys"]).catch((thrown: unknown) => thrown);
+    const error = await removeDevSecrets(path, ["turnstile-secret-keys"]).catch((thrown: unknown) => thrown);
 
     expect(error).toBeInstanceOf(PithyError);
     expect(surfaces(error)).not.toContain("SUPER-SECRET-VALUE");

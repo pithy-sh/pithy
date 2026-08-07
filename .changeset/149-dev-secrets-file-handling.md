@@ -3,7 +3,7 @@
 "@pithy-sh/secrets": patch
 ---
 
-Six corrections to how `.dev.secrets.jsonc` is read, written, and seeded.
+Six corrections to how the dev secrets file is read, written, and seeded.
 
 **An unreadable file is not an absent one.** The read answered `{}` for every errno. `ENOENT` is the only one that means "no secrets yet"; an `EACCES` or `EIO` merged into an empty base, and the file's real contents went with the next write. Both the read and the write path now refuse, naming the path and the errno and never a byte of the file.
 

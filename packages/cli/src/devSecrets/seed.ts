@@ -11,10 +11,12 @@ import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintMissingDevSecrets, seedDevSecrets, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import type { StatePathOptions } from "../notifier/state";
 import { loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { writeDevVars } from "./devVars";
-import { devSecretsPath, readDevSecrets, writeDevSecrets } from "./file";
+import { readDevSecrets, writeDevSecrets } from "./file";
+import { resolveDevSecretsFile } from "./location";
 import { ownProperties } from "./records";
 import {
   type DevSecretsStoreHandle,
@@ -24,9 +26,13 @@ import {
 } from "./store";
 
 /**
- * `pithy seed`'s dev-secrets half: take `.dev.secrets.jsonc`, mint what is missing and generatable, and
- * put every declared value where its registry entry says it belongs. The idempotent workhorse `pithy
- * add` and `pithy dev` both call, so there is one seeding path and not three that drift.
+ * `pithy seed`'s dev-secrets half: take `<config>/<project>/secrets.jsonc`, mint what is missing and
+ * generatable, and put every declared value where its registry entry says it belongs. The idempotent
+ * workhorse `pithy add` and `pithy dev` both call, so there is one seeding path and not three that drift.
+ *
+ * **The input moved out of the checkout; the destinations did not (#156).** The file is resolved from
+ * the project's *name*, so every worktree of one project seeds from one file with no setup step — and
+ * the local `SECRETS` store, `.dev.vars`, and `.wrangler/state` are all still the project directory's.
  *
  * **The registry decides the destination, per Worker.** Capabilities are per-Worker, so a registry is
  * too, and a `d1` secret goes into *that* Worker's local `SECRETS` store. The file is project-wide,
@@ -67,11 +73,19 @@ export interface DevSecretsTarget {
 
 /** What one seeding run did. Every list is sorted, so two runs of the same state read the same. */
 export interface DevSecretsSeedReport {
+  /**
+   * The absolute path of the secrets file this run read and minted into.
+   *
+   * In the report because the file is outside the checkout (#156) and nothing else in the run names
+   * it: "minted a dev auth-session-secret" is not actionable if the reader cannot open what it landed
+   * in. Optional so report doubles that assert only on `seeded` or `skipped` stay valid.
+   */
+  path?: string;
   /** `d1` secrets written this run — new, or changed in the file since the last run. */
   seeded: string[];
   /** `d1` secrets already stored with the value the file states. Not rewritten. */
   unchanged: string[];
-  /** Values minted this run and written back into `.dev.secrets.jsonc`. */
+  /** Values minted this run and written back into the secrets file. */
   minted: string[];
   /**
    * Secrets written into `.dev.vars` this run. Two reasons, one list: a `cf-secrets-store` secret
@@ -86,16 +100,8 @@ export interface DevSecretsSeedReport {
   /** Workers whose local store could not be opened, and the one thing each needs. */
   skipped: { worker: string; reason: string }[];
   /**
-   * Why a minted value was not written to `.dev.secrets.jsonc` — a project whose `.gitignore` cannot be
-   * made to cover it. One sentence naming what to add, never a value. `null` when nothing stood in the way.
-   *
-   * A real run always sets it. Optional so the report doubles that only assert on `seeded` or `skipped`
-   * stay valid — the same reason a discovered Worker's `dev` block is optional.
-   */
-  refused?: string | null;
-  /**
    * One sentence per value no `.dev.vars` quoting survives — see `encodeDevVarsValue`. Never a
-   * value. The secret is still in `.dev.secrets.jsonc` and still seeded into the store; what is refused
+   * value. The secret is still in the secrets file and still seeded into the store; what is refused
    * is the transitional copy, which is the only half dev reads until #153. Any superseded line went with
    * it, so the sentence describes a Worker with *no* value rather than one quietly on the old one.
    */
@@ -115,8 +121,13 @@ export interface DevSecretsSeedReport {
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
 export interface SeedProjectDevSecretsOptions {
-  /** The project root — owner of `.dev.secrets.jsonc`, `.dev.vars`, and the `.wrangler/state` stores. */
+  /** The project root — owner of `.dev.vars` and the `.wrangler/state` stores. Not of the secrets file. */
   projectDir: string;
+  /**
+   * Where the Pithy config directory is, for {@link resolveDevSecretsFile}. Defaults to the real one:
+   * `$PITHY_CONFIG_DIR`, else the platform's. A seam so a test never writes to the operator's own file.
+   */
+  paths?: StatePathOptions;
   /** The Workers to seed for. Defaults to every Worker in `apps/` that composes the secrets capability. */
   targets?: DevSecretsTarget[];
   /** Seam: open one Worker's local store. Defaults to the real Miniflare-backed one. */
@@ -129,7 +140,7 @@ export interface SeedProjectDevSecretsOptions {
   /**
    * **Unsayable on purpose (#159).** No environment, ever, by any spelling.
    *
-   * `.dev.secrets.jsonc` holds minted random dev values. Seeding it into staging or production would not
+   * The dev secrets file holds minted random dev values. Seeding it into staging or production would not
    * set some secrets — it would rotate every one at once: every session invalidated, every signed link
    * broken, every OAuth credential replaced with a value the provider has never seen, and no undo,
    * because the values it overwrote were the only copies. A `--force` does not make that safe, it makes
@@ -242,13 +253,16 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   const skipped: { worker: string; reason: string }[] = [];
   const devVars: Record<string, string> = {};
   const declared = new Set<string>();
+  // Resolved once, from the project's name rather than its directory (#156) — so every worktree of one
+  // project seeds from one file, with no setup step and nothing linked into the checkout. It is also
+  // what every note and every error this run raises names, because nothing in the project points at it.
+  const path = await resolveDevSecretsFile(projectDir, options.paths ?? {});
   // The file is read once and carried across Workers. Two Workers that declare one secret must mint it
   // once: the second sees the first's value in this object, and `seedDevSecrets` never mints over one.
-  const file = await readDevSecrets(projectDir);
+  const file = await readDevSecrets(path);
   const inDevVars = ownProperties(parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => "")));
 
   const minted = new Set<string>();
-  let refused: string | null = null;
 
   for (const target of targets) {
     for (const name of Object.keys(target.registry)) declared.add(name);
@@ -263,16 +277,14 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       // Before a byte is minted or stored. The destination is what makes this a dev seeding run — not
       // the caller's word for it, and not a flag anywhere upstream.
       assertLocalDevStore(projectDir, target.name, handle.persistPath);
-      // **Persist before storing.** A minted value written to D1 before it reaches
-      // `.dev.secrets.jsonc` is a row nothing explains: the next run finds the file still without it,
+      // **Persist before storing.** A minted value written to D1 before it reaches the secrets
+      // file is a row nothing explains: the next run finds the file still without it,
       // mints a *different* value, and overwrites the row — for a session secret, every live session
       // invalidated on every `pithy dev`, for as long as the file write keeps failing. And a failing
       // file write is exactly the state that produced it. This way a failed write costs a value that
       // never existed anywhere, and the store is left holding the last one that did.
       const fresh = mintMissingDevSecrets(file, declaredHere);
-      const written = await writeDevSecrets(projectDir, fresh);
-      refused = refused ?? written.refused;
-      for (const name of written.added) {
+      for (const name of await writeDevSecrets(path, fresh)) {
         const envelope = fresh[name];
         if (!envelope) continue;
         file[name] = envelope;
@@ -286,7 +298,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
         file,
         registry,
         store: handle.store,
-        path: devSecretsPath(projectDir),
+        path,
       });
       for (const name of result.seeded) seeded.add(name);
       for (const name of result.unchanged) unchanged.add(name);
@@ -296,7 +308,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       // that binding — not the row just written — is where dev reads it. Driven off `seeded` and
       // `unchanged` so it covers exactly what the store holds, on the first run and on every re-run.
       for (const name of [...result.seeded, ...result.unchanged]) {
-        const line = injectedValue(registry, name, file, devSecretsPath(projectDir));
+        const line = injectedValue(registry, name, file, path);
         if (line !== null) devVars[name] = line;
       }
     } finally {
@@ -313,6 +325,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   // `pithy add auth` made it about the value it had just minted itself.
   const undeclared = targets.length === 0 ? [] : Object.keys(file).filter((name) => !declared.has(name));
   return {
+    path,
     seeded: sorted(seeded),
     unchanged: sorted(unchanged),
     // What the write actually landed, never what was minted into memory. A refused write minted values
@@ -325,7 +338,6 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     missing: sorted(missing).filter((name) => !seeded.has(name) && !unchanged.has(name)),
     undeclared: undeclared.sort(),
     skipped,
-    refused,
     devVarsRefused: wrote.refused,
     shadowed: wrote.shadowed,
     undelivered: wrote.undelivered,
@@ -362,13 +374,13 @@ function assertLocalDevStore(projectDir: string, worker: string, persistPath: st
 
 /**
  * The registry minus every secret an existing project still keeps in `.dev.vars` and has not stated in
- * `.dev.secrets.jsonc`. Those are the migration case, and this run has nothing honest to do with them.
+ * the secrets file. Those are the migration case, and this run has nothing honest to do with them.
  *
  * **Minting over one is the bug this exists to stop.** Local dev resolves that value from its injected
  * binding today, so a mint here does not replace it — it adds a second, different value, in a second
  * file, with nothing to say which one signed what. `pithy add` already refuses on exactly this rule; the
  * seeder refusing on a different one meant one `pithy add auth` printed both "left in .dev.vars, nothing
- * was rewritten" and "minted into .dev.secrets.jsonc" about the same secret, and produced both values.
+ * was rewritten" and "minted into the secrets file" about the same secret, and produced both values.
  *
  * **Stated in the file wins.** A name in both files is a value the adopter has moved and not yet deleted
  * the old copy of, so the file is what gets seeded and the injection rewrites the `.dev.vars` copy from
@@ -376,7 +388,7 @@ function assertLocalDevStore(projectDir: string, worker: string, persistPath: st
  *
  * **And pithy's own injected copy is not one of these.** The transition writes an encoded envelope into
  * `.dev.vars` for every seeded secret, and that copy read exactly like an adopter's pre-#149 value here.
- * The result was a one-way door: once a secret had been seeded, deleting it from `.dev.secrets.jsonc` —
+ * The result was a one-way door: once a secret had been seeded, deleting it from the secrets file —
  * the obvious way to ask for a fresh one — left the injected copy behind, and the name was excluded from
  * the registry on every run after that. Never minted again, never seeded, never reported. An envelope in
  * `.dev.vars` is this tool's own writing; a bare string is the adopter's, and only that is the migration
@@ -435,7 +447,7 @@ function notYetMoved(
  *
  * Exported because `pithy add` asks the same question about the same line and must not answer it
  * differently — the two disagreeing about one secret is what produced "left in .dev.vars, nothing was
- * rewritten" and "minted into .dev.secrets.jsonc" in a single command, with both values on disk.
+ * rewritten" and "minted into the secrets file" in a single command, with both values on disk.
  */
 export function ourOwnInjection(value: string): boolean {
   try {

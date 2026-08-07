@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { DevSecretsSeedReport } from "./seed";
 
 /**
@@ -26,8 +25,11 @@ import type { DevSecretsSeedReport } from "./seed";
  */
 export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   const lines: string[] = [];
+  // The path, not the file's name. It is outside the checkout now (#156), so "minted into
+  // secrets.jsonc" names nothing the reader can open — and a project whose name collides with
+  // another's is only visible from the whole path.
   if (report.minted.length > 0) {
-    lines.push(`Minted ${list(report.minted)} into ${DEV_SECRETS_FILE}. Local only.`);
+    lines.push(`Minted ${list(report.minted)} into ${report.path ?? "the dev secrets file"}. Local only.`);
   }
   if (report.seeded.length > 0) {
     lines.push(`Seeded ${list(report.seeded)} into the local secrets store.`);
@@ -45,9 +47,6 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
       ...(report.undelivered !== undefined ? { undelivered: report.undelivered } : {}),
     }),
   );
-  // Last, and never silent. A refusal is the one line here that describes something the adopter has to
-  // do before the command can finish its job — every other line reports work already done.
-  if (report.refused) lines.push(report.refused);
   return lines;
 }
 

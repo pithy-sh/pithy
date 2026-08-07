@@ -94,20 +94,24 @@ describe("scaffoldProject", () => {
     await readFile(join(target, ".dev.vars.example"), "utf8");
   });
 
-  test("ships the dev-secrets example, and ignores the real file under every project name", async () => {
+  test("ships the dev-secrets example, and nothing else about secrets is in the project", async () => {
     await scaffoldProject({ targetDir: dir, appName: "my-app" });
 
-    // The committed half — the one an adopter reads to learn the envelope before they hand-write one.
+    // The committed half, and since #156 the *only* half — the one an adopter reads to learn the
+    // envelope, and to find out where the real file is. It says both.
     const example = await readFile(join(dir, ".dev.secrets.example.jsonc"), "utf8");
     expect(example).toContain("currentVersion");
     expect(example).toContain("versions");
+    expect(example).toContain("secrets.jsonc");
 
-    // The ignored half. Both lines, and in this order: the negation only re-includes the example if the
-    // pattern above it did not already swallow it, and a project named anything at all gets the same two.
+    // No ignore line, because there is nothing to ignore: the real file lives at
+    // `<config>/<project>/secrets.jsonc`, outside every checkout. A `.gitignore` entry for a path the
+    // project can never hold is a rule that reads as a guarantee and guards nothing. `.dev.vars`
+    // stays, and keeps its lines — wrangler chooses that file's location, not us.
     const ignored = await readFile(join(dir, ".gitignore"), "utf8");
-    expect(ignored).toMatch(/^\.dev\.secrets\.jsonc$/m);
-    expect(ignored).toMatch(/^!\.dev\.secrets\.example\.jsonc$/m);
-    expect(ignored.indexOf(".dev.secrets.jsonc")).toBeLessThan(ignored.indexOf("!.dev.secrets.example.jsonc"));
+    expect(ignored).not.toMatch(/^\.dev\.secrets\.jsonc/m);
+    expect(ignored).toMatch(/^\.dev\.vars$/m);
+    expect(ignored).toMatch(/^!\.dev\.vars\.example$/m);
   });
 
   test("the example carries no value — a committed file with a secret in it is a leaked secret", async () => {

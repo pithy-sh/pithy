@@ -10,7 +10,9 @@ import type { DevSecretsStore } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { defineSecretRegistry, type SecretValueType } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { devSecretsPath, readDevSecrets } from "./file";
+import type { StatePathOptions } from "../notifier/state";
+import { readDevSecrets } from "./file";
+import { devSecretsFile } from "./location";
 import { renderDevSecretsNotes } from "./report";
 import { seedProjectDevSecrets } from "./seed";
 import { type DevSecretsStoreHandle, localDevStorePath } from "./store";
@@ -57,21 +59,36 @@ class FakeStore implements DevSecretsStore {
 }
 
 let dir: string;
+let config: string;
+/** The resolved secrets file for this test's project — outside `dir`, which is the point of #156. */
+let secretsPath: string;
 let store: FakeStore;
+
+/** The config seams. A fresh directory per test, so no run can read or write the operator's own file. */
+function paths(): StatePathOptions {
+  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } };
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-seed-secrets-"));
+  config = await mkdtemp(join(tmpdir(), "pithy-seed-config-"));
+  // The seeder resolves the file from the project's *name*, so the project needs one.
+  await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "seedling" };\n');
+  secretsPath = devSecretsFile("seedling", paths());
+  await mkdir(join(config, "seedling"), { recursive: true, mode: 0o700 });
   store = new FakeStore();
 });
 afterEach(async () => {
   await chmod(dir, 0o700).catch(() => {});
   await rm(dir, { recursive: true, force: true });
+  await rm(config, { recursive: true, force: true });
 });
 
 /** Seed one Worker named `board`, against the in-memory store unless a handle is supplied. */
 function seed(handle?: DevSecretsStoreHandle) {
   return seedProjectDevSecrets({
     projectDir: dir,
+    paths: paths(),
     targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
     openStore: async () =>
       handle ?? { ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} },
@@ -84,7 +101,7 @@ describe("seedProjectDevSecrets", () => {
 
     expect(report.minted).toEqual(["auth-session-secret"]);
     expect(report.seeded).toEqual(["auth-session-secret"]);
-    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
     expect(envelope?.currentVersion).toBe("1");
     expect(store.rows.get("auth-session-secret")?.value).toEqual(envelope);
   });
@@ -92,14 +109,14 @@ describe("seedProjectDevSecrets", () => {
   test("the file it writes is 0600, on the first write and on the second", async () => {
     await seed();
     await writeFile(
-      devSecretsPath(dir),
-      `${(await readFile(devSecretsPath(dir), "utf8")).trimEnd().slice(0, -1)},
+      secretsPath,
+      `${(await readFile(secretsPath, "utf8")).trimEnd().slice(0, -1)},
   "auth-google-credentials": { "currentVersion": "1", "versions": { "1": { "clientId": "a", "clientSecret": "b" } } }
 }
 `,
     );
     await seed();
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+    expect((await stat(secretsPath)).mode & 0o777).toBe(0o600);
   });
 
   test("a secret nothing can honestly mint is named missing, not invented", async () => {
@@ -111,7 +128,7 @@ describe("seedProjectDevSecrets", () => {
 
   test("a cf-secrets-store secret comes back as a .dev.vars line — there is no local store", async () => {
     await writeFile(
-      devSecretsPath(dir),
+      secretsPath,
       '{ "CLOUDFLARE_API_TOKEN": { "currentVersion": "1", "versions": { "1": "cf-token" } } }',
     );
     const report = await seed();
@@ -125,8 +142,8 @@ describe("seedProjectDevSecrets", () => {
 
   test("re-running seeds nothing and mints nothing — idempotent, and it never rotates", async () => {
     const first = await seed();
-    const minted = (await readDevSecrets(dir))["auth-session-secret"];
-    const bytes = await readFile(devSecretsPath(dir), "utf8");
+    const minted = (await readDevSecrets(secretsPath))["auth-session-secret"];
+    const bytes = await readFile(secretsPath, "utf8");
 
     const second = await seed();
 
@@ -137,8 +154,8 @@ describe("seedProjectDevSecrets", () => {
     // Not one write on the second run: re-encrypting an unchanged value churns `updated_at` and the
     // ciphertext, and a value replaced is every live session gone.
     expect(store.writes).toBe(1);
-    expect((await readDevSecrets(dir))["auth-session-secret"]).toEqual(minted);
-    expect(await readFile(devSecretsPath(dir), "utf8")).toBe(bytes);
+    expect((await readDevSecrets(secretsPath))["auth-session-secret"]).toEqual(minted);
+    expect(await readFile(secretsPath, "utf8")).toBe(bytes);
   });
 
   test("a d1 secret is injected into .dev.vars too — dev resolves it from the binding until #153", async () => {
@@ -149,7 +166,7 @@ describe("seedProjectDevSecrets", () => {
     const report = await seed();
 
     const injected = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"];
-    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
     expect(injected).toBeDefined();
     // The encoded envelope, not the bare value: it is what the store holds, what `decodeVersionedValue`
     // round-trips, and it keeps every version rather than collapsing to whichever one is current.
@@ -160,7 +177,7 @@ describe("seedProjectDevSecrets", () => {
   test("the injection tracks the file, so a hand-edited value reaches dev on the next run", async () => {
     await seed();
     await writeFile(
-      devSecretsPath(dir),
+      secretsPath,
       '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "edited-by-hand" } } }',
     );
 
@@ -181,7 +198,7 @@ describe("seedProjectDevSecrets", () => {
   test("a value changed in the file is written through — the file is dev's source of truth", async () => {
     await seed();
     await writeFile(
-      devSecretsPath(dir),
+      secretsPath,
       '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "edited-by-hand" } } }',
     );
 
@@ -202,7 +219,7 @@ describe("seedProjectDevSecrets", () => {
     expect(report.minted).toEqual([]);
     expect(report.seeded).toEqual([]);
     expect(report.missing).not.toContain("auth-session-secret");
-    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+    await expect(readFile(secretsPath, "utf8")).rejects.toThrow();
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
   });
 
@@ -213,7 +230,7 @@ describe("seedProjectDevSecrets", () => {
     // An envelope in `.dev.vars` is pithy's own writing; a bare string is the adopter's.
     const first = await seed();
     expect(first.minted).toEqual(["auth-session-secret"]);
-    await rm(devSecretsPath(dir));
+    await rm(secretsPath);
 
     const second = await seed();
 
@@ -232,6 +249,7 @@ describe("seedProjectDevSecrets", () => {
 
     const report = await seedProjectDevSecrets({
       projectDir: dir,
+      paths: paths(),
       targets: [{ name: "board", dir: join(dir, "apps", "board"), registry: prototypeRegistry }],
       openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
@@ -239,16 +257,13 @@ describe("seedProjectDevSecrets", () => {
     expect(report.minted).toEqual(["constructor", "toString"]);
     expect(report.seeded).toEqual(["constructor", "toString"]);
     expect(report.undeclared).toEqual([]);
-    expect(Object.keys(await readDevSecrets(dir)).sort()).toEqual(["constructor", "toString"]);
+    expect(Object.keys(await readDevSecrets(secretsPath)).sort()).toEqual(["constructor", "toString"]);
     expect(report.devVars).toEqual(["constructor", "toString"]);
   });
 
   test("a secret in both files is seeded from the file — that is the copy the adopter moved", async () => {
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=stale\n");
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "moved" } } }',
-    );
+    await writeFile(secretsPath, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "moved" } } }');
 
     const report = await seed();
 
@@ -263,14 +278,11 @@ describe("seedProjectDevSecrets", () => {
     expect(report.seeded).toEqual([]);
     // Nothing minted either: a value written into the file that no run seeded is a value the adopter
     // believes is live. The next run, after `pithy migrate`, mints and seeds it together.
-    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+    await expect(readFile(secretsPath, "utf8")).rejects.toThrow();
   });
 
   test("a name no capability declares is reported, never fatal — a removed capability must not brick dev", async () => {
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }',
-    );
+    await writeFile(secretsPath, '{ "gone-capability-key": { "currentVersion": "1", "versions": { "1": "x" } } }');
     const report = await seed();
     expect(report.undeclared).toEqual(["gone-capability-key"]);
   });
@@ -278,6 +290,7 @@ describe("seedProjectDevSecrets", () => {
   test("two Workers declaring the same secret mint it once — the second sees the first's value", async () => {
     const report = await seedProjectDevSecrets({
       projectDir: dir,
+      paths: paths(),
       targets: [
         { name: "board", dir: join(dir, "apps", "board"), registry },
         { name: "api", dir: join(dir, "apps", "api"), registry },
@@ -286,19 +299,17 @@ describe("seedProjectDevSecrets", () => {
     });
 
     expect(report.minted).toEqual(["auth-session-secret"]);
-    expect(Object.keys(await readDevSecrets(dir))).toEqual(["auth-session-secret"]);
+    expect(Object.keys(await readDevSecrets(secretsPath))).toEqual(["auth-session-secret"]);
   });
 
   test("with no registry to consult, nothing in the file is called undeclared", async () => {
     // `pithy add auth` in a project that has not composed `secrets` mints into the file and has no
     // registry to check it against. Reporting the value it just minted as one no capability declares
     // was a statement it had no standing to make — and it made it, in the real CLI, out loud.
-    await writeFile(
-      devSecretsPath(dir),
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "v" } } }',
-    );
+    await writeFile(secretsPath, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "v" } } }');
     const report = await seedProjectDevSecrets({
       projectDir: dir,
+      paths: paths(),
       targets: [],
       openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
@@ -308,10 +319,12 @@ describe("seedProjectDevSecrets", () => {
   test("no Worker composes secrets: nothing happens, and nothing is claimed to have happened", async () => {
     const report = await seedProjectDevSecrets({
       projectDir: dir,
+      paths: paths(),
       targets: [],
       openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
     expect(report).toEqual({
+      path: secretsPath,
       seeded: [],
       unchanged: [],
       minted: [],
@@ -319,27 +332,29 @@ describe("seedProjectDevSecrets", () => {
       missing: [],
       undeclared: [],
       skipped: [],
-      refused: null,
       devVarsRefused: [],
       shadowed: [],
       undelivered: [],
     });
   });
 
-  test("a project whose .gitignore cannot cover the file is told, and nothing is minted into it", async () => {
-    // A `.gitignore` that is there and cannot be read is not a `.gitignore` that is absent. Treating
-    // the two the same is how a run decides nothing ignores the file, or that everything does.
-    await mkdir(join(dir, ".gitignore"));
-
+  test("the run names the file it minted into — nothing in the project points at it", async () => {
+    // The file is outside the checkout (#156), so "Minted auth-session-secret. Local only." is a
+    // sentence about a file the reader cannot find. The path is the actionable half.
     const report = await seed();
 
-    expect(report.minted).toEqual([]);
-    expect(report.refused).toContain(".gitignore");
-    expect(renderDevSecretsNotes(report)).toContain(report.refused);
-    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
-    // And nothing reached the store either. A row whose value is in no file is one the next run
-    // overwrites with a different value, which for a session secret signs everybody out every time.
-    expect(store.writes).toBe(0);
+    expect(report.path).toBe(secretsPath);
+    expect(renderDevSecretsNotes(report).join("\n")).toContain(secretsPath);
+  });
+
+  test("a mint leaves nothing about secrets in the checkout — not the file, not a .gitignore line", async () => {
+    // The run used to write the project's `.gitignore` before writing a byte of secret, and refuse the
+    // whole mint when it could not. There is nothing in the repository to ignore now, so a seeding run
+    // touches `.gitignore` never and leaves the checkout with `.dev.vars` and its own files alone.
+    const report = await seed();
+
+    expect(report.minted).toEqual(["auth-session-secret"]);
+    expect((await readdir(dir)).sort()).toEqual([".dev.vars", "pithy.config.ts"]);
   });
 
   test("the file holds a minted value before the store does — a row with no file is unrecoverable", async () => {
@@ -359,7 +374,7 @@ describe("seedProjectDevSecrets", () => {
 
     await expect(seed(failing)).rejects.toThrow(/D1 is gone/);
 
-    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
     expect(typeof envelope?.versions["1"]).toBe("string");
   });
 
@@ -384,14 +399,14 @@ describe("seedProjectDevSecrets", () => {
   });
 
   test("a malformed file is the loader's error, raised before anything is written", async () => {
-    await writeFile(devSecretsPath(dir), '{ "auth-session-secret": "bare-value" }');
+    await writeFile(secretsPath, '{ "auth-session-secret": "bare-value" }');
     await expect(seed()).rejects.toThrow(/not a versioned envelope/);
     expect(store.writes).toBe(0);
   });
 });
 
 /**
- * #159. `.dev.secrets.jsonc` holds minted random dev values, so seeding it into staging or production
+ * #159. The dev secrets file holds minted random dev values, so seeding it into staging or production
  * would not set some secrets — it would rotate every one at once, with no undo, because the values it
  * overwrote were the only copies. The refusal belongs in the seeder rather than in one of its callers.
  */

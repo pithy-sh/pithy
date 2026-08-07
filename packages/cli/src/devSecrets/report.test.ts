@@ -20,13 +20,17 @@ describe("renderDevSecretsNotes", () => {
     expect(renderDevSecretsNotes({ ...empty, unchanged: ["auth-session-secret"] })).toEqual([]);
   });
 
-  test("names what it minted and what it seeded, and says the mint is local", () => {
+  test("names what it minted, where it landed, and what it seeded, and says the mint is local", () => {
+    // The absolute path, not the file's name. The file is outside the checkout since #156, so
+    // "minted into secrets.jsonc" names nothing the reader can open — and a project sharing a name
+    // with another is only visible from the whole path.
     const lines = renderDevSecretsNotes({
       ...empty,
+      path: "/home/u/.config/pithy/replay/secrets.jsonc",
       minted: ["auth-session-secret"],
       seeded: ["auth-session-secret"],
     });
-    expect(lines.join("\n")).toContain(".dev.secrets.jsonc");
+    expect(lines.join("\n")).toContain("/home/u/.config/pithy/replay/secrets.jsonc");
     expect(lines.join("\n")).toMatch(/local/i);
     expect(lines.join("\n")).toContain("Seeded auth-session-secret");
   });

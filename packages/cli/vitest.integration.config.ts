@@ -9,6 +9,8 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // The same floor the default suite has: no test writes to the operator's real config directory.
+    setupFiles: ["./vitest.setup.ts"],
     // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
     globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 300_000,

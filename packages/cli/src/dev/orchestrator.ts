@@ -80,7 +80,7 @@ export interface StartDevOptions {
   json?: boolean;
   /** Test seam: the entitlement composition check, without loading a real `pithy.config.ts`. */
   checkEntitlements?: (workerDir: string) => Promise<string[]>;
-  /** Seam: seed `.dev.secrets.jsonc` into the local `SECRETS` store before anything spawns. */
+  /** Seam: seed the dev secrets file into the local `SECRETS` store before anything spawns. */
   seedSecrets?: (projectDir: string) => Promise<DevSecretsSeedReport>;
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
@@ -453,7 +453,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // run but the one that changed something.
   //
   // Non-fatal, in both directions. A project that never composed `secrets` has nothing to seed and
-  // hears nothing. A `.dev.secrets.jsonc` that will not parse is said out loud and the session still
+  // hears nothing. A dev secrets file that will not parse is said out loud and the session still
   // starts — refusing to run every Worker over one malformed file would be a worse trade than letting
   // the capability that needs the secret fail with its own error.
   const seedSecrets = options.seedSecrets ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir }));

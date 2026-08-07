@@ -72,11 +72,10 @@ function setup(issue: string, slug: string): void {
   const { branch, wtPath, root } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
-    // Re-wire rather than return. A worktree outlives the links into it: renaming the main checkout,
-    // or minting a secrets file after the worktree was made, leaves it pointing at nothing or at
-    // nothing at all — and re-running `setup` is the obvious thing to reach for. It used to be the one
-    // thing that could not fix it. The install is skipped, because that is the slow half and an
-    // existing worktree has already had it.
+    // Re-wire rather than return. A worktree outlives the link into it: renaming the main checkout
+    // leaves it pointing at nothing, and re-running `setup` is the obvious thing to reach for. It used
+    // to be the one thing that could not fix it. The install is skipped, because that is the slow half
+    // and an existing worktree has already had it.
     console.log(`Worktree exists. ${wtPath}`);
     wireShared(wtPath, root);
     return;
@@ -98,19 +97,18 @@ function setup(issue: string, slug: string): void {
 
 /**
  * Configure a freshly-created worktree so the gates and integration tests run inside it: install
- * deps, then share the main checkout's two dev-secret files.
+ * deps, then share the main checkout's `.dev.vars`.
  *
- * **`.dev.vars` is per-package, `.dev.secrets.jsonc` is root-only, and the difference is wrangler's.**
- * Wrangler reads `.dev.vars` from the worker's own directory, so it is linked at the worktree root and
- * again into each package by the `vars:local` turbo task. Nothing but our own CLI reads the secrets
- * file, and the CLI runs at the project root — so one link, at the root, is the whole story.
+ * **`.dev.vars` is the only file that needs wiring, and wrangler is the reason.** Wrangler reads it
+ * from the worker's own directory, so it is linked at the worktree root and again into each package by
+ * the `vars:local` turbo task — a location that is not ours to choose.
  *
- * **Shared, never copied.** A worktree is its own project root, so without this it has no secrets at
- * all: `pithy dev` there would mint a *second* set and diverge from the main checkout silently. A copy
- * would drift the same way the moment either side minted anything. Per-feature isolated secrets are a
- * real thing to want, but they are a deliberate feature and not the default.
+ * **The dev secrets file needs nothing, and that is #156.** It lives at `<config>/<project>/`, resolved
+ * from the project's *name*, so every worktree of this repo finds the same file with no link, no copy,
+ * and no step here. #155 asked for a link exactly like `.dev.vars`'s; moving the file removed the
+ * question instead — and with it the dangling link a renamed checkout used to leave behind.
  *
- * Idempotent, and each file is independent: a checkout with one and not the other wires the one it has.
+ * Idempotent.
  */
 function configure(wtPath: string, root: string): void {
   // Install so typecheck/biome/vitest run inside the tree.
@@ -119,7 +117,7 @@ function configure(wtPath: string, root: string): void {
 }
 
 /**
- * Point the worktree at the main checkout's dev-secret files. Separate from {@link configure} because
+ * Point the worktree at the main checkout's `.dev.vars`. Separate from {@link configure} because
  * this half is idempotent and cheap, so `setup` can run it against a worktree that already exists to
  * repair its links without paying for a second install.
  */
@@ -128,7 +126,6 @@ function wireShared(wtPath: string, root: string): void {
     execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
     console.log("Linked .dev.vars (root + per-package via vars:local).");
   }
-  if (share(root, wtPath, ".dev.secrets.jsonc")) console.log("Linked .dev.secrets.jsonc.");
 }
 
 /**

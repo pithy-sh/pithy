@@ -5,7 +5,7 @@
  * Maps keyed by a **secret name**, made safe to read with a plain `record[name]`.
  *
  * A secret name is not ours. A capability author picks it, an adopter types it into
- * `.dev.secrets.jsonc`, and `constructor`, `toString` and `valueOf` are all legal ones. On an ordinary
+ * the dev secrets file, and `constructor`, `toString` and `valueOf` are all legal ones. On an ordinary
  * object literal every one of those reads back a function from `Object.prototype`, so a secret named
  * for one is "already present" in an empty file, "declared" by every registry, and "already in
  * `.dev.vars`" in a project that has none.

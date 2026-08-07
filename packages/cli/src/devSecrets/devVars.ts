@@ -28,7 +28,7 @@ import { tightenMode } from "./mode";
  * root's file is linked into each Worker by `pithy feature` and by `pithy worker add` — never by
  * `pithy init`. So on a plain project every value written here landed in a file nothing reads: a fresh
  * `pithy init` + `pithy add auth` + `pithy dev` answered `Secret binding 'auth-session-secret' is not
- * configured.` with the row seeded, the envelope in `.dev.secrets.jsonc`, and the line in `.dev.vars`.
+ * configured.` with the row seeded, the envelope in the dev secrets file, and the line in `.dev.vars`.
  * Writing the value and delivering it are one operation here, so a fifth producer cannot get one right
  * and the other wrong.
  *
@@ -128,7 +128,7 @@ export function encodeDevVarsValue(name: string, value: string): DevVarsEncoding
   }
   return {
     encoded: null,
-    refused: `${name} cannot be written to .dev.vars — no quoting survives its value. Put it in .dev.secrets.jsonc and see #153.`,
+    refused: `${name} cannot be written to .dev.vars — no quoting survives its value. It belongs in the dev secrets file; see #153.`,
   };
 }
 
@@ -168,7 +168,7 @@ export interface WriteDevVarsResult {
 /**
  * Write values into the project's `.dev.vars` and make sure every Worker resolves to it.
  *
- * Mode `0600`, the same as `.dev.secrets.jsonc`: through the transition this file holds the very same
+ * Mode `0600`, the same as the dev secrets file: through the transition this file holds the very same
  * session keys and link-signing keys, and the umask default is world-readable.
  */
 export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteDevVarsResult> {
@@ -311,7 +311,7 @@ async function followLink(path: string): Promise<string> {
  * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Reading those
  * as "empty" meant the next content was built from an empty base and renamed over a file full of values
  * this process never saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run
- * reporting a clean write. The same defect `readSource` was written to end for `.dev.secrets.jsonc`, in
+ * reporting a clean write. The same defect `readSource` was written to end for the dev secrets file, in
  * the file beside it, twice over.
  *
  * The wrapped error carries the node error as `cause`. Its message is a path and an errno, never a line

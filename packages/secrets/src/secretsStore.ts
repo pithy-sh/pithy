@@ -119,17 +119,17 @@ function resolveVersioned(entry: SecretRegistryEntry, name: string, value: Versi
  * `cf-secrets-store` it is genuinely load-bearing: `pithy token mint` writes a raw token through
  * `putSecret`, and an entry set by hand in the dashboard or by `wrangler secrets-store secret create`
  * is a plain string too — there is no envelope to find, in dev or deployed. For `d1` it is the drift
- * `.dev.secrets.jsonc` exists to end: a `d1` secret's stored shape is always an envelope, so an
+ * the dev secrets file exists to end: a `d1` secret's stored shape is always an envelope, so an
  * unwrapped one should be an error naming the secret, not a reinterpretation.
  *
  * It survives here only because **local dev still resolves `d1` secrets from their injected bindings**
  * (see `secretsStore` below) — so today the unwrapped `d1` case is not drift arriving, it is the
  * documented dev path, and refusing it breaks every project and 139 tests across auth, email,
  * payments and turnstile that inject a `d1` value as a bare string. The order is: `pithy seed` /
- * `pithy dev` seed `.dev.secrets.jsonc` into the local `SECRETS` D1 (`dev/seedDevSecrets`), dev's read
+ * `pithy dev` seed the dev secrets file into the local `SECRETS` D1 (`dev/seedDevSecrets`), dev's read
  * path then routes by backend exactly as deployed does, and at that point nothing reaches this
  * fallback with a `d1` entry — and the `entry.backend === "d1"` branch becomes a `ValidationError`
- * that names the secret and says to move it into `.dev.secrets.jsonc`.
+ * that names the secret and says to move it into the dev secrets file.
  */
 function decodeInjectedValue(raw: string): VersionedValue {
   try {

@@ -168,7 +168,7 @@ export default defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
 
-      // Dev secrets first, and only for `dev`. `.dev.secrets.jsonc` is a local file — there is no staging
+      // Dev secrets first, and only for `dev`. The dev secrets file is machine-local — there is no staging
       // copy of it, and a deployed environment's secrets come from `pithy secrets create` through the
       // manager Workflow. Before the fixtures, because a fixture that signs a token or a link needs the
       // key that signs it to already be in the store.

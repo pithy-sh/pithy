@@ -8,13 +8,14 @@ import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
-import { DEV_SECRETS_FILE, type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { readDevVarsSource, writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, ourOwnInjection, seedProjectDevSecrets } from "../devSecrets/seed";
@@ -31,7 +32,7 @@ export interface AddBootstrapOptions {
   /**
    * Seam: seed the whole project's dev secrets. Defaults to the real seeder, with `reload` on.
    *
-   * It is a seam because this function and the seeder can reach the *same* refusal in one run, and the
+   * It is a seam because this function and the seeder can reach the *same* sentence in one run, and the
    * only way to prove they say it once is to make both of them say it.
    */
   seed?: (projectDir: string) => Promise<DevSecretsSeedReport>;
@@ -72,10 +73,11 @@ export async function bootstrapAdd({ projectDir, manifest, seed }: AddBootstrapO
   // later, unrelated command, which is what made it look like a store problem.
   const seedProject = seed ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir, reload: true }));
   notes.push(...renderDevSecretsNotes(await seedProject(projectDir)));
-  // **Deduplicated, in order.** Two halves of this function reach the same refusal in one run — the
-  // mint above, and the seeder that has just tried the same write for the same project. Both must be
-  // able to speak (a project that has not composed `secrets` has no targets, so only the first one
-  // does), and printing one sentence twice reads as two problems. An adopter counts lines.
+  // **Deduplicated, in order.** Two halves of this function reach the same `.dev.vars` delivery
+  // sentence in one run — the mint above injects the value it just minted, and the seeder injects the
+  // same one for the same project. Both must be able to speak (a project that has not composed
+  // `secrets` has no targets, so only the first one does), and printing one sentence twice reads as
+  // two problems. An adopter counts lines.
   return [...new Set(notes)];
 }
 
@@ -147,11 +149,13 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
  * list of names here would drift the moment a capability shipped another one — and drift silently,
  * because a missing lazily-read secret is invisible until the code path that reads it runs.
  *
- * **`.dev.secrets.jsonc`, not `.dev.vars` (#149).** Only the destination changed; the declaration and
- * the minting are the ones `pithy add` has always done. `.dev.vars` is wrangler's file — env bindings,
- * `UPPER_SNAKE` — and a kebab secret name sitting in it taught every adopter that one of the two
- * conventions was a mistake. The value is written as a full version-1 envelope, which is the shape the
- * store actually holds, so dev stops being a shape production never sees.
+ * **The secrets file, not `.dev.vars` (#149), and that file is outside the checkout (#156).** Only the
+ * destination changed; the declaration and the minting are the ones `pithy add` has always done.
+ * `.dev.vars` is wrangler's file — env bindings, `UPPER_SNAKE` — and a kebab secret name sitting in it
+ * taught every adopter that one of the two conventions was a mistake. The value is written as a full
+ * version-1 envelope, which is the shape the store actually holds, so dev stops being a shape
+ * production never sees. **Every note here names the absolute path**, because nothing in the project
+ * does: "already in the secrets file" is not actionable if the reader cannot open it.
  *
  * **And the value is injected into `.dev.vars` as well. That is a TRANSITION, not the design (#153).**
  * `secretsStore`'s dev branch resolves every secret from its injected binding regardless of backend,
@@ -189,36 +193,34 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
   // the exact outcome the "only when absent" rule above is for. See {@link readDevVarsSource}.
   const source = (await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "";
   const inDevVars = ownProperties(parseDevVars(source));
-  const stated = await readDevSecrets(projectDir);
+  const path = await resolveDevSecretsFile(projectDir);
+  const stated = await readDevSecrets(path);
   const minted: DevSecretsFile = {};
   const notes: string[] = [];
   for (const secret of declared) {
     if (stated[secret.name]) {
       notes.push(
-        `${secret.name} is already in ${DEV_SECRETS_FILE}. Left as it is — a new value invalidates what the old one signed.`,
+        `${secret.name} is already in ${path}. Left as it is — a new value invalidates what the old one signed.`,
       );
       continue;
     }
     const existing = inDevVars[secret.name];
     if (existing !== undefined && existing !== "" && !ourOwnInjection(existing)) {
       notes.push(
-        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
+        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
       );
       continue;
     }
     minted[secret.name] = initialDevSecret(mintDevValue(secret.devValue));
     notes.push(
-      `Minted a dev ${secret.name} into ${DEV_SECRETS_FILE}. Local only.`,
+      `Minted a dev ${secret.name} into ${path}. Local only.`,
       `Deployed environments need pithy secrets create ${secret.name}.`,
     );
   }
-  const written = await writeDevSecrets(projectDir, minted);
-  // A refusal replaces the mint notes rather than joining them. "Minted a dev auth-session-secret"
-  // beside "nothing was written" is two claims about one value, and the adopter acts on the first.
-  if (written.refused) return [written.refused];
+  const added = await writeDevSecrets(path, minted);
   // TRANSITION (#153): the same values, injected. Only what actually landed in the file — claiming a
   // mint the write did not make would put a value in `.dev.vars` that nothing else in the project has.
-  return [...notes, ...(await injectDevSecrets(projectDir, pick(minted, written.added)))];
+  return [...notes, ...(await injectDevSecrets(projectDir, pick(minted, added)))];
 }
 
 /** The entries of `file` named in `names`. */

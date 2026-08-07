@@ -8,7 +8,8 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { devSecretsPath, readDevSecrets } from "../devSecrets/file";
+import { readDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import { bootstrapAdd } from "./addBootstrap";
 
 /**
@@ -32,9 +33,30 @@ async function devMasterKey(dir: string): Promise<string | undefined> {
   return devVar(dir, "SECRETS_ENCRYPTION_KEYS");
 }
 
-/** The current-version value `.dev.secrets.jsonc` holds for `name`, or `undefined` when it has none. */
+/**
+ * A throwaway project root that has a `name` — the dev secrets file is keyed on it, not on the
+ * directory (#156), so a project without one cannot resolve a place to put a credential at all.
+ *
+ * **A distinct name per call, which is the whole reason this is a function.** Two projects sharing a
+ * name share one secrets file, so "the key is random per project" would compare a value with itself
+ * and pass for the wrong reason. `vitest.setup.ts` keeps every one of them out of the real config dir.
+ */
+let projects = 0;
+async function project(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+  projects += 1;
+  await writeFile(join(dir, "pithy.config.ts"), `export default { name: "bootstrap-${projects}" };\n`);
+  return dir;
+}
+
+/** Where this project's dev secrets landed — outside the checkout, resolved the way the CLI resolves it. */
+function secretsPath(dir: string): Promise<string> {
+  return resolveDevSecretsFile(dir);
+}
+
+/** The current-version value the dev secrets file holds for `name`, or `undefined` when it has none. */
 async function devSecret(dir: string, name: string): Promise<unknown> {
-  const envelope = (await readDevSecrets(dir))[name];
+  const envelope = (await readDevSecrets(await secretsPath(dir)))[name];
   return envelope?.versions[envelope.currentVersion];
 }
 
@@ -47,13 +69,12 @@ const emptySeed = async () => ({
   missing: [],
   undeclared: [],
   skipped: [],
-  refused: null,
 });
 
 describe("bootstrapAdd", () => {
   let dir: string;
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+    dir = await project();
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -76,7 +97,7 @@ describe("bootstrapAdd", () => {
   });
 
   test("the key is random per project — one shipped literal would be every adopter's key", async () => {
-    const other = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+    const other = await project();
     try {
       const manifest = await shippedManifest("secrets");
       await bootstrapAdd({ projectDir: dir, manifest });
@@ -152,8 +173,8 @@ describe("bootstrapAdd", () => {
     expect(notes.join(" ")).not.toContain(String(value));
   });
 
-  test("the secret lands in .dev.secrets.jsonc, and is injected into .dev.vars too until #153", async () => {
-    // The transition, not the design. `.dev.secrets.jsonc` is the source of truth; `.dev.vars` still
+  test("the secret lands in the dev secrets file, and is injected into .dev.vars too until #153", async () => {
+    // The transition, not the design. The secrets file is the source of truth; `.dev.vars` still
     // carries a copy because `secretsStore`'s dev branch resolves every secret from its injected
     // binding, whatever its backend. Writing only the new file left the Worker answering
     // `secrets/not_found` at the first sign-in. #153 routes dev by backend and deletes this half.
@@ -161,7 +182,7 @@ describe("bootstrapAdd", () => {
 
     const value = await devSecret(dir, "auth-session-secret");
     expect(value).toBeDefined();
-    expect((await readFile(devSecretsPath(dir), "utf8")).includes("auth-session-secret")).toBe(true);
+    expect((await readFile(await secretsPath(dir), "utf8")).includes("auth-session-secret")).toBe(true);
     const injected = await devVar(dir, "auth-session-secret");
     expect(JSON.parse(injected ?? "")).toEqual({ currentVersion: "1", versions: { "1": value } });
   });
@@ -175,21 +196,21 @@ describe("bootstrapAdd", () => {
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest });
 
-    expect(notes.join(" ")).toContain("already in .dev.secrets.jsonc");
+    expect(notes.join(" ")).toContain(`already in ${await secretsPath(dir)}`);
     expect(notes.join(" ")).not.toContain("where secrets no longer live");
   });
 
   test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
-    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    const envelope = (await readDevSecrets(await secretsPath(dir)))["auth-session-secret"];
     expect(envelope?.currentVersion).toBe("1");
     expect(Object.keys(envelope?.versions ?? {})).toEqual(["1"]);
   });
 
   test("the file it writes is 0600 — it will hold OAuth client secrets next to this one", async () => {
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
-    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+    expect((await stat(await secretsPath(dir))).mode & 0o777).toBe(0o600);
   });
 
   test("mints the email link-signing key beside the note about EMAIL_SENDER", async () => {
@@ -202,7 +223,7 @@ describe("bootstrapAdd", () => {
   });
 
   test("a minted secret is random per project — one shipped literal would sign every adopter's sessions", async () => {
-    const other = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+    const other = await project();
     try {
       const manifest = await shippedManifest("auth");
       await bootstrapAdd({ projectDir: dir, manifest });
@@ -235,10 +256,11 @@ describe("bootstrapAdd", () => {
     expect(await devVar(dir, "auth-session-secret")).toBe("already-mine");
     expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
     expect(notes.join(" ")).toContain(".dev.vars");
-    expect(notes.join(" ")).toContain(".dev.secrets.jsonc");
+    // The absolute path, not the file's name: it is outside the checkout, so a name locates nothing.
+    expect(notes.join(" ")).toContain(await secretsPath(dir));
   });
 
-  test("a dev secret goes to .dev.secrets.jsonc, never a committed example file", async () => {
+  test("a dev secret goes to the dev secrets file, never a committed example file", async () => {
     const example = "CLOUDFLARE_ACCOUNT_ID=\nCLOUDFLARE_API_TOKEN=\n";
     await writeFile(join(dir, ".dev.vars.example"), example);
     await writeFile(join(dir, ".dev.secrets.example.jsonc"), "{}\n");
@@ -254,27 +276,25 @@ describe("bootstrapAdd", () => {
     // The four OAuth credential pairs are registered with a provider; payments' is a Stripe key. A
     // generated value for either is a value that authenticates against nothing, hiding the real gap.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
-    const file = await readDevSecrets(dir);
+    const file = await readDevSecrets(await secretsPath(dir));
     for (const name of ["google", "apple", "facebook", "github"]) {
       expect(file[`auth-${name}-credentials`]).toBeUndefined();
     }
 
-    const payments = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+    const payments = await project();
     try {
       expect(await bootstrapAdd({ projectDir: payments, manifest: await shippedManifest("payments") })).toEqual([]);
-      await expect(readFile(devSecretsPath(payments), "utf8")).rejects.toThrow();
+      await expect(readFile(await secretsPath(payments), "utf8")).rejects.toThrow();
     } finally {
       await rm(payments, { recursive: true, force: true });
     }
   });
 
-  test("a refusal is said once, not twice", async () => {
-    // Two things reach the same refusal in one `pithy add`: the mint here, and the seeder that runs
-    // after it and has just tried the same write. `pithy add auth` on a project whose `.gitignore`
-    // cannot be written printed the sentence twice, which reads as two problems. An adopter counts lines.
-    await mkdir(join(dir, ".gitignore"));
-    const refusal =
-      ".gitignore could not be updated. Add .dev.secrets.jsonc and .dev.secrets.jsonc.tmp to it, then run the command again.";
+  test("a sentence both halves reach is said once, not twice", async () => {
+    // Two things reach the same `.dev.vars` delivery note in one `pithy add`: the mint here injects
+    // the value it just minted, and the seeder that runs after it injects the same one. Printing the
+    // sentence twice reads as two problems. An adopter counts lines.
+    const shared = "apps/board reads a .dev.vars of its own. wrangler opens that one, so nothing written reaches it.";
 
     const notes = await bootstrapAdd({
       projectDir: dir,
@@ -287,11 +307,25 @@ describe("bootstrapAdd", () => {
         missing: [],
         undeclared: [],
         skipped: [],
-        refused: refusal,
+        shadowed: ["apps/board"],
       }),
     });
 
-    expect(notes.filter((note) => note === refusal)).toHaveLength(1);
+    expect(notes.filter((note) => note === shared)).toHaveLength(1);
+  });
+
+  test("a project with no name refuses rather than guessing where to put a credential", async () => {
+    // The file is keyed on `pithy.config.ts`'s `name`. A guess — the directory basename — would give a
+    // worktree a different set of secrets from the checkout it was cut from, silently.
+    const nameless = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
+    await writeFile(join(nameless, "pithy.config.ts"), "export default {};\n");
+    try {
+      await expect(bootstrapAdd({ projectDir: nameless, manifest: await shippedManifest("auth") })).rejects.toThrow(
+        /name/,
+      );
+    } finally {
+      await rm(nameless, { recursive: true, force: true });
+    }
   });
 
   test("pithy's own injected copy is not read as a value the adopter left in .dev.vars", async () => {
@@ -300,7 +334,7 @@ describe("bootstrapAdd", () => {
     // had written there itself, on purpose, an hour before. Nothing was ever minted again.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
     const first = await devSecret(dir, "auth-session-secret");
-    await rm(devSecretsPath(dir));
+    await rm(await secretsPath(dir));
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
 
