@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, readFile, readlink, symlink } from "node:fs/promises";
+import { chmod, lstat, readFile, readlink, stat, symlink } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import { removeDevVarsContent, upsertDevVarsContent } from "../project/devVars";
 import { discoverWorkers } from "../project/workers";
@@ -156,8 +157,9 @@ export interface WriteDevVarsResult {
   shadowed: string[];
   /**
    * One sentence per Worker directory the value could not be delivered to: the link could not be made,
-   * so wrangler will open no `.dev.vars` at all there. Separate from {@link shadowed} because that is
-   * somebody's arrangement and this is a failure. Never a value.
+   * or the one already there resolves to nothing. Either way wrangler will open no `.dev.vars` at all.
+   * Separate from {@link shadowed} because that is somebody's arrangement and this is a failure. Never a
+   * value.
    */
   undelivered: string[];
 }
@@ -191,9 +193,23 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
   // different: the root's `.dev.vars` is a link at the main checkout's shared file, and writing the link
   // path atomically renames a new file over the link — cutting the worktree off the file every worker in
   // it still points at.
+  //
+  // **This resolution belongs in the atomic writer, and it moves there on the rebase.** Resolving the
+  // chain here and handing the result to `writeFileAtomic` makes the write follow a symlink with no rule
+  // about whose link it is: plant `.dev.vars` at a path outside the project and the freshly minted master
+  // key lands there. The rule cannot be stated here, either — a worktree's link points outside the
+  // project *by design*, so location cannot tell the two apart. `writeFileAtomic` on
+  // `fix/scaffold-cannot-run` resolves the chain itself and refuses any link a different uid made, which
+  // is the rule that can. This branch rebases onto it, and this line goes in the same commit.
+  //
+  // Dropping the resolution *before* that branch lands would not close the hole, it would trade it for a
+  // silent delivery failure: the rename would replace the worktree's link with a private file while every
+  // worker in it still read the main checkout's, and the result would still say `written`. That is the
+  // defect this whole file exists to end, and it needs no attacker. See #160 for the threat model that
+  // says the planter can wait and the accident cannot.
   const path = join(options.projectDir, ".dev.vars");
   const target = await followLink(path);
-  const content = await readFile(target, "utf8").catch(() => null);
+  const content = await readDevVarsSource(target);
   const before = parseDevVars(content ?? "");
   // Fail-closed: a value that could not be encoded takes its superseded line with it.
   const stale = refusals.filter(({ name }) => Object.hasOwn(before, name));
@@ -207,6 +223,11 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
   // Never conjure an empty `.dev.vars` out of a run whose every value was refused, and never rewrite a
   // file whose bytes would not change. `null` is "no file", and no file plus nothing to say stays that way.
   if (next !== (content ?? "")) await writeFileAtomic(target, next, { mode: 0o600 });
+  // Unconditionally, and *after* the write: the guard above is right and it left the mode to a write that
+  // may never happen, so a file created at the umask by anything else — an older pithy, an editor, a
+  // `cp` — kept 0644 forever while holding the session key. Narrowing only, so an adopter's deliberate
+  // 0400 survives. See {@link tightenMode}.
+  await tightenMode(target);
 
   const refused = refusals.map(({ name, reason }) =>
     stale.some((entry) => entry.name === name)
@@ -227,7 +248,16 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
       // An existing link points where somebody meant it to — at the repo's shared file, most often — so
       // it is never repointed. But where it points decides whether the value arrived, and that is asked
       // rather than assumed: a link at some other file is as undelivered as a file of the worker's own.
-      if (stats.isSymbolicLink() && (await followLink(beside)) === target) continue;
+      if (stats.isSymbolicLink()) {
+        const resolved = await followLink(beside).catch(() => null);
+        if (resolved === target) continue;
+        // A link that resolves to nothing is not somebody's arrangement, it is a fault: wrangler opens
+        // no file there at all. Reporting it as shadowed would read as "theirs to keep".
+        if (resolved === null) {
+          undelivered.push(`${dir} has a .dev.vars whose symlink chain never ends. wrangler opens nothing there.`);
+          continue;
+        }
+      }
       shadowed.push(dir);
       continue;
     }
@@ -244,23 +274,87 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
   return { written, refused, linked: linked.sort(), shadowed: shadowed.sort(), undelivered: undelivered.sort() };
 }
 
+/** How many links deep a chain may go before it is called a loop. Well past anything deliberate. */
+const MAX_LINK_HOPS = 32;
+
 /**
  * The real file a path names, following symlinks by hand — `realpath` refuses a dangling link, and a
  * `.dev.vars` link at a main checkout that has not written one yet is exactly that.
  *
- * Bounded, because a symlink loop is a hang and this runs inside `pithy dev`. At the bound it returns
- * what it has: the caller writes there, and the write is what fails, loudly.
+ * Bounded, because a symlink loop is a hang and this runs inside `pithy dev`. **At the bound it throws.**
+ * It used to return what it had, with a docstring promising the write would then fail loudly — and the
+ * write did not fail at all. What came back was still a symlink, so `writeFileAtomic` renamed a fresh
+ * file over the link and reported the value written: the same silent detachment the worktree case exists
+ * to prevent, reached by a link that points at itself rather than by one that points somewhere else.
  */
 async function followLink(path: string): Promise<string> {
   let current = path;
-  for (let hop = 0; hop < 32; hop += 1) {
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
     const stats = await lstat(current).catch(() => null);
     if (stats === null || !stats.isSymbolicLink()) return current;
     const next = await readlink(current).catch(() => null);
     if (next === null) return current;
     current = resolve(dirname(current), next);
   }
-  return current;
+  throw new InternalError({
+    message: `Refusing to touch ${path}: its symlink chain never ends.`,
+    action: "Fix the link — something in the chain points back at itself.",
+    detail: `more than ${MAX_LINK_HOPS} symlinks deep from '${path}'`,
+  });
+}
+
+/**
+ * The file's bytes, or `null` when there is no file — and **only** when there is no file.
+ *
+ * `ENOENT` is the one errno that means "nothing written yet". Every other one is a file that is there and
+ * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Reading those
+ * as "empty" meant the next content was built from an empty base and renamed over a file full of values
+ * this process never saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run
+ * reporting a clean write. The same defect `readSource` was written to end for `.dev.secrets.jsonc`, in
+ * the file beside it, twice over.
+ *
+ * The wrapped error carries the node error as `cause`. Its message is a path and an errno, never a line
+ * of the file.
+ */
+async function readDevVarsSource(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (cause) {
+    const code = (cause as { code?: string } | null)?.code;
+    if (code === "ENOENT") return null;
+    throw new InternalError(
+      {
+        message: ".dev.vars is there and could not be read.",
+        action: `Check ${path} and its permissions. It should be a file, mode 600.`,
+        detail: `.dev.vars '${path}' failed to read: ${code ?? "unknown error"}`,
+      },
+      { cause },
+    );
+  }
+}
+
+/** Group and other bits — everything a file holding a session key and a master key must not carry. */
+const SHARED_BITS = 0o077;
+
+/**
+ * Take the group and other bits off `.dev.vars`, and change nothing else.
+ *
+ * **Narrowing only.** An adopter's deliberate 0400 survives, 0664 becomes 0600. A mode is never widened
+ * from here: this runs on every write, and a rule that could widen would be a rule that eventually does.
+ *
+ * **Only a regular file we own.** A directory or a device at that path is not ours to re-mode, and
+ * neither is another account's file — on a shared checkout that would be an unrequested change to
+ * somebody else's permissions. Best effort throughout: the bytes are already written, and a mode that
+ * could not be set is not worth failing a `pithy dev` over.
+ */
+async function tightenMode(path: string): Promise<void> {
+  const entry = await stat(path).catch(() => null);
+  if (entry === null || !entry.isFile()) return;
+  const us = process.geteuid?.();
+  if (us !== undefined && entry.uid !== us) return;
+  const mode = entry.mode & 0o7777;
+  if ((mode & SHARED_BITS) === 0) return;
+  await chmod(path, mode & ~SHARED_BITS).catch(() => {});
 }
 
 /** Every Worker directory wrangler will run in — the ones with a `wrangler.jsonc` to load `.dev.vars` beside. */

@@ -224,6 +224,60 @@ describe("writeDevVars", () => {
     expect((await lstat(join(dir, ".dev.vars"))).mode & 0o777).toBe(0o600);
   });
 
+  test("a .dev.vars that is there and will not open is never replaced by one holding only new values", async () => {
+    // `readFile(...).catch(() => null)` read `EACCES` as "no file", so the write built its next content
+    // from an empty base and renamed it over a file full of values it never saw. The same silent data
+    // loss `readSource` was written to end for `.dev.secrets.jsonc`, in the file beside it. Only `ENOENT`
+    // means absent.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "KEEP=1\n");
+    await chmod(path, 0o000);
+    try {
+      await expect(writeDevVars({ projectDir: dir, values: { K: "v" } })).rejects.toThrow(/could not be read/);
+      await chmod(path, 0o600);
+      expect(await readFile(path, "utf8")).toBe("KEEP=1\n");
+    } finally {
+      await chmod(path, 0o600).catch(() => {});
+    }
+  });
+
+  test("a .dev.vars already world-readable is tightened, even when its content needs no write", async () => {
+    // The no-write-when-identical guard is right and it left a hole: a file created at the umask before
+    // this branch existed — or by any other tool — kept 0664 forever, because the one thing that set the
+    // mode was a write that never had to happen. Nothing diagnosed it either.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "K=v\n");
+    await chmod(path, 0o664);
+
+    const result = await writeDevVars({ projectDir: dir, values: { K: "v" } });
+
+    expect(result.written).toEqual(["K"]);
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  test("a deliberately tighter mode survives — this narrows, it never widens", async () => {
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "K=v\n");
+    await chmod(path, 0o400);
+    try {
+      await writeDevVars({ projectDir: dir, values: { K: "v" } });
+      expect((await lstat(path)).mode & 0o777).toBe(0o400);
+    } finally {
+      await chmod(path, 0o600);
+    }
+  });
+
+  test("a symlink chain that never ends is refused out loud, not written through", async () => {
+    // The bound existed and the docstring promised a loud failure at it. What the code did was return a
+    // path that was still a symlink, and the atomic rename then replaced that link with a private file —
+    // the exact silent detachment the worktree case above exists to prevent.
+    await symlink(join(dir, "b"), join(dir, ".dev.vars"));
+    await symlink(join(dir, ".dev.vars"), join(dir, "b"));
+
+    await expect(writeDevVars({ projectDir: dir, values: { K: "v" } })).rejects.toThrow(/never ends/);
+    expect((await lstat(join(dir, ".dev.vars"))).isSymbolicLink()).toBe(true);
+  });
+
   test("nothing to write touches no file at all", async () => {
     const result = await writeDevVars({ projectDir: dir, values: {} });
     expect(result).toEqual({ written: [], refused: [], linked: [], shadowed: [], undelivered: [] });

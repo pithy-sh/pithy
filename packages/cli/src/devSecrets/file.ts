@@ -31,6 +31,15 @@ import { ownProperties } from "./records";
  *
  * **Nothing thrown from here carries a byte of the file.** `comment-json` puts the whole source in its
  * `SyntaxError.message`, so every parse goes through {@link parseTree} — see there for what that cost.
+ *
+ * **Every write goes to the path the project names, links and all — and that is the atomic writer's
+ * problem, not this file's.** `scripts/worktree.ts` symlinks a worktree's `.dev.secrets.jsonc` at the
+ * main checkout's, so an atomic rename over that name detaches the worktree into a private copy and the
+ * share stops, silently, in a layout we create ourselves. Resolving the link here is *not* the fix: it
+ * would put a second symlink-following write in the CLI with no rule about whose link it is, and a
+ * planted one would send the whole secrets file wherever it pointed. `writeFileAtomic` on
+ * `fix/scaffold-cannot-run` resolves the chain and refuses any link a different uid made — one rule, one
+ * place, every caller. This branch rebases onto it and this paragraph goes with the rebase.
  */
 
 /** The `.dev.secrets.jsonc` path for a project root. */

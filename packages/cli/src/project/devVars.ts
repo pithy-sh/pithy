@@ -64,9 +64,14 @@ export function removeDevVarsContent(content: string, keys: string[]): string {
  * its callers had one of those two defects. It is the obvious thing the next producer would reach for,
  * so it is gone — `devSecrets/devVars.ts`'s `writeDevVars` is the one way a value becomes a `.dev.vars`
  * line, and `upsertDevVarsContent` above is the pure half it composes.
+ *
+ * **`0600`, like every other write of this file.** An atomic write is a rename, so the mode that lands is
+ * the temp file's — and this one passed none, which meant the umask's. `pithy turnstile deprovision`
+ * deletes one key and handed the whole file back at 0644, `SECRETS_ENCRYPTION_KEYS` and every injected
+ * session secret with it. Deleting a value is not the moment to widen the file it was in.
  */
 export async function removeDevVars(path: string, keys: string[]): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => null);
   if (content === null) return;
-  await writeFileAtomic(path, removeDevVarsContent(content, keys));
+  await writeFileAtomic(path, removeDevVarsContent(content, keys), { mode: 0o600 });
 }

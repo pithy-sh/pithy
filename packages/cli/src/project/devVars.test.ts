@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
-import { removeDevVarsContent, upsertDevVarsContent } from "./devVars";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { removeDevVars, removeDevVarsContent, upsertDevVarsContent } from "./devVars";
 
 describe("upsertDevVarsContent", () => {
   test("appends a new key to an empty file", () => {
@@ -40,6 +43,29 @@ describe("removeDevVarsContent", () => {
 
   test("returns an empty string when the last key is removed", () => {
     expect(removeDevVarsContent("A=1\n", ["A"])).toBe("");
+  });
+});
+
+describe("removeDevVars", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-remove-dev-vars-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("leaves the file at 0600 — deprovisioning must not widen a file holding session keys", async () => {
+    // `pithy turnstile deprovision` is the only caller, and it passed no mode at all: the atomic write
+    // renames a temp file created at the umask over a `.dev.vars` that `pithy init` chmods to 0600, so
+    // deleting one key handed the whole file — `SECRETS_ENCRYPTION_KEYS` included — back to 0644.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "A=1\nturnstile-secret-keys=x\n");
+    await chmod(path, 0o600);
+
+    await removeDevVars(path, ["turnstile-secret-keys"]);
+
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 });
 
