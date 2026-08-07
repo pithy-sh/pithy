@@ -5,8 +5,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
+import { encodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { seedDevSecrets, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { upsertDevVars } from "../project/devVars";
@@ -27,6 +28,17 @@ import { type DevSecretsStoreHandle, type OpenDevSecretsStoreOptions, openDevSec
  * capability contributes no registry; one whose store cannot be opened contributes a reason. Both come
  * back in the report for the caller to print. `pithy dev` must start a project whose secrets are not
  * wired yet — refusing to would make an unrelated capability's missing binding stop every Worker.
+ *
+ * **And every seeded value is injected into `.dev.vars` as well — a transition, deleted by #153.**
+ * `secretsStore` resolves *every* secret from its injected binding in dev, whatever the registry says
+ * its `backend` is (`packages/secrets/src/secretsStore.ts`), while the deployed branch routes by
+ * backend. So a `d1` value that only reaches the local `SECRETS` store reaches nowhere dev looks: a
+ * fresh `pithy init` + `pithy add auth` + `pithy dev` answered
+ * `{"code":"secrets/not_found","message":"Secret binding 'auth-session-secret' is not configured."}`
+ * on the first sign-in with the row sitting seeded and unread. Until dev routes by backend, the file
+ * is the source of truth, the store is seeded from it, **and** the value is injected — all three, not
+ * a choice among them. #153 collapses the two read paths and removes the injection in the same commit;
+ * nothing here is the intended shape.
  */
 
 /** One Worker's contribution: its name, its directory, and the registry that decides its destinations. */
@@ -47,7 +59,11 @@ export interface DevSecretsSeedReport {
   unchanged: string[];
   /** Values minted this run and written back into `.dev.secrets.jsonc`. */
   minted: string[];
-  /** `cf-secrets-store` secrets written into `.dev.vars` — there is no local Secrets Store. */
+  /**
+   * Secrets written into `.dev.vars` this run. Two reasons, one list: a `cf-secrets-store` secret
+   * belongs there permanently (there is no local Secrets Store), and a `d1` secret is copied there
+   * for the transition, because dev still resolves it from that binding. #153 leaves only the former.
+   */
   devVars: string[];
   /** Declared secrets with no value and nothing honest to mint. The adopter supplies these. */
   missing: string[];
@@ -119,10 +135,11 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       skipped.push({ worker: target.name, reason: handle.reason });
       continue;
     }
+    const registry = notYetMoved(target.registry, file, inDevVars);
     try {
       const result = await seedDevSecrets({
         file,
-        registry: notYetMoved(target.registry, file, inDevVars),
+        registry,
         store: handle.store,
         path: devSecretsPath(projectDir),
       });
@@ -133,6 +150,13 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       for (const [name, envelope] of Object.entries(result.minted)) {
         minted[name] = envelope;
         file[name] = envelope;
+      }
+      // TRANSITION (#153). Everything this Worker resolved now also goes into `.dev.vars`, because
+      // that binding — not the row just written — is where dev reads it. Driven off `seeded` and
+      // `unchanged` so it covers exactly what the store holds, on the first run and on every re-run.
+      for (const name of [...result.seeded, ...result.unchanged]) {
+        const line = injectedValue(registry, name, file, devSecretsPath(projectDir));
+        if (line !== null) devVars[name] = line;
       }
     } finally {
       await handle.dispose();
@@ -174,6 +198,24 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
  * the old copy of, so the file is what gets seeded and `pithy doctor` says to delete the `.dev.vars`
  * line. Nothing rewrites their `.dev.vars`; that is theirs.
  */
+/**
+ * **TRANSITION (#153).** One secret's `.dev.vars` line: the stored envelope, encoded — byte for byte
+ * what the local `SECRETS` row holds, and what `decodeInjectedValue` round-trips without the
+ * bare-string fallback. The bare current value would resolve too, and would silently drop every other
+ * version, so dev would disagree with the store the moment a secret had two.
+ *
+ * `null` when the name is not this registry's to inject, which is not a fault: `seedDevSecrets` reports
+ * across the whole run, and a second Worker's secret is that Worker's line to write.
+ *
+ * This function goes when dev's read path routes by backend. Nothing else here depends on it.
+ */
+function injectedValue(registry: SecretRegistry, name: string, file: DevSecretsFile, path: string): string | null {
+  const entry = registry[name];
+  const envelope = file[name];
+  if (!entry || !envelope) return null;
+  return encodeVersionedValue(storedSecretValue(entry, name, envelope, path));
+}
+
 function notYetMoved(
   registry: SecretRegistry,
   file: DevSecretsFile,

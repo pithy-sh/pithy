@@ -113,7 +113,9 @@ describe("seedProjectDevSecrets", () => {
     );
     const report = await seed();
 
-    expect(report.devVars).toEqual(["CLOUDFLARE_API_TOKEN"]);
+    expect(report.devVars).toContain("CLOUDFLARE_API_TOKEN");
+    // The one that matters here: it never reaches the store. `.dev.vars` also carries the transitional
+    // copy of every `d1` secret (#153), so the list is not this name alone.
     expect(store.rows.has("CLOUDFLARE_API_TOKEN")).toBe(false);
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8")).CLOUDFLARE_API_TOKEN).toContain("cf-token");
   });
@@ -134,6 +136,43 @@ describe("seedProjectDevSecrets", () => {
     expect(store.writes).toBe(1);
     expect((await readDevSecrets(dir))["auth-session-secret"]).toEqual(minted);
     expect(await readFile(devSecretsPath(dir), "utf8")).toBe(bytes);
+  });
+
+  test("a d1 secret is injected into .dev.vars too — dev resolves it from the binding until #153", async () => {
+    // The transition. `secretsStore`'s dev branch reads every secret from its injected binding
+    // whatever its backend, so a value that only reaches the local SECRETS D1 reaches nothing dev
+    // looks at. Seeding without this made `pithy add auth` hand a fresh project a Worker that
+    // answers `secrets/not_found` at the first sign-in. Both, until dev routes by backend.
+    const report = await seed();
+
+    const injected = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"];
+    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    expect(injected).toBeDefined();
+    // The encoded envelope, not the bare value: it is what the store holds, what `decodeVersionedValue`
+    // round-trips, and it keeps every version rather than collapsing to whichever one is current.
+    expect(JSON.parse(injected ?? "")).toEqual(envelope);
+    expect(report.devVars).toContain("auth-session-secret");
+  });
+
+  test("the injection tracks the file, so a hand-edited value reaches dev on the next run", async () => {
+    await seed();
+    await writeFile(
+      devSecretsPath(dir),
+      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "edited-by-hand" } } }',
+    );
+
+    await seed();
+
+    const injected = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"];
+    expect(JSON.parse(injected ?? "").versions["1"]).toBe("edited-by-hand");
+  });
+
+  test("a secret still only in .dev.vars is not re-injected — nothing rewrites the adopter's line", async () => {
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=already-mine\n");
+
+    await seed();
+
+    expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
   });
 
   test("a value changed in the file is written through — the file is dev's source of truth", async () => {

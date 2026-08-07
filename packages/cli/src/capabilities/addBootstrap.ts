@@ -8,6 +8,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { DEV_SECRETS_FILE, type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
@@ -117,14 +118,22 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
  * conventions was a mistake. The value is written as a full version-1 envelope, which is the shape the
  * store actually holds, so dev stops being a shape production never sees.
  *
+ * **And the value is injected into `.dev.vars` as well. That is a TRANSITION, not the design (#153).**
+ * `secretsStore`'s dev branch resolves every secret from its injected binding regardless of backend,
+ * so the new file alone is a place dev never reads: writing only there gave a fresh project a Worker
+ * that answers `secrets/not_found` at the first sign-in. The seeder does the same for every value the
+ * local `SECRETS` store holds — but it needs a registry, and a project that has not composed `secrets`
+ * yet has none, so a mint here must carry itself across. #153 routes dev by backend and deletes both
+ * halves in one commit. Until then, deleting this line breaks `pithy add auth`.
+ *
  * **Only when absent, from either file.** A session secret replaced is every live session invalidated;
  * a link-signing key replaced is every link already in an inbox broken.
  *
- * **A name still in `.dev.vars` is named, never moved.** That is the migration case: an existing
- * project has the value there, local dev still reads it, and minting a second one into the new file
- * would leave the project holding two values with nothing to say which signed what. Rewriting their
- * `.dev.vars` unasked is worse. So the note says where it is and where it belongs, and `pithy doctor`
- * repeats it every run until they move it.
+ * **The file is consulted first, then `.dev.vars`.** A name in both is this command's own pair, and it
+ * says so. A name in `.dev.vars` *alone* is the migration case: an existing project has the value
+ * there, dev reads it, and minting a second one would leave two values with nothing to say which
+ * signed what. Rewriting their `.dev.vars` unasked is worse. So the note says where it is and where it
+ * belongs, and `pithy doctor` repeats it every run until they move it.
  *
  * One write for the whole set, so a capability declaring several either lands them all or lands none.
  */
@@ -135,15 +144,15 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
   const minted: DevSecretsFile = {};
   const notes: string[] = [];
   for (const secret of declared) {
-    if (inDevVars[secret.name]) {
-      notes.push(
-        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
-      );
-      continue;
-    }
     if (stated[secret.name]) {
       notes.push(
         `${secret.name} is already in ${DEV_SECRETS_FILE}. Left as it is — a new value invalidates what the old one signed.`,
+      );
+      continue;
+    }
+    if (inDevVars[secret.name]) {
+      notes.push(
+        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
       );
       continue;
     }
@@ -153,6 +162,39 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       `Deployed environments need pithy secrets create ${secret.name}.`,
     );
   }
-  await writeDevSecrets(projectDir, minted);
+  const added = await writeDevSecrets(projectDir, minted);
+  // TRANSITION (#153): the same values, injected. Only what actually landed in the file — claiming a
+  // mint the write did not make would put a value in `.dev.vars` that nothing else in the project has.
+  await injectDevSecrets(projectDir, pick(minted, added));
   return notes;
+}
+
+/** The entries of `file` named in `names`. */
+function pick(file: DevSecretsFile, names: readonly string[]): DevSecretsFile {
+  const picked: DevSecretsFile = {};
+  for (const name of names) {
+    const envelope = file[name];
+    if (envelope) picked[name] = envelope;
+  }
+  return picked;
+}
+
+/**
+ * **TRANSITION (#153).** Inject each minted value into `.dev.vars` under its registry name, encoded as
+ * the envelope — the shape the store holds and `decodeInjectedValue` round-trips, rather than the bare
+ * string dev used to be handed. Deleted when dev's read path routes by backend.
+ *
+ * Every envelope here was made by `initialDevSecret(mintDevValue(...))` moments ago, so it has exactly
+ * one version and that version is a string. Nothing is inferred about the registry — this path runs
+ * before any registry is loadable, which is the whole reason it exists — and a value that is somehow
+ * neither is skipped rather than coerced. The seeder consults the real entry on the next run.
+ */
+async function injectDevSecrets(projectDir: string, file: DevSecretsFile): Promise<void> {
+  const vars: Record<string, string> = {};
+  for (const [name, envelope] of Object.entries(file)) {
+    const value = envelope.versions[envelope.currentVersion];
+    if (typeof value !== "string") continue;
+    vars[name] = encodeVersionedValue(initialVersionedValue(value));
+  }
+  if (Object.keys(vars).length > 0) await upsertDevVars(join(projectDir, ".dev.vars"), vars);
 }

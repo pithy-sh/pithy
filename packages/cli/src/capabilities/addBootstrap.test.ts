@@ -140,12 +140,31 @@ describe("bootstrapAdd", () => {
     expect(notes.join(" ")).not.toContain(String(value));
   });
 
-  test("the secret lands in .dev.secrets.jsonc, not .dev.vars — the two namespaces separate here", async () => {
+  test("the secret lands in .dev.secrets.jsonc, and is injected into .dev.vars too until #153", async () => {
+    // The transition, not the design. `.dev.secrets.jsonc` is the source of truth; `.dev.vars` still
+    // carries a copy because `secretsStore`'s dev branch resolves every secret from its injected
+    // binding, whatever its backend. Writing only the new file left the Worker answering
+    // `secrets/not_found` at the first sign-in. #153 routes dev by backend and deletes this half.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
-    expect(await devVar(dir, "auth-session-secret")).toBeUndefined();
-    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
+    const value = await devSecret(dir, "auth-session-secret");
+    expect(value).toBeDefined();
     expect((await readFile(devSecretsPath(dir), "utf8")).includes("auth-session-secret")).toBe(true);
+    const injected = await devVar(dir, "auth-session-secret");
+    expect(JSON.parse(injected ?? "")).toEqual({ currentVersion: "1", versions: { "1": value } });
+  });
+
+  test("the injected copy is not mistaken for the migration case on the next run", async () => {
+    // `pithy add` names a secret found in `.dev.vars` and refuses to touch it — that is an adopter's
+    // pre-#149 value. A copy this command wrote itself is not that, and telling someone to move a
+    // value that is already in both files, into the file it is already in, is a false instruction.
+    const manifest = await shippedManifest("auth");
+    await bootstrapAdd({ projectDir: dir, manifest });
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest });
+
+    expect(notes.join(" ")).toContain("already in .dev.secrets.jsonc");
+    expect(notes.join(" ")).not.toContain("where secrets no longer live");
   });
 
   test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
