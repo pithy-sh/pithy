@@ -130,7 +130,10 @@ describe("runAdd", () => {
     });
     expect(result).toEqual({
       capability: "auth",
+      // No `worker` was passed, so the deployed name falls back to the directory and the two agree.
+      // `runAdd`'s own "names the Worker by its directory" test is where they are made to disagree.
       worker: DEFAULT_WORKER,
+      deployedAs: DEFAULT_WORKER,
       package: "@pithy-sh/auth",
       packageManager: "bun",
       databases,
@@ -140,6 +143,26 @@ describe("runAdd", () => {
       notes: [],
       eject: undefined,
     });
+  });
+
+  test("names the Worker by its directory, and reports the deployed name separately", async () => {
+    // A Worker deploys as `<project>-<worker>`, so these two strings are what `pithy add --worker board`
+    // has in hand on a project named `acme`. They must not collapse into one field: `worker` is what
+    // `--worker` accepts and what a caller can act on, `deployedAs` is what Cloudflare shows.
+    const result = await runAdd({
+      projectDir: dir,
+      workerDir: worker,
+      worker: "acme-api",
+      project: "acme",
+      capability: "auth",
+      install: installManifest(optionManifest),
+      migrate: async () => [],
+    });
+
+    expect(result).toMatchObject({ worker: DEFAULT_WORKER, deployedAs: "acme-api" });
+    // Not merely different — the directory is read from `workerDir`, never derived by stripping a
+    // project prefix off the deployed name. A `wrangler.jsonc` may name the Worker anything.
+    expect(result.worker).not.toBe(result.deployedAs);
   });
 
   test("mints the secrets dev master key and reports it — `pithy dev` serves the moment add finishes", async () => {

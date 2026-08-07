@@ -23,6 +23,10 @@ logs/
 .env.*
 !.env.example
 
+# atomic-write temp siblings (.dev.vars.<rand>.tmp, .dev.secrets.jsonc.<rand>.tmp, …). A write
+# interrupted by SIGINT leaves one holding the full plaintext; it must never be committable.
+*.tmp
+
 # editor / os
 .DS_Store
 *.log

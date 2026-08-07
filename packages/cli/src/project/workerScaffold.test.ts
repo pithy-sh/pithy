@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,5 +154,18 @@ describe("scaffoldWorker", () => {
     await mkdir(join(dir, "apps", "web"), { recursive: true });
     await writeFile(join(dir, "apps", "web", "keep.txt"), "mine");
     await expect(scaffoldWorker({ projectDir: dir, name: "web", project: "acme" })).rejects.toThrow(PithyError);
+  });
+
+  test("refuses a symlinked apps/, and writes nothing through it", async () => {
+    // #147 lstat'd `apps/<name>` and stopped there, so a link one level up carried the whole worker out of
+    // the project exactly as before. Reproduced against the real CLI: `pithy init --name replay --worker
+    // board`, move `apps` out and symlink it back, `pithy worker add escape` — every file landed outside,
+    // and the command printed the in-project path and exited 0.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "apps"));
+
+    await expect(scaffoldWorker({ projectDir: dir, name: "escape", project: "acme" })).rejects.toThrow(PithyError);
+    expect(await readdir(outside)).toEqual([]);
   });
 });

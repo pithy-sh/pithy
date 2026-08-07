@@ -18,6 +18,8 @@ function planStub(plans: Record<string, ReconcilePlan>): BuildPlan {
 function clean(worker: string): ReconcilePlan {
   return {
     worker,
+    // Derived, never echoed — the directory and the deployed name must differ in every fixture.
+    deployedAs: `acme-${worker}`,
     env: "dev",
     perCapability: [],
     ejectedSkipped: [],

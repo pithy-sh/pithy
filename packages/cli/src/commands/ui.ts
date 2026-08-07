@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { unpublishedKitNotice } from "../project/scaffold";
+import { workerIdentity } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+import { dim } from "../terminal/style";
 import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
 import { targetWorker } from "./add";
 
@@ -64,7 +67,6 @@ const add = defineCommand({
       const report = await runUiAdd({
         projectDir,
         workerDir: target.dir,
-        worker: target.name,
         config: target.config,
         framework: args.framework,
         ...(args.auth === undefined ? {} : { auth: args.auth }),
@@ -73,7 +75,7 @@ const add = defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
       const screens = [report.auth ? "sign-in" : null, report.payments ? "paywall" : null].filter(
@@ -87,6 +89,11 @@ const add = defineCommand({
         process.stdout.write(`${report.created.length} files created.\n`);
       }
       process.stdout.write(`Worker-first: ${report.runWorkerFirst.join(", ")}.\n`);
+      // Before the install line, because it is the instruction that would otherwise be wrong. While the
+      // scope is unpublished the stub's `@pithy-sh/vite` range is dropped, so the install below succeeds
+      // and the build then fails on a Vite plugin nothing declared. `pithy init` says this; so does
+      // `pithy worker add`; the wording is decided once, in `unpublishedKitNotice`.
+      for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
       process.stdout.write(`Install the packages: ${report.packageManager} install. Then pithy dev.\n`);
       // Naming `pithy add` alone was the whole failure: it read as "capabilities change this list",
       // and the routes an adopter writes themselves change it too, with no command in the loop.
@@ -123,7 +130,6 @@ const sync = defineCommand({
 
       const report = await runUiSync({
         workerDir: target.dir,
-        worker: target.name,
         config: target.config,
         check: args.check,
       });
@@ -132,7 +138,7 @@ const sync = defineCommand({
       if (report.uncovered.length > 0) process.exitCode = 1;
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
       if (args.check) {

@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type { TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import { writeFileAtomic } from "../project/atomic";
+import { upsertDevVars } from "../project/devVars";
 
 /** Where a minted token landed — the store and a human location string. Never carries the value. */
 export interface SinkTarget {
@@ -46,30 +45,16 @@ export function devVarsFileName(env: string): string {
   return env === "dev" ? ".dev.vars" : `.dev.vars.${env}`;
 }
 
-/** Upsert one `KEY=value` line in a `.dev.vars` file, preserving every other line; create the file if absent. */
-async function upsertDevVar(file: string, key: string, value: string): Promise<void> {
-  let lines: string[] = [];
-  try {
-    lines = (await readFile(file, "utf8")).split("\n");
-  } catch {
-    // No file yet — start empty.
-  }
-  const entry = `${key}=${value}`;
-  const index = lines.findIndex((line) => line.trimStart().startsWith(`${key}=`));
-  if (index >= 0) {
-    lines[index] = entry;
-  } else {
-    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-    lines.push(entry);
-  }
-  await writeFileAtomic(file, `${lines.join("\n")}\n`);
-}
-
 /**
  * Write a minted token value to its store and report where it landed — never the value. `ephemeral`
  * persists nothing (the caller uses the value in-process); `dev-vars` upserts the token's **variable
  * key** in the env's git-ignored `.dev.vars` file, readable by a later CLI run; `secrets-store` writes
  * it to the CF Secrets Store under the project-scoped **entry name**, for a Worker to read via its binding.
+ *
+ * The `dev-vars` write goes through `upsertDevVars`, which is the *only* thing that should be writing one
+ * of these files. This had its own copy of the upsert, and the copy did not carry the `0600` the shared
+ * one applies when it has to create the file — so minting a token for an environment that had no
+ * `.dev.vars.<env>` yet left a live production Cloudflare credential at the umask default, `0664`.
  */
 export async function writeTokenToSink(store: TokenStore, value: string, context: SinkContext): Promise<SinkTarget> {
   switch (store) {
@@ -77,7 +62,7 @@ export async function writeTokenToSink(store: TokenStore, value: string, context
       return { sink: store, location: "(ephemeral — not written)" };
     case "dev-vars": {
       const name = devVarsFileName(context.env);
-      await upsertDevVar(join(context.projectDir, name), context.secretName, value);
+      await upsertDevVars(join(context.projectDir, name), { [context.secretName]: value });
       return { sink: store, location: name };
     }
     case "secrets-store": {

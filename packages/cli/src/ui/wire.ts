@@ -169,16 +169,28 @@ function mergeMissing(target: Record<string, string>, incoming: Record<string, s
 }
 
 /**
- * Drop every package the project already provides, so no unresolvable range is written.
+ * Drop every package there is no range to write for, so nothing unresolvable lands in a `package.json`.
  *
- * The stub pins `"@pithy-sh/vite": "^0.0.0"`, and nothing under that scope is published — against a local
- * checkout the range 404s on the adopter's *next* install, long after `pithy ui add` said Done. The
- * package resolves from the project root either way, so omitting the line costs nothing and the build
- * still finds it. Same predicate `pithy add` skips its install on ({@link alreadyProvided}).
+ * Two ways that happens, and both end in the same 404 on the adopter's *next* install — long after
+ * `pithy ui add` said Done.
+ *
+ * **The project already provides it.** A `@pithy-sh/*` package linked in from a checkout resolves from
+ * the project root either way, so omitting the line costs nothing and the build still finds it. Same
+ * predicate `pithy add` skips its install on ({@link alreadyProvided}).
+ *
+ * **There is no such version yet.** A stub declares a `null` range for a package the registry cannot
+ * serve at all — every `@pithy-sh/*` one, until the scope publishes. That case is the checkout case
+ * generalised: `alreadyProvided` only ever caught the adopter who linked one in, and a plain project
+ * kept the literal and broke. `kitRange` decides it once, for every producer, and stops deciding it the
+ * day the version is real.
  */
-async function withoutProvided(projectDir: string, packages: Record<string, string>): Promise<Record<string, string>> {
+async function withoutProvided(
+  projectDir: string,
+  packages: Record<string, string | null>,
+): Promise<Record<string, string>> {
   const kept: Record<string, string> = {};
   for (const [name, range] of Object.entries(packages)) {
+    if (range === null) continue;
     if (await alreadyProvided(projectDir, name)) continue;
     kept[name] = range;
   }

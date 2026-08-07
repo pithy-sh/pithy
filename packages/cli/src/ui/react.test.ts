@@ -1,9 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { beforeAll, describe, expect, test } from "vitest";
+import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
 import { loadStubFiles } from "./templates";
+
+/** The repo root, four levels up from `packages/cli/src/ui`. */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+/**
+ * A workspace package's own declared version — read from its own `package.json`, never inherited from a
+ * sibling's. That inheritance is the defect these tests pin down.
+ */
+async function declaredVersion(name: string): Promise<string> {
+  const path = join(REPO_ROOT, "packages", name.slice("@pithy-sh/".length), "package.json");
+  return (JSON.parse(await readFile(path, "utf8")) as { version: string }).version;
+}
 
 // The templates are real files in @pithy-sh/ui-react, so reading them is I/O. The manifest that
 // says WHICH of them a given context writes stays pure, and is asserted as a value below.
@@ -308,5 +325,47 @@ describe("the React 19 stub", () => {
     expect(reactStub.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.4");
     expect(reactStub.devDependencies.vite).toBe("^8.0.16");
     expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe("^1.48.0");
+  });
+
+  test("every @pithy-sh range is that package's OWN version, not core's", async () => {
+    // A literal `"^0.0.0"` 404s today for any adopter not linking a checkout in, and goes on 404ing after
+    // the scope publishes while every sibling range beside it is correct — so the range is derived.
+    //
+    // But it is derived from **core's** `PACKAGE_VERSION`, and the package it is written for is
+    // `@pithy-sh/vite`. This used to assert exactly that, which restated the bug as an invariant: two
+    // packages that version independently, one range. Read each package's own version instead. It is the
+    // test below that makes them equal, and that is where the equality belongs.
+    for (const [name, range] of Object.entries({ ...reactStub.dependencies, ...reactStub.devDependencies })) {
+      if (!name.startsWith("@pithy-sh/")) continue;
+      expect(range, name).toBe(kitRange(await declaredVersion(name)));
+    }
+    // Named, so dropping the package is a deliberate edit rather than a loop that silently sees nothing.
+    expect(Object.keys(reactStub.devDependencies)).toContain("@pithy-sh/vite");
+  });
+
+  test("@pithy-sh/vite ships on core's release train — the only thing that makes that range honest", async () => {
+    // `react.ts` writes `kitRange(PACKAGE_VERSION)`, core's version, for a sibling. `stampWorkerManifest`
+    // forbids exactly that ("there is no honest range to invent for a sibling") and it is right: with
+    // `linked` and `fixed` both empty, the first release that touched only core would have written a
+    // range `@pithy-sh/vite` never published — #141 again, past publication, where it cannot be fixed by
+    // dropping the line.
+    //
+    // **`fixed`, not `linked`.** Linked packages that are released together take one version; a package
+    // not in that release keeps the one it had, so a core-only patch leaves vite behind and the range
+    // lies. Fixed packages are always released together at one version, which is the invariant the
+    // derivation assumes. Stamping `packages/vite` with a version of its own was the alternative and is
+    // more machinery for less: `scripts/stampVersions.ts` stamps capability packages, keyed on
+    // `src/capability.ts`, and vite is a Vite plugin with no capability and no runtime that reports a
+    // version. It has no reason to carry a constant — only a reason to carry core's number.
+    const config = JSON.parse(await readFile(join(REPO_ROOT, ".changeset", "config.json"), "utf8")) as {
+      fixed?: string[][];
+    };
+    const group = (config.fixed ?? []).find((entry) => entry.includes("@pithy-sh/vite"));
+    expect(group, "@pithy-sh/vite must be in a Changesets `fixed` group with core").toBeDefined();
+    expect(group).toContain("@pithy-sh/core");
+
+    // And the guarantee, checked rather than assumed: today both are 0.0.0, and after the first release
+    // this is what turns red if the group is ever loosened.
+    expect(await declaredVersion("@pithy-sh/vite")).toBe(PACKAGE_VERSION);
   });
 });

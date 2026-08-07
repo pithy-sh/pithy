@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { runUiAdd } from "../ui/flow";
-import { loadWorkerConfig } from "./config";
 import { scaffoldProject } from "./scaffold";
+import { resolveSingleWorker } from "./workerScope";
 
 /**
  * The scaffold's own gates, run for real.
@@ -100,9 +100,21 @@ const tsc = (project: string) => join(project, "node_modules", "typescript", "bi
 const vitest = (project: string) => join(project, "node_modules", "vitest", "vitest.mjs");
 const biome = (project: string) => join(project, "node_modules", "@biomejs", "biome", "bin", "biome");
 
+/**
+ * The fixture's two names, deliberately unequal.
+ *
+ * A worker deploys as `<project>-<worker>` and lives at `apps/<worker>`. Scaffolding this fixture as
+ * `gates` alone made those two strings identical — `api` and `api` — so every path built from the wrong
+ * one still landed on the right directory, and `pithy ui add` wrote `apps/gates-api/tsconfig.client.json`
+ * into the solution file for a year of runs without a gate noticing. Two names that cannot collide is
+ * what makes this file able to see that class of bug at all.
+ */
+const PROJECT = "gates";
+const WORKER = "board";
+
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-gates-"));
-  await scaffoldProject({ targetDir: dir, appName: "gates" });
+  await scaffoldProject({ targetDir: dir, appName: PROJECT, worker: WORKER });
   await linkFarm(dir);
   scripts = (JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { scripts: Record<string, string> })
     .scripts;
@@ -130,11 +142,15 @@ describe("a freshly scaffolded project", () => {
     // `path` or an `includes` that misses the scaffolded layout is a gate that passes everything,
     // silently, and the scaffold would ship a file that does nothing.
     //
-    // Written and removed inside the test: every later gate here compiles or runs `apps/api/src`.
-    const probe = join(dir, "apps", "api", "src", "probe.ts");
+    // Written and removed inside the test: every later gate here compiles or runs the worker's `src`.
+    //
+    // Addressed through `WORKER` rather than a literal, because the scaffolded plugin matches
+    // `**/apps/*/src/**/*.ts` and a fixture whose worker is named for the default proves only that the
+    // glob works for that one name. This fixture deliberately does not use it.
+    const probe = join(dir, "apps", WORKER, "src", "probe.ts");
     await writeFile(probe, 'export const probe = (): void => console.log("hi");\n');
     try {
-      const { code, output } = await run(dir, biome(dir), ["check", "apps/api/src/probe.ts"]);
+      const { code, output } = await run(dir, biome(dir), ["check", `apps/${WORKER}/src/probe.ts`]);
       expect({ code, output }).not.toMatchObject({ code: 0 });
       expect(output).toContain("createWorkerLogger()");
     } finally {
@@ -175,12 +191,17 @@ describe("a freshly scaffolded project", () => {
 
 describe("after pithy ui add react", () => {
   beforeAll(async () => {
-    const config = await loadWorkerConfig(join(dir, "apps", "api"));
+    // Resolved the way the command resolves it, not by hand: `pithy ui add` reaches the flow through
+    // `resolveSingleWorker`, and it was that hand-off that carried the deployed name where a directory
+    // belonged. A test that assembles the arguments itself never crosses the seam that broke.
+    const target = await resolveSingleWorker({ projectDir: dir, worker: WORKER });
+    // The fixture's guarantee, asserted rather than assumed: the deployed name is not the directory.
+    expect(target.name).toBe(`${PROJECT}-${WORKER}`);
+    expect(target.dir).toBe(join(dir, "apps", WORKER));
     await runUiAdd({
       projectDir: dir,
-      workerDir: join(dir, "apps", "api"),
-      worker: "api",
-      config,
+      workerDir: target.dir,
+      config: target.config,
       framework: "react",
       auth: false,
       payments: false,
@@ -196,17 +217,27 @@ describe("after pithy ui add react", () => {
     expect(solution.files).toEqual([]);
     expect(solution.references.map((reference) => reference.path)).toEqual([
       "./tsconfig.tools.json",
-      "./apps/api/tsconfig.json",
-      "./apps/api/tsconfig.client.json",
-      "./apps/api/tsconfig.node.json",
+      `./apps/${WORKER}/tsconfig.json`,
+      `./apps/${WORKER}/tsconfig.client.json`,
+      `./apps/${WORKER}/tsconfig.node.json`,
     ]);
   });
+
+  test("keeps the solution file buildable, every reference included", async () => {
+    // `--dry` builds nothing and still resolves every reference, so this covers the one program the
+    // compile below cannot: `tsconfig.node.json` needs `@cloudflare/vite-plugin`, which no package in
+    // this monorepo installs. A reference to a directory that does not exist is TS6053 here, and TS6053
+    // is the whole `typecheck` gate failing on a project the adopter has not touched yet.
+    const { code, output } = await run(dir, tsc(dir), ["-b", "--dry"]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+    expect(output).not.toMatch(/TS6053/);
+  }, 120_000);
 
   test("still typechecks — the Worker and the client as two programs", async () => {
     const { code, output } = await run(dir, tsc(dir), [
       "-b",
-      "apps/api/tsconfig.json",
-      "apps/api/tsconfig.client.json",
+      `apps/${WORKER}/tsconfig.json`,
+      `apps/${WORKER}/tsconfig.client.json`,
     ]);
     expect({ code, output }).toMatchObject({ code: 0 });
   }, 120_000);

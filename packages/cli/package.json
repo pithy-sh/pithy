@@ -12,9 +12,18 @@
   "exports": {
     "./src/*": "./src/*.ts"
   },
+  "files": [
+    "src",
+    "scripts",
+    "templates",
+    "!src/**/*.test.ts"
+  ],
   "scripts": {
+    "prepack": "bun scripts/vendorTemplate.ts",
+    "postpack": "bun scripts/vendorTemplate.ts --clean",
+    "pack:verify": "bun scripts/verifyPack.ts",
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json && tsc -p scripts/tsconfig.json",
     "test": "vitest run",
     "test:node": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",

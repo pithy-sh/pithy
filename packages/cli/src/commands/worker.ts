@@ -8,7 +8,9 @@ import { askDomains, writeDomains } from "../project/askDomains";
 import { loadProject, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
+import { unpublishedKitNotice } from "../project/scaffold";
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
+import { workerIdentity } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { targetWorker } from "./add";
@@ -55,6 +57,11 @@ const add = defineCommand({
       } else {
         process.stdout.write("Ports are assigned when you run pithy feature create or sync.\n");
       }
+      // The worker's `src/index.ts` imports `@pithy-sh/core` and, while the scope is unpublished, its
+      // `package.json` declares no range for it — so this said "Done." over a worker that cannot resolve
+      // its own entrypoint. `pithy init` printed a notice for the identical gap; this is that notice,
+      // from the one function that decides the wording for all three commands.
+      for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
@@ -196,7 +203,7 @@ const sync = defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.sync", worker: target.name, runs })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), runs })}\n`);
         return;
       }
       if (runs.length === 0) {

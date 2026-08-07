@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { randomUUID } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { buildAssetMetadata } from "@pithy-sh/core/src/seed/metadata";
 import type { MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
+import { writeFileAtomic } from "../project/atomic";
 
 /**
  * The filesystem side of media seeding — the only part of `pithy seed` that reads fixture bytes and
@@ -51,11 +51,20 @@ export interface MediaFs {
   readBytes(path: string): Promise<Uint8Array>;
   /** Read the sidecar's text, or `null` when it does not exist yet (a never-uploaded `once` asset). */
   readText(path: string): Promise<string | null>;
-  /** Write the sidecar's text atomically — a temp file plus a rename, so a crash never leaves a torn file. */
+  /** Write the sidecar's text atomically, so a crash never leaves a torn file. */
   writeTextAtomic(path: string, text: string): Promise<void>;
 }
 
-/** The default {@link MediaFs}: `node:fs`, with an atomic temp-write-then-rename for the sidecar. */
+/**
+ * The default {@link MediaFs}: `node:fs`, with the sidecar written through {@link writeFileAtomic}.
+ *
+ * It used to roll its own temp-file-plus-rename — a UUID name, a plain `writeFile`, a `rename` — and so
+ * got none of what the primitive does: no exclusive create, so anything already at the temp path was
+ * written through rather than refused; no ownership check on the links it followed, so a planted symlink
+ * decided where the write landed; no mode; and no sweep of the file a killed run leaves behind. The
+ * payload here is an asset-id sidecar rather than a credential, which changes what it costs, not whether
+ * it is the same shape. One writer, one place to get it wrong.
+ */
 export const nodeMediaFs: MediaFs = {
   readBytes: (path) => readFile(path),
   readText: async (path) => {
@@ -67,11 +76,7 @@ export const nodeMediaFs: MediaFs = {
       throw error;
     }
   },
-  writeTextAtomic: async (path, text) => {
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    await writeFile(tmp, text);
-    await rename(tmp, path);
-  },
+  writeTextAtomic: (path, text) => writeFileAtomic(path, text),
 };
 
 /** What seeding one media item did this run — the same shape a dry-run plan reports per asset. */

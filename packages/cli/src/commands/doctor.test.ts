@@ -143,6 +143,7 @@ describe("renderDoctorText", () => {
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
         buildPlan: planStub({
           worker: "api",
+          deployedAs: "acme-api",
           env: "dev",
           ejectedSkipped: [],
           perCapability: [

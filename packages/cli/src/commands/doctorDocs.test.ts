@@ -126,6 +126,7 @@ describe("docs/CLI.md §5.6", () => {
           buildPlan: planStubPer({
             api: {
               worker: "api",
+              deployedAs: "acme-api",
               env: "dev",
               ejectedSkipped: [],
               perCapability: [

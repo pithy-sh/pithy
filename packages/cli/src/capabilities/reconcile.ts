@@ -13,6 +13,7 @@ import { z } from "zod";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
+import { workerIdentity } from "../project/workerIdentity";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
@@ -80,9 +81,10 @@ export type CapabilityReconcile = z.infer<typeof CapabilityReconcile>;
 /** The read-only reconcile plan: what an upgrade would add, what it would skip, and how far the schema is behind. */
 export const ReconcilePlan = z
   .object({
-    worker: z
+    worker: z.string().describe("The Worker this plan targets, as its apps/<name> directory — what --worker accepts."),
+    deployedAs: z
       .string()
-      .describe("The Worker this plan targets — its name as `pithy worker list` shows it (its apps/<name> dir)."),
+      .describe("The same Worker's deployed script name, from wrangler.jsonc — what the Cloudflare dashboard shows."),
     env: z.string().describe("The environment the pending-migration count was computed for."),
     perCapability: z
       .array(CapabilityReconcile)
@@ -162,7 +164,11 @@ export interface BuildReconcilePlanOptions {
   projectDir: string;
   /** The Worker's directory (`apps/<name>/`) — the wiring: its own pithy.config.ts and wrangler.jsonc. */
   workerDir: string;
-  /** The Worker's name, carried on the plan so a fan-out report can label it. Defaults to `workerDir`'s basename. */
+  /**
+   * The Worker's **deployed** script name, from its `wrangler.jsonc`. Reported on the plan as
+   * `deployedAs`; the plan's `worker` is always `workerDir`'s basename and is never taken from here.
+   * Defaults to the basename when a caller has no config to read.
+   */
   worker?: string;
   /** The environment the pending-migration count is computed for. Binding drift is reported across every environment regardless. */
   env: string;
@@ -461,7 +467,11 @@ async function readStanzas(workerDir: string): Promise<{ env: string; stanza: Wr
  */
 export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Promise<ReconcilePlan> {
   const { projectDir, workerDir, env } = options;
-  const worker = options.worker ?? basename(workerDir);
+  // The deployed name, kept under its own binding because two different consumers want two different
+  // things from it. `countPending` below builds a migration scope, where the Worker is identified the way
+  // the migration ledger identifies it; the plan this returns is read by a person or a script holding the
+  // checkout, where the `apps/` directory is the useful handle. Collapsing them is pithy-sh/pithy#144.
+  const deployedAs = options.worker ?? basename(workerDir);
   const capabilities = options.capabilities ?? allCapabilities(await loadWorkerConfig(workerDir));
   const countPending = options.countPending ?? defaultCountPending;
 
@@ -489,7 +499,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
-  const pendingMigrations = await countPending({ projectDir, workerDir, worker, env, capabilities });
+  const pendingMigrations = await countPending({ projectDir, workerDir, worker: deployedAs, env, capabilities });
   // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
   // in its composed set, so the question is per Worker exactly as the rest of the plan is.
   const entitlementGap = await findEntitlementGap(workerDir, capabilities);
@@ -503,7 +513,15 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // The same holds for a config with a syntax error: the honest answer is that this cannot be assessed.
   const wrangler = await readWranglerConfig(workerDir).catch(() => null);
   const missingVersionMetadata = wrangler !== null && !hasVersionMetadata(wrangler);
-  return { worker, env, perCapability, ejectedSkipped, pendingMigrations, entitlementGap, missingVersionMetadata };
+  return {
+    ...workerIdentity({ name: deployedAs, dir: workerDir }),
+    env,
+    perCapability,
+    ejectedSkipped,
+    pendingMigrations,
+    entitlementGap,
+    missingVersionMetadata,
+  };
 }
 
 /**
