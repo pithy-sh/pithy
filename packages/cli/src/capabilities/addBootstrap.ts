@@ -14,10 +14,10 @@ import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { seedProjectDevSecrets } from "../devSecrets/seed";
-import { upsertDevVars } from "../project/devVars";
 
 export interface AddBootstrapOptions {
   /**
@@ -103,7 +103,15 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
   }
   // Stringified, because that is the shape the binding has in a deployed worker too: the Secrets Store
   // holds the same JSON, and `resolveEncryptionConfig` parses one string in both places.
-  await upsertDevVars(path, { [MASTER_KEY_BINDING]: JSON.stringify(await initialMasterKeyConfig()) });
+  //
+  // Through `writeDevVars`, like every other value that has to reach a Worker. The master key is the
+  // clearest case for it: written to the project root alone it never arrived, and the Worker answered
+  // `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS` on a project that had just minted one.
+  const wrote = await writeDevVars({
+    projectDir,
+    values: { [MASTER_KEY_BINDING]: JSON.stringify(await initialMasterKeyConfig()) },
+  });
+  if (wrote.written.length === 0) return wrote.refused;
   return [
     `Minted a dev master key into .dev.vars as ${MASTER_KEY_BINDING}. Local only.`,
     "Deployed environments get theirs from pithy secrets provision.",
@@ -174,8 +182,7 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
   if (written.refused) return [written.refused];
   // TRANSITION (#153): the same values, injected. Only what actually landed in the file — claiming a
   // mint the write did not make would put a value in `.dev.vars` that nothing else in the project has.
-  await injectDevSecrets(projectDir, pick(minted, written.added));
-  return notes;
+  return [...notes, ...(await injectDevSecrets(projectDir, pick(minted, written.added)))];
 }
 
 /** The entries of `file` named in `names`. */
@@ -198,12 +205,14 @@ function pick(file: DevSecretsFile, names: readonly string[]): DevSecretsFile {
  * before any registry is loadable, which is the whole reason it exists — and a value that is somehow
  * neither is skipped rather than coerced. The seeder consults the real entry on the next run.
  */
-async function injectDevSecrets(projectDir: string, file: DevSecretsFile): Promise<void> {
+async function injectDevSecrets(projectDir: string, file: DevSecretsFile): Promise<string[]> {
   const vars: Record<string, string> = {};
   for (const [name, envelope] of Object.entries(file)) {
     const value = envelope.versions[envelope.currentVersion];
     if (typeof value !== "string") continue;
     vars[name] = encodeVersionedValue(initialVersionedValue(value));
   }
-  if (Object.keys(vars).length > 0) await upsertDevVars(join(projectDir, ".dev.vars"), vars);
+  if (Object.keys(vars).length === 0) return [];
+  const wrote = await writeDevVars({ projectDir, values: vars });
+  return wrote.refused;
 }

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { DEV_SECRETS_FILE, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -16,7 +18,9 @@ import {
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { removeDevVars, upsertDevVars } from "../project/devVars";
+import { writeDevVars } from "../devSecrets/devVars";
+import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
+import { removeDevVars } from "../project/devVars";
 import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
@@ -103,8 +107,39 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     });
   }
 
+  /**
+   * The dev widget's secret and its public sitekeys, each into the file its namespace belongs to.
+   *
+   * **The secret is a `d1` registry secret, so it goes into `.dev.secrets.jsonc` (#149)** — through
+   * `writeDevSecrets`, which is where the guarantee lives that the file is gitignored *before* a value
+   * is written into it. Writing it straight into `.dev.vars` bypassed both, and made this the fifth
+   * producer of the same defect. `replace`, because Cloudflare issued this value: keeping an older one
+   * because a value is already there leaves the project verifying against a widget it no longer has.
+   *
+   * **A refused write fails the provision.** Every other refusal in the kit is a note, because the
+   * command still did most of its job; here the command's entire job is to place a credential, and
+   * placing it in a file git will commit is worse than stopping with the two lines to add.
+   *
+   * The sitekeys are public, `UPPER_SNAKE`, and wrangler's — they stay in `.dev.vars`, along with the
+   * transitional copy of the secret itself, which is where dev still resolves it from until #153.
+   */
   async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
-    await upsertDevVars(join(this.#projectDir, ".dev.vars"), { [TURNSTILE_SECRET_NAME]: secret, ...sitekeys });
+    const envelope = initialDevSecret(secret);
+    const written = await writeDevSecrets(this.#projectDir, { [TURNSTILE_SECRET_NAME]: envelope }, { replace: true });
+    if (written.refused) {
+      throw new ValidationError({
+        message: `The turnstile dev secret was not written. ${written.refused}`,
+        action: `Add the two lines to .gitignore, then run pithy turnstile provision again.`,
+        detail: `turnstile dev secret refused: ${DEV_SECRETS_FILE} is not covered by .gitignore`,
+      });
+    }
+    // TRANSITION (#153): the envelope, injected, because dev resolves every secret from its binding
+    // whatever its backend. Encoded — the same bytes the store holds — and through `writeDevVars`, so
+    // the value is quoted for dotenv and reaches the Worker's own directory rather than the root alone.
+    await writeDevVars({
+      projectDir: this.#projectDir,
+      values: { [TURNSTILE_SECRET_NAME]: encodeVersionedValue(initialVersionedValue(secret)), ...sitekeys },
+    });
   }
 
   async writeManagedSecret(env: ManagedTurnstileEnv, secret: string): Promise<void> {
@@ -202,9 +237,15 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     }
   }
 
+  /**
+   * Both halves of what {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in
+   * `.dev.secrets.jsonc` as well as the `.dev.vars` lines. Leaving the value in the secrets file would
+   * have the next `pithy dev` seed and re-inject a key for a widget that no longer exists.
+   */
   async clearDev(modes: TurnstileMode[]): Promise<void> {
     const keys = [TURNSTILE_SECRET_NAME, ...modes.map((mode) => sitekeyVarName(mode))];
     await removeDevVars(join(this.#projectDir, ".dev.vars"), keys);
+    await removeDevSecrets(this.#projectDir, [TURNSTILE_SECRET_NAME]);
   }
 
   async clearManagedSitekeys(modes: TurnstileMode[]): Promise<void> {

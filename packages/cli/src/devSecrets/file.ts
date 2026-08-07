@@ -96,7 +96,11 @@ export function mergeDevSecretsContent(content: string, added: DevSecretsFile): 
 }
 
 /** The merge, plus the names it actually landed — what {@link writeDevSecrets} reports to its caller. */
-function mergeDevSecrets(content: string, added: DevSecretsFile): { content: string; added: string[] } {
+function mergeDevSecrets(
+  content: string,
+  added: DevSecretsFile,
+  replace = false,
+): { content: string; added: string[] } {
   const source = content.trim().length === 0 ? `${HEADER}{}\n` : content;
   const tree = parse(source) as Record<string, unknown> | null;
   // A file whose top level is not an object is the loader's error to raise, with its own actionable
@@ -105,10 +109,17 @@ function mergeDevSecrets(content: string, added: DevSecretsFile): { content: str
 
   // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a secret named for an
   // `Object.prototype` key read as already present and was dropped — a mint the caller was told landed.
-  const names = Object.keys(added).filter((name) => !Object.hasOwn(tree, name));
+  const names = Object.keys(added).filter((name) =>
+    replace ? !same(tree[name], added[name]) : !Object.hasOwn(tree, name),
+  );
   if (names.length === 0) return { content, added: [] };
   for (const name of names) tree[name] = added[name];
   return { content: `${stringify(tree, null, 2)}\n`, added: names };
+}
+
+/** Whether two envelopes are the same value, so a re-provision of an unchanged secret rewrites no bytes. */
+function same(current: unknown, next: unknown): boolean {
+  return current !== undefined && JSON.stringify(current) === JSON.stringify(next);
 }
 
 /** What one write did: the names that landed, and the one thing that stopped it if none did. */
@@ -138,13 +149,17 @@ export interface DevSecretsWrite {
  * whose `.gitignore` cannot be made to cover the file gets **no value written at all** and the sentence
  * saying what to add: minting first and hoping is how a live signing secret ends up in a repository.
  */
-export async function writeDevSecrets(projectDir: string, added: DevSecretsFile): Promise<DevSecretsWrite> {
+export async function writeDevSecrets(
+  projectDir: string,
+  added: DevSecretsFile,
+  options: WriteDevSecretsOptions = {},
+): Promise<DevSecretsWrite> {
   if (Object.keys(added).length === 0) return { added: [], refused: null };
   const path = devSecretsPath(projectDir);
   // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
   // merging into an empty base is how a write replaces a file of secrets with the one value it is adding.
   const content = (await readSource(path)) ?? "";
-  const merged = mergeDevSecrets(content, added);
+  const merged = mergeDevSecrets(content, added, options.replace === true);
   if (merged.added.length === 0) return { added: [], refused: null };
 
   const ignored = await ensureDevSecretsIgnored(projectDir);
@@ -152,4 +167,47 @@ export async function writeDevSecrets(projectDir: string, added: DevSecretsFile)
 
   await writeFileAtomic(path, merged.content, { mode: 0o600 });
   return { added: merged.added, refused: null };
+}
+
+/** How {@link writeDevSecrets} treats a name the file already carries. */
+export interface WriteDevSecretsOptions {
+  /**
+   * Overwrite a value already in the file. **For a value somebody else issued, never for a mint.**
+   *
+   * The default — a present secret always wins — exists because minting over a live session key
+   * invalidates every session and minting over a link key breaks every magic link already in an inbox.
+   * A provisioner is the opposite case: `pithy turnstile provision` is handed the widget's secret by
+   * Cloudflare, and keeping the old one leaves the project verifying against a widget it no longer has.
+   *
+   * An identical value still writes nothing, so a re-provision does not churn the file's mtime.
+   */
+  replace?: boolean;
+}
+
+/**
+ * Delete each named secret from the file, and answer which ones were actually there.
+ *
+ * The counterpart to a provisioner's write. `pithy turnstile deprovision` deletes the widget; leaving
+ * its secret behind would have the next `pithy dev` seed and inject a key for a widget that no longer
+ * exists, which reads as "turnstile is configured" everywhere anyone would look.
+ *
+ * Comments and every other value survive, for the same reason a write merges rather than replaces: the
+ * file is hand-maintained, and the note saying where a value came from is the useful part of it. No
+ * file, or no name present, writes nothing at all.
+ */
+export async function removeDevSecrets(projectDir: string, names: readonly string[]): Promise<string[]> {
+  if (names.length === 0) return [];
+  const path = devSecretsPath(projectDir);
+  const content = await readSource(path);
+  if (content === null || content.trim().length === 0) return [];
+
+  const tree = parse(content) as Record<string, unknown> | null;
+  if (tree === null || typeof tree !== "object" || Array.isArray(tree)) return [];
+  // `Object.hasOwn`, not `in`: a secret named for an `Object.prototype` key would otherwise read as
+  // present in an empty file, and `delete` would report a removal that never happened.
+  const removed = names.filter((name) => Object.hasOwn(tree, name));
+  if (removed.length === 0) return [];
+  for (const name of removed) delete tree[name];
+  await writeFileAtomic(path, `${stringify(tree, null, 2)}\n`, { mode: 0o600 });
+  return [...removed];
 }

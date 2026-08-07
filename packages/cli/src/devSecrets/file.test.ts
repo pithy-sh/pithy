@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEV_SECRETS_FILE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { devSecretsPath, mergeDevSecretsContent, readDevSecrets, writeDevSecrets } from "./file";
+import { devSecretsPath, mergeDevSecretsContent, readDevSecrets, removeDevSecrets, writeDevSecrets } from "./file";
 
 let dir: string;
 beforeEach(async () => {
@@ -194,5 +194,90 @@ describe("writeDevSecrets", () => {
   test("nothing to add checks nothing — a no-op add does not touch the adopter's .gitignore", async () => {
     await writeDevSecrets(dir, {});
     await expect(readFile(join(dir, ".gitignore"), "utf8")).rejects.toThrow();
+  });
+});
+
+describe("writeDevSecrets({ replace })", () => {
+  test("a provisioned value replaces the one in the file — it is issued, not minted", async () => {
+    // `pithy turnstile provision` receives the widget secret from Cloudflare. Keeping the old value
+    // because one is already there would leave the project verifying against a widget it no longer has.
+    await writeFile(
+      devSecretsPath(dir),
+      '{ "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "old" } } }',
+    );
+
+    const result = await writeDevSecrets(
+      dir,
+      { "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "new" } } },
+      { replace: true },
+    );
+
+    expect(result.added).toEqual(["turnstile-secret-keys"]);
+    expect(await readDevSecrets(dir)).toEqual({
+      "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "new" } },
+    });
+  });
+
+  test("replacing a value with itself writes nothing — a re-provision must not churn the file", async () => {
+    const content = '{ "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "same" } } }';
+    await writeFile(devSecretsPath(dir), content);
+
+    const result = await writeDevSecrets(
+      dir,
+      { "turnstile-secret-keys": { currentVersion: "1", versions: { "1": "same" } } },
+      { replace: true },
+    );
+
+    expect(result.added).toEqual([]);
+    expect(await readFile(devSecretsPath(dir), "utf8")).toBe(content);
+  });
+
+  test("without replace a present value still wins — a mint never overwrites", async () => {
+    await writeFile(
+      devSecretsPath(dir),
+      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "old" } } }',
+    );
+
+    const result = await writeDevSecrets(dir, {
+      "auth-session-secret": { currentVersion: "1", versions: { "1": "new" } },
+    });
+
+    expect(result.added).toEqual([]);
+    expect(await readDevSecrets(dir)).toEqual({
+      "auth-session-secret": { currentVersion: "1", versions: { "1": "old" } },
+    });
+  });
+});
+
+describe("removeDevSecrets", () => {
+  test("a deprovisioned secret leaves the file, comments and siblings intact", async () => {
+    await writeFile(
+      devSecretsPath(dir),
+      `{
+  // minted by pithy add auth
+  "auth-session-secret": { "currentVersion": "1", "versions": { "1": "keep" } },
+  "turnstile-secret-keys": { "currentVersion": "1", "versions": { "1": "gone" } }
+}
+`,
+    );
+
+    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual(["turnstile-secret-keys"]);
+
+    const content = await readFile(devSecretsPath(dir), "utf8");
+    expect(content).toContain("minted by pithy add auth");
+    expect(Object.keys(await readDevSecrets(dir))).toEqual(["auth-session-secret"]);
+  });
+
+  test("a name that is not there writes nothing at all — teardown is idempotent", async () => {
+    const content = '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "keep" } } }';
+    await writeFile(devSecretsPath(dir), content);
+
+    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual([]);
+    expect(await readFile(devSecretsPath(dir), "utf8")).toBe(content);
+  });
+
+  test("no file is nothing to remove — a deprovision on a project that never had one is silent", async () => {
+    expect(await removeDevSecrets(dir, ["turnstile-secret-keys"])).toEqual([]);
+    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
   });
 });

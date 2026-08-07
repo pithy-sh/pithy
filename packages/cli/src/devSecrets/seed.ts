@@ -11,8 +11,8 @@ import { mintMissingDevSecrets, seedDevSecrets, storedSecretValue } from "@pithy
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { loadWorkerConfig, type WorkerConfig } from "../project/config";
-import { upsertDevVars } from "../project/devVars";
 import { resolveWorkers } from "../project/workerScope";
+import { writeDevVars } from "./devVars";
 import { devSecretsPath, readDevSecrets, writeDevSecrets } from "./file";
 import { type DevSecretsStoreHandle, type OpenDevSecretsStoreOptions, openDevSecretsStore } from "./store";
 
@@ -40,6 +40,12 @@ import { type DevSecretsStoreHandle, type OpenDevSecretsStoreOptions, openDevSec
  * is the source of truth, the store is seeded from it, **and** the value is injected — all three, not
  * a choice among them. #153 collapses the two read paths and removes the injection in the same commit;
  * nothing here is the intended shape.
+ *
+ * **The injection goes through {@link writeDevVars}, which is what makes it arrive.** Writing the
+ * project root's `.dev.vars` is not the same as reaching the Worker: `pithy dev` runs wrangler with
+ * `cwd: apps/<worker>`, and only `pithy feature` and `pithy worker add` ever link that file into a
+ * Worker directory. On a plain project the dual-write landed in a file nothing reads, which is the
+ * regression it exists to prevent, moved rather than fixed.
  */
 
 /** One Worker's contribution: its name, its directory, and the registry that decides its destinations. */
@@ -80,6 +86,17 @@ export interface DevSecretsSeedReport {
    * stay valid — the same reason a discovered Worker's `dev` block is optional.
    */
   refused?: string | null;
+  /**
+   * One sentence per value no `.dev.vars` quoting survives — see `encodeDevVarsValue`. Never a
+   * value. The secret is still in `.dev.secrets.jsonc` and still seeded into the store; what is refused
+   * is the transitional copy, which is the only half dev reads until #153.
+   */
+  devVarsRefused?: string[];
+  /**
+   * Worker directories holding a `.dev.vars` of their own. wrangler reads *that* file, so the injected
+   * copy does not reach them, and their file is theirs to keep — so it is said out loud, never replaced.
+   */
+  shadowed?: string[];
 }
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
@@ -251,7 +268,9 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     }
   }
 
-  if (Object.keys(devVars).length > 0) await upsertDevVars(join(projectDir, ".dev.vars"), devVars);
+  // One writer, because a `.dev.vars` line has two ways of not arriving and both are silent: a value
+  // dotenv reads differently than it was written, and a file the Worker's wrangler never opens.
+  const wrote = await writeDevVars({ projectDir, values: devVars });
 
   // No target is no registry, and no registry is nothing to judge a name against. Calling every secret
   // in the file undeclared because this project has not composed `secrets` yet is a false statement, and
@@ -263,12 +282,16 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     // What the write actually landed, never what was minted into memory. A refused write minted values
     // that reached no file, and reporting them as minted is how a command claims a value it does not have.
     minted: sorted(minted),
-    devVars: Object.keys(devVars).sort(),
+    // What the write landed, never what was handed to it — a value no quoting survives is refused, and
+    // reporting it as written is how a command claims a binding the Worker does not have.
+    devVars: wrote.written,
     // A secret one Worker cannot mint may be another's to seed. Only the ones nothing supplied are missing.
     missing: sorted(missing).filter((name) => !seeded.has(name) && !unchanged.has(name)),
     undeclared: undeclared.sort(),
     skipped,
     refused,
+    devVarsRefused: wrote.refused,
+    shadowed: wrote.shadowed,
   };
 }
 

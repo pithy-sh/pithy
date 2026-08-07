@@ -35,6 +35,13 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   for (const { worker, reason } of report.skipped) {
     lines.push(`${worker}: secrets not seeded. ${reason}`);
   }
+  // Both of these describe a value that is in the file, is in the store, and still will not resolve in
+  // dev — which until #153 is the only thing that matters. They are run outcomes, not standing states:
+  // a project with neither hears nothing, and a project with either hears it every run until it is fixed.
+  for (const reason of report.devVarsRefused ?? []) lines.push(reason);
+  for (const dir of report.shadowed ?? []) {
+    lines.push(`${dir} has a .dev.vars of its own. wrangler reads that one, so nothing seeded reaches it.`);
+  }
   // Last, and never silent. A refusal is the one line here that describes something the adopter has to
   // do before the command can finish its job — every other line reports work already done.
   if (report.refused) lines.push(report.refused);

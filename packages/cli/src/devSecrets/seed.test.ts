@@ -282,6 +282,8 @@ describe("seedProjectDevSecrets", () => {
       undeclared: [],
       skipped: [],
       refused: null,
+      devVarsRefused: [],
+      shadowed: [],
     });
   });
 
