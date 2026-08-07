@@ -586,6 +586,38 @@ describe("renameWorker", () => {
     ).rejects.toThrow(ConflictError);
   });
 
+  test("a symlink at apps/<from> is refused — the source is gated too, not only the destination", async () => {
+    // #164, the seventh producer of this class and its third verb. The destination was gated and the
+    // source was not, so `rename` moved the *link* to `apps/board` — still pointing outside the project —
+    // and the `wrangler.jsonc` and `package.json` rewrites below then went straight through it. Reproduced
+    // against a canary directory: the command reported success and left the canary's files renamed.
+    const canary = join(dir, "canary");
+    await mkdir(canary, { recursive: true });
+    await writeFile(join(canary, "wrangler.jsonc"), '{ "name": "acme-api" }\n');
+    await writeFile(join(canary, "package.json"), `${JSON.stringify({ name: "acme-api" }, null, 2)}\n`);
+    await mkdir(join(dir, "apps"), { recursive: true });
+    await symlink(canary, join(dir, "apps", "api"));
+
+    const error = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    // The sentence is the move's, not the scaffold's: nothing was being scaffolded, and the wording an
+    // adopter acts on has to describe the command that printed it.
+    expect((error as ConflictError).payload.action).toContain("move through a link");
+    // Nothing moved, and nothing was written through the link.
+    expect((await lstat(join(dir, "apps", "api"))).isSymbolicLink()).toBe(true);
+    await expect(stat(join(dir, "apps", "board"))).rejects.toThrow();
+    const pkg = JSON.parse(await readFile(join(canary, "package.json"), "utf8")) as { name: string };
+    expect(pkg.name).toBe("acme-api");
+  });
+
   test("throws NotFoundError when the worker does not exist", async () => {
     await expect(
       renameWorker({

@@ -996,7 +996,27 @@ describe("ensureEmptyTarget", () => {
  * exists to keep true.
  */
 describe("the gate on the gate", () => {
-  const CLI_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  /**
+   * `packages/`, and the rules below read every package's `src` rather than this one's.
+   *
+   * The walk was `packages/cli/src`, which is neither what ships nor what the rules are about: a writer
+   * appearing in `packages/core/src` or `packages/secrets/src` was simply not read. Widening it is free
+   * today — nothing outside the CLI writes to an adopter's disk — and that is exactly why it should be
+   * done now rather than by whoever ships the first one.
+   *
+   * **What stays outside, and why.** The repository's `scripts/` and `tooling/`, each package's own
+   * `scripts/`, every `test-utils` directory, and `vitest.setup.ts` — this repository's own build and test
+   * machinery, none of which ships to anyone. Four of them probe with a
+   * follower while writing (`vendorTemplate.ts`, `audit.ts`, `stampVersions.ts`, `worktree.ts`) and six
+   * run a recursive delete — so the boundary is a decision, not an oversight, and it is on record here.
+   * None of them ever runs against an adopter's project, which is the only thing these rules protect: they
+   * delete `packages/cli/templates`, a temp checkout, or a worktree this repo made. A rule they had to
+   * satisfy would be ten exemptions buying nothing.
+   */
+  const PACKAGES = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+  /** A module's key in the maps below: its path under `packages/`, in posix separators. */
+  const named = (path: string): string => relative(PACKAGES, path).split(sep).join("/");
 
   /** Anything that puts bytes on disk. A module importing one of these is a module that writes. */
   const WRITES = new Set([
@@ -1048,31 +1068,31 @@ describe("the gate on the gate", () => {
    * manager that shares a store.
    */
   const FOLLOWS_ON_PURPOSE: Record<string, { probes: string; why: string }> = {
-    "capabilities/remove.ts": {
+    "cli/src/capabilities/remove.ts": {
       probes: "stat",
       why: "Asks whether `node_modules/<pkg>` is installed. Nothing is written there, and following is the right answer — a shared-store package manager links that path.",
     },
-    "devSecrets/mode.ts": {
+    "cli/src/devSecrets/mode.ts": {
       probes: "stat",
       why: "Takes the group and other bits off a dev secrets file, and a worker's `.dev.vars` is a link to the project's shared one by design — so the file to tighten is the destination, not the link. Narrowing only, regular files we own only, best effort, and the `chmod` follows the same path the `stat` answered about.",
     },
-    "feature/devVars.ts": {
+    "cli/src/feature/devVars.ts": {
       probes: "stat",
       why: "The destination *is* the question: it compares what the worker's link reaches with the project's shared file, behind an `lstat` that answers about the link.",
     },
-    "feature/ports.ts": {
+    "cli/src/feature/ports.ts": {
       probes: "stat",
       why: "Reads `mtimeMs` off a lock file it created itself, to age it out. Not an existence probe.",
     },
-    "feature/sync.ts": {
+    "cli/src/feature/sync.ts": {
       probes: "access",
       why: "Asks whether a worktree directory and its gitlink are still there, to decide whether a pinned port block belongs to a live feature. Nothing is composed from that answer and nothing is written through it.",
     },
-    "feature/worktree.ts": {
+    "cli/src/feature/worktree.ts": {
       probes: "existsSync",
       why: "Asks about a git worktree directory before handing it to `git worktree add`, which does its own refusing. Nothing is composed and written through the answer.",
     },
-    "platform/rc.ts": {
+    "cli/src/platform/rc.ts": {
       probes: "existsSync, statSync",
       why: "Follows deliberately, and documents it: an `lstatSync` escape guard refuses a link out of the home directory first, and the mode behind it is then the real file's.",
     },
@@ -1106,10 +1126,17 @@ describe("the gate on the gate", () => {
     return found;
   }
 
-  /** The names a module imports from `node:fs` or `node:fs/promises`, local aliases resolved to the original. */
+  /**
+   * The names a module imports from `fs` or `fs/promises`, local aliases resolved to the original.
+   *
+   * The `node:` prefix is **optional** here, and was not: the regex read `node:fs` alone, so `import
+   * { access } from "fs/promises"` — the same module, the same probe, one prefix short — went green
+   * through every rule below it. Nothing in this repo writes it that way today, which is precisely how
+   * long a hole like that survives unnoticed.
+   */
   function fsImports(source: string): string[] {
     return namedImports(source)
-      .filter(({ specifier }) => /^node:fs(\/promises)?$/.test(specifier))
+      .filter(({ specifier }) => /^(?:node:)?fs(\/promises)?$/.test(specifier))
       .flatMap(({ names }) => names);
   }
 
@@ -1121,15 +1148,31 @@ describe("the gate on the gate", () => {
     );
   }
 
-  /** Every module this rule covers: the CLI's shipped source, tests and their harnesses excluded. */
+  /** Every module these rules cover: every package's shipped source, tests and their harnesses excluded. */
   async function modules(): Promise<string[]> {
-    const entries = await readdir(CLI_SRC, { recursive: true, withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts"))
-      .map((entry) => join(entry.parentPath, entry.name))
-      .filter((path) => !path.includes(`${sep}test-utils${sep}`))
-      .sort();
+    const found: string[] = [];
+    for (const pkg of await readdir(PACKAGES, { withFileTypes: true })) {
+      if (!pkg.isDirectory()) continue;
+      const entries = await readdir(join(PACKAGES, pkg.name, "src"), { recursive: true, withFileTypes: true }).catch(
+        () => [],
+      );
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
+        const path = join(entry.parentPath, entry.name);
+        if (path.includes(`${sep}test-utils${sep}`)) continue;
+        found.push(path);
+      }
+    }
+    return found.sort();
   }
+
+  test("the walk reaches every package, not one directory of the CLI", async () => {
+    // A silent walk that finds nothing passes every rule below it, and a walk scoped to one directory
+    // passes every module outside that directory. So the walk is asserted before the rules are.
+    const found = await modules();
+    expect(found).toContain(join(PACKAGES, "core", "src", "error", "pithyError.ts"));
+    expect(new Set(found.map((path) => named(path).split("/")[0])).size).toBeGreaterThan(3);
+  });
 
   /** Every writing module that imports a link-following probe: path → the probes, sorted. */
   async function followers(): Promise<Record<string, string>> {
@@ -1139,7 +1182,7 @@ describe("the gate on the gate", () => {
       const probes = fsImports(source)
         .filter((name) => FOLLOWS.has(name))
         .sort();
-      if (probes.length > 0 && writes(source)) found[relative(CLI_SRC, path)] = probes.join(", ");
+      if (probes.length > 0 && writes(source)) found[named(path)] = probes.join(", ");
     }
     return found;
   }
@@ -1174,7 +1217,7 @@ describe("the gate on the gate", () => {
    * this is here.
    */
   const REMOVES_ON_PURPOSE: Record<string, string> = {
-    "capabilities/eject.ts":
+    "cli/src/capabilities/eject.ts":
       "Discards the fork it is about to re-copy under `--force`, on the exact path `ensureScaffoldPath(projectDir, dest)` cleared on the line above and `pathExists` then confirmed with an `lstat`. The gate is there; only the `rm` is local.",
   };
 
@@ -1187,7 +1230,7 @@ describe("the gate on the gate", () => {
       // The primitive's own module. `removeScaffoldPath` is where the `rm` is supposed to be.
       if (path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")) continue;
       const source = await readFile(path, "utf8");
-      if (/\brm(?:Sync)?\(\s*[^;]{0,200}?recursive:\s*true/.test(source)) found.push(relative(CLI_SRC, path));
+      if (/\brm(?:Sync)?\(\s*[^;]{0,200}?recursive:\s*true/.test(source)) found.push(named(path));
     }
 
     expect(found.sort(), "route it through removeScaffoldPath, or say why it deletes its own way").toEqual(
@@ -1201,17 +1244,306 @@ describe("the gate on the gate", () => {
     }
   });
 
-  test("and none of them reaches node:fs sideways, which would make the check above blind", async () => {
-    // A namespace or default import puts every `fs.access` behind a member expression the rule cannot see.
-    // Nothing in this package needs one, so the hole is closed rather than measured.
+  test("and none of them reaches fs sideways, which would make every rule here blind", async () => {
+    // A namespace or default import puts every `fs.access` behind a member expression no rule here can
+    // see, and `require` and a dynamic `import` hand over the whole module the same way. Every rule in
+    // this file reads named import clauses, so closing this is what makes reading them sufficient.
+    // Nothing in these packages needs one, so the hole is closed rather than measured.
     const sideways: string[] = [];
     for (const path of await modules()) {
       const source = await readFile(path, "utf8");
-      if (/import\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+"node:fs(?:\/promises)?"/.test(source)) {
-        sideways.push(relative(CLI_SRC, path));
+      const specifier = String.raw`["'](?:node:)?fs(?:\/promises)?["']`;
+      if (
+        new RegExp(String.raw`import\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+${specifier}`).test(source) ||
+        new RegExp(String.raw`\brequire\(\s*${specifier}\s*\)`).test(source) ||
+        new RegExp(String.raw`\bimport\(\s*${specifier}\s*\)`).test(source)
+      ) {
+        sideways.push(named(path));
       }
     }
     expect(sideways).toEqual([]);
+  });
+
+  /**
+   * **The rule about the path, not about the verb.**
+   *
+   * The two rules above enumerate verbs. `the gate on the gate` names five probes; the recursive-delete
+   * rule names `rm` and `rmSync`. Both were green on #164, because `pithy worker rename` neither probes
+   * nor deletes — it *moves*. That is the third verb this one class has worn:
+   *
+   * ```
+   * write   → #147, #151, #152   gated
+   * delete  → #158               gated
+   * move    → #164               not gated
+   * ```
+   *
+   * Add `rename` to a list and the eighth producer is `copyFile`, or `link`, or `truncate`. So the
+   * invariant this asks about is the one that does not change with the verb: **a filesystem operation on a
+   * path composed from a user-supplied name goes through {@link ensureScaffoldPath}.** `node:fs`'s
+   * mutating surface is a closed set and all of it is in {@link MUTATES}; what the rule then looks at is
+   * the *path argument*.
+   *
+   * **This is a heuristic over source text, and here is exactly what it can see.** It reads a module's
+   * `const` initializers and calls a binding *scaffold-rooted* when its initializer names `"apps"` or
+   * `"capabilities"` — the two directories this CLI invents inside an adopter's project out of a name they
+   * typed — or names another rooted binding, to a fixpoint. A mutating call whose path argument mentions a
+   * rooted binding must have that same expression cleared by a gate in the same module.
+   *
+   * **And here is what it cannot.**
+   *
+   * - **Parameters.** A path handed to a helper is invisible: `renamePackage(to, …)` writes
+   *   `join(dir, "package.json")` off a parameter, and this reads it as unrooted. The gate at the call
+   *   site is what covers that, not this.
+   * - **A fresh name appended to a cleared path.** A binding derived from a cleared one reads as cleared,
+   *   so `join(<cleared>, <another name>)` passes. The gate walks every component *down to* the path it was
+   *   given and no further, so that is a real gap, closed only by {@link COMPOSED_ON_PURPOSE} refusing the
+   *   silent version of it.
+   * - **A path that never names the scaffold tree in the module that writes it** — one arriving from
+   *   discovery, say, in a module that mentions neither directory.
+   * - **Aliases, `require`, dynamic `import`, and a re-export.** The first is resolved; the next two are
+   *   banned outright by the test above, which is what makes reading named imports sufficient; the last is
+   *   not visible to any rule in this file.
+   *
+   * Two better homes were checked and neither exists: TypeScript 7 ships no parser API, and Biome's grit
+   * plugins match expressions rather than the conjunction of a module fact and a call — the same reason
+   * `the gate on the gate` is a test. Move it when either changes.
+   */
+  describe("a path composed from a name", () => {
+    /**
+     * `node:fs`'s path-mutating surface, in both forms.
+     *
+     * An enumeration — but of a *closed* API, not of the verbs this bug has worn so far. That is the whole
+     * difference from the two rules above. `copyFile`, `link` and `truncate` are here before anyone uses
+     * one.
+     *
+     * `open`, `mkdtemp` and the stream constructors are deliberately absent: each creates something the
+     * caller then holds, and `writeFileAtomic` is the one module in these packages that opens a path to
+     * create it. `atomic.test.ts` is the rule that covers it.
+     */
+    const MUTATES = new Set(
+      [
+        "appendFile",
+        "chmod",
+        "chown",
+        "copyFile",
+        "cp",
+        "lchmod",
+        "lchown",
+        "link",
+        "lutimes",
+        "mkdir",
+        "rename",
+        "rm",
+        "rmdir",
+        "symlink",
+        "truncate",
+        "unlink",
+        "utimes",
+        "writeFile",
+      ].flatMap((name) => [name, `${name}Sync`]),
+    );
+
+    /** The two directories this CLI invents inside an adopter's project, each out of a name they typed. */
+    const SCAFFOLD_TREE = /["'](?:apps|capabilities)["']/;
+
+    /**
+     * The gates whose second argument is the path being cleared. `removeScaffoldPath` is not here: it holds
+     * its own `rm`, so a caller reaching it has already routed through the primitive rather than around it.
+     */
+    const GATE = /\b(?:ensureScaffoldPath|ensureEmptyTarget)\(\s*[^,]+,\s*([^,)]+)/g;
+
+    /**
+     * The modules whose mutating calls this rule leaves alone: path → the paths, and why.
+     *
+     * `project/scaffold.ts` is absent because it is excluded outright below — the primitive's own module is
+     * where these operations are supposed to be, exactly as the recursive-delete rule already has it.
+     *
+     * An entry is a claim about a **path expression**, and the test holds it to both halves: an unlisted
+     * one fails, and a listed one that was gated, renamed, or removed fails too. Adding a line is the
+     * reviewable act. That is the whole point of the list.
+     */
+    const COMPOSED_ON_PURPOSE: Record<string, { paths: string; why: string }> = {
+      "cli/src/project/workerScaffold.ts": {
+        paths: `join(path, ".."), path`,
+        why: "`ensureEmptyTarget(options.projectDir, dir)` clears `apps/<name>` two lines above, and every path below it is `join(dir, rel)` where `rel` is a key of `workerFiles` — six file names fixed in this module, none of them the adopter's. This is the gap in the rule's sight above, written down rather than passed silently.",
+      },
+    };
+
+    /** Every `const`/`let` binding in a module, mapped to its initializer text. */
+    function declarations(source: string): Map<string, string> {
+      const decls = new Map<string, string>();
+      // Destructuring is skipped: nothing here composes a path out of one, and reading it would mean
+      // matching a binding pattern rather than an identifier.
+      for (const match of source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=/g)) {
+        const start = (match.index ?? 0) + match[0].length;
+        const end = source.indexOf(";", start);
+        decls.set(match[1] ?? "", source.slice(start, end === -1 ? source.length : end));
+      }
+      return decls;
+    }
+
+    /** Whether `text` names `binding` — never as a property, so `options.to` is not a mention of `to`. */
+    const mentions = (text: string, binding: string): boolean =>
+      new RegExp(String.raw`(?<![.\w])${binding}\b`).test(text);
+
+    /**
+     * Every binding whose initializer reaches `seed`, or another such binding. Run to a fixpoint.
+     *
+     * `admit` is the second condition a binding has to meet to join the set at all — see how the gated set
+     * uses it below. The rooted set admits everything: derivation is exactly what it is tracking.
+     */
+    function reaching(
+      decls: Map<string, string>,
+      seed: (init: string) => boolean,
+      admit: (init: string) => boolean = () => true,
+    ): Set<string> {
+      const found = new Set<string>();
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const [name, init] of decls) {
+          if (found.has(name) || !admit(init)) continue;
+          if (!seed(init) && ![...found].some((known) => mentions(init, known))) continue;
+          found.add(name);
+          grew = true;
+        }
+      }
+      return found;
+    }
+
+    /** Every argument of the call whose open paren ends at `start`, as source text. */
+    function argumentsOf(source: string, start: number): string[] {
+      const args: string[] = [];
+      let depth = 0;
+      let from = start;
+      for (let i = start; i < source.length; i++) {
+        const char = source[i];
+        if (char === "(" || char === "[" || char === "{") depth++;
+        else if (char === "}" || char === "]") depth--;
+        else if (char === ")") {
+          if (depth > 0) {
+            depth--;
+            continue;
+          }
+          args.push(source.slice(from, i).trim());
+          return args;
+        } else if (char === "," && depth === 0) {
+          args.push(source.slice(from, i).trim());
+          from = i + 1;
+        }
+      }
+      return args;
+    }
+
+    /**
+     * Whether every path this initializer composes ends in a **literal** segment.
+     *
+     * This is what keeps "derived from a gated path is gated" honest. A gate walks every component down to
+     * the path it was handed and no further, so `join(<gated>, "src")` really is covered by it and
+     * `join(<gated>, <a name the adopter typed>)` is not — that is a fresh producer wearing a cleared
+     * path's clothes. Only the first reads as gated.
+     */
+    function appendsOnlyLiterals(init: string): boolean {
+      for (const call of init.matchAll(/\b(?:join|resolve)\(/g)) {
+        const tail = argumentsOf(init, (call.index ?? 0) + call[0].length).at(-1) ?? "";
+        if (!/^["'`]/.test(tail)) return false;
+      }
+      return true;
+    }
+
+    /** The `node:fs` mutators a module can call, local name → the export it binds. */
+    function mutators(source: string): string[] {
+      const bound: string[] = [];
+      for (const statement of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"([^"]+)"/g)) {
+        if (!/^(?:node:)?fs(\/promises)?$/.test(statement[2] ?? "")) continue;
+        for (const clause of (statement[1] ?? "").split(",")) {
+          const [exported, alias] = clause
+            .trim()
+            .split(/\s+as\s+/)
+            .map((part) => part.trim());
+          if (exported && MUTATES.has(exported)) bound.push(alias ?? exported);
+        }
+      }
+      return bound;
+    }
+
+    /** Every mutating call on a scaffold-rooted path that no gate in the module cleared: path → the paths. */
+    async function ungated(): Promise<Record<string, string>> {
+      const found: Record<string, string[]> = {};
+      for (const path of await modules()) {
+        // The primitive's own module. `ensureScaffoldPath` is where these operations are supposed to be,
+        // and `ensureScaffoldable` is the gate `pithy init` runs before any of them.
+        if (path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")) continue;
+        const source = await readFile(path, "utf8");
+        const bound = mutators(source);
+        if (bound.length === 0) continue;
+
+        const decls = declarations(source);
+        const rooted = reaching(decls, (init) => SCAFFOLD_TREE.test(init));
+        if (rooted.size === 0) continue;
+
+        const gated = new Set<string>();
+        for (const [, target] of source.matchAll(GATE)) if (target) gated.add(target.trim());
+        const derived = reaching(
+          decls,
+          (init) => [...gated].some((target) => init.includes(target)),
+          appendsOnlyLiterals,
+        );
+
+        const isRooted = (text: string) => SCAFFOLD_TREE.test(text) || [...rooted].some((r) => mentions(text, r));
+        const isGated = (text: string) =>
+          gated.has(text) ||
+          (appendsOnlyLiterals(text) && [...gated, ...derived].some((cleared) => text.includes(cleared)));
+        for (const local of bound) {
+          for (const call of source.matchAll(new RegExp(String.raw`(?<![.\w])${local}\(`, "g"))) {
+            const argument = argumentsOf(source, (call.index ?? 0) + call[0].length)[0] ?? "";
+            if (argument.length === 0 || !isRooted(argument) || isGated(argument)) continue;
+            const already = found[named(path)] ?? [];
+            already.push(argument);
+            found[named(path)] = already;
+          }
+        }
+      }
+      return Object.fromEntries(
+        Object.entries(found).map(([path, paths]) => [path, [...new Set(paths)].sort().join(", ")]),
+      );
+    }
+
+    test("every filesystem call on one goes through ensureScaffoldPath", async () => {
+      const found = await ungated();
+      const declared = Object.fromEntries(
+        Object.entries(COMPOSED_ON_PURPOSE).map(([path, { paths }]) => [path, paths]),
+      );
+
+      // One equality, failing from both sides — the shape `the gate on the gate` already uses. A module
+      // that starts mutating an ungated name-derived path shows up; a listed one whose paths changed shows
+      // up too, so the list cannot go stale and cannot quietly widen.
+      expect(
+        found,
+        "gate it with ensureScaffoldPath(projectDir, …) before the call, or say why in COMPOSED_ON_PURPOSE",
+      ).toEqual(declared);
+    });
+
+    test("and every exemption says why, in a sentence somebody has to disagree with", () => {
+      for (const [path, { why }] of Object.entries(COMPOSED_ON_PURPOSE)) {
+        expect(why.trim().length, path).toBeGreaterThan(40);
+      }
+    });
+
+    test("it sees a move, which is the verb both older rules were blind to", async () => {
+      // The rule's own regression test: #164 shipped because `rename` is neither a probe nor a delete.
+      // Drop the gate `renameWorker` now runs on its source and this is what has to fail.
+      const source = await readFile(join(PACKAGES, "cli", "src", "project", "workerCommand.ts"), "utf8");
+      const ungatedSource = source.replace(/await ensureScaffoldPath\(options\.projectDir, target\.dir, "move"\);/, "");
+      expect(ungatedSource, "renameWorker no longer gates its source the way this test reads it").not.toBe(source);
+
+      const decls = declarations(ungatedSource);
+      const rooted = reaching(decls, (init) => SCAFFOLD_TREE.test(init));
+      const gated = new Set<string>();
+      for (const [, target] of ungatedSource.matchAll(GATE)) if (target) gated.add(target.trim());
+
+      expect(rooted.has("target")).toBe(true); // `apps/<from>`, composed from the name the adopter typed
+      expect(gated.has("target.dir")).toBe(false); // and nothing cleared it
+    });
   });
 });
 

@@ -174,10 +174,7 @@ export async function ensureScaffoldPath(root: string, target: string, intent: P
       entry.isSymbolicLink()
         ? {
             message: `${named} is a symlink.`,
-            action:
-              intent === "delete"
-                ? "Pithy won't delete through a link — the tree removed would be outside the project. Remove the link, or check the name, and run the command again."
-                : "Pithy won't scaffold through a link — the files would land outside the project. Remove it, or pick another name, and run the command again.",
+            action: THROUGH_A_LINK[intent],
             detail: `refusing to reach ${target} through the symlink at ${step}`,
           }
         : {
@@ -190,13 +187,25 @@ export async function ensureScaffoldPath(root: string, target: string, intent: P
 }
 
 /**
- * What the caller is about to do to the path — the only thing the two refusals differ by.
+ * What the caller is about to do to the path — the only thing the refusals differ by.
  *
  * A delete borrowing the write refusal told the adopter "the files would land outside the project" about a
  * command that was writing nothing, which is the one sentence they would act on and the one that was
- * false. The *rule* is identical for both, so it stays in one walk; only the sentence moves.
+ * false. The *rule* is identical for all three, so it stays in one walk; only the sentence moves.
  */
-type PathIntent = "write" | "delete";
+type PathIntent = "write" | "delete" | "move";
+
+/**
+ * The sentence each intent gives an adopter who has a link in the way. One line each, and every one of
+ * them has to be true of the command that is asking — see {@link PathIntent}.
+ */
+const THROUGH_A_LINK: Record<PathIntent, string> = {
+  write:
+    "Pithy won't scaffold through a link — the files would land outside the project. Remove it, or pick another name, and run the command again.",
+  delete:
+    "Pithy won't delete through a link — the tree removed would be outside the project. Remove the link, or check the name, and run the command again.",
+  move: "Pithy won't move through a link — the directory would leave the project, and the files rewritten after the move would land outside it. Remove the link, or check the name, and run the command again.",
+};
 
 /**
  * Delete `target` and everything under it — **the one answer to "may this path be removed", and the `rm`

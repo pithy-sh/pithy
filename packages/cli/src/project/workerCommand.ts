@@ -411,6 +411,16 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   }
 
   const to = join(appsDir, options.to);
+  // **Both ends of the move, and the source is the one that was missing.** A rename reads its source path
+  // as well as writing its destination, and `rename` on a symlink moves the *link* — so a link at
+  // `apps/<from>` arrived at `apps/<to>` still pointing outside the project, and the `wrangler.jsonc` and
+  // `package.json` rewrites below then went through it. Reproduced against a canary: `worker rename api
+  // board` left `apps/board` a link and rewrote the canary's two files, reporting success. #164.
+  //
+  // The source is gated as a `move` rather than a `write`: nothing is scaffolded here, and telling an
+  // adopter "the files would land outside the project" about a directory being moved is the same false
+  // sentence a delete borrowing the write wording used to print.
+  await ensureScaffoldPath(options.projectDir, target.dir, "move");
   // Safe first, then free. `ensureScaffoldPath` refuses a link at `apps` or at `apps/<to>` — `rename` onto
   // one is ENOTDIR, and this function had its own `exists()` over `access`, which follows the link and so
   // read a dangling one as "nothing there". The gate cleared, `rename` threw, and a raw node:fs stack trace
