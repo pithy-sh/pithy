@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -14,7 +14,7 @@ import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
-import { WORKER_NAME } from "./scaffold";
+import { ensureScaffoldPath, pathExists, WORKER_NAME } from "./scaffold";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -288,16 +288,6 @@ function deployedScriptNames(config: RenamableWrangler): string[] {
   return names;
 }
 
-/** Whether anything at all is at this path — a directory, a file, a link. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** What the account said about the old worker's script names. */
 export interface DeployedScripts {
   /** The script names that exist on the account. Empty when nothing does — or when nothing was asked. */
@@ -412,9 +402,15 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   }
 
   const to = join(appsDir, options.to);
-  // Checked against the filesystem rather than the discovered set: a directory holding neither manifest
-  // nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still destroy it.
-  if (await exists(to)) {
+  // Safe first, then free. `ensureScaffoldPath` refuses a link at `apps` or at `apps/<to>` — `rename` onto
+  // one is ENOTDIR, and this function had its own `exists()` over `access`, which follows the link and so
+  // read a dangling one as "nothing there". The gate cleared, `rename` threw, and a raw node:fs stack trace
+  // came out of a command whose `--json` callers parse `{"error":{…}}`. Reproduced against the real CLI.
+  await ensureScaffoldPath(options.projectDir, to);
+  // Then existence, checked against the filesystem rather than the discovered set: a directory holding
+  // neither manifest nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still
+  // destroy it. `pathExists` is `lstat`, shared with every other gate for the reason above.
+  if (await pathExists(to)) {
     throw new ConflictError({
       message: `apps/${options.to} already exists.`,
       action: "Pick another name, or remove that directory first.",

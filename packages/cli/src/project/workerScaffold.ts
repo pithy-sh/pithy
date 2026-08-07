@@ -248,12 +248,18 @@ export async function scaffoldWorker(options: {
     });
   }
 
-  // The gate runs **before** the directory is made, not after. A symlink at `apps/<name>` is refused
-  // rather than created through (see `ensureEmptyTarget`), and a *dangling* one is ENOENT to a recursive
-  // `mkdir` — a raw node:fs error escaping the PithyError contract `withErrorReporting` prints from.
-  // Nothing created also means `addWorker` has nothing to roll back, which is the other half of that fix.
+  // The gate runs **before** the directory is made, not after. A symlink anywhere between the project and
+  // `apps/<name>` is refused rather than created through (see `ensureScaffoldPath`), and a *dangling* one
+  // is ENOENT to a recursive `mkdir` — a raw node:fs error escaping the PithyError contract
+  // `withErrorReporting` prints from. Nothing created also means `addWorker` has nothing to roll back,
+  // which is the other half of #147's fix.
+  //
+  // The project directory is what bounds the walk, and passing it is the whole of #152 here: the gate used
+  // to be handed `apps/<name>` alone, so it lstat'd that one path and never looked at `apps`. A link there
+  // carried every file of the worker outside the project while the command printed the in-project path and
+  // exited 0 — `pithy init` already refused that shape, `worker add` did not.
   const dir = join(options.projectDir, "apps", options.name);
-  await ensureEmptyTarget(dir);
+  await ensureEmptyTarget(options.projectDir, dir);
   await mkdir(dir, { recursive: true });
 
   const files = workerFiles(options.name, options.project);

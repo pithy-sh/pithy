@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -545,6 +545,45 @@ describe("renameWorker", () => {
       }),
     ).rejects.toThrow(ConflictError);
     await stat(join(dir, "apps", "api"));
+  });
+
+  test("a dangling symlink at the destination refuses through PithyError, never a raw ENOTDIR", async () => {
+    // `renameWorker` had its own `exists()` over `access`, which follows the link — so a dangling one read
+    // as "nothing there", cleared the gate, and `rename` threw ENOTDIR straight through the PithyError
+    // contract `--json` callers parse. Reproduced against the real CLI: `pithy worker rename board moved`
+    // with a dangling link at `apps/moved` printed a node:fs stack trace and exited 0.
+    await scaffold("api");
+    await symlink(join(dir, "nowhere"), join(dir, "apps", "board"));
+
+    const error = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    await stat(join(dir, "apps", "api")); // untouched
+  });
+
+  test("a symlinked apps/ is refused — the move would carry the worker out of the project", async () => {
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "apps"));
+    await scaffold("api"); // writes through the link, as an adopter's own layout would have
+
+    await expect(
+      renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account(),
+      }),
+    ).rejects.toThrow(ConflictError);
   });
 
   test("throws NotFoundError when the worker does not exist", async () => {

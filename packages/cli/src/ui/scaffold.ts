@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
+import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 
 /**
  * Create, never overwrite.
@@ -26,16 +27,6 @@ export interface ScaffoldResult {
   skipped: string[];
 }
 
-/** True if `path` exists. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Write a stub's file record into `workerDir`, creating parent directories.
  *
@@ -47,7 +38,8 @@ async function exists(path: string): Promise<boolean> {
  * no existing byte changes.
  */
 export async function scaffoldFiles(options: {
-  /** The worker's directory — `apps/<name>`. */
+  /** The worker's directory — `apps/<name>`. Every path below it is checked; the directory itself is the
+   * caller's, and `pithy worker add` is what gates *that* one. */
   workerDir: string;
   /** The stub's file record: worker-relative path → contents. */
   files: Record<string, string>;
@@ -58,7 +50,17 @@ export async function scaffoldFiles(options: {
 
   const skipped: string[] = [];
   for (const [rel] of entries) {
-    if (await exists(join(options.workerDir, rel))) skipped.push(rel);
+    const path = join(options.workerDir, rel);
+    // Every directory this run would create or write through, before any of it is created. `exists()` here
+    // was `access`, which follows a link and answers about its destination — so a symlink at
+    // `apps/<worker>/src` read as "src/client.tsx is missing", cleared the gate, and `pithy ui add react`
+    // wrote six files of the front end outside the project and exited 0. Reproduced against the real CLI.
+    //
+    // The refusal covers the backfill (`strict: false`) too, and that is not the same rule as the skip
+    // below. A file already *there* is safe to skip because nothing is written to it. A link where a
+    // directory belongs is the opposite: the file under it does not exist, so the backfill writes — outside.
+    await ensureScaffoldPath(options.workerDir, dirname(path));
+    if (await pathExists(path)) skipped.push(rel);
   }
 
   if (skipped.length > 0 && options.strict !== false) {

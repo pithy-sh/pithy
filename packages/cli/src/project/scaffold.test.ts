@@ -3,13 +3,20 @@
 
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { ensureEmptyTarget, ensureScaffoldable, kitRange, scaffoldProject, unpublishedKitNotice } from "./scaffold";
+import {
+  ensureEmptyTarget,
+  ensureScaffoldable,
+  ensureScaffoldPath,
+  kitRange,
+  scaffoldProject,
+  unpublishedKitNotice,
+} from "./scaffold";
 import { addWorker } from "./workerCommand";
 import { scaffoldWorker } from "./workerScaffold";
 
@@ -601,18 +608,89 @@ describe("ensureScaffoldable", () => {
   });
 });
 
+/**
+ * The one gate. Four producers of the same escape wrote four versions of this question and three got it
+ * wrong, so the rule is tested once, here, and every gate is tested for *routing through it* rather than
+ * for re-deriving it.
+ */
+describe("ensureScaffoldPath", () => {
+  test("a chain of real directories is fine", async () => {
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await expect(ensureScaffoldPath(dir, join(dir, "apps", "board"))).resolves.toBeUndefined();
+  });
+
+  test("a missing chain is fine — the scaffold is what creates it", async () => {
+    await expect(ensureScaffoldPath(dir, join(dir, "apps", "board", "src"))).resolves.toBeUndefined();
+  });
+
+  test("the root itself is never judged — it is the directory the adopter handed us", async () => {
+    // A project kept behind a symlink is the adopter's arrangement and none of our business. What has to
+    // be real is every path *we* invent out of a name, which is exactly what starts below the root.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    const root = join(dir, "project");
+    await symlink(outside, root);
+
+    await expect(ensureScaffoldPath(root, root)).resolves.toBeUndefined();
+  });
+
+  test("a symlink between the root and the target is refused, and named", async () => {
+    // The gap #147 left: it lstat'd `apps/<name>` and never looked at `apps`. A link one level up carries
+    // the scaffold out of the project just as completely, and `pithy worker add` walked straight through it.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "apps"));
+
+    const error = await ensureScaffoldPath(dir, join(dir, "apps", "board")).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("apps");
+    expect((error as PithyError).payload.message).toContain("symlink");
+  });
+
+  test("a symlink at the target itself is refused", async () => {
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, "apps"), { recursive: true });
+    await symlink(outside, join(dir, "apps", "escape"));
+
+    await expect(ensureScaffoldPath(dir, join(dir, "apps", "escape"))).rejects.toThrow(PithyError);
+  });
+
+  test("a dangling symlink is refused through PithyError, never a raw ENOENT", async () => {
+    // `access` and a plain `existsSync` both follow the link and answer "missing", which cleared every
+    // gate that asked them. `lstat` sees the link itself — which is the thing in the way.
+    await mkdir(join(dir, "apps"), { recursive: true });
+    await symlink(join(dir, "nowhere"), join(dir, "apps", "gone"));
+
+    await expect(ensureScaffoldPath(dir, join(dir, "apps", "gone"))).rejects.toThrow(PithyError);
+  });
+
+  test("a file where a directory belongs is refused, rather than left to mkdir's raw ENOTDIR", async () => {
+    await writeFile(join(dir, "apps"), "mine");
+    const error = await ensureScaffoldPath(dir, join(dir, "apps", "board")).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("apps");
+  });
+
+  test("a target outside the root is this code's bug, and says so rather than probing on", async () => {
+    // Nothing would be checked: the walk would leave the loop at the filesystem root. A caller that builds
+    // such a path has already lost the argument, so it fails loudly here instead of passing quietly.
+    await expect(ensureScaffoldPath(join(dir, "project"), join(dir, "elsewhere"))).rejects.toThrow(InternalError);
+  });
+});
+
 describe("ensureEmptyTarget", () => {
   test("a missing directory is fine", async () => {
-    await expect(ensureEmptyTarget(join(dir, "nope"))).resolves.toBeUndefined();
+    await expect(ensureEmptyTarget(dir, join(dir, "nope"))).resolves.toBeUndefined();
   });
 
   test("an existing empty directory is fine", async () => {
-    await expect(ensureEmptyTarget(dir)).resolves.toBeUndefined();
+    await expect(ensureEmptyTarget(dir, dir)).resolves.toBeUndefined();
   });
 
   test("anything at all in the directory refuses it — this guards a path Pithy owns outright", async () => {
     await writeFile(join(dir, "README.md"), "not a project, still in the way");
-    await expect(ensureEmptyTarget(dir)).rejects.toThrow(PithyError);
+    await expect(ensureEmptyTarget(dir, dir)).rejects.toThrow(PithyError);
   });
 
   test("a symlink is refused however empty its destination — the gate asks about the path", async () => {
@@ -625,7 +703,7 @@ describe("ensureEmptyTarget", () => {
     await mkdir(dirname(link), { recursive: true });
     await symlink(outside, link);
 
-    await expect(ensureEmptyTarget(link)).rejects.toThrow(PithyError);
+    await expect(ensureEmptyTarget(dir, link)).rejects.toThrow(PithyError);
   });
 
   test("a dangling symlink refuses through PithyError, never a raw ENOENT", async () => {
@@ -635,7 +713,124 @@ describe("ensureEmptyTarget", () => {
     await mkdir(dirname(link), { recursive: true });
     await symlink(join(dir, "nowhere"), link);
 
-    await expect(ensureEmptyTarget(link)).rejects.toThrow(PithyError);
+    await expect(ensureEmptyTarget(dir, link)).rejects.toThrow(PithyError);
+  });
+
+  test("a symlinked parent is refused too, not just the target — that is the gap #147 left", async () => {
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "apps"));
+
+    await expect(ensureEmptyTarget(dir, join(dir, "apps", "board"))).rejects.toThrow(PithyError);
+  });
+});
+
+/**
+ * The gate on the gate: **a module that writes to the filesystem may not decide where with `access`.**
+ *
+ * This escape has had four producers, each one a hand-rolled `exists()` over `access` or a `readdir` that
+ * followed a link, and each one found by review after the last fix shipped. {@link ensureScaffoldPath} is
+ * the answer; this is what stops a fifth from being written beside it. Without it the primitive is a
+ * convention, and a convention is what the last four fixes already were.
+ *
+ * **Why a test and not a Biome grit plugin.** The rule that holds with no exemptions is a conditional —
+ * `access` is wrong in a module that *writes*, and unremarkable in one that only reads. `config.ts`,
+ * `workerScope.ts`, `packageManager.ts`, `ui/flow.ts` and `feature/sync.ts` all probe for a file they are
+ * only going to read; following a link there decides nothing and leaks nothing. That conjunction is a fact
+ * about a whole module, and Biome's grit plugins match expressions — the three this repo already ships
+ * (`no-console`, `no-process-io`, `no-raw-request-input`) are all "never, anywhere in this scope" rules,
+ * which this one is not. Scoping a plugin by `includes` would have meant hand-listing the writing modules
+ * in `biome.jsonc`, which is a fifth place to forget.
+ *
+ * `readdir` is deliberately **not** banned: listing a directory is its ordinary use, all over this package.
+ * What made it dangerous was asking it first. `occupied` asks `lstat` first, and that is what the primitive
+ * exists to keep true.
+ */
+describe("the gate on the gate", () => {
+  const CLI_SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  /** Anything that puts bytes on disk. A module importing one of these is a module that writes. */
+  const WRITES = new Set([
+    "appendFile",
+    "appendFileSync",
+    "chmod",
+    "chmodSync",
+    "copyFile",
+    "copyFileSync",
+    "cp",
+    "cpSync",
+    "link",
+    "linkSync",
+    "mkdir",
+    "mkdirSync",
+    "rename",
+    "renameSync",
+    "rm",
+    "rmdir",
+    "rmdirSync",
+    "rmSync",
+    "symlink",
+    "symlinkSync",
+    "truncate",
+    "truncateSync",
+    "unlink",
+    "unlinkSync",
+    "writeFile",
+    "writeFileSync",
+  ]);
+
+  /** The link-following existence probes. `lstat` is the one that answers about the path itself. */
+  const FOLLOWS = new Set(["access", "accessSync"]);
+
+  /** The names a module imports from `node:fs` or `node:fs/promises`, local aliases resolved to the original. */
+  function fsImports(source: string): string[] {
+    const names: string[] = [];
+    for (const statement of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"node:fs(?:\/promises)?"/g)) {
+      for (const clause of (statement[1] ?? "").split(",")) {
+        const imported = clause
+          .trim()
+          .split(/\s+as\s+/)[0]
+          ?.trim();
+        if (imported) names.push(imported);
+      }
+    }
+    return names;
+  }
+
+  /** Every module this rule covers: the CLI's shipped source, tests and their harnesses excluded. */
+  async function modules(): Promise<string[]> {
+    const entries = await readdir(CLI_SRC, { recursive: true, withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts"))
+      .map((entry) => join(entry.parentPath, entry.name))
+      .filter((path) => !path.includes(`${sep}test-utils${sep}`))
+      .sort();
+  }
+
+  test("no module that writes to the filesystem probes with access", async () => {
+    const offenders: string[] = [];
+    for (const path of await modules()) {
+      const imported = fsImports(await readFile(path, "utf8"));
+      const probe = imported.find((name) => FOLLOWS.has(name));
+      if (probe && imported.some((name) => WRITES.has(name))) {
+        offenders.push(`${relative(CLI_SRC, path)} (${probe})`);
+      }
+    }
+
+    expect(offenders, "route the check through ensureScaffoldPath/pathExists in project/scaffold.ts").toEqual([]);
+  });
+
+  test("and none of them reaches node:fs sideways, which would make the check above blind", async () => {
+    // A namespace or default import puts every `fs.access` behind a member expression the rule cannot see.
+    // Nothing in this package needs one, so the hole is closed rather than measured.
+    const sideways: string[] = [];
+    for (const path of await modules()) {
+      const source = await readFile(path, "utf8");
+      if (/import\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+"node:fs(?:\/promises)?"/.test(source)) {
+        sideways.push(relative(CLI_SRC, path));
+      }
+    }
+    expect(sideways).toEqual([]);
   });
 });
 

@@ -84,26 +84,99 @@ function templateDir(): string {
 }
 
 /**
- * Throw unless `targetDir` is missing or a real, empty directory.
+ * Every path from `root` (exclusive) down to `target` (inclusive), outermost first.
+ *
+ * The walk stops at `root` on purpose. `root` is the directory the adopter handed us — a project they may
+ * legitimately keep behind a symlink, and not ours to judge. What has to be real is every path *we* invent
+ * out of a name below it, because those are the ones an attacker or an accident can aim somewhere else.
+ *
+ * A `target` outside `root` is a bug at the call site, and it is precisely the bug that would make this
+ * walk useless: the loop would climb to the filesystem root having checked nothing anyone meant. So it
+ * throws rather than quietly returning a chain nobody asked for.
+ */
+function descent(root: string, target: string): string[] {
+  const within = relative(resolve(root), resolve(target));
+  if (within.length === 0) return [];
+  if (within.startsWith("..") || isAbsolute(within)) {
+    throw new InternalError({
+      message: "Pithy tried to scaffold outside the project.",
+      action: "Report this — the command should not have built that path.",
+      detail: `${target} is not under ${root}`,
+    });
+  }
+  const steps: string[] = [];
+  let step = resolve(root);
+  for (const segment of within.split(sep)) {
+    step = join(step, segment);
+    steps.push(step);
+  }
+  return steps;
+}
+
+/**
+ * Throw unless every path between `root` and `target` — `target` itself included — is a real directory or
+ * missing. **The one answer to "is this path safe to scaffold into", and every gate routes through it.**
+ *
+ * This escape has had four producers. `ensureScaffoldable`'s `exists` (#111), `ensureEmptyTarget`'s
+ * `readdir` (#147), `scaffoldFiles`' `exists` and `renameWorker`'s `exists` (#152) — four hand-rolled
+ * predicates over `access` or a following `readdir`, each asking about *the destination of a link* while
+ * the caller then wrote to *the link's path*. Each fix landed in one of them and review found the rest. So
+ * the rule lives in one function, and `scaffold.test.ts` fails the build if a writing module rolls another.
+ *
+ * **`lstat`, and the whole chain of it.** `access` and `existsSync` follow links, so a dangling one reads
+ * as missing and clears any gate that asks them; `lstat` answers about the path itself. And asking only
+ * about `target` is the half-fix #147 shipped — a link at `apps` carries the scaffold out of the project
+ * exactly as completely as a link at `apps/<name>`, and `pithy worker add` walked through it.
+ *
+ * **Missing stops the walk**, because everything below a missing directory is missing too, and creating it
+ * is what the scaffold is for.
+ *
+ * A non-directory in the way is refused here too, rather than left to blow up later: `mkdir`, `cp` and
+ * `rename` all die on it with a raw `node:fs` ENOTDIR — outside the `PithyError` contract `withErrorReporting`
+ * prints from and `--json` callers parse — and by then the run is usually half-written.
+ */
+export async function ensureScaffoldPath(root: string, target: string): Promise<void> {
+  for (const step of descent(root, target)) {
+    const entry = await lstat(step).catch(() => null);
+    if (entry === null) return; // missing, and so is everything below it
+    if (entry.isDirectory()) continue;
+
+    const named = relative(root, step);
+    throw new ConflictError(
+      entry.isSymbolicLink()
+        ? {
+            message: `${named} is a symlink.`,
+            action:
+              "Pithy won't scaffold through a link — the files would land outside the project. Remove it, or pick another name, and run the command again.",
+            detail: `refusing to reach ${target} through the symlink at ${step}`,
+          }
+        : {
+            message: `${named} isn't a directory.`,
+            action: "Move it aside, or pick another name, and run the command again.",
+            detail: `refusing to reach ${target} through the non-directory at ${step}`,
+          },
+    );
+  }
+}
+
+/**
+ * Throw unless `targetDir` is missing or a real, empty directory, reached through real directories.
  *
  * This is the guard for a directory **Pithy owns outright** — `apps/<worker>`, which `scaffoldWorker`
  * creates and fills. Nothing else may already live there, so emptiness is the right question. The
  * project root is the adopter's directory and asks a narrower one: see {@link ensureScaffoldable}.
  *
- * **Emptiness of the path, not of wherever it leads.** This used to be a bare `readdir`, which follows
- * symlinks — so a link at `apps/<worker>` pointing at an empty directory anywhere on disk answered
- * "empty", cleared the gate, and the whole worker was written *through* the link, outside the project,
- * with a `.dev.vars` link beside it and an exit code of 0. That is the escape #111 closed at
- * {@link exists} and {@link blocksDirectory}, in the sibling gate that fix did not reach; `lstat` is what
- * asks about the path itself. {@link occupied} already asked it correctly, so this defers to it rather
- * than restating the rule — one predicate, one place to get it wrong.
+ * Safety is {@link ensureScaffoldPath}'s answer, not this function's, which is the fix #152 asked for:
+ * #147 left this gate lstat-ing `apps/<worker>` and nothing above it, so a symlink at `apps` still carried
+ * the whole worker outside the project. Emptiness is all that is left here, and {@link occupied} asks it.
  *
- * It also makes the refusal survivable. `addWorker` rolls `apps/<worker>` back on failure, and `rm`
- * unlinks a symlink rather than its destination — so the escaped files would have stayed outside the
- * project while the command reported a clean rollback. Refusing before anything is created is what puts
- * that path out of reach, which is why `scaffoldWorker` calls this *before* its `mkdir` and not after.
+ * The gate also has to run *before* anything is created. `addWorker` rolls `apps/<worker>` back on failure,
+ * and `rm` unlinks a symlink rather than its destination — so escaped files would have stayed outside the
+ * project while the command reported a clean rollback. Refusing first puts that path out of reach, which is
+ * why `scaffoldWorker` calls this before its `mkdir` and not after.
  */
-export async function ensureEmptyTarget(targetDir: string): Promise<void> {
+export async function ensureEmptyTarget(root: string, targetDir: string): Promise<void> {
+  await ensureScaffoldPath(root, targetDir);
   if (!(await occupied(targetDir))) return;
   throw new ConflictError({
     message: `${targetDir} isn't an empty directory.`,
@@ -120,8 +193,11 @@ export async function ensureEmptyTarget(targetDir: string): Promise<void> {
  * both wrote *through* the link, landing the scaffolded file outside `targetDir` while the run reported
  * success. Node and Bun do not even agree on that copy, which makes it worse rather than narrower: the
  * unit tests and the shipped CLI would answer differently on one input.
+ *
+ * Exported for the same reason {@link ensureScaffoldPath} is: `scaffoldFiles` and `renameWorker` each had
+ * their own copy of this over `access`, and each got it wrong. One predicate, one place to get it wrong.
  */
-async function exists(path: string): Promise<boolean> {
+export async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);
     return true;
@@ -262,7 +338,7 @@ export async function ensureScaffoldable(targetDir: string, worker?: string): Pr
 
   const collisions = new Set<string>();
   for (const path of files) {
-    if (await exists(join(targetDir, path))) collisions.add(path);
+    if (await pathExists(join(targetDir, path))) collisions.add(path);
   }
   for (const path of directories) {
     if (await blocksDirectory(join(targetDir, path))) collisions.add(path);
@@ -434,7 +510,7 @@ async function stampWorkerManifest(path: string, name: string): Promise<void> {
  */
 async function seedDevVars(targetDir: string): Promise<void> {
   const path = join(targetDir, ".dev.vars");
-  if (await exists(path)) return;
+  if (await pathExists(path)) return;
   await cp(join(targetDir, ".dev.vars.example"), path);
   await chmod(path, 0o600);
 }

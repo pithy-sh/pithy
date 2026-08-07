@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -54,6 +54,36 @@ describe("scaffoldFiles", () => {
     expect(await readFile(join(dir, "index.html"), "utf8")).toBe("mine\n");
     expect(await readFile(join(dir, "src", "client.tsx"), "utf8")).toBe("also mine\n");
     expect(await readdir(join(dir, "src"))).toEqual(["client.tsx"]);
+  });
+
+  test("refuses a symlinked directory on the way to a file, and writes nothing through it", async () => {
+    // `exists()` here was `access`, which follows the link and answers about the destination — so a link at
+    // `apps/<worker>/src` read as "src/client.tsx is missing", cleared the gate, and `pithy ui add react`
+    // wrote six files of the front end outside the project and exited 0. Reproduced against the real CLI.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "src"));
+
+    await expect(
+      scaffoldFiles({ workerDir: dir, files: { "index.html": "<!doctype html>\n", "src/client.tsx": "theirs\n" } }),
+    ).rejects.toThrow(PithyError);
+
+    expect(await readdir(outside)).toEqual([]);
+    expect(await readdir(dir)).toEqual(["outside", "src"]); // index.html was never written either
+  });
+
+  test("a backfill is held to the same rule — a link is refused, not quietly skipped", async () => {
+    // `strict: false` skips a file that is already there, which is safe because nothing is written. A
+    // symlinked *directory* is the opposite case: the file under it does not exist, so the backfill writes,
+    // and it writes outside the project.
+    const outside = join(dir, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(dir, "src"));
+
+    await expect(
+      scaffoldFiles({ workerDir: dir, files: { "src/styles.css": "body {}\n" }, strict: false }),
+    ).rejects.toThrow(PithyError);
+    expect(await readdir(outside)).toEqual([]);
   });
 
   test("with strict off, an existing file is skipped and left byte-identical", async () => {
