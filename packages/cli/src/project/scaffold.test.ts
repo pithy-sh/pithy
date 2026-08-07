@@ -16,9 +16,12 @@ import {
   ensureScaffoldable,
   ensureScaffoldPath,
   kitRange,
+  pathExists,
+  RENAMED_ON_LANDING,
   scaffoldProject,
   unpublishedKitNotice,
 } from "./scaffold";
+import { committedFiles } from "./templateFiles";
 import { addWorker } from "./workerCommand";
 import { scaffoldWorker } from "./workerScaffold";
 
@@ -1024,6 +1027,55 @@ describe("a symlink above the file being written", () => {
 
     expect(await readdir(join(outside, "board"))).toEqual([]);
     expect(await readdir(outside)).toEqual(["board"]);
+  });
+});
+
+/**
+ * What `pithy init` is allowed to copy out of the starter: **what git has committed, and nothing else.**
+ *
+ * Reproduced against the real CLI from a checkout. A `.dev.vars` in `templates/starter` — gitignored,
+ * invisible to `git status`, the file `pithy add` and `pithy token mint` write `CLOUDFLARE_API_TOKEN` and
+ * `SECRETS_ENCRYPTION_KEYS` into — was copied straight into the adopter's new project, mode and all. `cp`
+ * preserves the source's mode, so a maintainer's credentials landed in someone else's repository
+ * world-readable, and `seedDevVars` then found a `.dev.vars` already there and left it exactly as it was.
+ *
+ * #145 fixed the same defect for the published tarball and stopped at the packer. `pithy init` from a
+ * checkout is the other reader of that directory, and it had no filter at all.
+ */
+describe("the template copy", () => {
+  const STARTER = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../templates/starter");
+
+  test("carries no file the template's working tree merely happens to hold", async () => {
+    const planted = join(STARTER, ".dev.vars");
+    const scratch = join(STARTER, "apps", "api", "notes.local.md");
+    await writeFile(planted, "CLOUDFLARE_API_TOKEN=a-maintainers-real-token\n");
+    await writeFile(scratch, "half-written thought\n");
+    try {
+      await scaffoldProject({ targetDir: dir, appName: "leaky", worker: "board" });
+
+      // The project's own `.dev.vars` is seeded from the example and owner-only. It is never the
+      // maintainer's, and the mode is the tell: a copied one arrives with the source file's bits.
+      const seeded = await readFile(join(dir, ".dev.vars"), "utf8");
+      expect(seeded).not.toContain("a-maintainers-real-token");
+      expect((await lstat(join(dir, ".dev.vars"))).mode & 0o777).toBe(0o600);
+      // Ignored is not the rule — untracked is. An exclusion filter has to predict the next artefact.
+      expect(await pathExists(join(dir, "apps", "board", "notes.local.md"))).toBe(false);
+    } finally {
+      await rm(planted, { force: true });
+      await rm(scratch, { force: true });
+    }
+  });
+
+  test("carries every file it has committed — the allowlist is the index, not a hand-kept list", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "complete", worker: "board" });
+
+    const committed = committedFiles(STARTER) ?? [];
+    expect(committed.length).toBeGreaterThan(10);
+    for (const path of committed) {
+      // Two files land under another name, and the first worker lands under the name the run chose.
+      const landed = RENAMED_ON_LANDING[path] ?? path.replace(`apps${sep}api${sep}`, `apps${sep}board${sep}`);
+      expect(await pathExists(join(dir, landed)), landed).toBe(true);
+    }
   });
 });
 

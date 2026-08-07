@@ -9,9 +9,9 @@
  * coincidence.
  */
 
-import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { committedFiles } from "../src/project/templateFiles";
 
 /** `packages/cli`. */
 export const CLI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,22 +28,22 @@ export const VENDORED = "templates/starter";
 /**
  * The starter's committed files, relative to `source`, sorted. **The allowlist.**
  *
- * The alternative was an exclusion filter, and it is the weaker one: a filter has to predict the next
- * artefact somebody drops in that directory, and nobody predicted `.dev.vars` — the file `pithy add` and
- * `pithy token mint` write `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into, which `files`
- * published straight past `.gitignore`. Reading the index inverts the burden: a file ships because it was
- * committed, reviewed and pushed. Anything a working tree happens to hold is invisible to the packer.
+ * {@link committedFiles} is the allowlist itself, and it lives in `src/` because `pithy init` reads it
+ * too: the packer decides what a published tarball carries, and the scaffold decides what an adopter's
+ * new project carries, and both were reading the same directory by different rules. `.dev.vars` got past
+ * `files` into the tarball (#145) and past `cp` into an adopter's project (#152) — one defect, two
+ * readers, and fixing the packer alone left the worse half open.
  *
- * `--cached`, so an untracked or ignored file sitting beside a tracked one is not listed either.
+ * What is not shared is the answer to "no index". Here it is fatal: a tarball built from a working tree
+ * is exactly what the allowlist exists to prevent, so a pack outside a checkout must stop. `pithy init`
+ * carries on, because an installed CLI has a vendored copy and no `.git` to ask.
  */
 export function templateFiles(source: string): string[] {
-  let listed: string;
-  try {
-    listed = execFileSync("git", ["-C", source, "ls-files", "-z", "--cached"], { encoding: "utf8" });
-  } catch (cause) {
-    throw new Error(`Could not read the git index at ${source}. Pack from a checkout, with git available.`, { cause });
+  const files = committedFiles(source);
+  if (files === null) {
+    throw new Error(
+      `Could not read the git index at ${source}, or nothing under it is committed. Pack from a checkout, with git available.`,
+    );
   }
-  const files = listed.split("\0").filter(Boolean).sort();
-  if (files.length === 0) throw new Error(`No committed files under ${source}. Nothing to vendor.`);
   return files;
 }

@@ -14,6 +14,7 @@ import {
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { wireFeatureDevVars } from "../feature/devVars";
+import { committedFiles } from "./templateFiles";
 
 export interface ScaffoldOptions {
   /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
@@ -262,13 +263,53 @@ async function occupied(path: string): Promise<boolean> {
  * own `biome check .`, which is a fair warning about what it would do inside any monorepo that vendored
  * the template.
  */
-const RENAMED_ON_LANDING: Record<string, string> = {
+export const RENAMED_ON_LANDING: Record<string, string> = {
   gitignore: ".gitignore",
   "biome.template.jsonc": "biome.jsonc",
 };
 
 /**
- * Every path {@link scaffoldProject} writes, relative to the target — walked from the template rather
+ * What the starter is allowed to hand an adopter: **its committed files, and the directories holding
+ * them** — relative to the template, sorted.
+ *
+ * The index is the allowlist, for the reason {@link committedFiles} gives. `pithy init` copied the
+ * template directory wholesale, so from a checkout it also copied whatever the maintainer's working tree
+ * happened to hold — and it held `.dev.vars`, the file `pithy add` and `pithy token mint` write
+ * `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into. Reproduced: a maintainer's live token in a
+ * stranger's brand-new project, mode 0664 because `cp` copies the source's, and `seedDevVars` then found
+ * a `.dev.vars` already there and left it alone. `git status` said nothing, because the file is ignored.
+ *
+ * #145 read the index for the *published tarball* and stopped at the packer. This is the same rule for
+ * the other reader of the same directory.
+ *
+ * **No index means the vendored copy**, which is what an installed `@pithy-sh/cli` has: `prepack` built
+ * it from this same allowlist, and there is no `.git` beside it to ask. So the directory is taken as it
+ * stands. Falling back the other way — refusing — would break `pithy init` for every adopter to protect
+ * a checkout none of them have.
+ */
+async function templateContents(root: string): Promise<{ files: string[]; directories: string[] }> {
+  const committed = committedFiles(root);
+  if (committed !== null) {
+    const directories = new Set<string>();
+    for (const path of committed) {
+      for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) directories.add(parent);
+    }
+    return { files: committed, directories: [...directories].sort() };
+  }
+
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  const named = entries.map((entry) => ({
+    path: relative(root, join(entry.parentPath, entry.name)),
+    directory: entry.isDirectory(),
+  }));
+  return {
+    files: named.filter((entry) => !entry.directory).map(({ path }) => path),
+    directories: named.filter((entry) => entry.directory).map(({ path }) => path),
+  };
+}
+
+/**
+ * Every path {@link scaffoldProject} writes, relative to the target — read from the template rather
  * than listed here, so a file added to the starter is covered without anyone remembering to.
  *
  * Files and directories are separated because the two ask different questions. A file that already
@@ -288,20 +329,13 @@ const RENAMED_ON_LANDING: Record<string, string> = {
  * was replaced with a link, and since the file is git-ignored there was no copy of it anywhere.
  */
 async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
-  const root = templateDir();
-  const entries = await readdir(root, { recursive: true, withFileTypes: true });
-  const named = entries.map((entry) => ({
-    path: relative(root, join(entry.parentPath, entry.name)),
-    directory: entry.isDirectory(),
-  }));
+  const contents = await templateContents(templateDir());
 
-  const files = named
-    .filter((entry) => !entry.directory)
-    .flatMap(({ path }) => {
-      const landed = RENAMED_ON_LANDING[path];
-      return landed ? [path, landed] : [path];
-    });
-  const directories = named.filter((entry) => entry.directory).map(({ path }) => path);
+  const files = contents.files.flatMap((path) => {
+    const landed = RENAMED_ON_LANDING[path];
+    return landed ? [path, landed] : [path];
+  });
+  const directories = [...contents.directories];
   files.push(join("apps", worker, ".dev.vars"));
   if (worker === DEFAULT_WORKER) return { files, directories };
 
@@ -312,6 +346,31 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
     files: [...files, ...rename(files)],
     directories: [...directories, `apps${sep}${worker}`, ...rename(directories)],
   };
+}
+
+/**
+ * Copy the starter into `targetDir` — every path {@link templateContents} allows, and no other.
+ *
+ * The filter is the whole point: `cp` with `recursive` and nothing else copied the directory as it sits
+ * on the maintainer's disk. It runs on directories too, and a `false` there skips the subtree, so every
+ * ancestor of an allowed file has to be allowed with it — which is what {@link templateContents} returns
+ * the second list for.
+ *
+ * Held to the same allowlist {@link templatePaths} builds the collision gate from, and that is not a
+ * coincidence worth leaving to chance: a gate that refuses over a file the copy would never write is a
+ * `pithy init` that cannot run in a directory it has no quarrel with.
+ */
+async function copyTemplate(targetDir: string): Promise<void> {
+  const root = templateDir();
+  const contents = await templateContents(root);
+  const allowed = new Set([...contents.files, ...contents.directories]);
+  await cp(root, targetDir, {
+    recursive: true,
+    filter: (source) => {
+      const path = relative(root, source);
+      return path.length === 0 || allowed.has(path);
+    },
+  });
 }
 
 /**
@@ -568,7 +627,7 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   await mkdir(options.targetDir, { recursive: true });
   await ensureScaffoldable(options.targetDir, worker);
 
-  await cp(templateDir(), options.targetDir, { recursive: true });
+  await copyTemplate(options.targetDir);
   for (const [shipped, landed] of Object.entries(RENAMED_ON_LANDING)) {
     await rename(join(options.targetDir, shipped), join(options.targetDir, landed));
   }

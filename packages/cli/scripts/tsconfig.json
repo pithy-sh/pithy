@@ -5,9 +5,20 @@
   // whether a published CLI can run its first command was never typechecked. `bun` ran it anyway.
   //
   // Node only. Nothing here executes in a Worker; it runs on the machine doing the packing.
+  //
+  // `rootDir` is the package, not this directory, so one module under `src` can be shared with the
+  // scaffold that reads the same starter directory the packer does — `src/project/templateFiles.ts`.
+  // The rule it holds is "what git has committed here", and duplicating it is how the packer and
+  // `pithy init` came to disagree about `.dev.vars`.
+  //
+  // Only that one file crosses, and only in this direction. `src` roots at `src`, so a module there
+  // importing a script is `TS6059`; a script importing `src` is fine as long as the module it reaches
+  // has no project imports of its own. That one has none — `node:child_process` and `node:path` — so
+  // nothing of the CLI's graph, and none of its Workers types, arrives in this program behind it.
+  // `include` still names only this directory: the shared module joins through the import, as a leaf.
   "extends": "@pithy-sh/tsconfig/base.json",
   "compilerOptions": {
-    "rootDir": ".",
+    "rootDir": "..",
     "lib": ["ES2022"],
     "types": ["node"]
   },
