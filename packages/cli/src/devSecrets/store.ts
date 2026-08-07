@@ -30,12 +30,32 @@ import { resolveStoreIds } from "../seed/drivers";
  */
 export const SECRETS_D1_BINDING = "SECRETS";
 
+/**
+ * Where a project's local dev D1 databases are persisted — the directory `wrangler dev` writes into, and
+ * the one thing that makes a store provably *this project's local dev store* rather than something a
+ * caller called `dev`.
+ *
+ * Exported because the seeder asserts against it (#159). It is a destination, not a claim: a handle over
+ * a remote D1 cannot name this path and mean it.
+ */
+export function localDevStorePath(projectDir: string): string {
+  return join(projectDir, ".wrangler", "state", "v3", "d1");
+}
+
 /** An open local store, or the reason there is none. `dispose` is safe to call either way. */
 export type DevSecretsStoreHandle =
   | {
       readonly ready: true;
       /** The store `seedDevSecrets` writes through — the real `SystemSecretsStore` over the local D1. */
       readonly store: DevSecretsStore;
+      /**
+       * Where rows written through {@link store} actually land. The seeder refuses anything that is not
+       * {@link localDevStorePath} for the project it was asked about — see `assertLocalDevStore`.
+       *
+       * Required, and that is the point: a handle assembled without it does not compile, so a future
+       * store seam cannot quietly become a path dev secrets reach a managed environment through.
+       */
+      readonly persistPath: string;
       readonly dispose: () => Promise<void>;
     }
   | {
@@ -57,6 +77,12 @@ export interface OpenDevSecretsStoreOptions {
   workerDir: string;
   /** The Worker's name, for the reason text. Defaults to naming no Worker. */
   worker?: string;
+  /**
+   * **Unsayable on purpose (#159).** There is no environment here, and there must not be one: this opens
+   * the project's own Miniflare-backed store and nothing else. `never` means a caller that tries to pass
+   * `prod` fails to compile, which is stronger than any check it could fail at runtime.
+   */
+  env?: never;
 }
 
 /** Open the local secrets store for one Worker, or say why there is none to open. */
@@ -76,11 +102,12 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     return { ready: false, reason: `No ${MASTER_KEY_BINDING} in .dev.vars. Run pithy add secrets${scope}.`, ...noop };
   }
 
+  const persistPath = localDevStorePath(options.projectDir);
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",
     d1Databases: { [SECRETS_D1_BINDING]: databaseId },
-    d1Persist: join(options.projectDir, ".wrangler", "state", "v3", "d1"),
+    d1Persist: persistPath,
   });
   const dispose = () => miniflare.dispose();
 
@@ -108,5 +135,5 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     await dispose();
     return { ready: false, reason: "The local SECRETS database is not migrated. Run pithy migrate.", ...noop };
   }
-  return { ready: true, store, dispose };
+  return { ready: true, store, persistPath, dispose };
 }

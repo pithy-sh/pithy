@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsStore } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
@@ -13,7 +13,7 @@ import { z } from "zod";
 import { devSecretsPath, readDevSecrets } from "./file";
 import { renderDevSecretsNotes } from "./report";
 import { seedProjectDevSecrets } from "./seed";
-import type { DevSecretsStoreHandle } from "./store";
+import { type DevSecretsStoreHandle, localDevStorePath } from "./store";
 
 const registry = defineSecretRegistry({
   "auth-session-secret": {
@@ -73,7 +73,8 @@ function seed(handle?: DevSecretsStoreHandle) {
   return seedProjectDevSecrets({
     projectDir: dir,
     targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
-    openStore: async () => handle ?? { ready: true, store, dispose: async () => {} },
+    openStore: async () =>
+      handle ?? { ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} },
   });
 }
 
@@ -232,7 +233,7 @@ describe("seedProjectDevSecrets", () => {
     const report = await seedProjectDevSecrets({
       projectDir: dir,
       targets: [{ name: "board", dir: join(dir, "apps", "board"), registry: prototypeRegistry }],
-      openStore: async () => ({ ready: true, store, dispose: async () => {} }),
+      openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
 
     expect(report.minted).toEqual(["constructor", "toString"]);
@@ -281,7 +282,7 @@ describe("seedProjectDevSecrets", () => {
         { name: "board", dir: join(dir, "apps", "board"), registry },
         { name: "api", dir: join(dir, "apps", "api"), registry },
       ],
-      openStore: async () => ({ ready: true, store, dispose: async () => {} }),
+      openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
 
     expect(report.minted).toEqual(["auth-session-secret"]);
@@ -299,7 +300,7 @@ describe("seedProjectDevSecrets", () => {
     const report = await seedProjectDevSecrets({
       projectDir: dir,
       targets: [],
-      openStore: async () => ({ ready: true, store, dispose: async () => {} }),
+      openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
     expect(report.undeclared).toEqual([]);
   });
@@ -308,7 +309,7 @@ describe("seedProjectDevSecrets", () => {
     const report = await seedProjectDevSecrets({
       projectDir: dir,
       targets: [],
-      openStore: async () => ({ ready: true, store, dispose: async () => {} }),
+      openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
     });
     expect(report).toEqual({
       seeded: [],
@@ -352,6 +353,7 @@ describe("seedProjectDevSecrets", () => {
           throw new Error("D1 is gone");
         },
       },
+      persistPath: localDevStorePath(dir),
       dispose: async () => {},
     };
 
@@ -372,6 +374,7 @@ describe("seedProjectDevSecrets", () => {
       openStore: async () => ({
         ready: true,
         store,
+        persistPath: localDevStorePath(dir),
         dispose: async () => {
           disposals += 1;
         },
@@ -384,5 +387,85 @@ describe("seedProjectDevSecrets", () => {
     await writeFile(devSecretsPath(dir), '{ "auth-session-secret": "bare-value" }');
     await expect(seed()).rejects.toThrow(/not a versioned envelope/);
     expect(store.writes).toBe(0);
+  });
+});
+
+/**
+ * #159. `.dev.secrets.jsonc` holds minted random dev values, so seeding it into staging or production
+ * would not set some secrets — it would rotate every one at once, with no undo, because the values it
+ * overwrote were the only copies. The refusal belongs in the seeder rather than in one of its callers.
+ */
+describe("the environment boundary", () => {
+  test("a store that is not this project's local dev store is refused, whatever the caller passed", async () => {
+    // The destination is asserted, not the intent. A caller can still hand the seeder a handle bound to
+    // a remote D1 — a `--env prod` path that grew a store seam, a helper that took the wrong project
+    // root — and a parameter that says "dev" would have blessed it.
+    await expect(
+      seedProjectDevSecrets({
+        projectDir: dir,
+        targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
+        openStore: async () => ({
+          ready: true,
+          store,
+          persistPath: join(dir, "..", "somebody-elses-project", ".wrangler", "state", "v3", "d1"),
+          dispose: async () => {},
+        }),
+      }),
+    ).rejects.toThrow(/local dev store/);
+    expect(store.writes).toBe(0);
+  });
+
+  test("a store that will not say where it writes is refused too — permissive-by-default is the bug", async () => {
+    await expect(
+      seedProjectDevSecrets({
+        projectDir: dir,
+        targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
+        // A handle from outside TypeScript, or one written before `persistPath` existed. An unresolvable
+        // destination is refused for the same reason an unknown environment is: the dangerous default is
+        // the permissive one.
+        openStore: async () => ({ ready: true, store, dispose: async () => {} }) as unknown as DevSecretsStoreHandle,
+      }),
+    ).rejects.toThrow(/local dev store/);
+    expect(store.writes).toBe(0);
+  });
+
+  test("the real local dev store is the one it accepts", async () => {
+    const report = await seedProjectDevSecrets({
+      projectDir: dir,
+      targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
+      openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
+    });
+    expect(report.seeded).toContain("auth-session-secret");
+  });
+
+  test("nothing carrying a managed environment can reach the seeder", async () => {
+    // The tripwire. Four defect classes in this series each had three or more producers, every one
+    // because a rule lived at a call site instead of at the thing being called. A seventh caller makes
+    // this list grow and the failure names the file: prove it cannot carry an environment, or pin it.
+    const root = join(import.meta.dirname, "..");
+    const files = await readdir(root, { recursive: true, withFileTypes: true });
+    const callers: string[] = [];
+    let seedCommand = "";
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".ts") || file.name.endsWith(".test.ts")) continue;
+      const full = join(file.parentPath, file.name);
+      const text = (await readFile(full, "utf8")).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      const path = relative(root, full);
+      if (path === join("commands", "seed.ts")) seedCommand = text;
+      if (/seedProjectDevSecrets\(/.test(text)) callers.push(path);
+    }
+
+    expect(callers.sort()).toEqual(
+      [
+        // The seeder itself, and the two commands with no environment concept at all.
+        join("devSecrets", "seed.ts"),
+        join("dev", "orchestrator.ts"),
+        join("capabilities", "addBootstrap.ts"),
+        // The one caller that has an environment. Its guard stays — belt and braces — and the seeder no
+        // longer depends on it, which is the point of #159.
+        join("commands", "seed.ts"),
+      ].sort(),
+    );
+    expect(seedCommand).toMatch(/env === "dev"[\s\S]{0,120}seedProjectDevSecrets\(/);
   });
 });

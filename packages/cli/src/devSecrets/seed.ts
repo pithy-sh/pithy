@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue, VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
@@ -15,7 +16,12 @@ import { resolveWorkers } from "../project/workerScope";
 import { writeDevVars } from "./devVars";
 import { devSecretsPath, readDevSecrets, writeDevSecrets } from "./file";
 import { ownProperties } from "./records";
-import { type DevSecretsStoreHandle, type OpenDevSecretsStoreOptions, openDevSecretsStore } from "./store";
+import {
+  type DevSecretsStoreHandle,
+  localDevStorePath,
+  type OpenDevSecretsStoreOptions,
+  openDevSecretsStore,
+} from "./store";
 
 /**
  * `pithy seed`'s dev-secrets half: take `.dev.secrets.jsonc`, mint what is missing and generatable, and
@@ -120,6 +126,21 @@ export interface SeedProjectDevSecretsOptions {
    * Ignored when `targets` is supplied, which is already an answer about the composition.
    */
   reload?: boolean;
+  /**
+   * **Unsayable on purpose (#159).** No environment, ever, by any spelling.
+   *
+   * `.dev.secrets.jsonc` holds minted random dev values. Seeding it into staging or production would not
+   * set some secrets — it would rotate every one at once: every session invalidated, every signed link
+   * broken, every OAuth credential replaced with a value the provider has never seen, and no undo,
+   * because the values it overwrote were the only copies. A `--force` does not make that safe, it makes
+   * it reachable. Production secrets are set one at a time by `pithy secrets provision` and
+   * `pithy secrets set`, which know they are touching a live environment.
+   *
+   * `never` is the strong half of the guarantee: a caller cannot pass the wrong environment because it
+   * cannot pass one at all. {@link assertLocalDevStore} is the other half, for the destination a caller
+   * *can* still get wrong.
+   */
+  env?: never;
 }
 
 /**
@@ -175,6 +196,8 @@ export interface DevSecretsTargetsOptions {
    * the config once and never rewrite it, so they have nothing stale to correct.
    */
   reload?: boolean;
+  /** **Unsayable on purpose (#159).** Targets are the project's own Workers; there is no environment. */
+  env?: never;
 }
 
 /** Distinguishes one reload from the next, so two in a process both get a module and not the first one twice. */
@@ -237,6 +260,9 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     }
     const declaredHere = notYetMoved(target.registry, file, inDevVars);
     try {
+      // Before a byte is minted or stored. The destination is what makes this a dev seeding run — not
+      // the caller's word for it, and not a flag anywhere upstream.
+      assertLocalDevStore(projectDir, target.name, handle.persistPath);
       // **Persist before storing.** A minted value written to D1 before it reaches
       // `.dev.secrets.jsonc` is a row nothing explains: the next run finds the file still without it,
       // mints a *different* value, and overwrites the row — for a session secret, every live session
@@ -304,6 +330,34 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     shadowed: wrote.shadowed,
     undelivered: wrote.undelivered,
   };
+}
+
+/**
+ * Refuse any store that is not this project's own local dev store (#159).
+ *
+ * **The rule lives here rather than at a call site.** `commands/seed.ts` has guarded it correctly since
+ * the day it was written — `env === "dev" && !dryRun` — and that is one caller out of six. Four defect
+ * classes in this branch each had three or more producers, every one because the rule was enforced where
+ * the thing was called instead of inside the thing being called. This one's payload is every live secret
+ * in a production environment, rotated at once, with no copy of what it overwrote.
+ *
+ * **The destination is asserted, not the intent.** A parameter saying `dev` is a claim; where the rows
+ * land is a fact. `openDevSecretsStore` opens Miniflare over {@link localDevStorePath} and reports that
+ * path, so a handle bound to a remote D1 — through the `openStore` seam, or a future one — cannot pass.
+ *
+ * **And an unresolvable destination refuses.** A handle with no path at all is not "probably fine": the
+ * permissive default is the whole bug this closes. `undefined` is in the signature and not in the type
+ * because the type already forbids it — this is what answers a caller that came from outside TypeScript.
+ */
+function assertLocalDevStore(projectDir: string, worker: string, persistPath: string | undefined): void {
+  const expected = localDevStorePath(projectDir);
+  if (persistPath !== undefined && resolve(persistPath) === resolve(expected)) return;
+  throw new ConflictError({
+    message: `Refusing to seed dev secrets for ${worker}: that is not this project's local dev store.`,
+    action:
+      "Dev secrets are local only. A deployed environment gets its secrets from pithy secrets provision and pithy secrets set, one at a time.",
+    detail: `expected the local dev store at '${expected}'; the handle named ${persistPath === undefined ? "no path at all" : `'${persistPath}'`}`,
+  });
 }
 
 /**
