@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -66,6 +66,51 @@ describe("writeTokenToSink", () => {
     });
     expect(target.location).toBe(".dev.vars");
     expect(await readFile(join(dir, ".dev.vars"), "utf8")).toContain("CF_TOKEN_CI_SYSTEM=v1");
+  });
+
+  test("dev-vars creates a file that did not exist owner-only, not at the umask default", async () => {
+    // Every other test here writes into a `.dev.vars` the test already created, and an existing file
+    // keeps its own mode — which is exactly how this survived. `pithy token mint --store dev-vars`
+    // against an environment with no dev-vars file yet *creates* one, and the first thing in it is a
+    // live Cloudflare API token. Falling through to the umask put a production credential at 0664.
+    const target = await writeTokenToSink("dev-vars", "live-prod-token", {
+      projectDir: dir,
+      env: "prod",
+      secretName: "CLOUDFLARE_API_TOKEN",
+      storeEntryName: "acme-prod-cloudflare-api-token",
+    });
+    expect(target.location).toBe(".dev.vars.prod");
+
+    const file = join(dir, ".dev.vars.prod");
+    expect(((await stat(file)).mode & 0o777).toString(8)).toBe("600");
+    expect(await readFile(file, "utf8")).toContain("CLOUDFLARE_API_TOKEN=live-prod-token");
+  });
+
+  test("dev-vars leaves the mode of a file that already exists alone", async () => {
+    // The mode is for creating a file, never for overruling one an adopter has already set.
+    await writeFile(join(dir, ".dev.vars.staging"), "OTHER=keep\n", { mode: 0o640 });
+    await writeTokenToSink("dev-vars", "v1", {
+      projectDir: dir,
+      env: "staging",
+      secretName: "CF_TOKEN_CI_SYSTEM",
+      storeEntryName: "acme-staging-cf-token-ci-system",
+    });
+    expect(((await stat(join(dir, ".dev.vars.staging"))).mode & 0o777).toString(8)).toBe("640");
+  });
+
+  test("dev-vars leaves a commented-out key commented, rather than rewriting the comment", async () => {
+    // A `.dev.vars` seeded from `.dev.vars.example` is mostly comments. Upserting has to add the key,
+    // not edit the documentation that happens to mention it.
+    await writeFile(join(dir, ".dev.vars"), "# CLOUDFLARE_API_TOKEN=put-yours-here\n");
+    await writeTokenToSink("dev-vars", "real", {
+      projectDir: dir,
+      env: "dev",
+      secretName: "CLOUDFLARE_API_TOKEN",
+      storeEntryName: "acme-dev-cloudflare-api-token",
+    });
+    const body = await readFile(join(dir, ".dev.vars"), "utf8");
+    expect(body).toContain("# CLOUDFLARE_API_TOKEN=put-yours-here");
+    expect(body).toContain("\nCLOUDFLARE_API_TOKEN=real");
   });
 
   test("secrets-store writes the project-scoped entry name, not the .dev.vars variable key", async () => {
