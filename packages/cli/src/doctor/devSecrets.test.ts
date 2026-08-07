@@ -151,6 +151,21 @@ describe("checkDevSecrets", () => {
     expect(result?.unreadable).toBe(true);
     expect(result?.missing).toEqual([]);
   });
+
+  test("a malformed file reports nothing misplaced either — it cannot tell pithy's own copy from theirs", async () => {
+    // The classification compares the `.dev.vars` copy against the file. A file that will not parse
+    // states nothing, so pithy's own injected line — the one thing nobody should touch before #153 —
+    // fell through to `unmoved`, and doctor told the adopter to go move it. A broken file is its own
+    // diagnosis; every other sentence it produces is a guess.
+    await writeFile(join(dir, ".dev.vars"), `auth-session-secret={"currentVersion":"1","versions":{"1":"n"}}\n`);
+    await writeFile(devSecretsPath(dir), "{ nope");
+
+    const result = await check();
+
+    expect(result?.unreadable).toBe(true);
+    expect(result?.misplaced).toEqual([]);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain("belongs in");
+  });
 });
 
 describe("devSecretsHealthy", () => {

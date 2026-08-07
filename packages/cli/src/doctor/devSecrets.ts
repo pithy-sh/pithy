@@ -66,7 +66,11 @@ export interface MisplacedDevSecret {
 export interface DevSecretsCheck {
   /** The resolved `.dev.secrets.jsonc` path — the answer to "where does this go", file or no file. */
   path: string;
-  /** Declared `d1`-backed secrets sitting in `.dev.vars`. Empty is the healthy state. */
+  /**
+   * Declared `d1`-backed secrets sitting in `.dev.vars`. Empty is the healthy state — and also the
+   * honest answer when {@link unreadable}, because the state of each one is decided against a file that
+   * would not parse.
+   */
   misplaced: MisplacedDevSecret[];
   /**
    * Declared secrets with no value in either file and nothing honest to mint — an OAuth client secret, a
@@ -155,7 +159,18 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     : Object.keys(stated)
         .filter((name) => !seen.has(name))
         .sort();
-  return { path, misplaced, missing: unreadable ? [] : [...missing].sort(), undeclared, mode, unreadable };
+  return {
+    path,
+    // Nor can it say anything true about `.dev.vars`. Every state below is decided by comparing the copy
+    // with the file, and an unparseable file states nothing — so pithy's own injected line, the one thing
+    // nobody should touch before #153, fell through to `unmoved` and the report told the adopter to go
+    // move it. That is the diagnostic breaking dev over a fault it had already named one line earlier.
+    misplaced: unreadable ? [] : misplaced,
+    missing: unreadable ? [] : [...missing].sort(),
+    undeclared,
+    mode,
+    unreadable,
+  };
 }
 
 /**
