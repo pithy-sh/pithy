@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
+import { pathExists } from "../project/scaffold";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
@@ -36,6 +36,23 @@ export type UiScreenSet = typeof AUTH_CAPABILITY | typeof PAYMENTS_CAPABILITY;
  */
 export type UiScreenPrompt = (request: { screens: UiScreenSet; suggestion: boolean }) => Promise<boolean>;
 
+/**
+ * The one name this file uses for a Worker: the directory it lives in, `apps/<name>`.
+ *
+ * Derived here rather than accepted as an argument, because a Worker has **two** names and the wrong one
+ * is what a caller has to hand. `ResolvedWorker.name` is the *deployed* name — `<project>-<worker>`, the
+ * string in `wrangler.jsonc` — and taking it wrote `apps/<project>-<worker>/tsconfig.client.json` into the
+ * root solution file, a reference to a directory that has never existed. `tsc -b` stops on it with TS6053
+ * and Vite refuses to load the Worker's `vite.config.ts`, so a freshly scaffolded project could neither
+ * typecheck nor start.
+ *
+ * Everything below is either a path or a `--worker` value, and both are the directory. The deployed name
+ * belongs in `wrangler.jsonc` and nowhere else.
+ */
+function workerName(workerDir: string): string {
+  return basename(workerDir);
+}
+
 /** One entry of `pithy ui list`. */
 export interface UiStubListing {
   /** The `<framework>` positional. */
@@ -55,10 +72,8 @@ export function listStubs(): UiStubListing[] {
 export interface UiAddOptions {
   /** The project root — where the lockfile that names the package manager lives. */
   projectDir: string;
-  /** The target worker's directory, `apps/<name>`. */
+  /** The target worker's directory, `apps/<name>` — which is also where its name comes from. */
   workerDir: string;
-  /** The target worker's name. */
-  worker: string;
   /** The target worker's loaded `pithy.config.ts` — the route table the allowlist is derived from. */
   config: WorkerConfig;
   /** The `<framework>` positional. */
@@ -102,16 +117,6 @@ export interface UiAddReport {
   scripts: string[];
 }
 
-/** True if `path` exists. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Whether to write one capability's screens. `--auth`/`--no-auth` and `--payments`/`--no-payments` decide
  * outright. With neither, a human is asked (defaulting to yes when the capability is composed on this
@@ -131,9 +136,10 @@ async function resolveScreens(
   if (wanted === undefined)
     wanted = options.prompt ? await options.prompt({ screens, suggestion: composed }) : composed;
   if (wanted && !composed) {
+    const worker = workerName(options.workerDir);
     throw new ValidationError({
-      message: `The ${screens} screens need the ${screens} capability, and ${options.worker} doesn't compose it.`,
-      action: `Run pithy add ${screens} --worker ${options.worker} first, or leave them out with --no-${screens}.`,
+      message: `The ${screens} screens need the ${screens} capability, and ${worker} doesn't compose it.`,
+      action: `Run pithy add ${screens} --worker ${worker} first, or leave them out with --no-${screens}.`,
     });
   }
   return wanted;
@@ -158,8 +164,9 @@ async function planFiles(
   screens: { auth: boolean; payments: boolean },
 ): Promise<{ files: Record<string, string>; strict: boolean }> {
   const current = await readWorkerUi(options.workerDir);
+  const worker = workerName(options.workerDir);
   const files = await loadStubFiles(stub, {
-    worker: options.worker,
+    worker,
     ...screens,
     packageManager: options.packageManager ?? "npm",
   });
@@ -167,18 +174,23 @@ async function planFiles(
 
   if (current.stub !== stub.id) {
     throw new ConflictError({
-      message: `${options.worker} already has a ${current.stub} front end.`,
+      message: `${worker} already has a ${current.stub} front end.`,
       action: "One worker, one front end. Remove it, or add the new one to a different worker with --worker.",
     });
   }
 
+  // `pathExists`, the shared `lstat`, and not the local `access` this used to roll. `access` follows a
+  // link, so a dangling one planted at a template path answered "nothing there" — the file counted as
+  // fresh, and the plan handed it to `scaffoldFiles` to write. That is the same predicate five other
+  // modules got wrong, in the one module the tripwire could not see because it imports no writer of its
+  // own. One question, one implementation.
   let fresh = 0;
   for (const rel of Object.keys(files)) {
-    if (!(await exists(join(options.workerDir, rel)))) fresh += 1;
+    if (!(await pathExists(join(options.workerDir, rel)))) fresh += 1;
   }
   if (fresh === 0) {
     throw new ConflictError({
-      message: `${options.worker} already has a ${current.stub} front end.`,
+      message: `${worker} already has a ${current.stub} front end.`,
       action: "Add screens by dropping files into src/routes/app/. Run pithy ui sync to re-derive its route allowlist.",
     });
   }
@@ -211,10 +223,10 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
   // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
   // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
-  await wireSolution(options.projectDir, options.worker);
+  await wireSolution(options.projectDir, workerName(options.workerDir));
 
   return {
-    worker: options.worker,
+    worker: workerName(options.workerDir),
     framework: stub.id,
     auth,
     payments,
@@ -265,20 +277,19 @@ export interface UiSyncReport {
  * Creates no files either way, and re-running changes nothing.
  */
 export async function runUiSync(options: {
-  /** The target worker's directory, `apps/<name>`. */
+  /** The target worker's directory, `apps/<name>` — which is also where its name comes from. */
   workerDir: string;
-  /** The target worker's name. */
-  worker: string;
   /** The target worker's loaded `pithy.config.ts`. */
   config: WorkerConfig;
   /** Report the drift and write nothing — the CI gate. */
   check?: boolean;
 }): Promise<UiSyncReport> {
+  const worker = workerName(options.workerDir);
   const current = await readWorkerUi(options.workerDir);
   if (!current) {
     throw new NotFoundError({
-      message: `${options.worker} has no front end.`,
-      action: `Run pithy ui add react --worker ${options.worker} to scaffold one.`,
+      message: `${worker} has no front end.`,
+      action: `Run pithy ui add react --worker ${worker} to scaffold one.`,
     });
   }
 
@@ -286,7 +297,7 @@ export async function runUiSync(options: {
   if (options.check) {
     const assets = await readAssets(options.workerDir);
     return {
-      worker: options.worker,
+      worker,
       before: assets.runWorkerFirst,
       after,
       changed: assets.runWorkerFirst.join("\n") !== after.join("\n") || assets.notFoundHandling === undefined,
@@ -298,7 +309,7 @@ export async function runUiSync(options: {
   const change = await wireAssets(options.workerDir, options.config);
   const before = change.before ?? [];
   return {
-    worker: options.worker,
+    worker,
     before,
     after: change.after,
     // Every way this call can have moved the file, not just the allowlist — a report that says

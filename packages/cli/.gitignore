@@ -1,0 +1,4 @@
+# The starter template vendored by `prepack` and removed by `postpack`. Never committed: the one
+# copy lives at the repo root. `files` in package.json still carries it into the tarball — an ignore
+# file does not override an allowlist, in npm or in bun.
+/templates/

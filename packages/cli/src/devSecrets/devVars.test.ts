@@ -325,6 +325,11 @@ describe("the producers", () => {
         join("tokens", "sinks.ts"),
         // Reads `.dev.vars` for a seed driver's credential; the write is the seed artifact, not a var.
         join("seed", "prepare.ts"),
+        // `pithy init` seeds the project's one shared `.dev.vars` from the committed
+        // `.dev.vars.example` — a comment block, at 0600. It writes the *file*, never a value: there
+        // is no secret in existence yet when it runs. Added when this branch met the merged `main`,
+        // which is the first tree in which both writers existed.
+        join("project", "scaffold.ts"),
       ].sort(),
     );
   });

@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { wireFeatureDevVars } from "../feature/devVars";
+import { type KeptDevVars, wireFeatureDevVars } from "../feature/devVars";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
-import { WORKER_NAME } from "./scaffold";
+import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -33,8 +33,10 @@ const defaultInstall: WorkspaceInstall = async (projectDir) => {
     await run(pm, ["install"], { cwd: projectDir });
   } catch (cause) {
     throw new InternalError({
-      message: `${pm} install failed after scaffolding the worker.`,
-      action: `Run ${pm} install by hand in the project root.`,
+      // The worker is rolled back, so "run the install by hand" would point at a workspace that no
+      // longer has the package in it. The retry is the command itself.
+      message: `${pm} install failed, so the worker was not added.`,
+      action: `Fix the install, then run pithy worker add again — or pass --skip-install and run ${pm} install later.`,
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
@@ -82,6 +84,13 @@ export interface AddWorkerReport {
   port: number | null;
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
+  /**
+   * The workers whose `.dev.vars` this left alone, and why — a real file of their own, or a link pointing
+   * somewhere else. This command wires *every* worker it discovers, not just the new one, so a sibling
+   * running on secrets the shared file does not have is a fact about the project the adopter has to be
+   * told. `pithy dev` names it on every run; the command that adds the worker used to say nothing.
+   */
+  kept: KeptDevVars[];
 }
 
 /** Options for {@link addWorker}. */
@@ -92,11 +101,61 @@ export interface AddWorkerOptions extends WorkerContext {
 }
 
 /**
+ * Everything `pithy worker add` does once `apps/<name>/` exists: link the worker's `.dev.vars`, take a
+ * port when there is a block to take one from, relink the workspace, and report what the wiring left alone.
+ *
+ * **The install goes last.** It used to run first, and it is the one step here that reaches the network —
+ * so when it threw, the `.dev.vars` wiring below it never ran and every worker after the first came out
+ * without the link `pithy init` promises every worker has. Ordering fixes that outright: by the time an
+ * install can fail, there is nothing left for it to skip.
+ */
+async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<AddWorkerReport> {
+  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
+  const { mainRoot, inWorktree } = await resolveRoots(options);
+
+  let port: number | null = null;
+  let reconciled = false;
+  if (inWorktree) {
+    const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
+    const report = await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
+    port = report.dev.workers[options.name]?.port ?? null;
+    reconciled = true;
+  }
+
+  // In a plain checkout this *is* the wiring — there is no feature port block to reconcile, so nothing
+  // else has run. In a worktree the sync above has already done it and this pass changes nothing: it is
+  // idempotent, and it is here because `SyncReport` does not carry what the wiring left alone. Dropping
+  // that list was how a sibling keeping its own `.dev.vars` went unmentioned by the command that found it.
+  const links = await wireFeatureDevVars({
+    mainRoot,
+    worktreePath: options.projectDir,
+    workers: await discoverWorkers(options.projectDir),
+  });
+
+  if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
+  return { name: options.name, dir, port, reconciled, kept: links.kept };
+}
+
+/**
  * Scaffold `apps/<name>/` and wire it into the project — the logic behind `pithy worker add`. Additive: the
  * root worker and every sibling are untouched. Inside a feature worktree it reconciles the feature's
  * `.dev.config.json` (the new worker takes the lowest free port in the reserved block, every existing worker
  * keeps its port) and re-links `.dev.vars`. In a plain main checkout there is no port block yet — it only
  * links `.dev.vars`; ports are assigned when `pithy feature create`/`sync` runs.
+ *
+ * **All-or-nothing.** Anything that fails after the directory is made rolls it back, so the same command
+ * works on the retry. It used to leave the half-made `apps/<name>` behind, and `scaffoldWorker` refuses a
+ * directory holding anything at all — so the failure blocked its own retry, and `rm -rf` by hand was the
+ * only way forward. Rolled back rather than resumed, deliberately: `apps/<name>` is a directory pithy owns
+ * outright and fills in one pass, so nothing in it is ever the adopter's and removing it destroys nothing
+ * they wrote. Resuming would mean deciding whether a non-empty `apps/<name>` is our half-made worker or
+ * their directory — and after they have opened an editor in it, those look identical. Guessing wrong there
+ * overwrites their file, which is a worse failure than the one being fixed.
+ *
+ * The feature's `.dev.config.json` may name the rolled-back worker until the next reconcile. It is derived
+ * state, rebuilt from the workers actually present on every `feature sync`, `worker add` and `worker
+ * remove`, and `pithy dev` starts the discovered set rather than the pinned one — so a stale entry starts
+ * nothing and costs the feature one port until it is next reconciled away.
  */
 export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerReport> {
   // The project comes from the root config, through `requireProjectName` — never the directory basename.
@@ -107,29 +166,20 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   const project = requireProjectName(await loadProject(options.projectDir));
   const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project });
 
-  if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
-
-  const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
-  const { mainRoot, inWorktree } = await resolveRoots(options);
-
-  if (!inWorktree) {
-    // No feature port block in a plain checkout — just link the new worker's .dev.vars at the shared file.
-    await wireFeatureDevVars({
-      mainRoot,
-      worktreePath: options.projectDir,
-      workers: await discoverWorkers(options.projectDir),
-    });
-    return { name: options.name, dir, port: null, reconciled: false };
+  try {
+    return await wireAddedWorker(options, dir);
+  } catch (cause) {
+    // Only `dir`, and only the one this call just created — never a sibling, and never a path that was
+    // there before `scaffoldWorker` ran, which it would have refused.
+    //
+    // Gated even here (#158): a rollback is still a recursive delete of a path built out of a name, and
+    // "we made it a moment ago" is an assumption about a tree that another process shares. A refusal is
+    // swallowed rather than thrown, because it would replace the failure being reported with a second
+    // one — and `scaffoldWorker` already refused every layout this gate catches, so a refusal at this
+    // point means the tree changed mid-run and the original cause is still the more useful answer.
+    await removeScaffoldPath(options.projectDir, dir).catch(() => {});
+    throw cause;
   }
-
-  const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
-  const report = await syncFeatureDevConfig({
-    mainRoot,
-    worktreePath: options.projectDir,
-    branch,
-    discoverWorkers,
-  });
-  return { name: options.name, dir, port: report.dev.workers[options.name]?.port ?? null, reconciled: true };
 }
 
 /** One row of {@link listWorkers}: a worker's name, dir, whether it autostarts, and its pinned dev port. */
@@ -192,7 +242,10 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
     });
   }
 
-  await rm(target.dir, { recursive: true, force: true });
+  // Gated, and the gate is stricter than the one a write gets (#158). `target.dir` is `apps/<name>`,
+  // composed from a name and handed to a recursive delete: a symlink at `apps` carried that delete onto a
+  // canary tree outside the project, reproduced with the real CLI, and the command said "Done."
+  await removeScaffoldPath(options.projectDir, target.dir);
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
   if (!inWorktree) return { name: target.name, dir: target.dir, reconciled: false };
@@ -242,16 +295,6 @@ function deployedScriptNames(config: RenamableWrangler): string[] {
     names.push(stanza?.name ?? `${top}-${env}`);
   }
   return names;
-}
-
-/** Whether anything at all is at this path — a directory, a file, a link. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** What the account said about the old worker's script names. */
@@ -368,9 +411,15 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   }
 
   const to = join(appsDir, options.to);
-  // Checked against the filesystem rather than the discovered set: a directory holding neither manifest
-  // nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still destroy it.
-  if (await exists(to)) {
+  // Safe first, then free. `ensureScaffoldPath` refuses a link at `apps` or at `apps/<to>` — `rename` onto
+  // one is ENOTDIR, and this function had its own `exists()` over `access`, which follows the link and so
+  // read a dangling one as "nothing there". The gate cleared, `rename` threw, and a raw node:fs stack trace
+  // came out of a command whose `--json` callers parse `{"error":{…}}`. Reproduced against the real CLI.
+  await ensureScaffoldPath(options.projectDir, to);
+  // Then existence, checked against the filesystem rather than the discovered set: a directory holding
+  // neither manifest nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still
+  // destroy it. `pathExists` is `lstat`, shared with every other gate for the reason above.
+  if (await pathExists(to)) {
     throw new ConflictError({
       message: `apps/${options.to} already exists.`,
       action: "Pick another name, or remove that directory first.",

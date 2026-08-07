@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
+import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } from "./configImports";
 
 /**
@@ -98,16 +99,6 @@ export interface EjectResult {
   forced: boolean;
 }
 
-/** True if a path exists. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The package's promotable runtime dependencies as `name@version`, read from the installed manifest.
  * Workspace-internal versions (`workspace:*`) are dropped — they exist only inside this monorepo and a
@@ -174,14 +165,20 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   const source = join(projectDir, "node_modules", pkg, "src");
   const dest = join(workerDir, EJECT_DIR, capability);
 
-  if (!(await exists(source))) {
+  if (!(await pathExists(source))) {
     throw new NotFoundError({
       message: `${pkg} is not installed (no ${pkg}/src to eject).`,
       action: `Run pithy add ${capability} first.`,
     });
   }
 
-  const alreadyEjected = await exists(dest);
+  // The fork's own path, and every segment of it Pithy composed: `apps`, `apps/<worker>`,
+  // `capabilities`, `capabilities/<cap>`. This was a local `exists()` over `stat`, which follows a link
+  // and answers about its destination — so a symlink at any of the four read as "not ejected yet" and the
+  // `cp` below wrote the capability's whole source through it, outside the project. That is the fifth
+  // producer of one escape, and it is the reason the question has exactly one implementation now.
+  await ensureScaffoldPath(projectDir, dest);
+  const alreadyEjected = await pathExists(dest);
   if (alreadyEjected && !force) {
     throw new ConflictError({
       message: `${EJECT_DIR}/${capability} already exists.`,

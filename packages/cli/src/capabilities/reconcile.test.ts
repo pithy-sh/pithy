@@ -136,11 +136,15 @@ describe("buildReconcilePlan — bindings", () => {
 });
 
 describe("buildReconcilePlan — per Worker", () => {
-  test("names the Worker it targets, defaulting to the apps/<name> basename", async () => {
+  test("names the Worker by its directory, and reports the deployed name separately", async () => {
     await writeManifest(dir, authManifest);
     const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
-    expect(plan.worker).toBe("api");
+    // No config to read, so both fall back to the directory.
+    expect(plan).toMatchObject({ worker: "api", deployedAs: "api" });
 
+    // The case that matters: the two disagree. `worker` stays the directory — the value `--worker`
+    // accepts and every path is relative to — while the deployed name goes to its own field. This test
+    // asserted the opposite before pithy-sh/pithy#144, against its own title.
     const named = await buildReconcilePlan({
       projectDir: dir,
       workerDir,
@@ -148,7 +152,7 @@ describe("buildReconcilePlan — per Worker", () => {
       env: "dev",
       capabilities: AUTH,
     });
-    expect(named.worker).toBe("reconcile-test-api");
+    expect(named).toMatchObject({ worker: "api", deployedAs: "reconcile-test-api" });
   });
 
   test("reads only its own Worker's wiring — drift in one Worker does not appear in the other", async () => {

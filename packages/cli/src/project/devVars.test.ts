@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { removeDevVars, removeDevVarsContent, upsertDevVarsContent } from "./devVars";
+import { removeDevVars, removeDevVarsContent, upsertDevVars, upsertDevVarsContent } from "./devVars";
 
 describe("upsertDevVarsContent", () => {
   test("appends a new key to an empty file", () => {
@@ -46,29 +47,6 @@ describe("removeDevVarsContent", () => {
   });
 });
 
-describe("removeDevVars", () => {
-  let dir: string;
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "pithy-remove-dev-vars-"));
-  });
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  test("leaves the file at 0600 — deprovisioning must not widen a file holding session keys", async () => {
-    // `pithy turnstile deprovision` is the only caller, and it passed no mode at all: the atomic write
-    // renames a temp file created at the umask over a `.dev.vars` that `pithy init` chmods to 0600, so
-    // deleting one key handed the whole file — `SECRETS_ENCRYPTION_KEYS` included — back to 0644.
-    const path = join(dir, ".dev.vars");
-    await writeFile(path, "A=1\nturnstile-secret-keys=x\n");
-    await chmod(path, 0o600);
-
-    await removeDevVars(path, ["turnstile-secret-keys"]);
-
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
-  });
-});
-
 describe("CRLF fidelity", () => {
   test("upsert preserves CRLF line endings", () => {
     const before = "# creds\r\nA=1\r\n";
@@ -87,5 +65,95 @@ describe("CRLF fidelity", () => {
 
   test("empty file defaults to LF on upsert", () => {
     expect(upsertDevVarsContent("", { A: "1" })).toBe("A=1\n");
+  });
+});
+
+describe("upsertDevVars — the file it writes", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-devvars-io-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("creates a .dev.vars owner-only, because that is the first thing written into it", async () => {
+    // `pithy add` mints SECRETS_ENCRYPTION_KEYS into a file that may not exist yet. The umask is not a
+    // permission policy for a credential file.
+    const path = join(dir, ".dev.vars");
+    await upsertDevVars(path, { SECRETS_ENCRYPTION_KEYS: '{"active":"k1"}' });
+    expect(((await stat(path)).mode & 0o777).toString(8)).toBe("600");
+  });
+
+  test("keeps the 0600 pithy init set, rather than handing it back the umask", async () => {
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "# copy this file\n");
+    await chmod(path, 0o600);
+    await upsertDevVars(path, { CLOUDFLARE_API_TOKEN: "tok" });
+    expect(((await stat(path)).mode & 0o777).toString(8)).toBe("600");
+  });
+
+  test("writes through a worker's symlink instead of detaching it into a stale copy", async () => {
+    // apps/<worker>/.dev.vars links at the project's shared file. Detached, the worker keeps a private
+    // copy that never sees another secret — and nothing afterwards repairs it.
+    const shared = join(dir, ".dev.vars");
+    await writeFile(shared, "SHARED=abc\n");
+    const linked = join(dir, "worker.dev.vars");
+    await symlink(shared, linked);
+
+    await upsertDevVars(linked, { CLOUDFLARE_API_TOKEN: "tok" });
+
+    expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+    expect(await readFile(shared, "utf8")).toBe("SHARED=abc\nCLOUDFLARE_API_TOKEN=tok\n");
+  });
+
+  test("refuses a read it could not make, rather than replacing the file with only the new keys", async () => {
+    // The third data loss of this exact `catch(() => "")` shape. Every read failure read as an empty
+    // file, and the atomic write then landed a file holding *only* the upserted keys — every other
+    // secret in `.dev.vars` gone, with no copy anywhere because the file is gitignored. `EACCES` on a
+    // file that plainly exists is enough; no attacker is involved.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, 'CLOUDFLARE_API_TOKEN=tok\nSECRETS_ENCRYPTION_KEYS={"active":"k1"}\n');
+    await chmod(path, 0o200); // -w-: writable, unreadable — the file is there and cannot be read back
+
+    const failure = await upsertDevVars(path, { APP_TOKEN: "new" }).catch((error: unknown) => error);
+    await chmod(path, 0o600);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.detail).toContain("EACCES");
+    expect(await readFile(path, "utf8")).toBe('CLOUDFLARE_API_TOKEN=tok\nSECRETS_ENCRYPTION_KEYS={"active":"k1"}\n');
+  });
+
+  test("removeDevVars refuses the same read, rather than reporting a key it never removed", async () => {
+    // The sibling with the same shape. A read failure returned early and the caller printed success,
+    // so the adopter was told a credential had been removed while it sat in the file untouched.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "APP_TOKEN=tok\n");
+    await chmod(path, 0o200);
+
+    const failure = await removeDevVars(path, ["APP_TOKEN"]).catch((error: unknown) => error);
+    await chmod(path, 0o600);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect(await readFile(path, "utf8")).toBe("APP_TOKEN=tok\n");
+  });
+
+  test("an absent file is still absent — only ENOENT means there is nothing to preserve", async () => {
+    const path = join(dir, ".dev.vars");
+    await upsertDevVars(path, { APP_TOKEN: "tok" });
+    expect(await readFile(path, "utf8")).toBe("APP_TOKEN=tok\n");
+    await expect(removeDevVars(join(dir, "absent.dev.vars"), ["APP_TOKEN"])).resolves.toBeUndefined();
+  });
+
+  test("removes a key through the link too, so the shared file is what changes", async () => {
+    const shared = join(dir, ".dev.vars");
+    await writeFile(shared, "A=1\nB=2\n");
+    const linked = join(dir, "worker.dev.vars");
+    await symlink(shared, linked);
+
+    await removeDevVars(linked, ["A"]);
+
+    expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+    expect(await readFile(shared, "utf8")).toBe("B=2\n");
   });
 });

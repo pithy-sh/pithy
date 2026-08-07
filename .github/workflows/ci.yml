@@ -86,6 +86,14 @@ jobs:
           # a change to CI itself get tested by the CI it changes.
           GLOBAL_PATHS='^(bun\.lock|package\.json|turbo\.jsonc|biome\.jsonc|tsconfig[^/]*\.json|\.github/)'
 
+          # The starter template belongs to no workspace either, and it is not repo-wide: it is one
+          # package's asset. `@pithy-sh/cli` scaffolds from it and its suite is the only one that reads
+          # it. A PR touching `templates/` alone planned ZERO packages and every test job was skipped —
+          # so the regression test guarding the template never ran on the PRs that change the template.
+          # Measured on this repo before the fix: a one-line edit to `templates/starter/pithy.config.ts`
+          # yielded `count: 0, any: false`.
+          TEMPLATE_PATHS='^templates/'
+
           scope=()
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Diff from the merge base, not the base branch tip. On a `pull_request` event the
@@ -96,6 +104,15 @@ jobs:
             if git diff --name-only "${base}" HEAD | grep -qE "$GLOBAL_PATHS"; then
               echo "Full run: this PR touches a repo-wide file, which no package owns."
               git diff --name-only "${base}" HEAD | grep -E "$GLOBAL_PATHS" | sed 's/^/  /'
+            elif git diff --name-only "${base}" HEAD | grep -qE "$TEMPLATE_PATHS"; then
+              # Affected, PLUS the CLI. Spelled as two filters rather than `--affected --filter=...`,
+              # because turbo INTERSECTS those two — measured: `--affected --filter=@pithy-sh/cli` on a
+              # templates-only diff plans zero packages, the same silence this branch exists to end.
+              # Filters union with each other, so the affected set has to be written as one. It is the
+              # same set: `--filter=...[base]` and `--affected` returned identical package lists on both
+              # a templates-only diff and a `core` diff that cascades to all 21.
+              echo "Affected since ${base}, plus @pithy-sh/cli — this PR changes the starter template."
+              scope=("--filter=...[${base}]" --filter=@pithy-sh/cli)
             else
               echo "Affected since ${base}"
               export TURBO_SCM_BASE="${base}"
@@ -184,6 +201,16 @@ jobs:
       - name: Migration orders
         working-directory: packages/cli
         run: bunx vitest run src/migrations/orders.test.ts
+
+      # `files` does not fail on a missing path. Pack the CLI with lifecycle scripts disabled and the
+      # starter template is simply absent from the tarball — silently, exit 0 — which is the defect
+      # `prepack` was added to close, reappearing through the one door `prepack` cannot watch. No script
+      # our manifest declares can run during a pack that refuses to run scripts, so the post-condition
+      # has to sit on the artefact instead. This is it: pack, then hold the tarball to the git index.
+      # Whatever publishes runs the same check on the file it is about to push.
+      - name: Pack the CLI
+        working-directory: packages/cli
+        run: bun run pack:verify
 
       - name: Typecheck
         run: bun run typecheck

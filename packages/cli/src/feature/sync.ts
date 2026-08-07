@@ -88,9 +88,15 @@ export interface SyncFeatureOptions {
  *
  * Refuses to run when `worktreePath` is the main checkout root. `pithy feature sync` derives its identity
  * from the current branch and takes no path argument, so running it from the main checkout while on a
- * feature branch is a plausible slip — and `wireFeatureDevVars` would otherwise `unlink` and replace every
- * real `apps/*.dev.vars` in the main checkout with a symlink, permanently losing git-ignored content. This
- * guard lives here (not only in `devVars.ts`) so it protects every caller, `createFeature` included.
+ * feature branch is a plausible slip: it would reserve a port block against the main checkout, write a
+ * feature's `.dev.config.json` at the project root, and point every worker there at a file it already
+ * owns. The main checkout is not a feature, and none of that is recoverable by re-running anything.
+ *
+ * It no longer guards the `.dev.vars` files themselves. `wireFeatureDevVars` used to `unlink` and replace
+ * every real `apps/*.dev.vars` it found, which permanently lost git-ignored content, and this guard was
+ * the only thing standing in front of it — for one caller. It now leaves a real file alone and reports it,
+ * so the loss is closed at the source, for every caller. This guard stays because syncing the main
+ * checkout as a feature is still wrong, not because it is the last line of defence.
  */
 export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise<SyncReport> {
   if (options.worktreePath === options.mainRoot) {

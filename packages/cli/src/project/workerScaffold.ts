@@ -5,7 +5,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
-import { ensureEmptyTarget, WORKER_NAME } from "./scaffold";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { ensureEmptyTarget, kitRange, WORKER_NAME } from "./scaffold";
 
 /**
  * The scaffolded app capability's name — which is also its **migration namespace**, and namespaces admit no
@@ -21,6 +22,19 @@ export function workerNamespace(name: string): string {
   const stripped = name.replace(/[^a-z0-9]/g, "");
   return NAMESPACE_PATTERN.test(stripped) ? stripped : `app${stripped}`;
 }
+
+/**
+ * The wrangler every producer of a Worker manifest pins.
+ *
+ * Three write it: this file, `templates/starter/apps/api/package.json`, and the React stub `pithy ui add`
+ * merges into a Worker. `scaffoldParity.test.ts` held it between the first two only, so the third could
+ * drift from both unnoticed — a Worker whose front end and whose server deploy through different wrangler
+ * majors. Exported and imported rather than restated, so there is one literal and one test holding it to
+ * the template on disk.
+ *
+ * `@cloudflare/vite-plugin` peers on `wrangler ^4.115.0`; moving this alone will not resolve.
+ */
+export const WRANGLER_RANGE = "^4.115.0";
 
 /**
  * The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve).
@@ -95,6 +109,12 @@ function workerFiles(name: string, project: string): Record<string, string> {
 }
 `;
 
+  // The kit range, by the same rule `pithy init` stamps into the first Worker — `kitRange` imported from
+  // there rather than restated, because a second copy of the rule is a second thing to forget. `null`
+  // while nothing under `@pithy-sh/*` is published, and then the line is omitted outright: a `"^0.0.0"`
+  // here 404'd the install this command runs, which is how the second Worker in a project came out
+  // half-made. A published version writes the range with no change to this file.
+  const kit = kitRange(PACKAGE_VERSION);
   const pkg = `${JSON.stringify(
     {
       // `<project>-<worker>`, matching both the deploy name above and what `pithy init` gives `apps/api`,
@@ -102,9 +122,18 @@ function workerFiles(name: string, project: string): Record<string, string> {
       name: `${project}-${name}`,
       private: true,
       type: "module",
-      scripts: { dev: "wrangler dev", deploy: "wrangler deploy" },
-      dependencies: { "@pithy-sh/core": "^0.0.0", hono: "^4.12.0" },
-      devDependencies: { "@cloudflare/workers-types": "^4.20260610.1", wrangler: "^4.99.0" },
+      // Every field below is held equal to the starter template's by `scaffoldParity.test.ts`. This file
+      // and that template are the project's two Worker producers, and only one of them is ever the file
+      // somebody remembers to edit — which is how the pins here fell a major version behind.
+      engines: { node: ">=22" },
+      scripts: {
+        dev: "wrangler dev",
+        deploy: "wrangler deploy",
+        "deploy:staging": "wrangler deploy --env staging",
+        "deploy:prod": "wrangler deploy --env prod",
+      },
+      dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.12.0" },
+      devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: WRANGLER_RANGE },
     },
     null,
     2,
@@ -219,9 +248,19 @@ export async function scaffoldWorker(options: {
     });
   }
 
+  // The gate runs **before** the directory is made, not after. A symlink anywhere between the project and
+  // `apps/<name>` is refused rather than created through (see `ensureScaffoldPath`), and a *dangling* one
+  // is ENOENT to a recursive `mkdir` — a raw node:fs error escaping the PithyError contract
+  // `withErrorReporting` prints from. Nothing created also means `addWorker` has nothing to roll back,
+  // which is the other half of #147's fix.
+  //
+  // The project directory is what bounds the walk, and passing it is the whole of #152 here: the gate used
+  // to be handed `apps/<name>` alone, so it lstat'd that one path and never looked at `apps`. A link there
+  // carried every file of the worker outside the project while the command printed the in-project path and
+  // exited 0 — `pithy init` already refused that shape, `worker add` did not.
   const dir = join(options.projectDir, "apps", options.name);
+  await ensureEmptyTarget(options.projectDir, dir);
   await mkdir(dir, { recursive: true });
-  await ensureEmptyTarget(dir);
 
   const files = workerFiles(options.name, options.project);
   for (const [rel, content] of Object.entries(files)) {

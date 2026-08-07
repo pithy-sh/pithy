@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
+import { kitRange } from "../project/scaffold";
+import { WRANGLER_RANGE } from "../project/workerScaffold";
 import type { UiStub, UiStubContext, UiStubFile } from "./stubs";
 
 /**
@@ -53,12 +56,25 @@ export const reactStub: UiStub = {
   },
   devDependencies: {
     "@cloudflare/vite-plugin": "^1.48.0",
-    "@pithy-sh/vite": "^0.0.0",
+    // Derived, never a literal: `"^0.0.0"` 404'd the adopter's next install, and no release would ever
+    // have moved it. `kitRange` answers `null` while nothing under the scope is published, which drops
+    // the line entirely, and writes a real range the day one exists.
+    //
+    // **`PACKAGE_VERSION` is core's, and this is a sibling** — which `stampWorkerManifest` forbids
+    // outright, because two packages that version independently share no honest range. What makes it
+    // honest here is `.changeset/config.json`: `@pithy-sh/core` and `@pithy-sh/vite` are a `fixed` group,
+    // always released together at one version, so core's number IS vite's number. `linked` would not do
+    // it — a release touching only core leaves a linked sibling on its old version, and the range would
+    // then name something vite never published. `react.test.ts` holds the group and the equality; break
+    // either and this line goes back to inventing a version.
+    "@pithy-sh/vite": kitRange(PACKAGE_VERSION),
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
     vite: "^8.0.16",
-    wrangler: "^4.115.0",
+    // The Worker's own pin, imported from the producer that writes it — this was a third copy of a
+    // literal that `scaffoldParity.test.ts` held between only the other two.
+    wrangler: WRANGLER_RANGE,
   },
   // `--configLoader runner` is load-bearing, not a preference. Vite's default config loader bundles
   // vite.config.ts and leaves every bare import external, so Node itself has to import
