@@ -57,7 +57,13 @@ export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions
   // local `SECRETS` store to be worth anything, and so does every value already in the file that a
   // previous run could not seed — `pithy add secrets` is exactly the run that makes the store openable.
   // Never fatal. A project whose store is not wired yet gets a reason, not a failed `pithy add`.
-  notes.push(...renderDevSecretsNotes(await seedProjectDevSecrets({ projectDir })));
+  //
+  // **`reload`, because this process is holding a stale config.** `pithy add` rewrote the Worker's
+  // `pithy.config.ts` several steps ago, and the module it imported before that write is the one still
+  // in the ESM cache — so the aggregate registry seeded against is the composition from *before* the
+  // add, and the secret this same run has just minted is not in it. It reached the store only on some
+  // later, unrelated command, which is what made it look like a store problem.
+  notes.push(...renderDevSecretsNotes(await seedProjectDevSecrets({ projectDir, reload: true })));
   return notes;
 }
 

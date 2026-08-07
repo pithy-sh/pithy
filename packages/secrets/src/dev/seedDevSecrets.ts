@@ -80,7 +80,9 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
   const unchanged: string[] = [];
   const missing: string[] = [];
   const devVars: Record<string, string> = {};
-  const minted: DevSecretsFile = {};
+  // Every mint happens here, before a single store write, so a caller that wants to persist the file
+  // first can do exactly that: mint, write, then seed with the values already on disk. The CLI does.
+  const minted = mintMissingDevSecrets(file, registry);
 
   for (const name of Object.keys(registry).sort()) {
     const entry = registry[name];
@@ -98,12 +100,8 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
       continue;
     }
 
-    let envelope = file[name];
-    if (!envelope && entry.devValue) {
-      // Minted only on absence. Present-in-the-file always wins, whatever is stored.
-      envelope = initialDevSecret(mintDevValue(entry.devValue));
-      minted[name] = envelope;
-    }
+    // Present-in-the-file always wins, whatever is stored and whatever was minted above.
+    const envelope = file[name] ?? minted[name];
     if (!envelope) {
       missing.push(name);
       continue;
@@ -127,11 +125,38 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     seeded.push(name);
   }
 
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a stale `toString` left in the file
+  // read as declared by every capability and was never reported.
   const undeclared = Object.keys(file)
-    .filter((name) => !(name in registry))
+    .filter((name) => !Object.hasOwn(registry, name))
     .sort();
 
   return { seeded, unchanged, devVars, minted, missing, undeclared };
+}
+
+/**
+ * Every secret the registry says may be minted and the file does not already carry, minted — and
+ * **nothing written anywhere**. The one place that decides what a mint is, so `seedDevSecrets` and a
+ * caller that needs the values before seeding cannot drift into two rules.
+ *
+ * That ordering is the point of exporting it. The CLI mints, persists `.dev.secrets.jsonc`, then
+ * seeds: a store write that lands before the file does leaves a row no file explains, and the next
+ * run mints a different value and overwrites it — a session secret that changes on every `pithy dev`
+ * for as long as the file write keeps failing.
+ *
+ * A keyspace is skipped: its members exist only at runtime, so there is no one value to mint. A secret
+ * with no `devValue` is skipped too — nothing here invents a value something outside the project has
+ * to agree with.
+ */
+export function mintMissingDevSecrets(file: DevSecretsFile, registry: SecretRegistry): DevSecretsFile {
+  const minted: DevSecretsFile = {};
+  for (const name of Object.keys(registry).sort()) {
+    const entry = registry[name];
+    if (!entry || entry.keyed || !entry.devValue) continue;
+    if (Object.hasOwn(file, name)) continue;
+    minted[name] = initialDevSecret(mintDevValue(entry.devValue));
+  }
+  return minted;
 }
 
 /**

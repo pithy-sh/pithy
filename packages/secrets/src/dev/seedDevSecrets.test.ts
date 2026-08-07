@@ -7,7 +7,7 @@ import { z } from "zod";
 import { encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { defineSecretRegistry, type SecretValueType } from "../registry";
 import type { DevSecretsFile } from "./devSecretsFile";
-import { type DevSecretsStore, seedDevSecrets } from "./seedDevSecrets";
+import { type DevSecretsStore, mintMissingDevSecrets, seedDevSecrets } from "./seedDevSecrets";
 
 /** An in-memory stand-in for the `SECRETS` D1 store, counting writes so idempotency is observable. */
 class FakeStore implements DevSecretsStore {
@@ -231,5 +231,48 @@ describe("seedDevSecrets — the file and the registry cannot disagree", () => {
 
     expect(result.undeclared).toEqual(["gone-capability-secret"]);
     expect(store.writes).toBe(0);
+  });
+
+  test("a name matching an Object.prototype key is undeclared like any other", async () => {
+    // `name in registry` walked the prototype chain, so a stale `toString` in the file read as
+    // declared by every capability and was silently never reported.
+    const store = new FakeStore();
+    const file: DevSecretsFile = { toString: { currentVersion: "1", versions: { "1": "v" } } };
+
+    const result = await seedDevSecrets({ file, registry, store });
+
+    expect(result.undeclared).toEqual(["toString"]);
+  });
+});
+
+describe("mintMissingDevSecrets", () => {
+  test("mints only what the registry says may be minted and the file does not have", () => {
+    const file: DevSecretsFile = { "auth-session-secret": { currentVersion: "1", versions: { "1": "kept" } } };
+
+    // `auth-google-credentials` has no `devValue` (Google issued it), `CONNECTION_SIGNING_KEY` is a
+    // keyspace with no single value, and the session secret is already there.
+    expect(mintMissingDevSecrets(file, registry)).toEqual({});
+    expect(Object.keys(mintMissingDevSecrets({}, registry))).toEqual(["auth-session-secret"]);
+  });
+
+  test("what it mints is what the seeder would have — one minting rule, not two", async () => {
+    // The CLI persists these to `.dev.secrets.jsonc` *before* seeding, so a failed file write cannot
+    // leave a row in the store that no file explains. That only holds while both use this function.
+    const store = new FakeStore();
+    const minted = mintMissingDevSecrets({}, registry);
+
+    const result = await seedDevSecrets({ file: minted, registry, store });
+
+    expect(result.minted).toEqual({});
+    expect(result.seeded).toEqual(["auth-session-secret"]);
+    expect(store.rows.get("auth-session-secret")?.value).toEqual(minted["auth-session-secret"]);
+  });
+
+  test("an empty file inherits nothing from Object.prototype — `in` would call every name present", () => {
+    const odd = defineSecretRegistry({
+      toString: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", devValue: "random" },
+    });
+
+    expect(Object.keys(mintMissingDevSecrets({}, odd))).toEqual(["toString"]);
   });
 });

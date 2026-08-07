@@ -3,6 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { DEV_SECRETS_FILE, type DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
@@ -49,9 +50,37 @@ const HEADER = `// Local dev secret values. Gitignored. Never committed, never d
  */
 export async function readDevSecrets(projectDir: string): Promise<DevSecretsFile> {
   const path = devSecretsPath(projectDir);
-  const source = await readFile(path, "utf8").catch(() => null);
+  const source = await readSource(path);
   if (source === null) return {};
   return loadDevSecrets(source, { path });
+}
+
+/**
+ * The file's bytes, or `null` when there is no file — and **only** when there is no file.
+ *
+ * `ENOENT` is the one errno that means "no secrets yet". Every other one is a file that is there and
+ * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Answering
+ * `{}` for those was the same as answering "empty", so a write merged its one new value into an empty
+ * base and the adopter's OAuth client secrets went with the next rename.
+ *
+ * The wrapped error carries the node error as `cause`. Its message is `EACCES: permission denied, open
+ * '<path>'` — a path and an errno, never a byte of the file.
+ */
+async function readSource(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (cause) {
+    const code = (cause as { code?: string } | null)?.code;
+    if (code === "ENOENT") return null;
+    throw new InternalError(
+      {
+        message: `${DEV_SECRETS_FILE} is there and could not be read.`,
+        action: `Check ${path} and its permissions. It should be a file, mode 600.`,
+        detail: `dev secrets file '${path}' failed to read: ${code ?? "unknown error"}`,
+      },
+      { cause },
+    );
+  }
 }
 
 /**
@@ -74,7 +103,9 @@ function mergeDevSecrets(content: string, added: DevSecretsFile): { content: str
   // message. Anything written here would land inside something that is not a secrets file.
   if (tree === null || typeof tree !== "object" || Array.isArray(tree)) return { content, added: [] };
 
-  const names = Object.keys(added).filter((name) => !(name in tree));
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a secret named for an
+  // `Object.prototype` key read as already present and was dropped — a mint the caller was told landed.
+  const names = Object.keys(added).filter((name) => !Object.hasOwn(tree, name));
   if (names.length === 0) return { content, added: [] };
   for (const name of names) tree[name] = added[name];
   return { content: `${stringify(tree, null, 2)}\n`, added: names };
@@ -110,7 +141,9 @@ export interface DevSecretsWrite {
 export async function writeDevSecrets(projectDir: string, added: DevSecretsFile): Promise<DevSecretsWrite> {
   if (Object.keys(added).length === 0) return { added: [], refused: null };
   const path = devSecretsPath(projectDir);
-  const content = (await readFile(path, "utf8").catch(() => "")) as string;
+  // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
+  // merging into an empty base is how a write replaces a file of secrets with the one value it is adding.
+  const content = (await readSource(path)) ?? "";
   const merged = mergeDevSecrets(content, added);
   if (merged.added.length === 0) return { added: [], refused: null };
 

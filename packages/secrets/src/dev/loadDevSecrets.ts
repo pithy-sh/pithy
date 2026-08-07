@@ -45,18 +45,24 @@ const ENVELOPE_SHAPE = '{ "currentVersion": "1", "versions": { "1": <value> } }'
 export function loadDevSecrets(source: string, options: LoadDevSecretsOptions = {}): DevSecretsFile {
   const path = options.path ?? DEV_SECRETS_FILE;
 
+  // A file with nothing in it is a project with no secrets yet — the same answer an absent file gets,
+  // and the same one the write path already gives when it merges a mint into empty content. `touch
+  // .dev.secrets.jsonc` used to fail `pithy add` outright, which is one state with two answers.
+  if (source.trim().length === 0) return {};
+
   let parsed: unknown;
   try {
     parsed = parse(source, undefined, true);
   } catch (cause) {
-    throw new ValidationError(
-      {
-        message: `${path} is not valid JSONC.`,
-        action: "Fix the syntax and run pithy seed. Comments and trailing commas are fine; unquoted keys are not.",
-        detail: `dev secrets file '${path}' failed to parse`,
-      },
-      { cause },
-    );
+    // **No `cause`, deliberately.** `comment-json`'s `SyntaxError` reads `Unexpected token '"', "{ …
+    // the entire file … }" is not valid JSON` — it embeds the source, so attaching it would carry
+    // every OAuth client secret in the file into whatever logs or prints the error chain. The
+    // position is kept, because a line and a column are not a value.
+    throw new ValidationError({
+      message: `${path} is not valid JSONC.`,
+      action: "Fix the syntax and run pithy seed. Comments and trailing commas are fine; unquoted keys are not.",
+      detail: `dev secrets file '${path}' failed to parse${position(cause)}`,
+    });
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -72,6 +78,19 @@ export function loadDevSecrets(source: string, options: LoadDevSecretsOptions = 
     file[name] = readEnvelope(path, name, value);
   }
   return DevSecretsFile.parse(file);
+}
+
+/**
+ * The parse error's position, as ` at line L column C`, or nothing when the parser did not give one.
+ *
+ * The only part of a `SyntaxError` from `comment-json` that is safe to repeat. Its `message` quotes
+ * the source it choked on — the whole file — so nothing else from it is carried anywhere.
+ */
+function position(cause: unknown): string {
+  if (typeof cause !== "object" || cause === null) return "";
+  const { line, column } = cause as { line?: unknown; column?: unknown };
+  if (typeof line !== "number" || typeof column !== "number") return "";
+  return ` at line ${line} column ${column}`;
 }
 
 /**
@@ -98,7 +117,10 @@ function readEnvelope(path: string, name: string, value: unknown): DevSecretEnve
       detail: `dev secrets file '${path}': '${name}' has an empty versions map`,
     });
   }
-  if (!(envelope.currentVersion in envelope.versions)) {
+  // `Object.hasOwn`, never `in`: `in` walks the prototype chain, so a `currentVersion` of `toString`
+  // or `constructor` passed this check and failed much later inside the store, with an error naming
+  // neither the file nor the secret.
+  if (!Object.hasOwn(envelope.versions, envelope.currentVersion)) {
     throw new ValidationError({
       message: `Secret '${name}' in ${path} points at version '${envelope.currentVersion}', which it does not have.`,
       action: "Set currentVersion to a key that is present in versions.",

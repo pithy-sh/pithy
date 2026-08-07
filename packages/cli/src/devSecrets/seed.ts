@@ -7,9 +7,10 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { seedDevSecrets, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { mintMissingDevSecrets, seedDevSecrets, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { upsertDevVars } from "../project/devVars";
 import { resolveWorkers } from "../project/workerScope";
 import { devSecretsPath, readDevSecrets, writeDevSecrets } from "./file";
@@ -74,8 +75,11 @@ export interface DevSecretsSeedReport {
   /**
    * Why a minted value was not written to `.dev.secrets.jsonc` — a project whose `.gitignore` cannot be
    * made to cover it. One sentence naming what to add, never a value. `null` when nothing stood in the way.
+   *
+   * A real run always sets it. Optional so the report doubles that only assert on `seeded` or `skipped`
+   * stay valid — the same reason a discovered Worker's `dev` block is optional.
    */
-  refused: string | null;
+  refused?: string | null;
 }
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
@@ -86,6 +90,11 @@ export interface SeedProjectDevSecretsOptions {
   targets?: DevSecretsTarget[];
   /** Seam: open one Worker's local store. Defaults to the real Miniflare-backed one. */
   openStore?: (options: OpenDevSecretsStoreOptions) => Promise<DevSecretsStoreHandle>;
+  /**
+   * Re-import every `pithy.config.ts` before deriving targets — see {@link DevSecretsTargetsOptions}.
+   * Ignored when `targets` is supplied, which is already an answer about the composition.
+   */
+  reload?: boolean;
 }
 
 /**
@@ -100,8 +109,15 @@ export interface SeedProjectDevSecretsOptions {
  * and threw outright in a scaffolded one, where `pithy add secrets` writes `secrets({ rotationIntervalDays })`
  * and leaves `registry` for the adopter — so the slice is `undefined` on a config the CLI itself wrote.
  */
-export async function devSecretsTargets(projectDir: string, worker?: string): Promise<DevSecretsTarget[]> {
-  const workers = await resolveWorkers({ projectDir, ...(worker !== undefined ? { worker } : {}) }).catch(() => []);
+export async function devSecretsTargets(
+  projectDir: string,
+  options: DevSecretsTargetsOptions = {},
+): Promise<DevSecretsTarget[]> {
+  const workers = await resolveWorkers({
+    projectDir,
+    ...(options.worker !== undefined ? { worker: options.worker } : {}),
+    ...(options.reload ? { loadConfig: reloadWorkerConfig } : {}),
+  }).catch(() => []);
   const targets: DevSecretsTarget[] = [];
   for (const resolved of workers) {
     if (!resolved.capabilities.some(isSecretsCapability)) continue;
@@ -114,11 +130,61 @@ export async function devSecretsTargets(projectDir: string, worker?: string): Pr
   return targets;
 }
 
+/** How {@link devSecretsTargets} narrows and how it loads. Both default to the whole project, cached. */
+export interface DevSecretsTargetsOptions {
+  /** Narrow to one Worker, by the name `pithy worker list` shows or its `apps/<dir>` basename. */
+  worker?: string;
+  /**
+   * Re-import each `pithy.config.ts` rather than taking the module this process already holds.
+   *
+   * For **`pithy add`, and only for it.** That command rewrites the Worker's config and then seeds, in
+   * one process that imported the config before the write — so the aggregate registry it seeds against
+   * is the composition from *before* the add, and the secret the same run has just minted never
+   * reaches the store. The next unrelated command picked it up, which made it look like a store
+   * problem rather than a stale module.
+   *
+   * Off by default because it is not free: every reload adds a module instance to the ESM registry for
+   * the life of the process, and re-runs the config's top-level code. `pithy dev` and `pithy seed` load
+   * the config once and never rewrite it, so they have nothing stale to correct.
+   */
+  reload?: boolean;
+}
+
+/** Distinguishes one reload from the next, so two in a process both get a module and not the first one twice. */
+let reloadCount = 0;
+
+/**
+ * One Worker's `pithy.config.ts`, imported past the ESM module cache with a query the resolver ignores
+ * and the cache key does not.
+ *
+ * **The specifier is the absolute path, not `pathToFileURL`, and that is load-bearing under Bun.** Bun
+ * honours the query as part of the cache key for a path specifier and ignores it for a `file://` URL:
+ * `import("/abs/pithy.config.ts?v=2")` re-evaluates, `import("file:///abs/pithy.config.ts?v=2")` hands
+ * back the first instance. The URL form is what {@link loadWorkerConfig} uses and is right there — it
+ * *wants* the cache. Written the same way here, `pithy add auth` seeded nothing and said nothing about
+ * it, because the fallback below silently returned the stale module. Vitest's module runner busts on
+ * either form, so no unit test can tell the two apart; the CLI itself was what caught it.
+ *
+ * Every failure falls back to {@link loadWorkerConfig}, which owns the two actionable errors — a config
+ * that is absent, and one that will not import — so nothing here has to restate them, and a config that
+ * loads clean but exports the wrong shape is answered by the same message it always was.
+ */
+async function reloadWorkerConfig(workerDir: string): Promise<WorkerConfig> {
+  const path = join(workerDir, "pithy.config.ts");
+  reloadCount += 1;
+  const module = await import(`${path}?pithy-reload=${reloadCount}`).catch(() => null);
+  const config: unknown = module?.default;
+  if (config === null || typeof config !== "object" || !Array.isArray((config as WorkerConfig).capabilities)) {
+    return loadWorkerConfig(workerDir);
+  }
+  return config as WorkerConfig;
+}
+
 /** Seed the project's dev secrets. Throws only when the file itself is malformed — that is the boundary. */
 export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOptions): Promise<DevSecretsSeedReport> {
   const projectDir = options.projectDir;
   const openStore = options.openStore ?? openDevSecretsStore;
-  const targets = options.targets ?? (await devSecretsTargets(projectDir));
+  const targets = options.targets ?? (await devSecretsTargets(projectDir, { reload: options.reload === true }));
 
   const seeded = new Set<string>();
   const unchanged = new Set<string>();
@@ -129,8 +195,10 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   // The file is read once and carried across Workers. Two Workers that declare one secret must mint it
   // once: the second sees the first's value in this object, and `seedDevSecrets` never mints over one.
   const file = await readDevSecrets(projectDir);
-  const minted: Record<string, (typeof file)[string]> = {};
   const inDevVars = parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => ""));
+
+  const minted = new Set<string>();
+  let refused: string | null = null;
 
   for (const target of targets) {
     for (const name of Object.keys(target.registry)) declared.add(name);
@@ -140,8 +208,27 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       skipped.push({ worker: target.name, reason: handle.reason });
       continue;
     }
-    const registry = notYetMoved(target.registry, file, inDevVars);
+    const declaredHere = notYetMoved(target.registry, file, inDevVars);
     try {
+      // **Persist before storing.** A minted value written to D1 before it reaches
+      // `.dev.secrets.jsonc` is a row nothing explains: the next run finds the file still without it,
+      // mints a *different* value, and overwrites the row — for a session secret, every live session
+      // invalidated on every `pithy dev`, for as long as the file write keeps failing. And a failing
+      // file write is exactly the state that produced it. This way a failed write costs a value that
+      // never existed anywhere, and the store is left holding the last one that did.
+      const fresh = mintMissingDevSecrets(file, declaredHere);
+      const written = await writeDevSecrets(projectDir, fresh);
+      refused = refused ?? written.refused;
+      for (const name of written.added) {
+        const envelope = fresh[name];
+        if (!envelope) continue;
+        file[name] = envelope;
+        minted.add(name);
+      }
+
+      // Nothing minted here is seeded unless it landed. Both `file` and the registry are narrowed, so
+      // `seedDevSecrets` has nothing left to mint and this is the only place a mint can happen.
+      const registry = seedable(declaredHere, file);
       const result = await seedDevSecrets({
         file,
         registry,
@@ -152,10 +239,6 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
       for (const name of result.unchanged) unchanged.add(name);
       for (const name of result.missing) missing.add(name);
       for (const [name, value] of Object.entries(result.devVars)) devVars[name] = value;
-      for (const [name, envelope] of Object.entries(result.minted)) {
-        minted[name] = envelope;
-        file[name] = envelope;
-      }
       // TRANSITION (#153). Everything this Worker resolved now also goes into `.dev.vars`, because
       // that binding — not the row just written — is where dev reads it. Driven off `seeded` and
       // `unchanged` so it covers exactly what the store holds, on the first run and on every re-run.
@@ -168,9 +251,6 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     }
   }
 
-  // Written after every Worker, not per Worker: a project with two Workers should touch each file once,
-  // and a mid-run failure should not leave half a mint on disk with no row to match it.
-  const written = await writeDevSecrets(projectDir, minted);
   if (Object.keys(devVars).length > 0) await upsertDevVars(join(projectDir, ".dev.vars"), devVars);
 
   // No target is no registry, and no registry is nothing to judge a name against. Calling every secret
@@ -182,13 +262,13 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     unchanged: sorted(unchanged),
     // What the write actually landed, never what was minted into memory. A refused write minted values
     // that reached no file, and reporting them as minted is how a command claims a value it does not have.
-    minted: [...written.added].sort(),
+    minted: sorted(minted),
     devVars: Object.keys(devVars).sort(),
     // A secret one Worker cannot mint may be another's to seed. Only the ones nothing supplied are missing.
     missing: sorted(missing).filter((name) => !seeded.has(name) && !unchanged.has(name)),
     undeclared: undeclared.sort(),
     skipped,
-    refused: written.refused,
+    refused,
   };
 }
 
@@ -224,12 +304,28 @@ function injectedValue(registry: SecretRegistry, name: string, file: DevSecretsF
   return encodeVersionedValue(storedSecretValue(entry, name, envelope, path));
 }
 
+/**
+ * The registry minus every mintable secret the file still does not carry — the entries whose write was
+ * refused. Dropping them is what stops `seedDevSecrets` from minting a second value and storing it: a
+ * row whose value exists in no file is the one outcome minting-before-persisting produced.
+ *
+ * A no-op on every ordinary run, where the write landed and every mintable name is in the file.
+ */
+function seedable(registry: SecretRegistry, file: DevSecretsFile): SecretRegistry {
+  const entries = Object.entries(registry).filter(
+    ([name, entry]) => !entry.devValue || entry.keyed || Object.hasOwn(file, name),
+  );
+  return Object.fromEntries(entries) as SecretRegistry;
+}
+
 function notYetMoved(
   registry: SecretRegistry,
   file: DevSecretsFile,
   inDevVars: Record<string, string>,
 ): SecretRegistry {
-  const entries = Object.entries(registry).filter(([name]) => name in file || !inDevVars[name]);
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a secret named for an
+  // `Object.prototype` key would read as stated in the file when the file is empty.
+  const entries = Object.entries(registry).filter(([name]) => Object.hasOwn(file, name) || !inDevVars[name]);
   return Object.fromEntries(entries) as SecretRegistry;
 }
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -46,6 +46,24 @@ describe("readDevSecrets", () => {
     expect(Object.keys(await readDevSecrets(dir))).toEqual(["auth-session-secret"]);
   });
 
+  test("an unreadable file is not an absent one — only ENOENT means there are no secrets", async () => {
+    // `.catch(() => null)` answered `{}` for every errno. An EACCES or EIO then merged into an empty
+    // base, and the file's real contents were gone — silently, on a file holding OAuth client secrets.
+    await mkdir(devSecretsPath(dir));
+
+    const error = await readDevSecrets(dir).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain(DEV_SECRETS_FILE);
+  });
+
+  test("a zero-byte file is no secrets, the same answer the write path gives", async () => {
+    // `touch .dev.secrets.jsonc` failed `pithy add` with exit 1 while `mergeDevSecretsContent` was
+    // deciding that empty content meant `{}`. One state, two answers, in one module.
+    await writeFile(devSecretsPath(dir), "");
+    expect(await readDevSecrets(dir)).toEqual({});
+  });
+
   test("a malformed file names the real path, not the default", async () => {
     await writeFile(devSecretsPath(dir), "{ nope }");
     const error = await readDevSecrets(dir).catch((e: unknown) => e);
@@ -88,6 +106,14 @@ describe("mergeDevSecretsContent", () => {
   test("nothing to add returns the source byte for byte — no churn on a re-run", () => {
     const source = '// keep\n{\n  "a-b": { "currentVersion": "1", "versions": { "1": "v" } },\n}\n';
     expect(mergeDevSecretsContent(source, {})).toBe(source);
+  });
+
+  test("a name matching an Object.prototype key is added like any other", () => {
+    // `name in tree` walked the prototype chain, so such a name read as already present and was
+    // silently dropped — a mint the caller was told had landed.
+    const out = mergeDevSecretsContent("{}", { toString: { currentVersion: "1", versions: { "1": "v" } } });
+
+    expect(out).toContain('"toString"');
   });
 });
 
@@ -153,6 +179,16 @@ describe("writeDevSecrets", () => {
     } finally {
       await chmod(dir, 0o700);
     }
+  });
+
+  test("a write over an unreadable file refuses rather than replacing it with the new value alone", async () => {
+    // The merge base comes from that read. Treating a failed read as empty content is how a write
+    // replaces a file of secrets with the one value it happened to be adding.
+    await mkdir(devSecretsPath(dir));
+
+    await expect(
+      writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } }),
+    ).rejects.toThrow(PithyError);
   });
 
   test("nothing to add checks nothing — a no-op add does not touch the adopter's .gitignore", async () => {

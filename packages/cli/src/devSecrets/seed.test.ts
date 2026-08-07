@@ -296,6 +296,29 @@ describe("seedProjectDevSecrets", () => {
     expect(report.refused).toContain(".gitignore");
     expect(renderDevSecretsNotes(report)).toContain(report.refused);
     await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+    // And nothing reached the store either. A row whose value is in no file is one the next run
+    // overwrites with a different value, which for a session secret signs everybody out every time.
+    expect(store.writes).toBe(0);
+  });
+
+  test("the file holds a minted value before the store does — a row with no file is unrecoverable", async () => {
+    // Proved by the store failing: the value is on disk, so the next run re-uses it rather than
+    // minting a second one. The other order left D1 holding a value the file had never heard of.
+    const failing: DevSecretsStoreHandle = {
+      ready: true,
+      store: {
+        getValue: async () => undefined,
+        put: async () => {
+          throw new Error("D1 is gone");
+        },
+      },
+      dispose: async () => {},
+    };
+
+    await expect(seed(failing)).rejects.toThrow(/D1 is gone/);
+
+    const envelope = (await readDevSecrets(dir))["auth-session-secret"];
+    expect(typeof envelope?.versions["1"]).toBe("string");
   });
 
   test("every store it opens is disposed — a leaked Miniflare holds the local D1 open", async () => {
