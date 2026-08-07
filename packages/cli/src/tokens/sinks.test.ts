@@ -86,16 +86,19 @@ describe("writeTokenToSink", () => {
     expect(await readFile(file, "utf8")).toContain("CLOUDFLARE_API_TOKEN=live-prod-token");
   });
 
-  test("dev-vars leaves the mode of a file that already exists alone", async () => {
-    // The mode is for creating a file, never for overruling one an adopter has already set.
-    await writeFile(join(dir, ".dev.vars.staging"), "OTHER=keep\n", { mode: 0o640 });
+  test("dev-vars leaves a tighter mode that already exists alone", async () => {
+    // The mode is for creating a file, never for overruling one an adopter has already set tighter.
+    // 0640 no longer survives this: 0600 is the mode a live API token is written with, and
+    // `writeFileAtomic` will not adopt one *wider* than the caller asked for — a pre-created file is an
+    // instruction taken from a file, and widening is never what an adopter meant. See `atomic.ts`.
+    await writeFile(join(dir, ".dev.vars.staging"), "OTHER=keep\n", { mode: 0o400 });
     await writeTokenToSink("dev-vars", "v1", {
       projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
       storeEntryName: "acme-staging-cf-token-ci-system",
     });
-    expect(((await stat(join(dir, ".dev.vars.staging"))).mode & 0o777).toString(8)).toBe("640");
+    expect(((await stat(join(dir, ".dev.vars.staging"))).mode & 0o777).toString(8)).toBe("400");
   });
 
   test("dev-vars leaves a commented-out key commented, rather than rewriting the comment", async () => {

@@ -27,9 +27,10 @@ const STALE_TEMP_MS = 60_000;
 export interface AtomicWriteOptions {
   /**
    * The mode a **newly created** file lands with — for the files that hold credentials, where the umask
-   * is not a permission policy. Ignored when the target already exists *and is ours*: those permissions
-   * are the adopter's, tighter or looser than ours, and a write is not the moment to overrule them. A
-   * target somebody else owns has its mode ignored instead — see {@link adoptableModeOf}.
+   * is not a permission policy. Also the **ceiling** for one that already exists: a target of ours that is
+   * tighter keeps its own mode, because that is the adopter's decision and a write is not the moment to
+   * overrule it; one that is wider does not, because nobody meant a credential file to be widened. A
+   * target somebody else owns has its mode ignored either way — see {@link adoptableModeOf}.
    */
   mode?: number;
 }
@@ -44,8 +45,9 @@ export interface AtomicWriteOptions {
  * --store dev-vars` wrote through here and handed it back the temp file's 0644 — at exactly the moment
  * it started holding `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS`. An existing target's mode is
  * kept; `options.mode` is the mode for creating one that is not there yet. Kept only from a target that is
- * *ours*, though — a mode read off a file is an instruction taken from a file, and pre-creating `.dev.vars`
- * at 0666 is one line of work for anyone who can write the directory. See {@link adoptableModeOf}.
+ * *ours* and only where it is no *wider* than asked for, though — a mode read off a file is an instruction
+ * taken from a file, and pre-creating `.dev.vars` at 0644 is one line of work for anyone who can write the
+ * directory. See {@link adoptableModeOf}.
  *
  * Its **link**. `apps/<worker>/.dev.vars` is a symlink to the project's shared file, and a rename over a
  * symlink does not follow it — it deletes it and leaves a private regular file holding a stale copy.
@@ -87,7 +89,7 @@ export interface AtomicWriteOptions {
  */
 export async function writeFileAtomic(path: string, content: string, options?: AtomicWriteOptions): Promise<void> {
   const target = await resolveWritePath(path);
-  const mode = (await adoptableModeOf(target)) ?? options?.mode;
+  const mode = (await adoptableModeOf(target, options?.mode)) ?? options?.mode;
   const tmp = `${target}.${randomBytes(TEMP_SUFFIX_BYTES).toString("hex")}${TEMP_SUFFIX}`;
 
   let handle: FileHandle;
@@ -189,6 +191,18 @@ function writeFailure(target: string, tmp: string, err: unknown): PithyError {
       { cause: err },
     );
   }
+  if (code === "ENOTDIR") {
+    // What the walk now hands the kernel rather than collapsing: `file.txt/../out.txt`. The generic
+    // message told the adopter to check that the file was writable, which is not the thing in the way.
+    return new ConflictError(
+      {
+        message: `Cannot write ${target}: something on the way to it is not a directory.`,
+        action: "Check the path — a file is standing where a directory has to be.",
+        detail,
+      },
+      { cause: err },
+    );
+  }
   return new InternalError(
     {
       message: `Could not write ${target}.`,
@@ -199,8 +213,13 @@ function writeFailure(target: string, tmp: string, err: unknown): PithyError {
   );
 }
 
-/** The `errno` string off a `node:fs` rejection, without asserting a shape onto an unknown value. */
-function errnoOf(err: unknown): string | undefined {
+/**
+ * The `errno` string off a `node:fs` rejection, without asserting a shape onto an unknown value.
+ *
+ * Exported for `scaffold.ts`, which has the same job on the delete side: a raw errno reaching a `--json`
+ * caller is unparseable output, and the errno is what says which failure it was.
+ */
+export function errnoOf(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null) return undefined;
   const code: unknown = Reflect.get(err, "code");
   return typeof code === "string" ? code : undefined;
@@ -212,26 +231,36 @@ function errnoOf(err: unknown): string | undefined {
  * `lstat`, not `stat`: `path` comes out of {@link resolveWritePath} with every link already followed and
  * checked, so a link here would be one that appeared since — not one to read a mode through.
  *
- * **Only from a file we own.** Adopting the target's mode is what keeps an adopter's deliberate 0640, but
- * it is also an instruction taken from a file, and whoever wrote the file wrote the instruction. Someone
- * who can write the project directory but not read the 0600 file in it — the position every attack here is
- * launched from — pre-creates `.dev.vars` at 0666, and the freshly minted `CLOUDFLARE_API_TOKEN` lands
- * world-readable with the write reporting nothing wrong. A mode is only adopted from a file whose uid is
- * ours; otherwise the caller's mode stands, which is the mode that knows what it is about to write.
+ * **Never wider than `requested`.** Adopting the target's mode is what keeps an adopter's deliberate 0400,
+ * but it is also an instruction taken from a file, and whoever wrote the file wrote the instruction.
+ * Someone who can write the project directory but not read the 0600 file in it — the position every attack
+ * here is launched from — pre-creates `.dev.vars` at 0644, and the freshly minted `CLOUDFLARE_API_TOKEN`
+ * lands world-readable with the write reporting nothing wrong. So a mode is adopted only when its bits are
+ * a subset of the ones asked for: tightening is the adopter's to do, widening is not something they can
+ * have meant. `0o7777`, so a setuid bit is a widening too.
+ *
+ * A caller that names no mode names no ceiling, and nothing is refused. Those are `wrangler.jsonc` and
+ * `package.json` — files holding no credential, whose existing mode is the whole question (#146). The
+ * files that carry a secret all state the mode they need.
+ *
+ * **And only from a file we own**, which is the narrower rule the ceiling leaves standing: a foreign 0400
+ * is not a widening, and it is still an instruction from a file we did not write.
  *
  * Deliberately stricter than {@link ensureOurs}, which allows root. A root-owned *link* sends a write
  * somewhere root chose, and root can read anything of ours regardless — nothing is given away. A root-owned
  * *mode* of 0666 gives it to everybody else, which is not root's to hand out on our behalf.
  *
  * The same limit as {@link ensureOurs} applies: a platform with no uid model — Windows — has nothing to
- * compare and adopts unconditionally.
+ * compare and adopts from anyone. The ceiling holds there, and it is the half that stops a widening.
  */
-async function adoptableModeOf(path: string): Promise<number | undefined> {
+async function adoptableModeOf(path: string, requested: number | undefined): Promise<number | undefined> {
   try {
     const entry = await lstat(path);
     const us = process.geteuid?.();
     if (us !== undefined && entry.uid !== us) return undefined;
-    return entry.mode & 0o7777;
+    const mode = entry.mode & 0o7777;
+    if (requested !== undefined && (mode & ~requested) !== 0) return undefined;
+    return mode;
   } catch {
     return undefined;
   }
@@ -297,34 +326,41 @@ function partsOf(path: string): string[] {
  * cycle is refused: following it never ends, and picking one link in it to overwrite would be a guess at
  * what the caller meant.
  *
- * **Nothing below a component that does not exist is normalised.** The walk used to hand the remainder to
- * `join`, which collapses `..` *lexically* — `missing/../apps/.dev.vars` came back as `apps/.dev.vars`,
- * a path the kernel would have refused outright and, worse, one whose surviving components were then
- * traversed by the open with no ownership check on them at all. Plant the link at `apps` and it is
- * followed. Do not lexically normalise a path you are about to hand to a syscall — that is the same
- * mistake as following a link because the name looked fine. Past the first missing component the walk
- * resolves nothing: components are appended verbatim, `..` included, and the syscall judges the path it
- * was actually given.
+ * **Nothing below a component the kernel could not walk through is normalised.** The walk used to hand the
+ * remainder to `join`, which collapses `..` *lexically* — `missing/../apps/.dev.vars` came back as
+ * `apps/.dev.vars`, a path the kernel would have refused outright and, worse, one whose surviving
+ * components were then traversed by the open with no ownership check on them at all. Plant the link at
+ * `apps` and it is followed. Do not lexically normalise a path you are about to hand to a syscall — that is
+ * the same mistake as following a link because the name looked fine.
+ *
+ * A component that is *there* and is not a directory is the same case, and was missed by the first fix:
+ * `file.txt/..` is ENOTDIR to the kernel every single time, and collapsing it produced a path the caller
+ * never named and this walk never checked. A typo reaches it; no attacker is required. So the rule is not
+ * "past the first missing component" but past the first one that cannot be walked *through*: components are
+ * then appended verbatim, `..` included, and the syscall judges the path it was actually given.
  */
 async function resolveWritePath(path: string): Promise<string> {
   const absolute = isAbsolute(path) ? path : join(process.cwd(), path);
   let resolved = parse(absolute).root;
   let pending = partsOf(absolute);
   let hops = 0;
-  /** Set the moment a component turns out not to be there. Nothing after it can be resolved. */
-  let missing = false;
+  /**
+   * Set the moment a component cannot be walked through — it is not there, or it is not a directory.
+   * Nothing after it can be resolved, and the last component of an ordinary write sets it harmlessly.
+   */
+  let opaque = false;
 
   while (pending.length > 0) {
     const part = pending.shift() as string;
     if (part === ".") continue;
-    if (missing) {
-      // Verbatim, not `join`. `join` would collapse a `..` here against a directory that does not exist,
-      // inventing a path the caller never named and the kernel would never have reached.
+    if (opaque) {
+      // Verbatim, not `join`. `join` would collapse a `..` here against something the kernel cannot walk
+      // through, inventing a path the caller never named and would never have reached.
       resolved = `${resolved}${sep}${part}`;
       continue;
     }
     if (part === "..") {
-      // Safe only here, above the first missing component: every directory to the left has been walked
+      // Safe only here, above the first unwalkable component: every directory to the left has been walked
       // and every link in it expanded, so `resolved` is physical and its parent is the kernel's parent.
       resolved = dirname(resolved);
       continue;
@@ -336,6 +372,9 @@ async function resolveWritePath(path: string): Promise<string> {
       const entry = await lstat(next);
       if (!entry.isSymbolicLink()) {
         resolved = next;
+        // A file, a socket, a device: real, and nothing below it exists to reach. Whatever follows is the
+        // kernel's ENOTDIR to give, not ours to normalise away.
+        opaque = !entry.isDirectory();
         continue;
       }
       ensureOurs(next, entry.uid, path);
@@ -345,7 +384,7 @@ async function resolveWritePath(path: string): Promise<string> {
       // Nothing here, or it stopped being a link between the two calls. Either way there is no link left
       // to follow: the rest is taken literally and the write reports whatever it finds.
       resolved = next;
-      missing = true;
+      opaque = true;
       continue;
     }
 

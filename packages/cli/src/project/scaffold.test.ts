@@ -1,7 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -756,6 +768,29 @@ describe("removeScaffoldPath", () => {
     await expect(removeScaffoldPath(dir, dir)).rejects.toThrow(PithyError);
     expect(await pathExists(join(dir, "pithy.config.ts"))).toBe(true);
   });
+
+  test("a delete that cannot finish says so through the contract, and names what survived it", async () => {
+    // Reachable by accident, not by an attacker: a read-only directory, a file another process holds
+    // open, a mount gone read-only. The `rm` threw the raw `node:fs` errno and its stack straight
+    // through the `PithyError` contract `withErrorReporting` prints and `--json` callers parse — and it
+    // threw it *after* emptying part of the tree. A half-deleted worker the adopter cannot see is worse
+    // than the error, so the survivors are named.
+    const target = join(dir, "apps", "board");
+    await mkdir(join(target, "src"), { recursive: true });
+    await writeFile(join(target, "src", "index.ts"), "export default {};\n");
+    await chmod(join(target, "src"), 0o500); // r-x: readable, so `src/index.ts` is visible and unremovable
+
+    const error = await removeScaffoldPath(dir, target).catch((cause: unknown) => cause);
+    await chmod(join(target, "src"), 0o700);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).toContain(join("apps", "board"));
+    expect(payload.message).toContain(join("src", "index.ts"));
+    // The errno is throw-site context, not client copy — the HTTP codec strips `detail`, and the
+    // adopter is told what is still on their disk instead.
+    expect(payload.detail).toContain("EACCES");
+  });
 });
 
 /**
@@ -1311,6 +1346,13 @@ describe("the template copy", () => {
  * whatever the umask allowed and a foreign-owned symlink at `logs/dev-login.json` carried it straight out
  * of the project. `writeFileAtomic` is the rule for both halves: the link ownership check, and a mode the
  * file is *born* with rather than widened from.
+ *
+ * **What is under test is the route, not the result.** A mode assertion is satisfied by a hand-rolled
+ * `writeFile` that happens to `chmod` afterwards — which is the exact writer this fix removed, and the
+ * one that leaves the file world-readable for the interval between the two calls and follows a planted
+ * link the whole time. So the tests below name behaviour only `writeFileAtomic` produces: a symlink chain
+ * refused by *its* wording, and the stale temp sweep that is *its* housekeeping. Neither is reachable from
+ * a writer that merely lands the right bits.
  */
 describe("the seed writers", () => {
   test("writes the dev-login artifact owner-only, because it holds a live session cookie", async () => {
@@ -1320,15 +1362,46 @@ describe("the seed writers", () => {
     expect((await lstat(path)).mode & 0o777).toBe(0o600);
   });
 
-  test("leaves a mode the adopter set on a file that is already there", async () => {
-    // The same rule `.dev.vars` gets: `options.mode` is for creating a file, never for overruling one.
+  test("leaves a tighter mode the adopter set on a file that is already there", async () => {
+    // The same rule `.dev.vars` gets: `options.mode` is for creating a file, never for overruling one —
+    // as far as the mode asked for. A *wider* one is refused, and `atomic.test.ts` holds that half.
     await mkdir(join(dir, "logs"), { recursive: true });
     const path = join(dir, "logs", "dev-login.json");
     await writeFile(path, "{}\n");
-    await chmod(path, 0o640);
+    await chmod(path, 0o400);
 
     await writeSeedArtifact(dir, { file: "dev-login.json", contents: '{"cookie":"live"}\n' });
-    expect((await lstat(path)).mode & 0o777).toBe(0o640);
+    expect((await lstat(path)).mode & 0o777).toBe(0o400);
+  });
+
+  test("goes through writeFileAtomic — the link chain is walked, and a loop is refused in its words", async () => {
+    // The route, asserted by a refusal no hand-rolled writer makes. A plain `writeFile` on this pair
+    // gets a raw ELOOP from the kernel, outside the `PithyError` contract; the primitive walks the chain
+    // itself and says what is wrong with it.
+    await mkdir(join(dir, "logs"), { recursive: true });
+    await symlink(join(dir, "logs", "other.json"), join(dir, "logs", "dev-login.json"));
+    await symlink(join(dir, "logs", "dev-login.json"), join(dir, "logs", "other.json"));
+
+    const error = await writeSeedArtifact(dir, { file: "dev-login.json", contents: '{"cookie":"live"}\n' }).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("symlink chain never ends");
+  });
+
+  test("goes through writeFileAtomic — a killed run's temp file, holding the same cookie, is swept", async () => {
+    // The other half of the route, and the reason it matters here: an interrupted write leaves a full
+    // copy of the session cookie beside the artifact. Only the primitive reclaims it.
+    await mkdir(join(dir, "logs"), { recursive: true });
+    const stale = join(dir, "logs", "dev-login.json.0011223344556677.tmp");
+    await writeFile(stale, '{"cookie":"live"}\n', { mode: 0o600 });
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    await utimes(stale, longAgo, longAgo);
+
+    await writeSeedArtifact(dir, { file: "dev-login.json", contents: '{"cookie":"rotated"}\n' });
+
+    expect(await pathExists(stale)).toBe(false);
   });
 });
 

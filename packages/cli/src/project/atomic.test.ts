@@ -153,12 +153,39 @@ describe("writeFileAtomic — the target's permissions", () => {
   });
 
   test("the caller's mode never widens a file that already has one", async () => {
-    // An existing file's permissions are the adopter's decision, tighter or looser than ours.
+    // An existing file's permissions are the adopter's decision, as far as the mode asked for.
     const path = join(dir, "theirs");
     await writeFile(path, "OLD=1\n");
     await chmod(path, 0o400);
     await writeFileAtomic(path, "NEW=1\n", { mode: 0o600 });
     expect(await modeOf(path)).toBe("400");
+  });
+
+  test("and an existing mode never widens the file either — the caller's mode is the ceiling", async () => {
+    // The other direction, and the one that leaks. Adopting the target's mode is an instruction read out
+    // of a file, so whoever wrote the file wrote the instruction: pre-create `.dev.vars` at 0644 and the
+    // freshly minted CLOUDFLARE_API_TOKEN lands group- and world-readable with nothing reported wrong.
+    // Ownership already refuses somebody else's file; this refuses the case where the file is ours and
+    // the mode is still wider than the caller asked for, which is never what an adopter meant.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "OLD=1\n");
+    await chmod(path, 0o644);
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    expect(await modeOf(path)).toBe("600");
+  });
+
+  test("a caller that names no mode names no ceiling, and the file keeps what it had", async () => {
+    // `wrangler.jsonc` and `package.json` hold no credential and pass no mode, so there is nothing for a
+    // mode to be wider than. #146's rule stands unchanged for them.
+    const path = join(dir, "wrangler.jsonc");
+    await writeFile(path, "{}\n");
+    await chmod(path, 0o664);
+
+    await writeFileAtomic(path, "{ }\n");
+
+    expect(await modeOf(path)).toBe("664");
   });
 });
 
@@ -465,9 +492,12 @@ describe("writeFileAtomic — a target somebody else left in the way", () => {
   });
 
   test("does not adopt the mode of a target somebody else owns", async () => {
+    // 0400, deliberately: a *wider* mode is refused by the ceiling whoever owns it, so this would pass
+    // without the ownership rule and prove nothing. Paired with "still keeps the mode of a target that
+    // is ours" below, which is the same 0400 and *is* adopted. The owner is the only difference.
     const path = join(dir, ".dev.vars");
     await writeFile(path, "");
-    await chmod(path, 0o666);
+    await chmod(path, 0o400);
     owner.byPath.set(path, foreign);
 
     await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
@@ -490,13 +520,15 @@ describe("writeFileAtomic — a target somebody else left in the way", () => {
   });
 
   test("still keeps the mode of a target that is ours", async () => {
+    // 0400 rather than 0640: a wider mode is now refused whoever owns it, so 0640 here would pass for
+    // the wrong reason and stop testing ownership at all.
     const path = join(dir, ".dev.vars");
     await writeFile(path, "");
-    await chmod(path, 0o640);
+    await chmod(path, 0o400);
 
     await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
 
-    expect(await modeOf(path)).toBe("640");
+    expect(await modeOf(path)).toBe("400");
   });
 });
 
@@ -546,6 +578,30 @@ describe("writeFileAtomic — a path through something that is not there", () =>
     await expect(writeFileAtomic(path, "x", { mode: 0o600 })).rejects.toThrow(PithyError);
 
     await expect(stat(join(dir, "file.txt"))).rejects.toThrow();
+  });
+
+  test("refuses a `..` past a component that exists and is not a directory", async () => {
+    // The same bug one branch over. A missing component stops the walk; a component that is *there* and
+    // is a plain file did not, so `file.txt/..` — ENOTDIR to the kernel, every time — was collapsed back
+    // to `dir` and the write landed at a path the caller never named. Reachable by a typo, no attacker
+    // required.
+    await writeFile(join(dir, "file.txt"), "in the way\n");
+    const path = literal(dir, "file.txt", "..", "out.txt");
+
+    await expect(writeFileAtomic(path, "x", { mode: 0o600 })).rejects.toThrow(PithyError);
+
+    await expect(stat(join(dir, "out.txt"))).rejects.toThrow();
+  });
+
+  test("and says the path went through something that is not a directory", async () => {
+    // ENOTDIR reached the adopter as "check the file and its directory are writable", which names the
+    // wrong thing to look at. The component in the way is the thing to look at.
+    await writeFile(join(dir, "file.txt"), "in the way\n");
+
+    const error = await writeFileAtomic(literal(dir, "file.txt", "..", "out.txt"), "x").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("is not a directory");
   });
 
   test("still resolves `..` above the first missing component", async () => {

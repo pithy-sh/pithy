@@ -266,7 +266,16 @@ export interface RemoveSteps {
    * whole scope if asked to remove it.
    */
   uninstall: (pkg: string) => Promise<{ packageManager: string; uninstalled: boolean }>;
-  /** Delete an ejected capability's local source tree (default: recursive `fs.rm`). */
+  /**
+   * Delete an ejected capability's local source tree — `apps/<worker>/capabilities/<cap>`, four segments
+   * composed out of names (default: `removeScaffoldPath`, which refuses a symlink at any component and a
+   * path resolving outside the project, then does the `rm` itself).
+   *
+   * The default said "recursive `fs.rm`" until #158, and that is what it was: a link at `apps` carried the
+   * delete onto whatever it pointed at, outside the project, with nothing to recover. A docstring
+   * advertising the ungated version is how the next producer of that bug gets written — a step handed in
+   * here is held to the same gate.
+   */
   deleteSource: (dir: string) => Promise<void>;
   /** Whether `@pithy-sh/<cap>` is installed (default: a `node_modules` stat). */
   packageInstalled: (pkg: string) => Promise<boolean>;

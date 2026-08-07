@@ -5,7 +5,7 @@ import { lstatSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assertValidProjectName,
   isReservedProjectName,
@@ -14,6 +14,7 @@ import {
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { wireFeatureDevVars } from "../feature/devVars";
+import { errnoOf } from "./atomic";
 import { committedFiles } from "./templateFiles";
 
 export interface ScaffoldOptions {
@@ -223,6 +224,9 @@ type PathIntent = "write" | "delete";
  *
  * A target that is not there is not a delete: `rm` is `force`, so a caller rolling back a step that never
  * ran gets a clean no-op rather than a refusal it would have to special-case.
+ *
+ * **And a delete that fails part-way says which part.** See {@link removeFailure}: the `rm` threw a raw
+ * `node:fs` errno through the contract, after it had already emptied some of the tree.
  */
 export async function removeScaffoldPath(root: string, target: string): Promise<void> {
   await ensureScaffoldPath(root, target, "delete");
@@ -239,7 +243,60 @@ export async function removeScaffoldPath(root: string, target: string): Promise<
     });
   }
 
-  await rm(target, { recursive: true, force: true });
+  try {
+    await rm(target, { recursive: true, force: true });
+  } catch (err) {
+    throw await removeFailure(root, target, err);
+  }
+}
+
+/** How many surviving paths a failed delete names. Enough to see the shape of what is left, not a listing. */
+const SURVIVOR_SAMPLE = 5;
+
+/**
+ * The error a `rm` that could not finish should have thrown all along.
+ *
+ * A recursive delete fails part-way for ordinary reasons — a directory the adopter chmod'd, a file another
+ * process holds open, a mount that went read-only — and it fails **after** removing whatever it got to
+ * first. What escaped here was the raw `node:fs` errno and its stack: outside the `PithyError` contract
+ * `withErrorReporting` prints from and `--json` callers parse, so a CI wrapper got unparseable output, and
+ * silent about the half-deleted tree, which is the part the adopter has to act on. A worker directory
+ * missing its `src/` and still holding its `wrangler.jsonc` is a worse state than the failure, and nothing
+ * said it had happened.
+ *
+ * So the survivors are read back and named. Best effort — this is already the failure path, and a scan that
+ * cannot run must not replace the error with its own.
+ */
+async function removeFailure(root: string, target: string, err: unknown): Promise<PithyError> {
+  if (err instanceof PithyError) return err;
+  const named = relative(root, target) || target;
+  return new InternalError(
+    {
+      message: `Could not finish deleting ${named}. ${whatSurvived(await survivorsOf(target))}`,
+      action: "Something blocked it — a permission, or a file in use. Clear that and run the command again.",
+      detail: `${errnoOf(err) ?? "unknown error"} while removing ${target}`,
+    },
+    { cause: err },
+  );
+}
+
+/** What is still under `target`, relative to it — or `null` when the target itself is gone. */
+async function survivorsOf(target: string): Promise<string[] | null> {
+  try {
+    return (await readdir(target, { recursive: true })).sort();
+  } catch {
+    return null;
+  }
+}
+
+/** The sentence that tells the adopter which half of the tree they are holding. */
+function whatSurvived(left: string[] | null): string {
+  if (left === null) return "Nothing of it is left, but the delete did not report finishing.";
+  if (left.length === 0) return "It is empty, and still there.";
+  const rest = left.length - SURVIVOR_SAMPLE;
+  const shown = left.slice(0, SURVIVOR_SAMPLE).join(", ");
+  const counted = left.length === 1 ? "1 path is" : `${left.length} paths are`;
+  return `${counted} still there: ${shown}${rest > 0 ? `, and ${rest} more` : ""}.`;
 }
 
 /**
