@@ -321,6 +321,7 @@ describe("seedProjectDevSecrets", () => {
       refused: null,
       devVarsRefused: [],
       shadowed: [],
+      undelivered: [],
     });
   });
 

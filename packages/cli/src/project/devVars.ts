@@ -56,13 +56,15 @@ export function removeDevVarsContent(content: string, keys: string[]): string {
   return out.length === 0 ? "" : `${out.join(eol)}${eol}`;
 }
 
-/** Read a dev-vars file (empty if absent), upsert the keys, and write it back atomically. */
-export async function upsertDevVars(path: string, vars: Record<string, string>): Promise<void> {
-  const content = await readFile(path, "utf8").catch(() => "");
-  await writeFileAtomic(path, upsertDevVarsContent(content, vars));
-}
-
-/** Read a dev-vars file (no-op if absent), remove the keys, and write it back atomically. */
+/**
+ * Read a dev-vars file (no-op if absent), remove the keys, and write it back atomically.
+ *
+ * **There is deliberately no `upsertDevVars` beside it.** There was, and it was the raw writer: it
+ * wrote values unquoted, at whatever path it was handed, and delivered them to no Worker. Every one of
+ * its callers had one of those two defects. It is the obvious thing the next producer would reach for,
+ * so it is gone — `devSecrets/devVars.ts`'s `writeDevVars` is the one way a value becomes a `.dev.vars`
+ * line, and `upsertDevVarsContent` above is the pure half it composes.
+ */
 export async function removeDevVars(path: string, keys: string[]): Promise<void> {
   const content = await readFile(path, "utf8").catch(() => null);
   if (content === null) return;

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, readFile, symlink } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { lstat, readFile, readlink, symlink } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { writeFileAtomic } from "../project/atomic";
-import { upsertDevVarsContent } from "../project/devVars";
+import { removeDevVarsContent, upsertDevVarsContent } from "../project/devVars";
 import { discoverWorkers } from "../project/workers";
 
 /**
@@ -35,6 +35,21 @@ import { discoverWorkers } from "../project/workers";
  * and ours. A value no form survives is refused by name. That is deliberately stricter than a rule
  * about which characters are dangerous: the rule would need updating for the shape nobody thought of,
  * and the round trip already covers it.
+ *
+ * **A refusal is fail-closed.** `.dev.vars` is the only place dev reads until #153, so a refused value
+ * that leaves the superseded line in place hands the Worker the *previous* secret while every report
+ * says the value was replaced. Wrong-and-silent beats broken-and-loud for nothing, least of all a
+ * secret, so the stale line goes and the refusal says it went.
+ *
+ * **And delivery is checked, never assumed.** Three ways it used not to happen, all silently. A failed
+ * `symlink()` was swallowed and the directory counted as linked anyway. A worker whose `.dev.vars` is a
+ * symlink was skipped without asking where it pointed. And in the layout `pithy feature create` and
+ * `pithy worker add` produce — a worktree root and every worker inside it symlinked at the main
+ * checkout's one shared file — the atomic write *replaced* the root's link with a private file and left
+ * every worker on the untouched original. Verified against a real one: `pithy feature create`, then
+ * `writeDevVars`, then `wrangler dev` in the worktree, and the Worker served the superseded value while
+ * the result read `written: ["auth-session-secret"], shadowed: []`. So the write follows the link to
+ * the file it names, and each worker's link is resolved and compared with the file that was written.
  */
 
 /** What one value's encoding produced: the bytes to write, or the sentence saying why nothing was. */
@@ -134,10 +149,17 @@ export interface WriteDevVarsResult {
   /** Worker directories whose `.dev.vars` this call created as a link to the project's. */
   linked: string[];
   /**
-   * Worker directories holding a `.dev.vars` of their own. wrangler reads *that* file, so nothing
-   * written here reaches them — and their file is theirs, so it is reported rather than replaced.
+   * Worker directories reading a `.dev.vars` that is not the one written — a file of their own, or a
+   * link pointing somewhere else. wrangler reads *that* file, so nothing written here reaches them, and
+   * it is theirs, so it is reported rather than replaced.
    */
   shadowed: string[];
+  /**
+   * One sentence per Worker directory the value could not be delivered to: the link could not be made,
+   * so wrangler will open no `.dev.vars` at all there. Separate from {@link shadowed} because that is
+   * somebody's arrangement and this is a failure. Never a value.
+   */
+  undelivered: string[];
 }
 
 /**
@@ -148,45 +170,97 @@ export interface WriteDevVarsResult {
  */
 export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteDevVarsResult> {
   const written: string[] = [];
-  const refused: string[] = [];
+  const refusals: { name: string; reason: string }[] = [];
   const encoded: Record<string, string> = {};
   for (const name of Object.keys(options.values).sort()) {
     const value = options.values[name];
     if (value === undefined) continue;
     const result = encodeDevVarsValue(name, value);
     if (result.encoded === null) {
-      if (result.refused) refused.push(result.refused);
+      if (result.refused) refusals.push({ name, reason: result.refused });
       continue;
     }
     encoded[name] = result.encoded;
     written.push(name);
   }
-  if (written.length === 0) return { written, refused, linked: [], shadowed: [] };
+  if (written.length === 0 && refusals.length === 0) {
+    return { written, refused: [], linked: [], shadowed: [], undelivered: [] };
+  }
 
+  // The path the project names, and the file it actually resolves to. In a feature worktree they are
+  // different: the root's `.dev.vars` is a link at the main checkout's shared file, and writing the link
+  // path atomically renames a new file over the link — cutting the worktree off the file every worker in
+  // it still points at.
   const path = join(options.projectDir, ".dev.vars");
-  const content = await readFile(path, "utf8").catch(() => "");
-  await writeFileAtomic(path, upsertDevVarsContent(content, encoded), { mode: 0o600 });
+  const target = await followLink(path);
+  const content = await readFile(target, "utf8").catch(() => null);
+  const before = parseDevVars(content ?? "");
+  // Fail-closed: a value that could not be encoded takes its superseded line with it.
+  const stale = refusals.filter(({ name }) => Object.hasOwn(before, name));
+  const next = upsertDevVarsContent(
+    removeDevVarsContent(
+      content ?? "",
+      stale.map(({ name }) => name),
+    ),
+    encoded,
+  );
+  // Never conjure an empty `.dev.vars` out of a run whose every value was refused, and never rewrite a
+  // file whose bytes would not change. `null` is "no file", and no file plus nothing to say stays that way.
+  if (next !== (content ?? "")) await writeFileAtomic(target, next, { mode: 0o600 });
+
+  const refused = refusals.map(({ name, reason }) =>
+    stale.some((entry) => entry.name === name)
+      ? `${reason} Its superseded line was removed — a stale value that still works is worse than none.`
+      : reason,
+  );
+  if (written.length === 0) return { written, refused, linked: [], shadowed: [], undelivered: [] };
 
   const dirs = options.workerDirs ?? (await workerDirs(options.projectDir));
   const linked: string[] = [];
   const shadowed: string[] = [];
+  const undelivered: string[] = [];
   for (const dir of dirs) {
     if (dir === options.projectDir) continue;
-    const target = join(dir, ".dev.vars");
-    const stats = await lstat(target).catch(() => null);
-    // An existing symlink points where somebody meant it to — a feature worktree's link at the main
-    // checkout's shared file, most often. Repointing it at this project's copy would take a worktree
-    // off the file the whole repo shares.
-    if (stats?.isSymbolicLink()) continue;
+    const beside = join(dir, ".dev.vars");
+    const stats = await lstat(beside).catch(() => null);
     if (stats !== null) {
+      // An existing link points where somebody meant it to — at the repo's shared file, most often — so
+      // it is never repointed. But where it points decides whether the value arrived, and that is asked
+      // rather than assumed: a link at some other file is as undelivered as a file of the worker's own.
+      if (stats.isSymbolicLink() && (await followLink(beside)) === target) continue;
       shadowed.push(dir);
       continue;
     }
     // Relative, so a project that is copied, moved, or mounted at another path still resolves.
-    await symlink(relative(dir, path), target).catch(() => {});
-    linked.push(dir);
+    const failure = await symlink(relative(dir, path), beside).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err)),
+    );
+    // A swallowed failure is a delivery that did not happen, reported as one. For a secret that is the
+    // worst answer available: everything downstream reads as written and the Worker has no binding.
+    if (failure === null) linked.push(dir);
+    else undelivered.push(`${dir} has no .dev.vars and one could not be linked: ${failure}`);
   }
-  return { written, refused, linked: linked.sort(), shadowed: shadowed.sort() };
+  return { written, refused, linked: linked.sort(), shadowed: shadowed.sort(), undelivered: undelivered.sort() };
+}
+
+/**
+ * The real file a path names, following symlinks by hand — `realpath` refuses a dangling link, and a
+ * `.dev.vars` link at a main checkout that has not written one yet is exactly that.
+ *
+ * Bounded, because a symlink loop is a hang and this runs inside `pithy dev`. At the bound it returns
+ * what it has: the caller writes there, and the write is what fails, loudly.
+ */
+async function followLink(path: string): Promise<string> {
+  let current = path;
+  for (let hop = 0; hop < 32; hop += 1) {
+    const stats = await lstat(current).catch(() => null);
+    if (stats === null || !stats.isSymbolicLink()) return current;
+    const next = await readlink(current).catch(() => null);
+    if (next === null) return current;
+    current = resolve(dirname(current), next);
+  }
+  return current;
 }
 
 /** Every Worker directory wrangler will run in — the ones with a `wrangler.jsonc` to load `.dev.vars` beside. */

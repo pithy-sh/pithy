@@ -40,8 +40,9 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   // a project with neither hears nothing, and a project with either hears it every run until it is fixed.
   for (const reason of report.devVarsRefused ?? []) lines.push(reason);
   for (const dir of report.shadowed ?? []) {
-    lines.push(`${dir} has a .dev.vars of its own. wrangler reads that one, so nothing seeded reaches it.`);
+    lines.push(`${dir} reads a .dev.vars of its own. wrangler opens that one, so nothing seeded reaches it.`);
   }
+  for (const reason of report.undelivered ?? []) lines.push(reason);
   // Last, and never silent. A refusal is the one line here that describes something the adopter has to
   // do before the command can finish its job — every other line reports work already done.
   if (report.refused) lines.push(report.refused);

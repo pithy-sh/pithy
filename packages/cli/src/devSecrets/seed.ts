@@ -90,14 +90,21 @@ export interface DevSecretsSeedReport {
   /**
    * One sentence per value no `.dev.vars` quoting survives — see `encodeDevVarsValue`. Never a
    * value. The secret is still in `.dev.secrets.jsonc` and still seeded into the store; what is refused
-   * is the transitional copy, which is the only half dev reads until #153.
+   * is the transitional copy, which is the only half dev reads until #153. Any superseded line went with
+   * it, so the sentence describes a Worker with *no* value rather than one quietly on the old one.
    */
   devVarsRefused?: string[];
   /**
-   * Worker directories holding a `.dev.vars` of their own. wrangler reads *that* file, so the injected
-   * copy does not reach them, and their file is theirs to keep — so it is said out loud, never replaced.
+   * Worker directories reading a `.dev.vars` that is not the project's — one of their own, or a link at
+   * some other file. wrangler reads *that* file, so the injected copy does not reach them, and it is
+   * theirs to keep — so it is said out loud, never replaced.
    */
   shadowed?: string[];
+  /**
+   * One sentence per Worker directory the injected copy could not be delivered to at all: no
+   * `.dev.vars` beside the Worker and no link could be made. Never a value.
+   */
+  undelivered?: string[];
 }
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
@@ -295,6 +302,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     refused,
     devVarsRefused: wrote.refused,
     shadowed: wrote.shadowed,
+    undelivered: wrote.undelivered,
   };
 }
 

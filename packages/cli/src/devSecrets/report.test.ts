@@ -47,6 +47,13 @@ describe("renderDevSecretsNotes", () => {
     expect(lines).toEqual(["board: secrets not seeded. Run pithy migrate."]);
   });
 
+  test("a Worker the value could not be delivered to is never silent — that is a binding it will not have", () => {
+    // The one line between "seeded" and a Worker that starts with no secret at all. A failed link used
+    // to be swallowed, and the run reported the delivery as done.
+    const lines = renderDevSecretsNotes({ ...empty, undelivered: ["/p/apps/board has no .dev.vars: EACCES"] });
+    expect(lines).toEqual(["/p/apps/board has no .dev.vars: EACCES"]);
+  });
+
   test("an undeclared name is doctor's too — this runs mid-`pithy add`, on a config already rewritten", () => {
     // `pithy add auth` imports the Worker config before it rewrites it, so the process is still holding
     // the pre-write module when this renders. It reported the value it had just minted as undeclared.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
@@ -139,6 +139,86 @@ describe("writeDevVars", () => {
     expect(seen).toEqual({ good: "ok" });
   });
 
+  test.each(HOSTILE)("%s survives the whole write path, not only the encoder", async (_label, value) => {
+    // The encoder had a test from the day it was written; the path that calls it did not. Reintroducing
+    // the truncation — writing `values` where `encoded` goes — left the whole suite green.
+    await writeDevVars({ projectDir: dir, values: { "auth-session-secret": value } });
+    const source = await readFile(join(dir, ".dev.vars"), "utf8");
+    expect(parseDotenv(source)["auth-session-secret"]).toBe(value);
+    expect(parseDevVars(source)["auth-session-secret"]).toBe(value);
+  });
+
+  test("a refused value takes its superseded line with it, rather than leaving one that still works", async () => {
+    // Fail-closed. `.dev.vars` is the only place dev reads until #153, so a refusal that leaves the old
+    // line behind hands the Worker the previous secret while every report says the value was replaced.
+    // Wrong-and-silent is the one outcome worth breaking dev over.
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=superseded\n");
+
+    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "one\ntwo" } });
+
+    expect(result.written).toEqual([]);
+    expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))).toEqual({});
+    expect(result.refused.join("\n")).toContain("superseded line was removed");
+  });
+
+  test("a refusal with no line to supersede says only what happened", async () => {
+    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "one\ntwo" } });
+    expect(result.refused.join("\n")).not.toContain("superseded line was removed");
+  });
+
+  test("in a feature worktree the value reaches the Worker, through the link the layout uses", async () => {
+    // The layout `pithy feature create` and `pithy worker add` produce, copied from a real one: the
+    // worktree root's `.dev.vars` and every worker's are absolute symlinks at the main checkout's single
+    // shared file. Writing at the root replaced that link with a private file and left every worker
+    // pointing at the untouched original — `written: ["auth-session-secret"]`, `shadowed: []`, and
+    // `wrangler dev` in the worktree served the superseded value from inside the Worker.
+    const main = join(dir, "main");
+    const worktree = join(main, ".worktrees", "wt");
+    await mkdir(join(worktree, "apps", "board"), { recursive: true });
+    await writeFile(join(main, ".dev.vars"), "auth-session-secret=superseded\n");
+    await writeFile(join(worktree, "apps", "board", "wrangler.jsonc"), "{}\n");
+    await symlink(join(main, ".dev.vars"), join(worktree, ".dev.vars"));
+    await symlink(join(main, ".dev.vars"), join(worktree, "apps", "board", ".dev.vars"));
+
+    const result = await writeDevVars({ projectDir: worktree, values: { "auth-session-secret": "fresh" } });
+
+    // Read where wrangler reads it: the worker's own directory, with `cwd: apps/board`.
+    const seen = parseDevVars(await readFile(join(worktree, "apps", "board", ".dev.vars"), "utf8"));
+    expect(seen["auth-session-secret"]).toBe("fresh");
+    // Already resolving to the file that was written. Nothing to link, and nothing shadowing it.
+    expect(result).toMatchObject({ written: ["auth-session-secret"], linked: [], shadowed: [], undelivered: [] });
+    // And the sharing survives. Writing over the link would take the worktree off the repo's one file.
+    expect((await lstat(join(worktree, ".dev.vars"))).isSymbolicLink()).toBe(true);
+    expect((await lstat(join(main, ".dev.vars"))).isFile()).toBe(true);
+  });
+
+  test("a link pointing at some other file is reported — nothing written here reaches that Worker", async () => {
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
+    await writeFile(join(dir, "shared"), "SHARED=1\n");
+    await symlink(join("..", "..", "shared"), join(dir, "apps", "board", ".dev.vars"));
+
+    const result = await writeDevVars({ projectDir: dir, values: { K: "v" } });
+
+    expect(result.shadowed).toEqual([join(dir, "apps", "board")]);
+  });
+
+  test("a link that could not be created is reported, never counted as delivered", async () => {
+    // The `catch(() => {})` this replaces pushed the directory onto `linked` regardless, so a delivery
+    // that did not happen was reported as one — for a secret, the worst answer available.
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
+    await chmod(join(dir, "apps", "board"), 0o500);
+    try {
+      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
+
+      expect(result.linked).toEqual([]);
+      expect(result.undelivered.join("\n")).toContain(join(dir, "apps", "board"));
+    } finally {
+      await chmod(join(dir, "apps", "board"), 0o700);
+    }
+  });
+
   test("the file is 0600 — it holds the same values .dev.secrets.jsonc does", async () => {
     await writeDevVars({ projectDir: dir, values: { K: "v" } });
     expect((await lstat(join(dir, ".dev.vars"))).mode & 0o777).toBe(0o600);
@@ -146,7 +226,7 @@ describe("writeDevVars", () => {
 
   test("nothing to write touches no file at all", async () => {
     const result = await writeDevVars({ projectDir: dir, values: {} });
-    expect(result).toEqual({ written: [], refused: [], linked: [], shadowed: [] });
+    expect(result).toEqual({ written: [], refused: [], linked: [], shadowed: [], undelivered: [] });
     await expect(lstat(join(dir, ".dev.vars"))).rejects.toThrow();
   });
 });
