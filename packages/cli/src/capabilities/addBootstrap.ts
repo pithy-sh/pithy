@@ -16,8 +16,9 @@ import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
+import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes } from "../devSecrets/report";
-import { seedProjectDevSecrets } from "../devSecrets/seed";
+import { type DevSecretsSeedReport, ourOwnInjection, seedProjectDevSecrets } from "../devSecrets/seed";
 
 export interface AddBootstrapOptions {
   /**
@@ -28,6 +29,13 @@ export interface AddBootstrapOptions {
   projectDir: string;
   /** The manifest of the capability just wired — the authority on which bindings it needs. */
   manifest: CapabilityManifest;
+  /**
+   * Seam: seed the whole project's dev secrets. Defaults to the real seeder, with `reload` on.
+   *
+   * It is a seam because this function and the seeder can reach the *same* refusal in one run, and the
+   * only way to prove they say it once is to make both of them say it.
+   */
+  seed?: (projectDir: string) => Promise<DevSecretsSeedReport>;
 }
 
 /**
@@ -43,7 +51,7 @@ export interface AddBootstrapOptions {
  *
  * Returns the lines to print (`AddResult.notes`), in order. Nothing here ever prints a value.
  */
-export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions): Promise<string[]> {
+export async function bootstrapAdd({ projectDir, manifest, seed }: AddBootstrapOptions): Promise<string[]> {
   const notes: string[] = [];
   for (const binding of manifest.requiredBindings) {
     // Optional bindings are skipped for the same reason `validateBindings` skips them: nothing refuses
@@ -63,8 +71,13 @@ export async function bootstrapAdd({ projectDir, manifest }: AddBootstrapOptions
   // in the ESM cache — so the aggregate registry seeded against is the composition from *before* the
   // add, and the secret this same run has just minted is not in it. It reached the store only on some
   // later, unrelated command, which is what made it look like a store problem.
-  notes.push(...renderDevSecretsNotes(await seedProjectDevSecrets({ projectDir, reload: true })));
-  return notes;
+  const seedProject = seed ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir, reload: true }));
+  notes.push(...renderDevSecretsNotes(await seedProject(projectDir)));
+  // **Deduplicated, in order.** Two halves of this function reach the same refusal in one run — the
+  // mint above, and the seeder that has just tried the same write for the same project. Both must be
+  // able to speak (a project that has not composed `secrets` has no targets, so only the first one
+  // does), and printing one sentence twice reads as two problems. An adopter counts lines.
+  return [...new Set(notes)];
 }
 
 /** The secrets capability's master-key binding — the one provisioned binding with an honest dev value. */
@@ -149,11 +162,19 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
  * signed what. Rewriting their `.dev.vars` unasked is worse. So the note says where it is and where it
  * belongs, and `pithy doctor` repeats it every run until they move it.
  *
+ * **But only an adopter's line is that case.** The transition injects an encoded envelope under the
+ * same name, so once a project had been seeded, deleting the secret from `.dev.secrets.jsonc` — the
+ * obvious way to ask for a fresh one — met "auth-session-secret is in .dev.vars, where secrets no
+ * longer live. Move it." about a line pithy had written itself, an hour earlier, on purpose.
+ * `ourOwnInjection` is the same discriminator the seeder uses, for the same reason.
+ *
  * One write for the whole set, so a capability declaring several either lands them all or lands none.
  */
 async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret[]): Promise<string[]> {
   if (declared.length === 0) return [];
-  const inDevVars = parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => ""));
+  // Prototype-free: a secret named `constructor` must not read back `Object.prototype.constructor` and
+  // be reported as already in a `.dev.vars` the project does not have. See {@link ownProperties}.
+  const inDevVars = ownProperties(parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => "")));
   const stated = await readDevSecrets(projectDir);
   const minted: DevSecretsFile = {};
   const notes: string[] = [];
@@ -164,7 +185,8 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       );
       continue;
     }
-    if (inDevVars[secret.name]) {
+    const existing = inDevVars[secret.name];
+    if (existing !== undefined && existing !== "" && !ourOwnInjection(existing)) {
       notes.push(
         `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${DEV_SECRETS_FILE} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
       );

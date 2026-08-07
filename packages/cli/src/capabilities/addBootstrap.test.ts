@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
@@ -37,6 +37,18 @@ async function devSecret(dir: string, name: string): Promise<unknown> {
   const envelope = (await readDevSecrets(dir))[name];
   return envelope?.versions[envelope.currentVersion];
 }
+
+/** A seeder that does nothing — these cases are about what `bootstrapAdd` itself writes and says. */
+const emptySeed = async () => ({
+  seeded: [],
+  unchanged: [],
+  minted: [],
+  devVars: [],
+  missing: [],
+  undeclared: [],
+  skipped: [],
+  refused: null,
+});
 
 describe("bootstrapAdd", () => {
   let dir: string;
@@ -254,5 +266,56 @@ describe("bootstrapAdd", () => {
     } finally {
       await rm(payments, { recursive: true, force: true });
     }
+  });
+
+  test("a refusal is said once, not twice", async () => {
+    // Two things reach the same refusal in one `pithy add`: the mint here, and the seeder that runs
+    // after it and has just tried the same write. `pithy add auth` on a project whose `.gitignore`
+    // cannot be written printed the sentence twice, which reads as two problems. An adopter counts lines.
+    await mkdir(join(dir, ".gitignore"));
+    const refusal =
+      ".gitignore could not be updated. Add .dev.secrets.jsonc and .dev.secrets.jsonc.tmp to it, then run the command again.";
+
+    const notes = await bootstrapAdd({
+      projectDir: dir,
+      manifest: await shippedManifest("auth"),
+      seed: async () => ({
+        seeded: [],
+        unchanged: [],
+        minted: [],
+        devVars: [],
+        missing: [],
+        undeclared: [],
+        skipped: [],
+        refused: refusal,
+      }),
+    });
+
+    expect(notes.filter((note) => note === refusal)).toHaveLength(1);
+  });
+
+  test("pithy's own injected copy is not read as a value the adopter left in .dev.vars", async () => {
+    // Delete the secret from `.dev.secrets.jsonc` to ask for a fresh one, and `pithy add auth` answered
+    // "auth-session-secret is in .dev.vars, where secrets no longer live. Move it." — about a line it
+    // had written there itself, on purpose, an hour before. Nothing was ever minted again.
+    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+    const first = await devSecret(dir, "auth-session-secret");
+    await rm(devSecretsPath(dir));
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+
+    expect(notes.join("\n")).toContain("Minted a dev auth-session-secret");
+    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
+    expect(await devSecret(dir, "auth-session-secret")).not.toBe(first);
+  });
+
+  test("an adopter's own .dev.vars value is still left exactly where it is", async () => {
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=written-by-hand\n");
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+
+    expect(notes.join("\n")).toContain("where secrets no longer live");
+    expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
+    expect(await devVar(dir, "auth-session-secret")).toBe("written-by-hand");
   });
 });

@@ -9,6 +9,7 @@ import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureDevSecretsIgnored } from "./gitignore";
+import { ownProperties } from "./records";
 
 /**
  * `.dev.secrets.jsonc` as a file on disk — the bytes half of the seam `@pithy-sh/secrets` deliberately
@@ -54,8 +55,10 @@ const HEADER = `// Local dev secret values. Gitignored. Never committed, never d
 export async function readDevSecrets(projectDir: string): Promise<DevSecretsFile> {
   const path = devSecretsPath(projectDir);
   const source = await readSource(path);
-  if (source === null) return {};
-  return loadDevSecrets(source, { path });
+  // Prototype-free, both branches. Every caller reads it as `file[name]` for a name the adopter typed,
+  // and `{}` is the one an empty project hands to every lookup. See {@link ownProperties}.
+  if (source === null) return ownProperties<never>({});
+  return ownProperties(loadDevSecrets(source, { path }));
 }
 
 /**

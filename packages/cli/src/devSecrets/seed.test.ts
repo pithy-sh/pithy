@@ -205,6 +205,43 @@ describe("seedProjectDevSecrets", () => {
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
   });
 
+  test("pithy's own injected copy is not an adopter's .dev.vars value", async () => {
+    // The suppression this caused: seed once, delete the secret from `.dev.secrets.jsonc` to have a
+    // fresh one minted, and nothing was ever minted again. The injected copy left behind in `.dev.vars`
+    // read as the pre-#149 migration case, so the secret was excluded from the registry for good.
+    // An envelope in `.dev.vars` is pithy's own writing; a bare string is the adopter's.
+    const first = await seed();
+    expect(first.minted).toEqual(["auth-session-secret"]);
+    await rm(devSecretsPath(dir));
+
+    const second = await seed();
+
+    expect(second.minted).toEqual(["auth-session-secret"]);
+    expect(second.seeded).toEqual(["auth-session-secret"]);
+  });
+
+  test("a secret named for an Object.prototype key travels the whole path", async () => {
+    // `constructor` and `toString` are own-property lookups everywhere here or they answer for
+    // `Object.prototype`: a secret read as already present in an empty file, minted and reported and
+    // never written. The name is adopter-supplied — a capability author picks it — so it is checked.
+    const prototypeRegistry = defineSecretRegistry({
+      constructor: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", devValue: "random" },
+      toString: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", devValue: "random" },
+    });
+
+    const report = await seedProjectDevSecrets({
+      projectDir: dir,
+      targets: [{ name: "board", dir: join(dir, "apps", "board"), registry: prototypeRegistry }],
+      openStore: async () => ({ ready: true, store, dispose: async () => {} }),
+    });
+
+    expect(report.minted).toEqual(["constructor", "toString"]);
+    expect(report.seeded).toEqual(["constructor", "toString"]);
+    expect(report.undeclared).toEqual([]);
+    expect(Object.keys(await readDevSecrets(dir)).sort()).toEqual(["constructor", "toString"]);
+    expect(report.devVars).toEqual(["constructor", "toString"]);
+  });
+
   test("a secret in both files is seeded from the file — that is the copy the adopter moved", async () => {
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=stale\n");
     await writeFile(

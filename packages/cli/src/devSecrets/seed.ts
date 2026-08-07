@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
-import { encodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { encodeVersionedValue, VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintMissingDevSecrets, seedDevSecrets, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -14,6 +14,7 @@ import { loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { writeDevVars } from "./devVars";
 import { devSecretsPath, readDevSecrets, writeDevSecrets } from "./file";
+import { ownProperties } from "./records";
 import { type DevSecretsStoreHandle, type OpenDevSecretsStoreOptions, openDevSecretsStore } from "./store";
 
 /**
@@ -141,7 +142,9 @@ export async function devSecretsTargets(
     targets.push({
       name: resolved.name,
       dir: resolved.dir,
-      registry: aggregateSecretRegistries(resolved.capabilities),
+      // Prototype-free, so `registry[name]` here and in every consumer — `pithy doctor` included — is an
+      // own-property lookup for a secret a capability chose to call `constructor`. See {@link ownProperties}.
+      registry: ownProperties(aggregateSecretRegistries(resolved.capabilities)),
     });
   }
   return targets;
@@ -212,7 +215,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   // The file is read once and carried across Workers. Two Workers that declare one secret must mint it
   // once: the second sees the first's value in this object, and `seedDevSecrets` never mints over one.
   const file = await readDevSecrets(projectDir);
-  const inDevVars = parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => ""));
+  const inDevVars = ownProperties(parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => "")));
 
   const minted = new Set<string>();
   let refused: string | null = null;
@@ -306,8 +309,16 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
  * was rewritten" and "minted into .dev.secrets.jsonc" about the same secret, and produced both values.
  *
  * **Stated in the file wins.** A name in both files is a value the adopter has moved and not yet deleted
- * the old copy of, so the file is what gets seeded and `pithy doctor` says to delete the `.dev.vars`
- * line. Nothing rewrites their `.dev.vars`; that is theirs.
+ * the old copy of, so the file is what gets seeded and the injection rewrites the `.dev.vars` copy from
+ * it. Nothing else in their `.dev.vars` is touched; that is theirs.
+ *
+ * **And pithy's own injected copy is not one of these.** The transition writes an encoded envelope into
+ * `.dev.vars` for every seeded secret, and that copy read exactly like an adopter's pre-#149 value here.
+ * The result was a one-way door: once a secret had been seeded, deleting it from `.dev.secrets.jsonc` —
+ * the obvious way to ask for a fresh one — left the injected copy behind, and the name was excluded from
+ * the registry on every run after that. Never minted again, never seeded, never reported. An envelope in
+ * `.dev.vars` is this tool's own writing; a bare string is the adopter's, and only that is the migration
+ * case.
  */
 /**
  * **TRANSITION (#153).** One secret's `.dev.vars` line: the stored envelope, encoded — byte for byte
@@ -346,10 +357,30 @@ function notYetMoved(
   file: DevSecretsFile,
   inDevVars: Record<string, string>,
 ): SecretRegistry {
-  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a secret named for an
-  // `Object.prototype` key would read as stated in the file when the file is empty.
-  const entries = Object.entries(registry).filter(([name]) => Object.hasOwn(file, name) || !inDevVars[name]);
+  const entries = Object.entries(registry).filter(
+    ([name]) => Object.hasOwn(file, name) || !inDevVars[name] || ourOwnInjection(inDevVars[name] ?? ""),
+  );
   return Object.fromEntries(entries) as SecretRegistry;
+}
+
+/**
+ * Whether a `.dev.vars` value is a copy **this tool wrote** — an encoded versioned envelope — rather
+ * than an adopter's own line.
+ *
+ * That is the whole distinction, and it holds because the two are different shapes and always were: a
+ * pre-#149 `.dev.vars` secret is the bare value, and every copy the transition injects is
+ * `encodeVersionedValue` output. Nothing has to be remembered between runs to tell them apart.
+ *
+ * Exported because `pithy add` asks the same question about the same line and must not answer it
+ * differently — the two disagreeing about one secret is what produced "left in .dev.vars, nothing was
+ * rewritten" and "minted into .dev.secrets.jsonc" in a single command, with both values on disk.
+ */
+export function ourOwnInjection(value: string): boolean {
+  try {
+    return VersionedValue.safeParse(JSON.parse(value)).success;
+  } catch {
+    return false;
+  }
 }
 
 /** A set as a sorted array — every list in the report is ordered, so a run reads the same twice. */
