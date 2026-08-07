@@ -1,11 +1,46 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { Buffer } from "node:buffer";
+import type { Mode, PathLike } from "node:fs";
 import { chmod, lstat, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { writeFileAtomic } from "./atomic";
+
+/**
+ * The temp file's suffix is random precisely so nobody can plant anything at it. To *test* the guard that
+ * catches a planted file anyway, the randomness is pinned for one case — that is the only reason this mock
+ * exists, and every other test leaves it alone and gets the real thing.
+ */
+const pinned = vi.hoisted(() => ({ suffix: null as string | null }));
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...actual,
+    randomBytes: (size: number) =>
+      pinned.suffix === null ? actual.randomBytes(size) : Buffer.from(pinned.suffix, "hex"),
+  };
+});
+
+/**
+ * The mode the temp file *already had* when the chmod ran. A write that creates the file at the umask
+ * default and tightens it afterwards leaves a window where a plaintext credential is world-readable, and
+ * the finished file looks identical either way — this is the only place the difference is observable.
+ */
+const observed = vi.hoisted(() => ({ modeAtChmod: null as number | null }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    chmod: async (path: PathLike, mode: Mode) => {
+      observed.modeAtChmod = (await actual.stat(path)).mode & 0o777;
+      await actual.chmod(path, mode);
+    },
+  };
+});
 
 /** The permission bits of whatever `path` finally resolves to. */
 async function modeOf(path: string): Promise<string> {
@@ -15,6 +50,8 @@ async function modeOf(path: string): Promise<string> {
 let dir: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-atomic-"));
+  pinned.suffix = null;
+  observed.modeAtChmod = null;
 });
 afterEach(async () => {
   await chmod(dir, 0o755).catch(() => {});
@@ -144,5 +181,87 @@ describe("writeFileAtomic — a symlinked target", () => {
     await symlink(a, b);
     await symlink(b, a);
     await expect(writeFileAtomic(a, "x")).rejects.toThrow(/link/i);
+  });
+});
+
+describe("writeFileAtomic — the temp file", () => {
+  let outside: string;
+  beforeEach(async () => {
+    outside = await mkdtemp(join(tmpdir(), "pithy-atomic-outside-"));
+  });
+  afterEach(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  test("never writes to the predictable `<target>.tmp` path", async () => {
+    // The old temp name was `${target}.tmp` — a name anyone who can write the project directory can
+    // work out and plant a symlink at. The write followed it, so `.dev.vars` — CLOUDFLARE_API_TOKEN,
+    // SECRETS_ENCRYPTION_KEYS — landed at the attacker's path, and the rename then installed the link
+    // over the target so every later write went there too. No race: the name was fixed.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "OLD=1\n");
+    await chmod(path, 0o600);
+    const loot = join(outside, "loot");
+    await symlink(loot, `${path}.tmp`);
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    await expect(stat(loot)).rejects.toThrow();
+    expect((await lstat(`${path}.tmp`)).isSymbolicLink()).toBe(true);
+    expect((await lstat(path)).isFile()).toBe(true);
+    expect(await readFile(path, "utf8")).toBe("CLOUDFLARE_API_TOKEN=live\n");
+  });
+
+  test("refuses to write through a symlink planted at the temp path", async () => {
+    // Even with the name unguessable, the open is exclusive: anything already at the path fails it
+    // rather than being followed. Pinned randomness is the only way to stand where the attacker would.
+    pinned.suffix = "0123456789abcdef";
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "OLD=1\n");
+    const loot = join(outside, "loot");
+    const tmp = `${path}.0123456789abcdef.tmp`;
+    await symlink(loot, tmp);
+
+    const error = await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain(tmp);
+    await expect(stat(loot)).rejects.toThrow();
+    expect(await readFile(path, "utf8")).toBe("OLD=1\n");
+    // The planted link is left exactly where it is: deleting it is a write to a path we just refused.
+    expect((await lstat(tmp)).isSymbolicLink()).toBe(true);
+  });
+
+  test("refuses a plain file left at the temp path rather than reusing it", async () => {
+    // A leftover from a crashed run kept its own mode: `writeFile` truncates through O_CREAT, which
+    // ignores the mode of a file that already exists. The new content inherited whatever it was.
+    pinned.suffix = "0123456789abcdef";
+    const path = join(dir, ".dev.vars");
+    const tmp = `${path}.0123456789abcdef.tmp`;
+    await writeFile(tmp, "leftover\n", { mode: 0o666 });
+
+    await expect(writeFileAtomic(path, "TOKEN=live\n", { mode: 0o600 })).rejects.toThrow(PithyError);
+    expect(await readFile(tmp, "utf8")).toBe("leftover\n");
+  });
+
+  test("creates the temp file already restricted, never widening it after the write", async () => {
+    const path = join(dir, ".dev.vars.prod");
+    observed.modeAtChmod = null;
+
+    await writeFileAtomic(path, "CLOUDFLARE_API_TOKEN=live\n", { mode: 0o600 });
+
+    expect(observed.modeAtChmod).toBe(0o600);
+    expect(await modeOf(path)).toBe("600");
+  });
+
+  test("a dangling link into a directory that does not exist fails as a PithyError, not a raw ENOENT", async () => {
+    // `--json` callers parse the error contract. A bare node ENOENT escaping it is unparseable.
+    const link = join(dir, "dangling");
+    await symlink(join(outside, "gone", "target"), link);
+
+    const error = await writeFileAtomic(link, "x", { mode: 0o600 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain(join(outside, "gone", "target"));
   });
 });
