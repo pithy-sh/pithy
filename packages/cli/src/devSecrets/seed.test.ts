@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
@@ -11,6 +11,7 @@ import { defineSecretRegistry, type SecretValueType } from "@pithy-sh/secrets/sr
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { devSecretsPath, readDevSecrets } from "./file";
+import { renderDevSecretsNotes } from "./report";
 import { seedProjectDevSecrets } from "./seed";
 import type { DevSecretsStoreHandle } from "./store";
 
@@ -63,6 +64,7 @@ beforeEach(async () => {
   store = new FakeStore();
 });
 afterEach(async () => {
+  await chmod(dir, 0o700).catch(() => {});
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -279,7 +281,21 @@ describe("seedProjectDevSecrets", () => {
       missing: [],
       undeclared: [],
       skipped: [],
+      refused: null,
     });
+  });
+
+  test("a project whose .gitignore cannot cover the file is told, and nothing is minted into it", async () => {
+    // A `.gitignore` that is there and cannot be read is not a `.gitignore` that is absent. Treating
+    // the two the same is how a run decides nothing ignores the file, or that everything does.
+    await mkdir(join(dir, ".gitignore"));
+
+    const report = await seed();
+
+    expect(report.minted).toEqual([]);
+    expect(report.refused).toContain(".gitignore");
+    expect(renderDevSecretsNotes(report)).toContain(report.refused);
+    await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
   });
 
   test("every store it opens is disposed — a leaked Miniflare holds the local D1 open", async () => {

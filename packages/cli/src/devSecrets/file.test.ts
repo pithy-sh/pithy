@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -14,6 +14,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-dev-secrets-"));
 });
 afterEach(async () => {
+  await chmod(dir, 0o700).catch(() => {});
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -123,7 +124,39 @@ describe("writeDevSecrets", () => {
     const second = await writeDevSecrets(dir, {
       "auth-session-secret": { currentVersion: "1", versions: { "1": "other" } },
     });
-    expect(first).toEqual(["auth-session-secret"]);
-    expect(second).toEqual([]);
+    expect(first).toEqual({ added: ["auth-session-secret"], refused: null });
+    expect(second).toEqual({ added: [], refused: null });
+  });
+
+  test("the project's .gitignore is made to cover the file before a value goes into it", async () => {
+    await writeFile(join(dir, ".gitignore"), "node_modules/\n");
+
+    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+
+    const ignore = await readFile(join(dir, ".gitignore"), "utf8");
+    expect(ignore).toContain(DEV_SECRETS_FILE);
+    expect(ignore).toContain(`${DEV_SECRETS_FILE}.tmp`);
+  });
+
+  test("a project whose .gitignore cannot be fixed gets no secret at all, and is told what to add", async () => {
+    // Mint first and hope is not a guarantee. The value never leaves memory: a live signing secret in
+    // a file git will commit is worse than a `pithy add` that stopped and said one sentence.
+    await chmod(dir, 0o500);
+    try {
+      const result = await writeDevSecrets(dir, {
+        "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } },
+      });
+
+      expect(result.added).toEqual([]);
+      expect(result.refused).toContain(DEV_SECRETS_FILE);
+      await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
+    } finally {
+      await chmod(dir, 0o700);
+    }
+  });
+
+  test("nothing to add checks nothing — a no-op add does not touch the adopter's .gitignore", async () => {
+    await writeDevSecrets(dir, {});
+    await expect(readFile(join(dir, ".gitignore"), "utf8")).rejects.toThrow();
   });
 });

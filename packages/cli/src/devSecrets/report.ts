@@ -35,6 +35,9 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   for (const { worker, reason } of report.skipped) {
     lines.push(`${worker}: secrets not seeded. ${reason}`);
   }
+  // Last, and never silent. A refusal is the one line here that describes something the adopter has to
+  // do before the command can finish its job — every other line reports work already done.
+  if (report.refused) lines.push(report.refused);
   return lines;
 }
 

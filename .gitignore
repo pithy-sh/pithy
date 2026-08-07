@@ -18,6 +18,9 @@ dist/
 
 # env & secrets
 .dev.secrets.jsonc
+# The atomic write's temp file. `.dev.vars.*` covers its sibling; nothing covered this one, and a
+# SIGINT between the write and the rename leaves it behind holding full plaintext.
+.dev.secrets.jsonc.tmp
 !.dev.secrets.example.jsonc
 .env
 .env.*

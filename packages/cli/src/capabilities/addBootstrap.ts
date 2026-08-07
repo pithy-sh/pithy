@@ -162,10 +162,13 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       `Deployed environments need pithy secrets create ${secret.name}.`,
     );
   }
-  const added = await writeDevSecrets(projectDir, minted);
+  const written = await writeDevSecrets(projectDir, minted);
+  // A refusal replaces the mint notes rather than joining them. "Minted a dev auth-session-secret"
+  // beside "nothing was written" is two claims about one value, and the adopter acts on the first.
+  if (written.refused) return [written.refused];
   // TRANSITION (#153): the same values, injected. Only what actually landed in the file — claiming a
   // mint the write did not make would put a value in `.dev.vars` that nothing else in the project has.
-  await injectDevSecrets(projectDir, pick(minted, added));
+  await injectDevSecrets(projectDir, pick(minted, written.added));
   return notes;
 }
 

@@ -7,6 +7,7 @@ import { DEV_SECRETS_FILE, type DevSecretsFile } from "@pithy-sh/secrets/src/dev
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
+import { ensureDevSecretsIgnored } from "./gitignore";
 
 /**
  * `.dev.secrets.jsonc` as a file on disk — the bytes half of the seam `@pithy-sh/secrets` deliberately
@@ -79,6 +80,17 @@ function mergeDevSecrets(content: string, added: DevSecretsFile): { content: str
   return { content: `${stringify(tree, null, 2)}\n`, added: names };
 }
 
+/** What one write did: the names that landed, and the one thing that stopped it if none did. */
+export interface DevSecretsWrite {
+  /** The secrets actually added to the file. Empty when there was nothing to add, or nothing was written. */
+  added: string[];
+  /**
+   * Why nothing was written, when something should have been — today only an unignorable project. A
+   * line for the caller to print verbatim; never a value. `null` when the write went through.
+   */
+  refused: string | null;
+}
+
 /**
  * Add every secret in `added` that the file does not already carry, and return the names that landed.
  *
@@ -87,14 +99,24 @@ function mergeDevSecrets(content: string, added: DevSecretsFile): { content: str
  * is how a command claims to have minted a value it did not.
  *
  * Nothing to add writes nothing at all — an empty `.dev.secrets.jsonc` conjured by a no-op `pithy add`
- * would be one more file to explain.
+ * would be one more file to explain, and an adopter's `.gitignore` is not touched over a no-op either.
+ *
+ * **The ignore is verified before the bytes are, every time.** This is the one funnel every dev secret
+ * passes through — `pithy add`'s mint, the seeder's mint, a hand-written value on its way back — so
+ * the guarantee lives here rather than at each call site, where one of them would forget it. A project
+ * whose `.gitignore` cannot be made to cover the file gets **no value written at all** and the sentence
+ * saying what to add: minting first and hoping is how a live signing secret ends up in a repository.
  */
-export async function writeDevSecrets(projectDir: string, added: DevSecretsFile): Promise<string[]> {
-  if (Object.keys(added).length === 0) return [];
+export async function writeDevSecrets(projectDir: string, added: DevSecretsFile): Promise<DevSecretsWrite> {
+  if (Object.keys(added).length === 0) return { added: [], refused: null };
   const path = devSecretsPath(projectDir);
-  const content = await readFile(path, "utf8").catch(() => "");
+  const content = (await readFile(path, "utf8").catch(() => "")) as string;
   const merged = mergeDevSecrets(content, added);
-  if (merged.added.length === 0) return [];
+  if (merged.added.length === 0) return { added: [], refused: null };
+
+  const ignored = await ensureDevSecretsIgnored(projectDir);
+  if (!ignored.covered) return { added: [], refused: ignored.reason };
+
   await writeFileAtomic(path, merged.content, { mode: 0o600 });
-  return merged.added;
+  return { added: merged.added, refused: null };
 }

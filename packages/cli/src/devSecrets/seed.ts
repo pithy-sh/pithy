@@ -71,6 +71,11 @@ export interface DevSecretsSeedReport {
   undeclared: string[];
   /** Workers whose local store could not be opened, and the one thing each needs. */
   skipped: { worker: string; reason: string }[];
+  /**
+   * Why a minted value was not written to `.dev.secrets.jsonc` — a project whose `.gitignore` cannot be
+   * made to cover it. One sentence naming what to add, never a value. `null` when nothing stood in the way.
+   */
+  refused: string | null;
 }
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
@@ -165,7 +170,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
 
   // Written after every Worker, not per Worker: a project with two Workers should touch each file once,
   // and a mid-run failure should not leave half a mint on disk with no row to match it.
-  await writeDevSecrets(projectDir, minted);
+  const written = await writeDevSecrets(projectDir, minted);
   if (Object.keys(devVars).length > 0) await upsertDevVars(join(projectDir, ".dev.vars"), devVars);
 
   // No target is no registry, and no registry is nothing to judge a name against. Calling every secret
@@ -175,12 +180,15 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   return {
     seeded: sorted(seeded),
     unchanged: sorted(unchanged),
-    minted: Object.keys(minted).sort(),
+    // What the write actually landed, never what was minted into memory. A refused write minted values
+    // that reached no file, and reporting them as minted is how a command claims a value it does not have.
+    minted: [...written.added].sort(),
     devVars: Object.keys(devVars).sort(),
     // A secret one Worker cannot mint may be another's to seed. Only the ones nothing supplied are missing.
     missing: sorted(missing).filter((name) => !seeded.has(name) && !unchanged.has(name)),
     undeclared: undeclared.sort(),
     skipped,
+    refused: written.refused,
   };
 }
 
