@@ -26,7 +26,10 @@ import { ensureDevSecretsIgnored } from "./gitignore";
  *
  * **And a present secret always wins.** Minting over a value that is already there is how a re-run
  * invalidates every live session and breaks every magic link already in an inbox. The merge adds keys
- * and changes none.
+ * and changes none. The one exception is explicit: a *provisioned* value, which somebody else issued.
+ *
+ * **Nothing thrown from here carries a byte of the file.** `comment-json` puts the whole source in its
+ * `SyntaxError.message`, so every parse goes through {@link parseTree} — see there for what that cost.
  */
 
 /** The `.dev.secrets.jsonc` path for a project root. */
@@ -95,14 +98,41 @@ export function mergeDevSecretsContent(content: string, added: DevSecretsFile): 
   return mergeDevSecrets(content, added).content;
 }
 
+/**
+ * `comment-json`'s parse, with the one thing that makes it safe to run on this file.
+ *
+ * **Its `SyntaxError.message` embeds the source.** `Unexpected token 'o', "{ … the entire file … }" is
+ * not valid JSONC` — so a single missing brace, on the *write* path, printed every OAuth client secret
+ * in the file to the terminal and into whatever logged the error. `loadDevSecrets` was taught this
+ * already and has the sanitized error, with the line and column and nothing else; the write path
+ * re-parsed with a bare `parse` and no catch, and this module's own docstring promised the opposite.
+ *
+ * Re-raising through the loader rather than composing a second error keeps one sentence for one fault:
+ * the message an adopter sees for a malformed file is the same whichever command hit it first.
+ */
+function parseTree(source: string, path: string): Record<string, unknown> | null {
+  try {
+    return parse(source) as Record<string, unknown> | null;
+  } catch {
+    loadDevSecrets(source, { path });
+    // Unreachable in practice: the same source that just failed `parse` fails the loader's parse too.
+    throw new InternalError({
+      message: `${DEV_SECRETS_FILE} could not be parsed.`,
+      action: `Fix the syntax in ${path} and run the command again.`,
+      detail: `dev secrets file '${path}' failed to parse on the write path`,
+    });
+  }
+}
+
 /** The merge, plus the names it actually landed — what {@link writeDevSecrets} reports to its caller. */
 function mergeDevSecrets(
   content: string,
   added: DevSecretsFile,
   replace = false,
+  path: string = DEV_SECRETS_FILE,
 ): { content: string; added: string[] } {
   const source = content.trim().length === 0 ? `${HEADER}{}\n` : content;
-  const tree = parse(source) as Record<string, unknown> | null;
+  const tree = parseTree(source, path);
   // A file whose top level is not an object is the loader's error to raise, with its own actionable
   // message. Anything written here would land inside something that is not a secrets file.
   if (tree === null || typeof tree !== "object" || Array.isArray(tree)) return { content, added: [] };
@@ -159,7 +189,7 @@ export async function writeDevSecrets(
   // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
   // merging into an empty base is how a write replaces a file of secrets with the one value it is adding.
   const content = (await readSource(path)) ?? "";
-  const merged = mergeDevSecrets(content, added, options.replace === true);
+  const merged = mergeDevSecrets(content, added, options.replace === true, path);
   if (merged.added.length === 0) return { added: [], refused: null };
 
   const ignored = await ensureDevSecretsIgnored(projectDir);
@@ -201,7 +231,7 @@ export async function removeDevSecrets(projectDir: string, names: readonly strin
   const content = await readSource(path);
   if (content === null || content.trim().length === 0) return [];
 
-  const tree = parse(content) as Record<string, unknown> | null;
+  const tree = parseTree(content, path);
   if (tree === null || typeof tree !== "object" || Array.isArray(tree)) return [];
   // `Object.hasOwn`, not `in`: a secret named for an `Object.prototype` key would otherwise read as
   // present in an empty file, and `delete` would report a removal that never happened.

@@ -281,3 +281,39 @@ describe("removeDevSecrets", () => {
     await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();
   });
 });
+
+describe("a malformed file on the write path", () => {
+  /** Every string a thrown error can carry to a terminal or a log. */
+  function surfaces(error: unknown): string {
+    const e = error as { message?: string; action?: string; detail?: string; stack?: string };
+    return [e.message, e.action, e.detail, e.stack].filter(Boolean).join("\n");
+  }
+
+  test("prints no secret it could not parse", async () => {
+    // `comment-json`'s SyntaxError reads `Unexpected token … "<the entire file>" is not valid JSON`.
+    // The write path re-parsed with a bare `parse` and no catch, so one missing brace put every OAuth
+    // client secret in the file onto the terminal — the opposite of what this module's docstring says
+    // it does, and the loader had already been taught not to.
+    await writeFile(
+      devSecretsPath(dir),
+      `{ "auth-google-credentials": { "currentVersion": "1", "versions": { "1": "SUPER-SECRET-VALUE" } } oops }`,
+    );
+
+    const error = await writeDevSecrets(dir, {
+      "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } },
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(surfaces(error)).not.toContain("SUPER-SECRET-VALUE");
+    expect(surfaces(error)).toContain(DEV_SECRETS_FILE);
+  });
+
+  test("removeDevSecrets is the same boundary, and says the same thing", async () => {
+    await writeFile(devSecretsPath(dir), `{ "turnstile-secret-keys": "SUPER-SECRET-VALUE" oops }`);
+
+    const error = await removeDevSecrets(dir, ["turnstile-secret-keys"]).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(surfaces(error)).not.toContain("SUPER-SECRET-VALUE");
+  });
+});
