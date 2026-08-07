@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ejectCapability } from "../capabilities/eject";
 import { defaultRemoveSteps } from "../capabilities/remove";
 import { wireFeatureDevVars } from "../feature/devVars";
+import { writeSeedArtifact } from "../seed/prepare";
 import { scaffoldFiles } from "../ui/scaffold";
 import {
   ensureEmptyTarget,
@@ -1296,6 +1297,38 @@ describe("the template copy", () => {
       const landed = RENAMED_ON_LANDING[path] ?? path.replace(`apps${sep}api${sep}`, `apps${sep}board${sep}`);
       expect(await pathExists(join(dir, landed)), landed).toBe(true);
     }
+  });
+});
+
+/**
+ * The last two writers in this package that put a file on disk their own way.
+ *
+ * Driven from here for the reason every other exit in this series is: the escape is one bug, the producers
+ * are scattered, and splitting the coverage across each module's own suite is exactly how the last five
+ * fixes each covered one of them.
+ *
+ * `writeSeedArtifact` writes the **live dev-login session cookie** — a plain `writeFile`, so it arrived at
+ * whatever the umask allowed and a foreign-owned symlink at `logs/dev-login.json` carried it straight out
+ * of the project. `writeFileAtomic` is the rule for both halves: the link ownership check, and a mode the
+ * file is *born* with rather than widened from.
+ */
+describe("the seed writers", () => {
+  test("writes the dev-login artifact owner-only, because it holds a live session cookie", async () => {
+    const path = await writeSeedArtifact(dir, { file: "dev-login.json", contents: '{"cookie":"live"}\n' });
+
+    expect(path).toBe(join(dir, "logs", "dev-login.json"));
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  test("leaves a mode the adopter set on a file that is already there", async () => {
+    // The same rule `.dev.vars` gets: `options.mode` is for creating a file, never for overruling one.
+    await mkdir(join(dir, "logs"), { recursive: true });
+    const path = join(dir, "logs", "dev-login.json");
+    await writeFile(path, "{}\n");
+    await chmod(path, 0o640);
+
+    await writeSeedArtifact(dir, { file: "dev-login.json", contents: '{"cookie":"live"}\n' });
+    expect((await lstat(path)).mode & 0o777).toBe(0o640);
   });
 });
 

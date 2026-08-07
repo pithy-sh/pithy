@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { type StatePathOptions, stateDir } from "../notifier/state";
+import { writeFileAtomic } from "../project/atomic";
 
 /**
  * The CLI half of the prepared-set seam: everything a `SeedSet.prepare` hook needs from the machine, kept
@@ -78,11 +79,24 @@ export function devSecretReader(projectDir: string): (name: string) => Promise<s
 }
 
 /**
+ * The mode a freshly written artifact lands with. `logs/dev-login.json` holds a **live session cookie** —
+ * one `cat` from being anybody's login — and the umask is not a permission policy.
+ */
+const ARTIFACT_MODE = 0o600;
+
+/**
  * Write one prepared artifact under the project's `logs/`, returning the path written.
  *
  * The directory is not the fixture's to choose: `logs/` is gitignored by the starter template, and the one
  * artifact that exists holds a live session cookie. A `file` carrying any directory part is refused rather
  * than normalized — a fixture that tried it is a bug, and silently relocating it would hide the bug.
+ *
+ * **Through {@link writeFileAtomic}, for the same two reasons `.dev.vars` is.** A plain `writeFile` follows
+ * a symlink at the target wherever it points, so a foreign-owned link left at `logs/dev-login.json` carried
+ * a live session cookie out of the project; and it lands the file at whatever the umask allows, which for
+ * a credential is a decision nobody made. The primitive owns both rules — an ownership check on every link
+ * it follows, and a mode the file is *born* with rather than widened from. A file already there keeps its
+ * own mode: those permissions are the adopter's.
  */
 export async function writeSeedArtifact(projectDir: string, artifact: SeedArtifact): Promise<string> {
   if (artifact.file !== basename(artifact.file) || artifact.file.startsWith(".")) {
@@ -95,6 +109,6 @@ export async function writeSeedArtifact(projectDir: string, artifact: SeedArtifa
   const dir = join(projectDir, SEED_ARTIFACT_DIR);
   await mkdir(dir, { recursive: true });
   const path = join(dir, artifact.file);
-  await writeFile(path, artifact.contents, "utf8");
+  await writeFileAtomic(path, artifact.contents, { mode: ARTIFACT_MODE });
   return path;
 }

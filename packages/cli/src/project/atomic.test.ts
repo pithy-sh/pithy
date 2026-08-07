@@ -692,10 +692,6 @@ describe("the gate on the gate", () => {
     ["packages/cli/src/project/atomic.ts", "This module. It is the one that is allowed to."],
     ["packages/cli/src/project/scaffold.ts", "Moves scaffolded template files into place after the copy."],
     ["packages/cli/src/project/workerCommand.ts", "`worker rename` moves a directory. Not a file write."],
-    [
-      "packages/cli/src/seed/media.ts",
-      "The fifth producer, found while closing the fourth. Its sidecar is an asset-id manifest rather than a credential, so it is listed rather than left silent — route it through writeFileAtomic and delete this line.",
-    ],
   ]);
 
   /**
