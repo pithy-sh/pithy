@@ -129,6 +129,45 @@ describe("writeDevSecrets", () => {
     expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
   });
 
+  test("a file already world-readable is tightened, even when its content needs no write", async () => {
+    // `.dev.vars` got this and its sibling did not, so a `.dev.secrets.jsonc` created at the umask —
+    // by an older pithy, an editor, a `cp` — stayed 0644 forever while holding OAuth client secrets.
+    // The one thing that set the mode was a write, and a re-run's write never has to happen.
+    const envelope = { currentVersion: "1", versions: { "1": "s" } };
+    await writeDevSecrets(dir, { "auth-session-secret": envelope });
+    await chmod(devSecretsPath(dir), 0o644);
+
+    const result = await writeDevSecrets(dir, { "auth-session-secret": envelope });
+
+    expect(result.added).toEqual([]);
+    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+  });
+
+  test("a file already world-readable is tightened when the caller has nothing to add at all", async () => {
+    // The shape every real caller has: `pithy add` filters out what is already in the file and hands
+    // this an empty set, so a re-run never reaches the merge. Tightening only past that point left the
+    // most common run of all doing nothing — `pithy add auth` twice, with a `chmod 644` between, and
+    // the file stayed 644.
+    await writeDevSecrets(dir, { "auth-session-secret": { currentVersion: "1", versions: { "1": "s" } } });
+    await chmod(devSecretsPath(dir), 0o644);
+
+    await writeDevSecrets(dir, {});
+
+    expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o600);
+  });
+
+  test("a deliberately tighter mode survives — this narrows, it never widens", async () => {
+    const envelope = { currentVersion: "1", versions: { "1": "s" } };
+    await writeDevSecrets(dir, { "auth-session-secret": envelope });
+    await chmod(devSecretsPath(dir), 0o400);
+    try {
+      await writeDevSecrets(dir, { "auth-session-secret": envelope });
+      expect((await stat(devSecretsPath(dir))).mode & 0o777).toBe(0o400);
+    } finally {
+      await chmod(devSecretsPath(dir), 0o600);
+    }
+  });
+
   test("writes nothing when there is nothing to add — no empty file appears from a no-op add", async () => {
     await writeDevSecrets(dir, {});
     await expect(readFile(devSecretsPath(dir), "utf8")).rejects.toThrow();

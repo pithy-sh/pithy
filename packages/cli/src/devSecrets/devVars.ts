@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, lstat, readFile, readlink, stat, symlink } from "node:fs/promises";
+import { lstat, readFile, readlink, symlink } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import { removeDevVarsContent, upsertDevVarsContent } from "../project/devVars";
 import { discoverWorkers } from "../project/workers";
+import { tightenMode } from "./mode";
 
 /**
  * The one place a secret value becomes a `.dev.vars` line — and the one place that makes sure the line
@@ -315,8 +316,13 @@ async function followLink(path: string): Promise<string> {
  *
  * The wrapped error carries the node error as `cause`. Its message is a path and an errno, never a line
  * of the file.
+ *
+ * **Exported because reading this file honestly is not only the writer's problem.** `pithy add` asks the
+ * same question — is this secret already here? — and its own `.catch(() => "")` answered "no" for an
+ * unreadable file, so `add` minted a second value and the project held two under one name, one in each
+ * file. Three readers of one file is how one of them keeps getting it wrong.
  */
-async function readDevVarsSource(path: string): Promise<string | null> {
+export async function readDevVarsSource(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");
   } catch (cause) {
@@ -331,30 +337,6 @@ async function readDevVarsSource(path: string): Promise<string | null> {
       { cause },
     );
   }
-}
-
-/** Group and other bits — everything a file holding a session key and a master key must not carry. */
-const SHARED_BITS = 0o077;
-
-/**
- * Take the group and other bits off `.dev.vars`, and change nothing else.
- *
- * **Narrowing only.** An adopter's deliberate 0400 survives, 0664 becomes 0600. A mode is never widened
- * from here: this runs on every write, and a rule that could widen would be a rule that eventually does.
- *
- * **Only a regular file we own.** A directory or a device at that path is not ours to re-mode, and
- * neither is another account's file — on a shared checkout that would be an unrequested change to
- * somebody else's permissions. Best effort throughout: the bytes are already written, and a mode that
- * could not be set is not worth failing a `pithy dev` over.
- */
-async function tightenMode(path: string): Promise<void> {
-  const entry = await stat(path).catch(() => null);
-  if (entry === null || !entry.isFile()) return;
-  const us = process.geteuid?.();
-  if (us !== undefined && entry.uid !== us) return;
-  const mode = entry.mode & 0o7777;
-  if ((mode & SHARED_BITS) === 0) return;
-  await chmod(path, mode & ~SHARED_BITS).catch(() => {});
 }
 
 /** Every Worker directory wrangler will run in — the ones with a `wrangler.jsonc` to load `.dev.vars` beside. */

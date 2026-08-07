@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
@@ -14,7 +13,7 @@ import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
-import { writeDevVars } from "../devSecrets/devVars";
+import { readDevVarsSource, writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
@@ -110,7 +109,11 @@ function provisionNote(capability: string, binding: BindingSpec): string {
  */
 async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
   const path = join(projectDir, ".dev.vars");
-  const existing = parseDevVars(await readFile(path, "utf8").catch(() => ""));
+  // Through the writer's own reader: only `ENOENT` is "no key here". `.catch(() => "")` answered that
+  // for every errno, so an unreadable file read as absent and this minted a second key — and a second
+  // master key orphans every secret the first one encrypted, which is what this function exists to
+  // prevent. See {@link readDevVarsSource}.
+  const existing = parseDevVars((await readDevVarsSource(path)) ?? "");
   if (existing[MASTER_KEY_BINDING]) {
     return [`${MASTER_KEY_BINDING} is already in .dev.vars. Left as it is — a new key orphans every stored secret.`];
   }
@@ -179,7 +182,13 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
   if (declared.length === 0) return [];
   // Prototype-free: a secret named `constructor` must not read back `Object.prototype.constructor` and
   // be reported as already in a `.dev.vars` the project does not have. See {@link ownProperties}.
-  const inDevVars = ownProperties(parseDevVars(await readFile(join(projectDir, ".dev.vars"), "utf8").catch(() => "")));
+  //
+  // And read honestly: this answer decides the migration case, so `.catch(() => "")` on an unreadable
+  // file said "no value here" and a second one was minted into `.dev.secrets.jsonc`. The project then
+  // held two different values for one secret, one per file, with nothing to say which signed what —
+  // the exact outcome the "only when absent" rule above is for. See {@link readDevVarsSource}.
+  const source = (await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "";
+  const inDevVars = ownProperties(parseDevVars(source));
   const stated = await readDevSecrets(projectDir);
   const minted: DevSecretsFile = {};
   const notes: string[] = [];

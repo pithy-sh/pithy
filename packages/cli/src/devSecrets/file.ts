@@ -9,6 +9,7 @@ import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureDevSecretsIgnored } from "./gitignore";
+import { tightenMode } from "./mode";
 import { ownProperties } from "./records";
 
 /**
@@ -18,7 +19,10 @@ import { ownProperties } from "./records";
  *
  * **The mode is not a detail.** The file holds OAuth client secrets, Stripe keys, and whatever else a
  * capability needs that cannot be minted. It is written `0600` on creation *and on every rewrite* — see
- * {@link writeFileAtomic}, where the rename is what used to widen it back to the umask default.
+ * {@link writeFileAtomic}, where the rename is what used to widen it back to the umask default — and
+ * narrowed on every write path whether or not a write was needed, which is the case the `mode` option
+ * cannot reach: a file somebody else created at the umask, that a re-run has nothing to add to. See
+ * {@link tightenMode}, shared with `.dev.vars` because the rule is about the contents, not the name.
  *
  * **Writes merge, they never replace.** The file is hand-edited: comments say where a value came from,
  * and a trailing comma is the residue of deleting a line. So a write re-parses the adopter's own text
@@ -196,19 +200,32 @@ export async function writeDevSecrets(
   added: DevSecretsFile,
   options: WriteDevSecretsOptions = {},
 ): Promise<DevSecretsWrite> {
-  if (Object.keys(added).length === 0) return { added: [], refused: null };
   const path = devSecretsPath(projectDir);
-  // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
-  // merging into an empty base is how a write replaces a file of secrets with the one value it is adding.
-  const content = (await readSource(path)) ?? "";
-  const merged = mergeDevSecrets(content, added, options.replace === true, path);
-  if (merged.added.length === 0) return { added: [], refused: null };
+  try {
+    if (Object.keys(added).length === 0) return { added: [], refused: null };
+    // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
+    // merging into an empty base is how a write replaces a file of secrets with the one it is adding.
+    const content = (await readSource(path)) ?? "";
+    const merged = mergeDevSecrets(content, added, options.replace === true, path);
+    if (merged.added.length === 0) return { added: [], refused: null };
 
-  const ignored = await ensureDevSecretsIgnored(projectDir);
-  if (!ignored.covered) return { added: [], refused: ignored.reason };
+    const ignored = await ensureDevSecretsIgnored(projectDir);
+    if (!ignored.covered) return { added: [], refused: ignored.reason };
 
-  await writeFileAtomic(path, merged.content, { mode: 0o600 });
-  return { added: merged.added, refused: null };
+    await writeFileAtomic(path, merged.content, { mode: 0o600 });
+    return { added: merged.added, refused: null };
+  } finally {
+    // Unconditionally, whatever happened above, and including the no-op return. The `mode` on the write
+    // is right and it left the mode to a write that mostly never happens: every caller filters what is
+    // already there first, so a re-run of `pithy add` reaches this function with nothing to add at all —
+    // and a file created at the umask by an older pithy, an editor, or a `cp` kept 0644 forever while
+    // holding the OAuth client secrets `.dev.vars` only carries a copy of. Verified with the real CLI:
+    // `pithy add auth` twice, `chmod 644` between, and the second run left it 644.
+    //
+    // No file is still no file — {@link tightenMode} stats and returns — so a no-op add conjures nothing
+    // and the adopter's `.gitignore` is still untouched. Narrowing only, so a deliberate 0400 survives.
+    await tightenMode(path);
+  }
 }
 
 /** How {@link writeDevSecrets} treats a name the file already carries. */

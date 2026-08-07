@@ -121,6 +121,67 @@ describe("CloudflareTurnstileProvisioner", () => {
     });
   });
 
+  test("writeDev names the Worker the sitekeys and the injected secret never reached", async () => {
+    // The third call site to throw the delivery report away. `pithy add`'s two were fixed last round;
+    // this one still reported a provision that had placed nothing in the Worker wrangler actually runs.
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
+    const notes: string[] = [];
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      notes: (line) => void notes.push(line),
+    });
+
+    await p.writeDev('{"visible":{"key":"never-printed"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+
+    expect(notes.join("\n")).toContain(workerDir);
+    expect(notes.join("\n")).toMatch(/wrangler opens that one/);
+    // Never the secret, in a line that reaches a terminal scrollback and a CI log.
+    expect(notes.join("\n")).not.toContain("never-printed");
+  });
+
+  test("a clean delivery says nothing — a line per provision about nothing is noise", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const notes: string[] = [];
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      notes: (line) => void notes.push(line),
+    });
+
+    await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+
+    expect(notes).toEqual([]);
+  });
+
+  test("without a sink the report still reaches a human — a silent default is the defect again", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+
+      await p.writeDev('{"visible":{"key":"1x"}}', {});
+
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain(workerDir);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   test("writeManagedSecret dispatches a create with the d1/environment/json routing facts", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();

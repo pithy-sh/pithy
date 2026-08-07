@@ -319,6 +319,25 @@ describe("bootstrapAdd", () => {
     expect(await devVar(dir, "auth-session-secret")).toBe("written-by-hand");
   });
 
+  test("an unreadable .dev.vars is not an absent one — no second secret is minted beside it", async () => {
+    // `readFile(...).catch(() => "")` made an EACCES read as "no secret here", so `add` minted a second
+    // value into `.dev.secrets.jsonc` and the project held two different secrets under one name, one in
+    // each file. Only ENOENT means absent — the rule `writeDevVars` already enforces on the same file.
+    const path = join(dir, ".dev.vars");
+    await writeFile(path, "auth-session-secret=already-mine\n");
+    await chmod(path, 0o000);
+    try {
+      await expect(
+        bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed }),
+      ).rejects.toThrow(/could not be read/);
+
+      await chmod(path, 0o600);
+      expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
+    } finally {
+      await chmod(path, 0o600).catch(() => {});
+    }
+  });
+
   test("a Worker reading a .dev.vars of its own is named — the minted key never reached it", async () => {
     // `writeDevVars` grew `shadowed` and `undelivered` precisely so a delivery that did not happen stops
     // being reported as one. Both direct calls here took `.refused` off the result and dropped the rest,
