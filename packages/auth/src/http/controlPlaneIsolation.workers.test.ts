@@ -19,9 +19,11 @@ import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { EMAIL_MIGRATION_ORDER, email } from "@pithy-sh/email/src/capability";
+import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { auth } from "../capability";
 import { authDatabase } from "../data/tables";
@@ -54,7 +56,7 @@ import { requireAuth } from "./middleware";
 
 const SECRET = "test-secret-please-rotate-0000000000";
 
-/** The environment this Worker and the registered connection both claim. Not a `ManagedEnvironment`, so secrets resolve from injected dev values. */
+/** The environment this Worker and the registered connection both claim. It decides nothing about how a secret resolves (#153); the control-plane guard matches on it. */
 const ENVIRONMENT = "dev";
 
 /** Every table auth (and its email delivery side) owns. A control-plane call must leave all of them empty. */
@@ -71,13 +73,16 @@ const AUTH_TABLES = [
   "pithy_email_events",
 ];
 
-/** Dev-mode secret values, keyed by secret name — the whole aggregated registry, since dev resolves it in one batch. */
-const SECRET_ENV: Record<string, string> = {
+/** The registry the composed backend aggregates: auth's slice plus the one email declares. */
+const REGISTRY = { ...authSecretsRegistry, ...emailSigningRegistry };
+
+/** Every secret the composed backend resolves — all of them, since the accessor resolves in one batch. */
+const SECRETS: SecretFixture<typeof REGISTRY> = {
   "auth-session-secret": SECRET,
-  "auth-google-credentials": JSON.stringify({ clientId: "g", clientSecret: "g" }),
-  "auth-apple-credentials": JSON.stringify({ clientId: "a", clientSecret: "a" }),
-  "auth-facebook-credentials": JSON.stringify({ clientId: "f", clientSecret: "f" }),
-  "auth-github-credentials": JSON.stringify({ clientId: "h", clientSecret: "h" }),
+  "auth-google-credentials": { clientId: "g", clientSecret: "g" },
+  "auth-apple-credentials": { clientId: "a", clientSecret: "a" },
+  "auth-facebook-credentials": { clientId: "f", clientSecret: "f" },
+  "auth-github-credentials": { clientId: "h", clientSecret: "h" },
   "email-link-signing-key": "dev-link-signing-key",
 };
 
@@ -107,19 +112,17 @@ function memoryKv(): MemoryKv {
 }
 
 /**
- * The Worker env one test's requests share. `SECRETS`/`EMAIL_SUPPRESSIONS` point at the same D1 only to
- * satisfy the binding check — nothing in these tests reads either, because dev-mode secrets resolve
- * from the injected values above and no email is ever sent.
+ * The Worker env one test's requests share. `SECRETS` and `SECRETS_ENCRYPTION_KEYS` are the real
+ * bindings the reader uses — every auth secret is a `d1` entry, so it comes from the row `beforeEach`
+ * seeded and never from the env (#153). `EMAIL_SUPPRESSIONS` points at the app D1 only to satisfy the
+ * binding check; no email is ever sent here.
  */
 function workerEnv(): Record<string, unknown> {
   return {
     ...(env as unknown as Record<string, unknown>),
-    ...SECRET_ENV,
     ENVIRONMENT,
-    SECRETS: env.DB,
     EMAIL_SUPPRESSIONS: env.DB,
     EMAIL_SENDER: {},
-    SECRETS_ENCRYPTION_KEYS: "unused-in-dev",
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     CONTROL_PLANE: memoryKv(),
   };
@@ -295,6 +298,10 @@ beforeEach(async () => {
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);
+
+  // The backend composes `secrets`, whose `compose` hook configures the shared accessor with the real
+  // resolver at startup — so the values have to be real rows, written before the first request.
+  await seedSecrets(env, REGISTRY, SECRETS);
 
   const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
   signingKey = pair.privateKey;

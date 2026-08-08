@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
@@ -41,8 +42,10 @@ beforeEach(async () => {
   await email_0001_init.up(emailDatabase(env.DB));
   await email_0001_suppressions.up(emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS));
   // The registered routes resolve the signing key through the shared per-invocation accessor, so
-  // configure it from email's own slice before each case (and reset after).
+  // configure it from email's own slice before each case (and reset after), and provision the key as
+  // the encrypted row the accessor reads.
   configureSharedSecrets({ registry: emailSigningRegistry });
+  await seedSecrets(env, emailSigningRegistry, { [EMAIL_LINK_SIGNING_KEY]: KEY });
 });
 
 afterEach(() => resetSharedSecrets());
@@ -169,16 +172,26 @@ function liveToken(claims: TokenClaims): Promise<string> {
 /**
  * The three routes as `registerCallbacks` mounts them — the app-level peer of the direct-handler cases
  * above, so the `zValidator("param" | "query", …, validationHook)` declarations on the route line are
- * actually exercised. The signing key resolves through the shared secrets accessor, which in local dev
- * (no `ENVIRONMENT` var) reads the injected string and wraps it as version "1" — the same `kid`
- * `liveToken()` mints with.
+ * actually exercised. The signing key resolves through the shared secrets accessor, from the row
+ * `beforeEach` seeded: a fresh envelope, so its one version is `"1"` — the same `kid` `liveToken()`
+ * mints with. The env carries the `SECRETS` database and the master key and nothing else; a `d1`
+ * secret is never read from a binding (#153).
  */
 function callbackApp(): (path: string) => Promise<Response> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   registerCallbacks(app);
   return async (path) =>
-    app.request(path, {}, { DB: env.DB, EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS, [EMAIL_LINK_SIGNING_KEY]: KEY });
+    app.request(
+      path,
+      {},
+      {
+        DB: env.DB,
+        EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS,
+        SECRETS: env.SECRETS,
+        SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
+      },
+    );
 }
 
 /** The `code` from a `{ error: <public payload> }` response body. */

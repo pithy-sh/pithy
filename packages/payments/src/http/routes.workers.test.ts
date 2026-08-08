@@ -15,8 +15,8 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
-import { secretsStore } from "@pithy-sh/secrets/src/secretsStore";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -76,7 +76,11 @@ import {
   type StripeRecordedCall,
   stripeSignatureHeader,
 } from "../rails/stripe/fixtures/events";
-import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
+import {
+  PAYMENTS_PROVIDER_SECRET,
+  type PaymentsProviderCredentials,
+  paymentsSecretsRegistry,
+} from "../secret/registry";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
@@ -265,15 +269,12 @@ beforeEach(async () => {
   // Google's published keys are cached per isolate, which is right in a Worker and wrong across tests.
   resetGoogleJwksCache();
   // The routes read credentials through the shared per-invocation accessor, so it is configured with payments'
-  // own slice. The bundle is a `d1` secret — an encrypted row the manager Workflow writes — so a deployed read
-  // would want a secrets D1 and a master key stood up per case. These cases are about the routes, not the
-  // secrets pipeline (`secretsStore.workers.test.ts` owns that round trip), so the resolver is pointed at the
-  // local-dev path and reads the bundle each case injects as a binding. `ENVIRONMENT` stays on the request
-  // bindings, because payments reads it for its own purpose: the store environment a purchase is checked against.
-  configureSharedSecrets({
-    registry: paymentsSecretsRegistry,
-    resolve: (env, registry) => secretsStore({ ...env, ENVIRONMENT: undefined }, registry),
-  });
+  // own slice — the real resolver, no seam replaced. The bundle is a `d1` secret, so it is provisioned as the
+  // encrypted row the manager Workflow writes and the reader reads, in dev exactly as deployed (#153); a case
+  // wanting a different bundle seeds over this one. `ENVIRONMENT` stays on the request bindings, because
+  // payments reads it for its own purpose: the store environment a purchase is checked against.
+  configureSharedSecrets({ registry: paymentsSecretsRegistry });
+  await seedSecrets(env, paymentsSecretsRegistry, { [PAYMENTS_PROVIDER_SECRET]: CREDENTIALS });
 });
 
 afterEach(() => resetSharedSecrets());
@@ -391,8 +392,8 @@ interface RequestOptions {
   raw?: string;
   /** This deployment's environment. `prod` unless a case says otherwise. */
   environment?: string | null;
-  /** The credential bundle on the env. Defaults to a provisioned Apple and Google block. */
-  credentials?: unknown;
+  /** The provisioned credential bundle, seeded over the suite's. Defaults to a provisioned Apple and Google block. */
+  credentials?: PaymentsProviderCredentials;
   /** The `Authorization` header — where a Pub/Sub push carries its OIDC token. */
   authorization?: string;
   /**
@@ -432,13 +433,23 @@ async function request(app: Hono<PithyHonoEnv>, method: string, path: string, op
       ...(options.controlPlane.tokenId === undefined ? {} : { tokenId: options.controlPlane.tokenId }),
     });
   }
-  const bindings: Record<string, unknown> = {
-    ...env,
-    [PAYMENTS_PROVIDER_SECRET]: JSON.stringify(options.credentials ?? CREDENTIALS),
-  };
+  await provision(options.credentials);
+  const bindings: Record<string, unknown> = { ...env };
   const environment = options.environment === undefined ? "prod" : options.environment;
   if (environment !== null) bindings.ENVIRONMENT = environment;
   return app.request(`http://x${path}`, { method, headers, body }, bindings);
+}
+
+/**
+ * Seed a case's own credential bundle over the suite's, when it wants one.
+ *
+ * The accessor caches for its TTL, and `configureSharedSecrets` in `beforeEach` clears that cache — so the
+ * row written here is what the first read of the case resolves. A case that wants two different bundles
+ * wants two cases.
+ */
+async function provision(credentials?: PaymentsProviderCredentials): Promise<void> {
+  if (credentials === undefined) return;
+  await seedSecrets(env, paymentsSecretsRegistry, { [PAYMENTS_PROVIDER_SECRET]: credentials });
 }
 
 const errorCode = async (response: Response) => (await response.json<{ error: { code: string } }>()).error.code;
@@ -1594,10 +1605,10 @@ async function stripeHook(
       : options.header;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (header !== null) headers["stripe-signature"] = header;
+  await provision(options.credentials);
   const bindings: Record<string, unknown> = {
     ...env,
     ENVIRONMENT: options.environment === undefined ? "prod" : options.environment,
-    [PAYMENTS_PROVIDER_SECRET]: JSON.stringify(options.credentials ?? CREDENTIALS),
   };
   return app.request("http://x/payments/webhooks/stripe", { method: "POST", headers, body }, bindings);
 }

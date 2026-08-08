@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
 
 /**
@@ -8,6 +9,10 @@ import { defineConfig } from "vitest/config";
  * nothing (the monotonic guard is a SQL predicate, not a JS comparison), and the entitlement read model
  * is re-derived inside the same `DB.batch` as the purchase write, so the two can never disagree. A mock
  * would assert the code we wrote; D1 asserts the constraints.
+ *
+ * The provider credential bundle is a `d1` secret, so it is read from an encrypted row — here as in a
+ * deployed worker (#153). That needs the dedicated `SECRETS` database and a master key, exactly as a
+ * project composing `secrets` has; `seedSecrets` writes the row and `devEncryptionKeys` mints the key.
  */
 export default defineConfig({
   plugins: [
@@ -15,7 +20,8 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: "2025-01-01",
         compatibilityFlags: ["nodejs_compat"],
-        d1Databases: ["DB"],
+        d1Databases: ["DB", "SECRETS"],
+        bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
     }),
   ],
