@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { join } from "node:path";
-import { type StatePathOptions, stateDir } from "../notifier/state";
+import { projectConfigDir, type StatePathOptions, stateDir } from "../notifier/state";
 import { loadProject, requireProjectName } from "../project/config";
 import { ensureOwnerOnlyDirFor } from "./mode";
 
@@ -33,9 +33,15 @@ import { ensureOwnerOnlyDirFor } from "./mode";
 /** The file's name inside the project's config directory. Undotted: nothing here is hidden from anything. */
 export const DEV_SECRETS_FILE_NAME = "secrets.jsonc";
 
-/** The project's own directory under the Pithy config directory — the same one `dev.json` sits in. */
+/**
+ * The project's own directory under the Pithy config directory — the same one `dev.json` sits in.
+ *
+ * The join is {@link projectConfigDir}'s, and so is the rule that this name may become a path segment
+ * (#212). It used to be stated at every call site instead, which is where a rule is stated three times
+ * and then not a fourth.
+ */
 export function devSecretsDir(project: string, options: StatePathOptions = {}): string {
-  return join(stateDir(options), project);
+  return projectConfigDir(project, options);
 }
 
 /** `<config>/<project>/secrets.jsonc`, from a project name that has already been resolved. */

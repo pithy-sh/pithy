@@ -12,7 +12,7 @@ import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { readDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
-import { type StatePathOptions, stateDir } from "../notifier/state";
+import { projectConfigDir, type StatePathOptions, stateDir } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 
 /**
@@ -20,6 +20,9 @@ import { writeFileAtomic } from "../project/atomic";
  * here because a capability module is bundled into the Worker and cannot reach the filesystem at all.
  * The hook gets values and callbacks; the disk stays on this side.
  */
+
+/** The file's name inside the project's config directory. Undotted: nothing here is hidden from anything. */
+export const DEV_PREFERENCES_FILE_NAME = "dev.json";
 
 /**
  * Where a developer states their machine-local preferences for one project: `<stateDir()>/<project>/dev.json`
@@ -43,9 +46,14 @@ import { writeFileAtomic } from "../project/atomic";
  * One behavioural consequence, taken deliberately: `stateDir` reads the home directory from `os.homedir()`,
  * not from `$HOME`, so exporting `HOME` no longer relocates the preference file. That is the same rule the
  * state file has always followed, and one rule is the point.
+ *
+ * **The project segment is {@link projectConfigDir}'s to join, and its rule to state (#212).** This
+ * function used to join the name itself, with the rule that it was safe to put in a path living at every
+ * call site — safe every time, because each caller had been through `requireProjectName`, and safe by a
+ * property of the call graph rather than of the value.
  */
 export function devPreferencesPath(project: string, options: StatePathOptions = {}): string {
-  return join(stateDir(options), project, "dev.json");
+  return join(projectConfigDir(project, options), DEV_PREFERENCES_FILE_NAME);
 }
 
 /**

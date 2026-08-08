@@ -4,7 +4,8 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
 
@@ -163,6 +164,55 @@ export function stateDir(options: StatePathOptions = {}): string {
 /** The state file path: `<stateDir>/state.json`. */
 export function stateFilePath(options: StatePathOptions = {}): string {
   return join(stateDir(options), "state.json");
+}
+
+/**
+ * `<config>/<project>/` — **the one door a project name goes through to become a directory**, and the
+ * one place the rule that it may is stated (#212).
+ *
+ * That directory holds every dev secret a project has: `secrets.jsonc`, `dev.json`, `tokens.json`, and
+ * since #206 the account-scoped credentials sit beside it. The gates that guard project writes do not
+ * reach it — `ensureScaffoldPath` guards writes *inside a project*, and this path is in the config
+ * directory, outside every checkout. There is no second line of defence, so the join states its own.
+ *
+ * **It was safe before this, and that is the point.** Every caller passes a name already through
+ * `requireProjectName` or `kebab`. What was missing is where the rule *lived*: at each call site, which
+ * is the #183 shape — #171 narrowed a manifest's default values, #174 an option's key and describe, #183
+ * the capability's own name, three rounds for one rule that was never stated where it belonged. A caller
+ * that is safe because it happens to have normalised earlier is safe by a property of the call graph,
+ * and #206 added a caller to this family within a day of the last one.
+ *
+ * **Two halves, because a name arrives two ways (#206).** {@link assertValidProjectName} is read *after*
+ * kebabbing, deliberately: `Acme Corp` is a legal project name because it *becomes* `acme-corp`. So it
+ * is a statement about the slug, not about the string in hand — `My/Project` passes it whole, and joined
+ * verbatim it is two path segments. The second half is that the value **is** its own normalised form, so
+ * the typed name and the slug are held to one rule rather than the rule being true of only one of them.
+ */
+export function projectConfigDir(project: string, options: StatePathOptions = {}): string {
+  return join(stateDir(options), projectConfigSegment(project));
+}
+
+/**
+ * The validator every config string passes before it is joined into the config directory.
+ *
+ * Separate from the join because that is what the gate in `./state.test.ts` can see: the invariant is
+ * "no config string is joined into the config directory without passing a validator", stated that way
+ * rather than as a list of the joiners known today — enumerating is what produced the second and third
+ * instance of every other class of this in the tree.
+ *
+ * A `ValidationError`, and it names the value: a project name is something a human typed into
+ * `pithy.config.ts`, and it is not a secret.
+ */
+export function projectConfigSegment(project: string): string {
+  assertValidProjectName(project);
+  if (project !== kebab(project)) {
+    throw new ValidationError({
+      message: `"${project}" can't be a directory name.`,
+      action: "Use the normalized project name — lowercase letters, digits, and single hyphens.",
+      detail: `"${project}" is a valid project name only after kebabbing to "${kebab(project)}", and it is joined into the Pithy config directory verbatim. Pass the name requireProjectName returns.`,
+    });
+  }
+  return project;
 }
 
 /**

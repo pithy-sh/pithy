@@ -56,6 +56,16 @@ describe("devPreferencesPath", () => {
       expect(devPreferencesPath("acme", options)).toBe(join(stateDir(options), "acme", "dev.json"));
     }
   });
+
+  test("a name that is not a valid project name is refused, naming the value (#212)", () => {
+    // The other joiner of the same directory, held to the same rule and by the same function — the rule
+    // is `projectConfigDir`'s, not a second copy stated here. `Acme Corp` is the two-path case: legal as
+    // a project *name* because it kebabs to `acme-corp`, and not the string that may become a segment.
+    const options = { platform: "linux" as const, homedir: "/home/dev", env: {} };
+    for (const name of ["../evil", "a/b", "..", "", "Acme Corp"]) {
+      expect(() => devPreferencesPath(name, options), JSON.stringify(name)).toThrow(PithyError);
+    }
+  });
 });
 
 describe("readDevPreferences", () => {
