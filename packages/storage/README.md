@@ -213,11 +213,12 @@ Storage is tested in three places, and the split is not arbitrary — each one c
 `bun run test:integration` runs against a **live** Cloudflare account. It exists because Miniflare emulates the R2 binding and serves no S3 endpoint — so a *presigned* URL has nothing to address there, and the transfer path the whole design rests on (bytes going client-to-R2, never through the Worker) is untested until it runs for real. The live suite creates a throwaway bucket per test, PUTs real bytes to real presigned URLs, moves a genuine ≥ 5 MiB multipart upload, and reconciles the orphan sweep against a real bucket and a real D1. The inverse of the emulator's blind spot is its own: an `R2Bucket` only exists inside workerd, so the live suite serves `head`/`list`/`delete` over S3 and leaves `get` throwing. Neither suite can quietly take the other's path and pass.
 
 ```sh
-bun run vars:local        # symlink ../../.dev.vars -> .dev.vars (git-ignored)
 bun run test:integration  # creates and deletes real R2 buckets and D1 databases
 ```
 
 It needs `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and the R2 S3 key pair as `R2_CREDENTIALS={"accessKeyId":"…","secretAccessKey":"…"}`; it skips cleanly without them. Point it at a dedicated test account.
+
+Those come from **`packages/cloudflare/.dev.vars`**, not this package's — the live suites here call `loadIntegrationCreds` from `@pithy-sh/cloudflare/src/test-utils/harness`, and it reads the file beside itself. A `.dev.vars` in `packages/storage/` is read by nothing. Exporting the three as environment variables works too, and is how CI runs. Nothing creates the file: it used to be a symlink to the root's, wired by a `vars:local` task that #154 removed along with every other `.dev.vars` link. Write it by hand. See [`@pithy-sh/cloudflare`](../cloudflare/README.md) § "Live integration tests".
 
 ## License
 

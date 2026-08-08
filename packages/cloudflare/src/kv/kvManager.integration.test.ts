@@ -10,8 +10,8 @@ import { CloudflareKVManager } from "./kvManager";
  * LIVE integration test — the reference for the pattern every other `*.integration.test.ts` copies
  * (see `README.md` § "Live integration tests"). Creates a real KV namespace, exercises the manager
  * against it, and tears the namespace down in a guaranteed `finally`. Reads creds from the package
- * `.dev.vars` (symlink via `bun run vars:local`) or `process.env`; skipped when absent. Run via
- * `bun run test:integration`.
+ * `.dev.vars` — a real file you write yourself, since nothing creates one — or `process.env`; skipped
+ * when absent. Run via `bun run test:integration`.
  *
  * It asserts the three things every live test must: a happy-path request succeeds, the response
  * decodes to the expected shape, and an error/absent path behaves correctly (a deleted key reads

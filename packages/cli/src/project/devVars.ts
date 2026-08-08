@@ -67,7 +67,8 @@ export function removeDevVarsContent(content: string, keys: string[]): string {
 
 /**
  * Read a dev-vars file (empty if absent), upsert the keys, and write it back atomically — owner-only when
- * it has to be created, and through the shared file's symlink when `path` is a worker's link at it.
+ * it has to be created, and *through* a symlink at `path` rather than over it, when the link is one we
+ * could have made ourselves. See {@link writeFileAtomic}.
  */
 export async function upsertDevVars(path: string, vars: Record<string, string>): Promise<void> {
   const content = await readDevVarsFile(path);
