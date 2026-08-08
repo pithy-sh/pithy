@@ -259,7 +259,9 @@ async function collect(
 
 /** What every destination already holds. An absent file is empty; one that will not open throws. */
 async function load(projectDir: string, project: string | null, paths: StatePathOptions): Promise<Destinations> {
-  const cloudflare = parseCloudflareConfig((await readOptionalFile(cloudflareConfigPath(paths))) ?? "");
+  const cloudflare = parseCloudflareConfig(
+    (await readOptionalFile(cloudflareConfigPath({ ...paths, account: null }))) ?? "",
+  );
   if (project === null) return { cloudflare, secrets: {}, bootstrap: {}, tokens: {} };
   return {
     cloudflare,
@@ -313,7 +315,7 @@ function planOne(
     return { ...base, destination: null, action: "leave", reason: null, safeToRemove: false };
   }
   if (source.kind === "credential") {
-    const path = cloudflareConfigPath(paths);
+    const path = cloudflareConfigPath({ ...paths, account: null });
     return settle(base, path, source.value, destinations.cloudflare[source.key], pending);
   }
   if (project === null) return unplaceable(base);
@@ -439,7 +441,7 @@ async function write(
     }
   }
 
-  if (Object.keys(credentials).length > 0) await writeCloudflareConfig(credentials, paths);
+  if (Object.keys(credentials).length > 0) await writeCloudflareConfig(credentials, { ...paths, account: null });
   if (Object.keys(secrets).length > 0 && project !== null) {
     await writeDevSecrets(devSecretsFile(project, paths), secrets);
   }

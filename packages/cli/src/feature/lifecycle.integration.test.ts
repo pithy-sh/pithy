@@ -35,7 +35,7 @@ import { cloudflareProvisioners, provisionFeature } from "./provision";
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const vars = cloudflareEnv();
+const vars = cloudflareEnv({ account: null });
 const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
 const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
 const hasCreds = Boolean(accountId && apiToken);

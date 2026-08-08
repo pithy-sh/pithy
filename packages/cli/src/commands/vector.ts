@@ -10,9 +10,9 @@ import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { createRemoteCliAudit } from "../audit/cliAudit";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
@@ -32,9 +32,14 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * designed to authorize additive writes. A reset deletes every vector in an index.
  */
 
-/** The Cloudflare credentials every vector command needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): { accountId: string; apiToken: string } {
-  const vars = cloudflareEnv();
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): { accountId: string; apiToken: string } {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -95,7 +100,7 @@ async function buildProvisioner(projectDir: string, env: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
-  const { accountId, apiToken } = loadCloudflareCreds();
+  const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const config = await loadVectorConfig(projectDir);
   return {
     project,

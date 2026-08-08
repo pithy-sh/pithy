@@ -77,6 +77,35 @@ describe("the ui block of pithy.worker.jsonc", () => {
     await expect(readManifestDocument(dir)).rejects.toThrow(PithyError);
   });
 
+  test("a manifest that parses to something other than an object is refused by name, not read as empty", async () => {
+    // The last path in this family from "the read succeeded" to "start from an empty base": valid JSONC
+    // that is not an object. `{}` here is what `writeManifestDocument` renames over the adopter's file.
+    const path = join(dir, "pithy.worker.jsonc");
+    await writeFile(path, "[1, 2, 3]\n");
+
+    const thrown = (await readManifestDocument(dir).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    // The file, and what was found in it — never a byte of what it holds.
+    expect(thrown.payload.message).toContain(path);
+    expect(thrown.payload.message).toContain("array");
+    expect(thrown.payload.action ?? "").not.toBe("");
+    // And the same refusal through the question `pithy ui add` gates on before it writes anything.
+    await expect(readWorkerUi(dir)).rejects.toThrow(PithyError);
+    // Nothing was written over it.
+    expect(await readFile(path, "utf8")).toBe("[1, 2, 3]\n");
+  });
+
+  test("a manifest holding `null`, or a bare primitive, is not an absent one either", async () => {
+    // `null` is the shape that reached `{}` most directly: `typeof null === "object"` is the check that
+    // was meant to stop it and does not. The primitives are the second half of the same mistake —
+    // comment-json boxes a top-level scalar so it has somewhere to hang the file's comments, so
+    // `parse('"react"')` is a `String` *object* and `typeof` calls it one too.
+    for (const source of ["null\n", '"react"\n', "42\n", "true\n"]) {
+      await writeFile(join(dir, "pithy.worker.jsonc"), source);
+      await expect(readManifestDocument(dir), source).rejects.toThrow(PithyError);
+    }
+  });
+
   test("writes back comment-preserving, 2-space, trailing newline", async () => {
     await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  // keep me\n  "dev": { "autostart": false }\n}\n');
     const document = await readManifestDocument(dir);

@@ -6,7 +6,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { assertValidProjectName, isValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, type ProjectConfig } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
@@ -369,9 +369,14 @@ export async function probeAccountEvidence(
    */
   connect: (credentials: { accountId: string; apiToken: string }) => CloudflareClients = (credentials) =>
     new CloudflareClients(credentials),
+  /**
+   * The Cloudflare account this project belongs to. The verdict this function can reach — `orphaned`,
+   * "a live database is not yours" — is one no adopter should ever read off the wrong account (#206).
+   */
+  account: CloudflareAccountSelection | null = null,
 ): Promise<Map<string, AccountEvidence>> {
   const evidence = new Map<string, AccountEvidence>();
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return evidence;

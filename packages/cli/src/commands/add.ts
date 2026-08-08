@@ -11,9 +11,9 @@ import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
 import { type ConfigPrompt, coerceConfigValue, collectSetFlags, isHandWritten, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { type ResolvedWorker, type ResolveOptions, resolveSingleWorker } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
@@ -31,6 +31,12 @@ export interface BuildAuditOptions {
   env: string;
   /** The target Worker's capabilities — auditing is wired only when `audit` is among them. */
   capabilities: Capability[];
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required rather than defaulted: an audit written against the wrong
+   * account is a record of this project's work in another company's database (#206).
+   */
+  account: CloudflareAccountSelection | null;
   /** Audit factory seam (default: {@link createRemoteCliAudit}). */
   create?: (options: CreateCliAuditOptions) => Promise<CliAuditEmit>;
 }
@@ -45,9 +51,9 @@ export interface BuildAuditOptions {
  * first time `pithy add audit` itself runs — nothing can audit-log its own installation).
  */
 export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEmit> {
-  const { projectDir, worker, env, capabilities } = options;
+  const { projectDir, worker, env, capabilities, account } = options;
   const create = options.create ?? createRemoteCliAudit;
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
@@ -228,7 +234,13 @@ export default defineCommand({
         prompt: interactive ? promptConfigValues : undefined,
         eject: args.eject,
         force: args.force,
-        audit: await buildAudit({ projectDir, worker: target.name, env: "dev", capabilities: target.capabilities }),
+        audit: await buildAudit({
+          projectDir,
+          account: await projectCloudflareAccount(projectDir),
+          worker: target.name,
+          env: "dev",
+          capabilities: target.capabilities,
+        }),
       });
 
       if (args.json) {

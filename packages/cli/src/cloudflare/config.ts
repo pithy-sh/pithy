@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
-import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, fromZodError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -47,6 +47,107 @@ import { readOptionalFile } from "../project/readOptionalFile";
 export const CLOUDFLARE_CONFIG_FILE_NAME = "cloudflare.json";
 
 /**
+ * The shape a `cloudflare.accountName` may take: **a bare token** — lowercase letters, digits, and
+ * single interior hyphens.
+ *
+ * **This schema is the gate, and it is the only one there is.** The name becomes a file name in the
+ * *config directory*, which sits outside every checkout, so `ensureScaffoldPath` and the atomic writer —
+ * the two things that guard a path inside a project — never see it. #174 and #183 were both an
+ * unvalidated string reaching somewhere structural, and #183's lesson was to state the rule at the thing
+ * being validated rather than at each site that uses it. So `../../etc/passwd`, `a/b`, `a\b`, the empty
+ * string, a trailing space, a null byte and a control character are all refused *here*, once, and every
+ * way a name can arrive — typed into `pithy.config.ts`, or slugified by `pithy init` from a Cloudflare
+ * account's free-text name — goes through this same parse. A second path would make the rule true of
+ * only one of them.
+ *
+ * The refusal names the config and the value, because those are the two things needed to fix it and
+ * neither is recoverable from a bare "invalid string".
+ */
+const ACCOUNT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** No file name has any business being longer, and a cap keeps a pathological value off the filesystem. */
+const MAX_ACCOUNT_NAME = 64;
+
+export const CloudflareAccountName = z
+  .string()
+  .max(MAX_ACCOUNT_NAME, {
+    error: (issue) =>
+      `\`cloudflare.accountName\` in pithy.config.ts is longer than ${MAX_ACCOUNT_NAME} characters: ${JSON.stringify(issue.input)}. It is a file name — <config>/cloudflare.<name>.json — so keep it to a short nickname.`,
+  })
+  .regex(ACCOUNT_NAME_PATTERN, {
+    error: (issue) =>
+      `\`cloudflare.accountName\` in pithy.config.ts must be a bare token — lowercase letters, digits, and single hyphens, like "leed". It was ${JSON.stringify(issue.input)}. The name becomes the file name <config>/cloudflare.<name>.json, so a path separator, "..", an empty value, or a control character is refused here rather than where the path is built.`,
+  })
+  .describe(
+    "The nickname a project's root pithy.config.ts gives its Cloudflare account — a bare token, because it becomes <config>/cloudflare.<name>.json.",
+  );
+
+/** The nickname a project gives its Cloudflare account. Same name as its schema, as every Zod object here is. */
+export type CloudflareAccountName = z.output<typeof CloudflareAccountName>;
+
+/**
+ * The credentials file for a named account, or the unnamed default.
+ *
+ * The name is parsed here as well as at the config's own schema, and that is not belt-and-braces: this
+ * is the function that turns a string into a path, so it is the one place that must be impossible to
+ * reach with an unvalidated one. Callers that already parsed pay a regex; a caller that did not is
+ * refused rather than trusted.
+ */
+export function cloudflareAccountFile(accountName: string | null | undefined): string {
+  if (accountName === null || accountName === undefined) return CLOUDFLARE_CONFIG_FILE_NAME;
+  const parsed = CloudflareAccountName.safeParse(accountName);
+  if (!parsed.success) {
+    throw fromZodError(parsed.error, {
+      // The schema's sentence, promoted: the CLI renders `message` and `action` and drops `issues`, and a
+      // refusal that does not name the value is one the reader has to go and look up.
+      message: parsed.error.issues.map((issue) => issue.message).join(" "),
+      action: "Set `cloudflare.accountName` in pithy.config.ts to a bare token — lowercase, digits, hyphens.",
+    });
+  }
+  return `cloudflare.${parsed.data}.json`;
+}
+
+/**
+ * Which Cloudflare account a project belongs to, as its root `pithy.config.ts` declares it (#206).
+ *
+ * Both fields are optional and they answer different questions. `accountName` selects the credentials
+ * file; absent, the file is `cloudflare.json` exactly as before, so a single-account machine is
+ * untouched and there is nothing to migrate. `accountId` is a **pin**, not a credential — an account id
+ * is an identifier, the kind `wrangler.toml` commits routinely — and it is what makes the nickname mean
+ * the same thing on two developers' machines.
+ */
+export interface CloudflareAccountSelection {
+  /** Selects `<config>/cloudflare.<accountName>.json`. Absent selects `cloudflare.json`. */
+  accountName?: string;
+  /** The account the project belongs to. Verified against whatever the credentials resolve to. */
+  accountId?: string;
+}
+
+/**
+ * Where the credentials come from, and which account they must belong to.
+ *
+ * **`account` is required, and there is no ambient behind it.** The first shape of this change kept the
+ * selection in a process-wide holder that `loadProject` published into, so a call resolved correctly
+ * only if the project had already been loaded. Six call sites resolved credentials before it had —
+ * including the pair handed to `wrangler deploy` — and each was silently right on a single-account
+ * machine and silently wrong on any other. Six is this repository's usual count for a rule living at
+ * call sites instead of at the thing being called, and a holder makes the rule *invisible*: the wrong
+ * code is the code with nothing written in it.
+ *
+ * So the account is an argument with no default. Omitting it is a type error, which is the only form of
+ * "you must think about this" that survives the next person in a hurry. `null` is the deliberate answer
+ * — this project names no account, or there is no project here — and it is a statement a reviewer can
+ * see in a diff, which the omission never was.
+ *
+ * {@link projectCloudflareAccount} is where a value comes from; it loads the project, so the ordering
+ * that used to be implicit is now the `await` in front of it.
+ */
+export interface CloudflareConfigOptions extends StatePathOptions {
+  /** The project's account, from `projectCloudflareAccount`, or `null` when it names none. */
+  account: CloudflareAccountSelection | null;
+}
+
+/**
  * The account's Cloudflare configuration as it appears on disk.
  *
  * Every field is optional because every one of them is legitimately absent: a project that has not been
@@ -79,9 +180,98 @@ export const CloudflareConfig = z
 /** The account's Cloudflare configuration. Same name as its schema, as every Zod object in this repo is. */
 export type CloudflareConfig = z.output<typeof CloudflareConfig>;
 
-/** `<config>/cloudflare.json` — beside `state.json`, above every project's own directory. */
-export function cloudflareConfigPath(options: StatePathOptions = {}): string {
-  return join(stateDir(options), CLOUDFLARE_CONFIG_FILE_NAME);
+/**
+ * `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the project names an
+ * account — beside `state.json`, above every project's own directory.
+ */
+export function cloudflareConfigPath(options: CloudflareConfigOptions): string {
+  return join(stateDir(options), cloudflareAccountFile(options.account?.accountName));
+}
+
+/** Where a resolved `CLOUDFLARE_ACCOUNT_ID` came from — the two sources {@link cloudflareEnv} merges. */
+export type CloudflareAccountSource = "file" | "environment";
+
+/**
+ * A project's pin disagreeing with the account the credentials actually belong to.
+ *
+ * `cloudflare.<name>.json` is a local file, so the nickname means whatever each machine says it means:
+ * two developers on one repository can both have that file and have it point at different accounts, and
+ * nothing in the repository would disagree with either of them. The pin is what makes the repository the
+ * authority — the local file may only supply credentials *for the account the project says it belongs to*.
+ */
+export interface CloudflareAccountMismatch {
+  /** `cloudflare.accountId` from the project's root config. */
+  pinned: string;
+  /** The `CLOUDFLARE_ACCOUNT_ID` that actually resolved. */
+  resolved: string;
+  /** Which of the two sources supplied it — the environment overlay is the CI case. */
+  source: CloudflareAccountSource;
+  /** The credentials file this resolution named, whether or not it existed. */
+  path: string;
+}
+
+/** One credential resolution, with everything a caller may need to refuse or to report it. */
+export interface CloudflareResolution {
+  /** The file this resolution read, named whether or not it exists. */
+  path: string;
+  /** The `cloudflare.accountName` that selected it, or `null` for the unnamed default. */
+  accountName: string | null;
+  /** The credentials: the file's keys, with `process.env` overlaid per key for the ones it did not set. */
+  vars: Record<string, string>;
+  /** The project's `cloudflare.accountId`, or `null` when it set none. */
+  pinnedAccountId: string | null;
+  /** Set when the pin and the resolved account id disagree. */
+  mismatch: CloudflareAccountMismatch | null;
+}
+
+/**
+ * Resolve the credentials **and** everything that can be said about them, without throwing.
+ *
+ * The non-throwing half of {@link cloudflareEnv}, for the two callers that must keep working in exactly
+ * the state they exist to report: `pithy doctor`, which turns a mismatch into a line and a non-zero exit,
+ * and `pithy add secrets`, whose store-id recording is a convenience that may never fail the command it
+ * rides on.
+ */
+export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareResolution {
+  const selection = options.account;
+  const accountName = selection?.accountName ?? null;
+  const path = join(stateDir(options), cloudflareAccountFile(accountName));
+  const fromFile = readCloudflareConfigSync(path);
+  const vars = { ...fromFile };
+  const env = options.env ?? process.env;
+  for (const key of CLOUDFLARE_ENV_KEYS) {
+    const overlay = env[key];
+    if (!vars[key] && overlay) vars[key] = overlay;
+  }
+
+  const pinnedAccountId = selection?.accountId ?? null;
+  const resolved = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  // A pin with nothing resolved is not a mismatch: unconfigured is a legitimate state, and `pithy doctor`
+  // already names it every run. Only a *disagreement* is a fault.
+  const mismatch =
+    pinnedAccountId && resolved && resolved !== pinnedAccountId
+      ? {
+          pinned: pinnedAccountId,
+          resolved,
+          source: (fromFile.CLOUDFLARE_ACCOUNT_ID ? "file" : "environment") as CloudflareAccountSource,
+          path,
+        }
+      : null;
+
+  return { path, accountName, vars, pinnedAccountId, mismatch };
+}
+
+/**
+ * The one sentence a mismatch gets, so the refusal and `pithy doctor`'s line say the same thing.
+ *
+ * Both ids are named, because the whole failure is that two of them exist and nothing else in the
+ * toolchain compares them. The source is named too: a file naming the wrong account is a local
+ * misconfiguration, and an *environment* naming it is a CI job pointed at the wrong tenant — the one
+ * place that deploys to production.
+ */
+export function describeCloudflareAccountMismatch(mismatch: CloudflareAccountMismatch): string {
+  const where = mismatch.source === "file" ? mismatch.path : "the environment";
+  return `This project pins Cloudflare account ${mismatch.pinned}, and ${where} supplies credentials for ${mismatch.resolved}.`;
 }
 
 /**
@@ -96,14 +286,17 @@ export function cloudflareConfigPath(options: StatePathOptions = {}): string {
  * per key, so a file holding only the account id still takes the token from the environment — which is
  * exactly the mixture {@link cloudflareCredentialSplit} exists to name.
  */
-export function cloudflareEnv(options: StatePathOptions = {}): Record<string, string> {
-  const vars = readCloudflareConfigSync(cloudflareConfigPath(options));
-  const env = options.env ?? process.env;
-  for (const key of CLOUDFLARE_ENV_KEYS) {
-    const fromEnv = env[key];
-    if (!vars[key] && fromEnv) vars[key] = fromEnv;
+export function cloudflareEnv(options: CloudflareConfigOptions): Record<string, string> {
+  const resolved = resolveCloudflare(options);
+  if (resolved.mismatch) {
+    throw new ConflictError({
+      message: describeCloudflareAccountMismatch(resolved.mismatch),
+      action:
+        "Fix `cloudflare.accountId` in pithy.config.ts, or point `cloudflare.accountName` at the file holding this account's credentials. Pithy will not use credentials for an account the project does not claim.",
+      detail: `pinned ${resolved.mismatch.pinned}; ${resolved.mismatch.source} supplied ${resolved.mismatch.resolved} (${resolved.mismatch.path})`,
+    });
   }
-  return vars;
+  return resolved.vars;
 }
 
 /** One credential group assembled from two places: what the file supplied, and what the environment filled in. */
@@ -132,7 +325,7 @@ export interface CloudflareCredentialSplit {
  * file with nothing to fill the other half are all silent. An empty value counts as unset, matching the
  * overlay exactly, so this reports the credentials that actually resolve.
  */
-export function cloudflareCredentialSplit(options: StatePathOptions = {}): CloudflareCredentialSplit | null {
+export function cloudflareCredentialSplit(options: CloudflareConfigOptions): CloudflareCredentialSplit | null {
   const path = cloudflareConfigPath(options);
   let file: Record<string, string>;
   try {
@@ -179,7 +372,7 @@ export function parseCloudflareConfig(source: string): Record<string, string> {
  */
 export async function writeCloudflareConfig(
   values: Partial<Record<(typeof CLOUDFLARE_ENV_KEYS)[number], string>>,
-  options: StatePathOptions = {},
+  options: CloudflareConfigOptions,
 ): Promise<Record<string, string>> {
   const path = cloudflareConfigPath(options);
   const document = await readCloudflareDocument(path);

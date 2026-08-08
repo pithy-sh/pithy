@@ -8,7 +8,7 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { destroyFeature } from "../feature/destroy";
 import { deriveIdentityFromBranch } from "../feature/identity";
@@ -16,7 +16,7 @@ import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } fr
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
@@ -26,8 +26,8 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 const DEFAULT_FEATURE_ENV = "feature";
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-function buildProvisioners(): FeatureProvisioners | null {
-  const vars = cloudflareEnv();
+function buildProvisioners(account: CloudflareAccountSelection | null): FeatureProvisioners | null {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
@@ -57,8 +57,12 @@ const AUDIT_DESTINATION_ENV = "dev";
  * These are control-plane operations: they touch real Cloudflare whatever environment is named, so they use
  * `createCliAudit` directly rather than the remote-gated variant, and are always recorded.
  */
-async function buildAudit(projectDir: string, capabilities: Capability[]): Promise<CliAuditEmit> {
-  const vars = cloudflareEnv();
+async function buildAudit(
+  projectDir: string,
+  capabilities: Capability[],
+  account: CloudflareAccountSelection | null,
+): Promise<CliAuditEmit> {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
@@ -231,7 +235,8 @@ const provision = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { identity, capabilities } = await branchIdentity(projectDir);
-      const provisioners = buildProvisioners();
+      const account = await projectCloudflareAccount(projectDir);
+      const provisioners = buildProvisioners(account);
       if (!provisioners) {
         throw new ValidationError({
           message: "Cloudflare credentials are missing.",
@@ -246,7 +251,7 @@ const provision = defineCommand({
         capabilities,
         identity,
         provisioners,
-        audit: await buildAudit(projectDir, capabilities),
+        audit: await buildAudit(projectDir, capabilities, account),
       });
 
       if (args.json) {
@@ -283,7 +288,8 @@ const destroy = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { identity, capabilities } = await branchIdentity(projectDir);
-      const provisioners = buildProvisioners();
+      const account = await projectCloudflareAccount(projectDir);
+      const provisioners = buildProvisioners(account);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
       // D1/KV/R2 leaks while the run reports success, and teardown then deletes the branch the resource
@@ -304,7 +310,7 @@ const destroy = defineCommand({
         capabilities,
         env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
         ...(provisioners && !args["local-only"] ? { provisioners } : {}),
-        audit: await buildAudit(projectDir, capabilities),
+        audit: await buildAudit(projectDir, capabilities, account),
       });
 
       if (args.json) {

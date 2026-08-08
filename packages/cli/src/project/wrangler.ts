@@ -2,20 +2,59 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "./atomic";
+import { readOptionalFile } from "./readOptionalFile";
 
 /** The slice of `wrangler.jsonc` the per-environment var helpers read and write. */
 export interface WranglerEnvVars {
   env?: Record<string, { vars?: Record<string, string> } | undefined>;
 }
 
-/** Read and parse the project's `wrangler.jsonc`, comments preserved (comment-json). Caller casts the shape. */
+/**
+ * The parsed `wrangler.jsonc`, comments preserved (comment-json), or `null` when there is **no file**.
+ *
+ * Nineteen modules read a Worker's config through this wrapper, and until #204 it read the bytes with a
+ * bare `readFile`. That put every one of those reads outside the ENOENT gate: the gate recognises the leaf
+ * calls that hand back a file's contents, so a read behind a wrapper is one it cannot see, and
+ * `envInventory.ts` was left spelling out the errno branch for itself — correct, and invisible. The
+ * decision lives in {@link readOptionalFile} now, which is what puts this wrapper inside the rule.
+ *
+ * Absent is `ENOENT` and nothing else. A `wrangler.jsonc` that is there and will not open is a refusal
+ * naming it, never a Worker quietly reported as having no configuration.
+ */
+export async function readOptionalWranglerConfig(projectDir: string): Promise<unknown> {
+  const path = join(projectDir, "wrangler.jsonc");
+  const raw = await readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Can't read ${path}.`,
+          action: "Fix the file's permissions, or move it aside, and run the command again.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+  });
+  return raw === null ? null : parse(raw);
+}
+
+/**
+ * The same read, for the callers that have already established the Worker has a config — most of them.
+ * A directory with no `wrangler.jsonc` is a `PithyError` naming the file rather than node's own `ENOENT`
+ * escaping into a command's output. Caller casts the shape.
+ */
 export async function readWranglerConfig(projectDir: string): Promise<unknown> {
-  return parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8"));
+  const config = await readOptionalWranglerConfig(projectDir);
+  if (config === null) {
+    throw new NotFoundError({
+      message: `No wrangler.jsonc at ${join(projectDir, "wrangler.jsonc")}.`,
+      action: "Every worker lives in apps/<name> with its own wrangler.jsonc. Run pithy worker list to see them.",
+    });
+  }
+  return config;
 }
 
 /** Write `wrangler.jsonc` back comment-preserving, with the repo's 2-space + trailing-newline formatting. */

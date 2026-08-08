@@ -5,7 +5,7 @@ import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { unpublishedKitNotice } from "../project/scaffold";
@@ -32,6 +32,7 @@ const add = defineCommand({
       // `pithy init` asks, against the same account zones, and equally skippable.
       const asked = await askDomains({
         projectDir,
+        account: await projectCloudflareAccount(projectDir),
         workerName: report.name,
         interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
       });

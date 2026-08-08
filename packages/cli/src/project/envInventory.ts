@@ -5,13 +5,13 @@ import { relative } from "node:path";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { z } from "zod";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { StatePathOptions } from "../notifier/state";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { dashboardListUrl, dashboardUrl } from "./dashboard";
 import { resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
-import { readWranglerConfig } from "./wrangler";
+import { readOptionalWranglerConfig } from "./wrangler";
 
 /**
  * The read-only inventory behind `pithy env`. Every Worker lives in `apps/<name>/` with its **own**
@@ -250,6 +250,13 @@ export interface EnvInventoryOptions {
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
   paths?: StatePathOptions;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`.
+   *
+   * The inventory prints the account id every Worker's resources live under, so reading it from the
+   * wrong account's file would label this project's bindings with another company's account (#206).
+   */
+  account?: CloudflareAccountSelection | null;
 }
 
 /**
@@ -279,19 +286,18 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
     });
   }
 
-  const accountId = cloudflareEnv(options.paths ?? {}).CLOUDFLARE_ACCOUNT_ID ?? null;
+  const accountId = cloudflareEnv({ ...options.paths, account: options.account ?? null }).CLOUDFLARE_ACCOUNT_ID ?? null;
 
   const workers: WorkerEnvironments[] = [];
   for (const target of selected) {
-    let config: RawWrangler;
-    try {
-      config = (await readWranglerConfig(target.dir)) as RawWrangler;
-    } catch (error) {
-      // Discovery said this Worker had a wrangler.jsonc; it vanished or is unreadable mid-run. `pithy env`
-      // reports, it does not gate — carry on with the other Workers rather than failing the whole inventory.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
+    // Discovery said this Worker had a wrangler.jsonc; between then and now it may have vanished. `pithy
+    // env` reports, it does not gate — carry on with the other Workers rather than failing the inventory.
+    // Absence is the only thing skipped, and which failure is an absence is `readOptionalFile`'s decision,
+    // reached through `readOptionalWranglerConfig`. A config that is there and will not open still refuses:
+    // a Worker silently missing from an inventory is the under-report this whole family exists to prevent.
+    const raw = await readOptionalWranglerConfig(target.dir);
+    if (raw === null) continue;
+    const config = raw as RawWrangler;
     // The declaration, when this Worker has one. Read defensively: `pithy env` reports and does not
     // gate, so a Worker whose `pithy.config.ts` is missing, unimportable, or carries a malformed
     // `domains` block must still have its wrangler-derived environments listed rather than fail the

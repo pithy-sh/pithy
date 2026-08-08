@@ -13,6 +13,7 @@ import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type EnsureSecretsStoreIdOptions, ensureSecretsStoreId } from "../cloudflare/storeId";
 import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevVarsSource } from "../devSecrets/devVars";
@@ -46,6 +47,11 @@ export interface AddBootstrapOptions {
   ensureStoreId?: (options: EnsureSecretsStoreIdOptions) => Promise<string[]>;
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
   paths?: StatePathOptions;
+  /**
+   * The Cloudflare account this project belongs to. One Secrets Store per account, so the store id
+   * recorded here belongs to whichever account the project uses (#206).
+   */
+  account?: CloudflareAccountSelection | null;
 }
 
 /**
@@ -67,6 +73,7 @@ export async function bootstrapAdd({
   seed,
   ensureStoreId,
   paths,
+  account,
 }: AddBootstrapOptions): Promise<string[]> {
   const notes: string[] = [];
   // The account's Secrets Store id, resolved once and recorded in `<config>/cloudflare.json` — the one
@@ -74,7 +81,7 @@ export async function bootstrapAdd({
   // because the sentence it may print ("no credentials yet") is the same one that explains why the
   // provisioning notes below are the next step. Never fatal: see {@link ensureSecretsStoreId}.
   if (manifest.name === SECRETS_CAPABILITY) {
-    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)(paths !== undefined ? { paths } : {})));
+    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)({ paths: { ...paths, account: account ?? null } })));
   }
   for (const binding of manifest.requiredBindings) {
     // Optional bindings are skipped for the same reason `validateBindings` skips them: nothing refuses

@@ -40,6 +40,12 @@ type ManifestDocument = Record<string, unknown> & {
  * merges its two blocks into that empty base and {@link writeManifestDocument} renames the result over a
  * file whose every other block the process never saw. Committed rather than gitignored, so the loss is
  * recoverable from git — but only by someone who notices before committing over it.
+ *
+ * **Three ways in, and `{}` is the answer to exactly one of them.** The file is not there; the file is
+ * there and will not open; the file opened and is not a document. The third was the last path left from
+ * "the read succeeded" to "start from an empty base" (#204) — `typeof null === "object"` let `null`
+ * through, and an array passed the same check and then lost every key `stringify` drops off it. Such a
+ * file is malformed either way, which changes what the loss costs, not whether it is the same defect.
  */
 export async function readManifestDocument(workerDir: string): Promise<ManifestDocument> {
   const path = join(workerDir, WORKER_MANIFEST_FILE);
@@ -65,7 +71,32 @@ export async function readManifestDocument(workerDir: string): Promise<ManifestD
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
-  return typeof value === "object" && value !== null ? (value as ManifestDocument) : {};
+  const found = shapeOf(value);
+  if (found !== "object") {
+    throw new ConflictError({
+      message: `Cannot update ${path}: it holds ${asWords(found)}, not a manifest object.`,
+      action: "Restore it to a JSONC object, or move it aside, and run the command again.",
+      detail: `${WORKER_MANIFEST_FILE} in ${workerDir} parsed to ${asWords(found)}`,
+    });
+  }
+  return value as ManifestDocument;
+}
+
+/**
+ * What was found in place of a document, by shape alone — never a byte of what the file holds.
+ *
+ * By the value's own tag rather than by `typeof`, which answers this question wrong twice: `null` is an
+ * `"object"`, and **comment-json boxes a top-level primitive** so it has somewhere to hang the file's
+ * comments — `parse('"react"')` is a `String` object, and `typeof` calls that an `"object"` too.
+ */
+function shapeOf(value: unknown): string {
+  return Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
+}
+
+/** The shape as the sentence names it: `null`, `an array`, `a string`. */
+function asWords(shape: string): string {
+  if (shape === "null" || shape === "undefined") return shape;
+  return /^[aeiou]/.test(shape) ? `an ${shape}` : `a ${shape}`;
 }
 
 /** Write the document back, 2-space with a trailing newline — the repo's JSONC formatting. */

@@ -20,8 +20,14 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
-import { loadProject, loadWorkerConfig, loadWorkerDomains, requireProjectName } from "../project/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import {
+  loadProject,
+  loadWorkerConfig,
+  loadWorkerDomains,
+  projectCloudflareAccount,
+  requireProjectName,
+} from "../project/config";
 import { resolveWorkerAddress } from "../project/workerAddress";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -64,9 +70,18 @@ async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig>
   return cap.emailConfig;
 }
 
-/** The CF credentials and Secrets Store id email provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): { accountId: string; apiToken: string; storeId: string } {
-  const vars = cloudflareEnv();
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  accountId: string;
+  apiToken: string;
+  storeId: string;
+} {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -192,7 +207,7 @@ const provision = defineCommand({
       // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
       // adopts another project's opt-out list (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
-      const { accountId, apiToken, storeId } = loadCloudflareCreds();
+      const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const { theme } = await loadEmailConfig(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
@@ -244,7 +259,7 @@ const deprovision = defineCommand({
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
-      const { accountId, apiToken } = loadCloudflareCreds();
+      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
         cf,
@@ -276,7 +291,7 @@ const test = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken } = loadCloudflareCreds();
+      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const { fromAddress, fromName, baseUrl, theme } = await loadEmailConfig(projectDir);
       const payload = samplePayloads[args.template];
       if (!payload) {

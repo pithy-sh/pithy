@@ -37,7 +37,7 @@ import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsPr
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const vars = cloudflareEnv();
+const vars = cloudflareEnv({ account: null });
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 const optedIn = process.env.PITHY_LIVE_DEPLOY === "1";
 

@@ -3,8 +3,14 @@
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
-import { type CloudflareCredentialSplit, cloudflareCredentialSplit, cloudflareEnv } from "../cloudflare/config";
-import type { StatePathOptions } from "../notifier/state";
+import {
+  type CloudflareAccountMismatch,
+  type CloudflareConfigOptions,
+  type CloudflareCredentialSplit,
+  cloudflareCredentialSplit,
+  describeCloudflareAccountMismatch,
+  resolveCloudflare,
+} from "../cloudflare/config";
 
 /**
  * Whether `pithy doctor` can reach Cloudflare with the credentials the project is configured with.
@@ -27,7 +33,15 @@ export type CloudflareAccessState =
   /** `GET /user/tokens/verify` rejected it — wrong value, revoked, or expired. */
   | "token_invalid"
   /** The token is live but this account did not answer — usually the wrong account id, or missing permissions. */
-  | "account_unreachable";
+  | "account_unreachable"
+  /**
+   * The project pins `cloudflare.accountId` and the resolved credentials belong to a different account.
+   *
+   * Decided before anything reaches the network, and it stays that way: the one thing worse than
+   * reporting the wrong account would be authenticating as it first. It fails the exit like every other
+   * non-`ok` state, which is the whole guarantee the pin buys (#206).
+   */
+  | "account_mismatch";
 
 /** What `doctor` learned about the configured Cloudflare credentials. */
 export interface CloudflareAccess {
@@ -45,6 +59,19 @@ export interface CloudflareAccess {
    * fault this project's own config positively establishes may gate CI.
    */
   credentialSplit: CloudflareCredentialSplit | null;
+  /**
+   * The credentials file this run resolved — `<config>/cloudflare.json`, or the account-named file the
+   * project selected — named whether or not it exists.
+   *
+   * **Optional, and every field below it is, because they are facts about *this machine's* resolution
+   * rather than about reachability.** A caller that supplies its own probe has no file to name, and
+   * `describeCloudflareAccess` prints exactly what it printed before when nothing names one.
+   */
+  configPath?: string;
+  /** The project's `cloudflare.accountName`, or `null` when it named none. */
+  accountName?: string | null;
+  /** The pin disagreeing with the resolved credentials. Set exactly when the state is `account_mismatch`. */
+  accountMismatch?: CloudflareAccountMismatch | null;
 }
 
 /**
@@ -94,40 +121,72 @@ async function verifyByKind(clients: CloudflareClients, apiToken: string): Promi
  * Never throws: a diagnostic command has to keep working in exactly the broken environment it exists to
  * diagnose, so every failure becomes a state rather than an exception.
  */
-export async function checkCloudflareAccess(options: StatePathOptions = {}): Promise<CloudflareAccess> {
-  const vars = cloudflareEnv(options);
+export async function checkCloudflareAccess(options: CloudflareConfigOptions): Promise<CloudflareAccess> {
+  // `resolveCloudflare` rather than `cloudflareEnv`: a pinned mismatch is a throw everywhere else, and a
+  // diagnostic that died of the fault it exists to report would leave nothing to read it in.
+  const resolution = resolveCloudflare(options);
+  const vars = resolution.vars;
   // Resolved from the same file and the same environment, so what is reported is a fact about *this*
   // resolution rather than about a second one taken a moment later.
   const credentialSplit = cloudflareCredentialSplit(options);
+  const where = {
+    configPath: resolution.path,
+    accountName: resolution.accountName,
+    accountMismatch: resolution.mismatch,
+  };
+
+  // Before the credentials are even counted, and long before any of them are used: credentials for an
+  // account this project does not claim must not reach Cloudflare, not even to be verified.
+  if (resolution.mismatch)
+    return { state: "account_mismatch", missing: [], tokenStatus: null, credentialSplit, ...where };
+
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
-  if (missing.length > 0) return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit };
+  if (missing.length > 0)
+    return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit, ...where };
 
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const clients = new CloudflareClients({ accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken });
 
   const tokenStatus = await verifyByKind(clients, apiToken);
-  if (tokenStatus === null) return { state: "token_invalid", missing: [], tokenStatus: null, credentialSplit };
+  if (tokenStatus === null)
+    return { state: "token_invalid", missing: [], tokenStatus: null, credentialSplit, ...where };
 
   // Account-scoped, read-only, and never throws — and it exercises the one permission the bootstrap token
   // must hold to mint anything (`docs/TOKENS.md`), so a token that cannot mint is caught here rather than
   // by `pithy token mint`.
   const reachable = await clients.accountTokens().validateServiceAccess();
-  if (!reachable) return { state: "account_unreachable", missing: [], tokenStatus, credentialSplit };
+  if (!reachable) return { state: "account_unreachable", missing: [], tokenStatus, credentialSplit, ...where };
 
-  return { state: "ok", missing: [], tokenStatus, credentialSplit };
+  return { state: "ok", missing: [], tokenStatus, credentialSplit, ...where };
+}
+
+/**
+ * The credentials file, abbreviated against the operator's home the way every other path in the report
+ * is. `~/.config/pithy/cloudflare.json` when nothing named one — a stubbed probe, and the default.
+ */
+function configPath(access: CloudflareAccess, home: string | undefined): string {
+  const path = access.configPath ?? "~/.config/pithy/cloudflare.json";
+  return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
 /** The state's own line, before the split warning {@link describeCloudflareAccess} may append. */
-function describeState(access: CloudflareAccess): string {
+function describeState(access: CloudflareAccess, home?: string): string {
   switch (access.state) {
     case "ok":
       return `reachable (token ${access.tokenStatus ?? "verified"})`;
     case "unconfigured":
-      return `not configured (set ${access.missing.join(" and ")} in ~/.config/pithy/cloudflare.json, or the environment)`;
+      // The file this run actually resolved, when it knows it. `~/.config/pithy/cloudflare.json` is the
+      // right answer for a single-account machine and the wrong one for a project that names an account,
+      // and telling somebody to set a key in a file nothing will read is worse than saying nothing.
+      return `not configured (set ${access.missing.join(" and ")} in ${configPath(access, home)}, or the environment)`;
     case "token_invalid":
       return "CLOUDFLARE_API_TOKEN rejected — check the value, or mint a new bootstrap token";
     case "account_unreachable":
       return "token is valid but the account did not answer — check CLOUDFLARE_ACCOUNT_ID and the token's permissions";
+    case "account_mismatch":
+      return access.accountMismatch
+        ? `${describeCloudflareAccountMismatch(access.accountMismatch)} Nothing will run against it.`
+        : "the credentials belong to an account this project does not claim";
   }
 }
 
@@ -137,9 +196,17 @@ function describeState(access: CloudflareAccess): string {
  * A split group is appended rather than substituted: both facts are true at once, and a reachable state
  * is exactly what makes the split easy to miss — mixed credentials still reach *an* account.
  */
-export function describeCloudflareAccess(access: CloudflareAccess): string {
-  const state = describeState(access);
+export function describeCloudflareAccess(access: CloudflareAccess, home?: string): string {
+  const state = describeState(access, home);
   const split = access.credentialSplit;
-  if (!split) return state;
-  return `${state}; credentials come from two places — cloudflare.json sets ${split.fromFile.join(" and ")}, the environment supplies ${split.fromEnvironment.join(" and ")} — set the whole pair in one of them`;
+  const withSplit = split
+    ? `${state}; credentials come from two places — cloudflare.json sets ${split.fromFile.join(" and ")}, the environment supplies ${split.fromEnvironment.join(" and ")} — set the whole pair in one of them`
+    : state;
+  // The file, on every run that knows one. "Which account am I about to deploy to" must never require
+  // inspection, and once a machine holds `cloudflare.leed.json` beside `cloudflare.other-co.json` the
+  // state line alone does not answer it. The two states that have already named it — a mismatch names
+  // both ids, an unconfigured one names where the missing keys go — are not made to say it twice.
+  const named = access.state === "account_mismatch" || access.state === "unconfigured";
+  if (!access.configPath || named) return withSplit;
+  return `${withSplit}; from ${configPath(access, home)}`;
 }

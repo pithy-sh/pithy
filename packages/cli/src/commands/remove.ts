@@ -5,7 +5,7 @@ import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { formatDone, withErrorReporting } from "../terminal/output";
 import { buildAudit, targetWorker } from "./add";
@@ -91,6 +91,7 @@ export default defineCommand({
         // plain unwiring has no live environment, and the audit database is resolved from the project
         // root, narrowed to the Worker being unwired.
         audit: await buildAudit({
+          account: await projectCloudflareAccount(projectDir),
           projectDir,
           worker: target.name,
           env: args.drop ? env : "dev",

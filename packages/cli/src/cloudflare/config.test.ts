@@ -4,14 +4,18 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { StatePathOptions } from "../notifier/state";
 import {
   CLOUDFLARE_CONFIG_FILE_NAME,
+  CloudflareAccountName,
+  type CloudflareConfigOptions,
+  cloudflareAccountFile,
   cloudflareConfigPath,
   cloudflareCredentialSplit,
   cloudflareEnv,
   parseCloudflareConfig,
+  resolveCloudflare,
   writeCloudflareConfig,
 } from "./config";
 
@@ -22,8 +26,9 @@ import {
  */
 let dir: string;
 
-function paths(env: Record<string, string> = {}): StatePathOptions {
-  return { env: { PITHY_CONFIG_DIR: dir, ...env } };
+function paths(env: Record<string, string> = {}): CloudflareConfigOptions {
+  // The unnamed file, stated: every resolution says which account it is for, and "none" is an answer.
+  return { env: { PITHY_CONFIG_DIR: dir, ...env }, account: null };
 }
 
 async function config(values: Record<string, unknown>): Promise<void> {
@@ -41,6 +46,211 @@ afterEach(async () => {
 describe("cloudflareConfigPath", () => {
   test("is the account's file at the config root, not under any project", () => {
     expect(cloudflareConfigPath(paths())).toBe(join(dir, "cloudflare.json"));
+  });
+
+  test("a named account selects its own file, so two projects on one machine do not share one", () => {
+    expect(cloudflareConfigPath({ ...paths(), account: { accountName: "leed" } })).toBe(
+      join(dir, "cloudflare.leed.json"),
+    );
+    expect(cloudflareConfigPath({ ...paths(), account: { accountName: "other-co" } })).toBe(
+      join(dir, "cloudflare.other-co.json"),
+    );
+  });
+
+  test("no name resolves cloudflare.json exactly as before — nothing changes for a single-account machine", () => {
+    expect(cloudflareConfigPath({ ...paths(), account: { accountId: "acct" } })).toBe(join(dir, "cloudflare.json"));
+    expect(cloudflareConfigPath({ ...paths(), account: null })).toBe(join(dir, "cloudflare.json"));
+  });
+
+  test("there is no ambient to fall back to — the account is always the caller's word", () => {
+    // The whole point of the required argument: two resolutions in one process, for two accounts,
+    // neither able to affect the other. A holder made this a question of which ran first.
+    expect(cloudflareConfigPath({ ...paths(), account: { accountName: "leed" } })).toBe(
+      join(dir, "cloudflare.leed.json"),
+    );
+    expect(cloudflareConfigPath(paths())).toBe(join(dir, "cloudflare.json"));
+  });
+});
+
+/**
+ * `accountName` is a config string that becomes a file name in the config directory — outside every
+ * checkout, so `ensureScaffoldPath` and the atomic writer do not cover it. The schema is the gate, and
+ * these are the values that make it one (#174, #183).
+ */
+describe("CloudflareAccountName", () => {
+  test.each([
+    ["../../etc/passwd", "a traversal"],
+    ["../cloudflare", "a parent segment"],
+    ["a/b", "a posix separator"],
+    ["a\\b", "a windows separator"],
+    ["", "empty"],
+    [" ", "blank"],
+    ["leed ", "a trailing space"],
+    ["Leed", "an uppercase letter"],
+    ["leed.prod", "a dot"],
+    [`leed${String.fromCharCode(0)}`, "a null byte"],
+    [`leed${String.fromCharCode(7)}`, "a control character"],
+    ["leed\nx", "a newline"],
+    ["-leed", "a leading hyphen"],
+    ["leed-", "a trailing hyphen"],
+    ["a--b", "a doubled hyphen"],
+    ["~", "a home reference"],
+    ["a".repeat(65), "longer than a name has any reason to be"],
+  ])("refuses %j — %s", (value) => {
+    expect(CloudflareAccountName.safeParse(value).success).toBe(false);
+  });
+
+  test.each(["leed", "other-co", "acme2", "13ways", "a"])("accepts the bare token %j", (value) => {
+    expect(CloudflareAccountName.safeParse(value).success).toBe(true);
+  });
+
+  test("the refusal names the config and the value, so the fix needs no second lookup", () => {
+    const message = CloudflareAccountName.safeParse("../../etc/passwd").error?.issues[0]?.message ?? "";
+    expect(message).toContain("cloudflare.accountName");
+    expect(message).toContain("pithy.config.ts");
+    expect(message).toContain("../../etc/passwd");
+  });
+
+  test("a name that is not a bare token never reaches a path, even passed straight to the resolver", () => {
+    expect(() => cloudflareAccountFile("../../etc/passwd")).toThrow(PithyError);
+    expect(() => cloudflareConfigPath({ ...paths(), account: { accountName: "a/b" } })).toThrow(PithyError);
+    expect(() => resolveCloudflare({ ...paths(), account: { accountName: ".." } })).toThrow(PithyError);
+  });
+
+  test("the file name is the whole shape, so nothing else can be spliced into it", () => {
+    expect(cloudflareAccountFile(null)).toBe("cloudflare.json");
+    expect(cloudflareAccountFile("leed")).toBe("cloudflare.leed.json");
+  });
+});
+
+describe("the account a project names", () => {
+  test("two projects naming different accounts each resolve their own credentials", async () => {
+    await writeFile(
+      join(dir, "cloudflare.leed.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "leed-acct", CLOUDFLARE_API_TOKEN: "leed-token" }),
+    );
+    await writeFile(
+      join(dir, "cloudflare.other-co.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "other-acct", CLOUDFLARE_API_TOKEN: "other-token" }),
+    );
+    // The unnamed file holds a third account's pair, and neither project may read it.
+    await config({ CLOUDFLARE_ACCOUNT_ID: "default-acct", CLOUDFLARE_API_TOKEN: "default-token" });
+
+    expect(cloudflareEnv({ ...paths(), account: { accountName: "leed" } })).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "leed-acct",
+      CLOUDFLARE_API_TOKEN: "leed-token",
+    });
+    expect(cloudflareEnv({ ...paths(), account: { accountName: "other-co" } })).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "other-acct",
+      CLOUDFLARE_API_TOKEN: "other-token",
+    });
+    expect(cloudflareEnv(paths()).CLOUDFLARE_ACCOUNT_ID).toBe("default-acct");
+  });
+
+  test("a named file that does not exist resolves to no credentials, never to the unnamed one", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "default-acct", CLOUDFLARE_API_TOKEN: "default-token" });
+    expect(cloudflareEnv({ ...paths(), account: { accountName: "leed" } })).toEqual({});
+  });
+
+  test("the environment overlay still fills a named file's gaps, per key", async () => {
+    await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify({ CLOUDFLARE_API_TOKEN: "leed-token" }));
+    expect(
+      cloudflareEnv({ ...paths({ CLOUDFLARE_ACCOUNT_ID: "from-env" }), account: { accountName: "leed" } }),
+    ).toEqual({ CLOUDFLARE_API_TOKEN: "leed-token", CLOUDFLARE_ACCOUNT_ID: "from-env" });
+  });
+
+  test("a store id is recorded into the file the project selected", async () => {
+    const account = { accountName: "leed" };
+    await writeCloudflareConfig({ CLOUDFLARE_API_TOKEN: "leed-token" }, { ...paths(), account });
+    await writeCloudflareConfig({ SECRETS_STORE_ID: "store-leed" }, { ...paths(), account });
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.leed.json"), "utf8"))).toMatchObject({
+      CLOUDFLARE_API_TOKEN: "leed-token",
+      SECRETS_STORE_ID: "store-leed",
+    });
+    expect(cloudflareEnv(paths())).toEqual({});
+  });
+
+  test("the credential split is read from the selected file, not from the unnamed one", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "default-acct", CLOUDFLARE_API_TOKEN: "default-token" });
+    await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify({ CLOUDFLARE_API_TOKEN: "leed-token" }));
+    expect(
+      cloudflareCredentialSplit({ ...paths({ CLOUDFLARE_ACCOUNT_ID: "from-env" }), account: { accountName: "leed" } }),
+    ).toEqual({ fromFile: ["CLOUDFLARE_API_TOKEN"], fromEnvironment: ["CLOUDFLARE_ACCOUNT_ID"] });
+  });
+});
+
+/**
+ * The pin. `cloudflare.<name>.json` is a local file whose nickname means whatever each machine says it
+ * means, so the repository is the only thing that can hold a nickname to an account.
+ */
+describe("cloudflare.accountId, the pin", () => {
+  test("credentials that match the pin resolve exactly as they would without one", async () => {
+    await writeFile(
+      join(dir, "cloudflare.leed.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "leed-acct", CLOUDFLARE_API_TOKEN: "leed-token" }),
+    );
+    const account = { accountName: "leed", accountId: "leed-acct" };
+    expect(cloudflareEnv({ ...paths(), account }).CLOUDFLARE_ACCOUNT_ID).toBe("leed-acct");
+  });
+
+  test("a file naming another account refuses, and the refusal names both ids and the file", async () => {
+    await writeFile(
+      join(dir, "cloudflare.leed.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "someone-elses", CLOUDFLARE_API_TOKEN: "leed-token" }),
+    );
+    const account = { accountName: "leed", accountId: "leed-acct" };
+    const thrown = (() => {
+      try {
+        cloudflareEnv({ ...paths(), account });
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(thrown).toBeInstanceOf(PithyError);
+    const message = (thrown as PithyError).payload.message;
+    expect(message).toContain("leed-acct");
+    expect(message).toContain("someone-elses");
+    expect(message).toContain(join(dir, "cloudflare.leed.json"));
+  });
+
+  test("an overlaid account id is verified too — the CI job configured for the wrong account", () => {
+    // No file at all, which is how CI runs: the pair comes from the environment, and the pin is the only
+    // thing in the repository that can disagree with it.
+    const account = { accountId: "leed-acct" };
+    expect(() =>
+      cloudflareEnv({
+        ...paths({ CLOUDFLARE_ACCOUNT_ID: "wrong-acct", CLOUDFLARE_API_TOKEN: "tok" }),
+        account,
+      }),
+    ).toThrow(PithyError);
+    expect(resolveCloudflare({ ...paths({ CLOUDFLARE_ACCOUNT_ID: "wrong-acct" }), account }).mismatch).toMatchObject({
+      pinned: "leed-acct",
+      resolved: "wrong-acct",
+      source: "environment",
+    });
+  });
+
+  test("a pin with nothing resolved is not a mismatch — unconfigured is not wrong", () => {
+    expect(resolveCloudflare({ ...paths(), account: { accountId: "leed-acct" } }).mismatch).toBeNull();
+    expect(cloudflareEnv({ ...paths(), account: { accountId: "leed-acct" } })).toEqual({});
+  });
+
+  test("resolveCloudflare never throws, so a diagnostic can report the mismatch rather than die of it", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "someone-elses" });
+    const resolved = resolveCloudflare({ ...paths(), account: { accountId: "leed-acct" } });
+    expect(resolved.path).toBe(join(dir, "cloudflare.json"));
+    expect(resolved.accountName).toBeNull();
+    expect(resolved.mismatch).toMatchObject({ pinned: "leed-acct", resolved: "someone-elses", source: "file" });
+  });
+});
+
+describe("CI, which has no file and no account name", () => {
+  test("resolves the whole pair from the environment, unchanged", () => {
+    const env = { CLOUDFLARE_ACCOUNT_ID: "ci-acct", CLOUDFLARE_API_TOKEN: "ci-token" };
+    expect(cloudflareEnv(paths(env))).toEqual(env);
+    expect(cloudflareConfigPath(paths(env))).toBe(join(dir, "cloudflare.json"));
+    expect(resolveCloudflare(paths(env)).mismatch).toBeNull();
   });
 });
 
@@ -114,7 +324,7 @@ describe("parseCloudflareConfig", () => {
 describe("writeCloudflareConfig", () => {
   test("creates the file owner-only, in an owner-only directory", async () => {
     const nested = join(dir, "deeper");
-    await writeCloudflareConfig({ CLOUDFLARE_API_TOKEN: "tok" }, { env: { PITHY_CONFIG_DIR: nested } });
+    await writeCloudflareConfig({ CLOUDFLARE_API_TOKEN: "tok" }, { env: { PITHY_CONFIG_DIR: nested }, account: null });
     expect((await stat(join(nested, CLOUDFLARE_CONFIG_FILE_NAME))).mode & 0o777).toBe(0o600);
     expect((await stat(nested)).mode & 0o777).toBe(0o700);
   });
@@ -179,7 +389,7 @@ describe("cloudflareCredentialSplit", () => {
 
   test("half a file with nothing in the environment is silent — that is unconfigured, not a split", async () => {
     await config({ CLOUDFLARE_API_TOKEN: "tok" });
-    expect(cloudflareCredentialSplit({ env: { PITHY_CONFIG_DIR: dir } })).toBeNull();
+    expect(cloudflareCredentialSplit({ env: { PITHY_CONFIG_DIR: dir }, account: null })).toBeNull();
   });
 
   test("an empty value in the file counts as unset, exactly as the overlay treats it", async () => {

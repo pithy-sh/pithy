@@ -20,7 +20,7 @@ import {
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
 import { Miniflare } from "miniflare";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { collectMigrationSets } from "./registry";
 
@@ -73,6 +73,11 @@ export interface MigrationFanOutOptions {
    * Worker's local D1 lives in.
    */
   projectDir: string;
+  /**
+   * The Cloudflare account this project belongs to. A remote migration alters a real schema, so the
+   * wrong account's credentials would run it against another company's database (#206).
+   */
+  account?: CloudflareAccountSelection | null;
   /** Target environment. `dev` runs locally via Miniflare; staging/prod run over the D1 REST API. */
   env: string;
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
@@ -432,8 +437,8 @@ function databaseOf(cache: Map<string, D1Database>, group: DatabaseGroup): D1Dat
  * `@pithy-sh/cloudflare` D1 client (a shared client memoizes managers by database id). Only ever called
  * for the real REST path; an injected `override` replaces it wholesale.
  */
-function defaultRemoteD1(env: string): RemoteD1Factory {
-  const vars = cloudflareEnv();
+function defaultRemoteD1(env: string, account: CloudflareAccountSelection | null): RemoteD1Factory {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   // The active CF token: the bootstrap token locally, or the least-privilege `ci-system` token in CI
   // (an operator mints it with `pithy token mint ci-system` and sets it as CI's CLOUDFLARE_API_TOKEN).
@@ -456,9 +461,14 @@ function defaultRemoteD1(env: string): RemoteD1Factory {
  * client wholesale, so credentials are demanded only for the real path (mirrors the seed driver, which
  * is likewise credential-lazy): substituting the network client must never require ambient CF creds.
  */
-function remoteDriver(env: string, groups: DatabaseGroup[], override?: RemoteD1Factory): MigrationDriver {
+function remoteDriver(
+  env: string,
+  groups: DatabaseGroup[],
+  account: CloudflareAccountSelection | null,
+  override?: RemoteD1Factory,
+): MigrationDriver {
   // Build the REST-backed D1 per binding; the default reaches for creds, an override bypasses them.
-  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(env);
+  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(env, account);
 
   const cache = new Map<string, D1Database>();
   for (const group of groups) {
@@ -485,6 +495,12 @@ interface RunContext {
   groupWorkers: WorkerScope[];
   /** The project root whose `.wrangler/state` holds the local D1 every Worker shares. */
   persistRoot: string;
+  /**
+   * The Cloudflare account this project belongs to, carried from the run's options. A remote migration
+   * alters a real schema, so the wrong account's credentials would run it against another company's
+   * database (#206).
+   */
+  account: CloudflareAccountSelection | null;
   /** Target environment. */
   env: string;
   /** The owning project every touched database is stamped with and checked against. Optional. */
@@ -497,7 +513,7 @@ interface RunContext {
 function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<MigrationDriver> {
   return context.env === "dev"
     ? localDriver(context.persistRoot, groups)
-    : Promise.resolve(remoteDriver(context.env, groups, context.remoteD1));
+    : Promise.resolve(remoteDriver(context.env, groups, context.account, context.remoteD1));
 }
 
 /**
@@ -654,6 +670,7 @@ async function contextFor(options: MigrationFanOutOptions & { project?: string }
     }),
     groupWorkers,
     persistRoot: options.projectDir,
+    account: options.account ?? null,
     env: options.env,
     ...(options.project !== undefined ? { project: options.project } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
@@ -747,6 +764,11 @@ export interface DropCapabilityOptions {
   workerDir: string;
   /** The project root whose `.wrangler/state` holds the local D1 every Worker shares. */
   persistRoot: string;
+  /**
+   * The Cloudflare account this project belongs to. A remote drop reverses migrations against a real
+   * database, so it must be the account the project claims and no other (#206).
+   */
+  account?: CloudflareAccountSelection | null;
   /** Target environment. `dev` runs locally via Miniflare; staging/prod over the D1 REST API. */
   env: string;
   /**
@@ -781,6 +803,7 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     // other capability's tables and ledger rows, on this D1 or a Worker sharing it, stay untouched.
     groupWorkers: [worker],
     persistRoot: options.persistRoot,
+    account: options.account ?? null,
     env: options.env,
     project: options.project,
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),

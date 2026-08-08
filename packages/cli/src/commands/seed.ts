@@ -5,11 +5,11 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
@@ -94,8 +94,9 @@ async function buildSeedAudit(
   projectDir: string,
   env: string,
   capabilities: readonly Capability[],
+  account: CloudflareAccountSelection | null,
 ): Promise<CliAuditEmit> {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
@@ -207,6 +208,7 @@ export default defineCommand({
           projectDir,
           env,
           workers.flatMap((worker) => worker.capabilities),
+          await projectCloudflareAccount(projectDir),
         ),
       });
 

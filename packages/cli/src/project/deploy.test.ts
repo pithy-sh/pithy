@@ -48,6 +48,7 @@ describe("deployProject", () => {
     const calls: { name: string; args: string[] }[] = [];
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runDeploy: async (target, args) => {
@@ -71,6 +72,7 @@ describe("deployProject", () => {
     const calls: string[][] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       runDeploy: async (_target, args) => {
         calls.push(args);
@@ -86,6 +88,7 @@ describe("deployProject", () => {
     await writeWorker("web", "pithy-web");
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       env: "staging",
       runDeploy: async (target) => {
@@ -104,6 +107,7 @@ describe("deployProject", () => {
     await writeWorker("app", "pithy-app");
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       // How runWrangler reports a non-zero exit: a public message plus the real output in `detail`.
@@ -121,6 +125,7 @@ describe("deployProject", () => {
     await writeWorker("app", "pithy-app");
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       runDeploy: async () => "Deployed. No parseable details here.",
     });
@@ -129,7 +134,7 @@ describe("deployProject", () => {
   });
 
   test("fails when the project has no deployable workers", async () => {
-    const failure = await deployProject({ projectDir: dir, runDeploy: async () => "" }).catch(
+    const failure = await deployProject({ account: null, projectDir: dir, runDeploy: async () => "" }).catch(
       (error: unknown) => error,
     );
 
@@ -144,6 +149,7 @@ describe("deployProject", () => {
     const builds: { command: string; args: string[]; cwd: string }[] = [];
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runBuild: async (target, command, args) => {
@@ -169,6 +175,7 @@ describe("deployProject", () => {
     const builds: { command: string; args: string[] }[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       runBuild: async (_target, command, args) => void builds.push({ command, args }),
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
@@ -187,6 +194,7 @@ describe("deployProject", () => {
     const environments: (string | undefined)[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runBuild: async (_target, _command, _args, environment) => void environments.push(environment),
@@ -201,6 +209,7 @@ describe("deployProject", () => {
     const environments: (string | undefined)[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       runBuild: async (_target, _command, _args, environment) => void environments.push(environment),
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
@@ -213,6 +222,7 @@ describe("deployProject", () => {
     let builds = 0;
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       runBuild: async () => void builds++,
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
@@ -232,6 +242,7 @@ describe("deployProject", () => {
     const deployed: string[] = [];
 
     const results = await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runBuild: async () => {
@@ -256,6 +267,7 @@ describe("deployProject", () => {
     const calls: string[][] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       env: "staging",
       runBuild: async () => {},
@@ -275,6 +287,7 @@ describe("deployProject", () => {
     const events: CliAuditEvent[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runBuild: async () => {
@@ -293,6 +306,7 @@ describe("deployProject", () => {
     const events: CliAuditEvent[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       env: "prod",
       runDeploy: async (target) => wranglerOutput(target.name, "v1"),
@@ -317,6 +331,7 @@ describe("deployProject", () => {
     const events: CliAuditEvent[] = [];
 
     await deployProject({
+      account: null,
       projectDir: dir,
       env: "staging",
       runDeploy: async () => {

@@ -8,6 +8,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { StatePathOptions } from "../notifier/state";
 import { buildEnvInventory } from "./envInventory";
+import type { WorkerTarget } from "./workers";
 
 let dir: string;
 let configDir: string;
@@ -235,5 +236,48 @@ describe("buildEnvInventory — per Worker", () => {
 
     const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);
+  });
+});
+
+/**
+ * The two answers a `wrangler.jsonc` that did not come back can carry, kept apart — discovery said the
+ * file was there, and between that and the read it either vanished or refused to open.
+ *
+ * This module used to draw that line itself, with a hand-written `ENOENT` branch on a read it performs
+ * through `readWranglerConfig` (#204). The branch was correct and the gate could not see it, because the
+ * scan knows leaf reads and this one is behind a wrapper. The decision lives in `readOptionalFile` now.
+ */
+describe("buildEnvInventory — a wrangler.jsonc that did not come back", () => {
+  /** Discovery's answer, claiming a wrangler.jsonc for a directory whichever way this suite left it. */
+  function discovering(...entries: [name: string, dirName: string][]) {
+    return async (): Promise<WorkerTarget[]> =>
+      entries.map(([name, dirName]) => ({ name, dir: join(dir, "apps", dirName), hasWrangler: true }));
+  }
+
+  test("one that vanished between discovery and the read drops out — `pithy env` reports, it does not gate", async () => {
+    await writeWorker("api", { name: "acme-api" });
+    await mkdir(join(dir, "apps", "gone"), { recursive: true });
+
+    const inv = await buildEnvInventory({
+      projectDir: dir,
+      paths: paths(),
+      discoverWorkers: discovering(["acme-api", "api"], ["gone", "gone"]),
+    });
+    expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);
+  });
+
+  test("one that is there and will not open fails the inventory, and says which file", async () => {
+    // Absence is the only thing that may be skipped. A Worker whose config exists and cannot be read is a
+    // Worker this inventory would silently under-report, which is the answer the whole family refuses.
+    await writeWorker("api", { name: "acme-api" });
+    await mkdir(join(dir, "apps", "broken", "wrangler.jsonc"), { recursive: true });
+
+    const thrown = (await buildEnvInventory({
+      projectDir: dir,
+      paths: paths(),
+      discoverWorkers: discovering(["acme-api", "api"], ["broken", "broken"]),
+    }).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(thrown.payload.message).toContain(join(dir, "apps", "broken", "wrangler.jsonc"));
   });
 });
