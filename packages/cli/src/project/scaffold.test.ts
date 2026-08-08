@@ -1303,9 +1303,24 @@ describe("the gate on the gate", () => {
    *   banned outright by the test above, which is what makes reading named imports sufficient; the last is
    *   not visible to any rule in this file.
    *
-   * Two better homes were checked and neither exists: TypeScript 7 ships no parser API, and Biome's grit
-   * plugins match expressions rather than the conjunction of a module fact and a call — the same reason
-   * `the gate on the gate` is a test. Move it when either changes.
+   * - **The created path is not always the first argument.** Only the first is read, and `symlink(target,
+   *   path)` creates its second. That is the gap #167 named.
+   *
+   * Two better homes were checked and neither is available, though not for the reasons first assumed.
+   *
+   * Biome is not missing a feature — `style/noRestrictedImports` exists and `overrides` already carries a
+   * per-path `linter` block. It is the wrong shape. Grit plugins match expressions, not the conjunction of
+   * a module fact and a call, and expressing this through `overrides` would mean hand-listing every
+   * writing module in `biome.jsonc` — the same reason `the gate on the gate` is a test.
+   *
+   * TypeScript 7 does ship an AST: `typescript/unstable/ast` has the node types, the predicates, a visitor
+   * and `createScanner`. What it has no equivalent of is `ts.createSourceFile` — a parser that turns a
+   * string into a tree. A tree arrives only through `typescript/unstable/sync`, which spawns the compiler
+   * server, needs a resolved project, and says in its own specifier that it is unstable. Verified against
+   * `typescript@7.0.2`.
+   *
+   * Move this when either changes. What it cannot see is accepted meanwhile, with the threat model that
+   * decides how much it matters: `docs/ACCEPTED-LIMITS.md`, "The tripwires read source text".
    */
   describe("a path composed from a name", () => {
     /**

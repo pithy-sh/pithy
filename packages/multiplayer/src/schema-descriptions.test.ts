@@ -11,22 +11,17 @@ declare global {
 }
 
 // Eagerly import every source module except tests, so any newly exported schema is covered automatically —
-// no manual list to keep in sync. Mirrors core's and leaderboard's meta-test. The Durable Object module and
-// its test-worker shell import `cloudflare:workers`, which only resolves in the Workers runtime, so they are
-// excluded here (their exported schemas are re-exported from the pure `config`/`state`/`commit` modules,
-// which this test does cover).
+// no manual list to keep in sync. Mirrors core's and leaderboard's meta-test.
+//
+// Only the Durable Object module and its test-worker shell are excluded: they import `cloudflare:workers`,
+// which resolves in the Workers runtime and nowhere else. Their exported schemas are re-exported from the
+// pure `config`/`state` modules, which this test does cover.
+//
+// `capability.ts`, `index.ts`, and `http/routes.ts` used to be excluded here too, for the same reason —
+// they reached the DO transitively. #172 cut that edge, and dropping them from this list is what proves
+// it: the entry point an adopter's `pithy.config.ts` imports now loads in a node environment.
 const modules = import.meta.glob(
-  [
-    "./**/*.ts",
-    "!./**/*.test.ts",
-    // These import `cloudflare:workers` (directly or transitively), which only resolves in the Workers
-    // runtime. Their exported schemas are re-exported from the pure modules this test still covers.
-    "!./session/durableObject.ts",
-    "!./session/testWorker.ts",
-    "!./http/routes.ts",
-    "!./capability.ts",
-    "!./index.ts",
-  ],
+  ["./**/*.ts", "!./**/*.test.ts", "!./session/durableObject.ts", "!./session/testWorker.ts"],
   { eager: true },
 );
 

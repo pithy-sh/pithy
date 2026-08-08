@@ -8,7 +8,8 @@ import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { MULTIPLAYER_MIGRATION_ORDER } from "../capability";
 import { multiplayer_0001_results } from "../migrations/0001_results";
-import { type MultiplayerSession, USER_HEADER } from "./durableObject";
+import type { MultiplayerSession } from "./durableObject";
+import { USER_HEADER } from "./protocol";
 import type { GameSnapshot, SessionView } from "./state";
 
 function provider(): MigrationProvider {

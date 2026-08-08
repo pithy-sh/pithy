@@ -95,8 +95,40 @@ export const ConfigOptionValue: z.ZodType<ConfigOptionValue> = z
   )
   .describe("An option's rendered value: a JSON scalar, or a minimal worked example the adopter replaces.");
 
-/** An object key that can be written bare in a TypeScript object literal. */
+/**
+ * An object key that can be written bare in a TypeScript object literal.
+ *
+ * ASCII only, which is narrower than JavaScript: `café` is a legal bare identifier and Biome keeps it,
+ * checked by running Biome over it. It stays out because this is also the shape a *config option's* key
+ * is held to, and an option name an English keyboard cannot type is not one a capability should ship.
+ * Reserved words are in — `{ default: 1 }` and `{ class: 1 }` are both legal property names, checked the
+ * same way — so nothing here needs a keyword list to keep in step with the language.
+ */
 const BARE_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * The characters that end a `//` comment. All four are line terminators to a JavaScript parser, so a
+ * `describe` carrying one puts everything after it into `pithy.config.ts` as bare code — Biome's first
+ * report on the generated file is a parse error, not a lint (#174). U+2028 and U+2029 are here because
+ * they really do terminate the comment; that was measured with Biome, not assumed.
+ */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+/**
+ * Whether a string prints as a `//` comment Biome leaves exactly as written.
+ *
+ * Two things break it, and only two. A line terminator ends the comment, so the rest of the `describe`
+ * lands as code. And trailing whitespace parses fine and then fails `biome format`, which is a diff on a
+ * file the adopter never opened — the same failure mode #171 closed for values.
+ *
+ * Everything else stays legal, each one checked by running Biome over the rendered comment: leading
+ * whitespace, an interior tab, a block-comment terminator, `${x}`, non-ASCII, and a line of any length.
+ * A `//` comment ends at the line and nowhere else, and Biome never reflows one, so there is no width
+ * rule here either.
+ */
+function isPrintableComment(value: string): boolean {
+  return !LINE_TERMINATOR.test(value) && value === value.trimEnd();
+}
 
 /** Print one string as source, refusing the two sequences {@link isPrintableString} keeps out. */
 function renderString(value: string): string {
@@ -187,7 +219,36 @@ export const CONFIG_OPTION_INDENT = "      ";
  * comment, so an option's `describe` may run as long as it needs to.
  */
 export function renderConfigOptionLine(key: string, value: ConfigOptionValue, indent: string): string {
+  if (!BARE_KEY.test(key)) {
+    throw new ValidationError({
+      message: `A config option key must be a bare identifier, and "${key}" is not.`,
+      action: "Rename the option, or write it by hand in pithy.config.ts.",
+      detail: `Rendered as ${JSON.stringify(`${key}: …`)}, the generated pithy.config.ts would not parse as TypeScript — a key is written bare, so it cannot carry a hyphen, a space, a quote, or a leading digit.`,
+    });
+  }
   return `${indent}${key}: ${renderConfigValue(value)},`;
+}
+
+/**
+ * The comment line both writers put above an option: its `describe`, verbatim, as a `//` comment.
+ *
+ * The rationale is the whole reason the generated config documents itself, and it comes out of a manifest
+ * read from `node_modules` — third-party text reaching generated source. Both writers used to build this
+ * line themselves, which is the arrangement that let `pithy add` and `pithy upgrade` disagree about the
+ * line *below* it (#171); they now share this, so a rule stated here holds for both.
+ *
+ * Total over what {@link ConfigOption} parses, exactly as {@link renderConfigOptionLine} is: a manifest
+ * cannot reach the throw, because every manifest is parsed before it is rendered.
+ */
+export function renderConfigOptionComment(describe: string, indent: string): string {
+  if (!isPrintableComment(describe)) {
+    throw new ValidationError({
+      message: "A config option's rationale must be one line, with no trailing whitespace.",
+      action: "Put it on one line, or write the option by hand in pithy.config.ts.",
+      detail: `Rendered as ${JSON.stringify(`// ${describe}`)}, the generated pithy.config.ts would either not parse — a line break ends the comment and the rest becomes code — or fail biome format on the trailing whitespace.`,
+    });
+  }
+  return `${indent}// ${describe}`;
 }
 
 /**
@@ -200,12 +261,34 @@ export function renderConfigOptionLine(key: string, value: ConfigOptionValue, in
  * **Every option the capability's config type requires belongs here.** The manifest is the only thing
  * `pithy add` reads, so an option it omits is an option the generated config omits — see
  * {@link ConfigOptionValue} for the one that got away.
+ *
+ * **All three fields are narrowed to what the renderer can print, not just the value.** #171 held
+ * `default` to shapes Biome prints unchanged and left `key` and `describe` as `z.string().min(1)`, so a
+ * manifest could still state `content-type` — rendered `content-type: "x",`, which is not TypeScript at
+ * all — or a `describe` with a newline in it, whose second line landed in `pithy.config.ts` as bare code.
+ * A manifest is third-party data read from `node_modules`, and an option key is that data interpolated
+ * into generated source; `}) ; evil(` is the shape that makes the point. Narrowing here is what lets
+ * {@link renderConfigOptionLine} and {@link renderConfigOptionComment} guarantee the whole line rather
+ * than its right-hand side (#174).
  */
 export const ConfigOption = z
   .object({
-    key: z.string().min(1).describe('Option name passed to the capability factory (e.g. "basePath").'),
+    key: z
+      .string()
+      .regex(BARE_KEY, {
+        error: (issue) =>
+          `A config option key must be a bare identifier, and ${JSON.stringify(issue.input)} is not — it is written bare into pithy.config.ts.`,
+      })
+      .describe('Option name passed to the capability factory (e.g. "basePath"); a bare identifier.'),
     default: ConfigOptionValue.describe("Default value rendered into pithy.config.ts when no override is given."),
-    describe: z.string().min(1).describe("Rationale rendered as the comment above this option in pithy.config.ts."),
+    describe: z
+      .string()
+      .min(1)
+      .refine(isPrintableComment, {
+        error: (issue) =>
+          `A config option's rationale must be one line with no trailing whitespace, and ${JSON.stringify(issue.input)} is not — it is written into pithy.config.ts as a // comment.`,
+      })
+      .describe("Rationale rendered as the comment above this option in pithy.config.ts; one line."),
   })
   .describe("A configurable option a capability exposes (key, default, rationale).");
 export type ConfigOption = z.infer<typeof ConfigOption>;

@@ -4,7 +4,8 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { defineSecretRegistry, SecretBackend } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devSecretsFile } from "../devSecrets/location";
 import type { DevSecretsTarget } from "../devSecrets/seed";
@@ -30,6 +31,16 @@ const registry = defineSecretRegistry({
     scope: "global",
     rotatable: false,
     valueType: "text",
+  },
+  // A `cf-secrets-store` secret that is **not** a CLI credential — the dashboard's own shape (#178).
+  // Its dev value is stated in the secrets file exactly as a `d1` one's is; the seeder is what puts it
+  // in a binding. A copy in the root `.dev.vars` is read by nothing.
+  CONNECTION_KEY_ENCRYPTION_KEY: {
+    backend: "cf-secrets-store",
+    scope: "environment",
+    rotatable: false,
+    valueType: "text",
+    devValue: "random",
   },
 });
 
@@ -81,9 +92,38 @@ describe("checkDevSecrets", () => {
     expect((await check())?.misplaced).toEqual([]);
   });
 
-  test("a cf-secrets-store secret in .dev.vars is where it belongs — there is no local store", async () => {
+  test("a CLI credential in .dev.vars is where it belongs — that file is what the CLI reads", async () => {
+    // `CLOUDFLARE_API_TOKEN` is silent because it is a {@link CLOUDFLARE_ENV_KEYS} credential, not
+    // because of its backend. Naming it misplaced would send an adopter to break their own CLI.
     await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=tok\n");
     expect((await check())?.misplaced).toEqual([]);
+  });
+
+  /**
+   * #178: the check reached `backend: "d1"` only, so the dashboard's `cf-secrets-store` registry
+   * secrets sat in its root `.dev.vars` unflagged while the `d1` ones beside them were named. Backend
+   * decides where a *seeded* value lands; it never decided whether the root `.dev.vars` is the file a
+   * value belongs in. That question has one answer for every backend.
+   */
+  test("a cf-secrets-store secret in .dev.vars is misplaced too — the root file is nobody's source", async () => {
+    await writeFile(join(dir, ".dev.vars"), "CONNECTION_KEY_ENCRYPTION_KEY=k\n");
+    expect((await check())?.misplaced).toEqual([{ name: "CONNECTION_KEY_ENCRYPTION_KEY", state: "unmoved" }]);
+  });
+
+  test("every backend the registry can declare is reported, so a third one cannot arrive unchecked", async () => {
+    // The gate, stated as the invariant rather than as a list of backends this file happens to know:
+    // a registry secret in the root `.dev.vars` is misplaced, whatever `backend` says. Add a backend to
+    // {@link SecretBackend} and this fails until a fixture declares it and the check names it.
+    const declared = Object.entries(registry)
+      .filter(([name]) => !CLOUDFLARE_ENV_KEYS.includes(name as (typeof CLOUDFLARE_ENV_KEYS)[number]))
+      .map(([name, entry]) => [name, entry.backend] as const);
+    expect(new Set(declared.map(([, backend]) => backend))).toEqual(new Set(SecretBackend.options));
+
+    await writeFile(join(dir, ".dev.vars"), declared.map(([name]) => `${name}=x`).join("\n"));
+
+    expect(new Set((await check())?.misplaced.map((entry) => entry.name))).toEqual(
+      new Set(declared.map(([name]) => name)),
+    );
   });
 
   test("a name in both files is a duplicate — the move is done and the old line was left", async () => {

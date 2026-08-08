@@ -270,9 +270,16 @@ function cannotSee(root: string, step: string, reason: string): PithyError {
  *   unchanged, so a link at `apps` or at `apps/<name>` is refused and named.
  * - **And the path actually lands inside the project.** `ensureScaffoldPath` judges components one at a
  *   time and stops at the first missing one; this asks the kernel where the whole thing resolves to. A
- *   bind mount, a hard-linked directory, and a link swapped in between the walk and the `rm` all end here
- *   instead of in a recursive delete. The root itself is resolved the same way, because a project kept
- *   behind a symlink is the adopter's arrangement and none of our business.
+ *   link swapped in between the walk and the `rm` ends here instead of in a recursive delete. The root
+ *   itself is resolved the same way, because a project kept behind a symlink is the adopter's arrangement
+ *   and none of our business.
+ *
+ *   **`realpath` resolves symlinks and nothing else, so this is not a containment guarantee.** A bind
+ *   mount and a hard-linked directory are not links: the kernel resolves such a path to itself, so a bind
+ *   mount at `apps/` answers *inside the project* while the bytes it covers live anywhere the mounter
+ *   chose, and the `rm` below follows it out. Telling one apart needs the mount table, which is
+ *   platform-specific and not portable. Accepted, with the threat model that decides how much it matters:
+ *   `docs/ACCEPTED-LIMITS.md`, "Bind mounts and hard-linked directories".
  *
  * **The root is never the target.** A gate that permits deleting the directory it is containing to permits
  * everything, and no command here has any business removing the project.

@@ -1,0 +1,110 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { describe, expect, test } from "vitest";
+
+const run = promisify(execFile);
+
+/** `packages/cli/src/ci` → the repository. */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+
+/** The derivation CI plans with. Run as a subprocess: it is not under this package's `rootDir`. */
+const SCRIPT = join(REPO_ROOT, ".github", "scripts", "crossPackageReads.ts");
+
+type Read = { package: string; directory: string; file: string; target: string };
+
+/** Every cross-package read the script finds in this tree. */
+async function reads(): Promise<Read[]> {
+  const { stdout } = await run("bun", [SCRIPT, "--json"], { cwd: REPO_ROOT });
+  return JSON.parse(stdout) as Read[];
+}
+
+/** The `--filter=` arguments CI would add for a diff touching exactly `changed`. */
+async function filtersFor(changed: readonly string[]): Promise<string[]> {
+  const child = run("bun", [SCRIPT, "--filters"], { cwd: REPO_ROOT });
+  child.child.stdin?.end(`${changed.join("\n")}\n`);
+  const { stdout } = await child;
+  return stdout.split("\n").filter(Boolean);
+}
+
+/**
+ * The record. **This is a list, and it is meant to be.**
+ *
+ * Everything else about this mechanism is derived — the script re-reads the test files on every CI
+ * run, so a cross-package read added tomorrow is planned tomorrow with nothing to remember. That is
+ * what stops #148 and #173 from recurring. But "derived" and "unnoticed" are the same thing unless
+ * something says out loud what the derivation currently finds, so this is the tripwire: a path no
+ * test read across a boundary before fails here, and gets added by a human who meant to.
+ *
+ * These are the exact paths, because they are what the planner matches a changed file against. A
+ * second test reading `packages/**` adds no entry; a test reading somewhere new does.
+ *
+ * Each key is a path read from outside the package that reads it. Each value is why.
+ */
+const RECORD: Record<string, string> = {
+  ".": "The repo root. `project/atomic.test.ts`'s rename and recursive-delete tripwires walk every source file in the tree, and the docs tests hold `README.md` and `docs/` to the CLI's real output.",
+  "docs/CLI.md": "`terminal/styleDocs.test.ts` holds the documented styles to the ones the terminal module exports.",
+  packages:
+    "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
+  "templates/starter": "The tree `pithy init` copies (#148). `project/scaffold.test.ts` reads it whole.",
+  "templates/starter/apps/api/package.json":
+    "`project/scaffold.test.ts` — the dependencies a scaffolded Worker starts with.",
+  "templates/starter/apps/api/tsconfig.json":
+    "`project/workerScaffold.test.ts` — the Worker's compiler options survive scaffolding.",
+  "templates/starter/apps/api/wrangler.jsonc":
+    "`project/scaffoldParity.test.ts` — `init` string-replaces three fields here and stamps the rest.",
+  "templates/starter/gitignore":
+    "`seed/prepare.test.ts` — what a scaffolded project ignores, including its dev secrets.",
+};
+
+describe("the cross-package reads CI plans from", () => {
+  test("every package that asserts about another package's files is planned by name", async () => {
+    // `--affected` maps a changed file to its owning package and that package's dependents, and
+    // nothing else. A package appearing here is one whose suite that model cannot reach.
+    expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual(["@pithy-sh/cli"]);
+  });
+
+  test("only these paths are read across a package boundary", async () => {
+    const found = [...new Set((await reads()).map((read) => read.target))].sort();
+    expect(found).toEqual(Object.keys(RECORD).sort());
+  });
+
+  test("every recorded read resolves to something that exists", async () => {
+    // The rule that separates a path a test READS from a path a test REJECTS.
+    // `testers/src/crypto/token.test.ts` feeds `"../../../etc/passwd"` to a traversal guard as
+    // hostile input; it resolves to `packages/etc/passwd`, which is nothing, so it is not a read.
+    for (const read of await reads()) expect(existsSync(join(REPO_ROOT, read.target))).toBe(true);
+  });
+
+  test("the traversal fixture is not mistaken for a read", async () => {
+    expect((await reads()).some((read) => read.target.includes("etc/passwd"))).toBe(false);
+  });
+});
+
+describe("what CI plans for a change", () => {
+  test("editing any shipped manifest plans the CLI — the sweep that reads them all (#173)", async () => {
+    const manifests = readdirSync(join(REPO_ROOT, "packages"))
+      .map((name) => `packages/${name}/pithy.manifest.json`)
+      .filter((path) => existsSync(join(REPO_ROOT, path)));
+
+    expect(manifests.length).toBeGreaterThan(10);
+    for (const manifest of manifests) {
+      // One at a time. A manifest whose package the CLI happens to depend on would be planned by
+      // `--affected` anyway; asserting them as a batch would hide the ones that are not.
+      expect(await filtersFor([manifest])).toContain("--filter=@pithy-sh/cli");
+    }
+  });
+
+  test("editing the starter template still plans the CLI (#148, kept)", async () => {
+    expect(await filtersFor(["templates/starter/pithy.config.ts"])).toContain("--filter=@pithy-sh/cli");
+  });
+
+  test("editing any package's source plans the CLI — the tripwires walk all of them", async () => {
+    expect(await filtersFor(["packages/leaderboard/src/capability.ts"])).toContain("--filter=@pithy-sh/cli");
+  });
+});

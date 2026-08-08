@@ -86,14 +86,6 @@ jobs:
           # a change to CI itself get tested by the CI it changes.
           GLOBAL_PATHS='^(bun\.lock|package\.json|turbo\.jsonc|biome\.jsonc|tsconfig[^/]*\.json|\.github/)'
 
-          # The starter template belongs to no workspace either, and it is not repo-wide: it is one
-          # package's asset. `@pithy-sh/cli` scaffolds from it and its suite is the only one that reads
-          # it. A PR touching `templates/` alone planned ZERO packages and every test job was skipped —
-          # so the regression test guarding the template never ran on the PRs that change the template.
-          # Measured on this repo before the fix: a one-line edit to `templates/starter/pithy.config.ts`
-          # yielded `count: 0, any: false`.
-          TEMPLATE_PATHS='^templates/'
-
           scope=()
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Diff from the merge base, not the base branch tip. On a `pull_request` event the
@@ -101,18 +93,50 @@ jobs:
             # `base.sha` is the fallback: it can lag if `main` moved, which over-counts affected
             # packages — the safe direction.
             base="$(git merge-base "origin/${{ github.base_ref }}" HEAD 2>/dev/null || echo "${{ github.event.pull_request.base.sha }}")"
-            if git diff --name-only "${base}" HEAD | grep -qE "$GLOBAL_PATHS"; then
+            changed="$(git diff --name-only "${base}" HEAD)"
+
+            # The other blind spot, and the one that keeps coming back. `--affected` maps a changed
+            # file to its owning package and that package's DEPENDENTS — so a test that asserts about
+            # ANOTHER package's files is invisible to it. `packages/cli` is no dependent of
+            # `packages/leaderboard`, so editing `packages/leaderboard/pithy.manifest.json` planned
+            # `leaderboard, multiplayer` and the manifest-width sweep in the CLI never ran (#173).
+            # #148 was the same defect on `templates/`, and this line used to be a hardcoded
+            # `^templates/` — which is precisely why #173 was found on the branch that fixed #148.
+            #
+            # So nothing is hardcoded now. `crossPackageReads.ts` derives the mapping from the tests
+            # themselves on every run: it resolves the relative-path literals in each package's test
+            # files and reports the ones that land outside their own package. Add a cross-package read
+            # tomorrow and it is planned tomorrow, with no edit here. Run it with no arguments to see
+            # the record; `packages/cli/src/ci/crossPackageReads.test.ts` holds it to a written-down set
+            # so a NEW kind of read is a deliberate act rather than a silent one.
+            #
+            # Not turbo's own knobs, and this was measured rather than assumed on turbo 2.10.7:
+            # `inputs: ["$TURBO_ROOT$/packages/*/pithy.manifest.json"]` on the CLI's `test:node` leaves
+            # the affected set byte-identical, because `--affected` never reads task inputs; and
+            # `globalDependencies` only reaches files no package owns — `templates/**` there works but
+            # escalates to all 23 packages, and `packages/*/pithy.manifest.json` is ignored outright.
+            #
+            # Assigned to a variable before `mapfile` rather than read from a process substitution:
+            # `pipefail` does not see inside a `< <(…)`, so a crashing script would hand back an empty
+            # array and fall through to plain `--affected` — planning less, quietly, which is the exact
+            # failure mode this closes. This way it fails the step.
+            reads_out="$(printf '%s\n' "$changed" | bun .github/scripts/crossPackageReads.ts --filters)"
+            reads=()
+            if [ -n "$reads_out" ]; then mapfile -t reads <<< "$reads_out"; fi
+
+            if grep -qE "$GLOBAL_PATHS" <<< "$changed"; then
               echo "Full run: this PR touches a repo-wide file, which no package owns."
-              git diff --name-only "${base}" HEAD | grep -E "$GLOBAL_PATHS" | sed 's/^/  /'
-            elif git diff --name-only "${base}" HEAD | grep -qE "$TEMPLATE_PATHS"; then
-              # Affected, PLUS the CLI. Spelled as two filters rather than `--affected --filter=...`,
-              # because turbo INTERSECTS those two — measured: `--affected --filter=@pithy-sh/cli` on a
-              # templates-only diff plans zero packages, the same silence this branch exists to end.
-              # Filters union with each other, so the affected set has to be written as one. It is the
-              # same set: `--filter=...[base]` and `--affected` returned identical package lists on both
-              # a templates-only diff and a `core` diff that cascades to all 21.
-              echo "Affected since ${base}, plus @pithy-sh/cli — this PR changes the starter template."
-              scope=("--filter=...[${base}]" --filter=@pithy-sh/cli)
+              grep -E "$GLOBAL_PATHS" <<< "$changed" | sed 's/^/  /'
+            elif [ "${#reads[@]}" -gt 0 ]; then
+              # Affected, PLUS the packages that assert about the changed paths. Spelled as two
+              # filters rather than `--affected --filter=...`, because turbo INTERSECTS those two —
+              # measured: `--affected --filter=@pithy-sh/cli` on a templates-only diff plans zero
+              # packages, the same silence this branch exists to end. Filters union with each other,
+              # so the affected set has to be written as one. It is the same set: `--filter=...[base]`
+              # and `--affected` returned identical package lists on both a templates-only diff and a
+              # `core` diff that cascades to all 21.
+              echo "Affected since ${base}, plus ${reads[*]} — these assert about paths this PR changed."
+              scope=("--filter=...[${base}]" "${reads[@]}")
             else
               echo "Affected since ${base}"
               export TURBO_SCM_BASE="${base}"

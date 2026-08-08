@@ -19,6 +19,7 @@ import {
   describeDevSecretsLocation,
   devSecretsHealthy,
 } from "../doctor/devSecrets";
+import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
@@ -144,14 +145,27 @@ export interface DoctorReport {
    */
   devVarsLocal: DevVarsLocalCheck | null;
   /**
+   * The two `.dev.vars` questions nothing else asks: whether each Worker's generated file actually
+   * carries anything, and whether the project root's hand-written one is still holding values nothing
+   * reads. `null` outside a readable project, on the same footing as the checks above.
+   *
+   * It reports and never fails the exit, for the same reason {@link DoctorReport.devSecrets} does not:
+   * every project that predates the generated file (#154) is in this state by definition, and an
+   * upgrade that turns a green `pithy doctor` red in CI is a surprise rather than a diagnosis. What it
+   * must not be is silent — until #178 the only thing that reported either was a 500 from a running
+   * Worker naming the bindings it did not have.
+   */
+  devVars: DevVarsCheck | null;
+  /**
    * Where this project's dev secrets file is, and whether it is there. `null` outside a project with a
    * resolvable name, on the same footing as {@link DoctorReport.devPreferences}.
    *
    * **Separate from {@link DoctorReport.devSecrets}, and reported even when that one is `null`.** That
    * check needs a registry to compare against, so a project that has not composed `secrets` yet gets no
    * answer from it — and a location is still the question an adopter has, because the file is outside
-   * the checkout (#156) and nothing in the project names it. It never fails the exit: a path is not a
-   * fault.
+   * the checkout (#156) and nothing in the project names it. It never fails the exit and it is not a
+   * term in the terse predicate: a path is not a fault. It prints in **both** forms of the report for
+   * that same reason (#166) — a healthy project is the one most likely to be asking where the file is.
    */
   devSecretsFile: DevSecretsLocationCheck | null;
   os: { name: string; version: string };
@@ -243,6 +257,12 @@ export interface DoctorReportOptions {
   /** Seam: what this project's `.dev.vars.local` files carry that nothing else declares. */
   checkDevVarsLocal?: (projectDir: string) => Promise<DevVarsLocalCheck | null>;
   /**
+   * Seam: whether each Worker's generated `.dev.vars` carries anything, and what the root one is
+   * holding that nothing reads. Resolved against the same `homedir` and `env` every other per-project
+   * path in this report is, so the file it names can never be one this report did not resolve.
+   */
+  checkDevVars?: (projectDir: string) => Promise<DevVarsCheck | null>;
+  /**
    * Dev-secrets location seam; defaults to {@link checkDevSecretsLocation} resolved against the same
    * `homedir` and `env` the config directory is, so the line can never name a path this report did not
    * resolve — the defect #131 fixed for `dev.json`, in the file beside it.
@@ -293,6 +313,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
   const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
   const probeDevVarsLocal = options.checkDevVarsLocal ?? ((dir: string) => checkDevVarsLocal({ projectDir: dir }));
+  const probeDevVars =
+    options.checkDevVars ??
+    ((dir: string) =>
+      checkDevVars({
+        projectDir: dir,
+        paths: { ...(options.homedir ? { homedir: options.homedir } : {}), env },
+      }));
   const probeDevSecretsFile =
     options.checkDevSecretsFile ??
     ((dir: string) => checkDevSecretsLocation(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -398,6 +425,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // that has never composed `secrets` — which is the project most likely to be asking where the file is.
   const devSecretsFile = inProject ? await probeDevSecretsFile(options.projectDir).catch(() => null) : null;
   const devVarsLocal = inProject ? await probeDevVarsLocal(options.projectDir).catch(() => null) : null;
+  // Gated the same way, and files only once more: each Worker's generated `.dev.vars` and the root's.
+  // No account, no store, no seed run — which matters here more than anywhere, because the state it
+  // reports is a project whose Workers cannot start.
+  const devVars = inProject ? await probeDevVars(options.projectDir).catch(() => null) : null;
 
   return {
     cli,
@@ -416,6 +447,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     devSecrets,
     devSecretsFile,
     devVarsLocal,
+    devVars,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -603,6 +635,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // four OAuth pairs auth declares are unset in almost every project, and treating that as a fault would
   // drag every report in the world verbose. `devSecretsHealthy` draws that line; the block still prints.
   const devSecretsOk = !report.devSecrets || devSecretsHealthy(report.devSecrets);
+  // A Worker that would start with no bindings at all is worth the ink for exactly the same reason a
+  // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
+  // but a report that called this project healthy is what #178 was reported about.
+  const devVarsOk = !report.devVars || devVarsHealthy(report.devVars);
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
   const terse =
     report.cli.state === "current" &&
@@ -613,9 +649,28 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     workerNamesOk &&
     devPreferencesOk &&
     devSecretsOk &&
+    devVarsOk &&
     !report.projectLoadError;
 
   const blocks: string[] = [];
+
+  /**
+   * The `Secrets:` line's content — the path, plus whatever {@link describeDevSecretsLocation} has to add.
+   *
+   * Built once and rendered twice, because it is the one line in the report that belongs in **both**
+   * forms. Everything else here reports a fault, and the terse report exists to say nothing when nothing
+   * is wrong; this reports a *location*, and "where is the file" is not a complaint. The file is outside
+   * every checkout since #156 — nothing in the project names it and `ls` will not find it — so a terse
+   * report that omitted it left the adopter with no way to find it at all (#166). `null` outside a
+   * project with a resolvable name, where there is no path to name.
+   */
+  const secretsLocation =
+    report.devSecretsFile === null
+      ? null
+      : (() => {
+          const detail = describeDevSecretsLocation(report.devSecretsFile);
+          return `${tildify(report.devSecretsFile.path, home)}${detail ? ` — ${detail}` : ""}`;
+        })();
 
   // CLI version.
   const cliLines = [`pithy ${report.cli.installed} (installed via ${report.cli.installer})`];
@@ -661,14 +716,15 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
       const path = tildify(report.devPreferences.path, home);
       paths.push(`Dev login:  ${path} — ${describeDevPreferences(report.devPreferences)}`);
     }
-    // Always, and beside the other two paths rather than in the findings block below. The findings
-    // block prints when something is wrong; this is the answer to "where is the file", which the
-    // adopter needs most when nothing is wrong and there is no other way to find out (#156).
-    if (report.devSecretsFile) {
-      const detail = describeDevSecretsLocation(report.devSecretsFile);
-      paths.push(`Secrets:    ${tildify(report.devSecretsFile.path, home)}${detail ? ` — ${detail}` : ""}`);
-    }
+    // Beside the other two paths rather than in the findings block below, because it answers the same
+    // question they do. The terse report has no paths block to sit in, so it gets the line on its own,
+    // in this same position — see `secretsLocation` above.
+    if (secretsLocation !== null) paths.push(`Secrets:    ${secretsLocation}`);
     blocks.push([...paths, `Notifier:   ${notifier}`].join("\n"));
+  } else if (secretsLocation !== null) {
+    // Unpadded, because there is nothing here to align it against: the terse report carries this line
+    // and no other path. Same position in the report either way, so the two forms read as one document.
+    blocks.push(`Secrets: ${secretsLocation}`);
   }
 
   // Project. Three states across two fields, and all three are said out loud: the config loaded, it is
@@ -708,8 +764,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
   // {@link DoctorReport.devSecrets}.
-  if (report.devSecrets || report.devVarsLocal) {
+  if (report.devSecrets || report.devVars || report.devVarsLocal) {
     const lines = [
+      // First in the block, because it is the loudest thing there is to say about a dev environment:
+      // that Worker answers every request with a missing-binding error, and the lines below it are
+      // usually why. Everything else here is a value in the wrong file; this one is a Worker with none.
+      ...(report.devVars ? describeDevVars(report.devVars) : []),
       ...(report.devSecrets ? describeDevSecrets(report.devSecrets) : []),
       // In the same block, because it is the same question asked of the file beside it: what is in a
       // git-ignored file that nothing else in the project knows about.
@@ -798,6 +858,10 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     devVarsLocal: report.devVarsLocal
       ? { ...report.devVarsLocal, detail: describeDevVarsLocal(report.devVarsLocal) }
       : null,
+    // Names only, never a value — the same discipline as its neighbour. The whole `root` classification
+    // is carried rather than only the findings, because an agent asking "what is in that file and what
+    // reads it" is asking the question the classification *is*, and a filtered list answers half of it.
+    devVars: report.devVars ? { ...report.devVars, detail: describeDevVars(report.devVars) } : null,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,
     node: report.node,

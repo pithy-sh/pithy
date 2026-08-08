@@ -64,12 +64,24 @@ const HEADER = `// Local dev secret values. Machine-local, outside every checkou
 `;
 
 /**
+ * The bytes a file that does not exist yet starts from: the header, and an empty object.
+ *
+ * Exported for `edit.ts` — `pithy secrets edit` on a project with no file has to open the editor on
+ * *something*, and an empty buffer is a document the adopter has to know the shape of before they can
+ * type into it. It is the same header a mint would have created, so the first hand-written secret and
+ * the first minted one land in a file that reads identically.
+ */
+export function initialDevSecretsContent(): string {
+  return `${HEADER}{}\n`;
+}
+
+/**
  * The project's dev secrets, validated. An absent file is `{}` — a project has none until a capability
  * needs one, and that is not a fault. A file that is *there* and malformed is, and comes back as the
  * loader's `ValidationError` naming this project's real absolute path.
  */
 export async function readDevSecrets(path: string): Promise<DevSecretsFile> {
-  const source = await readSource(path);
+  const source = await readDevSecretsSource(path);
   // Prototype-free, both branches. Every caller reads it as `file[name]` for a name the adopter typed,
   // and `{}` is the one an empty project hands to every lookup. See {@link ownProperties}.
   if (source === null) return ownProperties<never>({});
@@ -79,6 +91,11 @@ export async function readDevSecrets(path: string): Promise<DevSecretsFile> {
 /**
  * The file's bytes, or `null` when there is no file — and **only** when there is no file.
  *
+ * Exported for `edit.ts`, which needs the adopter's own text rather than the parsed value: an editor
+ * opens on bytes, and every comment in the file is a byte the parse throws away. It reads through here
+ * rather than calling `readFile` itself so that "there is no file yet" and "the file would not open"
+ * stay one decision — a second reader answering `{}` for an EACCES is exactly the defect below.
+ *
  * `ENOENT` is the one errno that means "no secrets yet". Every other one is a file that is there and
  * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Answering
  * `{}` for those was the same as answering "empty", so a write merged its one new value into an empty
@@ -87,7 +104,7 @@ export async function readDevSecrets(path: string): Promise<DevSecretsFile> {
  * The wrapped error carries the node error as `cause`. Its message is `EACCES: permission denied, open
  * '<path>'` — a path and an errno, never a byte of the file.
  */
-async function readSource(path: string): Promise<string | null> {
+export async function readDevSecretsSource(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");
   } catch (cause) {
@@ -149,7 +166,7 @@ function mergeDevSecrets(
   replace = false,
   path: string = DEV_SECRETS_FILE_NAME,
 ): { content: string; added: string[] } {
-  const source = content.trim().length === 0 ? `${HEADER}{}\n` : content;
+  const source = content.trim().length === 0 ? initialDevSecretsContent() : content;
   const tree = parseTree(source, path);
   // A file whose top level is not an object is the loader's error to raise, with its own actionable
   // message. Anything written here would land inside something that is not a secrets file.
@@ -194,7 +211,7 @@ export async function writeDevSecrets(
     if (Object.keys(added).length === 0) return [];
     // The merge base. A read that fails for anything but ENOENT throws rather than answering "empty":
     // merging into an empty base is how a write replaces a file of secrets with the one it is adding.
-    const content = (await readSource(path)) ?? "";
+    const content = (await readDevSecretsSource(path)) ?? "";
     const merged = mergeDevSecrets(content, added, options.replace === true, path);
     if (merged.added.length === 0) return [];
 
@@ -244,7 +261,7 @@ export interface WriteDevSecretsOptions {
  */
 export async function removeDevSecrets(path: string, names: readonly string[]): Promise<string[]> {
   if (names.length === 0) return [];
-  const content = await readSource(path);
+  const content = await readDevSecretsSource(path);
   if (content === null || content.trim().length === 0) return [];
 
   const tree = parseTree(content, path);
