@@ -991,7 +991,21 @@ describe("dev secrets file", () => {
 
   test("prints in the verbose report, beside the other config paths", async () => {
     const report = await buildDoctorReport(baseOptions({ checkDevSecretsFile: location() }));
-    expect(renderDoctorText(report, "/home/u")).toContain("Secrets:    ~/.config/pithy/acme/secrets.jsonc");
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Secrets:    ~/.config/pithy/acme/secrets.jsonc (run `pithy secrets edit`)",
+    );
+  });
+
+  /**
+   * The command, not only the path. The file is outside the checkout, so nothing an adopter can browse
+   * leads to it and this line is the only place the toolchain names either one (#186).
+   */
+  test("names the command that opens it, in both forms of the report", async () => {
+    const verbose = await buildDoctorReport(baseOptions({ checkDevSecretsFile: location() }));
+    const terse = await buildDoctorReport(harness.healthyOptions({ checkDevSecretsFile: location() }));
+    for (const report of [verbose, terse]) {
+      expect(renderDoctorText(report, "/home/u")).toContain("(run `pithy secrets edit`)");
+    }
   });
 
   test("prints in the terse report too — a healthy project is the one most likely to be asking", async () => {
@@ -1006,7 +1020,7 @@ describe("dev secrets file", () => {
         "Shell: zsh",
         "Alias: installed",
         "",
-        "Secrets: ~/.config/pithy/acme/secrets.jsonc",
+        "Secrets: ~/.config/pithy/acme/secrets.jsonc (run `pithy secrets edit`)",
         "",
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
@@ -1030,7 +1044,7 @@ describe("dev secrets file", () => {
       harness.healthyOptions({ checkDevSecretsFile: location({ present: false, orphans: ["acme-old"] }) }),
     );
     expect(renderDoctorText(report, "/home/u")).toContain(
-      "Secrets: ~/.config/pithy/acme/secrets.jsonc — no file yet; secrets exist for acme-old — a renamed project leaves its old name here",
+      "Secrets: ~/.config/pithy/acme/secrets.jsonc (run `pithy secrets edit`) — no file yet; secrets exist for acme-old — a renamed project leaves its old name here",
     );
   });
 
