@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, messageOf, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import { errnoOf } from "../project/atomic";
+import { readFileOutcome } from "../project/readOptionalFile";
 import { type CatalogEntry, capabilityPackageDir } from "./catalog";
 
 /** Every capability ships under this npm scope; the CLI resolves them by name. */
@@ -45,25 +45,22 @@ type ManifestRead =
 /**
  * Read and validate one package's manifest, distinguishing "not there" from "there and broken".
  *
- * **Only `ENOENT` means the package ships no manifest.** Every other errno is a file that exists and did
- * not open — `EACCES` after someone tightened a mode, `EISDIR`, `EIO` on failing disk — and reading those
- * as absence is how a present-but-unreadable capability disappears from `pithy add --list` with nothing
- * said. That is the same rule `readDevVarsSource` states for `.dev.vars` and `readDevJson` for `dev.json`
- * (`../devSecrets/`); this is its third instance in the codebase, and the third for the same reason.
+ * **Only `ENOENT` means the package ships no manifest**, and that decision is {@link readFileOutcome}'s
+ * now (`../project/readOptionalFile.ts`) rather than a third local copy of it. Reading any other errno as
+ * absence is how a present-but-unreadable capability disappears from `pithy add --list` with nothing said
+ * (#184); the primitive is where that sentence and its three producers live.
  *
- * Nothing is thrown: the caller decides what a fault means. `loadManifest` was asked for this capability
- * and refuses; `availableManifests` was asked for all of them and must still answer for the rest.
+ * The read is taken as a *value* and not as a throw, because the caller decides what a fault means:
+ * `loadManifest` was asked for this capability and refuses; `availableManifests` was asked for all of
+ * them and must still answer for the rest. Node's own error rides along as `cause`, so {@link faults}
+ * reports the errno an adopter can act on.
  */
 async function readInstalledManifest(path: string): Promise<ManifestRead> {
-  let raw: string;
+  const read = await readFileOutcome(path);
+  if (read.state === "absent") return { state: "absent" };
+  if (read.state === "unreadable") return { state: "invalid", cause: read.cause };
   try {
-    raw = await readFile(path, "utf8");
-  } catch (cause) {
-    if (errnoOf(cause) === "ENOENT") return { state: "absent" };
-    return { state: "invalid", cause };
-  }
-  try {
-    return { state: "manifest", manifest: CapabilityManifest.parse(JSON.parse(raw)) };
+    return { state: "manifest", manifest: CapabilityManifest.parse(JSON.parse(read.text)) };
   } catch (cause) {
     return { state: "invalid", cause };
   }

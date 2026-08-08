@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { StatePathOptions } from "../notifier/state";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { writeBootstrapVars } from "./bootstrapVars";
 import { generateDevVars } from "./generate";
 
@@ -196,12 +196,13 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
 /**
  * The file's bytes, or `null` when there is no file — and **only** when there is no file.
  *
- * `ENOENT` is the one errno that means "nothing written yet". Every other one is a file that is there and
- * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Reading those
- * as "empty" meant the next content was built from an empty base and renamed over a file full of values
- * this process never saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run
- * reporting a clean write. The same defect `readSource` was written to end for the dev secrets file, in
- * the file beside it, twice over.
+ * The rule and its three producers now live in {@link readOptionalFile} (`../project/`). What stays here
+ * is what is `.dev.vars`-shaped: the sentence an adopter reads, the mode it names, and *why* absence had
+ * to stop meaning "unreadable" for this file in particular. Reading `EACCES` or `EIO` as "empty" meant
+ * the next content was built from an empty base and renamed over a file full of values this process never
+ * saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run reporting a clean
+ * write. The same defect `readSource` was written to end for the dev secrets file, in the file beside it,
+ * twice over.
  *
  * The wrapped error carries the node error as `cause`. Its message is a path and an errno, never a line
  * of the file.
@@ -212,18 +213,15 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
  * file. Three readers of one file is how one of them keeps getting it wrong.
  */
 export async function readDevVarsSource(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (cause) {
-    const code = (cause as { code?: string } | null)?.code;
-    if (code === "ENOENT") return null;
-    throw new InternalError(
-      {
-        message: ".dev.vars is there and could not be read.",
-        action: `Check ${path} and its permissions. It should be a file, mode 600.`,
-        detail: `.dev.vars '${path}' failed to read: ${code ?? "unknown error"}`,
-      },
-      { cause },
-    );
-  }
+  return readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new InternalError(
+        {
+          message: ".dev.vars is there and could not be read.",
+          action: `Check ${path} and its permissions. It should be a file, mode 600.`,
+          detail: `.dev.vars '${path}' failed to read: ${code ?? "unknown error"}`,
+        },
+        { cause },
+      ),
+  });
 }
