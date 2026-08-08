@@ -24,17 +24,19 @@ import {
   unwireConfig,
 } from "./remove";
 
-/** A minimal manifest for the pure helpers. */
+/**
+ * A minimal manifest for the pure helpers.
+ *
+ * Through `parse`, not a cast. A cast would let this suite build a manifest the schema refuses — which is
+ * exactly what `remove` is asked to undo, and what #183 narrowed. The helpers under test read `name`, and
+ * the whole point of the narrowing is that the name they read is a bare identifier.
+ */
 function manifest(over: Partial<CapabilityManifest> & { name: string }): CapabilityManifest {
-  return {
+  return CapabilityManifest.parse({
     package: `@pithy-sh/${over.name}`,
     requiredBindings: [],
-    peerCapabilities: [],
-    optionalCapabilities: [],
-    scaffold: [],
-    configOptions: [],
     ...over,
-  } as CapabilityManifest;
+  });
 }
 
 describe("unwireConfig", () => {

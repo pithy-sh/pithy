@@ -49,12 +49,14 @@ export interface AtomicWriteOptions {
  * taken from a file, and pre-creating `.dev.vars` at 0644 is one line of work for anyone who can write the
  * directory. See {@link adoptableModeOf}.
  *
- * Its **link**. `apps/<worker>/.dev.vars` is a symlink to the project's shared file, and a rename over a
- * symlink does not follow it — it deletes it and leaves a private regular file holding a stale copy.
- * Nothing repairs that afterwards: the wiring then correctly sees a regular file and reports it `kept`
- * forever, so the worker silently stops seeing every secret the shared file gains. The link is resolved
- * and written *through* — a dangling one has its destination created rather than the link replaced — and
- * a chain that loops is refused rather than followed.
+ * Its **link**. `apps/<worker>/.dev.vars` used to be a symlink to the project's shared file, and a rename
+ * over a symlink does not follow it — it deletes it and leaves a private regular file holding a stale copy.
+ * Nothing repaired that afterwards: the wiring then correctly saw a regular file and reported it `kept`
+ * forever, so the worker silently stopped seeing every secret the shared file gained. That share is gone
+ * and every Worker's file is generated now (#154), but a link at a path written here is still the adopter's
+ * to make and the failure would be the same. A link is resolved and written *through* — a dangling one has
+ * its destination created rather than the link replaced — and a chain that loops is refused rather than
+ * followed.
  *
  * **The temp file is somewhere nobody could have got to first.** Its name was `${target}.tmp`: a path
  * anyone able to write the project directory could work out and plant a symlink at. The write followed
@@ -279,22 +281,26 @@ const ROOT_UID = 0;
 /**
  * Refuse a symlink somebody else made.
  *
- * This is the whole containment rule, and it is about the link's **owner**, not its destination, because
- * destination cannot separate the two cases:
+ * This is the whole containment rule, and it is about the link's **owner**, not its destination.
  *
- * - `apps/<worker>/.dev.vars` → the project's shared file. Must be followed (#146): a rename over it
- *   detaches the share into a private copy holding a stale credential set, silently and permanently.
- * - a **worktree's** root `.dev.vars` → the **main checkout's**, which `scripts/worktree.ts` links
- *   absolutely and which lives outside the worktree entirely. Must also be followed.
- * - `.dev.vars` → `/tmp/loot`, planted by whoever can write the directory. Must be refused.
+ * **Nothing in this repository makes a symlink any more.** The shared `.dev.vars` linked into each
+ * `apps/<worker>/` is generated per Worker instead (#154); `scripts/worktree.ts` links nothing and says so;
+ * the dev secrets file is found by name outside every checkout rather than linked into one (#156). So there
+ * is no arrangement of ours left for this to recognise. Every link the walk can meet is the adopter's own,
+ * on their machine, for a reason they did not tell us — beside a planted `.dev.vars` → `/tmp/loot`, which
+ * is indistinguishable from it by destination. Location cannot classify either: the writes that land in
+ * `<config>/<project>/` are outside every checkout by design, so there is no project root to contain to,
+ * and one that existed would refuse the adopter's link along with the planted one.
  *
- * The second and the third are the same shape: an absolute link out of the tree, to a path nothing here
- * can classify. Containing to a project root would refuse both and put #146 back; a root is not even
- * available at this depth. What actually differs is who made the link. Every legitimate one is made by the
- * developer running this command — by `worktree.ts`, by `vars:local`, by the worker wiring. A planted one
- * is made by a different uid: someone who can write a directory in the project but cannot read the 0600
- * file in it, which is exactly the position this attack is launched from. `symlink(2)` stamps the creating
- * uid on the link and only root may `chown` it afterwards, so that owner is not forgeable by the planter.
+ * Nor is replacing a link the safe way out. A rename over one deletes it and leaves a private regular file
+ * holding a stale copy, silently and permanently — that is #146, and it is why the choice here is follow or
+ * refuse.
+ *
+ * What actually differs is who made the link. A legitimate one is made as the developer running this
+ * command, whether by their own hand or by ours. A planted one is made by a different uid: someone who can
+ * write a directory in the project but cannot read the 0600 file in it, which is exactly the position this
+ * attack is launched from. `symlink(2)` stamps the creating uid on the link and only root may `chown` it
+ * afterwards, so that owner is not forgeable by the planter.
  *
  * Where the same uid made the link, it is ours by definition and there is nothing left to defend: anything
  * running as us can already read every file we could write.

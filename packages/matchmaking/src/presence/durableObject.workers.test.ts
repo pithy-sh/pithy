@@ -9,7 +9,8 @@ import { matchmakingDatabase } from "../data/tables";
 import { friendStore } from "../friends/store";
 import { inviteStore } from "../invite/store";
 import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
-import { type MatchmakingPresence, PRESENCE_USER_HEADER, type PresenceEvent } from "./durableObject";
+import type { MatchmakingPresence } from "./durableObject";
+import { PRESENCE_USER_HEADER, type PresenceEvent } from "./protocol";
 
 /** Rebuild the matchmaking tables from a clean slate before each test (the presence connect reads them). */
 beforeEach(async () => {

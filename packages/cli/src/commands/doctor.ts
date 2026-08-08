@@ -558,6 +558,21 @@ function workerHealthLines(health: WorkerHealth): string[] {
  */
 function healthBlock(health: ProjectHealth): string {
   const lines = ["Project health:"];
+  // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
+  // whose manifest could not be read contributes no drift to any check below it, so a project full of
+  // them read as healthy and said nothing at all (#184). No Worker owns this — manifests resolve once,
+  // from the project root — so it sits at the block's top rather than inside a Worker's section.
+  if (!health.manifests.ok) {
+    lines.push("  manifests:");
+    for (const fault of health.manifests.faults) {
+      // Not `healthLine`: a package name is longer than the 13-column label the per-Worker checks use, so
+      // it takes the line and its reason indents beneath it.
+      lines.push(
+        `${HEALTH_INDENT}${fault.package}: malformed pithy.manifest.json — reinstall it, or tell its maintainer`,
+      );
+      for (const line of fault.reason.split("\n")) lines.push(`${HEALTH_INDENT}  ${line}`);
+    }
+  }
   for (const worker of health.workers) {
     if (worker.ok) {
       lines.push(`  ${worker.worker}: healthy ✓`);

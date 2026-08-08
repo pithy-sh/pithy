@@ -90,7 +90,7 @@ describe("loadManifest", () => {
 
 describe("availableManifests", () => {
   test("a project with no node_modules has no capabilities", async () => {
-    expect(await availableManifests(dir)).toEqual([]);
+    expect(await availableManifests(dir)).toEqual({ manifests: [], faults: [] });
   });
 
   test("scans node_modules/@pithy-sh/* and returns every validated manifest", async () => {
@@ -101,15 +101,105 @@ describe("availableManifests", () => {
       requiredBindings: [{ type: "r2", name: "BUCKET" }],
     });
 
-    const manifests = await availableManifests(dir);
+    const { manifests, faults } = await availableManifests(dir);
     expect(manifests.map((m) => m.name).sort()).toEqual(["auth", "storage"]);
+    expect(faults).toEqual([]);
   });
 
   test("skips @pithy-sh packages that ship no manifest (core, cli)", async () => {
     await installManifest(dir, "auth", authManifest);
     await mkdir(join(dir, "node_modules", "@pithy-sh", "core"), { recursive: true });
 
-    const manifests = await availableManifests(dir);
+    const { manifests, faults } = await availableManifests(dir);
     expect(manifests.map((m) => m.name)).toEqual(["auth"]);
+    // The silent skip, and the only one: a package that is not a capability says nothing.
+    expect(faults).toEqual([]);
+  });
+});
+
+/**
+ * Missing and invalid are different answers, and this code gave them the same one.
+ *
+ * One `catch` covered both, so a manifest the schema refused made its capability vanish from
+ * `pithy add --list`, `pithy upgrade` and `pithy doctor` with no message anywhere — the three commands an
+ * adopter runs *because* something is missing were the three that stayed silent (#184). The four cases
+ * are separated here because they were one case in the code.
+ *
+ * Third instance of the shape: `readDevVarsSource` and `readDevJson` (`../devSecrets/`) each read every
+ * errno as absence too, and each now says only `ENOENT` means gone.
+ */
+describe("availableManifests tells a missing manifest from a broken one", () => {
+  test("missing: a package with no manifest is skipped, silently, as it always was", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "cli"), { recursive: true });
+    expect(await availableManifests(dir)).toEqual({ manifests: [], faults: [] });
+  });
+
+  test("unparseable: a manifest that is not JSON is reported, naming the package and why", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "audit"), { recursive: true });
+    await writeFile(join(dir, "node_modules", "@pithy-sh", "audit", "pithy.manifest.json"), "{ not json");
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests).toEqual([]);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]?.package).toBe("@pithy-sh/audit");
+    expect(faults[0]?.reason).toMatch(/JSON/i);
+  });
+
+  test("schema-invalid: the reason is the schema's own refusal, the same sentence loadManifest gives", async () => {
+    await installManifest(dir, "audit", {
+      ...authManifest,
+      name: "audit",
+      package: "@pithy-sh/audit",
+      configOptions: [{ key: "content-type", default: "x", describe: "Not renderable as a bare key." }],
+    });
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests).toEqual([]);
+    expect(faults[0]?.package).toBe("@pithy-sh/audit");
+    expect(faults[0]?.reason).toContain("configOptions[0].key");
+    expect(faults[0]?.reason).toContain("bare identifier");
+
+    // And it matches the direct path, so an adopter reading either sees the same words.
+    const direct = (await loadManifest("audit", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(direct.payload.detail).toBe(faults[0]?.reason);
+  });
+
+  test("unreadable: a manifest that will not open is reported, not read as absent", async () => {
+    // A directory where the file should be. Every uid gets EISDIR from `readFile`, so this says the same
+    // thing on a developer's laptop and in a container running as root — unlike a chmod, which root
+    // ignores. The rule under test is that only ENOENT means "not there".
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "audit", "pithy.manifest.json"), { recursive: true });
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests).toEqual([]);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]?.package).toBe("@pithy-sh/audit");
+    expect(faults[0]?.reason).toContain("EISDIR");
+  });
+
+  test("one broken package does not cost the listing of the others", async () => {
+    await installManifest(dir, "auth", authManifest);
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "audit"), { recursive: true });
+    await writeFile(join(dir, "node_modules", "@pithy-sh", "audit", "pithy.manifest.json"), "{ not json");
+
+    const { manifests, faults } = await availableManifests(dir);
+    expect(manifests.map((m) => m.name)).toEqual(["auth"]);
+    expect(faults.map((fault) => fault.package)).toEqual(["@pithy-sh/audit"]);
+  });
+});
+
+/**
+ * The same rule on the direct path. `loadManifest` caught every read failure and said "No capability
+ * named X is installed" — which for an unreadable file sends the adopter to `pithy add`, the command that
+ * has just declined to run.
+ */
+describe("loadManifest tells a missing manifest from an unreadable one", () => {
+  test("an unreadable manifest is not reported as uninstalled", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "auth", "pithy.manifest.json"), { recursive: true });
+
+    const error = (await loadManifest("auth", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.payload.action).not.toContain("pithy add auth");
+    expect(error.payload.detail).toContain("EISDIR");
   });
 });

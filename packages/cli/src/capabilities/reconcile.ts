@@ -9,6 +9,7 @@ import {
   type CapabilityManifest,
   ConfigOption,
   ConfigOptionValue,
+  renderCapabilityRegistration,
   renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
@@ -492,7 +493,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   const capabilities = options.capabilities ?? allCapabilities(await loadWorkerConfig(workerDir));
   const countPending = options.countPending ?? defaultCountPending;
 
-  const manifests = await availableManifests(projectDir);
+  const { manifests } = await availableManifests(projectDir);
   const ejected = await ejectedCapabilities(workerDir);
   const configSource = await readConfigSource(workerDir);
   const stanzas = await readStanzas(workerDir);
@@ -626,13 +627,25 @@ function renderKeyLines(keys: MissingConfigKey[], indent: string): string {
   return lines.join("\n");
 }
 
-/** Convert a one-liner `name(),` registration to block form, inserting the missing keys. */
+/**
+ * Convert a one-liner `name(),` registration to block form, inserting the missing keys.
+ *
+ * The call is rendered by core, not written here: it is the third place a capability's name reaches
+ * generated source, and `pithy add`'s two were the ones #183 was reported about. No trailing comma —
+ * the regex below matches `name()` and leaves the file's own separating comma alone.
+ */
 function convertOneLiner(source: string, name: string, indent: string, keys: MissingConfigKey[]): string {
-  const inner = `${indent}  `;
-  const block = `${name}({\n${renderKeyLines(keys, inner)}\n${indent}})`;
-  const re = new RegExp(`^([ \\t]*)${escapeRegExp(name)}[ \\t]*\\(\\s*\\)`, "m");
+  const block = renderCapabilityRegistration({
+    name,
+    indent,
+    optionLines: [renderKeyLines(keys, `${indent}  `)],
+    trailingComma: false,
+  });
+  // `indent` is the indent this very regex captured when the registration was located, so the block
+  // carries its own opening indent and the match is replaced whole.
+  const re = new RegExp(`^[ \\t]*${escapeRegExp(name)}[ \\t]*\\(\\s*\\)`, "m");
   // A replacement function keeps any `$` in the rendered defaults literal.
-  return source.replace(re, (_match, ind: string) => `${ind}${block}`);
+  return source.replace(re, () => block);
 }
 
 /**
@@ -733,7 +746,7 @@ async function applyBindings(
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
   if (caps.length === 0) return added;
 
-  const byName = new Map((await availableManifests(projectDir)).map((manifest) => [manifest.name, manifest]));
+  const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
   const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
   const stanzas = envStanzas(config);

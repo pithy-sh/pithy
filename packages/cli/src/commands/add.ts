@@ -102,12 +102,19 @@ export function targetWorker(options: TargetWorkerOptions): Promise<ResolvedWork
   });
 }
 
-/** `pithy add --list`: the built-in catalog, with installed capabilities marked. */
+/**
+ * `pithy add --list`: the built-in catalog, with installed capabilities marked.
+ *
+ * A package whose manifest is present and unusable is named, with the reason. It used to be dropped in
+ * silence — the capability was simply absent from the listing, and the command an adopter runs *because*
+ * something is missing was the command that said nothing about it (#184). Reported rather than refused:
+ * one broken package must not cost the adopter the other fifteen entries.
+ */
 async function listCapabilities(projectDir: string, json: boolean): Promise<void> {
-  const installed = new Set((await availableManifests(projectDir)).map((manifest) => manifest.name));
-  const listing = buildCatalogListing(installed);
+  const { manifests, faults } = await availableManifests(projectDir);
+  const listing = buildCatalogListing(new Set(manifests.map((manifest) => manifest.name)));
   if (json) {
-    process.stdout.write(`${formatJsonLine({ command: "add", capabilities: listing })}\n`);
+    process.stdout.write(`${formatJsonLine({ command: "add", capabilities: listing, manifestFaults: faults })}\n`);
     return;
   }
   const rows = listing.map((entry) => ({
@@ -115,6 +122,9 @@ async function listCapabilities(projectDir: string, json: boolean): Promise<void
     description: entry.installed ? `${entry.whenToEnable} (installed)` : entry.whenToEnable,
   }));
   process.stdout.write(`${formatList(rows)}\n`);
+  for (const fault of faults) {
+    process.stderr.write(`${fault.package} ships a malformed pithy.manifest.json. Not listed.\n${fault.reason}\n`);
+  }
 }
 
 /**

@@ -3,6 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
+import { availableManifests, type ManifestFault } from "../capabilities/manifests";
 import {
   applyReconcilePlan,
   buildReconcilePlan,
@@ -54,12 +55,29 @@ export interface UpgradeRunOptions {
   countPending?: CountPending;
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
+  /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
+  readManifests?: (projectDir: string) => Promise<{ faults: ManifestFault[] }>;
 }
 
 /** One Worker's outcome: the plan built for it, and what applying it changed (absent on a dry run). */
 export interface UpgradeWorkerResult {
   plan: ReconcilePlan;
   applied: ReconcileApplied | null;
+}
+
+/**
+ * What one `pithy upgrade` run produced: a result per Worker, and the manifests it could not read.
+ *
+ * The faults are project-wide, not per Worker — manifests install once under the root's
+ * `node_modules/@pithy-sh` and every Worker shares them — so they are reported once, above the Workers.
+ * They used to be reported nowhere at all: a manifest the schema refused made its capability vanish from
+ * every plan, and the run reconciled happily around the hole (#184).
+ */
+export interface UpgradeRun {
+  /** One entry per Worker in scope, in discovery order. */
+  workers: UpgradeWorkerResult[];
+  /** Installed packages whose `pithy.manifest.json` is present and unusable. Empty on a healthy install. */
+  manifestFaults: ManifestFault[];
 }
 
 /**
@@ -84,8 +102,10 @@ async function proposalProject(projectDir: string): Promise<string | undefined> 
  * Reconcile every Worker in scope, in discovery order. Each Worker gets its own plan, built from and (unless
  * `dryRun`) applied to its own `apps/<name>/` wiring — no Worker's drift can reach another's files.
  */
-export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeWorkerResult[]> {
+export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun> {
   const resolve = options.resolveWorkers ?? resolveWorkers;
+  const scan = options.readManifests ?? availableManifests;
+  const { faults } = await scan(options.projectDir);
   const workers = await resolve({
     projectDir: options.projectDir,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
@@ -118,7 +138,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeWor
     });
     results.push({ plan, applied });
   }
-  return results;
+  return { workers: results, manifestFaults: faults };
 }
 
 /** `"2 bindings"` / `"1 binding"` — count with a singular/plural noun, omitted when zero. */
@@ -134,6 +154,21 @@ function parts(bindings: number, keys: number, verb: string): string | null {
   );
   if (pieces.length === 0) return null;
   return `${verb} ${pieces.join(", ")}.`;
+}
+
+/**
+ * The warning lines for a manifest that is installed and unusable.
+ *
+ * A capability with a fault here is in no other line of the report: its manifest could not be read, so it
+ * contributes no drift, no bindings, and no config keys, and the run reconciles happily around the hole.
+ * That silence is what #184 was reported about — `upgrade` is one of the three commands an adopter runs
+ * when a capability has gone missing, and it was one of the three that said nothing.
+ */
+function faultLines(faults: readonly ManifestFault[]): string[] {
+  return faults.flatMap((fault) => [
+    `${fault.package}: malformed pithy.manifest.json. Not reconciled.`,
+    ...fault.reason.split("\n").map((line) => `  ${line}`),
+  ]);
 }
 
 /** The human-readable lines for one Worker's dry-run plan. */
@@ -179,9 +214,10 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
  * Worker in scope appears, including one with nothing to do — the run covered it, and silence would read
  * as "skipped".
  */
-function renderUpgrade(results: UpgradeWorkerResult[]): string[] {
-  const lines: string[] = [];
-  for (const { plan, applied } of results) {
+function renderUpgrade(run: UpgradeRun): string[] {
+  // Above the Workers, because it is not any Worker's fault and it explains a gap in all of them.
+  const lines: string[] = faultLines(run.manifestFaults);
+  for (const { plan, applied } of run.workers) {
     lines.push(`${plan.worker}:`);
     for (const line of applied ? appliedLines(applied, plan) : planLines(plan)) lines.push(`  ${line}`);
   }
@@ -204,7 +240,7 @@ export default defineCommand({
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
       const dryRun = args["dry-run"];
-      const results = await runUpgrade({
+      const run = await runUpgrade({
         projectDir: process.cwd(),
         env,
         ...(args.worker ? { worker: args.worker } : {}),
@@ -213,12 +249,14 @@ export default defineCommand({
       });
 
       if (args.json) {
-        const workers = results.map(({ plan, applied }) => applied ?? plan);
-        process.stdout.write(`${formatJsonLine({ command: "upgrade", env, dryRun, workers })}\n`);
+        const workers = run.workers.map(({ plan, applied }) => applied ?? plan);
+        process.stdout.write(
+          `${formatJsonLine({ command: "upgrade", env, dryRun, workers, manifestFaults: run.manifestFaults })}\n`,
+        );
         return;
       }
 
-      for (const line of renderUpgrade(results)) process.stdout.write(`${line}\n`);
+      for (const line of renderUpgrade(run)) process.stdout.write(`${line}\n`);
       process.stdout.write(dryRun ? "Dry run. Nothing written.\n" : `${formatDone()}\n`);
     }),
 });

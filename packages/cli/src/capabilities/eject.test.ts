@@ -4,9 +4,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { isCapabilityImport } from "./configImports";
+import { isCapabilityImport, isInside } from "./configImports";
 import { ejectCapability, ejectImportPath, parseEjectedCapabilities } from "./eject";
 
 describe("parseEjectedCapabilities", () => {
@@ -195,5 +196,30 @@ describe("ejectCapability", () => {
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).toContain("@pithy-sh/turnstile/src/index");
     expect(config).not.toContain("./capabilities/turnstile");
+  });
+});
+
+/**
+ * Eject's local path is built from the capability's name, so #183's narrowing lands here too.
+ *
+ * A manifest's `name` is what `pithy add --eject` uses for the fork directory and the import that points
+ * at it. Held to a bare identifier, that path has no separator, no `..`, and no quote in it — so the one
+ * thing an ejected import could never do is leave `./capabilities/`. Checked because the rule lives at
+ * the schema, one package away, and nothing here would notice if it were relaxed.
+ */
+describe("a manifest name cannot name a fork directory outside ./capabilities", () => {
+  test("every name the schema admits stays inside the fork directory", () => {
+    for (const name of ["auth", "_x", "$x", "x9", "controlplane"]) {
+      const parsed = CapabilityManifest.safeParse({ name, package: "@pithy-sh/x", requiredBindings: [] });
+      expect(parsed.success).toBe(true);
+      expect(ejectImportPath(name)).toBe(`./capabilities/${name}`);
+      expect(isInside(ejectImportPath(name), "./capabilities")).toBe(true);
+    }
+  });
+
+  test("the names that would escape are the names the schema refuses", () => {
+    for (const name of ["..", "../../elsewhere", "a/b", 'a"b']) {
+      expect(CapabilityManifest.safeParse({ name, package: "@pithy-sh/x", requiredBindings: [] }).success).toBe(false);
+    }
   });
 });

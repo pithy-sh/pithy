@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import {
   type CapabilityManifest,
+  renderCapabilityImport,
+  renderCapabilityRegistration,
   renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
@@ -147,27 +149,29 @@ function escapeRegExp(text: string): string {
  * option — so `pithy.config.ts` documents itself (docs/CLI.md §Config). The mount
  * path and every other knob live here, in the user's surface; the handler stays
  * in the package.
+ *
+ * Every line of it comes from core's renderers now, the call included. This function used to interpolate
+ * `manifest.name` into the call itself, which is how a manifest declaring `audit }) ; evil(` closed the
+ * capabilities array and opened a call of its own (#183) — the same defect as the option key #174 closed,
+ * one line up.
  */
 function renderRegistration(
   manifest: CapabilityManifest,
   configValues: Record<string, ConfigValue>,
   indent: string,
 ): string {
-  if (manifest.configOptions.length === 0) return `${indent}${manifest.name}(),`;
-
   const inner = `${indent}  `;
-  const lines = [`${indent}${manifest.name}({`];
+  const optionLines: string[] = [];
   for (const option of manifest.configOptions) {
     const value = configValues[option.key] ?? option.default;
     // The same two lines `pithy upgrade` writes, from the same two functions. Two renderers of one line
     // is how `add` and `upgrade` came to disagree about a nested default in the first place (#171), and
     // the comment was still built here and there separately until the manifest text going into it got a
     // rule of its own (#174).
-    lines.push(renderConfigOptionComment(option.describe, inner));
-    lines.push(renderConfigOptionLine(option.key, value, inner));
+    optionLines.push(renderConfigOptionComment(option.describe, inner));
+    optionLines.push(renderConfigOptionLine(option.key, value, inner));
   }
-  lines.push(`${indent}}),`);
-  return lines.join("\n");
+  return renderCapabilityRegistration({ name: manifest.name, indent, optionLines });
 }
 
 async function updateConfig({ workerDir, manifest, configValues }: AddCapabilityOptions): Promise<void> {
@@ -195,7 +199,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   const existing = findNamedImport(source, manifest.name);
   const origin = existing && importOrigin(existing.specifier, manifest.package, ejectImportPath(manifest.name));
   if (existing === undefined) {
-    source = `import { ${manifest.name} } from "${capabilityImportSpecifier(manifest.package)}";\n${source}`;
+    source = `${renderCapabilityImport(manifest.name, capabilityImportSpecifier(manifest.package))}\n${source}`;
   } else if (origin === "foreign") {
     throw new ConflictError({
       message: `${path} already imports ${manifest.name} from "${existing.specifier}".`,

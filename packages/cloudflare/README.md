@@ -131,12 +131,17 @@ These are out-of-Worker REST clients, so tests mock the `cloudflare` SDK (`vi.mo
 
 Mocks prove our call *shapes*. They cannot prove the request, the response decoding, and the error handling are functionally correct against real Cloudflare — that only surfaces live. So every manager that makes real CF calls also has a `*.integration.test.ts` that creates a throwaway resource, exercises the manager against it, and tears it down. These are excluded from the default suite and run via `bun run test:integration` (the `vitest.integration.config.ts` project), gated on credentials so they skip cleanly without them.
 
-Run them locally by linking the root `.dev.vars` into the package, then running the suite:
+Credentials come from `packages/cloudflare/.dev.vars`, with `process.env` overlaid per key for anything the file does not set (`loadCloudflareEnv`). **Nothing creates that file.** It used to be a symlink to the root's, wired by a `vars:local` task; #154 removed both, and `pithy dev` and `pithy seed` generate `apps/<worker>/.dev.vars` in an adopter's project — `apps/` is the registry, so nothing regenerates a file in a kit package. Write it, or export the variables:
 
 ```sh
-bun run vars:local        # symlink ../../.dev.vars -> .dev.vars (git-ignored)
-bun run test:integration  # against the account in those creds; CI overlays process.env instead
+cat > .dev.vars <<'EOF'          # a real file, in this package, git-ignored
+CLOUDFLARE_ACCOUNT_ID=…
+CLOUDFLARE_API_TOKEN=…
+EOF
+bun run test:integration         # against the account in those creds
 ```
+
+Exporting them instead works identically and is how CI runs — the workflow sets `CLOUDFLARE_*` and `SECRETS_STORE_ID` from the `E2E Integration Testing` environment with no `.dev.vars` present. Set a key in both places and the file wins.
 
 Point them at a **dedicated test account** — they create and delete real resources.
 

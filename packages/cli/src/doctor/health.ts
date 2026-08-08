@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
 import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
@@ -62,11 +63,28 @@ export interface WorkerHealth {
   entitlements: EntitlementHealth;
 }
 
-/** The whole project's health: one entry per Worker. `ok` is the AND across them — any failure fails the doctor exit. */
+/**
+ * The `manifests` check: installed packages whose `pithy.manifest.json` is present and unusable.
+ *
+ * Project-wide rather than per Worker, because manifests resolve once from the project root. It fails the
+ * doctor exit for the same reason the others do: a capability nobody can read is a capability every check
+ * below silently leaves out, and `doctor` reporting a healthy project around that hole is what #184 was
+ * reported about. `pithy upgrade` cannot fix it — the manifest belongs to someone else's package.
+ */
+export interface ManifestHealth {
+  ok: boolean;
+  faults: ManifestFault[];
+}
+
+/** The whole project's health: one entry per Worker, plus the project-wide manifest read. `ok` is the AND. */
 export interface ProjectHealth {
   ok: boolean;
   workers: WorkerHealth[];
+  manifests: ManifestHealth;
 }
+
+/** The manifest-scan seam: defaults to {@link availableManifests}, the scan every capability command reads. */
+export type ReadManifests = (projectDir: string) => Promise<AvailableManifests>;
 
 /** The plan-builder seam: defaults to {@link buildReconcilePlan}, the engine `upgrade` shares. */
 export type BuildPlan = (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
@@ -96,6 +114,8 @@ export interface ProjectHealthOptions {
   countPending?: CountPending;
   /** Test seam: substitute the plan builder. Defaults to the shared reconcile engine. */
   buildPlan?: BuildPlan;
+  /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
+  readManifests?: ReadManifests;
 }
 
 /** Group a plan's per-capability missing bindings into one entry per binding, listing the envs that lack it. */
@@ -150,6 +170,13 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
  */
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {
   const build = options.buildPlan ?? defaultBuildPlan;
+  const scan = options.readManifests ?? availableManifests;
+
+  // Read once, at the project, because that is where manifests live: one install under the root's
+  // `node_modules/@pithy-sh`, shared by every Worker. Every plan below is built from the same scan, so a
+  // capability whose manifest will not read is missing from every Worker's checks at once — which is the
+  // hole this reports, and the reason it is not a per-Worker line.
+  const { faults } = await scan(options.projectDir);
 
   const workers: WorkerHealth[] = [];
   for (const worker of options.workers) {
@@ -164,5 +191,6 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     workers.push(healthFromPlan(worker.name, plan));
   }
 
-  return { ok: workers.every((worker) => worker.ok), workers };
+  const manifests: ManifestHealth = { ok: faults.length === 0, faults };
+  return { ok: manifests.ok && workers.every((worker) => worker.ok), workers, manifests };
 }

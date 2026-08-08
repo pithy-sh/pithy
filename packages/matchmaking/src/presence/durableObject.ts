@@ -7,8 +7,11 @@ import { friendStore } from "../friends/store";
 import { inviteStore } from "../invite/store";
 import { PRESENCE_USER_HEADER, type PresenceEvent } from "./protocol";
 
-// Re-exported for callers that already import them from the DO module (e.g. the presence tests).
-export { PRESENCE_USER_HEADER, type PresenceEvent } from "./protocol";
+// The header and the event shapes are **not** re-exported from here. They live in `./protocol` and are
+// imported from there by everyone, DO included. Re-exporting them made this module a legal source for two
+// pure values, and a value import out of a `cloudflare:workers` module is exactly how #172 reached
+// multiplayer's config path — the routes only needed two constants, and they took the whole DO with them.
+// One source per value, and it is the pure one.
 
 /**
  * Presence — a single Durable Object (addressed by a fixed name) holding every online player's WebSocket

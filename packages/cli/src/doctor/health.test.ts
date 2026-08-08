@@ -199,6 +199,56 @@ describe("buildProjectHealth — per Worker", () => {
 
   test("a project with no workers is vacuously healthy — nothing was checked", async () => {
     const health = await buildProjectHealth({ projectDir: "/p", env: "dev", workers: [], buildPlan: planStub({}) });
-    expect(health).toEqual({ ok: true, workers: [] });
+    expect(health).toEqual({ ok: true, workers: [], manifests: { ok: true, faults: [] } });
+  });
+});
+
+/**
+ * The check that says why a capability is absent from every other check.
+ *
+ * A manifest that is present and invalid was skipped by `availableManifests` without a word, so the
+ * capability contributed no drift to any Worker and `doctor` reported the project healthy around the hole.
+ * `doctor` is one of the three commands an adopter runs when something has gone missing (#184).
+ */
+describe("buildProjectHealth — manifests", () => {
+  test("a healthy install reports no manifest faults and stays ok", async () => {
+    const health = await buildProjectHealth({
+      projectDir: "/p",
+      env: "dev",
+      workers: [api],
+      buildPlan: planStub({ api: clean("api") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+    });
+    expect(health.manifests).toEqual({ ok: true, faults: [] });
+    expect(health.ok).toBe(true);
+  });
+
+  test("a manifest that is present and invalid fails the project, naming the package and why", async () => {
+    const fault = { package: "@pithy-sh/audit", reason: "configOptions[0].key — not a bare identifier" };
+    const health = await buildProjectHealth({
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: async () => ({ manifests: [], faults: [fault] }),
+    });
+    // Every Worker is clean; the project is not.
+    expect(health.workers.every((worker) => worker.ok)).toBe(true);
+    expect(health.manifests).toEqual({ ok: false, faults: [fault] });
+    expect(health.ok).toBe(false);
+  });
+
+  test("the fault is reported once, not once per Worker — manifests resolve at the project", async () => {
+    const fault = { package: "@pithy-sh/audit", reason: "why" };
+    const scan = vi.fn(async () => ({ manifests: [], faults: [fault] }));
+    const health = await buildProjectHealth({
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: scan,
+    });
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(health.manifests.faults).toEqual([fault]);
   });
 });

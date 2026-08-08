@@ -191,9 +191,10 @@ describe("writeFileAtomic — the target's permissions", () => {
 
 describe("writeFileAtomic — a symlinked target", () => {
   test("writes through the link instead of replacing it with a private copy", async () => {
-    // `apps/<worker>/.dev.vars` links to the project's shared one. A rename over the link detaches it
-    // into a regular file holding a stale copy — and the wiring then correctly reports it `kept`
-    // forever, so the worker silently stops seeing every secret the shared file gains.
+    // A rename over a link detaches it into a regular file holding a stale copy, and nothing repairs
+    // that afterwards — the wiring then correctly sees a regular file and reports it `kept` forever.
+    // That is #146, found when `apps/<worker>/.dev.vars` was a link to a shared file. The share is gone
+    // (#154); the failure is what any link at a path written here would still get.
     const shared = join(dir, ".dev.vars");
     await writeFile(shared, "SHARED=abc\n");
     const link = join(dir, "apps-board-dev-vars");
@@ -383,10 +384,11 @@ describe("writeFileAtomic — the temp file", () => {
  * as before — the write follows the link, adopts the destination's mode, and renames onto it.
  *
  * **Containment cannot be by path, and these tests are what pins that.** The link this must follow and the
- * link it must refuse are indistinguishable by where they point: `scripts/worktree.ts` links a worktree's
- * `.dev.vars` at the *main checkout's*, which is outside every root this function could compute. Refusing
- * by location reintroduces #146; following by location is the hole. What separates them is who made the
- * link, so that is what the rule asks.
+ * link it must refuse are indistinguishable by where they point. Nothing in this repository makes a
+ * symlink any more (#154), so every one the walk meets is the adopter's own, pointing wherever they chose
+ * — and the writes that land in `<config>/<project>/` are outside every checkout by design (#156), so
+ * there is no root available to contain to. Refusing by location reintroduces #146; following by location
+ * is the hole. What separates them is who made the link, so that is what the rule asks.
  */
 describe("writeFileAtomic — a symlink somebody else planted", () => {
   let outside: string;
@@ -447,10 +449,10 @@ describe("writeFileAtomic — a symlink somebody else planted", () => {
   });
 
   test("follows a link the operator made, even one that leaves the project", async () => {
-    // A worktree's `.dev.vars` is a symlink to the main checkout's (`scripts/worktree.ts`), and writing
-    // through it is the point — a rename over it detaches the share into a stale private copy (#146).
-    // The destination is outside every root available here, so only ownership can tell this from the case
-    // above. It is the same shape as the attack and the opposite answer.
+    // An operator's own link, pointing out of the checkout. Writing through it is the point — a rename
+    // over it detaches it into a stale private copy (#146). The destination is outside every root
+    // available here, so only ownership can tell this from the case above. It is the same shape as the
+    // attack and the opposite answer.
     const main = join(outside, ".dev.vars");
     await writeFile(main, "SHARED=abc\n");
     await chmod(main, 0o600);

@@ -122,10 +122,13 @@ describe("worker grouping", () => {
       entitlementGap: [],
       missingVersionMetadata: false,
     };
-    const out = __test.renderUpgrade([
-      { plan, applied: null },
-      { plan: collab, applied: null },
-    ]);
+    const out = __test.renderUpgrade({
+      workers: [
+        { plan, applied: null },
+        { plan: collab, applied: null },
+      ],
+      manifestFaults: [],
+    });
     expect(out).toEqual([
       "api:",
       "  auth: add 1 binding, 1 config key.",
@@ -145,7 +148,9 @@ describe("worker grouping", () => {
       migrations: [],
       addedVersionMetadata: false,
     };
-    expect(__test.renderUpgrade([{ plan, applied }])).toContain("  auth: added 1 config key.");
+    expect(__test.renderUpgrade({ workers: [{ plan, applied }], manifestFaults: [] })).toContain(
+      "  auth: added 1 config key.",
+    );
   });
 
   test("a worker with nothing to do still appears — silence would read as skipped", () => {
@@ -159,7 +164,10 @@ describe("worker grouping", () => {
       entitlementGap: [],
       missingVersionMetadata: false,
     };
-    expect(__test.renderUpgrade([{ plan: clean, applied: null }])).toEqual(["web:", "  Nothing to upgrade."]);
+    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([
+      "web:",
+      "  Nothing to upgrade.",
+    ]);
   });
 });
 
@@ -223,7 +231,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   const base = { env: "dev", dryRun: true, migrate: false, countPending: async () => 0 } as const;
 
   test("plans every worker, one entry each, in discovery order", async () => {
-    const results = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
+    const { workers: results } = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
     expect(results.map((result) => result.plan.worker)).toEqual(["api", "collab"]);
     for (const { plan, applied } of results) {
       expect(applied).toBeNull(); // dry run writes nothing
@@ -232,7 +240,12 @@ describe("runUpgrade — fan-out over apps/", () => {
   });
 
   test("--worker narrows the fan-out to one worker", async () => {
-    const results = await runUpgrade({ ...base, projectDir: dir, worker: "collab", resolveWorkers: resolve });
+    const { workers: results } = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      worker: "collab",
+      resolveWorkers: resolve,
+    });
     expect(results).toHaveLength(1);
     expect(results[0]?.plan.worker).toBe("collab");
   });
@@ -245,7 +258,7 @@ describe("runUpgrade — fan-out over apps/", () => {
       raw.replaceAll('"d1_databases": [],', '"d1_databases": [{ "binding": "DB" }],'),
     );
 
-    const results = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
+    const { workers: results } = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
     const byWorker = new Map(results.map((result) => [result.plan.worker, result.plan]));
     expect(byWorker.get("api")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toEqual([]);
     expect(byWorker.get("collab")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
@@ -254,7 +267,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   test("applying writes each worker's own wiring, and re-running finds nothing left", async () => {
     const applyOptions = { ...base, dryRun: false, projectDir: dir, resolveWorkers: resolve };
     const applied = await runUpgrade(applyOptions);
-    expect(applied.map((result) => result.applied?.worker)).toEqual(["api", "collab"]);
+    expect(applied.workers.map((result) => result.applied?.worker)).toEqual(["api", "collab"]);
 
     for (const workerDir of [apiDir, collabDir]) {
       const wrangler = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
@@ -262,7 +275,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     }
 
     const second = await runUpgrade(applyOptions);
-    for (const { applied: result } of second) expect(result?.perCapability).toEqual([]);
+    for (const { applied: result } of second.workers) expect(result?.perCapability).toEqual([]);
   });
 
   test("never writes a capability another worker composes into a worker that does not (regression)", async () => {
@@ -271,7 +284,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     // declared them are exactly what `pithy add --worker` exists to prevent.
     const before = await readFile(join(collabDir, "wrangler.jsonc"), "utf8");
 
-    const results = await runUpgrade({
+    const { workers: results } = await runUpgrade({
       ...base,
       dryRun: false,
       projectDir: dir,
@@ -323,6 +336,53 @@ describe("runUpgrade — fan-out over apps/", () => {
     expect(seen).toEqual([
       { worker: "api", workerDir: apiDir },
       { worker: "collab", workerDir: collabDir },
+    ]);
+  });
+});
+
+/**
+ * The warning `pithy upgrade` did not print.
+ *
+ * A manifest the schema refuses makes its capability vanish from every plan, so the run reconciles
+ * happily around the hole and reports nothing at all (#184). The lines sit above the Workers because the
+ * fault belongs to none of them — manifests install once, under the project root.
+ */
+describe("manifest faults", () => {
+  const fault = { package: "@pithy-sh/audit", reason: "configOptions[0].key — not a bare identifier" };
+
+  test("a broken manifest is named, with its reason, above the workers", () => {
+    const clean: ReconcilePlan = {
+      worker: "api",
+      deployedAs: "acme-api",
+      env: "dev",
+      perCapability: [],
+      ejectedSkipped: [],
+      pendingMigrations: 0,
+      entitlementGap: [],
+      missingVersionMetadata: false,
+    };
+    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [fault] })).toEqual([
+      "@pithy-sh/audit: malformed pithy.manifest.json. Not reconciled.",
+      "  configOptions[0].key — not a bare identifier",
+      "api:",
+      "  Nothing to upgrade.",
+    ]);
+  });
+
+  test("a healthy install adds no lines at all", () => {
+    const clean: ReconcilePlan = {
+      worker: "api",
+      deployedAs: "acme-api",
+      env: "dev",
+      perCapability: [],
+      ejectedSkipped: [],
+      pendingMigrations: 0,
+      entitlementGap: [],
+      missingVersionMetadata: false,
+    };
+    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([
+      "api:",
+      "  Nothing to upgrade.",
     ]);
   });
 });

@@ -10,13 +10,19 @@ declare global {
   }
 }
 
-// Eagerly import every source module except tests and the DO/worker shells (which import
-// `cloudflare:workers` runtime types), so any newly exported schema is covered automatically. Mirrors
-// core's and leaderboard's meta-test.
-const modules = import.meta.glob(
-  ["./**/*.ts", "!./**/*.test.ts", "!./testWorker.ts", "!./index.ts", "!./**/durableObject.ts"],
-  { eager: true },
-);
+// Eagerly import every source module except tests, so any newly exported schema is covered automatically.
+// Mirrors core's and leaderboard's meta-test.
+//
+// Only the Durable Object modules and the test-worker shell are excluded: they import `cloudflare:workers`,
+// which resolves in the Workers runtime and nowhere else. Their exported schemas are re-exported from the
+// pure `config`/`data`/`queue/matching` modules, which this test does cover.
+//
+// `index.ts` used to be excluded here too, for the same reason — it re-exported both DO classes. #180 cut
+// that edge, and dropping it from this list is what proves it: the entry point an adopter's
+// `pithy.config.ts` imports now loads in a node environment.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./testWorker.ts", "!./**/durableObject.ts"], {
+  eager: true,
+});
 
 function describedSomewhere(schema: z.ZodType): boolean {
   let current: z.ZodType | undefined = schema;

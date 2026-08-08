@@ -23,7 +23,17 @@ import { R2Credentials } from "../r2/r2Credentials";
  * provisioner's first live test; see `README.md` § "Live integration tests" for the template.
  */
 
-/** The package root, where `.dev.vars` is symlinked by `bun run vars:local` (CI overlays `process.env`). */
+/**
+ * **This** package's root, whichever package's live suite is running — `@pithy-sh/storage` imports this
+ * harness, so its credentials come from `packages/cloudflare/.dev.vars` too, and a `.dev.vars` beside the
+ * importing package is read by nothing. See `README.md` § "Live integration tests".
+ *
+ * Nothing creates that file. It was a symlink to the repository root's, wired by a `vars:local` task that
+ * #154 deleted along with every other `.dev.vars` link, and generation does not replace it here: `apps/`
+ * is the registry, so `pithy dev` and `pithy seed` reach an adopter's Workers and never a kit package.
+ * Write it by hand, or export the keys — {@link loadCloudflareEnv} overlays `process.env` per key for
+ * anything the file does not set, which is how CI runs with no file at all.
+ */
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** Cloudflare credentials for a live run, plus whether enough of them are present to run at all. */
