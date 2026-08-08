@@ -4,11 +4,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { encodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
-import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -33,37 +30,31 @@ import { type StatePathOptions, stateDir } from "../notifier/state";
  * — there is no local Secrets Store to seed it into — so naming it misplaced would send an adopter to
  * break their own project. The registry's `backend` decides, here exactly as it does in the seeder.
  *
- * **And it describes the transition rather than fighting it (#153).** Until dev's read path routes by
- * backend, the seeder copies every `d1` value into `.dev.vars` too — that binding is where dev reads
- * it. This block used to name each of those copies and say "Delete that line", which is the one action
- * that breaks dev, told to every project on the branch that wrote the line. So the three situations are
- * now told apart by comparing the copy with what the seeder would write: pithy's own current copy is
- * explained and is not a fault, a copy that disagrees is one `pithy seed` away, and a secret in
- * `.dev.vars` alone is still the migration notice it always was.
+ * **And every copy it names is now inert (#153).** Through the transition the seeder wrote each `d1`
+ * value into `.dev.vars` as well, because that binding was where dev read it — so this block had to tell
+ * pithy's own current copy apart from an adopter's, or it would have told every project to do the one
+ * thing that broke dev. Dev reads the seeded row now and pithy writes no such copy, so what is left in
+ * `.dev.vars` is a line nothing reads, in either of the two ways it can get there.
  */
 
-/** Why a declared `d1` secret is sitting in `.dev.vars`. Three states, three different answers. */
+/** Why a declared `d1` secret is sitting in `.dev.vars`. Two states, two different fixes. */
 export type MisplacedDevSecretState =
   /**
-   * pithy put it there, and it matches the secrets file exactly. **Not a fault.** Dev resolves
-   * every secret from its injected binding whatever its backend, so the seeder writes this copy on
-   * every run and deleting it is the one action that breaks dev before #153 lands.
+   * Both files carry it. The move is done and the old line was never deleted — or it is the copy the
+   * #149 transition injected, which pithy no longer writes. Nothing reads it; it can go.
    */
-  | "injected"
+  | "duplicate"
   /**
-   * Both files carry it and they do not agree — an old hand-written value the move left behind, or a
-   * copy from before the file changed. The file is dev's source of truth, and `pithy seed` rewrites
-   * this copy from it.
+   * Only `.dev.vars` has it: the pre-#149 project, with nothing moved yet. The migration notice — and
+   * since #153 the value is not resolving either, so the move is the fix rather than tidiness.
    */
-  | "stale"
-  /** Only `.dev.vars` has it: the pre-#149 project, with nothing moved yet. The migration notice. */
   | "unmoved";
 
 /** One declared `d1` secret found in `.dev.vars`, and what its being there means. */
 export interface MisplacedDevSecret {
   /** The registry secret name, as it appears in both files. */
   name: string;
-  /** Which of the three situations this is — they have three different fixes, and one of them is none. */
+  /** Which of the two situations this is — delete the line, or move the value into the file. */
   state: MisplacedDevSecretState;
 }
 
@@ -144,10 +135,13 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       // chain, so a secret named `constructor` or `toString` read as stated in an empty file — and this
       // is the module that judges adopter-supplied names against a registry, so it is where a name
       // chosen to look like an `Object.prototype` key would be aimed.
-      const injected = Object.hasOwn(inDevVars, name) ? inDevVars[name] : undefined;
-      if (injected !== undefined && injected !== "") {
+      const stranded = Object.hasOwn(inDevVars, name) ? inDevVars[name] : undefined;
+      if (stranded !== undefined && stranded !== "") {
+        // `cf-secrets-store` is not misplaced there and never was — `CLOUDFLARE_API_TOKEN` has no local
+        // store to live in, so the binding is its home. Only a `d1` name in that file has anything wrong
+        // with it, and which of the two it is depends only on whether the secrets file states it too.
         if (entry.backend === "d1")
-          misplaced.push({ name, state: misplacedState(entry, name, stated, injected, path) });
+          misplaced.push({ name, state: Object.hasOwn(stated, name) ? "duplicate" : "unmoved" });
         continue;
       }
       // Mintable means the next seed supplies it. Only a value that has to come from somewhere real is
@@ -168,41 +162,15 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
         .sort();
   return {
     path,
-    // Nor can it say anything true about `.dev.vars`. Every state below is decided by comparing the copy
-    // with the file, and an unparseable file states nothing — so pithy's own injected line, the one thing
-    // nobody should touch before #153, fell through to `unmoved` and the report told the adopter to go
-    // move it. That is the diagnostic breaking dev over a fault it had already named one line earlier.
+    // Nor can it say anything true about `.dev.vars`. Both states are decided against what the secrets
+    // file states, and an unparseable file states nothing — so every copy would read as `unmoved` and the
+    // adopter would be told to move a value that is already there. Say the file is broken, once.
     misplaced: unreadable ? [] : misplaced,
     missing: unreadable ? [] : [...missing].sort(),
     undeclared,
     mode,
     unreadable,
   };
-}
-
-/**
- * Which of the three situations one `.dev.vars` copy is, decided by comparing it with what the seeder
- * would write — the encoded envelope, byte for byte. Equal means pithy wrote it, on some `pithy dev`
- * or `pithy add`, and it is current.
- *
- * Never throws. A file value the registry rejects (a `json` secret whose shape is wrong) cannot be
- * encoded, and that is `stale` rather than a crashed diagnostic: something is out of step, and the
- * seeder is where it gets said properly.
- */
-function misplacedState(
-  entry: SecretRegistryEntry,
-  name: string,
-  stated: DevSecretsFile,
-  injected: string,
-  path: string,
-): MisplacedDevSecretState {
-  const envelope = Object.hasOwn(stated, name) ? stated[name] : undefined;
-  if (!envelope) return "unmoved";
-  try {
-    return encodeVersionedValue(storedSecretValue(entry, name, envelope, path)) === injected ? "injected" : "stale";
-  } catch {
-    return "stale";
-  }
 }
 
 /** Whether the file is readable by anyone but its owner. `null` (no file) is not wide. */
@@ -219,10 +187,10 @@ function wideOpen(mode: number | null): boolean {
  * in the world, which is how a report stops being read.
  */
 export function devSecretsHealthy(check: DevSecretsCheck): boolean {
-  // An `injected` copy is not among them. pithy writes it, every run, deliberately — counting the
-  // toolchain's own transitional bookkeeping as a fault would drag every project on this branch verbose
-  // forever, over the one thing nobody should touch.
-  return check.misplaced.every((secret) => secret.state === "injected") && !check.unreadable && !wideOpen(check.mode);
+  // Every misplaced secret counts now. Through the transition one state did not — pithy wrote that copy
+  // itself, every run, and calling the toolchain's own bookkeeping a fault would have dragged every
+  // project on the branch verbose forever. It writes none, so there is nothing left to excuse.
+  return check.misplaced.length === 0 && !check.unreadable && !wideOpen(check.mode);
 }
 
 /**
@@ -256,21 +224,19 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
 }
 
 /**
- * The one sentence for each state — and the reason this is three sentences rather than two.
+ * The one sentence for each state. Both name the file the value belongs in, because it is outside the
+ * checkout and nothing in the project points at it.
  *
- * The `injected` line used to read "Dev reads the .dev.vars one. Delete that line.", said about a copy
- * **pithy had written itself**. That is the diagnostic telling every project on this branch to do the
- * one thing that breaks dev before #153 lands, in the same run that put the line there. A diagnostic
- * that argues with its own toolchain is worse than one that says nothing.
+ * Neither says the value is at risk, and that is the honest reading: `.dev.vars` is not read for a `d1`
+ * secret any more, so a line there is inert rather than competing. Saying "dev reads that one" was true
+ * before #153 and is the sentence that would send an adopter the wrong way now.
  */
 function describeMisplaced(name: string, state: MisplacedDevSecretState, path: string): string {
   switch (state) {
-    case "injected":
-      return `${name} is also in .dev.vars, injected by pithy: dev resolves every secret from its binding until #153. Leave it — ${path} is the source of truth.`;
-    case "stale":
-      return `${name} is in both .dev.vars and ${path}, and they disagree. Run pithy seed — it rewrites the .dev.vars copy from the file.`;
+    case "duplicate":
+      return `${name} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
     case "unmoved":
-      return `${name} is in .dev.vars. It belongs in ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
+      return `${name} is in .dev.vars, which dev no longer reads. Move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
   }
 }
 

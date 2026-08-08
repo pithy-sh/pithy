@@ -83,11 +83,10 @@ describe("CloudflareTurnstileProvisioner", () => {
     });
     const content = await readFile(join(projectDir, ".dev.vars"), "utf8");
     expect(content).toContain("TURNSTILE_SITEKEY_VISIBLE=1x00");
-    // The transitional injection (#153): dev resolves every secret from its binding, so the envelope
-    // goes into `.dev.vars` too — as the envelope, byte for byte what the store holds.
-    expect(parseDevVars(content)[TURNSTILE_SECRET_NAME]).toBe(
-      '{"currentVersion":"1","versions":{"1":"{\\"visible\\":{\\"key\\":\\"1x\\"}}"}}',
-    );
+    // The sitekeys and nothing else (#153). The secret was copied here through the transition, because
+    // dev resolved every secret from its binding; it reads the seeded row now, so a public sitekey no
+    // longer shares a file with the widget secret.
+    expect(parseDevVars(content)[TURNSTILE_SECRET_NAME]).toBeUndefined();
   });
 
   test("writeDev leaves nothing about the secret in the checkout, and no .gitignore line either", async () => {
@@ -174,7 +173,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     try {
       const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
 
-      await p.writeDev('{"visible":{"key":"1x"}}', {});
+      await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
 
       expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain(workerDir);
     } finally {

@@ -133,9 +133,9 @@ describe("seedProjectDevSecrets", () => {
     );
     const report = await seed();
 
-    expect(report.devVars).toContain("CLOUDFLARE_API_TOKEN");
-    // The one that matters here: it never reaches the store. `.dev.vars` also carries the transitional
-    // copy of every `d1` secret (#153), so the list is not this name alone.
+    // The whole list, not just a member of it: since #153 a `cf-secrets-store` secret is the only kind
+    // that reaches `.dev.vars` at all, and asserting containment would not have noticed the difference.
+    expect(report.devVars).toEqual(["CLOUDFLARE_API_TOKEN"]);
     expect(store.rows.has("CLOUDFLARE_API_TOKEN")).toBe(false);
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8")).CLOUDFLARE_API_TOKEN).toContain("cf-token");
   });
@@ -158,33 +158,15 @@ describe("seedProjectDevSecrets", () => {
     expect(await readFile(secretsPath, "utf8")).toBe(bytes);
   });
 
-  test("a d1 secret is injected into .dev.vars too — dev resolves it from the binding until #153", async () => {
-    // The transition. `secretsStore`'s dev branch reads every secret from its injected binding
-    // whatever its backend, so a value that only reaches the local SECRETS D1 reaches nothing dev
-    // looks at. Seeding without this made `pithy add auth` hand a fresh project a Worker that
-    // answers `secrets/not_found` at the first sign-in. Both, until dev routes by backend.
+  test("a d1 secret reaches the store and nothing else — .dev.vars is not written at all (#153)", async () => {
+    // The dual-write, deleted. Dev routes by backend now, so the row is the whole delivery: a copy in
+    // `.dev.vars` would be a second plaintext of the session key in a file with no reader.
     const report = await seed();
 
-    const injected = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"];
-    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
-    expect(injected).toBeDefined();
-    // The encoded envelope, not the bare value: it is what the store holds, what `decodeVersionedValue`
-    // round-trips, and it keeps every version rather than collapsing to whichever one is current.
-    expect(JSON.parse(injected ?? "")).toEqual(envelope);
-    expect(report.devVars).toContain("auth-session-secret");
-  });
-
-  test("the injection tracks the file, so a hand-edited value reaches dev on the next run", async () => {
-    await seed();
-    await writeFile(
-      secretsPath,
-      '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "edited-by-hand" } } }',
-    );
-
-    await seed();
-
-    const injected = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"];
-    expect(JSON.parse(injected ?? "").versions["1"]).toBe("edited-by-hand");
+    expect(report.seeded).toEqual(["auth-session-secret"]);
+    expect(report.devVars).toEqual([]);
+    // No file at all, rather than a file without the name in it: nothing else in this run writes one.
+    await expect(readFile(join(dir, ".dev.vars"), "utf8")).rejects.toThrow();
   });
 
   test("a secret still only in .dev.vars is not re-injected — nothing rewrites the adopter's line", async () => {
@@ -208,28 +190,26 @@ describe("seedProjectDevSecrets", () => {
     expect(store.rows.get("auth-session-secret")?.value.versions["1"]).toBe("edited-by-hand");
   });
 
-  test("a secret still in .dev.vars is left alone entirely — never minted a second value beside it", async () => {
-    // The migration case, and the bug it caused: `pithy add` refuses to mint over a `.dev.vars` value,
-    // and the seeder minted anyway, so one `pithy add auth` printed "nothing was rewritten" and "minted
-    // into .dev.secrets.jsonc" about the same secret — and the project ended up holding both values.
+  test("a secret stranded in .dev.vars is minted and seeded anyway — that line signs nothing now", async () => {
+    // The migration case, inverted by #153. It used to be dev's live value, so minting beside it made
+    // two values with nothing to say which signed what, and the run had to stand down. Dev reads the
+    // seeded row now: standing down would leave the Worker with no session key at all. So it mints,
+    // seeds, and leaves their file exactly as it found it — `pithy doctor` names the stranded line.
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=already-mine\n");
 
     const report = await seed();
 
-    expect(report.minted).toEqual([]);
-    expect(report.seeded).toEqual([]);
-    expect(report.missing).not.toContain("auth-session-secret");
-    await expect(readFile(secretsPath, "utf8")).rejects.toThrow();
+    expect(report.minted).toEqual(["auth-session-secret"]);
+    expect(report.seeded).toEqual(["auth-session-secret"]);
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
   });
 
-  test("pithy's own injected copy is not an adopter's .dev.vars value", async () => {
-    // The suppression this caused: seed once, delete the secret from `.dev.secrets.jsonc` to have a
-    // fresh one minted, and nothing was ever minted again. The injected copy left behind in `.dev.vars`
-    // read as the pre-#149 migration case, so the secret was excluded from the registry for good.
-    // An envelope in `.dev.vars` is pithy's own writing; a bare string is the adopter's.
+  test("deleting the secret from the file mints a fresh one, whatever .dev.vars still holds", async () => {
+    // Deleting the entry is the obvious way to ask for a new value, and a leftover line in `.dev.vars`
+    // used to suppress every mint after the first one — silently, for good.
     const first = await seed();
     expect(first.minted).toEqual(["auth-session-secret"]);
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=left-over\n");
     await rm(secretsPath);
 
     const second = await seed();
@@ -258,7 +238,8 @@ describe("seedProjectDevSecrets", () => {
     expect(report.seeded).toEqual(["constructor", "toString"]);
     expect(report.undeclared).toEqual([]);
     expect(Object.keys(await readDevSecrets(secretsPath)).sort()).toEqual(["constructor", "toString"]);
-    expect(report.devVars).toEqual(["constructor", "toString"]);
+    // Both are `d1`, so both land in the store and neither reaches `.dev.vars`.
+    expect(report.devVars).toEqual([]);
   });
 
   test("a secret in both files is seeded from the file — that is the copy the adopter moved", async () => {
@@ -354,7 +335,9 @@ describe("seedProjectDevSecrets", () => {
     const report = await seed();
 
     expect(report.minted).toEqual(["auth-session-secret"]);
-    expect((await readdir(dir)).sort()).toEqual([".dev.vars", "pithy.config.ts"]);
+    // Not even `.dev.vars` now (#153): a `d1` secret's whole delivery is the row, so this run creates
+    // no file in the checkout at all.
+    expect((await readdir(dir)).sort()).toEqual(["pithy.config.ts"]);
   });
 
   test("the file holds a minted value before the store does — a row with no file is unrecoverable", async () => {

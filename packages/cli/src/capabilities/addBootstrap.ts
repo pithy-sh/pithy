@@ -7,7 +7,6 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
@@ -18,7 +17,7 @@ import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
-import { type DevSecretsSeedReport, ourOwnInjection, seedProjectDevSecrets } from "../devSecrets/seed";
+import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 
 export interface AddBootstrapOptions {
   /**
@@ -73,11 +72,11 @@ export async function bootstrapAdd({ projectDir, manifest, seed }: AddBootstrapO
   // later, unrelated command, which is what made it look like a store problem.
   const seedProject = seed ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir, reload: true }));
   notes.push(...renderDevSecretsNotes(await seedProject(projectDir)));
-  // **Deduplicated, in order.** Two halves of this function reach the same `.dev.vars` delivery
-  // sentence in one run — the mint above injects the value it just minted, and the seeder injects the
-  // same one for the same project. Both must be able to speak (a project that has not composed
-  // `secrets` has no targets, so only the first one does), and printing one sentence twice reads as
-  // two problems. An adopter counts lines.
+  // **Deduplicated, in order.** Two `.dev.vars` writes happen in one run — the master key above, and
+  // the seeder's `cf-secrets-store` values — and both report delivery against the same Worker
+  // directories, so a Worker shadowing the project's file produces the same sentence twice. Both must
+  // be able to speak (a project that has not composed `secrets` has no targets, so only the first one
+  // does), and printing one sentence twice reads as two problems. An adopter counts lines.
   return [...new Set(notes)];
 }
 
@@ -157,40 +156,26 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
  * production never sees. **Every note here names the absolute path**, because nothing in the project
  * does: "already in the secrets file" is not actionable if the reader cannot open it.
  *
- * **And the value is injected into `.dev.vars` as well. That is a TRANSITION, not the design (#153).**
- * `secretsStore`'s dev branch resolves every secret from its injected binding regardless of backend,
- * so the new file alone is a place dev never reads: writing only there gave a fresh project a Worker
- * that answers `secrets/not_found` at the first sign-in. The seeder does the same for every value the
- * local `SECRETS` store holds — but it needs a registry, and a project that has not composed `secrets`
- * yet has none, so a mint here must carry itself across. #153 routes dev by backend and deletes both
- * halves in one commit. Until then, deleting this line breaks `pithy add auth`.
- *
- * **Only when absent, from either file.** A session secret replaced is every live session invalidated;
+ * **Only when the secrets file lacks it.** A session secret replaced is every live session invalidated;
  * a link-signing key replaced is every link already in an inbox broken.
  *
- * **The file is consulted first, then `.dev.vars`.** A name in both is this command's own pair, and it
- * says so. A name in `.dev.vars` *alone* is the migration case: an existing project has the value
- * there, dev reads it, and minting a second one would leave two values with nothing to say which
- * signed what. Rewriting their `.dev.vars` unasked is worse. So the note says where it is and where it
- * belongs, and `pithy doctor` repeats it every run until they move it.
- *
- * **But only an adopter's line is that case.** The transition injects an encoded envelope under the
- * same name, so once a project had been seeded, deleting the secret from `.dev.secrets.jsonc` — the
- * obvious way to ask for a fresh one — met "auth-session-secret is in .dev.vars, where secrets no
- * longer live. Move it." about a line pithy had written itself, an hour earlier, on purpose.
- * `ourOwnInjection` is the same discriminator the seeder uses, for the same reason.
+ * **A copy in `.dev.vars` no longer counts as having it (#153).** It used to: dev resolved every secret
+ * from its injected binding, so minting beside one produced two live values with nothing to say which
+ * signed what, and the honest answer was to refuse and say where it belonged. Dev reads the seeded row
+ * now, so that line signs nothing — refusing over it would leave the Worker with no session key at all,
+ * which is the failure this whole function exists to prevent. So the mint happens and the note names the
+ * stranded line. Nothing rewrites their `.dev.vars`; the value is still there if they want it, and
+ * `pithy doctor` repeats it every run until it is deleted.
  *
  * One write for the whole set, so a capability declaring several either lands them all or lands none.
  */
 async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret[]): Promise<string[]> {
   if (declared.length === 0) return [];
   // Prototype-free: a secret named `constructor` must not read back `Object.prototype.constructor` and
-  // be reported as already in a `.dev.vars` the project does not have. See {@link ownProperties}.
+  // be reported as sitting in a `.dev.vars` the project does not have. See {@link ownProperties}.
   //
-  // And read honestly: this answer decides the migration case, so `.catch(() => "")` on an unreadable
-  // file said "no value here" and a second one was minted into `.dev.secrets.jsonc`. The project then
-  // held two different values for one secret, one per file, with nothing to say which signed what —
-  // the exact outcome the "only when absent" rule above is for. See {@link readDevVarsSource}.
+  // And read honestly: `.catch(() => "")` on an unreadable file said "nothing here" for every errno, so
+  // a stranded line went unmentioned. It costs a sentence, not a value. See {@link readDevVarsSource}.
   const source = (await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "";
   const inDevVars = ownProperties(parseDevVars(source));
   const path = await resolveDevSecretsFile(projectDir);
@@ -204,55 +189,18 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       );
       continue;
     }
-    const existing = inDevVars[secret.name];
-    if (existing !== undefined && existing !== "" && !ourOwnInjection(existing)) {
-      notes.push(
-        `${secret.name} is in .dev.vars, where secrets no longer live. Move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }. Nothing was rewritten.`,
-      );
-      continue;
-    }
     minted[secret.name] = initialDevSecret(mintDevValue(secret.devValue));
     notes.push(
       `Minted a dev ${secret.name} into ${path}. Local only.`,
       `Deployed environments need pithy secrets create ${secret.name}.`,
     );
+    const stranded = inDevVars[secret.name];
+    if (stranded !== undefined && stranded !== "") {
+      notes.push(
+        `${secret.name} is also in .dev.vars, which dev no longer reads. Nothing was rewritten — delete that line, or move its value into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`,
+      );
+    }
   }
-  const added = await writeDevSecrets(path, minted);
-  // TRANSITION (#153): the same values, injected. Only what actually landed in the file — claiming a
-  // mint the write did not make would put a value in `.dev.vars` that nothing else in the project has.
-  return [...notes, ...(await injectDevSecrets(projectDir, pick(minted, added)))];
-}
-
-/** The entries of `file` named in `names`. */
-function pick(file: DevSecretsFile, names: readonly string[]): DevSecretsFile {
-  const picked: DevSecretsFile = {};
-  for (const name of names) {
-    const envelope = file[name];
-    if (envelope) picked[name] = envelope;
-  }
-  return picked;
-}
-
-/**
- * **TRANSITION (#153).** Inject each minted value into `.dev.vars` under its registry name, encoded as
- * the envelope — the shape the store holds and `decodeInjectedValue` round-trips, rather than the bare
- * string dev used to be handed. Deleted when dev's read path routes by backend.
- *
- * Every envelope here was made by `initialDevSecret(mintDevValue(...))` moments ago, so it has exactly
- * one version and that version is a string. Nothing is inferred about the registry — this path runs
- * before any registry is loadable, which is the whole reason it exists — and a value that is somehow
- * neither is skipped rather than coerced. The seeder consults the real entry on the next run.
- */
-async function injectDevSecrets(projectDir: string, file: DevSecretsFile): Promise<string[]> {
-  const vars: Record<string, string> = {};
-  for (const [name, envelope] of Object.entries(file)) {
-    const value = envelope.versions[envelope.currentVersion];
-    if (typeof value !== "string") continue;
-    vars[name] = encodeVersionedValue(initialVersionedValue(value));
-  }
-  if (Object.keys(vars).length === 0) return [];
-  const wrote = await writeDevVars({ projectDir, values: vars });
-  // The whole delivery report, for the same reason the master key's is: dev reads this copy and nothing
-  // else until #153, so a Worker the copy did not reach has the secret in two files and none of them.
-  return renderDevVarsNotes(wrote);
+  await writeDevSecrets(path, minted);
+  return notes;
 }

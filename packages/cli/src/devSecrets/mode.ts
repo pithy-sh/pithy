@@ -12,8 +12,8 @@ const SHARED_BITS = 0o077;
  *
  * **Shared by both files, because the rule is about their contents and not about their names.**
  * `.dev.vars` got this first; the secrets file did not, and it is the more sensitive of the two —
- * `.dev.vars` holds a transitional copy, the JSONC file holds the OAuth client secrets that copy is made
- * from. Two funnels, one rule, and a private copy in each is how they drift.
+ * `.dev.vars` holds env bindings and the dev master key, the JSONC file holds every application secret
+ * including the OAuth client secrets. Two funnels, one rule, and a private copy in each is how they drift.
  *
  * **Narrowing only.** An adopter's deliberate 0400 survives, 0664 becomes 0600. A mode is never widened
  * from here: this runs on every write, and a rule that could widen would be a rule that eventually does.

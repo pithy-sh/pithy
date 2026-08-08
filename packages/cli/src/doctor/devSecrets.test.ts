@@ -86,25 +86,18 @@ describe("checkDevSecrets", () => {
     expect((await check())?.misplaced).toEqual([]);
   });
 
-  test("pithy's own injected copy is the transition, not a fault", async () => {
-    // The CLI writes this line itself, every `pithy dev`, because dev resolves every secret from its
-    // binding whatever its backend (#153). Doctor told every project on this branch to delete the one
-    // line that keeps dev working — the branch and the diagnostic disagreeing about the same file.
+  test("a name in both files is a duplicate — the move is done and the old line was left", async () => {
+    // It made no difference whether the two agreed. They used to be told apart, because one of them was
+    // the copy pithy injected on every `pithy dev` and deleting it broke dev. Nothing is injected now
+    // and nothing reads the line, so both shapes have the same one-word fix.
     await writeFile(path, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }');
     await chmod(path, 0o600);
-    await writeFile(join(dir, ".dev.vars"), `auth-session-secret={"currentVersion":"1","versions":{"1":"n"}}\n`);
-
-    const result = await check();
-
-    expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "injected" }]);
-    expect(devSecretsHealthy(result as NonNullable<typeof result>)).toBe(true);
-  });
-
-  test("a copy that disagrees with the file is stale, and the seeder is what fixes it", async () => {
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=old\n");
-    await writeFile(path, '{ "auth-session-secret": { "currentVersion": "1", "versions": { "1": "n" } } }');
+
     const result = await check();
-    expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "stale" }]);
+
+    expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "duplicate" }]);
+    expect(devSecretsHealthy(result as NonNullable<typeof result>)).toBe(false);
   });
 
   test("a secret only in .dev.vars is the migration case, and is still named as one", async () => {
@@ -162,12 +155,11 @@ describe("checkDevSecrets", () => {
     expect(result?.missing).toEqual([]);
   });
 
-  test("a malformed file reports nothing misplaced either — it cannot tell pithy's own copy from theirs", async () => {
-    // The classification compares the `.dev.vars` copy against the file. A file that will not parse
-    // states nothing, so pithy's own injected line — the one thing nobody should touch before #153 —
-    // fell through to `unmoved`, and doctor told the adopter to go move it. A broken file is its own
-    // diagnosis; every other sentence it produces is a guess.
-    await writeFile(join(dir, ".dev.vars"), `auth-session-secret={"currentVersion":"1","versions":{"1":"n"}}\n`);
+  test("a malformed file reports nothing misplaced either — it cannot say which of the two states it is", async () => {
+    // Both states are decided against what the file states. A file that will not parse states nothing,
+    // so a value already moved fell through to `unmoved` and doctor told the adopter to go move it
+    // again. A broken file is its own diagnosis; every other sentence it produces is a guess.
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=old\n");
     await writeFile(path, "{ nope");
 
     const result = await check();
@@ -194,7 +186,7 @@ describe("devSecretsHealthy", () => {
 
   test("a misplaced secret, a wide mode, and a broken file each are", () => {
     expect(devSecretsHealthy({ ...clean, misplaced: [{ name: "a-b", state: "unmoved" }] })).toBe(false);
-    expect(devSecretsHealthy({ ...clean, misplaced: [{ name: "a-b", state: "stale" }] })).toBe(false);
+    expect(devSecretsHealthy({ ...clean, misplaced: [{ name: "a-b", state: "duplicate" }] })).toBe(false);
     expect(devSecretsHealthy({ ...clean, mode: 0o644 })).toBe(false);
     expect(devSecretsHealthy({ ...clean, unreadable: true })).toBe(false);
   });
@@ -231,31 +223,18 @@ describe("describeDevSecrets", () => {
     expect(lines.join("\n")).toContain("/home/u/.config/pithy/acme/secrets.jsonc");
   });
 
-  test("a stale copy names the command that rewrites it, rather than telling anyone to delete it", () => {
+  test("a duplicate is told to delete the line, and is not told to move a value that already moved", () => {
     const lines = describeDevSecrets({
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
-      misplaced: [{ name: "auth-session-secret", state: "stale" }],
-      missing: [],
-      undeclared: [],
-      mode: 0o600,
-      unreadable: false,
-    });
-    expect(lines.join("\n")).toContain("pithy seed");
-  });
-
-  test("the injected copy is explained, and nobody is told to delete it", () => {
-    // Deleting it is the one action that breaks dev before #153 lands.
-    const lines = describeDevSecrets({
-      path: "/home/u/.config/pithy/acme/secrets.jsonc",
-      misplaced: [{ name: "auth-session-secret", state: "injected" }],
+      misplaced: [{ name: "auth-session-secret", state: "duplicate" }],
       missing: [],
       undeclared: [],
       mode: 0o600,
       unreadable: false,
     });
     expect(lines.join("\n")).toContain("auth-session-secret");
-    expect(lines.join("\n")).not.toContain("Delete");
-    expect(lines.join("\n")).not.toContain("belongs in");
+    expect(lines.join("\n")).toContain("delete that line");
+    expect(lines.join("\n")).not.toContain("Move it");
   });
 
   test("a mode wider than 0600 is named in the mode people write it in", () => {

@@ -111,43 +111,22 @@ describe("secretsStore — cf-secrets-store backend", () => {
   });
 });
 
-describe("secretsStore — d1 backend, local dev .dev.vars fallback", () => {
-  // In local dev a `d1` secret is injected as a `.dev.vars` string, in the same shape it is stored, so
-  // the reader resolves it without a SECRETS D1 or master key — the deployed path is exercised by the
-  // workers suite (secretsStore.workers.test.ts) against a real D1.
-  test("resolves a d1 text secret from its injected .dev.vars string", async () => {
-    const registry = defineSecretRegistry({
-      "turnstile-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
-    });
-    const store = await secretsStore(envWith({ "turnstile-secret": "1x000" }), registry);
-    expect(store.get("turnstile-secret")).toBe("1x000");
+describe("secretsStore — d1 backend routes to the store, in every environment", () => {
+  // A `d1` secret comes from the encrypted row and from nowhere else, with or without `ENVIRONMENT`
+  // (#153). These prove the string is ignored: with no real SECRETS D1 or master key here, resolution
+  // fails — had the binding been read, it would have resolved to "plaintext" instead of throwing. The
+  // resolving half is exercised against a real D1 by the workers suite (secretsStore.workers.test.ts).
+  const registry = defineSecretRegistry({
+    FOO: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
   });
 
-  test("parses + validates a d1 json secret from its injected string, same shape as stored", async () => {
-    const registry = defineSecretRegistry({
-      EMAILER: { backend: "d1", scope: "environment", rotatable: false, valueType: "json", schema: Emailer },
-    });
-    const store = await secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "abcdefgh" }) }), registry);
-    expect(store.get("EMAILER")).toEqual({ apiKey: "abcdefgh" });
-  });
-
-  test("an invalid d1 json string throws without echoing the secret material", async () => {
-    const registry = defineSecretRegistry({
-      EMAILER: { backend: "d1", scope: "environment", rotatable: false, valueType: "json", schema: Emailer },
-    });
-    await expect(
-      secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "short" }) }), registry),
-    ).rejects.toBeInstanceOf(SecretInvalidValueError);
-  });
-
-  test("a DEPLOYED d1 secret is never shadowed by a same-named plaintext binding", async () => {
-    // ENVIRONMENT is a managed env → deployed → the d1 secret must come from the encrypted store, never
-    // the plaintext string. With no real SECRETS D1/master key here, resolution fails — proving the
-    // string was ignored (had it been used, it would resolve to "plaintext" instead of throwing).
-    const registry = defineSecretRegistry({
-      FOO: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
-    });
+  test("a deployed d1 secret is never shadowed by a same-named plaintext binding", async () => {
     await expect(secretsStore(envWith({ ENVIRONMENT: "prod", FOO: "plaintext" }), registry)).rejects.toThrow();
+  });
+
+  test("and neither is a dev one — the two branches collapsed into the same path", async () => {
+    // The whole of #153 in one line: no `ENVIRONMENT`, and the binding is still not a place to read from.
+    await expect(secretsStore(envWith({ FOO: "plaintext" }), registry)).rejects.toThrow();
   });
 });
 
@@ -339,17 +318,17 @@ describe("secretsStore — keyed entries are resolved at read, not up front", ()
     NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
   });
 
-  test("a keyspace needs no binding and no row in dev — a named entry alongside it still does", async () => {
+  test("a keyspace needs no binding and no row — a named cf entry alongside it still needs one", async () => {
     const secrets = await secretsStore(envWith({ NPM_TOKEN: "npm-abc" }), keyspace);
     expect(secrets.get("NPM_TOKEN")).toBe("npm-abc");
   });
 
-  test("a keyspace is not fetched from the store when the accessor is built, deployed or not", async () => {
+  test("a keyspace is not fetched from the store when the accessor is built", async () => {
     // No SECRETS D1 and no master key here: building the accessor would throw if a keyspace were
-    // batched into the deployed d1 read. Members are fetched one at a time, at the read.
+    // batched into the d1 read. Members are fetched one at a time, at the read.
     const onlyKeyspace = defineSecretRegistry({
       CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
     });
-    await expect(secretsStore(envWith({ ENVIRONMENT: "prod" }), onlyKeyspace)).resolves.toBeInstanceOf(SecretsAccessor);
+    await expect(secretsStore(envWith({}), onlyKeyspace)).resolves.toBeInstanceOf(SecretsAccessor);
   });
 });

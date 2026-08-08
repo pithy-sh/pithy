@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
-import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
@@ -132,8 +131,10 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
    * fifth producer of the same defect. `replace`, because Cloudflare issued this value: keeping an older
    * one because a value is already there leaves the project verifying against a widget it no longer has.
    *
-   * The sitekeys are public, `UPPER_SNAKE`, and wrangler's — they stay in `.dev.vars`, along with the
-   * transitional copy of the secret itself, which is where dev still resolves it from until #153.
+   * The sitekeys are public, `UPPER_SNAKE`, and wrangler's — they stay in `.dev.vars`, and they are now
+   * the only thing this writes there. The secret itself was copied alongside them until #153, because
+   * dev resolved every secret from its binding whatever its backend; dev reads the seeded row now, so
+   * the copy is gone and a public sitekey no longer shares a file with a widget secret.
    *
    * **And what that write says is said, not dropped.** This call took no result at all, so a provision
    * announced a delivery that may never have happened: a Worker with a `.dev.vars` of its own gets no
@@ -145,13 +146,9 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     const envelope = initialDevSecret(secret);
     const path = await resolveDevSecretsFile(this.#projectDir);
     await writeDevSecrets(path, { [TURNSTILE_SECRET_NAME]: envelope }, { replace: true });
-    // TRANSITION (#153): the envelope, injected, because dev resolves every secret from its binding
-    // whatever its backend. Encoded — the same bytes the store holds — and through `writeDevVars`, so
-    // the value is quoted for dotenv and reaches the Worker's own directory rather than the root alone.
-    const wrote = await writeDevVars({
-      projectDir: this.#projectDir,
-      values: { [TURNSTILE_SECRET_NAME]: encodeVersionedValue(initialVersionedValue(secret)), ...sitekeys },
-    });
+    // The sitekeys alone, through `writeDevVars` — so each is quoted for dotenv and reaches the Worker's
+    // own directory rather than the project root alone. The secret goes to the store, on the next seed.
+    const wrote = await writeDevVars({ projectDir: this.#projectDir, values: { ...sitekeys } });
     for (const note of renderDevVarsNotes(wrote)) this.#notes(note);
   }
 
@@ -252,8 +249,12 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
 
   /**
    * Both halves of what {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in the dev
-   * secrets file as well as the `.dev.vars` lines. Leaving the value in the secrets file would
-   * have the next `pithy dev` seed and re-inject a key for a widget that no longer exists.
+   * secrets file, and the sitekeys in `.dev.vars`. Leaving the value in the secrets file would have the
+   * next `pithy dev` seed a key for a widget that no longer exists.
+   *
+   * The secret's name is still passed to `removeDevVars`, and that is deliberate: a project provisioned
+   * before #153 has the transitional copy sitting there, and teardown is the run that should take it.
+   * A name that is not in the file is a no-op.
    */
   async clearDev(modes: TurnstileMode[]): Promise<void> {
     const keys = [TURNSTILE_SECRET_NAME, ...modes.map((mode) => sitekeyVarName(mode))];

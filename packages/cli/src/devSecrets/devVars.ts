@@ -4,9 +4,10 @@
 import { lstat, readFile, readlink, symlink } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
 import { removeDevVarsContent, upsertDevVarsContent } from "../project/devVars";
+import { ensureScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { tightenMode } from "./mode";
 
@@ -38,10 +39,15 @@ import { tightenMode } from "./mode";
  * about which characters are dangerous: the rule would need updating for the shape nobody thought of,
  * and the round trip already covers it.
  *
- * **A refusal is fail-closed.** `.dev.vars` is the only place dev reads until #153, so a refused value
- * that leaves the superseded line in place hands the Worker the *previous* secret while every report
- * says the value was replaced. Wrong-and-silent beats broken-and-loud for nothing, least of all a
- * secret, so the stale line goes and the refusal says it went.
+ * **A refusal is fail-closed.** The binding is the only place a `cf-secrets-store` secret is read from,
+ * so a refused value that leaves the superseded line in place hands the Worker the *previous* secret
+ * while every report says the value was replaced. Wrong-and-silent beats broken-and-loud for nothing,
+ * least of all a secret, so the stale line goes and the refusal says it went.
+ *
+ * **Every directory written beside is gated, through the shared `ensureScaffoldPath` (#167).** The
+ * directories come from `discoverWorkers`, which builds `apps/<name>` from a `readdir` that follows
+ * whatever `apps` is — so a symlink at either planted a link to the project's shared credential file
+ * outside the project, and reported it as `linked`.
  *
  * **And delivery is checked, never assumed.** Three ways it used not to happen, all silently. A failed
  * `symlink()` was swallowed and the directory counted as linked anyway. A worker whose `.dev.vars` is a
@@ -158,9 +164,9 @@ export interface WriteDevVarsResult {
   shadowed: string[];
   /**
    * One sentence per Worker directory the value could not be delivered to: the link could not be made,
-   * or the one already there resolves to nothing. Either way wrangler will open no `.dev.vars` at all.
-   * Separate from {@link shadowed} because that is somebody's arrangement and this is a failure. Never a
-   * value.
+   * the one already there resolves to nothing, or the directory is not one this project may write into
+   * (#167). Either way wrangler will open no `.dev.vars` at all. Separate from {@link shadowed} because
+   * that is somebody's arrangement and this is a failure. Never a value.
    */
   undelivered: string[];
 }
@@ -243,6 +249,27 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
   const undelivered: string[] = [];
   for (const dir of dirs) {
     if (dir === options.projectDir) continue;
+    // The directory, gated before anything is created inside it (#167). `discoverWorkers` builds
+    // `apps/<name>` out of a `readdir` that follows whatever `apps` is, so a symlink at either had this
+    // planting a `.dev.vars` link — pointing at the project's shared credential file — in a directory
+    // outside the project, and reporting it as `linked`. Whoever can write that directory then reads the
+    // team's secrets through it. `feature/devVars.ts` carries this same comment and has always had the
+    // gate; this module did not import it at all, which is precisely the drift two funnels produce.
+    //
+    // The shared gate, never a second implementation. It is where the rule is, and a private copy here
+    // is how the next producer gets a slightly different one.
+    //
+    // The check stops at the directory, never at `.dev.vars` itself: a link there is the arrangement
+    // this function delivers through, and the policy for it is below.
+    // Reported, not thrown, and that is the one difference from the sibling. By this line the project's
+    // own `.dev.vars` has already been written; a throw here would leave that write done, every note
+    // unprinted, and `pithy dev` refusing to start over one planted link in a directory no Worker of
+    // theirs owns. `undelivered` is where a Worker that will not receive the value already goes.
+    const refusal = await ensureScaffoldPath(options.projectDir, dir).then(() => null, refusalOf);
+    if (refusal !== null) {
+      undelivered.push(`${dir}: nothing was written beside it. ${refusal}`);
+      continue;
+    }
     const beside = join(dir, ".dev.vars");
     const stats = await lstat(beside).catch(() => null);
     if (stats !== null) {
@@ -273,6 +300,17 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
     else undelivered.push(`${dir} has no .dev.vars and one could not be linked: ${failure}`);
   }
   return { written, refused, linked: linked.sort(), shadowed: shadowed.sort(), undelivered: undelivered.sort() };
+}
+
+/**
+ * A gate refusal as one sentence. `PithyError`'s `action` is where the whole answer lives — "Remove it,
+ * or pick another name" — and `Error.message` alone is "apps/evil is a symlink.", which names the
+ * problem and not the fix. `detail` is never included: it is the throw-site context, and these lines
+ * reach a terminal.
+ */
+function refusalOf(error: unknown): string {
+  if (error instanceof PithyError) return `${error.payload.message} ${error.payload.action ?? ""}`.trim();
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** How many links deep a chain may go before it is called a loop. Well past anything deliberate. */

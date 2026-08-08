@@ -173,31 +173,25 @@ describe("bootstrapAdd", () => {
     expect(notes.join(" ")).not.toContain(String(value));
   });
 
-  test("the secret lands in the dev secrets file, and is injected into .dev.vars too until #153", async () => {
-    // The transition, not the design. The secrets file is the source of truth; `.dev.vars` still
-    // carries a copy because `secretsStore`'s dev branch resolves every secret from its injected
-    // binding, whatever its backend. Writing only the new file left the Worker answering
-    // `secrets/not_found` at the first sign-in. #153 routes dev by backend and deletes this half.
+  test("the secret lands in the dev secrets file, and nothing about it reaches .dev.vars (#153)", async () => {
+    // The dual-write, deleted. `.dev.vars` carried a copy while dev resolved every secret from its
+    // injected binding whatever its backend; dev reads the seeded row now, so a copy there would be a
+    // second plaintext of the session key in wrangler's env-binding file, under a kebab name, unread.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
     const value = await devSecret(dir, "auth-session-secret");
     expect(value).toBeDefined();
     expect((await readFile(await secretsPath(dir), "utf8")).includes("auth-session-secret")).toBe(true);
-    const injected = await devVar(dir, "auth-session-secret");
-    expect(JSON.parse(injected ?? "")).toEqual({ currentVersion: "1", versions: { "1": value } });
+    expect(await devVar(dir, "auth-session-secret")).toBeUndefined();
   });
 
-  test("the injected copy is not mistaken for the migration case on the next run", async () => {
-    // `pithy add` names a secret found in `.dev.vars` and refuses to touch it — that is an adopter's
-    // pre-#149 value. A copy this command wrote itself is not that, and telling someone to move a
-    // value that is already in both files, into the file it is already in, is a false instruction.
+  test("re-running names the file rather than minting a second value", async () => {
     const manifest = await shippedManifest("auth");
     await bootstrapAdd({ projectDir: dir, manifest });
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest });
 
     expect(notes.join(" ")).toContain(`already in ${await secretsPath(dir)}`);
-    expect(notes.join(" ")).not.toContain("where secrets no longer live");
   });
 
   test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
@@ -245,17 +239,18 @@ describe("bootstrapAdd", () => {
     expect(notes.join(" ")).toMatch(/already/i);
   });
 
-  test("a secret still in .dev.vars is left there and named, never rewritten and never re-minted", async () => {
-    // The migration case. An existing project has the value in `.dev.vars`, where dev still reads it.
-    // Minting a second one into the new file would give the project two values and no way to tell
-    // which one signed what; rewriting their file behind their back is worse. So: say it, change nothing.
+  test("a secret stranded in .dev.vars is named, and the mint happens anyway (#153)", async () => {
+    // The migration case, inverted. That line used to be where dev read the value, so minting beside it
+    // gave the project two live values and no way to say which signed what — the honest answer was to
+    // refuse. Dev reads the seeded row now: refusing would leave the Worker with no session key at all.
+    // So the value is minted, their file is not touched, and the stranded line is named.
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=already-mine\n");
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
     expect(await devVar(dir, "auth-session-secret")).toBe("already-mine");
-    expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
-    expect(notes.join(" ")).toContain(".dev.vars");
+    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
+    expect(notes.join(" ")).toContain("which dev no longer reads");
     // The absolute path, not the file's name: it is outside the checkout, so a name locates nothing.
     expect(notes.join(" ")).toContain(await secretsPath(dir));
   });
@@ -328,12 +323,12 @@ describe("bootstrapAdd", () => {
     }
   });
 
-  test("pithy's own injected copy is not read as a value the adopter left in .dev.vars", async () => {
-    // Delete the secret from `.dev.secrets.jsonc` to ask for a fresh one, and `pithy add auth` answered
-    // "auth-session-secret is in .dev.vars, where secrets no longer live. Move it." — about a line it
-    // had written there itself, on purpose, an hour before. Nothing was ever minted again.
+  test("deleting the secret from the file mints a fresh one, whatever .dev.vars holds", async () => {
+    // Deleting the entry is how you ask for a new value. A line left in `.dev.vars` used to suppress
+    // every mint after the first one, silently and for good.
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
     const first = await devSecret(dir, "auth-session-secret");
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=left-over\n");
     await rm(await secretsPath(dir));
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
@@ -343,20 +338,10 @@ describe("bootstrapAdd", () => {
     expect(await devSecret(dir, "auth-session-secret")).not.toBe(first);
   });
 
-  test("an adopter's own .dev.vars value is still left exactly where it is", async () => {
-    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=written-by-hand\n");
-
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
-
-    expect(notes.join("\n")).toContain("where secrets no longer live");
-    expect(await devSecret(dir, "auth-session-secret")).toBeUndefined();
-    expect(await devVar(dir, "auth-session-secret")).toBe("written-by-hand");
-  });
-
-  test("an unreadable .dev.vars is not an absent one — no second secret is minted beside it", async () => {
-    // `readFile(...).catch(() => "")` made an EACCES read as "no secret here", so `add` minted a second
-    // value into `.dev.secrets.jsonc` and the project held two different secrets under one name, one in
-    // each file. Only ENOENT means absent — the rule `writeDevVars` already enforces on the same file.
+  test("an unreadable .dev.vars is refused rather than read as an empty one", async () => {
+    // `readFile(...).catch(() => "")` made an EACCES read as "nothing here" for every errno, so the
+    // stranded line went unmentioned and `pithy doctor` was the only thing that ever said it. Only
+    // ENOENT means absent — the rule `writeDevVars` already enforces on the same file.
     const path = join(dir, ".dev.vars");
     await writeFile(path, "auth-session-secret=already-mine\n");
     await chmod(path, 0o000);
@@ -387,12 +372,16 @@ describe("bootstrapAdd", () => {
     expect(notes.join("\n")).toMatch(/wrangler opens that one/);
   });
 
-  test("a Worker the injected copy could not be linked into is named, never counted as delivered", async () => {
+  test("a Worker the master key could not be linked into is named, never counted as delivered", async () => {
     await mkdir(join(dir, "apps", "board"), { recursive: true });
     await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
     await chmod(join(dir, "apps", "board"), 0o500);
     try {
-      const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+      const notes = await bootstrapAdd({
+        projectDir: dir,
+        manifest: await shippedManifest("secrets"),
+        seed: emptySeed,
+      });
 
       expect(notes.join("\n")).toContain("could not be linked");
       expect(notes.join("\n")).toContain(join(dir, "apps", "board"));

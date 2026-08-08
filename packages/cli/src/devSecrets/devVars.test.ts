@@ -149,8 +149,9 @@ describe("writeDevVars", () => {
   });
 
   test("a refused value takes its superseded line with it, rather than leaving one that still works", async () => {
-    // Fail-closed. `.dev.vars` is the only place dev reads until #153, so a refusal that leaves the old
-    // line behind hands the Worker the previous secret while every report says the value was replaced.
+    // Fail-closed. The binding is the only place a `cf-secrets-store` secret is read from, so a refusal
+    // that leaves the old line behind hands the Worker the previous secret while every report says the
+    // value was replaced.
     // Wrong-and-silent is the one outcome worth breaking dev over.
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=superseded\n");
 
@@ -216,6 +217,46 @@ describe("writeDevVars", () => {
       expect(result.undelivered.join("\n")).toContain(join(dir, "apps", "board"));
     } finally {
       await chmod(join(dir, "apps", "board"), 0o700);
+    }
+  });
+
+  test("a Worker directory reached through a symlink is refused, never written beside (#167)", async () => {
+    // `discoverWorkers` builds `apps/<name>` from a `readdir` that follows whatever `apps` is, so a link
+    // planted at `apps/<name>` had this creating a `.dev.vars` symlink — pointing at the project's shared
+    // credential file — inside a directory outside the project, and reporting it as `linked`. Whoever
+    // can write that directory then reads the team's secrets through it. The gate is the shared one.
+    const canary = await mkdtemp(join(tmpdir(), "pithy-dev-vars-canary-"));
+    try {
+      await writeFile(join(canary, "wrangler.jsonc"), "{}\n");
+      await mkdir(join(dir, "apps"), { recursive: true });
+      await symlink(canary, join(dir, "apps", "evil"));
+
+      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
+
+      expect(result.linked).toEqual([]);
+      // The canary, and not a report about it: nothing was planted there.
+      expect(await readdir(canary)).toEqual(["wrangler.jsonc"]);
+      expect(result.undelivered.join("\n")).toContain(join(dir, "apps", "evil"));
+    } finally {
+      await rm(canary, { recursive: true, force: true });
+    }
+  });
+
+  test("a symlink at apps carries every Worker out of the project, and is refused the same way", async () => {
+    // The half #147 shipped and #167 repeated: gating `apps/<name>` alone leaves the link one level up,
+    // which carries the write out of the project exactly as completely.
+    const canary = await mkdtemp(join(tmpdir(), "pithy-dev-vars-canary-"));
+    try {
+      await mkdir(join(canary, "board"), { recursive: true });
+      await writeFile(join(canary, "board", "wrangler.jsonc"), "{}\n");
+      await symlink(canary, join(dir, "apps"));
+
+      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
+
+      expect(result.linked).toEqual([]);
+      expect(await readdir(join(canary, "board"))).toEqual(["wrangler.jsonc"]);
+    } finally {
+      await rm(canary, { recursive: true, force: true });
     }
   });
 

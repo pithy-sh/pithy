@@ -37,8 +37,8 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   for (const { worker, reason } of report.skipped) {
     lines.push(`${worker}: secrets not seeded. ${reason}`);
   }
-  // These describe a value that is in the file, is in the store, and still will not resolve in dev —
-  // which until #153 is the only thing that matters. They are run outcomes, not standing states: a
+  // These describe a `cf-secrets-store` value that is in the file and still will not reach a Worker —
+  // its binding is the only place it is ever read from. They are run outcomes, not standing states: a
   // project with none hears nothing, and a project with any hears it every run until it is fixed.
   lines.push(
     ...renderDevVarsNotes({
