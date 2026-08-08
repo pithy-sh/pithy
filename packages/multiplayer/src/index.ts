@@ -7,10 +7,21 @@
  * an app renders. Every other module is imported by deep path (`@pithy-sh/multiplayer/src/...`); this is the
  * documented contract, not a barrel over the package.
  *
- * The Durable Object class is intentionally re-exported here too: an adopter's worker must
- * `export { MultiplayerSession } from "@pithy-sh/multiplayer/src/index"` (or the deep path) so wrangler's
- * `class_name` resolves against the worker entry — the CLI writes that binding and the class migration tag
- * for you. To ship a custom game model, call `registerGameModel(myModel)` in the worker entry.
+ * **The `MultiplayerSession` Durable Object is deliberately not here.** It imports `cloudflare:workers`,
+ * which resolves in workerd and nowhere else, and this module is what an adopter's `pithy.config.ts`
+ * imports — a file loaded by every Node-side CLI command. Re-exporting the class from here put the whole
+ * Durable Object chain on that path and broke `pithy upgrade` for any project composing multiplayer (#172).
+ * The factory and the DO are two things with two runtimes, and this entry point carries only the first.
+ *
+ * The adopter's worker still exports the class, from its own module:
+ *
+ * ```ts
+ * export { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";
+ * ```
+ *
+ * — which is what the manifest's scaffold step says, and what wrangler's `class_name` resolves against.
+ * The CLI writes the binding and the class migration tag for you. To ship a custom game model, call
+ * `registerGameModel(myModel)` in the worker entry.
  */
 
 export {
@@ -68,5 +79,4 @@ export {
   wageringTable,
 } from "./game/patterns/wageringTable";
 export { createRngState, type RandomSource, RngState, randomSource } from "./game/random";
-export { MultiplayerSession, type MultiplayerSessionEnv } from "./session/durableObject";
 export { GameSnapshot, isTerminal, type SessionOutcome, SessionPhase, SessionView } from "./session/state";

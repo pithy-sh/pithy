@@ -5,11 +5,10 @@ import { readFileSync } from "node:fs";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, it } from "vitest";
 import type { MultiplayerOptions } from "./capability";
-import { MultiplayerConfig, validateGames } from "./config/config";
-import "./game/builtins";
+import { MULTIPLAYER_SESSION_CLASS, MULTIPLAYER_SESSIONS_BINDING, multiplayer } from "./capability";
 
 /**
- * What `pithy add multiplayer` writes, checked against what `multiplayer()` accepts.
+ * What `pithy add multiplayer` writes, checked by calling `multiplayer()` on it.
  *
  * The manifest is the only thing `pithy add` reads, so an option missing from it is an option missing
  * from the adopter's `pithy.config.ts`. `games` was missing, and a fresh scaffold failed `tsc` with
@@ -19,12 +18,13 @@ import "./game/builtins";
  * message saying why, so an empty seed compiles and then throws `too_small` on the first config load —
  * which `pithy upgrade` reports as "Could not load pithy.config.ts", naming the wrong cause. Both halves
  * are asserted here: `seeded` is annotated as `MultiplayerOptions`, so a shape the factory would reject
- * fails the compile, and parsing plus `validateGames` is what proves it survives the refusal.
+ * fails the compile, and calling the factory is what proves it survives the refusal.
  *
- * The two steps the capability performs, rather than the capability itself: `./capability` reaches
- * `session/durableObject`, which imports `cloudflare:workers` and resolves in workerd and nowhere else
- * — the same reason `schema-descriptions.test.ts` excludes that module. `MultiplayerOptions` still
- * arrives from it, as a type-only import that erases.
+ * This file used to stand in for the factory, re-performing its two steps (`MultiplayerConfig.parse`
+ * then `validateGames`) against a type-only import, because `./capability` reached
+ * `session/durableObject` through the routes and that module imports `cloudflare:workers` — so calling
+ * `multiplayer()` in a Node test was impossible. #172 split the Durable Object off the config path.
+ * The stand-in is gone: this now calls the thing an adopter's `pithy.config.ts` calls.
  */
 describe("pithy.manifest.json", () => {
   const manifest = CapabilityManifest.parse(
@@ -39,19 +39,15 @@ describe("pithy.manifest.json", () => {
     basePath: "/multiplayer",
   };
 
-  /** The two steps `multiplayer()` performs on its options, in order. */
-  const assemble = (options: MultiplayerOptions) => {
-    const { basePath: _basePath, ...config } = options;
-    return validateGames(MultiplayerConfig.parse(config));
-  };
-
   it("states every option MultiplayerConfig requires, at a value the type accepts", () => {
     expect(rendered).toEqual(seeded);
   });
 
-  it("seeds a game the config will actually load — an empty array would not", () => {
-    expect(assemble(seeded).map((game) => game.key)).toEqual(["tic-tac-toe"]);
-    expect(() => assemble({ ...seeded, games: [] })).toThrow();
+  it("assembles a capability from the seed — an empty game set would not", () => {
+    const capability = multiplayer(seeded);
+    expect(capability.name).toBe("multiplayer");
+    expect(capability.multiplayerConfig.games.map((game) => game.key)).toEqual(["tic-tac-toe"]);
+    expect(() => multiplayer({ ...seeded, games: [] })).toThrow();
   });
 
   it("seeds a game whose kind resolves and whose rules pass that model's schema", () => {
@@ -59,9 +55,39 @@ describe("pithy.manifest.json", () => {
     // block that model rejects — throws on deploy rather than on the adopter's first session. A 3x3
     // board where three in a line wins is tic-tac-toe: the smallest connect-n that can be won at all,
     // two players, no wagering, no ledger.
-    const [game] = assemble(seeded);
+    const [game] = multiplayer(seeded).multiplayerConfig.games;
     expect(game?.kind).toBe("connect-n");
     expect(game?.players).toBe(2);
-    expect(() => assemble({ games: [{ key: "g", kind: "no-such-model", rules: {} }] })).toThrow();
+    expect(() => multiplayer({ games: [{ key: "g", kind: "no-such-model", rules: {} }] })).toThrow();
+  });
+
+  it("declares the Durable Object binding the manifest and the CLI wire", () => {
+    // The factory is callable here, so the bindings it declares are checkable against the manifest the
+    // CLI reads — the two statements of the same fact, and `pithy add` writes wrangler config from the
+    // manifest while the runtime resolves against the capability.
+    const bindings = multiplayer(seeded).requiredBindings;
+    expect(bindings).toContainEqual(
+      expect.objectContaining({
+        type: "durable_object",
+        name: MULTIPLAYER_SESSIONS_BINDING,
+        className: MULTIPLAYER_SESSION_CLASS,
+      }),
+    );
+    expect(manifest.requiredBindings).toContainEqual(
+      expect.objectContaining({
+        type: "durable_object",
+        name: MULTIPLAYER_SESSIONS_BINDING,
+        className: MULTIPLAYER_SESSION_CLASS,
+      }),
+    );
+  });
+
+  it("tells the adopter to export the Durable Object from a module that is not the entry point", () => {
+    // The scaffold step is the adopter's only instruction for wiring `class_name`, and #172 moved where
+    // the class can be imported from. A step naming `src/index` would now name a module that does not
+    // export it — a scaffold that fails at bundle time, on the line the manifest told them to write.
+    const step = manifest.scaffold.find((line) => line.includes(MULTIPLAYER_SESSION_CLASS));
+    expect(step).toContain("@pithy-sh/multiplayer/src/session/durableObject");
+    expect(step).not.toContain("@pithy-sh/multiplayer/src/index");
   });
 });

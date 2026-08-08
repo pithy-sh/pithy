@@ -58,9 +58,11 @@ const EXPORT_DECLARATION = /^export\s+(?:async\s+)?(?:function|const|let|var|cla
  * The value names a barrel publishes. Aliases resolve to the published name; `type` specifiers drop,
  * because a capability factory is a value and a type-only export would not satisfy the import.
  *
- * **Source text, not a module load.** Half these barrels reach `cloudflare:workers` on import and no
- * factory runs without config — `migrations/orders.test.ts` reads source across the packages for the
- * same reason. The TypeScript API is not an alternative either: TS 7 ships no `createSourceFile`.
+ * **Source text, not a module load.** No factory runs without config — `migrations/orders.test.ts` reads
+ * source across the packages for the same reason. This used to cite `cloudflare:workers` too, and that
+ * half is dead: `configEntrypoints.test.ts` now imports every capability entry point in a node process
+ * and fails the build if one drags a runtime-only import in (#172). The TypeScript API is not an
+ * alternative either — TS 7 ships no string-to-tree parser, only the project-scoped `unstable/sync`.
  * What the text cannot see — whether the module a clause re-exports from really has the name —
  * `bun run typecheck` already fails on.
  *

@@ -14,9 +14,14 @@ import { describe, expect, test } from "vitest";
  * rating/ledger at 600) sat in the tree undetected for exactly that reason: every unit test composes
  * synthetic capabilities, and no test had ever composed the real set.
  *
- * Composing the real set here is not possible — `@pithy-sh/multiplayer` imports `cloudflare:workers`,
- * and half the factories require config. So this reads the declared constants out of the source text
- * instead. No module loading, no config, no runtime: just the numbers as an author wrote them.
+ * Composing the real set here is not possible — half the factories require config, and there is no
+ * config to give them that would not be inventing one. So this reads the declared constants out of the
+ * source text instead. No module loading, no config, no runtime: just the numbers as an author wrote them.
+ *
+ * It used to say `@pithy-sh/multiplayer` imports `cloudflare:workers` as well, and that is no longer
+ * true of any capability — `capabilities/configEntrypoints.test.ts` imports every one of them in a node
+ * process and fails the build if a runtime-only import comes back (#172). The config reason is the one
+ * that still stands on its own.
  *
  * The table below is hand-maintained, and the first test is what keeps it honest: a new capability
  * that declares an order without registering it here fails, with a message saying so. That makes the

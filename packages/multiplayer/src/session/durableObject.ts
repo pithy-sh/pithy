@@ -20,23 +20,13 @@ import {
 import { applyLedgerEffects } from "../game/effects";
 import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
+import { RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
 import { type GameSnapshot, isTerminal, SessionMeta, type SessionOutcome, type SessionView } from "./state";
 
 /** The Worker env a session DO reads — the app `DB` database it writes its terminal result to. */
 export interface MultiplayerSessionEnv {
   DB: D1Database;
 }
-
-/** The header the authenticated Hono handler sets when forwarding a WebSocket upgrade to the DO. */
-export const USER_HEADER = "x-pithy-user-id";
-
-/**
- * Marks an Error whose message carries a JSON-encoded `ErrorPayload`. A `PithyError` thrown inside a DO does
- * not survive the RPC boundary — the runtime strips a custom Error subclass down to a bare Error, but a
- * plain Error's **message** is preserved. So `guard` encodes the payload into the message behind this
- * sentinel, and `callSession` in the routes decodes it back into a real `PithyError`.
- */
-export const RPC_ERROR_PREFIX = "pithy-error:";
 
 const META_KEY = "meta";
 const OUTCOME_KEY = "outcome";

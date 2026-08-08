@@ -10,8 +10,11 @@ import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { type ResolvedGame, resolveGame } from "../config/config";
 import { MultiplayerGameNotFoundError, MultiplayerSessionNotFoundError } from "../error/errors";
+// Type-only, so it erases: the DO module imports `cloudflare:workers` and must never land on the value
+// import graph the adopter's `pithy.config.ts` pulls in. The two constants both sides need live in the
+// pure `session/protocol` module for the same reason (#172).
 import type { MultiplayerSession } from "../session/durableObject";
-import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/durableObject";
+import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/protocol";
 import type { GameSnapshot } from "../session/state";
 import { requireAuth } from "./guard";
 import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
