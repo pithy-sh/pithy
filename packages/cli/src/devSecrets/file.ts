@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { DEV_SECRETS_FILE_NAME, ensureDevSecretsDir } from "./location";
 import { tightenDirMode, tightenMode } from "./mode";
 import { ownProperties } from "./records";
@@ -96,29 +96,28 @@ export async function readDevSecrets(path: string): Promise<DevSecretsFile> {
  * rather than calling `readFile` itself so that "there is no file yet" and "the file would not open"
  * stay one decision — a second reader answering `{}` for an EACCES is exactly the defect below.
  *
- * `ENOENT` is the one errno that means "no secrets yet". Every other one is a file that is there and
- * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Answering
- * `{}` for those was the same as answering "empty", so a write merged its one new value into an empty
- * base and the adopter's OAuth client secrets went with the next rename.
+ * The errno decision is {@link readOptionalFile}'s: `ENOENT` is the one that means "no secrets yet".
+ * Every other one is a file that is there and did not open — `EACCES` after someone tightened the mode,
+ * `EISDIR`, `EIO` on failing disk. Answering `{}` for those was the same as answering "empty", so a
+ * write merged its one new value into an empty base and the adopter's OAuth client secrets went with
+ * the next rename.
  *
- * The wrapped error carries the node error as `cause`. Its message is `EACCES: permission denied, open
- * '<path>'` — a path and an errno, never a byte of the file.
+ * The words below are this file's, because the sentence an adopter reads about a secrets file is not
+ * the sentence about a `.dev.vars`. The wrapped error carries the node error as `cause`. Its message is
+ * `EACCES: permission denied, open '<path>'` — a path and an errno, never a byte of the file.
  */
 export async function readDevSecretsSource(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (cause) {
-    const code = (cause as { code?: string } | null)?.code;
-    if (code === "ENOENT") return null;
-    throw new InternalError(
-      {
-        message: `${path} is there and could not be read.`,
-        action: `Check that path and its permissions. It should be a file, mode 600.`,
-        detail: `dev secrets file '${path}' failed to read: ${code ?? "unknown error"}`,
-      },
-      { cause },
-    );
-  }
+  return readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new InternalError(
+        {
+          message: `${path} is there and could not be read.`,
+          action: `Check that path and its permissions. It should be a file, mode 600.`,
+          detail: `dev secrets file '${path}' failed to read: ${code ?? "unknown error"}`,
+        },
+        { cause },
+      ),
+  });
 }
 
 /**

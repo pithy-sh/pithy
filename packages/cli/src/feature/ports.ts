@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { open, readFile, stat, unlink } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
+import { readOptionalFile } from "../project/readOptionalFile";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,25 @@ export const BLOCK_SIZE = 10;
 export const LOCK_MAX_ATTEMPTS = 50;
 /** Delay between lock-acquire retries, in ms. */
 export const LOCK_RETRY_DELAY_MS = 100;
+
+/**
+ * How long a caller is willing to wait for the lock. Both values default to the two constants above,
+ * which are what every command uses; nothing in the CLI passes this.
+ *
+ * **It exists so a test can assert the rule rather than the clock** (#194). The one test that has to
+ * *exhaust* the budget — a fresh lock must not be reclaimed, so every retry must fail — cost
+ * `LOCK_MAX_ATTEMPTS × LOCK_RETRY_DELAY_MS`, which is 5000ms, which is vitest's default timeout to the
+ * millisecond. It passed on an idle machine and failed on a busy one, having proved nothing that three
+ * attempts at 10ms do not: the assertion is that a fresh lock survives a spent budget, and the size of
+ * the budget is not part of it. Two unrelated numbers matching is what made it marginal, and a test one
+ * scheduling hiccup from red now runs on every pull request (#173).
+ */
+export interface LockBudget {
+  /** Attempts before giving up. Defaults to {@link LOCK_MAX_ATTEMPTS}. */
+  maxAttempts?: number;
+  /** Delay between attempts, in ms. Defaults to {@link LOCK_RETRY_DELAY_MS}. */
+  retryDelayMs?: number;
+}
 /**
  * A lock file older than this is treated as abandoned, not held. A legitimate hold only ever spans one
  * registry read-modify-write — a single small JSON file, no network calls — so it never approaches this.
@@ -53,6 +73,8 @@ export interface AllocateOptions {
   branch: string;
   /** Ports per block (default BLOCK_SIZE). */
   size?: number;
+  /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
+  lock?: LockBudget;
 }
 
 /** Inputs to `freePortBlock`. */
@@ -61,6 +83,8 @@ export interface FreeOptions {
   registryPath: string;
   /** The feature branch key to release. */
   branch: string;
+  /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
+  lock?: LockBudget;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -100,9 +124,11 @@ async function reclaimIfStale(lockPath: string): Promise<void> {
  * left behind by a process that died mid-hold is reclaimed once it goes stale (see `LOCK_STALE_MS`)
  * instead of bricking the registry forever.
  */
-async function acquireLock(registryPath: string): Promise<string> {
+async function acquireLock(registryPath: string, budget: LockBudget = {}): Promise<string> {
   const lockPath = `${registryPath}.lock`;
-  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+  const maxAttempts = budget.maxAttempts ?? LOCK_MAX_ATTEMPTS;
+  const retryDelayMs = budget.retryDelayMs ?? LOCK_RETRY_DELAY_MS;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const handle = await open(lockPath, "wx");
       try {
@@ -115,13 +141,15 @@ async function acquireLock(registryPath: string): Promise<string> {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") {
         await reclaimIfStale(lockPath);
       }
-      await sleep(LOCK_RETRY_DELAY_MS);
+      await sleep(retryDelayMs);
     }
   }
+  // The budget that was actually spent, not the constant — a refusal naming 50 after 3 attempts is a
+  // refusal that sends the reader to the wrong number.
   throw new InternalError({
     message: "Could not lock the port registry.",
     action: `If no other pithy process is running, delete ${lockPath} by hand and retry.`,
-    detail: `Timed out acquiring ${lockPath} after ${LOCK_MAX_ATTEMPTS} attempts (stale threshold ${LOCK_STALE_MS}ms).`,
+    detail: `Timed out acquiring ${lockPath} after ${maxAttempts} attempts (stale threshold ${LOCK_STALE_MS}ms).`,
   });
 }
 
@@ -131,8 +159,8 @@ async function releaseLock(lockPath: string): Promise<void> {
 }
 
 /** Run `fn` while holding the advisory lock on `registryPath`, always releasing it after. */
-async function withLock<T>(registryPath: string, fn: () => Promise<T>): Promise<T> {
-  const lockPath = await acquireLock(registryPath);
+async function withLock<T>(registryPath: string, fn: () => Promise<T>, budget?: LockBudget): Promise<T> {
+  const lockPath = await acquireLock(registryPath, budget);
   try {
     return await fn();
   } finally {
@@ -140,21 +168,24 @@ async function withLock<T>(registryPath: string, fn: () => Promise<T>): Promise<
   }
 }
 
-/** Read the registry file. A missing file is an empty registry. Invalid JSON/shape throws `InternalError`. */
+/**
+ * Read the registry file. A **missing** file is an empty registry; invalid JSON/shape throws
+ * `InternalError`, and so does one that is there and will not open.
+ *
+ * That distinction is {@link readOptionalFile}'s. It matters here as much as anywhere: every writer
+ * below is a read-modify-write, so a registry read as empty is a registry rewritten holding only this
+ * branch — and every other feature's block handed straight back out.
+ */
 async function readRegistry(registryPath: string): Promise<PortsRegistry> {
-  let raw: string;
-  try {
-    raw = await readFile(registryPath, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return {};
-    }
-    throw new InternalError({
-      message: "Could not read the port registry.",
-      action: "Check permissions on .dev-ports.json.",
-      detail: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const raw = await readOptionalFile(registryPath, {
+    unreadable: ({ cause }) =>
+      new InternalError({
+        message: "Could not read the port registry.",
+        action: "Check permissions on .dev-ports.json.",
+        detail: cause instanceof Error ? cause.message : String(cause),
+      }),
+  });
+  if (raw === null) return {};
 
   let parsed: unknown;
   try {
@@ -201,23 +232,27 @@ export async function allocatePortBlock(options: AllocateOptions): Promise<PortB
   const { registryPath, branch } = options;
   const size = options.size ?? BLOCK_SIZE;
 
-  return withLock(registryPath, async () => {
-    const registry = await readRegistry(registryPath);
+  return withLock(
+    registryPath,
+    async () => {
+      const registry = await readRegistry(registryPath);
 
-    const existing = registry[branch];
-    if (existing) {
-      return existing;
-    }
+      const existing = registry[branch];
+      if (existing) {
+        return existing;
+      }
 
-    const taken = new Set(Object.values(registry).map((entry) => entry.block));
-    const block = lowestFreeBlock(taken);
-    const allocated: PortBlock = { block, base: BASE_PORT + block * size, size };
+      const taken = new Set(Object.values(registry).map((entry) => entry.block));
+      const block = lowestFreeBlock(taken);
+      const allocated: PortBlock = { block, base: BASE_PORT + block * size, size };
 
-    registry[branch] = allocated;
-    await writeRegistry(registryPath, registry);
+      registry[branch] = allocated;
+      await writeRegistry(registryPath, registry);
 
-    return allocated;
-  });
+      return allocated;
+    },
+    options.lock,
+  );
 }
 
 /**
@@ -236,34 +271,44 @@ export async function reclaimPortBlocks(options: {
   registryPath: string;
   /** Blocks observed on disk, one per existing worktree. */
   reservations: { branch: string; block: PortBlock }[];
+  /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
+  lock?: LockBudget;
 }): Promise<string[]> {
   if (options.reservations.length === 0) return [];
 
-  return withLock(options.registryPath, async () => {
-    const registry = await readRegistry(options.registryPath);
-    const reclaimed: string[] = [];
-    for (const { branch, block } of options.reservations) {
-      if (branch in registry) continue; // a live allocation always wins.
-      registry[branch] = block;
-      reclaimed.push(branch);
-    }
-    if (reclaimed.length > 0) await writeRegistry(options.registryPath, registry);
-    return reclaimed;
-  });
+  return withLock(
+    options.registryPath,
+    async () => {
+      const registry = await readRegistry(options.registryPath);
+      const reclaimed: string[] = [];
+      for (const { branch, block } of options.reservations) {
+        if (branch in registry) continue; // a live allocation always wins.
+        registry[branch] = block;
+        reclaimed.push(branch);
+      }
+      if (reclaimed.length > 0) await writeRegistry(options.registryPath, registry);
+      return reclaimed;
+    },
+    options.lock,
+  );
 }
 
 /** Free a branch's block under the lock (idempotent: a missing branch/registry is a no-op). */
 export async function freePortBlock(options: FreeOptions): Promise<void> {
   const { registryPath, branch } = options;
 
-  await withLock(registryPath, async () => {
-    const registry = await readRegistry(registryPath);
-    if (!(branch in registry)) {
-      return;
-    }
-    delete registry[branch];
-    await writeRegistry(registryPath, registry);
-  });
+  await withLock(
+    registryPath,
+    async () => {
+      const registry = await readRegistry(registryPath);
+      if (!(branch in registry)) {
+        return;
+      }
+      delete registry[branch];
+      await writeRegistry(registryPath, registry);
+    },
+    options.lock,
+  );
 }
 
 /** Resolve the .dev-ports.json path from any cwd (main checkout or a worktree) via git-common-dir. */

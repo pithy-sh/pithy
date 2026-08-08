@@ -6,18 +6,26 @@ import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir as osHomedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { readFileOutcome } from "../project/readOptionalFile";
 
 /** Mode for an rc file we create from scratch: owner read/write, group/other read (POSIX `0644`). */
 const RC_FILE_MODE = 0o644;
 
-/** Read an rc file, returning `''` when it does not exist yet (the common first-install case). */
+/**
+ * Read an rc file, returning `''` when it does not exist yet (the common first-install case).
+ *
+ * "Does not exist" is {@link readFileOutcome}'s decision, not this module's — an rc file that is there
+ * and will not open must not read as an empty one, because `removeFromRcFile` rewrites what it read.
+ *
+ * Through the outcome rather than `readOptionalFile` because this reader rethrows node's own error
+ * untouched, and `readOptionalFile`'s refusal is a `PithyError` by construction. Wrapping it would be a
+ * behaviour change, which routing is not allowed to be.
+ */
 export async function readRcFile(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
+  const read = await readFileOutcome(path);
+  if (read.state === "read") return read.text;
+  if (read.state === "absent") return "";
+  throw read.cause;
 }
 
 /** True when `target` resolves to `home` itself or a path beneath it. */

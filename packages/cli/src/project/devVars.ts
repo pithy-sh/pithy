@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
-import { errnoOf, writeFileAtomic } from "./atomic";
+import { writeFileAtomic } from "./atomic";
+import { readOptionalFile } from "./readOptionalFile";
 
 /**
  * The mode a `.dev.vars` this module *creates* lands with. `pithy init` seeds the project's own at 0600;
@@ -83,7 +83,7 @@ export async function removeDevVars(path: string, keys: string[]): Promise<void>
 }
 
 /**
- * The file's current contents, or `null` — **and `null` means `ENOENT` and nothing else.**
+ * The file's current contents, or `null` — **and `null` means the file is not there, nothing else.**
  *
  * Both writers above are read-modify-write over a credential file, so "absent" is the one answer that
  * licenses replacing it. A `catch(() => "")` licensed it for every failure: `EACCES` on a file that
@@ -93,23 +93,21 @@ export async function removeDevVars(path: string, keys: string[]): Promise<void>
  * quieter failure: it returned early and its caller printed success, telling the adopter a credential
  * was removed while it sat in the file untouched.
  *
- * This is the third data loss on this branch from that one shape, so the read is one function and the
- * distinction is made once. A file we cannot read is not a file we may overwrite.
+ * This is the third data loss on this branch from that one shape, so the errno decision belongs to
+ * {@link readOptionalFile} and is made once for every reader. What stays here is the sentence a
+ * credential file deserves. A file we cannot read is not a file we may overwrite.
  */
 async function readDevVarsFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (err) {
-    const code = errnoOf(err);
-    if (code === "ENOENT") return null;
-    throw new ConflictError(
-      {
-        message: `Cannot update ${path}: Pithy could not read what is already in it.`,
-        action:
-          "Fix the file's permissions, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not read.",
-        detail: `${code ?? "unknown error"} while reading ${path}`,
-      },
-      { cause: err },
-    );
-  }
+  return readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Cannot update ${path}: Pithy could not read what is already in it.`,
+          action:
+            "Fix the file's permissions, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not read.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+  });
 }

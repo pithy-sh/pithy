@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
+import { readOptionalFile } from "../project/readOptionalFile";
 
 /** One provisioned Cloudflare resource recorded for teardown. */
 export const FeatureResource = z
@@ -36,21 +36,23 @@ export function manifestPath(worktreeDir: string): string {
   return join(worktreeDir, ".pithy-feature.json");
 }
 
-/** Read + Zod-validate the manifest, or `null` if the file does not exist. */
+/**
+ * Read + Zod-validate the manifest, or `null` if the file does not exist.
+ *
+ * "Does not exist" is {@link readOptionalFile}'s decision — a manifest that is there and will not open
+ * would otherwise read as "this worktree provisioned nothing", and `pithy feature destroy` tears down by
+ * exact id from this record. The words stay here; the errno does not.
+ */
 export async function readManifest(path: string): Promise<FeatureManifest | null> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-    throw new InternalError({
-      message: "Could not read the feature manifest.",
-      action: "Check permissions on .pithy-feature.json.",
-      detail: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const raw = await readOptionalFile(path, {
+    unreadable: ({ cause }) =>
+      new InternalError({
+        message: "Could not read the feature manifest.",
+        action: "Check permissions on .pithy-feature.json.",
+        detail: cause instanceof Error ? cause.message : String(cause),
+      }),
+  });
+  if (raw === null) return null;
 
   let parsed: unknown;
   try {
