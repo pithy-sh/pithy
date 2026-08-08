@@ -7,4 +7,11 @@
 # CLOUDFLARE_ACCOUNT_ID=your-account-id
 # CLOUDFLARE_API_TOKEN=your-bootstrap-token
 #
-# Capability secrets are added here by `pithy add <capability>`.
+# Application secrets do NOT live here. `pithy add <capability>` puts them in the dev secrets file,
+# outside this repository — run `pithy doctor` to see where. This file is env bindings: the secrets
+# master key, public keys like a Turnstile sitekey, and the two credentials above.
+#
+# The difference is the registry's `backend`. A `d1` secret is read from the secrets store in every
+# environment, dev included, so writing one here does nothing — the Worker refuses with "bound as a
+# plain value, and a d1 secret is never read from a binding". A `cf-secrets-store` secret has no local
+# store to read, so its value does belong here.

@@ -56,7 +56,7 @@ No handler code lands in your repo. The logic lives in the package and upgrades 
 
 Through `@pithy-sh/secrets`, never an env literal.
 
-- `auth-session-secret` — the Better Auth signing and encryption secret. `pithy add auth` mints this project's **dev** value into `.dev.vars`, because nothing else names it: it is not a required binding, so without it the app boots healthy and fails at the first sign-in. Written only when absent — a new value signs out every live session. Deployed environments need their own:
+- `auth-session-secret` — the Better Auth signing and encryption secret. `pithy add auth` mints this project's **dev** value into the dev secrets file (`pithy doctor` names the path), because nothing else names it: it is not a required binding, so without it the app boots healthy and fails at the first sign-in. Written only when absent — a new value signs out every live session. Deployed environments need their own:
   ```
   pithy secrets create auth-session-secret
   ```
