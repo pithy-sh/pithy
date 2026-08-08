@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { relative } from "node:path";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { z } from "zod";
+import { cloudflareEnv } from "../cloudflare/config";
+import type { StatePathOptions } from "../notifier/state";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { dashboardListUrl, dashboardUrl } from "./dashboard";
 import { resolveWorkerAddress } from "./workerAddress";
@@ -241,17 +242,19 @@ function buildEnvironments(
 
 /** Options for {@link buildEnvInventory}. */
 export interface EnvInventoryOptions {
-  /** The project root — the parent of `apps/`, and where `.dev.vars` supplies the account id. */
+  /** The project root — the parent of `apps/`. */
   projectDir: string;
   /** Inventory only this Worker, by the name `pithy worker list` shows or its `apps/<dir>` basename. */
   worker?: string;
   /** Discovery seam (default: `discoverWorkers`), so tests need no `apps/` tree on disk. */
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
+  paths?: StatePathOptions;
 }
 
 /**
  * Build the environment inventory for a project: every Worker under `apps/`, each read from its own
- * `wrangler.jsonc`, plus the Cloudflare account id from `.dev.vars`/the environment. A project with no
+ * `wrangler.jsonc`, plus the Cloudflare account id from `<config>/cloudflare.json`/the environment. A project with no
  * Worker at all is a clean `NotFoundError`; a missing account id is not — the inventory still prints,
  * only without dashboard links. `worker` narrows the report to one Worker.
  */
@@ -276,7 +279,7 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
     });
   }
 
-  const accountId = loadCloudflareEnv(options.projectDir).CLOUDFLARE_ACCOUNT_ID ?? null;
+  const accountId = cloudflareEnv(options.paths ?? {}).CLOUDFLARE_ACCOUNT_ID ?? null;
 
   const workers: WorkerEnvironments[] = [];
   for (const target of selected) {

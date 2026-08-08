@@ -8,8 +8,9 @@ import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { GENERATED_HEADER } from "../devSecrets/generate";
-import type { DevSecretsTarget } from "../devSecrets/seed";
+import type { DevSecretsTarget } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
 import {
   checkDevVars,
@@ -130,28 +131,69 @@ describe("the generated .dev.vars — is the Worker getting anything", () => {
 });
 
 describe("the root .dev.vars — is anything reading it", () => {
-  test("a Cloudflare credential is where it belongs and says nothing", async () => {
+  test("a Cloudflare credential left in the checkout is named, and where it belongs now", async () => {
+    // It used to be the one silent class here: the CLI read `CLOUDFLARE_ENV_KEYS` out of exactly this
+    // file. They are account-scoped and live in `<config>/cloudflare.json` since #182, so this copy is a
+    // live credential in a checkout that nothing reads.
     const board = await worker("board", { vars: {} });
     await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=abc\nCLOUDFLARE_API_TOKEN=tok\n");
 
     const result = await check([board]);
 
     expect(result.root.map((entry) => entry.state)).toEqual(["credential", "credential"]);
-    expect(describeDevVars(result)).toEqual([]);
-    expect(devVarsHealthy(result)).toBe(true);
+    const lines = describeDevVars(result).join("\n");
+    expect(lines).toContain("CLOUDFLARE_API_TOKEN is in .dev.vars, which nothing reads now");
+    expect(lines).toContain("cloudflare.json");
+    // Never the value.
+    expect(lines).not.toContain("tok");
+    expect(devVarsHealthy(result)).toBe(false);
   });
 
-  test("every key the CLI reads out of that file is silent, so a fourth one cannot arrive noisy", async () => {
-    // The gate, stated as the invariant: the root `.dev.vars` is the CLI's file, and
-    // `CLOUDFLARE_ENV_KEYS` is the whole list of what it reads from it. Add a key there and this
-    // passes; classify by anything else and it fails.
+  test("every key the CLI used to read out of that file is classified as a credential, so a fourth one cannot arrive unclassified", async () => {
+    // The gate, stated as the invariant: `CLOUDFLARE_ENV_KEYS` is the whole list of what moved out of
+    // the checkout. Add a key there and this passes; classify by anything else and it fails.
     const board = await worker("board", { vars: {} });
     await writeFile(join(dir, ".dev.vars"), CLOUDFLARE_ENV_KEYS.map((key) => `${key}=x`).join("\n"));
 
     const result = await check([board]);
 
     expect(result.root.every((entry) => entry.state === "credential")).toBe(true);
-    expect(describeDevVars(result)).toEqual([]);
+    expect(describeDevVars(result)).toHaveLength(CLOUDFLARE_ENV_KEYS.length);
+  });
+
+  test("a .dev.vars.<env> the old token sink left behind is named, with its environment", async () => {
+    // #182: `pithy token mint --env production --store dev-vars` wrote a live production Cloudflare
+    // token here. Reported, never deleted — that value may be the only copy of it anywhere (#142).
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(dir, ".dev.vars.production"), "CF_TOKEN_CI_SYSTEM=live-production-token\n");
+    await writeFile(join(dir, ".dev.vars.local"), "MINE=1\n");
+    await writeFile(join(dir, ".dev.vars.example"), "CLOUDFLARE_API_TOKEN=\n");
+
+    const result = await check([board]);
+
+    // `.local` is the override file and `.example` is committed documentation. Neither is a minted one.
+    expect(result.minted).toEqual([{ file: ".dev.vars.production", env: "production" }]);
+    const lines = describeDevVars(result).join("\n");
+    expect(lines).toContain(".dev.vars.production holds a credential minted for production");
+    expect(lines).not.toContain("live-production-token");
+    expect(devVarsHealthy(result)).toBe(false);
+  });
+
+  test("a registry secret still copied into dev.json is named, and nothing else there is", async () => {
+    // #179: `pithy seed` used to copy every `cf-secrets-store` value into `dev.json` under `vars`, and
+    // the generator read that copy. Nothing reads it now. A value no registry declares — a Turnstile
+    // sitekey — is a legitimate tenant of that file and stays silent.
+    const board = await worker("board", { vars: {} });
+    await writeBootstrapVars(dir, { CONNECTION_KEY_ENCRYPTION_KEY: "stale", TURNSTILE_SITEKEY: "0x4AAA" }, paths());
+
+    const result = await check([board]);
+
+    expect(result.devJsonSecrets).toEqual(["CONNECTION_KEY_ENCRYPTION_KEY"]);
+    const lines = describeDevVars(result).join("\n");
+    expect(lines).toContain("CONNECTION_KEY_ENCRYPTION_KEY");
+    expect(lines).toContain("pithy secrets edit");
+    expect(lines).not.toContain("TURNSTILE_SITEKEY");
+    expect(lines).not.toContain("stale");
   });
 
   test("a registry secret is left to checkDevSecrets, which says which file it belongs in", async () => {
@@ -228,11 +270,17 @@ describe("the root .dev.vars — is anything reading it", () => {
   test("every state either prints a sentence or is another check's to print — none is merely forgotten", () => {
     // Add a state to `ROOT_DEV_VAR_STATES` and this fails until it is either given a sentence or
     // deliberately assigned to the check that owns it. The two silent ones are named, not defaulted.
-    const silent: RootDevVarState[] = ["credential", "secret"];
+    // One silent state, and it is named rather than defaulted: `secret` is `describeDevSecrets`'s to
+    // report, which says which file the value belongs in and in what shape. `credential` stopped being
+    // silent with #182 — the CLI does not read that file any more, so a live Cloudflare token sitting
+    // in it is a value nothing reads and worth a sentence of its own.
+    const silent: RootDevVarState[] = ["secret"];
     for (const state of ROOT_DEV_VAR_STATES) {
       const lines = describeDevVars({
         root: [{ key: "SOME_KEY", state, workers: ["board"] }],
         empty: [],
+        minted: [],
+        devJsonSecrets: [],
         devConfigPath: "/config/replay/dev.json",
       });
       expect(lines.length === 0).toBe(silent.includes(state));

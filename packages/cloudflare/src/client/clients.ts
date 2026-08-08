@@ -18,6 +18,7 @@ import type { R2Credentials } from "../r2/r2Credentials";
 import { CloudflareR2Manager } from "../r2/r2Manager";
 import { CloudflareR2Provisioner } from "../r2/r2Provisioner";
 import { CloudflareSecretsStoreManager } from "../secrets/secretsStoreManager";
+import { CloudflareSecretsStoresManager } from "../secrets/secretsStores";
 import { CloudflareAccountTokensManager } from "../tokens/accountTokensManager";
 import { CloudflareTurnstileManager } from "../turnstile/turnstileManager";
 import { CloudflareUserManager } from "../user/userManager";
@@ -48,6 +49,8 @@ export class CloudflareClients {
   private readonly vectorizeByIndex = new Map<string, CloudflareVectorizeManager>();
 
   private readonly secretsByStore = new Map<string, CloudflareSecretsStoreManager>();
+
+  private secretsStoresManager?: CloudflareSecretsStoresManager;
 
   private readonly hostnamesByZone = new Map<string, CloudflareCustomHostnamesManager>();
 
@@ -107,6 +110,17 @@ export class CloudflareClients {
   /** The Secrets Store manager for a store id. */
   secrets(storeId: string): CloudflareSecretsStoreManager {
     return memo(this.secretsByStore, storeId, () => new CloudflareSecretsStoreManager({ ...this.config, storeId }));
+  }
+
+  /**
+   * The **account-level** Secrets Store manager — which stores this account has.
+   *
+   * Separate from {@link secrets} because it is asked before any store id exists: `pithy add secrets`
+   * resolves the account's one store and records it, so nothing after that has to ask (#182).
+   */
+  secretsStores(): CloudflareSecretsStoresManager {
+    this.secretsStoresManager ??= new CloudflareSecretsStoresManager(this.config);
+    return this.secretsStoresManager;
   }
 
   /** The Custom Hostnames manager for a zone id. */

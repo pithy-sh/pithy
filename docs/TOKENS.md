@@ -4,7 +4,7 @@
 
 ## The bootstrap token
 
-Everything starts from the one credential you set by hand: the bootstrap `CLOUDFLARE_API_TOKEN` (plus `CLOUDFLARE_ACCOUNT_ID`) in `.dev.vars`, or the same env vars locally. `pithy` uses it to mint every other token.
+Everything starts from the one credential you set by hand: the bootstrap `CLOUDFLARE_API_TOKEN` (plus `CLOUDFLARE_ACCOUNT_ID`) in `<config>/cloudflare.json` — account-scoped, outside every checkout, written by `pithy init` — or the same env vars, which overlay it per key and are how CI supplies them. `pithy` uses it to mint every other token.
 
 **Least privileges the bootstrap token needs.** At minimum **API Tokens → Edit** (account scope), so `pithy` can create, roll, and delete account-owned tokens.
 
@@ -14,7 +14,7 @@ Everything starts from the one credential you set by hand: the bootstrap `CLOUDF
 
 A minted token is named `<project>-<env>-<profile>` — `acme-production-ci-system`, `acme-staging-secrets`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters on the `<project>-<env>-` prefix and shows nothing outside it.
 
-The store entry a token's value is written to is scoped the same way. The **`.dev.vars` variable name is not** — `CF_TOKEN_CI_SYSTEM` stays as it is, because it is a variable key in your own file, not a name in a shared namespace.
+The store entry a token's value is written to is scoped the same way. The **variable name is not** — `CF_TOKEN_CI_SYSTEM` stays as it is, because it is a variable key your pipeline reads, not a name in a shared namespace.
 
 `<project>` is `name` in the root `pithy.config.ts`. See [`NAMING.md`](NAMING.md) for the rule and its length budget.
 
@@ -26,9 +26,9 @@ CI runs migrate and deploy in one process under one credential, so there is one 
 pithy token mint ci-system --env production
 ```
 
-**How you use it in CI.** CI has no `.dev.vars`, and neither secret store is readable from outside a Worker — so the flow is: mint the token, read its value out, and set it as your CI system's `CLOUDFLARE_API_TOKEN` secret. This is exactly why the `dev-vars` and `ephemeral` stores exist.
+**How you use it in CI.** CI has no Pithy config directory, and neither secret store is readable from outside a Worker — so the flow is: mint the token, read its value out, and set it as your CI system's `CLOUDFLARE_API_TOKEN` secret. This is exactly why the `dev-vars` and `ephemeral` stores exist.
 
-- **`--store dev-vars`** (the default) writes the value to `.dev.vars.production` as `CF_TOKEN_CI_SYSTEM`. Read it, paste it into your CI provider's secret store as `CLOUDFLARE_API_TOKEN`, done. Your CI's `pithy migrate` / `pithy deploy` then run under least privilege.
+- **`--store dev-vars`** (the default) writes the value to `<config>/<project>/tokens.json`, under that environment, as `CF_TOKEN_CI_SYSTEM`. Read it, paste it into your CI provider's secret store as `CLOUDFLARE_API_TOKEN`, done. **Nothing is written into the checkout, for any environment** — it used to be `.dev.vars.<env>`, which put a live production credential in a directory `npm pack` can reach. Your CI's `pithy migrate` / `pithy deploy` then run under least privilege.
 - **`--store ephemeral`** writes nothing — for a single CI job that mints and uses the token in the same step.
 
 The value is never printed to stdout or `--json`; `dev-vars` is how you get it out to configure CI.
@@ -71,7 +71,7 @@ Its value is written to the **CF Secrets Store**, and the Worker reads it via it
 A minted value never prints. It is written to one of:
 
 - **`secrets-store`** — the CF Secrets Store; a Worker reads it via its binding. The destination for a worker-consumer token. If a profile doesn't name a store, the destination comes from the token's **declared secret** in your secret registry (`defineSecretRegistry`) — the registry, not a flag, decides where a store-backed token lives (CLAUDE.md §secrets). A token can't live in the encrypted D1 store (Worker-only); declare it `cf-secrets-store`.
-- **`dev-vars`** — the git-ignored `.dev.vars.<env>`, readable back by a later CLI run. The `ci-system` default.
+- **`dev-vars`** — `<config>/<project>/tokens.json`, keyed by environment, mode `0600` and outside every checkout. Readable back by a later CLI run. The `ci-system` default; the name is kept because it is a public flag value.
 - **`ephemeral`** — nothing is written; the value is used in-process.
 
 Override any mint with `--store`. A flag wins over the profile default, which wins over the registry backend.

@@ -641,7 +641,9 @@ describe("cloudflare credentials", () => {
       }),
     );
     const text = renderDoctorText(report, "/home/u");
-    expect(text).toContain("Cloudflare: not configured (set CLOUDFLARE_API_TOKEN in .dev.vars)");
+    expect(text).toContain(
+      "Cloudflare: not configured (set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json, or the environment)",
+    );
     expect(text).not.toContain("CLOUDFLARE_ACCOUNT_ID");
   });
 
@@ -666,7 +668,7 @@ describe("cloudflare credentials", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
-        "Cloudflare: reachable (token active); credentials come from two places — .dev.vars sets CLOUDFLARE_API_TOKEN, the environment supplies CLOUDFLARE_ACCOUNT_ID — set the whole pair in one of them",
+        "Cloudflare: reachable (token active); credentials come from two places — cloudflare.json sets CLOUDFLARE_API_TOKEN, the environment supplies CLOUDFLARE_ACCOUNT_ID — set the whole pair in one of them",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -908,7 +910,14 @@ describe("dev login", () => {
 describe("dev vars", () => {
   const devVars =
     (over: Partial<DoctorReport["devVars"] & object> = {}) =>
-    async () => ({ root: [], empty: [], devConfigPath: "/home/u/.config/pithy/acme/dev.json", ...over });
+    async () => ({
+      root: [],
+      empty: [],
+      minted: [],
+      devJsonSecrets: [],
+      devConfigPath: "/home/u/.config/pithy/acme/dev.json",
+      ...over,
+    });
 
   test("an empty generated file names the Worker and drags the report verbose", async () => {
     const report = await buildDoctorReport(
@@ -925,7 +934,7 @@ describe("dev vars", () => {
     expect(text).toContain("Config dir:");
   });
 
-  test("a key nothing reads is named, and a credential beside it is not", async () => {
+  test("a key nothing reads is named, and so is a credential left in the checkout beside it", async () => {
     const report = await buildDoctorReport(
       harness.healthyOptions({
         checkDevVars: devVars({
@@ -938,7 +947,9 @@ describe("dev vars", () => {
     );
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain("LEFTOVER_FROM_2024 is in .dev.vars and nothing reads it");
-    expect(text).not.toContain("CLOUDFLARE_API_TOKEN");
+    // #182 moved the credentials to `<config>/cloudflare.json`, so this copy is a live token in a
+    // checkout that nothing reads. It was the one silent class here; it is not any more.
+    expect(text).toContain("CLOUDFLARE_API_TOKEN is in .dev.vars, which nothing reads now");
   });
 
   test("a healthy project says nothing and stays terse", async () => {

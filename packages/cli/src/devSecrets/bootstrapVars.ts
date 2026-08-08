@@ -5,8 +5,9 @@ import { readFile } from "node:fs/promises";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { StatePathOptions } from "../notifier/state";
-import { errnoOf, writeFileAtomic } from "../project/atomic";
+import { writeFileAtomic } from "../project/atomic";
 import { loadProject, requireProjectName } from "../project/config";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { devPreferencesPath } from "../seed/prepare";
 import { ensureDevSecretsDir } from "./location";
 import { tightenMode } from "./mode";
@@ -85,6 +86,9 @@ export async function bootstrapVarsPath(projectDir: string, options: StatePathOp
  * result is merged into a file that is regenerated wholesale — so a `dev.json` that will not parse costs
  * a set of bindings and says so through the Worker's own missing-binding error, rather than stopping
  * `pithy dev` over a hand-edited preferences file. {@link writeBootstrapVars} is the one that refuses.
+ *
+ * So this read deliberately does *not* go through {@link readOptionalFile}, and it is written down as
+ * such in that module's gate (`../project/readOptionalFile.test.ts`) rather than left to be rediscovered.
  */
 export async function readBootstrapVars(projectDir: string, options: StatePathOptions = {}): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
@@ -157,23 +161,23 @@ export async function removeBootstrapVars(
 /**
  * The parsed `dev.json`, with every tenant's key intact. `{}` for an absent file and for one whose JSON
  * is not an object; a present file that will not read at all is the caller's refusal, not a fresh start.
+ *
+ * The `ENOENT`-only rule is {@link readOptionalFile}'s (`../project/`); the words below are this file's,
+ * because "cannot update" is what a read-modify-write over somebody else's tenants has to say.
  */
 async function readDevJson(path: string): Promise<Record<string, unknown>> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch (cause) {
-    const code = errnoOf(cause);
-    if (code === "ENOENT") return {};
-    throw new ConflictError(
-      {
-        message: `Cannot update ${path}: Pithy could not read what is already in it.`,
-        action: "Fix the file's permissions, or move it aside, and run the command again.",
-        detail: `${code ?? "unknown error"} while reading ${path}`,
-      },
-      { cause },
-    );
-  }
+  const source = await readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Cannot update ${path}: Pithy could not read what is already in it.`,
+          action: "Fix the file's permissions, or move it aside, and run the command again.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+  });
+  if (source === null) return {};
   const parsed = DevJson.safeParse(safeJson(source));
   return parsed.success ? parsed.data : {};
 }

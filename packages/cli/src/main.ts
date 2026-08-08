@@ -37,5 +37,6 @@ export const main = defineCommand({
     turnstile: () => import("./commands/turnstile").then((m) => m.default),
     alias: () => import("./commands/alias").then((m) => m.default),
     doctor: () => import("./commands/doctor").then((m) => m.default),
+    adopt: () => import("./commands/adopt").then((m) => m.default),
   },
 });

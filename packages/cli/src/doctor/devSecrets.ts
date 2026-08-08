@@ -7,7 +7,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
+import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
 import { isCloudflareEnvKey } from "./devVars";
 
@@ -85,6 +85,14 @@ export interface DevSecretsCheck {
    */
   missing: string[];
   /**
+   * Declared **bootstrap** secrets with no value — `SECRETS_ENCRYPTION_KEYS` above all. Kept apart from
+   * {@link missing} because the answer is a different one: nothing outside the project issues a master
+   * key, `pithy add secrets` mints it, and until it does the local `SECRETS` store cannot be opened at
+   * all. Telling somebody it is "issued by somebody else, fine to leave until you need it" is the one
+   * sentence that would send them past the thing actually stopping them.
+   */
+  bootstrapMissing: string[];
+  /**
    * Names in the secrets file that no capability declares — the residue of a removed capability, or a
    * typo. **Not a fault either**, and never fatal to a seed: a stale line must not brick dev. Reported so
    * a value nobody reads can be deleted rather than maintained.
@@ -131,6 +139,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
 
   const misplaced: MisplacedDevSecret[] = [];
   const missing = new Set<string>();
+  const bootstrapMissing = new Set<string>();
   const seen = new Set<string>();
   for (const target of targets) {
     for (const [name, entry] of Object.entries(target.registry)) {
@@ -156,7 +165,9 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       }
       // Mintable means the next seed supplies it. Only a value that has to come from somewhere real is
       // something the adopter has to do — and the file, not the store, is dev's source of truth for it.
-      if (!Object.hasOwn(stated, name) && !entry.devValue) missing.add(name);
+      if (Object.hasOwn(stated, name) || entry.devValue) continue;
+      if (entry.bootstrap) bootstrapMissing.add(name);
+      else missing.add(name);
     }
   }
   misplaced.sort((a, b) => a.name.localeCompare(b.name));
@@ -177,6 +188,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     // adopter would be told to move a value that is already there. Say the file is broken, once.
     misplaced: unreadable ? [] : misplaced,
     missing: unreadable ? [] : [...missing].sort(),
+    bootstrapMissing: unreadable ? [] : [...bootstrapMissing].sort(),
     undeclared,
     mode,
     unreadable,
@@ -220,6 +232,11 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
       `${check.path} carries ${check.undeclared.join(", ")}, which no capability declares. Nothing reads them.`,
     );
   }
+  if (check.bootstrapMissing.length > 0) {
+    lines.push(
+      `No dev value for ${check.bootstrapMissing.join(", ")}. Run pithy add secrets — it mints one into ${check.path}. Until then the local SECRETS store cannot be opened.`,
+    );
+  }
   if (check.missing.length > 0) {
     lines.push(
       `No dev value for ${check.missing.join(", ")}. Each is issued by somebody else, so nothing mints one. Fine to leave until you need it.`,
@@ -246,7 +263,7 @@ function describeMisplaced(name: string, state: MisplacedDevSecretState, path: s
     case "duplicate":
       return `${name} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
     case "unmoved":
-      return `${name} is in .dev.vars, which dev no longer reads. Move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
+      return `${name} is in .dev.vars, which dev no longer reads. Run pithy adopt, or move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
   }
 }
 

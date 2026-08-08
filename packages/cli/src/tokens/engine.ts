@@ -17,6 +17,7 @@ import {
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import type { StatePathOptions } from "../notifier/state";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
@@ -61,8 +62,10 @@ export interface TokenEngine {
    * revokes the other project's credential along with its own.
    */
   project: string;
-  /** The project root — where `.dev.vars` stores live. */
+  /** The project root — for the audit sink's app-database lookup. Nothing minted is written into it (#182). */
   projectDir: string;
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
+  paths?: StatePathOptions;
   /** The CF account-token control plane (the bootstrap token authenticates it). */
   tokens: AccountTokenControl;
   /** The aggregated profile registry (`resolveTokenProfiles`). */
@@ -205,11 +208,12 @@ export async function mintProfileToken(
   try {
     const minted = await engine.tokens.rollToken(name, profilePermissions(profile, engine.accountId));
     const sink = await writeTokenToSink(store, minted.value, {
-      projectDir: engine.projectDir,
+      project: engine.project,
       env,
       secretName: profile.secret,
       storeEntryName: tokenStoreEntryName(engine.project, env, profile),
       putSecret: engine.putSecret,
+      ...(engine.paths !== undefined ? { paths: engine.paths } : {}),
     });
     await emit(engine, {
       action: TokenAuditActions.minted,
@@ -290,11 +294,12 @@ export async function rotateProfileToken(
     const priorIds = (await engine.tokens.listTokens()).filter((token) => token.name === name).map((token) => token.id);
     const minted = await engine.tokens.mintToken(name, profilePermissions(profile, engine.accountId));
     const sink = await writeTokenToSink(store, minted.value, {
-      projectDir: engine.projectDir,
+      project: engine.project,
       env,
       secretName: profile.secret,
       storeEntryName: tokenStoreEntryName(engine.project, env, profile),
       putSecret: engine.putSecret,
+      ...(engine.paths !== undefined ? { paths: engine.paths } : {}),
     });
     if (!options?.keepPrevious) {
       for (const id of priorIds) await engine.tokens.deleteToken(id);

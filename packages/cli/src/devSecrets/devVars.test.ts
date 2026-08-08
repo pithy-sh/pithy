@@ -228,9 +228,10 @@ describe("the producers", () => {
         // The machine-local store the generator reads. It writes `dev.json`, never a `.dev.vars` — it
         // is here because it names the variable namespace in a schema description.
         join("devSecrets", "bootstrapVars.ts"),
-        // A minted CLI token — hex, from `pithy token mint`, through its own writer. It writes the
-        // project root's `.dev.vars`, which is the *CLI's* credential file and not a Worker's.
-        join("tokens", "sinks.ts"),
+        // `tokens/sinks.ts` was here while `pithy token mint --store dev-vars` wrote the project's
+        // `.dev.vars` and `.dev.vars.<env>`. It writes `<config>/<project>/tokens.json` now (#182), so
+        // no minted credential lands in the checkout for any environment and there is no `.dev.vars`
+        // string left in it to match.
         // `seed/prepare.ts` was here while it read `.dev.vars` for a prepared set's secret. It reads
         // the dev secrets file now (#176), so it neither writes nor reads a `.dev.vars` at all.
       ].sort(),

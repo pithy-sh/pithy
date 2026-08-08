@@ -40,7 +40,10 @@ describe("buildAudit", () => {
     // project root. Passing the Worker's own directory finds no `apps/` beneath it, and every add/remove
     // event is silently dropped — the Worker is named through `worker`, which is what narrows the lookup.
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-add-audit-"));
-    await writeFile(join(projectDir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=acct\nCLOUDFLARE_API_TOKEN=tok\n");
+    // Through the environment: the credentials are account-scoped since #182, so a `.dev.vars` in the
+    // project supplies nothing. The overlay is what CI uses and needs no config directory here.
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
     const seen: CreateCliAuditOptions[] = [];
     try {
       const emit = await buildAudit({

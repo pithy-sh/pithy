@@ -4,7 +4,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -17,6 +16,7 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -76,18 +76,18 @@ async function loadSupportConfig(projectDir: string) {
 }
 
 /** The CF credentials support provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(projectDir: string): {
+function loadCloudflareCreds(): {
   accountId: string;
   apiToken: string;
   r2Raw: string | undefined;
 } {
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   // No Secrets Store id, unlike email and media: the classification worker binds `DB` and `AI` and holds
@@ -188,7 +188,7 @@ const provision = defineCommand({
       // another project's inbox (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
       const { provisionSupport } = await loadSupport();
-      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken } = loadCloudflareCreds();
       const supportConfig = await loadSupportConfig(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
@@ -262,12 +262,12 @@ const deprovision = defineCommand({
     "r2-access-key-id": {
       type: "string",
       description:
-        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
     },
     "r2-secret-access-key": {
       type: "string",
       description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
     },
   },
   run: ({ args }) =>
@@ -277,7 +277,7 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionSupport } = await loadSupport();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken, r2Raw } = loadCloudflareCreds();
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the workers gone and the
       // bucket standing — a half-torn-down inbox for a mistake we can catch here.

@@ -3,7 +3,7 @@
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test } from "vitest";
-import { isSecretsCapability, secrets } from "./capability";
+import { isSecretsCapability, masterKeyRegistryEntry, secrets } from "./capability";
 import { defineSecretRegistry } from "./registry";
 import { resetSharedSecrets, sharedSecretsStore } from "./sharedSecretsStore";
 
@@ -44,9 +44,24 @@ describe("secrets capability", () => {
 
   test("carries the registry and defaults the rotation interval, discoverable via isSecretsCapability", () => {
     const capability = cap();
-    expect(capability.secretRegistry).toBe(registry);
+    expect(capability.secretRegistry).toMatchObject(registry);
     expect(capability.rotationIntervalDays).toBe(30);
     expect(isSecretsCapability(capability)).toBe(true);
+  });
+
+  test("declares its own master key, so the binding it requires has a secret that fills it", () => {
+    // #179: `SECRETS_ENCRYPTION_KEYS` was a bare required binding with no backend, so nothing could
+    // route it and dev needed a file and a special case of its own.
+    expect(cap().secretRegistry.SECRETS_ENCRYPTION_KEYS).toEqual(masterKeyRegistryEntry);
+    expect(masterKeyRegistryEntry.backend).toBe("cf-secrets-store");
+    expect(masterKeyRegistryEntry.bootstrap).toBe(true);
+  });
+
+  test("an adopter's own entry for the master key wins — the default is a floor, not a ceiling", () => {
+    const mine = defineSecretRegistry({
+      SECRETS_ENCRYPTION_KEYS: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    expect(secrets({ registry: mine }).secretRegistry.SECRETS_ENCRYPTION_KEYS?.scope).toBe("global");
   });
 
   test("honors an explicit rotation interval", () => {

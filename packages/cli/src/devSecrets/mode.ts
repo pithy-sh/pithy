@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { Stats } from "node:fs";
-import { chmod, stat } from "node:fs/promises";
+import { chmod, mkdir, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 
 /** Group and other bits — everything a file holding a session key or a client secret must not carry. */
 const SHARED_BITS = 0o077;
@@ -39,6 +40,23 @@ export function tightenMode(path: string): Promise<void> {
  */
 export function tightenDirMode(path: string): Promise<void> {
   return tighten(path, (entry) => entry.isDirectory());
+}
+
+/**
+ * Make sure the directory holding `file` exists and is `0700`, on this call and on every later one.
+ *
+ * `mkdir`'s `mode` only applies to a directory it creates, and it is masked by the umask besides — so a
+ * directory already there keeps whatever mode it was made with. The narrowing runs unconditionally for
+ * the same reason a file's does: the case it exists for is the directory somebody else created.
+ *
+ * **One implementation, because there are three kinds of file under this root now** — `secrets.jsonc`,
+ * `dev.json`, and the account's `cloudflare.json` — and every one of them is a credential whose *listing*
+ * is a finding on its own. A private copy per writer is how the third one lands at the umask default.
+ */
+export async function ensureOwnerOnlyDirFor(file: string): Promise<void> {
+  const dir = dirname(file);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await tightenDirMode(dir);
 }
 
 /** The one narrowing, so the file rule and the directory rule cannot drift apart. */

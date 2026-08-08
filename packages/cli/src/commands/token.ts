@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { resolveTokenProfiles, TOKEN_STORES, type TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -11,6 +10,7 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
@@ -32,8 +32,8 @@ import {
 export { resolveAuditDatabaseId as resolveAppDatabaseId } from "../audit/cliAudit";
 
 /** The CF credentials the token engine needs, from `.dev.vars` then `process.env`. */
-function loadCreds(projectDir: string): { accountId: string; apiToken: string; storeId: string } {
-  const vars = loadCloudflareEnv(projectDir);
+function loadCreds(): { accountId: string; apiToken: string; storeId: string } {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -158,7 +158,7 @@ function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistr
 
 /** Assemble the token engine: the aggregated profiles, the secret-registry backends, and the audit sink. */
 async function buildEngine(projectDir: string, env: string): Promise<TokenEngine> {
-  const { accountId, apiToken, storeId } = loadCreds(projectDir);
+  const { accountId, apiToken, storeId } = loadCreds();
   const cf = new CloudflareClients({ accountId, apiToken });
   // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
   // The root config is required here, not best-effort: every token name and Secrets Store entry starts

@@ -3,7 +3,6 @@
 
 import { join, relative } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
@@ -12,6 +11,7 @@ import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
 import { type ConfigPrompt, coerceConfigValue, collectSetFlags, isHandWritten, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
+import { cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
 import { loadProject, requireProjectName } from "../project/config";
 import { type ResolvedWorker, type ResolveOptions, resolveSingleWorker } from "../project/workerScope";
@@ -47,7 +47,7 @@ export interface BuildAuditOptions {
 export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEmit> {
   const { projectDir, worker, env, capabilities } = options;
   const create = options.create ?? createRemoteCliAudit;
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};

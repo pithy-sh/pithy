@@ -5,7 +5,6 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -21,6 +20,7 @@ import {
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
 import { Miniflare } from "miniflare";
+import { cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { collectMigrationSets } from "./registry";
 
@@ -432,8 +432,8 @@ function databaseOf(cache: Map<string, D1Database>, group: DatabaseGroup): D1Dat
  * `@pithy-sh/cloudflare` D1 client (a shared client memoizes managers by database id). Only ever called
  * for the real REST path; an injected `override` replaces it wholesale.
  */
-function defaultRemoteD1(persistRoot: string, env: string): RemoteD1Factory {
-  const vars = loadCloudflareEnv(persistRoot);
+function defaultRemoteD1(env: string): RemoteD1Factory {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   // The active CF token: the bootstrap token locally, or the least-privilege `ci-system` token in CI
   // (an operator mints it with `pithy token mint ci-system` and sets it as CI's CLOUDFLARE_API_TOKEN).
@@ -456,14 +456,9 @@ function defaultRemoteD1(persistRoot: string, env: string): RemoteD1Factory {
  * client wholesale, so credentials are demanded only for the real path (mirrors the seed driver, which
  * is likewise credential-lazy): substituting the network client must never require ambient CF creds.
  */
-function remoteDriver(
-  persistRoot: string,
-  env: string,
-  groups: DatabaseGroup[],
-  override?: RemoteD1Factory,
-): MigrationDriver {
+function remoteDriver(env: string, groups: DatabaseGroup[], override?: RemoteD1Factory): MigrationDriver {
   // Build the REST-backed D1 per binding; the default reaches for creds, an override bypasses them.
-  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(persistRoot, env);
+  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(env);
 
   const cache = new Map<string, D1Database>();
   for (const group of groups) {
@@ -502,7 +497,7 @@ interface RunContext {
 function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<MigrationDriver> {
   return context.env === "dev"
     ? localDriver(context.persistRoot, groups)
-    : Promise.resolve(remoteDriver(context.persistRoot, context.env, groups, context.remoteD1));
+    : Promise.resolve(remoteDriver(context.env, groups, context.remoteD1));
 }
 
 /**

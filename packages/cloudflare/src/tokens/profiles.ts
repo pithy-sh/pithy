@@ -12,8 +12,10 @@ import { isPermissionKey, type PermissionKey, resolvePermissionKeys } from "./pe
  * - `secrets-store` — the CF Secrets Store; a Worker reads it via its binding. The destination for a
  *   worker-consumer token; resolved from the token's declared secret (its registry backend) unless a
  *   profile or `--store` names it directly.
- * - `dev-vars` — the git-ignored `.dev.vars.<env>`, readable back by a later CLI run. The store for
- *   the `ci-system` token: mint it here, read the value out, and set it as CI's `CLOUDFLARE_API_TOKEN`.
+ * - `dev-vars` — `<config>/<project>/tokens.json`, keyed by environment and outside every checkout,
+ *   readable back by a later CLI run. The store for the `ci-system` token: mint it here, read the value
+ *   out, and set it as CI's `CLOUDFLARE_API_TOKEN`. It wrote `.dev.vars.<env>` *inside* the project until
+ *   #182; the name stays because it is a public `--store` flag value.
  * - `ephemeral` — nothing is written; the value is used in-process and discarded. The one-step CI
  *   path — CI can't read the CF Secrets Store, so it mints and uses the token in the same job.
  */
@@ -56,7 +58,7 @@ export interface TokenProfile {
   /**
    * Whether the value behind {@link secret} differs per environment (the default) or is one value every
    * environment shares. It decides the environment segment of the **CF Secrets Store entry name** the
-   * minted value is written to, and nothing else — never the `.dev.vars` key, which is a variable name
+   * minted value is written to, and nothing else — never the variable key, which is a variable name
    * and stays verbatim. A `global` profile writes one entry with the literal `global` in that slot,
    * matching what provisioning wrote; an `environment` profile writes one entry per environment.
    */

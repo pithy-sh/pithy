@@ -5,10 +5,24 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { StatePathOptions } from "../notifier/state";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "./cloudflare";
 
 let dir: string;
-const saved = { account: process.env.CLOUDFLARE_ACCOUNT_ID, token: process.env.CLOUDFLARE_API_TOKEN };
+
+/**
+ * The account config directory these tests resolve against. `PITHY_CONFIG_DIR` is the one variable that
+ * relocates everything Pithy keeps per machine, so pointing it at a temp directory is what keeps a unit
+ * test off the operator's real `cloudflare.json` — the file that holds their live API token.
+ */
+function paths(env: Record<string, string> = {}): StatePathOptions {
+  return { env: { PITHY_CONFIG_DIR: dir, ...env } };
+}
+
+/** Write the account's `cloudflare.json` for this run. */
+async function config(values: Record<string, string>): Promise<void> {
+  await writeFile(join(dir, "cloudflare.json"), JSON.stringify(values, null, 2), { mode: 0o600 });
+}
 
 /**
  * Cut the network for a case where both credentials resolve. `checkCloudflareAccess` swallows the
@@ -22,26 +36,16 @@ const offline = (): void => {
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-cf-doctor-"));
-  // `loadCloudflareEnv` overlays process.env over the file, so a developer's own credentials would
-  // otherwise leak into these assertions — and, worse, reach Cloudflare from a unit test.
-  process.env.CLOUDFLARE_ACCOUNT_ID = undefined as unknown as string;
-  process.env.CLOUDFLARE_API_TOKEN = undefined as unknown as string;
-  delete process.env.CLOUDFLARE_ACCOUNT_ID;
-  delete process.env.CLOUDFLARE_API_TOKEN;
 });
 
 afterEach(async () => {
   vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
-  if (saved.account === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
-  else process.env.CLOUDFLARE_ACCOUNT_ID = saved.account;
-  if (saved.token === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
-  else process.env.CLOUDFLARE_API_TOKEN = saved.token;
 });
 
 describe("checkCloudflareAccess", () => {
-  test("no .dev.vars at all reports both keys missing, without reaching the network", async () => {
-    expect(await checkCloudflareAccess(dir)).toEqual({
+  test("no cloudflare.json at all reports both keys missing, without reaching the network", async () => {
+    expect(await checkCloudflareAccess(paths())).toEqual({
       state: "unconfigured",
       missing: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
       tokenStatus: null,
@@ -50,8 +54,8 @@ describe("checkCloudflareAccess", () => {
   });
 
   test("a half-configured file names only the key that is absent", async () => {
-    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=abc123\n");
-    expect(await checkCloudflareAccess(dir)).toEqual({
+    await config({ CLOUDFLARE_ACCOUNT_ID: "abc123" });
+    expect(await checkCloudflareAccess(paths())).toEqual({
       state: "unconfigured",
       missing: ["CLOUDFLARE_API_TOKEN"],
       tokenStatus: null,
@@ -60,32 +64,38 @@ describe("checkCloudflareAccess", () => {
   });
 
   test("an empty value counts as missing, not as configured", async () => {
-    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=abc123\nCLOUDFLARE_API_TOKEN=\n");
-    expect((await checkCloudflareAccess(dir)).missing).toEqual(["CLOUDFLARE_API_TOKEN"]);
+    await config({ CLOUDFLARE_ACCOUNT_ID: "abc123", CLOUDFLARE_API_TOKEN: "" });
+    expect((await checkCloudflareAccess(paths())).missing).toEqual(["CLOUDFLARE_API_TOKEN"]);
   });
 
   test("half the pair from the file and half from the environment is reported", async () => {
-    // The fault this exists for: `loadCloudflareEnv` overlays per key, so a file that sets only the token
+    // The fault this exists for: `cloudflareEnv` overlays per key, so a file that sets only the token
     // pairs it with whatever account id the shell happens to export. Nothing disagrees; the run just
     // authenticates as one account against another's id.
-    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=from-file\n");
-    process.env.CLOUDFLARE_ACCOUNT_ID = "from-env";
+    await config({ CLOUDFLARE_API_TOKEN: "from-file" });
     // Both keys now resolve, so the probe would call out — the stub keeps a unit test off Cloudflare.
     offline();
-    expect((await checkCloudflareAccess(dir)).credentialSplit).toEqual({
+    expect((await checkCloudflareAccess(paths({ CLOUDFLARE_ACCOUNT_ID: "from-env" }))).credentialSplit).toEqual({
       fromFile: ["CLOUDFLARE_API_TOKEN"],
       fromEnvironment: ["CLOUDFLARE_ACCOUNT_ID"],
     });
   });
 
   test("a complete file over a different account's exported pair is silent — the file decides the whole group", async () => {
-    // The ordinary developer machine: this project's account in `.dev.vars`, an unrelated one in the shell.
+    // The ordinary developer machine: this account in `cloudflare.json`, an unrelated one in the shell.
     // The overlay applies to neither key, so nothing is mixed and there is nothing to say.
-    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=mine\nCLOUDFLARE_API_TOKEN=mine-tok\n");
-    process.env.CLOUDFLARE_ACCOUNT_ID = "other";
-    process.env.CLOUDFLARE_API_TOKEN = "other-tok";
+    await config({ CLOUDFLARE_ACCOUNT_ID: "mine", CLOUDFLARE_API_TOKEN: "mine-tok" });
     offline();
-    expect((await checkCloudflareAccess(dir)).credentialSplit).toBeNull();
+    const env = { CLOUDFLARE_ACCOUNT_ID: "other", CLOUDFLARE_API_TOKEN: "other-tok" };
+    expect((await checkCloudflareAccess(paths(env))).credentialSplit).toBeNull();
+  });
+
+  test("the environment supplies the whole pair when there is no file — how CI runs", async () => {
+    offline();
+    const env = { CLOUDFLARE_ACCOUNT_ID: "ci-account", CLOUDFLARE_API_TOKEN: "ci-token" };
+    const access = await checkCloudflareAccess(paths(env));
+    expect(access.missing).toEqual([]);
+    expect(access.credentialSplit).toBeNull();
   });
 });
 
@@ -104,7 +114,7 @@ describe("describeCloudflareAccess", () => {
 
   test("unconfigured tells you which keys to set and where", () => {
     expect(describeCloudflareAccess(access({ state: "unconfigured", missing: ["CLOUDFLARE_API_TOKEN"] }))).toBe(
-      "not configured (set CLOUDFLARE_API_TOKEN in .dev.vars)",
+      "not configured (set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json, or the environment)",
     );
   });
 
@@ -128,7 +138,7 @@ describe("describeCloudflareAccess", () => {
     );
     // Reachable is still true, and still said — the split is an extra warning, not a replacement.
     expect(text).toContain("reachable (token active)");
-    expect(text).toContain(".dev.vars sets CLOUDFLARE_API_TOKEN");
+    expect(text).toContain("cloudflare.json sets CLOUDFLARE_API_TOKEN");
     expect(text).toContain("the environment supplies CLOUDFLARE_ACCOUNT_ID");
   });
 });

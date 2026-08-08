@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join } from "node:path";
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type { TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import { upsertDevVars } from "../project/devVars";
+import type { StatePathOptions } from "../notifier/state";
+import { writeMintedToken } from "./mintedTokens";
 
 /** Where a minted token landed — the store and a human location string. Never carries the value. */
 export interface SinkTarget {
@@ -23,7 +23,12 @@ export interface SinkTarget {
  * scope — and scoping the first would rename `CF_TOKEN_CI_SYSTEM` and break every pipeline reading it.
  */
 export interface SinkContext {
-  projectDir: string;
+  /**
+   * The project's name, from the root `pithy.config.ts` via `requireProjectName` — never a directory.
+   * It keys `<config>/<project>/`, which is where a minted token goes now that nothing is written into
+   * the checkout (#182).
+   */
+  project: string;
   env: string;
   /**
    * The `.dev.vars` variable key — a local environment-variable name, never project-scoped. This is
@@ -38,38 +43,37 @@ export interface SinkContext {
   storeEntryName: string;
   /** Writes a value to the CF Secrets Store; required for the `secrets-store` sink. */
   putSecret?: (name: string, value: string) => Promise<void>;
-}
-
-/** The `.dev.vars` file for an environment: `.dev.vars` for dev, `.dev.vars.<env>` otherwise (CLAUDE.md §dev vars). */
-export function devVarsFileName(env: string): string {
-  return env === "dev" ? ".dev.vars" : `.dev.vars.${env}`;
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
+  paths?: StatePathOptions;
 }
 
 /**
  * Write a minted token value to its store and report where it landed — never the value. `ephemeral`
- * persists nothing (the caller uses the value in-process); `dev-vars` upserts the token's **variable
- * key** in the env's git-ignored `.dev.vars` file, readable by a later CLI run; `secrets-store` writes
- * it to the CF Secrets Store under the project-scoped **entry name**, for a Worker to read via its binding.
+ * persists nothing (the caller uses the value in-process); `dev-vars` records the token's **variable
+ * key** under its environment in `<config>/<project>/tokens.json`, readable by a later CLI run;
+ * `secrets-store` writes it to the CF Secrets Store under the project-scoped **entry name**, for a Worker
+ * to read via its binding.
  *
- * The `dev-vars` write goes through `upsertDevVars`, which is the *only* thing that should be writing one
- * of these files. This had its own copy of the upsert, and the copy did not carry the `0600` the shared
- * one applies when it has to create the file — so minting a token for an environment that had no
- * `.dev.vars.<env>` yet left a live production Cloudflare credential at the umask default, `0664`.
+ * **The `dev-vars` sink writes nothing inside the project directory, for any environment (#182).** It
+ * used to write `.dev.vars` for dev and `.dev.vars.<env>` for everything else — so a production mint put
+ * a live production Cloudflare token in the checkout, gitignored but reachable by `npm pack`, which does
+ * not consult `.gitignore` when `files` is set (#145). The store name stays `dev-vars` because it is a
+ * public flag value and renaming it would break every documented invocation; what changed is where it
+ * puts the value. See {@link writeMintedToken}.
  */
 export async function writeTokenToSink(store: TokenStore, value: string, context: SinkContext): Promise<SinkTarget> {
   switch (store) {
     case "ephemeral":
       return { sink: store, location: "(ephemeral — not written)" };
     case "dev-vars": {
-      const name = devVarsFileName(context.env);
-      await upsertDevVars(join(context.projectDir, name), { [context.secretName]: value });
-      return { sink: store, location: name };
+      const path = await writeMintedToken(context.project, context.env, context.secretName, value, context.paths ?? {});
+      return { sink: store, location: path };
     }
     case "secrets-store": {
       if (!context.putSecret) {
         throw new CloudflareNotConfiguredError({
           message: "No CF Secrets Store is configured for the secrets-store store.",
-          action: "Set SECRETS_STORE_ID in .dev.vars, or mint with --store dev-vars.",
+          action: "Run pithy add secrets to record SECRETS_STORE_ID, or mint with --store dev-vars.",
         });
       }
       await context.putSecret(context.storeEntryName, value);

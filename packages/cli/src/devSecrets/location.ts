@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { type StatePathOptions, stateDir } from "../notifier/state";
 import { loadProject, requireProjectName } from "../project/config";
-import { tightenDirMode } from "./mode";
+import { ensureOwnerOnlyDirFor } from "./mode";
 
 /**
  * Where a project's dev secrets live: `<config>/<project>/secrets.jsonc` — **outside the checkout, and
@@ -70,8 +69,6 @@ export async function resolveDevSecretsFile(projectDir: string, options: StatePa
  * The listing is the finding, not just the bytes. `ls <config>/<project>/` names every secret this
  * project has — which provider, which vendor, which capability — and that is worth 0700 on its own.
  */
-export async function ensureDevSecretsDir(file: string): Promise<void> {
-  const dir = dirname(file);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await tightenDirMode(dir);
+export function ensureDevSecretsDir(file: string): Promise<void> {
+  return ensureOwnerOnlyDirFor(file);
 }

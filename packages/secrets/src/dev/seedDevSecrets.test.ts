@@ -7,7 +7,7 @@ import { z } from "zod";
 import { encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { defineSecretRegistry, type SecretValueType } from "../registry";
 import type { DevSecretsFile } from "./devSecretsFile";
-import { type DevSecretsStore, mintMissingDevSecrets, seedDevSecrets } from "./seedDevSecrets";
+import { type DevSecretsStore, devVarsForRegistry, mintMissingDevSecrets, seedDevSecrets } from "./seedDevSecrets";
 
 /** An in-memory stand-in for the `SECRETS` D1 store, counting writes so idempotency is observable. */
 class FakeStore implements DevSecretsStore {
@@ -274,5 +274,59 @@ describe("mintMissingDevSecrets", () => {
     });
 
     expect(Object.keys(mintMissingDevSecrets({}, odd))).toEqual(["toString"]);
+  });
+});
+
+/**
+ * The asymmetry the `bootstrap` axis exists for, asserted from both sides — because one side alone is
+ * how it gets "tidied" back into a single rule that breaks the other.
+ */
+describe("devVarsForRegistry", () => {
+  const registry = defineSecretRegistry({
+    "connection-key": { backend: "cf-secrets-store", scope: "environment", rotatable: false, valueType: "text" },
+    SECRETS_ENCRYPTION_KEYS: {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      bootstrap: true,
+    },
+    "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+  });
+
+  const file: DevSecretsFile = {
+    "connection-key": { currentVersion: "2", versions: { "1": "old", "2": "current" } },
+    SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": "the-master-key" } },
+    "auth-session-secret": { currentVersion: "1", versions: { "1": "seeded-into-d1" } },
+  };
+
+  test("an ordinary cf-secrets-store secret carries the whole envelope, so its versions survive", () => {
+    // The same shape provisioning writes into the Secrets Store. Collapsing it to the current value
+    // would drop version 1 and break anything still verifying against it.
+    expect(devVarsForRegistry(file, registry)["connection-key"]).toBe(
+      encodeVersionedValue({ currentVersion: "2", versions: { "1": "old", "2": "current" } }),
+    );
+  });
+
+  test("a bootstrap secret carries its current value, because its reader has no decoder yet", () => {
+    // `resolveEncryptionConfig` parses this binding directly — it is what the envelope decoder needs in
+    // order to exist — so an envelope here is a Worker that boots into `not a valid EncryptionConfig`.
+    expect(devVarsForRegistry(file, registry).SECRETS_ENCRYPTION_KEYS).toBe("the-master-key");
+  });
+
+  test("a d1 secret is not a binding at all — its destination is the row the seeder writes", () => {
+    expect(devVarsForRegistry(file, registry)["auth-session-secret"]).toBeUndefined();
+  });
+
+  test("a declared secret the file does not state is simply absent, not an error", () => {
+    expect(Object.keys(devVarsForRegistry({}, registry))).toEqual([]);
+  });
+
+  test("the seeder and the generator agree, because they are one function", () => {
+    // Two implementations of "what does this binding carry" is how dev and the report drift apart.
+    const store = new FakeStore();
+    return seedDevSecrets({ file, registry, store }).then((result) => {
+      expect(result.devVars).toEqual(devVarsForRegistry(file, registry));
+    });
   });
 });

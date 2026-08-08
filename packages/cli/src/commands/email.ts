@@ -4,7 +4,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isEmailCapability, type ResolvedEmailConfig } from "@pithy-sh/email/src/capability";
@@ -21,6 +20,7 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadWorkerConfig, loadWorkerDomains, requireProjectName } from "../project/config";
 import { resolveWorkerAddress } from "../project/workerAddress";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
@@ -65,21 +65,21 @@ async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig>
 }
 
 /** The CF credentials and Secrets Store id email provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken: string; storeId: string } {
-  const vars = loadCloudflareEnv(projectDir);
+function loadCloudflareCreds(): { accountId: string; apiToken: string; storeId: string } {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
     throw new ValidationError({
       message: "The CF Secrets Store id is missing.",
-      action: "Set SECRETS_STORE_ID in .dev.vars (the email worker decrypts its signing key from it).",
+      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker decrypts its signing key from it).",
     });
   }
   return { accountId, apiToken, storeId };
@@ -192,7 +192,7 @@ const provision = defineCommand({
       // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
       // adopts another project's opt-out list (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
-      const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken, storeId } = loadCloudflareCreds();
       const { theme } = await loadEmailConfig(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
@@ -244,7 +244,7 @@ const deprovision = defineCommand({
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
-      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken } = loadCloudflareCreds();
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
         cf,
@@ -276,7 +276,7 @@ const test = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken } = loadCloudflareCreds();
       const { fromAddress, fromName, baseUrl, theme } = await loadEmailConfig(projectDir);
       const payload = samplePayloads[args.template];
       if (!payload) {

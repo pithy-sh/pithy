@@ -3,10 +3,10 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { cloudflareEnv } from "../cloudflare/config";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
@@ -122,10 +122,10 @@ function reasonOf(error: unknown): string {
  * The default deploy step: `wrangler deploy [--env <env>]` in the worker's directory, quiet on
  * success (its output is captured and summarized, not streamed — the brand voice). Wrangler reads
  * `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`, so CI needs no interactive login; we also pass them
- * from `.dev.vars` so a local deploy authenticates the same way.
+ * from `<config>/cloudflare.json` so a local deploy authenticates the same way.
  */
-function defaultRunDeploy(projectDir: string): RunDeploy {
-  const vars = loadCloudflareEnv(projectDir);
+function defaultRunDeploy(): RunDeploy {
+  const vars = cloudflareEnv();
   const env: Record<string, string> = {};
   if (vars.CLOUDFLARE_API_TOKEN) env.CLOUDFLARE_API_TOKEN = vars.CLOUDFLARE_API_TOKEN;
   if (vars.CLOUDFLARE_ACCOUNT_ID) env.CLOUDFLARE_ACCOUNT_ID = vars.CLOUDFLARE_ACCOUNT_ID;
@@ -238,7 +238,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
     });
   }
 
-  const run = options.runDeploy ?? defaultRunDeploy(options.projectDir);
+  const run = options.runDeploy ?? defaultRunDeploy();
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
   const args = options.env ? ["deploy", "--env", options.env] : ["deploy"];

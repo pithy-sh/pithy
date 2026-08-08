@@ -48,8 +48,10 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  * - **§5.6's `--json` sample carries exactly the keys `renderDoctorJson` emits.** Every key of that
  *   payload is unconditional — absent findings are `null`, never missing — so one render enumerates the
  *   whole contract, and a new field fails the comparison.
- * - **A `--json` payload §5.7 claims to specify is specified completely.** The section names its own
- *   commands; the source decides their keys.
+ * - **A `--json` payload a specifying section claims to specify is specified completely.** Each section
+ *   names its own commands; the source decides their keys. §5.7 and §5.8 are the two sections enrolled —
+ *   §5.8 by #187, which documented `pithy adopt` and wrote its payload key by key at the call site so
+ *   this scan could reach it.
  *
  * **Enrolment is what triggers the last one, and that is deliberate.** §5.7 covers the two commands it
  * documents because it documents them — mention another in backticks with `--json` and the gate demands
@@ -343,20 +345,23 @@ describe("docs/CLI.md documents what the code emits", () => {
    * source decides their keys. So documenting another command's payload there enrols it, and adding a
    * field to one already there fails until the prose names it. Nothing in this file lists a command.
    */
-  test("§5.7 names every --json field of every command it specifies", () => {
-    const section57 = section("### 5.7 Project capability updates");
-    const commands = new Set([...section57.matchAll(/`pithy ([a-z]+)[^`]*--json`/g)].map((match) => match[1] ?? ""));
-    expect(commands.size).toBeGreaterThan(0);
-    for (const command of commands) {
-      const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), `${command}.ts`), "utf8");
-      // A payload nothing can read is not a payload that passed. `add` also writes one built by spreading
-      // a typed object, which contributes no key here and is not gated — the edge stated in the header.
-      const { keys } = payloadKeys(source);
-      expect(keys, `${command} writes no --json payload this scan can read`).not.toEqual([]);
-      expect({ command, undocumented: keys.filter((key) => !section57.includes(`\`${key}\``)) }).toEqual({
-        command,
-        undocumented: [],
-      });
-    }
-  });
+  test.each([["### 5.7 Project capability updates"], ["### 5.8 The `pithy adopt` command"]])(
+    "%s names every --json field of every command it specifies",
+    (heading) => {
+      const body = section(heading);
+      const commands = new Set([...body.matchAll(/`pithy ([a-z]+)[^`]*--json`/g)].map((match) => match[1] ?? ""));
+      expect(commands.size).toBeGreaterThan(0);
+      for (const command of commands) {
+        const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), `${command}.ts`), "utf8");
+        // A payload nothing can read is not a payload that passed. `add` also writes one built by spreading
+        // a typed object, which contributes no key here and is not gated — the edge stated in the header.
+        const { keys } = payloadKeys(source);
+        expect(keys, `${command} writes no --json payload this scan can read`).not.toEqual([]);
+        expect({ command, undocumented: keys.filter((key) => !body.includes(`\`${key}\``)) }).toEqual({
+          command,
+          undocumented: [],
+        });
+      }
+    },
+  );
 });

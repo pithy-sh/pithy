@@ -3,10 +3,10 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { assertValidProjectName, isValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, type ProjectConfig } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
@@ -335,10 +335,7 @@ export interface AccountEvidence {
  * never established either way (no credentials, an unreachable account, a listing that was refused), which
  * is reported as unknown rather than as absence.
  */
-export type AccountProbe = (
-  projectDir: string,
-  candidates: MisnamedCandidate[],
-) => Promise<Map<string, AccountEvidence>>;
+export type AccountProbe = (candidates: MisnamedCandidate[]) => Promise<Map<string, AccountEvidence>>;
 
 /**
  * The recorded owner of a database, read through the one read-only seam `@pithy-sh/core` exposes.
@@ -362,7 +359,6 @@ async function ownerStampOf(clients: CloudflareClients, databaseId: string): Pro
  * of the map.
  */
 export async function probeAccountEvidence(
-  projectDir: string,
   candidates: MisnamedCandidate[],
   /**
    * How the account is reached. Injectable for the same reason `probeAccount` is one level up, but a level
@@ -375,7 +371,7 @@ export async function probeAccountEvidence(
     new CloudflareClients(credentials),
 ): Promise<Map<string, AccountEvidence>> {
   const evidence = new Map<string, AccountEvidence>();
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return evidence;
@@ -466,7 +462,7 @@ export async function checkProjectName(
   const candidates = misnamedResources(project, resources);
   if (candidates.length === 0) return nothingToSay;
 
-  const evidence = await (options.probeAccount ?? probeAccountEvidence)(projectDir, candidates);
+  const evidence = await (options.probeAccount ?? probeAccountEvidence)(candidates);
   const misnamed: MisnamedResource[] = candidates.map((entry) => {
     const found = evidence.get(entry.name);
     return { ...entry, provisioned: found ? found.exists : null, owner: found?.owner ?? null };

@@ -4,9 +4,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { afterAll, describe, expect, test } from "vitest";
+import { cloudflareEnv } from "../cloudflare/config";
 import { deployProject } from "./deploy";
 
 /**
@@ -36,7 +36,7 @@ import { deployProject } from "./deploy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.join(__dirname, "..", "..");
-const vars = loadCloudflareEnv(packageRoot);
+const vars = cloudflareEnv();
 const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
 const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
 const hasCreds = Boolean(accountId && apiToken);
@@ -135,13 +135,6 @@ describe.skipIf(!hasCreds)("deploy across workers — LIVE", () => {
   test("each worker deploys as its own script, from its own wrangler.jsonc", { timeout: 600_000 }, async () => {
     const dir = await mkdtemp(path.join(packageRoot, ".deploy-it-"));
     projectDir = dir;
-    // The fixture is a project root, and a project root carries its credentials. Written before anything
-    // runs, so `deployProject` resolves *these* — not whatever the ambient environment happens to say.
-    await writeFile(
-      path.join(dir, ".dev.vars"),
-      `CLOUDFLARE_ACCOUNT_ID="${accountId}"\nCLOUDFLARE_API_TOKEN="${apiToken}"\n`,
-      { mode: 0o600 },
-    );
     for (const worker of WORKERS) {
       const workerDir = path.join(dir, "apps", worker);
       await mkdir(path.join(workerDir, "src"), { recursive: true });
@@ -149,10 +142,12 @@ describe.skipIf(!hasCreds)("deploy across workers — LIVE", () => {
       await writeFile(path.join(workerDir, "src", "index.ts"), ENTRY);
     }
 
-    // The property the rest of this test rests on: the credentials the deploy will resolve from the
-    // fixture are the credentials the assertions and the teardown address. Asserted, not assumed —
-    // when it was merely assumed, it was false, and the suite leaked real Workers for four runs.
-    const forDeploy = loadCloudflareEnv(dir);
+    // The property the rest of this test rests on: the credentials the deploy will resolve are the
+    // credentials the assertions and the teardown address. Asserted, not assumed — when it was merely
+    // assumed, it was false, and the suite leaked real Workers for four runs. The fixture no longer
+    // carries them: they are account-scoped and outside every checkout (#182), so there is nothing to
+    // write into the project and nothing for the run to disagree with.
+    const forDeploy = cloudflareEnv();
     expect(forDeploy.CLOUDFLARE_ACCOUNT_ID).toBe(accountId);
     expect(forDeploy.CLOUDFLARE_API_TOKEN).toBe(apiToken);
 

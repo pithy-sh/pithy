@@ -4,10 +4,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { ZoneInfo } from "@pithy-sh/cloudflare/src/zones/zonesManager";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { cloudflareEnv } from "../cloudflare/config";
 import { applyDomains } from "./applyDomains";
 import { writeFileAtomic } from "./atomic";
 import {
@@ -45,8 +45,8 @@ interface ZoneLookup {
  * degrades to free text with a line saying so. Failing the command instead would make declaring a domain
  * impossible offline, which is exactly when someone is scaffolding.
  */
-async function lookupZones(projectDir: string): Promise<ZoneLookup> {
-  const vars = loadCloudflareEnv(projectDir);
+async function lookupZones(): Promise<ZoneLookup> {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -88,7 +88,7 @@ export async function askDomains(options: {
   if (!options.interactive) return { domains: undefined, prompted: false };
 
   const { isCancel, note: showNote, select, text } = await import("@clack/prompts");
-  const { zones, note } = await lookupZones(options.projectDir);
+  const { zones, note } = await lookupZones();
   if (note) showNote(note);
 
   const answers: DomainAnswer[] = [];

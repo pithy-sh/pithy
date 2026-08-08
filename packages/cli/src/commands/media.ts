@@ -4,7 +4,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -19,6 +18,7 @@ import {
 } from "../capabilities/mediaProvisioner";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -73,26 +73,26 @@ async function loadMediaConfig(projectDir: string) {
 }
 
 /** The CF credentials and Secrets Store id media provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(projectDir: string): {
+function loadCloudflareCreds(): {
   accountId: string;
   apiToken: string;
   storeId: string;
   r2Raw: string | undefined;
 } {
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
     throw new ValidationError({
       message: "The CF Secrets Store id is missing.",
-      action: "Set SECRETS_STORE_ID in .dev.vars (the media worker decrypts its credentials from it).",
+      action: "Run pithy add secrets to record SECRETS_STORE_ID (the media worker decrypts its credentials from it).",
     });
   }
   return { accountId, apiToken, storeId, r2Raw: vars.R2_CREDENTIALS };
@@ -160,12 +160,12 @@ const provision = defineCommand({
     "r2-access-key-id": {
       type: "string",
       description:
-        "R2 S3 access key id the Worker presigns R2 uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 access key id the Worker presigns R2 uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in the account config.",
     },
     "r2-secret-access-key": {
       type: "string",
       description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
     },
     "r2-api-token": {
       type: "string",
@@ -182,7 +182,7 @@ const provision = defineCommand({
       // find what to delete (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
       const { provisionMedia } = await loadMedia();
-      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds();
       const mediaConfig = await loadMediaConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
       const cf = new CloudflareClients({ accountId, apiToken });
@@ -226,12 +226,12 @@ const deprovision = defineCommand({
     "r2-access-key-id": {
       type: "string",
       description:
-        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
     },
     "r2-secret-access-key": {
       type: "string",
       description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in .dev.vars.",
+        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
     },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -242,7 +242,7 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionMedia } = await loadMedia();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken, r2Raw } = loadCloudflareCreds();
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the media workers gone
       // and the bucket standing — a half-torn-down environment for a mistake we can catch here.

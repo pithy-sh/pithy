@@ -47,6 +47,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
 | `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
+| `pithy adopt [--apply]` | Copy every dev value `doctor` reports as misplaced to where the current layout keeps it — the account's Cloudflare credentials, registry secrets, dev bindings, minted tokens. A dry run by default; **never deletes from a source file** (see Section 5.8) |
 | `pithy --help` / `pithy -h` | Show help for any command |
 | `pithy --version` / `pithy -v` | Print the installed version |
 
@@ -564,7 +565,7 @@ The two transcripts below are captured from the real binary and pinned by `packa
 $ pithy --help
 A backend kit for Cloudflare Workers. (pithy v<version>)
 
-USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor
+USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
 
 COMMANDS
 
@@ -593,6 +594,7 @@ COMMANDS
   turnstile    Provision and manage Turnstile widgets
       alias    Install the `p.` shortcut for `pithy`
      doctor    Check the toolchain, project, and for a new CLI version
+      adopt    Copy stray dev values to where the current layout keeps them
 
 Use pithy <command> --help for more information about a command.
 ```
@@ -853,13 +855,15 @@ Project health:
 
 The **`Cloudflare:`** line answers "can I reach the account" — the bootstrap `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` pair, verified against Cloudflare rather than merely read (`docs/TOKENS.md`). A configured-but-broken credential fails the exit; an absent one does not, because a project that has not been provisioned yet is a legitimate state.
 
-The same line warns when the pair **came from two places**. The `.dev.vars` overlay works per key, so a file that sets only `CLOUDFLARE_API_TOKEN` silently takes `CLOUDFLARE_ACCOUNT_ID` from whatever the shell exports — one account's token against another account's id, and nothing disagrees for anything to catch. What you get is a confusing 403, or an empty listing, at some much later call. Doctor names which key came from the file and which from the environment, and this one line is all it adds: an otherwise clean report stays terse. It checks that one source decided the pair, not that the pair is right — a complete `.dev.vars` naming the wrong account is coherent, and coherent is all this can judge. Reported, never gated: the credentials may well work. A complete `.dev.vars`, a shell exporting a different account's whole pair over it, and CI (which has no `.dev.vars` at all) are all silent.
+**Those credentials live in `<config>/cloudflare.json`, not in your repository.** They are functions of the *account*, not of a project: one account holds many Pithy projects, Cloudflare permits one Secrets Store per account, and a per-project home would keep one copy of the same token per project and make rotation an N-place edit. So `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` and `R2_CREDENTIALS` sit in one file beside `state.json`, mode `0600` in the `0700` config directory. `pithy init` writes the pair at the one moment you are holding both — it needs the token to list your zones two prompts later — and skips the question when they already resolve. Nothing about them is in the checkout, so there is nothing to gitignore and nothing an `npm pack` can carry.
+
+The same line warns when the pair **came from two places**. The overlay works per key, so a `cloudflare.json` that sets only `CLOUDFLARE_API_TOKEN` silently takes `CLOUDFLARE_ACCOUNT_ID` from whatever the shell exports — one account's token against another account's id, and nothing disagrees for anything to catch. What you get is a confusing 403, or an empty listing, at some much later call. Doctor names which key came from the file and which from the environment, and this one line is all it adds: an otherwise clean report stays terse. It checks that one source decided the pair, not that the pair is right — a complete file naming the wrong account is coherent, and coherent is all this can judge. Reported, never gated: the credentials may well work. A complete file, a shell exporting a different account's whole pair over it, and CI (which has no file at all) are all silent.
 
 The **`Project name:`** line answers the next question: is what I would find there still mine. Every resource this project provisions leads with the root config's `name` (`docs/NAMING.md`), and teardown *recomputes* those names rather than scanning for them — so one edit to `name` orphans everything while every command keeps exiting 0. Doctor requires positive evidence before it says so, because `<app>-<env>-<resource>` is also the ordinary Cloudflare convention and a database you brought with you is not an orphan. Two states fail the exit: **drifted**, where the wiring contradicts the config wholesale (every declared name leads with one and the same other project, and the configured name appears nowhere — the only shape a one-string rename can leave), and **orphaned**, where a database's `pithy_migrations_owner` stamp proves Pithy created it under another project's name. Neither state ever advises deleting a resource. A single foreign name, a mix, an unset name, and an unreadable `wrangler.jsonc` all pass — none of them establishes anything.
 
 The **`Dev login:`** line names the one config file that is per project rather than per machine: `dev.json`, the opt-in that makes `pithy seed` mint a real session instead of leaving you a magic link (`docs/SEED.md`). It sits with `Config dir:` and `State file:` because it answers the same question they do, and it is here because until recently it could not be: the file was resolved against a second, unrelated config root — and on Windows against no valid root at all — so this block named a directory that did not contain it and a developer whose dev login was not working looked there and found nothing. The line reports the resolved path whether or not the file exists, because where it *would* go is most of what anyone asking needs. **No file is not a fault** — magic-link-only is the documented default, and it never gates. A file that will not parse does, and so does one naming no user: `pithy seed` reads an unparseable `dev.json` as an absence, silently, so nothing else in the toolchain would ever mention it. It reports the user the file names and never claims that user is seeded — doctor runs no seed, so it has not established that, and the seed itself already refuses loudly on a name it does not create.
 
-The **`Secrets:`** line names your dev secret values — `<config>/<project>/secrets.jsonc`, the file `pithy add` mints into and `pithy seed` reads. **It is not in your repository, and that is the point.** `.dev.vars` has to sit in the worker's directory because wrangler reads it there; nothing but the CLI reads this one, so it lives outside every checkout — nothing to gitignore, nothing a `git add -A` can reach, nothing an `npm pack` can carry, and nothing an `rm -rf` on the working copy destroys. Delete the whole clone and the secrets are still there. Every worktree of one project resolves the same file with no setup step.
+The **`Secrets:`** line names your dev secret values — `<config>/<project>/secrets.jsonc`, the file `pithy add` mints into, `pithy seed` reads, and every Worker's `.dev.vars` is generated from. **It is not in your repository, and that is the point.** `.dev.vars` has to sit in the worker's directory because wrangler reads it there; nothing but the CLI reads this one, so it lives outside every checkout — nothing to gitignore, nothing a `git add -A` can reach, nothing an `npm pack` can carry, and nothing an `rm -rf` on the working copy destroys. Delete the whole clone and the secrets are still there. Every worktree of one project resolves the same file with no setup step.
 
 Because nothing in the project points at it, this line prints on **every** run whether or not the file exists — where it *would* go is most of what anyone asking needs, and there is no other way to find out. The directory is `0700` and the file `0600`, held there on every write.
 
@@ -885,17 +889,25 @@ A **`Dev secrets:`** block appears when something about this project's dev value
 
 | | |
 |---|---|
-| `<root>/.dev.vars` | Hand-written. Read by **the CLI**, for `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` and `R2_CREDENTIALS`. Nothing else reads it — no Worker ever has. |
+| `<root>/.dev.vars` | Hand-written, and **nothing reads it any more**. The CLI read `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` and `R2_CREDENTIALS` out of it until those moved to `<config>/cloudflare.json`. No Worker ever read it. |
 | `<root>/apps/<worker>/.dev.vars` | **Generated**, one per Worker. Read by wrangler, and so by the Worker. Built from the dev secrets file and this machine's `dev.json`. |
+| `<root>/.dev.vars.<env>` | A minted credential the old `pithy token mint --store dev-vars` left in the checkout, one per environment. Nothing writes one now; a minted token goes to `<config>/<project>/tokens.json`. |
 
-Four things get a line, and every one of them names an absolute path rather than a convention:
+Seven things get a line, and every one of them names an absolute path rather than a convention:
 
+- **A `.dev.vars.<env>` still in the checkout.** It holds a credential minted for that environment — a live production Cloudflare token, in the worst and most ordinary case. The line names the file and the environment. Gitignored is not enough: `npm pack` does not read `.gitignore` when `files` is set.
+- **A registry secret still copied into `<config>/<project>/dev.json` under `"vars"`.** `pithy seed` used to make that copy and the generator used to read it; the generator reads `secrets.jsonc` directly now, so nothing reads the copy. A value there that *no* registry declares — a Turnstile sitekey — is a legitimate tenant of that file and says nothing.
 - **A Worker whose generated file has a header and no values.** That Worker starts with none of its bindings and answers every request with `Missing required bindings: …`; before this, that 500 was the only thing that ever said so.
+- **A Cloudflare credential in the root `.dev.vars`.** Account-scoped, so it belongs in `<config>/cloudflare.json` — the line names that path. Never described as deletable: the value is live.
 - **A registry secret sitting in the root `.dev.vars`**, whatever its backend. It is inert there — dev reads a `d1` secret from the seeded store and a `cf-secrets-store` one from the generated file — so the line says which file the value belongs in and in what shape.
-- **A key in the root `.dev.vars` that a Worker needs as a binding**, `SECRETS_ENCRYPTION_KEYS` above all. Real value, wrong file, and never described as deletable.
+- **A key in the root `.dev.vars` that a Worker needs as a binding.** Real value, wrong file, and never described as deletable.
 - **A key nothing reads at all** — not a Cloudflare credential, not a registry secret, not declared by anything this project composes. That one can go.
 
+And one more, from the neighbouring `Dev secrets:` lines: **a project with no `SECRETS_ENCRYPTION_KEYS` at all** is told to run `pithy add secrets`, which mints one into `secrets.jsonc`. It is the one declared secret nobody outside the project issues, and until it exists the local `SECRETS` store cannot be opened.
+
 Reported, never fixed, and it never fails the exit. Every project that predates the generated file is in this state by definition, and an upgrade that turns a green `pithy doctor` red in CI over a file that still worked yesterday is a surprise rather than a diagnosis — and rewriting somebody's `.dev.vars` for them is worse than either. It does make the report verbose: a Worker that cannot start is worth the ink.
+
+Each of those lines names the command that performs the move — `pithy adopt` (§5.8). Doctor still never performs it: `adopt` is asked for, prints its plan first, and deletes nothing.
 
 The two name lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
 
@@ -942,7 +954,7 @@ OS:      macOS 14.5
 Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 ```
 
-The `Cloudflare:` check still runs there: `.dev.vars` is read from the directory either way, and "are my credentials right" is worth answering before `pithy init` as much as after.
+The `Cloudflare:` check still runs there, and it is the one check that never needed a project: the credentials are account-scoped and read from `<config>/cloudflare.json`, so "are my credentials right" has the same answer in every directory on the machine — worth answering before `pithy init` as much as after.
 
 **`--json` mirrors every block above**, because an agent cannot read aligned columns. One line, one object, and the same exit code:
 
@@ -977,7 +989,72 @@ $ pithy add --list --json
 {"command":"add","capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":true}],"manifestFaults":[{"package":"@pithy-sh/leaderboard","reason":"configOptions[0].key: not a bare identifier"}]}
 ```
 
-### 5.8 Testing checklist
+### 5.8 The `pithy adopt` command
+
+`pithy doctor`'s `Dev secrets:` block (§5.6) reports every value a project on the old layout is holding in the wrong file, and where each one belongs. `pithy adopt` performs that sort. It is the other half of one command pair: doctor reports, adopt moves, and doctor goes quiet.
+
+| What | Where it goes |
+|---|---|
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` in the root `.dev.vars` | `<config>/cloudflare.json`, account-scoped |
+| A registry secret in the root `.dev.vars`, any backend — `SECRETS_ENCRYPTION_KEYS` included | `<config>/<project>/secrets.jsonc`, as a version-1 envelope |
+| A registry secret still copied into `<config>/<project>/dev.json` under `"vars"` | the same `secrets.jsonc` |
+| A dev value a Worker needs as a binding and no registry declares — a Turnstile sitekey | `<config>/<project>/dev.json` under `"vars"` |
+| A minted credential in a `.dev.vars.<env>` | `<config>/<project>/tokens.json`, keyed by environment |
+| A key nothing this project composes declares | nowhere. It is named, and left where it is |
+
+Six rules, and each one is the answer to a way this could go wrong.
+
+**It never deletes from a source file.** It copies, and then reports which lines now have a copy elsewhere. You delete them. #142 was a run that rewrote an adopter's `.dev.vars` and destroyed gitignored secrets with no copy anywhere, and a move that loses a secret has no undo. The consequence is worth stating plainly: `doctor` keeps reporting those keys until you delete them, because they are still in the file.
+
+**A dry run is the default, and there is no prompt.** `pithy adopt` prints the plan and touches nothing. `pithy adopt --apply` performs it, and says so on the line before the first write. A confirmation an agent cannot answer would be a command an agent cannot run, and the two-invocation shape reads the same in a terminal and in CI.
+
+**A value that differs from the one already at its destination is refused, never overwritten.** Two different values under one name is exactly the state that produces "which one signed this?", and picking one silently is how a project ends up with a secret nobody can account for. The refusal is per key — the others still move — and it fails the exit.
+
+**A key it cannot place is named, not guessed.** A project whose root `pithy.config.ts` sets no `name` has no per-project directory to key on, and every destination but `cloudflare.json` is refused by name. A `json` registry secret whose `.dev.vars` line is not JSON is refused the same way, rather than written as a string the next `pithy seed` would reject.
+
+**It is idempotent.** A second run copies nothing and says so. A value already at its destination is `already there`, not re-copied — and that is the state the whole project reaches once, permanently.
+
+**Every destination is written atomically, `0600`, in the `0700` config directory**, through the same writers `pithy init`, `pithy add secrets` and `pithy token mint` use. There is no second write path here.
+
+**No value reaches stdout, `--json`, or an error message.** Names, paths, environments and verdicts only, on every path including the refusals.
+
+```
+$ pithy adopt
+
+replay — 9 values, 7 to copy.
+
+  auth-session-secret      ~/.config/pithy/replay/dev.json  →  ~/.config/pithy/replay/secrets.jsonc  already there
+  auth-session-secret      .dev.vars                        →  ~/.config/pithy/replay/secrets.jsonc  would copy
+  CLOUDFLARE_ACCOUNT_ID    .dev.vars                        →  ~/.config/pithy/cloudflare.json       would copy
+  CLOUDFLARE_API_TOKEN     .dev.vars                        →  ~/.config/pithy/cloudflare.json       would copy
+  OLD_FEATURE_FLAG         .dev.vars                        →  nothing reads it                      nothing reads it
+  SECRETS_ENCRYPTION_KEYS  .dev.vars                        →  ~/.config/pithy/replay/secrets.jsonc  would copy
+  SECRETS_STORE_ID         .dev.vars                        →  ~/.config/pithy/cloudflare.json       would copy
+  TURNSTILE_SITEKEY        .dev.vars                        →  ~/.config/pithy/replay/dev.json       would copy
+  CF_TOKEN_CI_SYSTEM       .dev.vars.production             →  ~/.config/pithy/replay/tokens.json    would copy
+
+Nothing written. Run pithy adopt --apply to perform this.
+```
+
+With `--apply`, every `would copy` reads `copied`, and the report closes with the one thing only you can do:
+
+```
+Copied 7. Nothing was deleted — delete these yourself when you are ready:
+  .dev.vars: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, SECRETS_ENCRYPTION_KEYS, SECRETS_STORE_ID, TURNSTILE_SITEKEY, auth-session-secret
+  .dev.vars.production: CF_TOKEN_CI_SYSTEM
+Done.
+```
+
+**The exit code is non-zero when anything was refused** — a conflicting value, or one with nowhere to go. A key nothing composes is not a refusal and does not gate: it is the ordinary residue of an old project, and deleting it is a judgement only its author can make.
+
+`pithy adopt --json` carries six fields. `command` is the command's name and `project` the root config's `name` (`null` when it sets none). `applied` says whether this run wrote anything. `entries` is the whole plan, one object per value found, each carrying its `key`, the absolute `source` file it is in, the `env` a minted token was minted for (`null` otherwise), its `kind` (`credential`, `secret`, `binding`, `token`, `unread`), the absolute `destination` (`null` when nothing composes it), the `action` taken (`copy`, `present`, `conflict`, `refused`, `leave`), a `reason` sentence for a refusal (`null` otherwise), and `safeToRemove`. `safeToRemove` at the top level is the same list as a pair of `file` and `key` — empty on a dry run, because nothing was written and so nothing is safe to delete yet. `refused` is the same shape, for every value that was not placed.
+
+```
+$ pithy adopt --json
+{"command":"adopt","project":"replay","applied":true,"entries":[{"key":"CLOUDFLARE_ACCOUNT_ID","source":"/w/replay/.dev.vars","env":null,"kind":"credential","destination":"/Users/jo/.config/pithy/cloudflare.json","action":"copy","reason":null,"safeToRemove":true}],"safeToRemove":[{"file":"/w/replay/.dev.vars","key":"CLOUDFLARE_ACCOUNT_ID"}],"refused":[]}
+```
+
+### 5.9 Testing checklist
 
 - [ ] Update check never blocks command execution
 - [ ] Network failure during check is silent; cached value continues to be used
@@ -1004,7 +1081,7 @@ $ pithy add --list --json
 - **Supervises N workers.** Spawns each autostart worker, labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Section 6.3), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
-- **Generates every worker's `.dev.vars`.** wrangler loads a `.dev.vars` from the directory it runs in and merges nothing, so each `apps/<worker>/` needs its own file — and each one is written here, from sources that never leave your machine: the bootstrap values in `<config>/<project>/dev.json`, overridden by the repo's root `.dev.vars.local`, overridden in turn by that worker's own. There is nothing to inherit and nothing to wire. `pithy init` writes no `.dev.vars` at all, a clone has none, and `pithy dev` is the command that runs every time — unlike a `postinstall`, which runs before the values exist. Each generated file opens with a marker, and **a `.dev.vars` pithy did not write is never overwritten and never merged**: it is named, with `.dev.vars.local` offered as the place for local values, and that worker starts without one rather than with somebody else's file replaced underneath it. Idempotent by comparing content, never mtime — a second run writes no bytes, so wrangler's watcher has nothing to react to. The ordinary run says nothing; a refusal gets a sentence, and so does a worker whose `.dev.vars` was still a symlink from the design this replaced. Non-fatal in every direction: a worker that could not be written is named, and every other worker still starts.
+- **Generates every worker's `.dev.vars`.** wrangler loads a `.dev.vars` from the directory it runs in and merges nothing, so each `apps/<worker>/` needs its own file — and each one is written here, from sources that never leave your machine: every `cf-secrets-store` secret your registry declares, read straight from `<config>/<project>/secrets.jsonc`, plus whatever in `<config>/<project>/dev.json` no registry declares, overridden by the repo's root `.dev.vars.local`, overridden in turn by that worker's own. **The dev secrets file is the source, not a file something copies out of**: edit a value there and the next `pithy dev` hands the Worker the new one, with no `pithy seed` in between; delete one and it is gone from every generated file, with no stale copy anywhere to fall back to. There is nothing to inherit and nothing to wire. `pithy init` writes no `.dev.vars` at all, a clone has none, and `pithy dev` is the command that runs every time — unlike a `postinstall`, which runs before the values exist. Each generated file opens with a marker, and **a `.dev.vars` pithy did not write is never overwritten and never merged**: it is named, with `.dev.vars.local` offered as the place for local values, and that worker starts without one rather than with somebody else's file replaced underneath it. Idempotent by comparing content, never mtime — a second run writes no bytes, so wrangler's watcher has nothing to react to. The ordinary run says nothing; a refusal gets a sentence, and so does a worker whose `.dev.vars` was still a symlink from the design this replaced. Non-fatal in every direction: a worker that could not be written is named, and every other worker still starts.
 
 ### 6.2 Session state and cleanup
 

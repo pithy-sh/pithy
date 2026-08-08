@@ -19,7 +19,22 @@ export default defineConfig({
     // green tests red with ANSI in the received string. NO_COLOR is checked first in `colorEnabled()`, so
     // it wins over any ambient FORCE_COLOR, and `execFile` children inherit it. `style.test.ts` is
     // unaffected: it stubs all three vars per case and re-imports, which is how color itself stays tested.
-    env: { NO_COLOR: "1" },
+    //
+    // **And the account credentials are unset for every unit test.** `vitest.setup.ts` relocates the
+    // config directory, which keeps a suite off the operator's real `cloudflare.json` — but
+    // `cloudflareEnv` overlays `process.env` per key by design (#182, so CI can pass them with no file),
+    // so a developer with `CLOUDFLARE_API_TOKEN` exported still had every code path that resolves
+    // credentials reach a real account from a unit test. `pithy add secrets` lists the account's Secrets
+    // Stores, which made that a live call rather than a latent one. Empty is unset, exactly as the
+    // overlay treats it. The integration config deliberately does *not* set this: those suites need the
+    // real credentials, and that is the whole point of them.
+    env: {
+      NO_COLOR: "1",
+      CLOUDFLARE_ACCOUNT_ID: "",
+      CLOUDFLARE_API_TOKEN: "",
+      SECRETS_STORE_ID: "",
+      R2_CREDENTIALS: "",
+    },
     // No `server.deps.inline` for picocolors. An earlier comment here claimed the inline was needed
     // so `vi.resetModules()` could re-evaluate picocolors' import-time color detection — but
     // `terminal/style.ts` never consults that detection. It computes its own `enabled` flag from

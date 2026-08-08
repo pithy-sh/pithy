@@ -5,13 +5,16 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import type { DevSecretsStore } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
+import { type DevSecretsStore, devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
 import { Miniflare } from "miniflare";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveStoreIds } from "../seed/drivers";
 import { readBootstrapVars } from "./bootstrapVars";
+import { readDevSecrets } from "./file";
+import { resolveDevSecretsFile } from "./location";
 
 /**
  * The local `SECRETS` D1, opened the way `wrangler dev` opens it — the same Miniflare store under the
@@ -100,13 +103,19 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     return { ready: false, reason: `No ${SECRETS_D1_BINDING} D1 binding. Run pithy add secrets${scope}.`, ...noop };
   }
 
-  // The bootstrap store, which is what the Worker's generated `.dev.vars` is built from (#154) — falling
-  // back to a pre-#154 project's root `.dev.vars`, where the key used to live and still does until
-  // `pithy add secrets` adopts it. Reading only the file would have made every upgraded project's store
-  // unopenable; reading only the store would have done the same to every project that has not upgraded.
-  const recorded = await readBootstrapVars(options.projectDir, options.paths ?? {});
-  const legacy = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
-  const masterKey = recorded[MASTER_KEY_BINDING] || legacy[MASTER_KEY_BINDING];
+  // The dev secrets file, which is what the Worker's generated `.dev.vars` is built from (#179) —
+  // materialised through the same function the generator uses, so the key this store opens with and the
+  // key the running Worker receives cannot be two different strings.
+  //
+  // **Both older homes are still read, in the order they were used.** `dev.json` is where #154 put it and
+  // where an upgrading project still has it; the project root's `.dev.vars` is where it lived before that
+  // and still does until `pithy add secrets` adopts it. Reading only the current one would make every
+  // project that has not upgraded unopenable — and this is the master key, so an "absent" answer is not a
+  // fresh start: it is every secret already encrypted under it becoming unreadable.
+  const masterKey =
+    (await statedMasterKey(options.projectDir, options.paths ?? {})) ||
+    (await readBootstrapVars(options.projectDir, options.paths ?? {}))[MASTER_KEY_BINDING] ||
+    parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""))[MASTER_KEY_BINDING];
   if (!masterKey) {
     return { ready: false, reason: `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`, ...noop };
   }
@@ -132,7 +141,7 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     });
   } catch {
     await dispose();
-    return { ready: false, reason: `${MASTER_KEY_BINDING} in .dev.vars is not a valid master key.`, ...noop };
+    return { ready: false, reason: `${MASTER_KEY_BINDING} is not a valid master key.`, ...noop };
   }
 
   try {
@@ -145,4 +154,25 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     return { ready: false, reason: "The local SECRETS database is not migrated. Run pithy migrate.", ...noop };
   }
   return { ready: true, store, persistPath, dispose };
+}
+
+/**
+ * The master key as the dev secrets file states it, materialised exactly as a Worker's binding receives
+ * it — `undefined` when the project has no name, no file, or no key in it.
+ *
+ * Through {@link devVarsForRegistry} and {@link masterKeyRegistryEntry} rather than by reaching into the
+ * envelope here: the entry is what says the value is an `EncryptionConfig` and that its binding carries
+ * the value rather than the envelope, and a second reading of that in this file is how the seeder and the
+ * store come to disagree about what the key is.
+ */
+async function statedMasterKey(projectDir: string, paths: StatePathOptions): Promise<string | undefined> {
+  try {
+    const path = await resolveDevSecretsFile(projectDir, paths);
+    const file = await readDevSecrets(path);
+    return devVarsForRegistry(file, { [MASTER_KEY_BINDING]: masterKeyRegistryEntry }, path)[MASTER_KEY_BINDING];
+  } catch {
+    // A nameless project, an unreadable file, or a value that does not validate as a master key. Each
+    // falls through to the older homes below, and each is named by `pithy seed` and `pithy doctor`.
+    return undefined;
+  }
 }

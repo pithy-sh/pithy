@@ -5,13 +5,19 @@ import { lstat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { readBootstrapVars } from "./bootstrapVars";
 import { encodeDevVarsValue, readDevVarsSource } from "./devVars";
+import { readDevSecrets } from "./file";
+import { resolveDevSecretsFile } from "./location";
 import { tightenMode } from "./mode";
+import { ownProperties } from "./records";
+import { type DevSecretsTarget, devSecretsTargets } from "./targets";
 
 /**
  * `apps/<worker>/.dev.vars` is **generated, one per Worker** — never shared by symlink (#154).
@@ -32,12 +38,25 @@ import { tightenMode } from "./mode";
  * ## The sources, in precedence order
  *
  * ```
- * <config>/<project>/dev.json  vars   machine-local bootstrap values  (./bootstrapVars)
+ * <config>/<project>/dev.json  vars   machine-local values no registry declares  (./bootstrapVars)
+ * <config>/<project>/secrets.jsonc    every cf-secrets-store secret the registry declares — wins
  * <root>/.dev.vars.local              every Worker's override
  * <root>/apps/<w>/.dev.vars.local     that Worker's override — wins
  *         ↓
  * <root>/apps/<w>/.dev.vars           generated, never edited
  * ```
+ *
+ * **The dev secrets file is a source, and that is #179.** It used to reach here one `pithy seed` later,
+ * through a copy: the seeder routed a `cf-secrets-store` value into `dev.json` under `vars`, and this
+ * read *that*. So the file named "the dev secrets file" and the file a Worker's bindings were built from
+ * were two files holding one secret — rotating in `secrets.jsonc` did not reach the Worker until
+ * something re-seeded, a removed secret's value stayed in `dev.json` forever (that module said so: "A
+ * value is never removed here"), and the header below named a source it did not read.
+ *
+ * **`dev.json` keeps only what no registry declares.** A Turnstile sitekey is a real machine-local value
+ * with no registry entry and belongs there. A name the registry *does* declare is dropped from that half
+ * outright, whatever it says — that is what makes deleting a secret from `secrets.jsonc` delete it from
+ * every generated file, rather than falling back to a stale copy. `pithy doctor` names each one.
  *
  * **`.dev.vars.local` is for overrides, not for variables.** `wrangler.jsonc`'s `vars` block is where a
  * value that should exist in production belongs — it is committed, reviewed, and deployed with the
@@ -137,8 +156,17 @@ export interface GenerateDevVarsOptions {
   workerDirs?: string[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
   paths?: StatePathOptions;
-  /** The bootstrap set. Defaults to this project's, read from `dev.json`. */
+  /**
+   * The whole value set, bypassing both sources. A seam for a test that has no project on disk — the
+   * real callers pass nothing, because a caller that assembled these itself would be the second answer
+   * to which files a Worker's bindings come from.
+   */
   values?: Record<string, string>;
+  /**
+   * The Workers whose registries decide which secrets are materialised. Defaults to every one composing
+   * `secrets`. A seam, and the one `pithy add` uses to hand over a freshly-reloaded composition.
+   */
+  targets?: DevSecretsTarget[];
 }
 
 /** What one generation run did. Every list is sorted, so two runs of the same state read the same. */
@@ -172,7 +200,7 @@ export interface GenerateDevVarsResult {
  * reason.
  */
 export async function generateDevVars(options: GenerateDevVarsOptions): Promise<GenerateDevVarsResult> {
-  const bootstrap = options.values ?? (await readBootstrapVars(options.projectDir, options.paths ?? {}));
+  const bootstrap = options.values ?? (await devVarsSources(options));
   const rootLocal = await readLocalOverrides(options.projectDir);
   const dirs = options.workerDirs ?? (await workerDirs(options.projectDir));
 
@@ -245,6 +273,54 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
     relinked: relinked.sort(),
     names: [...names].sort(),
   };
+}
+
+/**
+ * The two machine-local sources, merged: `dev.json`'s `vars` for what no registry declares, and every
+ * `cf-secrets-store` secret `secrets.jsonc` states.
+ *
+ * **The registry decides membership of both halves, and that is the whole point.** A name it declares is
+ * materialised from `secrets.jsonc` or not at all; a name it does not declare can only come from
+ * `dev.json`. So there is exactly one file per value and no precedence question to get wrong — and
+ * deleting a secret from `secrets.jsonc` deletes it from every generated file rather than falling back
+ * to the copy the old seeder left behind.
+ *
+ * **Never throws.** This runs inside `pithy dev`. A project with no name to key a config directory on, a
+ * `secrets.jsonc` that will not parse, a Worker whose config will not import — each costs the bindings it
+ * would have contributed and is reported by `pithy seed` and `pithy doctor`, which are the commands whose
+ * job it is to say so. Stopping every Worker in the project over one of them is the worse answer.
+ */
+async function devVarsSources(options: GenerateDevVarsOptions): Promise<Record<string, string>> {
+  const paths = options.paths ?? {};
+  const targets = options.targets ?? (await devSecretsTargets(options.projectDir).catch(() => []));
+  const registry: SecretRegistry = ownProperties(
+    Object.assign({}, ...targets.map((target) => target.registry)) as SecretRegistry,
+  );
+  const secrets = await materialisedSecrets(options.projectDir, registry, paths);
+
+  const values: Record<string, string> = {};
+  for (const [name, value] of Object.entries(await readBootstrapVars(options.projectDir, paths))) {
+    // A registry name is the secrets file's to answer, whatever `dev.json` still holds. This is the line
+    // that makes a removal take effect.
+    if (Object.hasOwn(registry, name)) continue;
+    values[name] = value;
+  }
+  return { ...values, ...secrets };
+}
+
+/** Every `cf-secrets-store` secret this project states, as `.dev.vars` values. Empty on any failure. */
+async function materialisedSecrets(
+  projectDir: string,
+  registry: SecretRegistry,
+  paths: StatePathOptions,
+): Promise<Record<string, string>> {
+  if (Object.keys(registry).length === 0) return {};
+  try {
+    const path = await resolveDevSecretsFile(projectDir, paths);
+    return devVarsForRegistry(await readDevSecrets(path), registry, path);
+  } catch {
+    return {};
+  }
 }
 
 /**

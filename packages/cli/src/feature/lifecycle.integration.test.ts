@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
+import { cloudflareEnv } from "../cloudflare/config";
 import { buildEnvInventory } from "../project/envInventory";
 import { destroyFeature } from "./destroy";
 import { cloudflareProvisioners, provisionFeature } from "./provision";
@@ -29,12 +29,13 @@ import { cloudflareProvisioners, provisionFeature } from "./provision";
  * each Worker's config; `destroy` removes it. Teardown runs in `afterAll` **unconditionally**, so a
  * failed assertion still deletes what was created rather than leaking resources into the account.
  *
- * Gated on credentials (`.dev.vars` or the environment). With none present the whole suite skips —
+ * Gated on credentials (`<config>/cloudflare.json` or the environment). With none present the whole suite
+ * skips —
  * it never half-runs.
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
+const vars = cloudflareEnv();
 const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
 const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
 const hasCreds = Boolean(accountId && apiToken);

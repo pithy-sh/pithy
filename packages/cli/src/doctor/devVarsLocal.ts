@@ -3,7 +3,7 @@
 
 import { relative } from "node:path";
 import { DEV_VARS_LOCAL, readLocalOverrides } from "../devSecrets/generate";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
+import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
 import { discoverWorkers } from "../project/workers";
 import { declaredVars } from "./wranglerVars";
 

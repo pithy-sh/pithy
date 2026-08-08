@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
+import { currentValue, encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { mintDevValue } from "../devValue";
 import type { SecretRegistry, SecretRegistryEntry, SecretValueType } from "../registry";
 import { DEV_SECRETS_FILE, type DevSecretEnvelope, type DevSecretsFile, initialDevSecret } from "./devSecretsFile";
@@ -110,9 +110,7 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     const value = storedSecretValue(entry, name, envelope, path);
 
     if (entry.backend === "cf-secrets-store") {
-      // The full envelope, encoded — the same shape provisioning writes into the Secrets Store, so a
-      // multi-version secret keeps its versions instead of collapsing to whichever one is current.
-      devVars[name] = encodeVersionedValue(value);
+      devVars[name] = bindingValue(entry, value);
       continue;
     }
 
@@ -132,6 +130,50 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     .sort();
 
   return { seeded, unchanged, devVars, minted, missing, undeclared };
+}
+
+/**
+ * The `.dev.vars` value one `cf-secrets-store` secret is materialised as.
+ *
+ * **The full envelope, encoded** — the same shape provisioning writes into the Secrets Store, so a
+ * multi-version secret keeps its versions instead of collapsing to whichever one is current.
+ *
+ * **Except for a `bootstrap` secret, which carries its current value verbatim.** That is not an
+ * exception invented here: `SECRETS_ENCRYPTION_KEYS` is read by `resolveEncryptionConfig` straight off
+ * its binding, because it is what the envelope decoder needs in order to exist, and provisioning has
+ * always written it un-enveloped. Materialising it like the others would hand a Worker a value it
+ * rejects with `SECRETS_ENCRYPTION_KEYS is not a valid EncryptionConfig` — and only at the first read,
+ * with the binding plainly present. See {@link SecretRegistryEntry.bootstrap}.
+ */
+export function bindingValue(entry: SecretRegistryEntry, value: VersionedValue): string {
+  return entry.bootstrap ? currentValue(value) : encodeVersionedValue(value);
+}
+
+/**
+ * Every `cf-secrets-store` secret the file states, as the `.dev.vars` lines a Worker reads them from.
+ *
+ * **The one materialisation, so the seeder's report and the generated file cannot disagree.** Dev has no
+ * Secrets Store, so a binding is the only place one of these can come from — and since the generator
+ * builds each Worker's `.dev.vars` from the dev secrets file directly (#179), the generator and the
+ * seeder are two callers of this rather than two copies of it.
+ *
+ * A secret with no value in the file is simply absent, exactly as a Worker with no binding is: this
+ * answers what *can* be materialised, and {@link seedDevSecrets} is what reports the rest as missing.
+ */
+export function devVarsForRegistry(
+  file: DevSecretsFile,
+  registry: SecretRegistry,
+  path: string = DEV_SECRETS_FILE,
+): Record<string, string> {
+  const devVars: Record<string, string> = {};
+  for (const name of Object.keys(registry).sort()) {
+    const entry = registry[name];
+    if (!entry || entry.keyed || entry.backend !== "cf-secrets-store") continue;
+    const envelope = file[name];
+    if (!envelope) continue;
+    devVars[name] = bindingValue(entry, storedSecretValue(entry, name, envelope, path));
+  }
+  return devVars;
 }
 
 /**

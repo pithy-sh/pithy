@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { StatePathOptions } from "../notifier/state";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { writeBootstrapVars } from "./bootstrapVars";
 import { generateDevVars } from "./generate";
+import type { DevSecretsTarget } from "./targets";
 
 /**
  * The one place a value becomes a `.dev.vars` line — and the one place that makes sure the line reaches
@@ -126,10 +127,16 @@ export function encodeDevVarsValue(name: string, value: string): DevVarsEncoding
 export interface WriteDevVarsOptions {
   /** The project root — owner of `apps/`, of the `.dev.vars.local` files, and of the project's name. */
   projectDir: string;
-  /** The values to record, by variable name. Empty records nothing and regenerates anyway. */
+  /**
+   * The values to record in `dev.json`, by variable name. **Only what no registry declares** — a
+   * Turnstile sitekey, a machine-local endpoint. A registry secret's value belongs in `secrets.jsonc`,
+   * which the generator reads directly (#179). Empty records nothing and regenerates anyway.
+   */
   values: Record<string, string>;
   /** The Worker directories to generate into. Defaults to every discovered Worker with a `wrangler.jsonc`. */
   workerDirs?: string[];
+  /** The Workers whose registries decide which secrets are materialised. Defaults to every one composing `secrets`. */
+  targets?: DevSecretsTarget[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
   paths?: StatePathOptions;
 }
@@ -149,6 +156,8 @@ export interface WriteDevVarsResult {
   unchanged: string[];
   /** Worker directories whose `.dev.vars` was a symlink from the old shared-file design, now a real file. */
   relinked: string[];
+  /** Every variable name the generated files carry, sorted. Names only — never a value, anywhere. */
+  names: string[];
 }
 
 /**
@@ -176,11 +185,14 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
     written.push(name);
   }
 
-  const values = await writeBootstrapVars(options.projectDir, encoded, options.paths ?? {});
+  await writeBootstrapVars(options.projectDir, encoded, options.paths ?? {});
+  // Regenerated from the **sources**, never from what was just recorded. A generator handed a value set
+  // by its caller is a generator that can disagree with the files it claims to read — which is exactly
+  // how a `cf-secrets-store` secret came to reach a Worker one `pithy seed` after it was rotated (#179).
   const generated = await generateDevVars({
     projectDir: options.projectDir,
-    values,
     ...(options.workerDirs !== undefined ? { workerDirs: options.workerDirs } : {}),
+    ...(options.targets !== undefined ? { targets: options.targets } : {}),
     ...(options.paths !== undefined ? { paths: options.paths } : {}),
   });
 
@@ -190,18 +202,20 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
     generated: generated.generated,
     unchanged: generated.unchanged,
     relinked: generated.relinked,
+    names: generated.names,
   };
 }
 
 /**
  * The file's bytes, or `null` when there is no file — and **only** when there is no file.
  *
- * `ENOENT` is the one errno that means "nothing written yet". Every other one is a file that is there and
- * did not open: `EACCES` after someone tightened the mode, `EISDIR`, `EIO` on failing disk. Reading those
- * as "empty" meant the next content was built from an empty base and renamed over a file full of values
- * this process never saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run
- * reporting a clean write. The same defect `readSource` was written to end for the dev secrets file, in
- * the file beside it, twice over.
+ * The rule and its three producers now live in {@link readOptionalFile} (`../project/`). What stays here
+ * is what is `.dev.vars`-shaped: the sentence an adopter reads, the mode it names, and *why* absence had
+ * to stop meaning "unreadable" for this file in particular. Reading `EACCES` or `EIO` as "empty" meant
+ * the next content was built from an empty base and renamed over a file full of values this process never
+ * saw — the adopter's `CLOUDFLARE_API_TOKEN` and every other line, gone, with the run reporting a clean
+ * write. The same defect `readSource` was written to end for the dev secrets file, in the file beside it,
+ * twice over.
  *
  * The wrapped error carries the node error as `cause`. Its message is a path and an errno, never a line
  * of the file.
@@ -212,18 +226,15 @@ export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteD
  * file. Three readers of one file is how one of them keeps getting it wrong.
  */
 export async function readDevVarsSource(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (cause) {
-    const code = (cause as { code?: string } | null)?.code;
-    if (code === "ENOENT") return null;
-    throw new InternalError(
-      {
-        message: ".dev.vars is there and could not be read.",
-        action: `Check ${path} and its permissions. It should be a file, mode 600.`,
-        detail: `.dev.vars '${path}' failed to read: ${code ?? "unknown error"}`,
-      },
-      { cause },
-    );
-  }
+  return readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new InternalError(
+        {
+          message: ".dev.vars is there and could not be read.",
+          action: `Check ${path} and its permissions. It should be a file, mode 600.`,
+          detail: `.dev.vars '${path}' failed to read: ${code ?? "unknown error"}`,
+        },
+        { cause },
+      ),
+  });
 }

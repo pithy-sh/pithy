@@ -241,8 +241,12 @@ export interface DoctorReportOptions {
   buildPlan?: (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
   /** Migration-count seam for the health plan. */
   countPending?: BuildReconcilePlanOptions["countPending"];
-  /** Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests never call out. */
-  checkCloudflare?: (projectDir: string) => Promise<CloudflareAccess>;
+  /**
+   * Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests
+   * never call out. It takes no project directory: the credentials are account-scoped (#182), so the
+   * answer is the same in every checkout on this machine.
+   */
+  checkCloudflare?: () => Promise<CloudflareAccess>;
   /** Project-name probe seam; defaults to {@link checkProjectName}. Injected so unit tests never call out. */
   checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
   /** Worker-name agreement seam; defaults to {@link checkWorkerNames}. Reads files only — no account call. */
@@ -305,7 +309,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const detect = options.detectShell ?? (() => detectShell());
   const readRc = options.readRc ?? readRcFile;
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
-  const probeCloudflare = options.checkCloudflare ?? checkCloudflareAccess;
+  const probeCloudflare =
+    options.checkCloudflare ??
+    (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env }));
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeDevPreferences =
@@ -404,7 +410,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
 
   // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
   // "are my credentials right" is a question worth answering before `pithy init` as much as after.
-  const cloudflare = await probeCloudflare(options.projectDir);
+  const cloudflare = await probeCloudflare();
   // The name is different, and it is asked only of a project whose root config actually loaded. It is not a
   // question about the directory, it is a question about a config: "is the `name` in this file still the one
   // every provisioned resource was named under". With no readable config there is no name and no question,

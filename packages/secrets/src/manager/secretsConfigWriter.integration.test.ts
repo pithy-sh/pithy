@@ -3,9 +3,8 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
-import { uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import { loadIntegrationCreds, uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { describe, expect, test } from "vitest";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
 
@@ -17,7 +16,14 @@ import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
+// One reader for every live suite in the kit — the credentials are the maintainer's, not a
+// project's, and the harness is where that file is named (#182).
+const creds = loadIntegrationCreds();
+const vars = {
+  CLOUDFLARE_ACCOUNT_ID: creds.accountId,
+  CLOUDFLARE_API_TOKEN: creds.apiToken,
+  SECRETS_STORE_ID: creds.secretsStoreId,
+};
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 
 /**

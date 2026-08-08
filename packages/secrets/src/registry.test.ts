@@ -194,4 +194,63 @@ describe("defineSecretRegistry — keyed entries", () => {
       ),
     ).toThrow(InternalError);
   });
+
+  test("accepts a bootstrap entry — the one secret read straight from its binding", () => {
+    const registry = defineSecretRegistry({
+      SECRETS_ENCRYPTION_KEYS: {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: false,
+        valueType: "text",
+        bootstrap: true,
+      },
+    });
+    expect(registry.SECRETS_ENCRYPTION_KEYS.bootstrap).toBe(true);
+  });
+
+  test("rejects a d1-backed bootstrap entry — it is read before any store is open", () => {
+    // The whole meaning of the axis: a row in the secrets D1 cannot be read until the master key that
+    // decrypts it has been resolved, so a `bootstrap` secret that lives there is a definition of a
+    // value nothing can ever read. Caught where the author is, not at a read that finds nothing.
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", bootstrap: true },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a keyed bootstrap entry — a keyspace has no one value to bind", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: false,
+            valueType: "text",
+            keyed: true,
+            bootstrap: true,
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
+  test("rejects a non-boolean bootstrap", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: false,
+            valueType: "text",
+            bootstrap: "yes",
+          },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
 });

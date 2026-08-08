@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountTokenSummary, MintedAccountToken } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
@@ -79,10 +79,18 @@ function engineWith(dir: string, tokens: AccountTokenControl, extra: Partial<Tok
     accountId: "acct-1",
     project: PROJECT,
     projectDir: dir,
+    // A minted token goes to `<config>/<project>/tokens.json` now (#182), so the config directory is the
+    // seam that keeps this suite off the operator's real one — which holds their live Cloudflare tokens.
+    paths: { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: join(dir, "config") } },
     tokens,
     profiles: resolveTokenProfiles([secretsCap]),
     ...extra,
   };
+}
+
+/** Where a minted `dev-vars` token lands for this fixture. */
+function tokensFile(dir: string): string {
+  return join(dir, "config", PROJECT, "tokens.json");
 }
 
 describe("tokenName", () => {
@@ -144,10 +152,10 @@ describe("mintProfileToken", () => {
     );
 
     expect(tokens.rolled).toEqual(["acme-staging-ci-system"]);
-    expect(result.sink).toEqual({ sink: "dev-vars", location: ".dev.vars.staging" });
-    expect(await readFile(join(dir, ".dev.vars.staging"), "utf8")).toContain(
-      "CF_TOKEN_CI_SYSTEM=value-acme-staging-ci-system",
-    );
+    expect(result.sink).toEqual({ sink: "dev-vars", location: tokensFile(dir) });
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({
+      staging: { CF_TOKEN_CI_SYSTEM: "value-acme-staging-ci-system" },
+    });
     expect(audited[0]).toMatchObject({
       action: "cloudflare/token_minted",
       outcome: "success",
@@ -170,7 +178,8 @@ describe("mintProfileToken", () => {
   test("rolls to the current scope even when a token already exists — extensibility takes effect", async () => {
     // A prior token's value is on disk, but mint still rolls: adding a capability's ciPermissions must
     // take effect on the next mint, so reusing the old (narrower) token is exactly what we must not do.
-    await writeFile(join(dir, ".dev.vars.staging"), "CF_TOKEN_CI_SYSTEM=old-narrow-token\n");
+    await mkdir(join(dir, "config", PROJECT), { recursive: true });
+    await writeFile(tokensFile(dir), JSON.stringify({ staging: { CF_TOKEN_CI_SYSTEM: "old-narrow-token" } }));
     const tokens = fakeControl({
       findTokenByName: vi.fn(async () => ({ id: "tok-1", name: "acme-staging-ci-system", status: "active" as const })),
     });
@@ -179,9 +188,9 @@ describe("mintProfileToken", () => {
 
     expect(tokens.rolled).toEqual(["acme-staging-ci-system"]); // re-minted with current scope
     expect(result.value).toBe("value-acme-staging-ci-system"); // not the stale on-disk value
-    expect(await readFile(join(dir, ".dev.vars.staging"), "utf8")).toContain(
-      "CF_TOKEN_CI_SYSTEM=value-acme-staging-ci-system",
-    );
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({
+      staging: { CF_TOKEN_CI_SYSTEM: "value-acme-staging-ci-system" },
+    });
   });
 
   test("a profile with no store and no declared secret backend fails with actionable guidance", async () => {

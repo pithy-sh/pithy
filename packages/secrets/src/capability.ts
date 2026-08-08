@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { EncryptionConfig } from "./crypto/envelope";
 import { secretsTables } from "./data/tables";
+import { MASTER_KEY_BINDING } from "./env/bindings";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { MANAGER_CF_API_TOKEN_SECRET } from "./provision/provisionSecrets";
-import type { SecretRegistry } from "./registry";
+import type { SecretRegistry, SecretRegistryEntry } from "./registry";
 import {
   aggregateSecretRegistries,
   configureSharedSecrets,
@@ -32,6 +34,41 @@ export const secretsTokenProfile = {
   defaultStore: "secrets-store",
   description: "The secrets manager's runtime credential — reads and writes CF Secrets Store from its Worker.",
 } as const;
+
+/**
+ * The master key, declared as what it already is: a `cf-secrets-store` secret, one value for the whole
+ * project, read from the `SECRETS_ENCRYPTION_KEYS` binding (#179).
+ *
+ * **It was a bare `requiredBindings` entry with no backend, scope, rotatable or valueType** — so nothing
+ * could route it, and local dev had to keep it in a file of its own with a special case at every reader.
+ * Production has always stored it in the account's Secrets Store, under the entry `masterKeySecretName`
+ * composes; this records that, and dev then materialises it from `secrets.jsonc` like every other secret
+ * of that backend.
+ *
+ * **`json`, against `EncryptionConfig`, because that is what the value is.** A hand-edit that drops
+ * `lastRotatedAt` or mistypes a key version is caught by the seeder naming the secret, rather than by a
+ * Worker answering every request with `secrets/crypto_failed`.
+ *
+ * **`bootstrap`, because the Worker reads it without the decoder.** See the axis for why that is the one
+ * secret whose binding carries its value rather than its envelope.
+ *
+ * **No `devValue`.** A random string is not an `EncryptionConfig`, and the registry refuses `devValue` on
+ * a non-text entry for exactly that reason. `pithy add secrets` mints one properly, through
+ * `initialMasterKeyConfig`, and writes it into `secrets.jsonc`.
+ *
+ * **`rotatable: false` is about *value* versions, not key versions.** The master key rotates on the
+ * `versions` map inside its own `EncryptionConfig` — that is what `atRestKeyRotation` walks — and a
+ * second value-envelope version on top would be a second rotation axis for one key.
+ */
+export const masterKeyRegistryEntry: SecretRegistryEntry = {
+  backend: "cf-secrets-store",
+  scope: "environment",
+  rotatable: false,
+  bootstrap: true,
+  valueType: "json",
+  schema: EncryptionConfig,
+  notes: "The at-rest master key every other secret is encrypted under. Minted by pithy add secrets.",
+};
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */
 const SECRETS_MIGRATION_ORDER = 100;
@@ -74,16 +111,20 @@ export interface SecretsCapability extends Capability {
  * app `DB`, because the app database is provisioned ephemerally per feature branch and secrets are
  * durable and shared, so they cannot be the same database. It requires the `SECRETS` D1 binding and
  * the `SECRETS_ENCRYPTION_KEYS` master-key binding (CF Secrets Store, worker-only), and carries the
- * project's {@link SecretRegistry}.
+ * project's {@link SecretRegistry} — with {@link masterKeyRegistryEntry} merged in, so the binding it
+ * requires and the secret that fills it are one declaration rather than two that can drift.
  */
 export function secrets(config: SecretsConfig): SecretsCapability {
   const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
+  // The capability's own secret, merged under the adopter's so a project that declares nothing still has
+  // a routable master key — and so an adopter who deliberately overrides the entry keeps that power.
+  const registry: SecretRegistry = { [MASTER_KEY_BINDING]: masterKeyRegistryEntry, ...config.registry };
   const capability = defineCapability({
     name: "secrets",
     // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
     // cannot read its own package.json. Reported per capability by the control-plane manifest.
     version: PACKAGE_VERSION,
-    secretRegistry: config.registry,
+    secretRegistry: registry,
     tokenProfiles: { secrets: secretsTokenProfile },
     requiredBindings: [
       { type: "d1", name: "SECRETS" },
@@ -105,7 +146,7 @@ export function secrets(config: SecretsConfig): SecretsCapability {
     },
   });
   return Object.assign(capability, {
-    secretRegistry: config.registry,
+    secretRegistry: registry,
     rotationIntervalDays: config.rotationIntervalDays ?? DEFAULT_ROTATION_INTERVAL_DAYS,
     secretsCacheTtlSeconds: ttlSeconds,
   });

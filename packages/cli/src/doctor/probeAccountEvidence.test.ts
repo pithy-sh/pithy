@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -68,7 +68,11 @@ describe("probeAccountEvidence", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-probe-"));
-    await writeFile(join(dir, ".dev.vars"), 'CLOUDFLARE_ACCOUNT_ID="acct"\nCLOUDFLARE_API_TOKEN="tok"\n');
+    // Through the environment, not a file in the checkout: the credentials are account-scoped since
+    // #182, so `<dir>/.dev.vars` supplies nothing to anybody. The overlay is the other real supply
+    // route — it is how CI runs — and it needs no config directory of its own.
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
   });
 
   afterEach(async () => {
@@ -80,7 +84,7 @@ describe("probeAccountEvidence", () => {
   test("reads a real owner stamp off a live database — the only path to proof", async () => {
     const { db, dispose } = await database("old-name");
     disposers.push(dispose);
-    const evidence = await probeAccountEvidence(dir, [candidate("old-name-dev-db", "d1")], () =>
+    const evidence = await probeAccountEvidence([candidate("old-name-dev-db", "d1")], () =>
       account({ databases: [{ name: "old-name-dev-db", uuid: "uuid-1" }], d1: db }),
     );
     expect(evidence.get("old-name-dev-db")).toEqual({ exists: true, owner: "old-name" });
@@ -91,14 +95,14 @@ describe("probeAccountEvidence", () => {
     // This is the case that must NOT escalate — an adopter's own database, named their own way.
     const { db, dispose } = await database();
     disposers.push(dispose);
-    const evidence = await probeAccountEvidence(dir, [candidate("acme-dev-db", "d1")], () =>
+    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], () =>
       account({ databases: [{ name: "acme-dev-db", uuid: "uuid-1" }], d1: db }),
     );
     expect(evidence.get("acme-dev-db")).toEqual({ exists: true, owner: null });
   });
 
   test("a database the account does not hold is absent, and no stamp is read for it", async () => {
-    const evidence = await probeAccountEvidence(dir, [candidate("gone-dev-db", "d1")], () =>
+    const evidence = await probeAccountEvidence([candidate("gone-dev-db", "d1")], () =>
       // `d1` is undefined on purpose: reaching for it would throw, so this also proves the id guard holds.
       account({ databases: [{ name: "other-dev-db", uuid: "uuid-2" }] }),
     );
@@ -108,15 +112,12 @@ describe("probeAccountEvidence", () => {
   test("a listing the token may not read leaves the name unknown, not absent", async () => {
     // The distinction the tri-state exists for. Reporting `exists: false` here would let a permissions
     // gap read as "that resource is gone".
-    const evidence = await probeAccountEvidence(dir, [candidate("acme-dev-db", "d1")], () =>
-      account({ listThrows: true }),
-    );
+    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], () => account({ listThrows: true }));
     expect(evidence.has("acme-dev-db")).toBe(false);
   });
 
   test("buckets are looked up but never carry an owner — R2 records none", async () => {
     const evidence = await probeAccountEvidence(
-      dir,
       [candidate("old-dev-media", "r2"), candidate("gone-dev-media", "r2")],
       () => account({ buckets: [{ name: "old-dev-media" }] }),
     );
@@ -125,14 +126,14 @@ describe("probeAccountEvidence", () => {
   });
 
   test("no credentials means no probe at all — nothing is claimed either way", async () => {
-    // `loadCloudflareEnv` falls through to `process.env` when the directory has no `.dev.vars`, so both
+    // `cloudflareEnv` falls through to `process.env` when there is no `cloudflare.json`, so both
     // sources have to be empty for this to be the no-credentials case. Stubbed rather than assumed: a
     // developer with `CLOUDFLARE_ACCOUNT_ID` exported would otherwise have this test reach a real account.
     vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
     const bare = await mkdtemp(join(tmpdir(), "pithy-probe-bare-"));
     try {
-      const evidence = await probeAccountEvidence(bare, [candidate("acme-dev-db", "d1")], () => {
+      const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], () => {
         throw new Error("must not reach the account without credentials");
       });
       expect(evidence.size).toBe(0);

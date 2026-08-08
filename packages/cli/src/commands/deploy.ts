@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
+import { cloudflareEnv } from "../cloudflare/config";
 import { countPendingMigrations } from "../migrations/run";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
@@ -35,7 +35,7 @@ async function pendingFor(projectDir: string, env: string): Promise<number | und
  * same one `dev` reads (see `resolveAuditDatabaseId`), so the fallback lines up with the real target.
  */
 async function buildAudit(projectDir: string, env: string) {
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};

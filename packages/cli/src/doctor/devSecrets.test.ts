@@ -8,7 +8,7 @@ import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineSecretRegistry, SecretBackend } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devSecretsFile } from "../devSecrets/location";
-import type { DevSecretsTarget } from "../devSecrets/seed";
+import type { DevSecretsTarget } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
 import {
   checkDevSecrets,
@@ -215,10 +215,19 @@ describe("devSecretsHealthy", () => {
     path: "/home/u/.config/pithy/acme/secrets.jsonc",
     misplaced: [],
     missing: [],
+    bootstrapMissing: [],
     undeclared: [],
     mode: 0o600,
     unreadable: false,
   };
+
+  test("a master key nobody has minted yet is named with the command that mints it", () => {
+    // Not "issued by somebody else, fine to leave until you need it" — that is the one sentence that
+    // sends an adopter past the thing actually stopping their local `SECRETS` store from opening.
+    const lines = describeDevSecrets({ ...clean, bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"] }).join("\n");
+    expect(lines).toContain("pithy add secrets");
+    expect(lines).not.toContain("issued by somebody else");
+  });
 
   test("a missing secret is not a fault — four unset OAuth pairs must not drag every report verbose", () => {
     expect(devSecretsHealthy({ ...clean, missing: ["auth-google-credentials"] })).toBe(true);
@@ -242,6 +251,7 @@ describe("describeDevSecrets", () => {
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
+      bootstrapMissing: [],
       undeclared: [],
       mode: 0o600,
       unreadable: false,
@@ -254,6 +264,7 @@ describe("describeDevSecrets", () => {
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [{ name: "auth-session-secret", state: "unmoved" }],
       missing: [],
+      bootstrapMissing: [],
       undeclared: [],
       mode: null,
       unreadable: false,
@@ -268,6 +279,7 @@ describe("describeDevSecrets", () => {
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [{ name: "auth-session-secret", state: "duplicate" }],
       missing: [],
+      bootstrapMissing: [],
       undeclared: [],
       mode: 0o600,
       unreadable: false,
@@ -282,6 +294,7 @@ describe("describeDevSecrets", () => {
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
+      bootstrapMissing: [],
       undeclared: [],
       mode: 0o644,
       unreadable: false,
@@ -295,6 +308,7 @@ describe("describeDevSecrets", () => {
       path: "/home/u/.config/pithy/acme/secrets.jsonc",
       misplaced: [],
       missing: [],
+      bootstrapMissing: [],
       undeclared: [],
       mode: 0o600,
       unreadable: true,
