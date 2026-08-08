@@ -21,6 +21,15 @@ matchmaking({
 });
 ```
 
+Then export the two Durable Objects from your worker entry, so wrangler's `class_name` resolves against it:
+
+```ts
+export { MatchmakingQueue } from "@pithy-sh/matchmaking/src/queue/durableObject";
+export { MatchmakingPresence } from "@pithy-sh/matchmaking/src/presence/durableObject";
+```
+
+Their own modules, never the package entry point. The entry point is what your `pithy.config.ts` imports, and that file is loaded by every Node-side CLI command — a Durable Object on that path imports `cloudflare:workers` and takes `pithy upgrade` down with it.
+
 ## Four ways to pair
 
 - **Room code.** A host opens a room and gets a short, shareable code (`WXYZ-1234`) — short-lived and limited-use. Others join by code. The zero-discovery, play-with-a-friend path.
