@@ -12,6 +12,7 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ejectCapability } from "../capabilities/eject";
 import { defaultRemoveSteps } from "../capabilities/remove";
+import { readSource, sourcePaths } from "../ci/sourceFiles";
 import { generateDevVars } from "../devSecrets/generate";
 import { writeSeedArtifact } from "../seed/prepare";
 import { scaffoldFiles } from "../ui/scaffold";
@@ -1147,20 +1148,20 @@ describe("the gate on the gate", () => {
     );
   }
 
-  /** Every module these rules cover: every package's shipped source, tests and their harnesses excluded. */
+  /**
+   * Every module these rules cover: every package's shipped source, tests and their harnesses excluded.
+   *
+   * Each package's `src` is walked rather than the package directory, so `scripts/`, `vitest.config.ts`
+   * and the starter template `prepack` vendors into `packages/cli/templates` stay outside — the boundary
+   * the docstring above records. The traversal is `ci/sourceFiles.ts`: one walk for the six tripwires
+   * that read source across this tree, hardened once against the scaffolds other suites create and
+   * delete underneath them (#185).
+   */
   async function modules(): Promise<string[]> {
     const found: string[] = [];
     for (const pkg of await readdir(PACKAGES, { withFileTypes: true })) {
       if (!pkg.isDirectory()) continue;
-      const entries = await readdir(join(PACKAGES, pkg.name, "src"), { recursive: true, withFileTypes: true }).catch(
-        () => [],
-      );
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
-        const path = join(entry.parentPath, entry.name);
-        if (path.includes(`${sep}test-utils${sep}`)) continue;
-        found.push(path);
-      }
+      found.push(...sourcePaths(join(PACKAGES, pkg.name, "src"), { skip: ["test-utils"] }));
     }
     return found.sort();
   }
@@ -1177,7 +1178,8 @@ describe("the gate on the gate", () => {
   async function followers(): Promise<Record<string, string>> {
     const found: Record<string, string> = {};
     for (const path of await modules()) {
-      const source = await readFile(path, "utf8");
+      const source = readSource(path);
+      if (source === null) continue;
       const probes = fsImports(source)
         .filter((name) => FOLLOWS.has(name))
         .sort();
@@ -1228,7 +1230,7 @@ describe("the gate on the gate", () => {
     for (const path of await modules()) {
       // The primitive's own module. `removeScaffoldPath` is where the `rm` is supposed to be.
       if (path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")) continue;
-      const source = await readFile(path, "utf8");
+      const source = readSource(path) ?? "";
       if (/\brm(?:Sync)?\(\s*[^;]{0,200}?recursive:\s*true/.test(source)) found.push(named(path));
     }
 
@@ -1250,7 +1252,7 @@ describe("the gate on the gate", () => {
     // Nothing in these packages needs one, so the hole is closed rather than measured.
     const sideways: string[] = [];
     for (const path of await modules()) {
-      const source = await readFile(path, "utf8");
+      const source = readSource(path) ?? "";
       const specifier = String.raw`["'](?:node:)?fs(?:\/promises)?["']`;
       if (
         new RegExp(String.raw`import\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+${specifier}`).test(source) ||
@@ -1487,7 +1489,8 @@ describe("the gate on the gate", () => {
         // The primitive's own module. `ensureScaffoldPath` is where these operations are supposed to be,
         // and `ensureScaffoldable` is the gate `pithy init` runs before any of them.
         if (path === fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts")) continue;
-        const source = await readFile(path, "utf8");
+        const source = readSource(path);
+        if (source === null) continue;
         const bound = mutators(source);
         if (bound.length === 0) continue;
 
