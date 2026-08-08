@@ -252,13 +252,13 @@ export function describeDevVars(check: DevVarsCheck): string[] {
   const lines: string[] = [];
   for (const { file, env } of check.minted) {
     lines.push(
-      `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — move it out and delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
+      `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — run pithy adopt to copy it out, then delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
     );
   }
   if (check.devJsonSecrets.length > 0) {
     const home = check.devConfigPath === null ? "this machine's dev config" : check.devConfigPath;
     lines.push(
-      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy secrets edit.`,
+      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy adopt, or pithy secrets edit.`,
     );
   }
   for (const { worker, file } of check.empty) {
@@ -284,7 +284,7 @@ function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): st
     case "credential":
       // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
       // class of value in this file that is worth naming twice rather than removing on somebody's behalf.
-      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — put it in ${cloudflareConfigPath()}, or export it.`;
+      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — run pithy adopt to put it in ${cloudflareConfigPath()}, or export it.`;
     case "secret":
       return null; // `describeDevSecrets` names it, and says which file it belongs in.
     case "binding": {
@@ -293,7 +293,7 @@ function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): st
       // reads the project root's file, and that this one needs the value as a binding.
       const wanted = entry.workers.length > 0 ? entry.workers.join(", ") : "this project";
       const home = devConfigPath === null ? "this machine's dev config" : devConfigPath;
-      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home} under "vars".`;
+      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home} under "vars". Run pithy adopt.`;
     }
     case "unread":
       return `${entry.key} is in .dev.vars and nothing reads it — not a Cloudflare credential, and nothing this project composes declares it. Delete it.`;
