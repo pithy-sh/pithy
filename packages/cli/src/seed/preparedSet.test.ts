@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { DEV_LOGIN_PATH } from "@pithy-sh/core/src/seed/devLogin";
 import { d1SeedGroup, defineSeed, type SeedPrepareContext } from "@pithy-sh/core/src/seed/seed";
+import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
+import { devSecretsFile } from "../devSecrets/location";
 import { migrateProject } from "../migrations/run";
 import { createThings, localWrangler, seedHarness, Things } from "../test-utils/seedHarness";
 import { seedProject } from "./run";
@@ -16,6 +18,11 @@ function preparedCapability(seen: SeedPrepareContext[], environments: readonly s
   return defineCapability({
     name: "app",
     requiredBindings: [],
+    // Declared, because the reader routes off the registry: a name no capability declares is not a
+    // secret, and answering `undefined` for it is the point (#176).
+    secretRegistry: defineSecretRegistry({
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    }),
     databases: {
       app: {
         binding: "DB",
@@ -83,7 +90,14 @@ describe("a prepared seed set", () => {
 
   test("writes its computed rows and its artifact into the gitignored logs directory", async () => {
     await h.writeWrangler(localWrangler);
-    await writeFile(join(h.projectDir, ".dev.vars"), "auth-session-secret=s3cr3t\n");
+    // The dev secrets file, not `.dev.vars`: since #153 that file carries no `d1` secret, and since
+    // #176 the reader looks where `pithy seed` actually writes.
+    const secrets = devSecretsFile("acme");
+    await mkdir(dirname(secrets), { recursive: true });
+    await writeFile(
+      secrets,
+      JSON.stringify({ "auth-session-secret": { currentVersion: "1", versions: { "1": "s3cr3t" } } }),
+    );
     const seen: SeedPrepareContext[] = [];
     const capabilities = [preparedCapability(seen)];
     await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });

@@ -14,6 +14,7 @@ import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact 
 import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
+import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import {
@@ -134,7 +135,12 @@ export interface SeedProjectOptions {
    * run, so one hand-edited file cannot be observed in two states by two Workers of the same fan-out.
    */
   preferences?: () => Promise<unknown>;
-  /** Seam: resolve a secret for a prepared set. Defaults to the project's `.dev.vars` — local dev's own store. */
+  /**
+   * Seam: resolve a secret for a prepared set. Defaults to the project's dev secrets file at
+   * `<config>/<project>/secrets.jsonc` — the one place a dev value is *stated*, whatever backend the
+   * registry gives it (#176). Passing this replaces the reader wholesale, so a test that supplies a
+   * value here proves nothing about where a real run finds one.
+   */
   secret?: (name: string) => Promise<string | undefined>;
   /** Seam: write a prepared set's artifact. Defaults to the project's gitignored `logs/`. */
   writeArtifact?: (artifact: SeedArtifact) => Promise<void>;
@@ -607,10 +613,22 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     // One inventory for the whole run, not one per Worker: a set deduped onto another Worker still writes
     // its rows, so a prepared set must be able to see them wherever the fan-out put them.
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
-    // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything from
-    // `.dev.vars` unless this says `dev` (#159). The rule is inside the reader — this only tells it where
-    // the rows are going.
-    secret: options.secret ?? devSecretReader({ projectDir: options.projectDir, env: options.env }),
+    // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything unless
+    // this says `dev` (#159). The rule is inside the reader — this only tells it where the rows are going.
+    //
+    // The registry is the whole fan-out's, in one `aggregateSecretRegistries` call, because the seam is
+    // the run's and not one Worker's: a set deduped onto another Worker must resolve the same secret it
+    // would have resolved on its own. That is also the exact call each Worker makes at composition, so
+    // two Workers that declare one name incompatibly fail here saying so, rather than resolving to
+    // whichever Worker happened to be first — and the dev secrets file has one value per name anyway, so
+    // there is no answer to hand them.
+    secret:
+      options.secret ??
+      devSecretReader({
+        project: options.project,
+        env: options.env,
+        registry: aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
+      }),
     writeArtifact:
       options.writeArtifact ??
       (async (artifact) => {

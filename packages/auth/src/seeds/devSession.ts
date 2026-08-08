@@ -247,7 +247,12 @@ export const authDevSessionSeed: SeedSet = defineSeed({
     if (!secret) {
       throw new ValidationError({
         message: "Cannot mint a dev session without this environment's auth secret.",
-        action: `Add ${AUTH_SESSION_SECRET} to .dev.vars, then seed again.`,
+        // Never `.dev.vars` (#176). Every `d1` secret left that file in #153, and telling an adopter to
+        // put one back there is telling them to undo it — the value would be inert, and the seed would
+        // fail again with the same sentence. The path is deliberately unnamed rather than guessed: this
+        // set runs inside a Worker with no filesystem and no config directory to resolve, and `pithy
+        // doctor` prints the resolved path on every run precisely so a message like this does not have to.
+        action: `Add ${AUTH_SESSION_SECRET} to this project's dev secrets file — pithy doctor prints its path — then seed again.`,
       });
     }
 

@@ -3,12 +3,17 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
+import { currentValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { readDevSecrets } from "../devSecrets/file";
+import { devSecretsFile } from "../devSecrets/location";
 import { type StatePathOptions, stateDir } from "../notifier/state";
-import { errnoOf, writeFileAtomic } from "../project/atomic";
+import { writeFileAtomic } from "../project/atomic";
 
 /**
  * The CLI half of the prepared-set seam: everything a `SeedSet.prepare` hook needs from the machine, kept
@@ -64,60 +69,93 @@ export async function readDevPreferences(project: string, options: StatePathOpti
  */
 const LOCAL_ENVIRONMENT = "dev";
 
-/** What a prepared set needs to build a dev-only reader: the project, and which environment it is seeding. */
+/** What a prepared set needs to build a dev-only reader: the project, its registry, and the environment. */
 export interface DevSecretReaderOptions {
-  /** The project root, whose `.dev.vars` local dev resolves every secret from. */
-  projectDir: string;
+  /**
+   * The project's **name** — what resolves the dev secrets file, exactly as it resolves `dev.json`
+   * one directory over. Not the project root: since #156 the file is at `<config>/<project>/`, so a
+   * directory is no longer an answer to where a secret is.
+   */
+  project: string;
   /**
    * The environment this seed run is writing to. **Required, and that is the structural half of the rule
    * (#159).** A caller cannot build a dev-secrets reader without stating where the rows are going, so
-   * there is no signature left that reads `.dev.vars` for an environment nobody named.
+   * there is no signature left that reads dev secrets for an environment nobody named.
    */
   env: string;
+  /**
+   * The project's aggregate secret registry — the authority on whether a name is a secret at all, and
+   * on the shape its value must have. Required for the same reason `env` is: a reader that guesses
+   * either one is a reader nobody can audit.
+   */
+  registry: SecretRegistry;
+  /** Where the Pithy config directory is. Defaults to the real one — a seam, so a test reads its own. */
+  paths?: StatePathOptions;
 }
 
 /**
- * Read a named secret out of the project's `.dev.vars` — **in `dev`, and in no other environment.**
+ * Read a named secret out of the project's **dev secrets file** — **in `dev`, and in no other environment.**
  *
- * That is where local dev's secrets genuinely live: `secretsStore` resolves every secret from an injected
- * `.dev.vars` string when `ENVIRONMENT` is not a managed environment, whatever the registry backend says.
- * So this reads the same value the running Worker will, from the same place — no store, no master key.
+ * That is where local dev's secrets live: `<config>/<project>/secrets.jsonc`, the same file `pithy seed`
+ * has just minted into and seeded from, two steps before a prepared set runs. It needs no D1 and no
+ * master key, so it answers at the point in the pipeline where seeds happen.
  *
- * **The environment gate is structural, not a caller's courtesy (#159).** The old reader's doc said a
- * deployed environment's secrets are not on the operator's disk, so it would answer `undefined` there.
- * That was never true of the operator's *own* machine: `.dev.vars` sits in the project under every `--env`,
- * so `pithy seed --env prod` handed a prepared set a live local dev secret and wrote it into production
- * rows. #159's rule is absolute and the adopter cannot opt out — dev secrets never reach a managed
- * environment — and a reader that leaks them is the same hole as a writer that plants them. So outside
- * `dev` the reading closure is never built: the caller gets a reader that refuses, and the file is never
- * opened at all.
+ * **This read `.dev.vars` until #176, and that was the whole defect.** #153 moved every `d1` secret out
+ * of that file and #154 made each Worker's copy a generated artifact; the reader was not moved with
+ * them. So `pithy seed` on a project composing auth's dev-session seed printed two lines that
+ * contradicted each other — the secret was seeded, and the seed that needs it could not see it — and
+ * the fix it suggested was to undo #153.
+ *
+ * **One source, whatever the backend, and so no branch.** `.dev.vars` is not the other half of this
+ * question any more: it is a *destination* now, generated per Worker from this same file, and a
+ * `cf-secrets-store` value written there is this file's value encoded for a binding. Reading it back
+ * would be reading a copy — and a run-wide reader cannot even say *which* Worker's copy, because since
+ * #154 there are as many as there are Workers. A `cf-secrets-store` secret therefore resolves here too,
+ * from the one place its dev value is stated. What is given up is narrow and deliberate: a value
+ * supplied only through a hand-written `.dev.vars.local` override is not visible to a prepared set. It
+ * is an override of what the Worker reads, not a statement of what the secret is.
+ *
+ * **Through the registry, and through `storedSecretValue`, so this is the value the Worker gets.** The
+ * registry says whether a `text` secret's version really is a string and validates a `json` one against
+ * its schema; the conversion is the same one the seeder uses to fill the store. So a prepared set is
+ * handed exactly the bytes `secretsStore` will resolve at runtime — not a near-miss parsed a second way
+ * by a second reader. A name the registry does not declare answers `undefined`: nothing declares it, so
+ * the running Worker cannot resolve it either. A keyspace answers `undefined` for the same reason
+ * `get(name)` refuses one — it has no single value.
+ *
+ * **The environment gate is structural, not a caller's courtesy (#159).** An older doc said a deployed
+ * environment's secrets are not on the operator's disk, so a read would answer `undefined` there. That
+ * was never true of the operator's *own* machine: the dev secrets file sits under `~/.config` whatever
+ * `--env` says, so `pithy seed --env prod` handed a prepared set a live local dev secret and wrote it
+ * into production rows. #159's rule is absolute and the adopter cannot opt out — dev secrets never reach
+ * a managed environment — and a reader that leaks them is the same hole as a writer that plants them. So
+ * outside `dev` the reading closure is never built: the caller gets a reader that refuses, and the file
+ * is never opened at all.
  *
  * **Provably dev, not merely not-prod.** An unknown, misspelled, or empty environment refuses too. The
  * permissive default is the entire bug.
  *
- * **And only `ENOENT` is an absent file.** A `.dev.vars` that cannot be read is not one that says nothing:
- * swallowing `EACCES` handed the set `undefined` and let it seed a row against a secret it never got.
+ * **Read at most once per run.** The file is hand-edited, and two Workers in one fan-out must not observe
+ * it in two states — the same rule, for the same reason, that `preparedRun` applies to `dev.json`. A run
+ * with no prepared set never opens it at all. And an absent file is `{}` while an unreadable one throws:
+ * `readDevSecrets` owns that distinction, because answering "empty" for `EACCES` is how a set writes a
+ * row against a secret it never got.
  */
 export function devSecretReader(options: DevSecretReaderOptions): (name: string) => Promise<string | undefined> {
-  const path = join(options.projectDir, ".dev.vars");
+  const path = devSecretsFile(options.project, options.paths ?? {});
   if (options.env !== LOCAL_ENVIRONMENT) return refuseOutsideDev(options.env, path);
+  let pending: Promise<DevSecretsFile> | undefined;
   return async (name: string) => {
-    let content: string;
-    try {
-      content = await readFile(path, "utf8");
-    } catch (err) {
-      const code = errnoOf(err);
-      if (code === "ENOENT") return undefined;
-      throw new ConflictError(
-        {
-          message: `Cannot read the dev secret "${name}": ${path} could not be read.`,
-          action: "Fix the file's permissions and run the command again.",
-          detail: `${code ?? "unknown error"} while reading ${path}`,
-        },
-        { cause: err },
-      );
-    }
-    return parseDevVars(content)[name];
+    // `Object.hasOwn`, never a bare index: a prepared set asking for `constructor` or `toString` would
+    // otherwise reach an `Object.prototype` member and be handed something that is not a secret at all.
+    if (!Object.hasOwn(options.registry, name)) return undefined;
+    const entry = options.registry[name];
+    if (!entry || entry.keyed) return undefined;
+    if (pending === undefined) pending = readDevSecrets(path);
+    const file = await pending;
+    const envelope = file[name];
+    if (!envelope) return undefined;
+    return currentValue(storedSecretValue(entry, name, envelope, path));
   };
 }
 
@@ -137,7 +175,7 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
       message: `Refusing to read the dev secret "${name}" while seeding ${env}.`,
       action:
         "Dev secrets are local only. Mark this set dev-only, or set the value for that environment with pithy secrets set.",
-      detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from disk`,
+      detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from the dev secrets file`,
     });
   };
 }
