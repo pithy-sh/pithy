@@ -130,6 +130,16 @@ describe("the dev-session seed set", () => {
     expect((failure as PithyError).payload.action).toContain(AUTH_SESSION_SECRET);
   });
 
+  test("sends the adopter to the dev secrets file, never back to .dev.vars (#176)", async () => {
+    // This message told adopters to undo #153. A `d1` secret in `.dev.vars` has been inert since then,
+    // so following the advice produced the identical failure a second time — and the reader that made
+    // the advice look plausible was reading the wrong file.
+    const failure = await prepare(context({ secret: async () => undefined })).catch((error: unknown) => error);
+    const action = (failure as PithyError).payload.action ?? "";
+    expect(action).not.toContain(".dev.vars");
+    expect(action).toContain("dev secrets file");
+  });
+
   test("never puts the secret or the cookie in an error a human or a log will see", async () => {
     const minted = await mintDevSession({ user: APP_USER, secret: SECRET });
     const failures = await Promise.all(

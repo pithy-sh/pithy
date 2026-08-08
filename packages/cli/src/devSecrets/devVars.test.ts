@@ -231,8 +231,8 @@ describe("the producers", () => {
         // A minted CLI token — hex, from `pithy token mint`, through its own writer. It writes the
         // project root's `.dev.vars`, which is the *CLI's* credential file and not a Worker's.
         join("tokens", "sinks.ts"),
-        // Reads `.dev.vars` for a seed driver's credential; the write is the seed artifact, not a var.
-        join("seed", "prepare.ts"),
+        // `seed/prepare.ts` was here while it read `.dev.vars` for a prepared set's secret. It reads
+        // the dev secrets file now (#176), so it neither writes nor reads a `.dev.vars` at all.
       ].sort(),
     );
   });

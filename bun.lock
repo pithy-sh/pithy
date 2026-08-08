@@ -88,6 +88,7 @@
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@pithy-sh/audit": "workspace:*",
+        "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/media": "workspace:*",
         "@pithy-sh/payments": "workspace:*",
         "@pithy-sh/storage": "workspace:*",
