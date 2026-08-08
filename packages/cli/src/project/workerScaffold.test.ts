@@ -9,7 +9,8 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { scaffoldWorker, workerNamespace } from "./workerScaffold";
+import { workerNamespace } from "./scaffold";
+import { scaffoldWorker } from "./workerScaffold";
 
 describe("scaffoldWorker", () => {
   let dir: string;

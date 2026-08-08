@@ -4,24 +4,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
-import { ensureEmptyTarget, kitRange, WORKER_NAME } from "./scaffold";
-
-/**
- * The scaffolded app capability's name — which is also its **migration namespace**, and namespaces admit no
- * separators (`NAMESPACE_PATTERN`, `^[a-z][a-z0-9]*$`). A worker directory is kebab-case, so the two cannot
- * be the same string: stamping `admin-api` verbatim writes a config whose first migration is rejected.
- *
- * So the directory stays kebab-case and the namespace is derived from it — hyphens dropped, keeping the
- * worker's identity (`admin-api` → `adminapi`, distinct from every sibling's). A name that starts with a
- * digit cannot open a namespace, so it takes the `app` prefix the starter's own capability uses
- * (`2fa-api` → `app2faapi`).
- */
-export function workerNamespace(name: string): string {
-  const stripped = name.replace(/[^a-z0-9]/g, "");
-  return NAMESPACE_PATTERN.test(stripped) ? stripped : `app${stripped}`;
-}
+import { ensureEmptyTarget, kitRange, WORKER_NAME, workerNamespace } from "./scaffold";
 
 /**
  * The wrangler every producer of a Worker manifest pins.
