@@ -6,7 +6,7 @@ import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir as osHomedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { readFileOutcome } from "../project/readOptionalFile";
+import { readOptionalFile } from "../project/readOptionalFile";
 
 /** Mode for an rc file we create from scratch: owner read/write, group/other read (POSIX `0644`). */
 const RC_FILE_MODE = 0o644;
@@ -14,18 +14,29 @@ const RC_FILE_MODE = 0o644;
 /**
  * Read an rc file, returning `''` when it does not exist yet (the common first-install case).
  *
- * "Does not exist" is {@link readFileOutcome}'s decision, not this module's — an rc file that is there
+ * "Does not exist" is {@link readOptionalFile}'s decision, not this module's — an rc file that is there
  * and will not open must not read as an empty one, because `removeFromRcFile` rewrites what it read.
  *
- * Through the outcome rather than `readOptionalFile` because this reader rethrows node's own error
- * untouched, and `readOptionalFile`'s refusal is a `PithyError` by construction. Wrapping it would be a
- * behaviour change, which routing is not allowed to be.
+ * **The words are this file's, and they matter more here than almost anywhere** (#203). The two commands
+ * that read an rc file are `pithy alias` and `pithy doctor`: the two an adopter runs *because* something
+ * is already wrong. This used to rethrow node's own error, so a `.zshrc` that would not open answered a
+ * bare `EACCES` and a stack — the failure the error model exists to prevent, on the surface least able to
+ * absorb it. It names the file and what to do instead. Nothing of the file's contents goes in either: an
+ * rc file is where a developer keeps `export GITHUB_TOKEN=…`.
  */
 export async function readRcFile(path: string): Promise<string> {
-  const read = await readFileOutcome(path);
-  if (read.state === "read") return read.text;
-  if (read.state === "absent") return "";
-  throw read.cause;
+  const contents = await readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Can't read ${path}.`,
+          action: "Fix the file's permissions, or add the Pithy alias to your shell config yourself.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+  });
+  return contents ?? "";
 }
 
 /** True when `target` resolves to `home` itself or a path beneath it. */

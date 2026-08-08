@@ -3,12 +3,12 @@
 
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { buildAssetMetadata } from "@pithy-sh/core/src/seed/metadata";
 import type { MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
-import { readFileOutcome } from "../project/readOptionalFile";
+import { readOptionalFile } from "../project/readOptionalFile";
 
 /**
  * The filesystem side of media seeding — the only part of `pithy seed` that reads fixture bytes and
@@ -68,17 +68,23 @@ export interface MediaFs {
  */
 export const nodeMediaFs: MediaFs = {
   readBytes: (path) => readFile(path),
-  readText: async (path) => {
-    // A missing sidecar is the expected first-run state — not an error. Anything else propagates, and
-    // which errno is which is {@link readFileOutcome}'s decision rather than this module's: a sidecar
-    // that is there and will not open reads as "never uploaded", and `writeTextAtomic` then renames a
-    // fresh id over the one recorded in it. Through the outcome rather than `readOptionalFile` because
-    // this seam rethrows node's own error untouched, and the refusal is a `PithyError` by construction.
-    const read = await readFileOutcome(path);
-    if (read.state === "read") return read.text;
-    if (read.state === "absent") return null;
-    throw read.cause;
-  },
+  readText: (path) =>
+    // A missing sidecar is the expected first-run state — not an error. Anything else refuses, and which
+    // errno is which is {@link readOptionalFile}'s decision rather than this module's: a sidecar that is
+    // there and will not open reading as "never uploaded" means `writeTextAtomic` renames a fresh id over
+    // the one recorded in it. It used to rethrow node's own error, which reached an adopter as a bare
+    // errno and a stack from the middle of a seed run (#203); the sentence below is what it says now.
+    readOptionalFile(path, {
+      unreadable: ({ code, cause }) =>
+        new ConflictError(
+          {
+            message: `Can't read the media sidecar ${path}.`,
+            action: "Fix the file's permissions, or move it aside, and run pithy seed again.",
+            detail: `${code ?? "unknown error"} while reading ${path}`,
+          },
+          { cause },
+        ),
+    }),
   writeTextAtomic: (path, text) => writeFileAtomic(path, text),
 };
 

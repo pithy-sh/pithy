@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { nodeMediaFs } from "./media";
 
@@ -36,13 +37,18 @@ describe("nodeMediaFs.readText", () => {
     expect(await nodeMediaFs.readText(join(dir, "never.ref.json"))).toBeNull();
   });
 
-  test("a sidecar that is there and will not open propagates, never null", async () => {
+  test("a sidecar that is there and will not open is a PithyError naming it, never null", async () => {
     // A directory where the file should be: EISDIR from `readFile` for every uid, root included.
     const path = join(dir, "unreadable.ref.json");
     await mkdir(path);
 
-    const thrown = (await nodeMediaFs.readText(path).catch((error: unknown) => error)) as NodeJS.ErrnoException;
-    expect(thrown).toBeInstanceOf(Error);
-    expect(thrown.code).toBe("EISDIR");
+    const thrown = (await nodeMediaFs.readText(path).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    // The sidecar, and an action — a raw errno with a stack is not something an adopter can act on.
+    expect(thrown.payload.message).toContain(path);
+    expect(thrown.payload.action ?? "").not.toBe("");
+    // The errno stays in `detail`, which the HTTP codec strips, and node's error survives as the cause.
+    expect(thrown.payload.detail).toContain("EISDIR");
+    expect((thrown.cause as { code?: string } | undefined)?.code).toBe("EISDIR");
   });
 });
