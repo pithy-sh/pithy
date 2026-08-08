@@ -291,11 +291,15 @@ describe("no module writes its own walk over a directory tree", () => {
     },
     "tooling/license-headers/src/workspace.ts": {
       walk: "walk",
-      why: "`tooling/*` cannot resolve `@pithy-sh/cli` at all — the workspace is installed isolated and this package declares no dependency on the CLI, so the import does not resolve, in tsc or at runtime. Routing it means adding that edge to its manifest or moving the walk somewhere both trees reach; #202 fixed the four it could and wrote this down rather than leaving it unmigrated in silence a second time.",
+      // #211 decided this one rather than leaving it implied. The edge is one line — `"@pithy-sh/cli":
+      // "workspace:*"` in that manifest, and the lockfile that follows it — so "it does not resolve today"
+      // was a fact about an edit nobody had made, not a reason. This is the reason.
+      why: "Declined, not blocked (#211). The edge is available for one devDependency line, and it is refused because of what it would invert: `tooling/license-headers` is the gate that stamps `packages/cli`'s own headers and it runs in `lint-staged` on every commit, so making the linter a dependent of the largest thing it lints points the graph backwards and pulls every CLI change into its `--affected` set. What the edge would buy was measured against this walk rather than assumed: symlinks it already declines (`withFileTypes` plus `isDirectory()`), the vendored `packages/cli/templates` is out of range because this reads `<pkg>/src`, and the one real gap — an unguarded `readdirSync` — is a `try`/`catch` in this file that costs no dependency at all and is now there. The edge would also buy only one of this package's two walks, because `audit.ts` below stays either way.",
     },
     "tooling/license-headers/src/audit.ts": {
       walk: "walk",
-      why: "Same package and the same missing edge, and this one would not fit even with it: `templateFiles` wants every file of every extension under a `templates/` tree, and the primitive skips `packages/cli/templates` by path on purpose (#192) — which is one of the roots the licence audit exists to check.",
+      // The `templates` half of #202's reason was checked here and is wrong; the dotted half is the real one.
+      why: "Same package, same declined edge — and this one could not be routed even with it, though not for the reason #202 recorded. The `templates` exclusion is not the blocker: the primitive skips `packages/cli/templates` by path and nothing else, so the root `templates/starter` and `packages/ui-react/templates` are both kept (asserted above), and the vendored copy it does skip is a byte-for-byte duplicate of the root starter that exists only between `prepack` and `postpack` — a finding naming it names a file `postpack` deletes, which is a thing this audit should want skipped. The blocker is direction: `templateFiles` wants every file of every extension at every depth, and the primitive skips dotted directories with no option to stop, because that rule is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every other caller (#185). `keep` narrows which files are taken; nothing widens which directories are entered. A template shipping a `.vscode/` — none does today — would go unchecked in silence, and a licence gate that under-reports is worse than one that walks its own tree.",
     },
   };
 
@@ -305,14 +309,13 @@ describe("no module writes its own walk over a directory tree", () => {
    * A debt inventory, not an allowlist — the distinction being that every line here is meant to leave. Each
    * `costs` is the sentence that says why it is worth an issue. The count below is a ratchet: it falls as
    * these are routed, and a change that raises it is a change writing the seventh copy of one traversal.
+   *
+   * **It is empty, and that is the point.** It held one entry when this rule landed — `.github/scripts/planShards.ts`,
+   * whose `testFileCount` had a guarded `readdirSync` and a bare `statSync` in the script that decides which
+   * test jobs CI runs, so an entry vanishing between the listing and the probe took the whole matrix down. It
+   * was routed in #211. A line added back here is a walk somebody wrote knowing this module exists.
    */
-  const NOT_YET_ROUTED: Record<string, { walk: string; costs: string }> = {
-    ".github/scripts/planShards.ts": {
-      walk: "walk",
-      costs:
-        "`testFileCount` counts `*.test.ts` under each package's `src` to weight the CI shards. Its `readdirSync` is guarded and its `statSync` is not, so an entry that vanishes between the listing and the probe throws inside the planner and takes the whole test matrix with it. It can reach the primitive — `crossPackageReads.ts` beside it already imports it, and running before `bun install` is the entire reason that module imports nothing but `node:fs` and `node:path` — so this is an edit nobody has made rather than one nobody can.",
-    },
-  };
+  const NOT_YET_ROUTED: Record<string, { walk: string; costs: string }> = {};
 
   /** The calls that hand back a directory's entries. A module reaching one of these lists a directory. */
   const LISTINGS = ["readdir", "readdirSync", "opendir", "opendirSync", "glob", "globSync"];
@@ -557,9 +560,9 @@ describe("no module writes its own walk over a directory tree", () => {
   });
 
   test("the debt list only shrinks", () => {
-    // One when this rule landed. Lower it as the rest are routed; a change that needs it raised is a change
-    // writing another private traversal into a repository that has spent three issues removing them.
-    expect(Object.keys(NOT_YET_ROUTED).length).toBeLessThanOrEqual(1);
+    // One when this rule landed, zero since #211. It cannot rise: a change that needs this number raised is a
+    // change writing another private traversal into a repository that has spent four issues removing them.
+    expect(Object.keys(NOT_YET_ROUTED).length).toBe(0);
     // And nothing may sit in both lists — unreachable and unrouted are different claims about one walk.
     for (const path of Object.keys(NOT_YET_ROUTED)) expect(SEPARATE_ON_PURPOSE[path]).toBeUndefined();
   });

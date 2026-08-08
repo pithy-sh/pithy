@@ -11,8 +11,9 @@ import { join, sep } from "node:path";
  * which modules can reach a `rename` (`project/atomic.test.ts`), which can probe with something that
  * follows a link or run a recursive delete (`project/scaffold.test.ts`), which can resolve an editor
  * (`platform/editor.test.ts`), which can export a pure value out of a Workers-runtime module
- * (`capabilities/configEntrypoints.test.ts`) — and CI's own change planner reads every test file to
- * work out which suites assert about which paths (`.github/scripts/crossPackageReads.ts`).
+ * (`capabilities/configEntrypoints.test.ts`) — and both halves of CI's own planner read every test file,
+ * one to work out which suites assert about which paths (`.github/scripts/crossPackageReads.ts`) and one
+ * to weight the shards they are dealt into (`.github/scripts/planShards.ts`).
  *
  * Each of those had written its own traversal, which made each one a separate place to get the same
  * two things wrong. #157's was hardened when it was written and `atomic.test.ts`'s was not, so
@@ -34,16 +35,19 @@ import { join, sep } from "node:path";
  *    directory behind it, so a walk cannot loop on a link to an ancestor or read a package twice
  *    through the `node_modules` entry that points at it.
  *
- * Synchronous on purpose. It is read-only, it is called from tests and from a CI script that runs
+ * Synchronous on purpose. It is read-only, it is called from tests and from the two CI scripts that run
  * before `bun install`, and the async form bought a sequential `await` per directory rather than any
  * concurrency. This module imports nothing but `node:fs` and `node:path` for the same reason: the
- * planner has to run with no dependencies installed.
+ * `plan` job in `ci.yml` has no install step, so its whole import graph has to be builtins and relative
+ * paths. Adding a package dependency here breaks both scripts at once and is a change to that job.
  *
  * **That this is the only walk is a gate, not a claim.** #185 said it in a changeset and it was not true —
  * five private traversals were never migrated, and none of them received the ENOENT tolerance above or
  * #192's `templates` exclusion (#202). `sourceFiles.test.ts` now fails the build on any module that defines
  * a function which lists a directory and calls itself, with the handful that cannot reach this one written
- * down by name and reason.
+ * down by name and reason. That list is now only the ones that *cannot*: `planShards.ts` was the last that
+ * merely had not been, and its `statSync` was the #185 race sitting in the script the whole matrix hangs
+ * off (#211).
  */
 
 /** A file the walk found, with the text it still held when the walk read it. */
