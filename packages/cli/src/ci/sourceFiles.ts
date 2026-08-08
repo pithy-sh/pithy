@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 /**
  * The one walk over this repository's own source.
@@ -23,12 +23,13 @@ import { join } from "node:path";
  * **Both halves of that failure live here, once.**
  *
  * 1. **The tree is not still.** Other suites scaffold whole projects into `packages/cli/.smoke-*` and
- *    `.e2e-*` and delete them on the way out, `packages/cli/templates/` appears and disappears around
- *    `bun pm pack`, and `.worktrees/` holds entire second checkouts of this repository. A dotted
- *    directory is skipped — `.github` excepted, because its scripts are source this repository runs
- *    its CI on — which removes most of that outright, and a directory that cannot be listed and a
- *    file that vanished between the listing and the read are both skipped rather than fatal. A file
- *    that is not there is not a file that breaks a rule.
+ *    `.e2e-*` and delete them on the way out, and `.worktrees/` holds entire second checkouts of this
+ *    repository. A dotted directory is skipped — `.github` excepted, because its scripts are source
+ *    this repository runs its CI on — which removes most of that outright, and a directory that
+ *    cannot be listed and a file that vanished between the listing and the read are both skipped
+ *    rather than fatal. A file that is not there is not a file that breaks a rule.
+ *    `packages/cli/templates/`, which appears and disappears around `bun pm pack`, is the one that
+ *    cannot be dotted; see {@link VENDORED_TEMPLATES}.
  * 2. **A symlink is not descended.** `withFileTypes` reports a link as a link rather than as the
  *    directory behind it, so a walk cannot loop on a link to an ancestor or read a package twice
  *    through the `node_modules` entry that points at it.
@@ -63,6 +64,24 @@ const NEVER = ["node_modules", "dist", "coverage"];
 
 /** The one dotted directory that holds source: this repository's CI scripts. */
 const DOTTED_SOURCE = ".github";
+
+/**
+ * The one transient the dotted rule cannot cover: `packages/cli/templates`, the copy of the repo root's
+ * `templates/starter` that `prepack` vendors in and `postpack` takes out again.
+ *
+ * It cannot be dotted and it cannot move. `files` in the CLI's manifest carries exactly this path, and
+ * that is the entire mechanism by which a published `@pithy-sh/cli` ships a starter at all (#143, #152).
+ * So the walk skips it by where it is instead — by path, never by name, because the repo root's
+ * `templates/` is the source of truth these tripwires exist to read.
+ *
+ * **Skipping is right whether or not a pack is in flight.** It is a file-by-file copy of a directory the
+ * same walk already visits at the repo root, so descending into it can only ever report a source twice,
+ * under a second path that `postpack` is about to delete — and a pack that fails after `prepack` leaves
+ * the copy behind for good, gitignored and silent, which makes the duplicate permanent rather than
+ * transient. Either way a gate that reports a path, counts files, or asserts a set gets a different
+ * answer depending on what a packer did, and a report naming the copy names a file nobody can open (#192).
+ */
+const VENDORED_TEMPLATES = join("packages", "cli", "templates");
 
 /** A `.ts` file that ships — neither a test nor a generated declaration. */
 export function isShippedSource(name: string): boolean {
@@ -115,6 +134,8 @@ function descend(directory: string, skip: ReadonlySet<string>, keep: (name: stri
     if (entry.isDirectory()) {
       if (skip.has(entry.name)) continue;
       if (entry.name.startsWith(".") && entry.name !== DOTTED_SOURCE) continue;
+      // Whatever root the walk began at, the path it built carries the ancestry that identifies the copy.
+      if (path === VENDORED_TEMPLATES || path.endsWith(`${sep}${VENDORED_TEMPLATES}`)) continue;
       descend(path, skip, keep, into);
       continue;
     }
