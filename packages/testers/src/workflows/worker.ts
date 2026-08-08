@@ -3,8 +3,6 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
-import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { triggerWorkflow } from "@pithy-sh/core/src/workflow/dispatch";
 import { confirmUrl, optInUrl, optOutUrl, TestersConfig } from "../config/config";
@@ -13,6 +11,7 @@ import type { TestersMember } from "../data/member";
 import { testersDatabase } from "../data/tables";
 import type { EnqueueNudge } from "../nudge/send";
 import { type CohortPassResult, openCohortIds, runCohortPass } from "./daily";
+import { logCohortFailure, logPassComplete } from "./report";
 import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from "./specs";
 
 /**
@@ -50,36 +49,6 @@ export interface TestersWorkerEnv {
   EMAIL_SENDER?: { create(options: { params: { jobIds: string[] } }): Promise<unknown> };
   /** The global email-suppression database, for reconciling which addresses have bounced. */
   EMAIL_SUPPRESSIONS?: D1Database;
-}
-
-/**
- * The pass's outcome, as one record. The run's only visible output: a pass whose findings are invisible
- * is a pass nobody can tell has stopped working.
- *
- * Two levels, and the distinction is the whole reason this is not one flat `info`. A cohort carrying
- * `nudgesSkipped` advanced its state and wrote its day but mailed nobody — the pass *looks* healthy and
- * nobody is being chased, which is the one failure mode this capability cannot afford, because silence
- * is also what success looks like. Everything else is routine, and a daily job that reports routine at
- * `warn` teaches an operator to stop reading it.
- */
-export function logPassComplete(log: Logger, results: readonly CohortPassResult[]): void {
-  const skipped = results.filter((result) => result.nudgesSkipped !== undefined).length;
-  log[skipped > 0 ? "warn" : "info"]("daily pass complete", { cohorts: results.length, skipped, results });
-}
-
-/**
- * One cohort's failure, with its payload intact.
- *
- * A `PithyError` goes in the reserved `error` field so the record carries its code, its status and its
- * throw-site `detail` — a log is an internal surface, the inverse of the HTTP codec that strips it.
- * Anything else takes `reason`: a plain `Error`'s `message` and `stack` are non-enumerable, so the
- * reserved field would serialize it to `{}` and lose the only thing it had to say.
- */
-export function logCohortFailure(log: Logger, cohortId: string, error: unknown): void {
-  log.error("cohort pass failed", {
-    cohort: cohortId,
-    ...(error instanceof PithyError ? { error } : { reason: messageOf(error) }),
-  });
 }
 
 /** The daily pass over every open cohort. */
