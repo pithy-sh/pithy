@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
@@ -538,6 +538,41 @@ describe("removeCapability", () => {
     expect(result.ejected).toBe(true);
     expect(calls.deleteSource).toEqual([join(worker, "capabilities", "turnstile")]);
     expect(calls.uninstall).toEqual([]);
+  });
+
+  test("ejected: a source that could not be deleted is not audited as removed", async () => {
+    // #165. `removeScaffoldPath` read every `realpath` errno as "gone", so a delete the kernel refused
+    // returned as a completed one. Here that is the worst version of it: config and wrangler are unwired
+    // *first*, so the run ended with the capability unwired, its source entire on disk, and an audit
+    // record saying `capability/removed`, `outcome: "success"`. A false audit record is not cosmetic.
+    //
+    // The delete step is the real one — this is the seam `pithy remove` uses — and the block is a
+    // non-searchable `capabilities/`, which is what a probe cannot answer through.
+    await fixture({ ejected: true });
+    const source = join(worker, "capabilities", "turnstile");
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, "index.ts"), "export default {};\n");
+    const real = defaultRemoveSteps({
+      projectDir: dir,
+      workerDir: worker,
+      loadCapabilities: async () => [],
+      project: "acme",
+    });
+    const { s } = steps({ loadCapabilities: async () => [cap("turnstile")] });
+    const events: CliAuditEvent[] = [];
+    await chmod(join(worker, "capabilities"), 0o600); // readable, not searchable
+
+    const error = await removeCapability({
+      workerDir: worker,
+      capability: "turnstile",
+      steps: { ...s, deleteSource: real.deleteSource },
+      audit: async (event) => void events.push(event),
+    }).catch((cause: unknown) => cause);
+    await chmod(join(worker, "capabilities"), 0o700);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(events).toEqual([]);
+    expect(await readdir(source)).toEqual(["index.ts"]); // the source really is entire
   });
 
   test("unwires only the target worker — a sibling wiring the same capability is untouched", async () => {

@@ -165,13 +165,14 @@ function descent(root: string, target: string): string[] {
  */
 export async function ensureScaffoldPath(root: string, target: string, intent: PathIntent = "write"): Promise<void> {
   for (const step of descent(root, target)) {
-    const entry = await lstat(step).catch(() => null);
-    if (entry === null) return; // missing, and so is everything below it
-    if (entry.isDirectory()) continue;
+    const entry = await probe(lstat(step));
+    if (entry.state === "unanswerable") throw cannotSee(root, step, entry.reason);
+    if (entry.state === "missing") return; // missing, and so is everything below it
+    if (entry.value.isDirectory()) continue;
 
     const named = relative(root, step);
     throw new ConflictError(
-      entry.isSymbolicLink()
+      entry.value.isSymbolicLink()
         ? {
             message: `${named} is a symlink.`,
             action: THROUGH_A_LINK[intent],
@@ -208,6 +209,51 @@ const THROUGH_A_LINK: Record<PathIntent, string> = {
 };
 
 /**
+ * What a filesystem probe established about a path — **three answers, never two.**
+ *
+ * The rule is {@link survivorsOf}'s, generalised: **only `ENOENT` means gone.** Anything else the probe
+ * cannot answer — `EACCES`, `ELOOP`, a mount that went away — is `unanswerable`, and reading it as gone is
+ * how a gate clears a path it never saw and a delete reports a tree it never removed.
+ *
+ * Exported for the test. Two of the three callers below are reachable only by racing the walk above, and a
+ * suite cannot stage that against a real `realpath` — but a gate whose second question can be skipped is a
+ * gate that asks one.
+ */
+export type Probed<T> =
+  | { readonly state: "answered"; readonly value: T }
+  | { readonly state: "missing" }
+  | { readonly state: "unanswerable"; readonly reason: string };
+
+/** Run a filesystem probe, keeping "it isn't there" apart from "I could not find out". */
+export async function probe<T>(ask: Promise<T>): Promise<Probed<T>> {
+  try {
+    return { state: "answered", value: await ask };
+  } catch (err) {
+    const errno = errnoOf(err) ?? "unknown error";
+    return errno === "ENOENT" ? { state: "missing" } : { state: "unanswerable", reason: errno };
+  }
+}
+
+/**
+ * The refusal for a path the filesystem would not answer about.
+ *
+ * One sentence for all three intents, because it is the only one that is true of all three: nothing is
+ * claimed about what is at the path, only that we could not find out. The intent-specific wording above
+ * describes what Pithy *won't do through a link*, and there is no link here — there is no answer at all.
+ *
+ * The errno is throw-site context, in `detail`, where the HTTP codec strips it. What the adopter gets is
+ * the path and the fact that the command stopped rather than guessed.
+ */
+function cannotSee(root: string, step: string, reason: string): PithyError {
+  return new ConflictError({
+    message: `Pithy couldn't check ${relative(root, step) || step}.`,
+    action:
+      "Something blocked the check — a permission, or a mount that went away. Clear that and run the command again.",
+    detail: `${reason} while checking ${step}`,
+  });
+}
+
+/**
  * Delete `target` and everything under it — **the one answer to "may this path be removed", and the `rm`
  * is inside it so no caller can route around it.**
  *
@@ -232,7 +278,13 @@ const THROUGH_A_LINK: Record<PathIntent, string> = {
  * everything, and no command here has any business removing the project.
  *
  * A target that is not there is not a delete: `rm` is `force`, so a caller rolling back a step that never
- * ran gets a clean no-op rather than a refusal it would have to special-case.
+ * ran gets a clean no-op rather than a refusal it would have to special-case. **Not there means `ENOENT`
+ * and nothing else** — see {@link Probed}. Both probes here read every other errno as "gone", so a
+ * `realpath` the kernel refused returned from this function having removed nothing, and the caller printed
+ * success. Through `pithy remove <cap>` it was worse: config and wrangler are unwired first, so the run
+ * ended with the capability unwired, its source entire on disk, and an audit record saying
+ * `capability/removed`, `outcome: "success"`. A false audit record is the one failure this project cannot
+ * treat as cosmetic. Reproduced with `chmod 0600` on `apps/` — readable, not searchable.
  *
  * **And a delete that fails part-way says which part.** See {@link removeFailure}: the `rm` threw a raw
  * `node:fs` errno through the contract, after it had already emptied some of the tree.
@@ -240,15 +292,28 @@ const THROUGH_A_LINK: Record<PathIntent, string> = {
 export async function removeScaffoldPath(root: string, target: string): Promise<void> {
   await ensureScaffoldPath(root, target, "delete");
 
-  const doomed = await realpath(target).catch(() => null);
-  if (doomed === null) return; // nothing there, or it went away under us — either way nothing to remove
-  const anchor = await realpath(root).catch(() => null);
-  const within = anchor === null ? "" : relative(anchor, doomed);
-  if (anchor === null || within.length === 0 || within.startsWith("..") || isAbsolute(within)) {
+  const doomed = await probe(realpath(target));
+  if (doomed.state === "unanswerable") throw cannotSee(root, target, doomed.reason);
+  if (doomed.state === "missing") return; // nothing there — and `rm` is force, so nothing to do
+
+  // The root's own resolution, and its failure is a *different* sentence. Swallowed, it made this refusal
+  // say "it isn't inside the project" about a target nothing had established anything about — advice to
+  // treat a path as hostile, printed because the project directory could not be resolved.
+  const anchor = await probe(realpath(root));
+  if (anchor.state !== "answered") {
+    throw new ConflictError({
+      message: `Pithy couldn't resolve the project directory, so ${relative(root, target) || target} was left alone.`,
+      action: "Check the project directory is there and readable, then run the command again.",
+      detail: `${anchor.state === "missing" ? "ENOENT" : anchor.reason} while resolving ${root}`,
+    });
+  }
+
+  const within = relative(anchor.value, doomed.value);
+  if (within.length === 0 || within.startsWith("..") || isAbsolute(within)) {
     throw new ConflictError({
       message: `Refusing to delete ${relative(root, target) || target}: it isn't inside the project.`,
       action: "Check what apps/ points at. If you didn't put it there, treat it as hostile.",
-      detail: `${target} resolves to ${doomed}, which is not under ${anchor ?? root}`,
+      detail: `${target} resolves to ${doomed.value}, which is not under ${anchor.value}`,
     });
   }
 
@@ -316,9 +381,10 @@ export type Survivors =
 /**
  * Read back what is still under `target`, relative to it.
  *
- * `lstat` first, and it is the whole distinction: only `ENOENT` means gone. Anything else the probe
- * cannot answer — `EACCES`, `ELOOP`, a mount that went away — is `unknown`, and so is a listing that
- * throws. Best effort about *what* is left, never about *whether* something is.
+ * `lstat` first, and it is the whole distinction: only `ENOENT` means gone. That rule is {@link probe}
+ * now, shared with the two gates above rather than stated once here — it was written down in this
+ * docstring while three sites nine lines up read every errno as "gone", which is how the delete gate came
+ * to report a removal it never made. Best effort about *what* is left, never about *whether* something is.
  *
  * A target that is there but not a directory is left with no paths under it: it is still there, which is
  * the fact the adopter acts on.
@@ -327,9 +393,10 @@ export type Survivors =
  * suite can stage against a real `rm`, and the only state the old sentence was ever true for.
  */
 export async function survivorsOf(target: string): Promise<Survivors> {
-  const entry = await lstat(target).catch((err: unknown) => errnoOf(err) ?? "unknown error");
-  if (typeof entry === "string") return entry === "ENOENT" ? { state: "gone" } : { state: "unknown", reason: entry };
-  if (!entry.isDirectory()) return { state: "left", paths: [] };
+  const entry = await probe(lstat(target));
+  if (entry.state === "missing") return { state: "gone" };
+  if (entry.state === "unanswerable") return { state: "unknown", reason: entry.reason };
+  if (!entry.value.isDirectory()) return { state: "left", paths: [] };
   try {
     return { state: "left", paths: (await readdir(target, { recursive: true })).sort() };
   } catch (err) {

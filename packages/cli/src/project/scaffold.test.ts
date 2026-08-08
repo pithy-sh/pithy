@@ -33,6 +33,7 @@ import {
   ensureScaffoldPath,
   kitRange,
   pathExists,
+  probe,
   RENAMED_ON_LANDING,
   removeScaffoldPath,
   resolveTemplateSource,
@@ -753,6 +754,51 @@ describe("removeScaffoldPath", () => {
 
   test("a missing target is not a delete — nothing there, nothing to refuse", async () => {
     await expect(removeScaffoldPath(dir, join(dir, "apps", "gone"))).resolves.toBeUndefined();
+  });
+
+  test("a target it could not even look at is not a missing one, and is never reported as removed", async () => {
+    // #165. Both probes here read every errno as "gone", so a `realpath` the kernel refused returned from
+    // this function having removed nothing and the caller printed success. Through `pithy remove <cap>`
+    // that is a false `capability/removed` audit record — see the caller's test below.
+    //
+    // **A non-searchable ancestor, not a non-writable target.** The two tests further down chmod the
+    // *target* to 0500/0300, which leaves it reachable through its parent: `lstat` and `realpath` both
+    // succeed and the `rm` is what fails. That is exactly why this survived a suite that already chmods.
+    const target = join(dir, "apps", "doomed");
+    await mkdir(join(target, "src"), { recursive: true });
+    await writeFile(join(target, "src", "index.ts"), "export default {};\n");
+    await chmod(join(dir, "apps"), 0o600); // readable, not searchable: nothing below it can be reached
+
+    const error = await removeScaffoldPath(dir, target).catch((cause: unknown) => cause);
+    await chmod(join(dir, "apps"), 0o700);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).toContain("couldn't check");
+    expect(payload.message).toContain(join("apps", "doomed"));
+    // Not "it isn't inside the project": nothing was established about where it is, and advice to treat a
+    // path as hostile is the wrong thing to print at someone whose permissions are simply in the way.
+    expect(payload.message).not.toContain("isn't inside the project");
+    expect(payload.detail).toContain("EACCES");
+    // The tree really is entire — the assertion the silent return contradicted.
+    expect(await readdir(target, { recursive: true })).toEqual(["src", join("src", "index.ts")].sort());
+  });
+
+  test("the probe tells missing from unanswerable, which is the whole of it", async () => {
+    // The rule `survivorsOf` documents, now shared by all three sites. The two `realpath` callers are
+    // reachable only by racing the walk that runs before them, so they are asserted here rather than
+    // staged — the same reason `survivorsOf` is exported.
+    expect(await probe(lstat(join(dir, "nowhere")))).toEqual({ state: "missing" });
+
+    const unreachable = join(dir, "apps");
+    await mkdir(join(unreachable, "board"), { recursive: true });
+    await chmod(unreachable, 0o600);
+    const blocked = await probe(lstat(join(unreachable, "board")));
+    await chmod(unreachable, 0o700);
+    expect(blocked).toEqual({ state: "unanswerable", reason: "EACCES" });
+
+    const answered = await probe(lstat(join(unreachable, "board")));
+    expect(answered.state).toBe("answered");
   });
 
   test("refuses a symlink between the root and the target, and deletes nothing through it", async () => {
