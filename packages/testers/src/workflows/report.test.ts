@@ -6,16 +6,21 @@ import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { describe, expect, test } from "vitest";
 import { TestersCohortClosedError } from "../error/errors";
 import type { CohortPassResult } from "./daily";
-import { logCohortFailure, logPassComplete } from "./worker";
+import { logCohortFailure, logPassComplete } from "./report";
 
 /**
- * The daily worker's two outputs, as records rather than as text.
+ * The daily pass's two outputs, as records rather than as text.
  *
- * A workers-project test because the module imports `cloudflare:workers` to extend `WorkflowEntrypoint`;
- * a node test cannot load it. Nothing here runs a pass — the pass has its own suite. What is proved is
- * the part an operator depends on: that a pass's tally arrives as queryable fields, that a cohort that
- * sent nothing is not reported at the same level as one that ran clean, and that a failed cohort keeps
- * its error payload — `detail` included — instead of being flattened into a message.
+ * Nothing here runs a pass — the pass has its own suite. What is proved is the part an operator depends
+ * on: that a pass's tally arrives as queryable fields, that a cohort that sent nothing is not reported at
+ * the same level as one that ran clean, and that a failed cohort keeps its error payload — `detail`
+ * included — instead of being flattened into a message.
+ *
+ * **A node test, and that is the point.** These two lived in `worker.ts` beside the Workflow class, so
+ * they could only be tested inside workerd — the module imports `cloudflare:workers` and a node process
+ * cannot load it. They are pure functions of a logger and a value and always were; the runtime was
+ * inherited from where they happened to sit (#189). Now that they sit in `report.ts`, this file loading
+ * at all is the proof that nothing drags workerd in behind them.
  */
 
 /** A logger whose records land in `records`, through the adapter's own injection point. */

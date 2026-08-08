@@ -9,7 +9,6 @@ import {
   lutimes,
   mkdir,
   mkdtemp,
-  readdir,
   readFile,
   readlink,
   realpath,
@@ -24,6 +23,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import { writeFileAtomic } from "./atomic";
 
 /**
@@ -736,11 +736,16 @@ function outsideOf(path: string): string {
  * scan reads import *clauses* rather than idioms, which is what makes aliasing (`rename as mv`), namespace
  * and default bindings, `promises` off `node:fs`, `require`, and dynamic `import` all count. What it cannot
  * see is a rename reached through a module that re-exports one.
+ *
+ * **The walk is `ci/sourceFiles.ts`, not a traversal written here.** This one had its own, and its own was
+ * the unhardened one: it descended into `packages/cli/.smoke-*` and `.e2e-*` — whole projects other suites
+ * scaffold and delete while this runs — and into `.worktrees/`, a second checkout of this repository read
+ * as if it were this one. `ENOENT … packages/cli/.smoke-OXGbGb/pithy.config.ts`, on a full-suite run
+ * (#185). Six tripwires had six traversals and six places to get that wrong separately; there is one now.
  */
 describe("the gate on the gate", () => {
   /** `packages/cli/src/project` → the repository. Asserted below, so a moved file fails loudly. */
   const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  const NOT_SOURCE = new Set(["node_modules", "dist", ".turbo", ".git", "coverage", ".changeset"]);
 
   /**
    * Every module in the repository that may reach a rename, and why it is not an atomic file write.
@@ -790,35 +795,23 @@ describe("the gate on the gate", () => {
     return found.size === 0 ? null : [...found].join(", ");
   }
 
-  /** Every `.ts` file in the repository that ships, test files and generated output excluded. */
-  async function sources(directory: string, into: string[]): Promise<string[]> {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (!NOT_SOURCE.has(entry.name)) await sources(path, into);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".d.ts")) continue;
-      into.push(path);
-    }
-    return into;
-  }
-
   test("scans the repository, not one directory of it", async () => {
     // The old version read `packages/cli/src` and nothing else, so the same code one directory out was
     // invisible to it. A silent walk that finds nothing would pass every assertion below, so the walk is
     // asserted before the rule is.
     expect(await stat(join(REPO_ROOT, "packages"))).toBeDefined();
     expect(await stat(join(REPO_ROOT, "biome.jsonc"))).toBeDefined();
-    expect((await sources(REPO_ROOT, [])).length).toBeGreaterThan(500);
+    expect(sourcePaths(REPO_ROOT).length).toBeGreaterThan(500);
+    // The CI scripts are in scope, and they are the one dotted directory that is. A `.github` script
+    // reaching a rename is a write to this repository nothing above would have reviewed.
+    expect(sourcePaths(REPO_ROOT).some((path) => path.includes(`${sep}.github${sep}`))).toBe(true);
   });
 
-  test("only the modules written down here can reach a rename", async () => {
+  test("only the modules written down here can reach a rename", () => {
     const reached = new Map<string, string>();
-    for (const path of await sources(REPO_ROOT, [])) {
-      const why = renameReach(await readFile(path, "utf8"));
-      if (why !== null) reached.set(relative(REPO_ROOT, path).split(sep).join("/"), why);
+    for (const source of sourceFiles(REPO_ROOT)) {
+      const why = renameReach(source.text);
+      if (why !== null) reached.set(relative(REPO_ROOT, source.path).split(sep).join("/"), why);
     }
 
     expect([...reached.keys()].sort(), "write down why, or route the write through writeFileAtomic").toEqual(

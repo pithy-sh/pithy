@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import { type EditorProcess, openInEditor, requireEditor, resolveEditor, runEditor } from "./editor";
 
 /** A POSIX host with every candidate installed and a human at the terminal — the ordinary case. */
@@ -328,11 +329,13 @@ describe("openInEditor", () => {
  * environment variable is read through, so a name assembled at runtime would pass. There is no AST to
  * walk (TypeScript 7 ships no parser API), and the rule belongs in Biome's `noRestrictedGlobals` no
  * more than the rename one does.
+ *
+ * The walk itself is `ci/sourceFiles.ts`. This traversal was hardened when it was written and
+ * `atomic.test.ts`'s was not, which is the whole argument for there being one of them (#185).
  */
 describe("the gate on the gate", () => {
   /** `packages/cli/src/platform` → the repository. Asserted below, so a moved file fails loudly. */
   const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  const NOT_SOURCE = new Set(["node_modules", "dist", ".turbo", ".git", "coverage", ".changeset"]);
 
   /** Every module in the repository that may resolve an editor, and why. Adding a line is the review. */
   const ALLOWED = new Map<string, string>([
@@ -359,42 +362,18 @@ describe("the gate on the gate", () => {
     return found.size === 0 ? null : [...found].sort().join(", ");
   }
 
-  /**
-   * Every `.ts` file in the repository that ships, test files and generated output excluded.
-   *
-   * **Dotted directories are skipped, `.github` excepted, and that is not tidiness.** Other suites
-   * scaffold whole projects into `packages/cli/.smoke-*` and `.e2e-*` while this runs and delete them
-   * on the way out, so a walk that descends into one collects paths that are gone before they can be
-   * read. The read below tolerates that too: a file that vanished mid-walk is not a file that resolves
-   * an editor, and a gate that fails on someone else's teardown is a gate people learn to re-run.
-   */
-  async function sources(directory: string, into: string[]): Promise<string[]> {
-    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        const skip = NOT_SOURCE.has(entry.name) || (entry.name.startsWith(".") && entry.name !== ".github");
-        if (!skip) await sources(path, into);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".d.ts")) continue;
-      into.push(path);
-    }
-    return into;
-  }
-
   test("scans the repository, not one directory of it", async () => {
     expect(await stat(join(REPO_ROOT, "packages"))).toBeDefined();
-    expect((await sources(REPO_ROOT, [])).length).toBeGreaterThan(500);
+    expect(sourcePaths(REPO_ROOT).length).toBeGreaterThan(500);
     // The CI scripts are in scope: a `.github` script that resolved an editor would hang a job forever.
-    expect((await sources(REPO_ROOT, [])).some((path) => path.includes(`${sep}.github${sep}`))).toBe(true);
+    expect(sourcePaths(REPO_ROOT).some((path) => path.includes(`${sep}.github${sep}`))).toBe(true);
   });
 
-  test("only the modules written down here can resolve an editor", async () => {
+  test("only the modules written down here can resolve an editor", () => {
     const reached = new Map<string, string>();
-    for (const path of await sources(REPO_ROOT, [])) {
-      const why = editorReach(await readFile(path, "utf8").catch(() => ""));
-      if (why !== null) reached.set(relative(REPO_ROOT, path).split(sep).join("/"), why);
+    for (const source of sourceFiles(REPO_ROOT)) {
+      const why = editorReach(source.text);
+      if (why !== null) reached.set(relative(REPO_ROOT, source.path).split(sep).join("/"), why);
     }
 
     expect([...reached.keys()].sort(), "write down why, or resolve the editor through resolveEditor").toEqual(

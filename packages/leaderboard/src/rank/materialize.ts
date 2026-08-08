@@ -36,6 +36,18 @@ export const MAX_BOUND_PARAMETERS = 100;
  */
 export const RANK_CHUNK_SIZE = 32;
 
+/**
+ * Chunks a refresh ranks before it checkpoints its cursor. `2000 * 32` is ~64k entries per Workflow step.
+ *
+ * The batch cap is stated here rather than in `worker.entry.ts`, which is the module that passes it as
+ * `maxChunks`. That module imports `cloudflare:workers`, so anything it exports is unreachable from a
+ * plain Node process, and a constant that reads as ordinary is exactly how #172 and #180 happened twice:
+ * a Node-side caller imports the number, gets workerd behind it, and the failure surfaces as
+ * `Could not load pithy.config.ts` — naming the config rather than the import. A pure value belongs in a
+ * pure module. `configEntrypoints.test.ts` is what holds that.
+ */
+export const REFRESH_BATCH_CHUNKS = 2000;
+
 /** The last entry a chunk ranked — where the next chunk (or the next batch's step) resumes. */
 export interface Keyset {
   score: number;

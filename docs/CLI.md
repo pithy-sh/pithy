@@ -808,7 +808,7 @@ Alias: installed (`p.` → `pithy`)
 Config dir: ~/.config/pithy
 State file: ~/.config/pithy/state.json
 Dev login:  ~/.config/pithy/acme/dev.json — none yet; sign-in stays magic-link only
-Secrets:    ~/.config/pithy/acme/secrets.jsonc
+Secrets:    ~/.config/pithy/acme/secrets.jsonc (run `pithy secrets edit`)
 Notifier:   enabled (PITHY_NO_UPDATE_NOTIFIER to disable)
 
 Project: pithy.config.ts found
@@ -841,6 +841,16 @@ healthy Worker collapses to one line, and the whole block is omitted when every 
 exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
 required binding is missing before deploy does.
 
+The block opens with a **`manifests:`** section when an installed `@pithy-sh/*` package ships a `pithy.manifest.json` that will not parse or will not validate. It sits above the Workers, and outside all of them, because that is where the fault is: manifests resolve once from the project root, so no Worker owns one — and a capability nobody can read contributes no drift to any check underneath it. Without this section a project full of unreadable manifests read as healthy and said nothing at all. It names the package and the reason, it **fails the exit** like every other check here, and it is the one finding in the block `pithy upgrade` cannot act on: the file belongs to someone else's package, so the fix is a reinstall or a word with its maintainer.
+
+```
+Project health:
+  manifests:
+    @pithy-sh/leaderboard: malformed pithy.manifest.json — reinstall it, or tell its maintainer
+      configOptions[0].key: not a bare identifier
+  api: healthy ✓
+```
+
 The **`Cloudflare:`** line answers "can I reach the account" — the bootstrap `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` pair, verified against Cloudflare rather than merely read (`docs/TOKENS.md`). A configured-but-broken credential fails the exit; an absent one does not, because a project that has not been provisioned yet is a legitimate state.
 
 The same line warns when the pair **came from two places**. The `.dev.vars` overlay works per key, so a file that sets only `CLOUDFLARE_API_TOKEN` silently takes `CLOUDFLARE_ACCOUNT_ID` from whatever the shell exports — one account's token against another account's id, and nothing disagrees for anything to catch. What you get is a confusing 403, or an empty listing, at some much later call. Doctor names which key came from the file and which from the environment, and this one line is all it adds: an otherwise clean report stays terse. It checks that one source decided the pair, not that the pair is right — a complete `.dev.vars` naming the wrong account is coherent, and coherent is all this can judge. Reported, never gated: the credentials may well work. A complete `.dev.vars`, a shell exporting a different account's whole pair over it, and CI (which has no `.dev.vars` at all) are all silent.
@@ -852,6 +862,8 @@ The **`Dev login:`** line names the one config file that is per project rather t
 The **`Secrets:`** line names your dev secret values — `<config>/<project>/secrets.jsonc`, the file `pithy add` mints into and `pithy seed` reads. **It is not in your repository, and that is the point.** `.dev.vars` has to sit in the worker's directory because wrangler reads it there; nothing but the CLI reads this one, so it lives outside every checkout — nothing to gitignore, nothing a `git add -A` can reach, nothing an `npm pack` can carry, and nothing an `rm -rf` on the working copy destroys. Delete the whole clone and the secrets are still there. Every worktree of one project resolves the same file with no setup step.
 
 Because nothing in the project points at it, this line prints on **every** run whether or not the file exists — where it *would* go is most of what anyone asking needs, and there is no other way to find out. The directory is `0700` and the file `0600`, held there on every write.
+
+**The line names the command as well as the path**, on the same rule the `Alias:` line follows when it offers `pithy alias`. A path outside the checkout is one no editor's file tree reaches and no `ls` in the project finds, so knowing it is not yet a way to open it — and this line is the only place in the toolchain positioned to say both.
 
 The file is keyed on your `pithy.config.ts` `name`, so two unrelated projects sharing a name share one file, and renaming a project leaves the old directory behind with every value in it. Dev-only values, so this is friction rather than danger — but invisible friction, so when this project has no file and others do, the line names them: `no file yet; secrets exist for acme-old — a renamed project leaves its old name here`.
 
@@ -900,7 +912,7 @@ Up to date.
 Shell: zsh
 Alias: installed
 
-Secrets: ~/.config/pithy/acme/secrets.jsonc
+Secrets: ~/.config/pithy/acme/secrets.jsonc (run `pithy secrets edit`)
 
 Project: pithy.config.ts found
 Project capabilities: all up to date
@@ -932,6 +944,17 @@ Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 
 The `Cloudflare:` check still runs there: `.dev.vars` is read from the directory either way, and "are my credentials right" is worth answering before `pithy init` as much as after.
 
+**`--json` mirrors every block above**, because an agent cannot read aligned columns. One line, one object, and the same exit code:
+
+```
+$ pithy doctor --json
+{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":"installed","configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"env":"dev"},"entitlements":{"ok":true,"gates":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"detail":"reachable (token active)"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
+```
+
+Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognised by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `devPreferences`, `devSecretsFile`, `devSecrets`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.
+
+`project.health.manifests` is the `manifests:` block above, and it is project-wide rather than per Worker for the same reason. `devSecrets.mode` is octal-formatted (`600`), because `384` is not a permission anybody recognises. `runtime` is the interpreter that ran, `node` the version it emulates — equal on Node, different under Bun.
+
 ### 5.7 Project capability updates
 
 Distinct from CLI updates. When run inside a Pithy project, the doctor command reports outdated capability packages alongside the CLI version. Two upgrade paths, two distinct commands:
@@ -942,6 +965,17 @@ Distinct from CLI updates. When run inside a Pithy project, the doctor command r
 | Project capabilities | `pithy upgrade` |
 
 These are intentionally separate. The CLI binary version is one concept; a project's capability versions are another. Conflating them would confuse the upgrade story and produce ambiguous commands.
+
+**Both capability commands report the manifests they could not read.** An installed `@pithy-sh/*` package whose `pithy.manifest.json` will not parse is a capability that vanishes from every plan, and a run that reconciled happily around the hole reported nothing at all. `pithy upgrade` prints the faults above the Workers, once, because manifests resolve from the project root and no Worker owns one; `pithy add --list` names them on stderr after the catalog, since a package it cannot read is one it cannot tell you is installed. Reported, never refused: one broken package must not cost an adopter the other fifteen entries. Neither command can fix it — the file belongs to somebody else's package.
+
+`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
+
+`pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
+
+```
+$ pithy add --list --json
+{"command":"add","capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":true}],"manifestFaults":[{"package":"@pithy-sh/leaderboard","reason":"configOptions[0].key: not a bare identifier"}]}
+```
 
 ### 5.8 Testing checklist
 
@@ -970,7 +1004,7 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 - **Supervises N workers.** Spawns each autostart worker, labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Section 6.3), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
-- **Makes the `.dev.vars` link every checkout has to make for itself.** The project keeps one `.dev.vars` at its root and each `apps/<worker>/.dev.vars` is a symlink to it. Both are git-ignored, so a clone inherits neither: `pithy init` makes the link for the developer who created the project, and everyone after them would otherwise write the `.dev.vars` the example tells them to and have wrangler report every secret in it absent. `pithy dev` re-makes the links on every run — it is the command that runs *after* the file exists, unlike a `postinstall`. A no-op when the project has no `.dev.vars`, and a worker holding a real `.dev.vars` of its own keeps it and is named in the output; nothing is ever replaced except a symlink.
+- **Generates every worker's `.dev.vars`.** wrangler loads a `.dev.vars` from the directory it runs in and merges nothing, so each `apps/<worker>/` needs its own file — and each one is written here, from sources that never leave your machine: the bootstrap values in `<config>/<project>/dev.json`, overridden by the repo's root `.dev.vars.local`, overridden in turn by that worker's own. There is nothing to inherit and nothing to wire. `pithy init` writes no `.dev.vars` at all, a clone has none, and `pithy dev` is the command that runs every time — unlike a `postinstall`, which runs before the values exist. Each generated file opens with a marker, and **a `.dev.vars` pithy did not write is never overwritten and never merged**: it is named, with `.dev.vars.local` offered as the place for local values, and that worker starts without one rather than with somebody else's file replaced underneath it. Idempotent by comparing content, never mtime — a second run writes no bytes, so wrangler's watcher has nothing to react to. The ordinary run says nothing; a refusal gets a sentence, and so does a worker whose `.dev.vars` was still a symlink from the design this replaced. Non-fatal in every direction: a worker that could not be written is named, and every other worker still starts.
 
 ### 6.2 Session state and cleanup
 
@@ -1009,7 +1043,7 @@ Port collisions are the one thing that stops two feature worktrees running simul
 
   `pithy dev` reads it as its start ports, and every worker's address is known ahead of time, so the workers auto-wire to each other. (Distinct from `.dev-state.json`, the running session's pid/child-pids from Section 6.2.) It is named for the feature's dev config, not for ports alone, so further per-feature dev settings land here without a rename.
 - **Ports are assigned at creation, never probed at startup.** Probing when a worker boots is a time-of-check/time-of-use race: two `pithy dev` processes in two worktrees can both observe the same port free and both try to bind it. Pre-assigning every worker its own port from a reserved block removes the race by construction — N features start simultaneously with nothing to negotiate.
-- **Per-feature values never go in `.dev.vars`.** That file is one shared secrets file for the whole repo — each worktree's, and each worker's, is a symlink to the main checkout's — so a per-feature value written there would clobber every other feature's. Shared secrets live in `.dev.vars`; per-feature ports live in `.dev.config.json`.
+- **Per-feature values never go in `.dev.vars`.** That file is generated (Section 6.1), so a value typed into it is gone on the next `pithy dev` — and the sources it is generated from are keyed on the project and held on the machine, which means every worktree of one project resolves the same ones. A per-feature value put there would clobber every other feature's. Shared secrets live in the dev secrets file; per-feature ports live in `.dev.config.json`.
 - `pithy dev` still verifies each assigned port is actually free (IPv4 + IPv6) before starting, and **reports a conflict rather than drifting** if something external grabbed one — a worker that quietly moves breaks every sibling that was told its address at creation. Because blocks are disjoint and stable, multiple worktrees run in unison and each feature's workers reach each other on their assigned localhost ports.
 
 > **Why one keyed registry, not a file per branch** (`.dev-ports.<branch>.json`)? A single file shows every allocation in one read, makes add/remove a one-key mutation, and leaves no stale per-branch files to garbage-collect. File-per-branch works but forces a glob-and-read-all to see what's taken.
@@ -1020,9 +1054,9 @@ Port collisions are the one thing that stops two feature worktrees running simul
 **`pithy feature sync`** — run from the worktree, no arguments, the branch says which feature it is. It makes the local environment ready whatever state it is in, and covers the two everyday cases with one command:
 
 - **You added a worker.** It takes the next free port from the feature's already-reserved block and leaves every existing worker exactly where it was.
-- **A colleague pushed the branch and you pulled it.** None of the local state is in git — `.dev.config.json`, the port reservation, and the `.dev.vars` links are all machine-local — so sync creates them on *your* machine, with your own free block, and migrates + seeds your local backend. (This is precisely why ports are never committed: your teammate's block may already be taken on your machine by one of your other worktrees.)
+- **A colleague pushed the branch and you pulled it.** None of the local state is in git — `.dev.config.json` and the port reservation are both machine-local — so sync creates them on *your* machine, with your own free block, and migrates + seeds your local backend. (This is precisely why ports are never committed: your teammate's block may already be taken on your machine by one of your other worktrees.) It touches no `.dev.vars`: each worker's is generated by `pithy dev` from sources that were already on your machine, so there is nothing here to share and nothing to lose.
 
-Every step is idempotent, so running it when nothing is missing reports that nothing moved. `--skip-data` reconciles ports and `.dev.vars` without touching the backend.
+Every step is idempotent, so running it when nothing is missing reports that nothing moved. `--skip-data` reconciles ports without touching the backend.
 
 ### 6.3.1 Naming and wiring a feature's live environment
 

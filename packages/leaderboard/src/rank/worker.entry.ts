@@ -8,7 +8,7 @@ import { leaderboardDatabase } from "../data/tables";
 import { pruneBoards } from "../retention/prune";
 import { windowKeyAt } from "../window/schedule";
 import { acquireRefreshLock, releaseRefreshLock } from "./lock";
-import { type Keyset, type RefreshResult, refreshWindowRanks } from "./materialize";
+import { type Keyset, REFRESH_BATCH_CHUNKS, type RefreshResult, refreshWindowRanks } from "./materialize";
 import { materializedBoards } from "./worker";
 
 /**
@@ -38,9 +38,6 @@ import { materializedBoards } from "./worker";
  * steps incur no CPU. Even firing every minute is well under the 500k-steps/month and 10M-requests/month
  * included tiers.
  */
-
-/** Entries ranked per step before checkpointing the cursor. 2000 chunks x 32 rows = ~64k entries/step. */
-export const REFRESH_BATCH_CHUNKS = 2000;
 
 interface RankWorkerEnv {
   DB: D1Database;

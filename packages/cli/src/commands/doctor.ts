@@ -678,13 +678,21 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
    * every checkout since #156 — nothing in the project names it and `ls` will not find it — so a terse
    * report that omitted it left the adopter with no way to find it at all (#166). `null` outside a
    * project with a resolvable name, where there is no path to name.
+   *
+   * **It names the command as well as the path**, on the same rule as `Alias: not installed (run `pithy
+   * alias`)`. Knowing where a file is is not the same as having a way to open it: this one is outside the
+   * checkout, so no editor's file tree reaches it and no `ls` in the project finds it. The line was the
+   * one place an adopter learned the path, and the path was all it gave — leaving "resolve it yourself
+   * and open it" as the workflow. `pithy secrets edit` (#157) is that step, and this is the only line in
+   * the toolchain positioned to mention it.
    */
   const secretsLocation =
     report.devSecretsFile === null
       ? null
       : (() => {
           const detail = describeDevSecretsLocation(report.devSecretsFile);
-          return `${tildify(report.devSecretsFile.path, home)}${detail ? ` — ${detail}` : ""}`;
+          const path = tildify(report.devSecretsFile.path, home);
+          return `${path} (run \`pithy secrets edit\`)${detail ? ` — ${detail}` : ""}`;
         })();
 
   // CLI version.
