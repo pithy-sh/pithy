@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
 
 const run = promisify(execFile);
 
@@ -50,7 +51,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rm(workDir, { recursive: true, force: true });
+  await removeTempDir(workDir);
 });
 
 /** The starter's committed files, from the index of the repo this test runs in. */
@@ -98,7 +99,7 @@ async function dirtyCheckout(root: string): Promise<string> {
   }
   await writeFile(join(cli, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const git = (...args: string[]) => run("git", ["-C", root, ...args]);
+  const git = (...args: string[]) => run("git", ["-C", root, ...GIT_NO_MAINTENANCE, ...args]);
   await git("init", "--quiet");
   await git("config", "user.email", "test@pithy.invalid");
   await git("config", "user.name", "Pithy Test");
@@ -179,7 +180,7 @@ describe("resolveTemplateDir", () => {
       const { resolveTemplateDir } = await import("./scaffold");
       expect(resolveTemplateDir(moduleDir)).toBe(own);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeTempDir(root);
     }
   });
 
@@ -196,7 +197,7 @@ describe("resolveTemplateDir", () => {
       const { resolveTemplateDir } = await import("./scaffold");
       expect(resolveTemplateDir(moduleDir)).toBe(source);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeTempDir(root);
     }
   });
 
@@ -208,7 +209,7 @@ describe("resolveTemplateDir", () => {
       const { resolveTemplateDir } = await import("./scaffold");
       expect(() => resolveTemplateDir(moduleDir)).toThrow(/missing its starter template/);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeTempDir(root);
     }
   });
 });

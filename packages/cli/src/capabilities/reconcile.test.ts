@@ -1,13 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readdirSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import {
+  CapabilityManifest,
+  CONFIG_LINE_WIDTH,
+  CONFIG_OPTION_INDENT,
+  renderConfigOptionLine,
+} from "@pithy-sh/core/src/capability/manifest";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
+import { addCapability } from "./add";
 import { applyReconcilePlan, buildReconcilePlan, type ReconcilePlan, type RunMigrate } from "./reconcile";
 
 /**
@@ -302,6 +311,30 @@ describe("buildReconcilePlan — config keys", () => {
       default: "/auth",
       describe: "Where the auth routes mount.",
     });
+  });
+
+  test("reports and writes an option the adopter fills in by hand, as the empty literal", async () => {
+    // The other half of #161. `pithy add secrets` now scaffolds the required `registry`, but a project
+    // that composed secrets before it did has a registration missing the key — and `pithy upgrade` is
+    // what closes that gap. Its own copy of the option's value type was the scalar union, so a manifest
+    // stating `{}` failed to parse and the one key an existing project needed was the one it could not
+    // report. Written empty, for the reason `add` writes it empty: the contents are the adopter's.
+    await writeManifest(dir, {
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [{ key: "registry", default: {}, describe: "Your secrets. Declare each one here." }],
+    });
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
+
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const auth = plan.perCapability.find((cap) => cap.name === "auth");
+    expect(auth?.missingConfigKeys).toEqual([
+      { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
+    ]);
+
+    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toContain("registry: {},");
   });
 
   test("never reports a key already present, even with an adopter-changed value", async () => {
@@ -718,4 +751,128 @@ describe("applyReconcilePlan — config-key insertion edge cases (regression)", 
     expect(src).toContain("debug: false,");
     expect(src).toContain("note with a } brace"); // the comment survives intact
   });
+});
+
+/**
+ * `pithy add` and `pithy upgrade` are two writers of one line, and for a while they were two renderers
+ * of it. `upgrade` called `JSON.stringify` where `add` called `renderConfigValue`, so one manifest
+ * produced `{"code":"chips"}` here and `{ code: "chips" }` there — and only the second survived the
+ * `biome check` a scaffolded project runs on itself (#171).
+ *
+ * Both now render through `renderConfigOptionLine`, and this is the test that stops a third producer:
+ * it does not assert a string, it asserts the two commands agree.
+ */
+describe("pithy add and pithy upgrade render one default one way", () => {
+  const ledgerManifest = {
+    name: "ledger",
+    package: "@pithy-sh/ledger",
+    requiredBindings: [],
+    configOptions: [
+      {
+        key: "currencies",
+        default: [{ code: "chips", name: "Chips" }],
+        describe: "Every currency this app's ledger holds.",
+      },
+      { key: "adminScope", default: "ledger:admin", describe: "The scope a session must carry." },
+    ],
+  };
+
+  /** The one line a config file carries for an option — what the two writers are compared on. */
+  function optionLine(source: string, key: string): string | undefined {
+    return source.split("\n").find((line) => line.trimStart().startsWith(`${key}:`));
+  }
+
+  test("the same manifest default lands as the same line from either command", async () => {
+    await writeManifest(dir, ledgerManifest);
+
+    // `pithy add` writes the whole registration into a Worker that has none.
+    const addedDir = await addWorker("added");
+    await addCapability({ workerDir: addedDir, manifest: CapabilityManifest.parse(ledgerManifest) });
+    const added = await readFile(join(addedDir, "pithy.config.ts"), "utf8");
+
+    // `pithy upgrade` splices the same options into a one-liner registration in the other Worker.
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    ledger(),"));
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("ledger") });
+    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    const upgraded = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+
+    for (const key of ["currencies", "adminScope"]) {
+      expect(optionLine(added, key)).toBeDefined();
+      expect(optionLine(upgraded, key)).toBe(optionLine(added, key));
+    }
+    // And the shape is Biome's, not JSON's — the thing that made the two differ in the first place.
+    expect(optionLine(upgraded, "currencies")).toBe('      currencies: [{ code: "chips", name: "Chips" }],');
+  });
+
+  test("an inline block an adopter wrote by hand gets the same rendering, not JSON", async () => {
+    await writeManifest(dir, ledgerManifest);
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith('    ledger({ adminScope: "ops:admin" }),'));
+
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("ledger") });
+    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+
+    const src = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+    expect(src).toContain('currencies: [{ code: "chips", name: "Chips" }],');
+    expect(src).not.toContain('{"code":"chips"');
+  });
+});
+
+/** `packages/` — this file lives at `packages/cli/src/capabilities/`. */
+const PACKAGES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/** Every capability package that ships a manifest, as `[name, manifest]`. */
+function shippedManifests(): [string, CapabilityManifest][] {
+  const found: [string, CapabilityManifest][] = [];
+  for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    let raw: string;
+    try {
+      raw = readFileSync(join(PACKAGES, pkg.name, "pithy.manifest.json"), "utf8");
+    } catch {
+      continue; // not a capability package (cli, test-utils, …)
+    }
+    found.push([pkg.name, CapabilityManifest.parse(JSON.parse(raw))]);
+  }
+  return found;
+}
+
+/**
+ * The width rule, as a gate rather than a sentence.
+ *
+ * `renderConfigValue`'s contract has always said a default must fit on one line, because Biome breaks
+ * any literal past its configured width and a broken literal is a `biome check` failure on a project the
+ * adopter has not touched — #161 and #168 both. Nothing checked it, and the margin was thinner than it
+ * looks: multiplayer's seed is 98 columns of 120, and a game with a two-move catalog reaches 133.
+ *
+ * So it is checked here, over every manifest the repo ships, at the indent the writers really use. A
+ * sixteenth capability with a default one line too wide fails the build instead of an adopter's first
+ * `bun run lint`. The manifests are read from the packages rather than from `node_modules`, so a seed
+ * fails the moment it is written, not the moment it is published.
+ */
+describe("every shipped manifest default fits the line Biome would keep", () => {
+  const manifests = shippedManifests();
+
+  test("the repo ships manifests to check", () => {
+    expect(manifests.length).toBeGreaterThan(10);
+  });
+
+  test("the budget is the scaffold's own lineWidth, not a number remembered from one", () => {
+    // The gate is only honest while it tracks the biome.jsonc `pithy init` writes. Change that
+    // `lineWidth` and this fails, which is the moment to change CONFIG_LINE_WIDTH with it.
+    const template = readFileSync(join(PACKAGES, "..", "templates", "starter", "biome.template.jsonc"), "utf8");
+    const scaffold = parse(template) as { formatter?: { lineWidth?: number } };
+    expect(scaffold.formatter?.lineWidth).toBe(CONFIG_LINE_WIDTH);
+  });
+
+  for (const [pkg, manifest] of manifests) {
+    for (const option of manifest.configOptions) {
+      test(`${pkg}: ${option.key}`, () => {
+        const line = renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT);
+        expect(
+          line.length,
+          `${pkg}'s ${option.key} default renders ${line.length} columns. Biome breaks past ${CONFIG_LINE_WIDTH}, and the exploded literal fails biome check on an untouched scaffold. Shrink the example.`,
+        ).toBeLessThanOrEqual(CONFIG_LINE_WIDTH);
+      });
+    }
+  }
 });

@@ -18,13 +18,18 @@
   ],
   "configOptions": [
     {
+      "key": "boards",
+      "default": [{ "key": "high-scores", "direction": "desc" }],
+      "describe": "Every board this app ranks. Replace this example — an all-time board where the highest score wins, which is the smallest board that works and the one shape that needs no rank worker at all. `key` is a URL path segment; `direction` is `desc` (highest wins) or `asc` (lowest wins) and is immutable once entries land, because flipping it would reinterpret every stored score. Add a `window` CRON (`0 0 * * *` daily, `0 0 1 * *` calendar month) to make the board periodic. At least one board is required."
+    },
+    {
       "key": "rank",
       "default": "live",
-      "describe": "How rank is computed: `live` (default — counted per request, always correct, $0 under ~10k players, quadratic past that) or `{ materialize: '<cron>' }` (a stored rank column refreshed on a schedule, the documented path past ~100k players). A player's own score stays live in both modes, which hides most of the staleness. Edit the `boards` array by hand to define boards."
+      "describe": "How rank is computed: `live` (default — counted per request, always correct, $0 under ~10k players, quadratic past that) or `{ materialize: '<cron>' }` (a stored rank column refreshed on a schedule, the documented path past ~100k players). A player's own score stays live in both modes, which hides most of the staleness."
     },
     {
       "key": "serverAuthoritative",
-      "default": "true",
+      "default": true,
       "describe": "Require the `leaderboard:submit` scope to post a score. On by default, inverting the vendor norm — every platform that offers server-authoritative writes ships it off. Turn it off only if you accept that a player's device can post any score it likes."
     }
   ]

@@ -17,12 +17,14 @@ dist/
 !.dev.vars.example
 
 # env & secrets
+# No dev secrets line. They live at <config>/<project>/secrets.jsonc, outside every checkout, so there
+# is nothing here to ignore — and `.dev.secrets.example.jsonc` is committed documentation. See #156.
 .env
 .env.*
 !.env.example
 
-# atomic-write temp siblings (.dev.vars.<rand>.tmp, .dev.secrets.jsonc.<rand>.tmp, …). A write
-# interrupted by SIGINT leaves one holding the full plaintext; it must never be committable.
+# atomic-write temp siblings (.dev.vars.<rand>.tmp, …). A write interrupted by SIGINT leaves one
+# holding the full plaintext; it must never be committable.
 *.tmp
 
 # local-only notes and scratch (never committed)

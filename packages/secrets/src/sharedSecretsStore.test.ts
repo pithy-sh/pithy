@@ -4,7 +4,8 @@
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { initialVersionedValue } from "./crypto/versionedValue";
-import { SecretCryptoError } from "./error/errors";
+import type { SecretsStoreEnv } from "./env/bindings";
+import { SecretCryptoError, SecretNotFoundError } from "./error/errors";
 import { defineSecretRegistry, type SecretRegistry } from "./registry";
 import { SecretsAccessor } from "./secretsStore";
 import {
@@ -128,6 +129,67 @@ describe("sharedSecretsStore", () => {
 
   test("defaults the TTL to 60 seconds", () => {
     expect(DEFAULT_SECRETS_CACHE_TTL_SECONDS).toBe(60);
+  });
+});
+
+describe("sharedSecretsStore — an unset secret in one capability, a read in another (#170)", () => {
+  // The reproduction, end to end and through the real resolver: two capabilities compose, one of them
+  // declares a credential that is only needed when its provider is enabled, and nothing sets it. Every
+  // entry here is `cf-secrets-store`, so the Node project needs no D1 — the seam under test is the
+  // combined registry, not the backend.
+  const authSlice = defineSecretRegistry({
+    "auth-session-secret": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
+    "auth-google-credentials": {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      notes: "Read only when the provider is enabled.",
+    },
+  });
+  const paymentsSlice = defineSecretRegistry({
+    "payments-webhook-secret": {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: true,
+      valueType: "text",
+    },
+  });
+
+  /** A worker env with the two configured secrets bound, and the optional one absent. */
+  const workerEnv = {
+    SECRETS: undefined,
+    SECRETS_ENCRYPTION_KEYS: "",
+    "auth-session-secret": "sess",
+    "payments-webhook-secret": "whsec",
+  } as unknown as SecretsStoreEnv;
+
+  function composed(): void {
+    const auth = defineCapability({ name: "auth", requiredBindings: [], secretRegistry: authSlice });
+    const payments = defineCapability({ name: "payments", requiredBindings: [], secretRegistry: paymentsSlice });
+    // The real `secretsStore` — no `resolve` seam. The whole point is that the resolution succeeds.
+    configureSharedSecrets({ registry: aggregateSecretRegistries([auth, payments]) });
+  }
+
+  test("both capabilities read their own configured secret", async () => {
+    composed();
+    expect((await sharedSecretsStore(workerEnv, authSlice)).get("auth-session-secret")).toBe("sess");
+    expect((await sharedSecretsStore(workerEnv, paymentsSlice)).get("payments-webhook-secret")).toBe("whsec");
+  });
+
+  test("the unset one still fails when it is the secret actually read, and it names itself", async () => {
+    composed();
+    const accessor = await sharedSecretsStore(workerEnv, authSlice);
+    const error = (() => {
+      try {
+        accessor.get("auth-google-credentials");
+      } catch (e: unknown) {
+        return e;
+      }
+      throw new Error("expected the read to throw");
+    })();
+    expect(error).toBeInstanceOf(SecretNotFoundError);
+    expect(JSON.stringify((error as SecretNotFoundError).payload)).toContain("auth-google-credentials");
   });
 });
 

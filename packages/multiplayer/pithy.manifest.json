@@ -23,9 +23,14 @@
   ],
   "configOptions": [
     {
+      "key": "games",
+      "default": [{ "key": "tic-tac-toe", "kind": "connect-n", "rules": { "rows": 3, "cols": 3, "connect": 3 } }],
+      "describe": "Every game this app runs. Replace this example — it is tic-tac-toe, the smallest game that actually plays: the built-in `connect-n` model on a 3x3 board where three in a line wins, two players, no wagering and no ledger. `kind` names a model (`battle`, `connect-n`, `craps`, or one you register with `registerGameModel`) and `rules` is that model's own block. At least one game is required."
+    },
+    {
       "key": "basePath",
       "default": "/multiplayer",
-      "describe": "Where the multiplayer routes mount. Sessions are created at POST `<basePath>/games/:game`, joined and played (`/action`) under `<basePath>/sessions/:id`. Edit the `games` array by hand — each game names a model by `kind` and carries that model's `rules`."
+      "describe": "Where the multiplayer routes mount. Sessions are created at POST `<basePath>/games/:game`, joined and played (`/action`) under `<basePath>/sessions/:id`."
     }
   ]
 }

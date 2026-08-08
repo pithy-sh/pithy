@@ -46,16 +46,22 @@ describe("addWorker", () => {
     });
 
     expect(installed).toBe(true);
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
+    expect(report).toEqual({
+      name: "web",
+      dir: join(dir, "apps", "web"),
+      port: null,
+      reconciled: false,
+      devVarsRefused: [],
+    });
     await stat(join(dir, "apps", "web", "wrangler.jsonc")); // the scaffold landed
   });
 
-  test("reports the sibling that kept its own .dev.vars, rather than dropping the list on the floor", async () => {
-    // `worker add web` wires *every* worker it discovers. apps/board keeping its own secrets is the
-    // situation `pithy dev` now names out loud, and the command that caused it said nothing at all.
-    await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
+  test("reports the sibling whose .dev.vars pithy did not write, rather than dropping the list", async () => {
+    // `worker add web` regenerates *every* worker it discovers. apps/board keeping its own file is the
+    // situation `pithy dev` names out loud, and the command that met it said nothing at all.
     const boardDir = join(dir, "apps", "board");
     await mkdir(boardDir, { recursive: true });
+    await writeFile(join(boardDir, "wrangler.jsonc"), "{}\n");
     await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
 
     const report = await addWorker({
@@ -66,17 +72,17 @@ describe("addWorker", () => {
       discoverWorkers: discover(dir, ["board", "web"]),
     });
 
-    expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+    expect(report.devVarsRefused.join("\n")).toContain(join(boardDir, ".dev.vars"));
     expect(await readFile(join(boardDir, ".dev.vars"), "utf8")).toBe("BOARD_ONLY=super-secret\n");
   });
 
-  test("in a feature worktree it reports the kept list too — the sync that wires them does not carry it", async () => {
+  test("in a feature worktree it reports the refusals too — SyncReport does not carry them", async () => {
     const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
     const worktree = join(mainRoot, ".worktrees", "73-demo");
     const boardDir = join(worktree, "apps", "board");
     await mkdir(boardDir, { recursive: true });
     await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
-    await writeFile(join(mainRoot, ".dev.vars"), "SHARED=abc\n");
+    await writeFile(join(boardDir, "wrangler.jsonc"), "{}\n");
     await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
     try {
       const report = await addWorker({
@@ -88,7 +94,7 @@ describe("addWorker", () => {
         discoverWorkers: discover(worktree, ["board", "web"]),
       });
 
-      expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+      expect(report.devVarsRefused.join("\n")).toContain(join(boardDir, ".dev.vars"));
     } finally {
       await rm(mainRoot, { recursive: true, force: true });
     }
@@ -140,7 +146,13 @@ describe("addWorker", () => {
       },
       discoverWorkers: discover(dir, ["app", "web"]),
     });
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
+    expect(report).toEqual({
+      name: "web",
+      dir: join(dir, "apps", "web"),
+      port: null,
+      reconciled: false,
+      devVarsRefused: [],
+    });
     await stat(join(dir, "apps", "web", "wrangler.jsonc"));
   });
 
@@ -169,11 +181,9 @@ describe("addWorker", () => {
     }
   });
 
-  test("wires .dev.vars before the install, so a failed install cannot be why a worker has none", async () => {
+  test("generates .dev.vars before the install, so a failed install cannot be why a worker has none", async () => {
     // The ordering that broke every worker after the first: the install ran first and threw, and the
-    // dev-vars link below it never ran at all. The link is the convention `pithy init` established —
-    // one `.dev.vars` at the project root, symlinked into every worker.
-    await writeFile(join(dir, ".dev.vars"), "SHARED=1\n");
+    // dev-vars step below it never ran at all.
     const order: string[] = [];
     await addWorker({
       projectDir: dir,
@@ -182,12 +192,13 @@ describe("addWorker", () => {
       install: async () => {
         order.push("install");
         // Whatever the worker looks like when the install runs is what it looks like afterwards.
-        order.push((await lstat(join(dir, "apps", "web", ".dev.vars"))).isSymbolicLink() ? "linked" : "plain");
+        const entry = await lstat(join(dir, "apps", "web", ".dev.vars")).catch(() => null);
+        order.push(entry?.isFile() ? "generated" : "missing");
       },
       discoverWorkers: discover(dir, ["app", "web"]),
     });
 
-    expect(order).toEqual(["install", "linked"]);
+    expect(order).toEqual(["install", "generated"]);
   });
 
   test("a failed install leaves nothing behind, so the same command works on the retry", async () => {
@@ -584,6 +595,38 @@ describe("renameWorker", () => {
         probeDeployed: account(),
       }),
     ).rejects.toThrow(ConflictError);
+  });
+
+  test("a symlink at apps/<from> is refused — the source is gated too, not only the destination", async () => {
+    // #164, the seventh producer of this class and its third verb. The destination was gated and the
+    // source was not, so `rename` moved the *link* to `apps/board` — still pointing outside the project —
+    // and the `wrangler.jsonc` and `package.json` rewrites below then went straight through it. Reproduced
+    // against a canary directory: the command reported success and left the canary's files renamed.
+    const canary = join(dir, "canary");
+    await mkdir(canary, { recursive: true });
+    await writeFile(join(canary, "wrangler.jsonc"), '{ "name": "acme-api" }\n');
+    await writeFile(join(canary, "package.json"), `${JSON.stringify({ name: "acme-api" }, null, 2)}\n`);
+    await mkdir(join(dir, "apps"), { recursive: true });
+    await symlink(canary, join(dir, "apps", "api"));
+
+    const error = await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    // The sentence is the move's, not the scaffold's: nothing was being scaffolded, and the wording an
+    // adopter acts on has to describe the command that printed it.
+    expect((error as ConflictError).payload.action).toContain("move through a link");
+    // Nothing moved, and nothing was written through the link.
+    expect((await lstat(join(dir, "apps", "api"))).isSymbolicLink()).toBe(true);
+    await expect(stat(join(dir, "apps", "board"))).rejects.toThrow();
+    const pkg = JSON.parse(await readFile(join(canary, "package.json"), "utf8")) as { name: string };
+    expect(pkg.name).toBe("acme-api");
   });
 
   test("throws NotFoundError when the worker does not exist", async () => {

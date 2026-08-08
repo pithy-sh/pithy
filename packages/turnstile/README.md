@@ -21,7 +21,7 @@ app.use("/lead", turnstile({ mode: "invisible" }));    // pick a widget when you
 
 On each request it:
 
-1. Resolves the widget secret through `@pithy-sh/secrets` — the secret `turnstile-secret-keys`, read via the one `secretsStore` reader like every Pithy secret (CLAUDE.md §secrets). The reader, not this package, decides where it lives (its registry entry says); the read is identical everywhere. The resolved value is `{ "visible": { "key": "…" }, "invisible": { "key": "…" } }`; with one widget it picks the only entry, with both `mode` selects. The app must have the `secrets` capability; in local dev the secret resolves from `.dev.vars`.
+1. Resolves the widget secret through `@pithy-sh/secrets` — the secret `turnstile-secret-keys`, read via the one `secretsStore` reader like every Pithy secret (CLAUDE.md §secrets). The reader, not this package, decides where it lives (its registry entry says); the read is identical everywhere. The resolved value is `{ "visible": { "key": "…" }, "invisible": { "key": "…" } }`; with one widget it picks the only entry, with both `mode` selects. The app must have the `secrets` capability; the secret is `backend: "d1"`, so it resolves from the secrets store in every environment, local dev included.
 2. Reads the response token — the `cf-turnstile-response` body field by default (form or JSON), or a header (`turnstile({ header: "x-turnstile-token" })`).
 3. Verifies it against Cloudflare's `/siteverify`, sending the caller IP (`CF-Connecting-IP`). When `action` is set, it asserts the returned action matches and denies on mismatch (binding the token to the route it was solved for).
 4. On success, lets the request continue to its real verification strategy. On failure, throws a `PithyError`.
@@ -62,7 +62,7 @@ turnstile({
 
 `pithy add turnstile` installs the package and wires its config; the secrets capability must be present (`pithy add secrets` → `pithy secrets provision`) since the widget secret is stored and read through `@pithy-sh/secrets`. `pithy turnstile provision` then wires everything per environment:
 
-- **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into `.dev.vars`, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable.
+- **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into the local secrets store, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable.
 - **Only `prod` provisions a real widget**, bound to the production domain in the configured mode. Its secret is written to the **`prod` secrets store**; the public sitekeys are written to the worker vars.
 
 The widget is named `<project>-prod-turnstile-<mode>` — the one naming rule, see [docs/NAMING.md](../../docs/NAMING.md). `prod` sits in the environment slot because that is the only environment with a real widget; dev and staging wire the test keys and create nothing. The project segment is not decoration: a Turnstile widget is account-scoped and provisioning is reuse-or-create **by name**, so without it a second Pithy project in the same account adopts the first's widget and `deprovision` deletes it.
@@ -75,29 +75,55 @@ If you genuinely need to sit alongside an existing widget — a hand-made one yo
 
 Because the secret is read through `secretsStore`, there is **no separate binding to materialize at deploy** — a production worker resolves it the same way it resolves every secret. (The `staging`/`prod` writes go through the deployed secrets manager, so `pithy secrets provision` must have run for those environments.)
 
-## `.dev.vars`
+## Setting the dev value
 
-`pithy turnstile provision` writes the dev value for you. To set it by hand, the secret is `turnstile-secret-keys`, injected as a `.dev.vars` string in the same shape it is stored — a JSON object keyed by widget mode, so one or both widgets share it:
+`pithy turnstile provision` writes it for you, and that is the shortest path.
 
-```sh
-# .dev.vars — local dev gate (one widget)
-turnstile-secret-keys={"visible":{"key":"1x0000000000000000000000000000000AA"}}   # CF test secret: always passes
-# Swap the key for 2x0000000000000000000000000000000AA to exercise the deny path.
-TURNSTILE_SITEKEY_VISIBLE=1x00000000000000000000AA          # public sitekey your front-end renders with
+To set it by hand, the secret is `turnstile-secret-keys` and it goes in the **dev secrets file**, not in
+`.dev.vars`. `pithy doctor` prints the path. Its `backend` is `d1`, so it
+is read from the secrets store in every environment — a `d1` secret written into `.dev.vars` is not read
+at all, and the Worker says so: *"bound as a plain value, and a d1 secret is never read from a binding"*.
+
+The value is a JSON object keyed by widget mode, so one or both widgets share it, and every value in that
+file is a versioned envelope:
+
+```jsonc
+// one widget. 1x000…AA is Cloudflare's test secret: always passes.
+// Swap it for 2x000…AA to exercise the deny path.
+"turnstile-secret-keys": {
+  "currentVersion": "1",
+  "versions": { "1": { "visible": { "key": "1x0000000000000000000000000000000AA" } } }
+}
 ```
 
-With both widgets, add a second entry to the same object (and pass `turnstile({ mode })` on each route):
+With both widgets, add a second entry to the same object and pass `turnstile({ mode })` on each route:
+
+```jsonc
+"turnstile-secret-keys": {
+  "currentVersion": "1",
+  "versions": {
+    "1": {
+      "visible":   { "key": "1x0000000000000000000000000000000AA" },
+      "invisible": { "key": "1x0000000000000000000000000000000AA" }
+    }
+  }
+}
+```
+
+The **sitekeys are public** and are not secrets, so they stay in `.dev.vars` as ordinary bindings:
 
 ```sh
-# .dev.vars — local dev gate (visible + invisible widgets)
-turnstile-secret-keys={"visible":{"key":"1x0000000000000000000000000000000AA"},"invisible":{"key":"1x0000000000000000000000000000000AA"}}
 TURNSTILE_SITEKEY_VISIBLE=1x00000000000000000000AA
 TURNSTILE_SITEKEY_INVISIBLE=1x00000000000000000000BB
 ```
 
-Dev also needs the `secrets` capability in scope — the reader's dev path resolves the secret from the `.dev.vars` string above. Running `pithy turnstile provision` / `deprovision` additionally needs the Cloudflare bootstrap credentials (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the same ones `email` and `secrets` use.
+Dev also needs the `secrets` capability in scope, and a `pithy migrate` — the store the reader reads is a
+real D1 table. Running `pithy turnstile provision` / `deprovision` additionally needs the Cloudflare
+bootstrap credentials (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), the same ones `email` and
+`secrets` use.
 
-The package's own test suite reads none of these — the Workers-runtime tests inject the dummy secret directly.
+The package's own test suite reads none of these. Its Workers-runtime tests seed a real encrypted row
+through the shared fixture in `@pithy-sh/secrets/src/test-utils`, which is the same path production takes.
 
 ## Testing against Turnstile
 

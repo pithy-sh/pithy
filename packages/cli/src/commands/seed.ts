@@ -6,6 +6,8 @@ import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
+import { renderDevSecretsNotes } from "../devSecrets/report";
+import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
 import { loadProject, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
@@ -166,6 +168,24 @@ export default defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
 
+      // Dev secrets first, and only for `dev`. The dev secrets file is machine-local — there is no staging
+      // copy of it, and a deployed environment's secrets come from `pithy secrets create` through the
+      // manager Workflow. Before the fixtures, because a fixture that signs a token or a link needs the
+      // key that signs it to already be in the store.
+      //
+      // Never fatal to a `--dry-run`, and never run by one: a dry run writes nothing, and seeding a
+      // secret is a write.
+      const devSecrets =
+        env === "dev" && !dryRun ? await seedProjectDevSecrets({ projectDir }) : (null as DevSecretsSeedReport | null);
+      if (devSecrets && !args.json) {
+        for (const line of renderDevSecretsNotes(devSecrets)) process.stdout.write(`${line}\n`);
+      }
+      // A `.dev.vars` pithy did not generate is never overwritten and never merged (#154) — so a Worker
+      // that was supposed to get one has not got one, and that is a failed run. The lines above already
+      // name the file and point at `.dev.vars.local`; this is what makes a script notice. Not a throw:
+      // the fixtures below are the rest of the run and they are worth doing.
+      if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = 1;
+
       const report = await seedProject({
         projectDir,
         // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
@@ -191,7 +211,7 @@ export default defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ ...report, devSecrets })}\n`);
         return;
       }
 

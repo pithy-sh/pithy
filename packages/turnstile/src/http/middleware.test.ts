@@ -2,35 +2,46 @@
 // SPDX-License-Identifier: MIT
 
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
-import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { type SecretFixture, stubSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "../secret/registry";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { TURNSTILE_SECRET_NAME, type TurnstileSecrets, turnstileSecretsRegistry } from "../secret/registry";
 import { siteverify, type TurnstileOptions, turnstile } from "./middleware";
 
-// The middleware reads its secret through the shared per-invocation accessor, so configure it from
-// turnstile's slice before each case (and reset after) — each case then resolves fresh from its env.
-beforeEach(() => configureSharedSecrets({ registry: turnstileSecretsRegistry }));
-
 const SECRET = "1x0000000000000000000000000000000AA";
-/** The single binding holds a JSON object keyed by mode. A one-widget app has one entry. */
-const ONE_WIDGET = JSON.stringify({ visible: { key: SECRET } });
+/** The single secret holds one entry per configured widget. A one-widget app has one. */
+const ONE_WIDGET: TurnstileSecrets = { visible: { key: SECRET } };
 
-/** A tiny app that stacks `turnstile()` on a public POST route, with the env binding seeded. */
-function app(options?: TurnstileOptions, env: Record<string, unknown> = { [TURNSTILE_SECRET_NAME]: ONE_WIDGET }) {
+/**
+ * A tiny app that stacks `turnstile()` on a public POST route, with the secret provisioned.
+ *
+ * There is no D1 in the Node project, so the value is installed on the shared accessor rather than
+ * seeded as a row — `@pithy-sh/secrets`' `test-utils/secretFixtures` explains which idiom belongs to
+ * which runtime. A case may pass `{}` to provision nothing, which is how "declared but never
+ * provisioned" is expressed.
+ */
+function app(options?: TurnstileOptions, secrets: SecretFixture<typeof turnstileSecretsRegistry> = one(ONE_WIDGET)) {
+  stubSecrets(turnstileSecretsRegistry, secrets);
   const hono = new Hono();
   hono.onError(pithyErrorHandler);
   hono.use("/protected", turnstile(options));
   hono.post("/protected", (c) => c.json({ ok: true }));
-  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, env);
+  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, {});
 }
+
+/** The fixture for turnstile's one secret — named so a case reads as the widgets it configures. */
+const one = (secrets: TurnstileSecrets): SecretFixture<typeof turnstileSecretsRegistry> => ({
+  [TURNSTILE_SECRET_NAME]: secrets,
+});
 
 /**
  * The same app, but the handler forwards the untouched request the way `@pithy-sh/auth`'s catch-all
  * hands `c.req.raw` to Better Auth. If the gate read the body off the request instead of a clone, this
  * handler throws "Body has already been read" on every request the gate LET THROUGH.
  */
-function forwardingApp(env: Record<string, unknown> = { [TURNSTILE_SECRET_NAME]: ONE_WIDGET }) {
+function forwardingApp() {
+  stubSecrets(turnstileSecretsRegistry, one(ONE_WIDGET));
   const hono = new Hono();
   hono.onError(pithyErrorHandler);
   hono.use("/protected", turnstile());
@@ -38,7 +49,7 @@ function forwardingApp(env: Record<string, unknown> = { [TURNSTILE_SECRET_NAME]:
     const forwarded = await c.req.raw.text();
     return c.json({ forwarded });
   });
-  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, env);
+  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, {});
 }
 
 /** Stub `fetch` to return a siteverify body. */
@@ -86,12 +97,9 @@ describe("turnstile() middleware", () => {
 
   test("with two widgets, mode selects the right secret", async () => {
     const fetchMock = stubSiteverify({ success: true });
-    const env = {
-      [TURNSTILE_SECRET_NAME]: JSON.stringify({ visible: { key: "vis-secret" }, invisible: { key: "inv-secret" } }),
-    };
     const res = await app(
       { mode: "invisible" },
-      env,
+      one({ visible: { key: "vis-secret" }, invisible: { key: "inv-secret" } }),
     )({
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
@@ -102,10 +110,9 @@ describe("turnstile() middleware", () => {
   });
 
   test("with two widgets and no mode, fails as turnstile/config (never opens)", async () => {
-    const env = { [TURNSTILE_SECRET_NAME]: JSON.stringify({ visible: { key: "v" }, invisible: { key: "i" } }) };
     const res = await app(
       undefined,
-      env,
+      one({ visible: { key: "v" }, invisible: { key: "i" } }),
     )({
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
@@ -202,10 +209,14 @@ describe("turnstile() middleware", () => {
     expect(await errCode(res)).toBe("turnstile/failed");
   });
 
-  test("500 turnstile/config when the secret is malformed (reader error rewrapped to the gate contract)", async () => {
+  test("500 turnstile/config when the secret is unreadable (reader error rewrapped to the gate contract)", async () => {
+    // Declared, never provisioned — so the reader throws `secrets/not_found` and the gate must answer in
+    // its own vocabulary rather than passing a stranger's code to the client. Which reader failure it is
+    // does not matter here; that a reader failure closes the gate does. The failure modes of the read
+    // itself (a malformed stored value, a missing master key) belong to `secretsStore`'s own suite.
     const res = await app(
       {},
-      { [TURNSTILE_SECRET_NAME]: "not json" },
+      {},
     )({
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ "cf-turnstile-response": "tok" }),

@@ -3,6 +3,7 @@
 
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { EncryptionConfig } from "./crypto/envelope";
@@ -29,7 +30,8 @@ const config: EncryptionConfig = {
   lastRotatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-// A deployed env: `ENVIRONMENT` is a managed env, so the reader routes by backend (d1 → the store).
+// A deployed env: `ENVIRONMENT` is a managed env. Since #153 it changes nothing about resolution —
+// {@link devEnvWith} is the same env without it, and the two answer identically.
 function envWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
   return {
     SECRETS: env.SECRETS,
@@ -37,6 +39,25 @@ function envWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
     ENVIRONMENT: "prod",
     ...extra,
   } as unknown as SecretsStoreEnv;
+}
+
+/** Local dev: no `ENVIRONMENT`, the same `SECRETS` D1 and master key `pithy dev` binds. */
+function devEnvWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
+  return {
+    SECRETS: env.SECRETS,
+    SECRETS_ENCRYPTION_KEYS: JSON.stringify(config),
+    ...extra,
+  } as unknown as SecretsStoreEnv;
+}
+
+/** The error a synchronous read threw, for assertions about its payload. Fails if it threw nothing. */
+function throwsFrom(read: () => unknown): unknown {
+  try {
+    read();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the read to throw");
 }
 
 function store(): SystemSecretsStore {
@@ -147,12 +168,90 @@ describe("secretsStore — d1 backend", () => {
     });
   });
 
-  test("a declared d1 secret that was never written fails loudly", async () => {
+  test("a declared d1 secret that was never written fails loudly when it is read", async () => {
     const registry = defineSecretRegistry({
       missing: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
     });
 
-    await expect(secretsStore(envWith(), registry)).rejects.toBeInstanceOf(SecretNotFoundError);
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(() => secrets.get("missing")).toThrow(SecretNotFoundError);
+  });
+
+  test("an unwritten secret costs the secret beside it nothing (#170)", async () => {
+    // The defect: one unset secret in the combined registry took every capability's read down with it.
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+    const registry = defineSecretRegistry({
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+      "auth-google-credentials": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(secrets.get("auth-session-secret")).toBe("seeded-session-key");
+    const error = throwsFrom(() => secrets.get("auth-google-credentials"));
+    expect(error).toBeInstanceOf(SecretNotFoundError);
+    const serialized = JSON.stringify((error as SecretNotFoundError).payload);
+    expect(serialized).toContain("auth-google-credentials");
+    expect(serialized).not.toContain("auth-session-secret");
+  });
+});
+
+describe("secretsStore — dev reads the seeded row, not a binding (#153)", () => {
+  const registry = defineSecretRegistry({
+    "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+  });
+
+  test("a d1 secret resolves from its row with no ENVIRONMENT at all", async () => {
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+
+    const secrets = await secretsStore(devEnvWith(), registry);
+
+    expect(secrets.get("auth-session-secret")).toBe("seeded-session-key");
+  });
+
+  test("every version survives, where the old dev path collapsed a rotated secret to one", async () => {
+    await store().put("auth-session-secret", appendVersion(initialVersionedValue("old"), "new"));
+
+    const secrets = await secretsStore(devEnvWith(), registry);
+
+    expect(secrets.getVersions("auth-session-secret")).toEqual({
+      currentVersion: "2",
+      versions: { "1": "old", "2": "new" },
+    });
+  });
+
+  test("a same-named binding does not shadow the row in dev either", async () => {
+    await store().put("auth-session-secret", initialVersionedValue("from-the-row"));
+
+    const secrets = await secretsStore(devEnvWith({ "auth-session-secret": "from-dev-vars" }), registry);
+
+    expect(secrets.get("auth-session-secret")).toBe("from-the-row");
+  });
+
+  test("no row but a binding of the same name names the secret and the fix", async () => {
+    // The one shape an upgrade produces: a pre-#149 `.dev.vars` line, or a Workers-runtime test injecting
+    // a `d1` value as a bare string. "not provisioned" would be a poor answer about a value sitting there.
+    const secrets = await secretsStore(devEnvWith({ "auth-session-secret": "REDACT_ME" }), registry);
+    const error = throwsFrom(() => secrets.get("auth-session-secret"));
+
+    expect(error).toBeInstanceOf(ValidationError);
+    const payload = (error as ValidationError).payload;
+    expect(payload.message).toContain("auth-session-secret");
+    expect(payload.action).toContain("pithy seed");
+    expect(JSON.stringify(payload)).not.toContain("REDACT_ME");
+  });
+
+  test("a cf-secrets-store entry still takes a plain string in dev — permanently", async () => {
+    // `pithy token mint` writes a raw token, and so does `wrangler secrets-store secret create`. There is
+    // no envelope to find there and never will be.
+    const cf = defineSecretRegistry({
+      CLOUDFLARE_API_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(devEnvWith({ CLOUDFLARE_API_TOKEN: "bare-dev-token" }), cf);
+
+    expect(secrets.get("CLOUDFLARE_API_TOKEN")).toBe("bare-dev-token");
   });
 });
 

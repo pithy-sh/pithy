@@ -10,7 +10,7 @@ import { defineCommand } from "citty";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
-import { type ConfigPrompt, coerceConfigValue, collectSetFlags, runAdd } from "../capabilities/flow";
+import { type ConfigPrompt, coerceConfigValue, collectSetFlags, isHandWritten, runAdd } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import type { DatabaseRun } from "../migrations/run";
 import { loadProject, requireProjectName } from "../project/config";
@@ -146,6 +146,9 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
   const values: Record<string, ConfigValue> = { ...provided };
   for (const option of manifest.configOptions) {
     if (option.key in values) continue;
+    // Left as the manifest scaffolds it. A secrets registry is not something anyone types at a prompt,
+    // and the fallback offered would have been the string "[object Object]".
+    if (isHandWritten(option)) continue;
     const fallback = String(option.default);
     const answer = await text({
       message: `${option.key} — ${option.describe}`,

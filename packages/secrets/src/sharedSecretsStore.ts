@@ -15,6 +15,12 @@ import { d1KeyedSource, type SecretsAccessor, secretsStore } from "./secretsStor
  * once, caches the resulting accessor for a configurable TTL (default 60 s), and hands each call site
  * a precisely-typed view over only its own slice via {@link SecretsAccessor.subset}.
  *
+ * Sharing one resolution is what made #170 bite: the combined registry is every capability's, so an
+ * unset secret anywhere in it used to fail the one resolution every capability waits on. The fix is in
+ * {@link secretsStore} — a failure is held against its own name and raised at its own read — and it is
+ * the reason a shared accessor is safe to share. This module resolves once; it does not resolve
+ * all-or-nothing.
+ *
  * The cache is module-scoped, so it is per worker isolate: built lazily on the first request that
  * needs secrets, reused by every access within the TTL, and rebuilt on the first access after it
  * expires. `@pithy-sh/secrets`' capability {@link configureSharedSecrets | configures} the combined

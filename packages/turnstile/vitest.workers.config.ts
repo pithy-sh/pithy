@@ -1,11 +1,16 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
 
 /**
  * Workers-runtime tests run the `turnstile()` middleware inside Miniflare, where its `fetch` to
- * Cloudflare's live siteverify endpoint behaves as it does in production. The `TURNSTILE_SECRET_KEY`
- * binding is set to one of Cloudflare's documented test secrets per test, so the positive, negative,
- * and challenge paths are deterministic without a real widget.
+ * Cloudflare's live siteverify endpoint behaves as it does in production. The widget secret is one of
+ * Cloudflare's documented test secrets per case, so the positive, negative, and challenge paths are
+ * deterministic without a real widget.
+ *
+ * The secret is a `d1` entry, so it is read from an encrypted row — here as in a deployed worker
+ * (#153). That needs the dedicated `SECRETS` database and a master key, exactly as a project composing
+ * `secrets` has; `seedSecrets` writes the row and `devEncryptionKeys` mints the key.
  */
 export default defineConfig({
   plugins: [
@@ -13,6 +18,8 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: "2025-01-01",
         compatibilityFlags: ["nodejs_compat"],
+        d1Databases: ["SECRETS"],
+        bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
     }),
   ],

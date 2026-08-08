@@ -15,8 +15,28 @@ import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { loadManifest } from "./manifests";
 
+/**
+ * Whether this option's value is one only the adopter can write — a registry of secrets, a set of
+ * boards — rather than a scalar a flag or a prompt can carry.
+ *
+ * The manifest states it as an empty literal so the generated config compiles (see `ConfigOptionValue`),
+ * and that is the whole of what the CLI can do for it. Both input paths ask this before touching such an
+ * option: `String({})` is `"[object Object]"`, and a prompt that offered it as a default would take a
+ * config that merely failed to typecheck and turn it into one that composed a string as a registry.
+ */
+export function isHandWritten(option: ConfigOption): boolean {
+  return typeof option.default === "object";
+}
+
 /** Coerce a raw string (a `--set` value or a prompt answer) to its option's type. */
 export function coerceConfigValue(option: ConfigOption, raw: string, capability: string): ConfigValue {
+  if (isHandWritten(option)) {
+    throw new ValidationError({
+      message: `${capability} option "${option.key}" is not settable from the command line.`,
+      action: `Edit ${option.key} in the worker's pithy.config.ts — pithy add scaffolds it empty.`,
+      detail: `${option.key} takes an object or an array; --set and the prompt both carry strings.`,
+    });
+  }
   if (typeof option.default === "boolean") {
     if (raw === "true") return true;
     if (raw === "false") return false;

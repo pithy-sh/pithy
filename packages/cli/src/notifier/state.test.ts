@@ -3,7 +3,7 @@
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   defaultState,
@@ -37,6 +37,37 @@ describe("stateDir / stateFilePath", () => {
     expect(
       stateDir({ platform: "win32", homedir: "C:\\Users\\u", env: { APPDATA: "C:\\Users\\u\\AppData\\Roaming" } }),
     ).toBe(join("C:\\Users\\u\\AppData\\Roaming", "pithy"));
+  });
+
+  test("PITHY_CONFIG_DIR wins over every platform rule, and adds no pithy segment", () => {
+    // It IS the pithy config directory, not a config root to nest under: a test harness that points it
+    // at a temp directory has to be able to read `<dir>/<project>/secrets.jsonc` back without guessing.
+    expect(stateDir({ platform: "linux", homedir: "/home/u", env: { PITHY_CONFIG_DIR: "/run/pithy" } })).toBe(
+      "/run/pithy",
+    );
+    expect(
+      stateDir({
+        platform: "linux",
+        homedir: "/home/u",
+        env: { PITHY_CONFIG_DIR: "/run/pithy", XDG_CONFIG_HOME: "/cfg" },
+      }),
+    ).toBe("/run/pithy");
+    expect(
+      stateDir({
+        platform: "win32",
+        homedir: "C:\\Users\\u",
+        env: { PITHY_CONFIG_DIR: "D:\\pithy", APPDATA: "C:\\x" },
+      }),
+    ).toBe(resolve("D:\\pithy"));
+  });
+
+  test("a relative PITHY_CONFIG_DIR is made absolute, and an empty one is no override", () => {
+    // Every error the secrets file raises names its absolute path, so the resolver may not hand out a
+    // relative one that means a different directory in every command that resolves its own cwd.
+    expect(stateDir({ platform: "linux", homedir: "/home/u", env: { PITHY_CONFIG_DIR: "cfg" } })).toBe(resolve("cfg"));
+    expect(stateDir({ platform: "linux", homedir: "/home/u", env: { PITHY_CONFIG_DIR: "  " } })).toBe(
+      "/home/u/.config/pithy",
+    );
   });
 });
 

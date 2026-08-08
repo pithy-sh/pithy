@@ -190,3 +190,49 @@ describe("both package.json producers", () => {
     expect(added.type).toBe("module");
   });
 });
+
+/**
+ * Both producers of a Worker's own `pithy.config.ts`, held to the same rule.
+ *
+ * `pithy worker add` generates the file and interpolates the name into all three places it appears.
+ * `pithy init` copies `templates/starter/apps/api/pithy.config.ts` and, until #169, stamped none of them
+ * — so a project scaffolded with any worker but the default carried a header pointing at a directory it
+ * does not have, a comment telling the adopter to run a command against a worker that does not exist,
+ * and the template's flat `"app"` where the other producer derives a namespace.
+ *
+ * The names here are deliberately kebab-case and unlike each other, because that is what separates the
+ * three stamps: `admin-api` becomes `adminapi` as a namespace and stays `admin-api` as a path. A fixture
+ * using a single-word default would pass with every stamp missing.
+ */
+describe("both pithy.config.ts producers", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-config-parity-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("name the worker they actually made, in the path, the command, and the namespace", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "replay", worker: "admin-api" });
+    await scaffoldWorker({ projectDir: dir, name: "edge-web", project: "replay" });
+
+    const scaffolded = await readFile(join(dir, "apps", "admin-api", "pithy.config.ts"), "utf8");
+    const added = await readFile(join(dir, "apps", "edge-web", "pithy.config.ts"), "utf8");
+
+    for (const [source, worker, namespace] of [
+      [scaffolded, "admin-api", "adminapi"],
+      [added, "edge-web", "edgeweb"],
+    ] as const) {
+      expect(source).toContain(`apps/${worker}/pithy.config.ts`);
+      expect(source).toContain(`--worker ${worker}`);
+      expect(source).toContain(`name: "${namespace}"`);
+      // The template's own name must not survive into either. `api` appears legitimately inside
+      // `admin-api`, so this asks about the three stamped forms rather than the bare word.
+      expect(source).not.toContain("apps/api/pithy.config.ts");
+      expect(source).not.toContain("--worker api");
+      expect(source).not.toContain('name: "app"');
+    }
+  });
+});

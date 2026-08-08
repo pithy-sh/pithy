@@ -3,7 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
 
@@ -49,20 +49,46 @@ export function defaultState(): NotifierState {
 export interface StatePathOptions {
   /** The platform, defaulting to `process.platform`. */
   platform?: NodeJS.Platform;
-  /** Environment map, defaulting to `process.env` (read for `XDG_CONFIG_HOME` / `APPDATA`). */
+  /** Environment map, defaulting to `process.env` (read for `PITHY_CONFIG_DIR` / `XDG_CONFIG_HOME` / `APPDATA`). */
   env?: NodeJS.ProcessEnv;
   /** The user's home directory, defaulting to `os.homedir()`. */
   homedir?: string;
 }
 
 /**
- * The Pithy config directory: `%APPDATA%\pithy` on Windows, `$XDG_CONFIG_HOME/pithy` when that is set,
- * else `~/.config/pithy`. This is the exact directory `pithy doctor` reports (tilde-abbreviated).
+ * The one environment variable that relocates everything Pithy keeps per machine — the notifier state,
+ * `<project>/dev.json`, and `<project>/secrets.jsonc`.
+ *
+ * **Required, not a convenience (#156).** Dev secrets live under this directory now, so without an
+ * override every test that scaffolds a project called `replay` writes to the operator's real file, and
+ * CI — which has no home directory worth writing to — writes to whatever `$HOME` happens to be. One
+ * variable moves the whole tree, which is also what makes per-worktree isolation a later configuration
+ * change rather than a redesign.
+ */
+const CONFIG_DIR_ENV = "PITHY_CONFIG_DIR";
+
+/**
+ * The Pithy config directory: `$PITHY_CONFIG_DIR` when set, else `%APPDATA%\pithy` on Windows,
+ * `$XDG_CONFIG_HOME/pithy` when that is set, else `~/.config/pithy`. This is the exact directory
+ * `pithy doctor` reports (tilde-abbreviated).
+ *
+ * **The override is the directory itself, with no `pithy` segment appended.** `XDG_CONFIG_HOME` names a
+ * config *root* shared with every other program, so Pithy has to claim a subdirectory of it; this names
+ * Pithy's own directory, so appending would make `PITHY_CONFIG_DIR=/tmp/x` resolve to `/tmp/x/pithy` and
+ * every harness that reads `$PITHY_CONFIG_DIR/<project>/secrets.jsonc` back would find nothing.
+ *
+ * **Absolute, always.** A relative value is resolved against the cwd once, here — every error raised
+ * about a file under this directory names its absolute path, and a relative root would make that path
+ * mean a different place in each command that resolves its own working directory. Blank is no override:
+ * an unset variable and one exported empty by a shell script are the same intention.
  */
 export function stateDir(options: StatePathOptions = {}): string {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const home = options.homedir ?? osHomedir();
+
+  const override = env[CONFIG_DIR_ENV];
+  if (override !== undefined && override.trim().length > 0) return resolve(override);
 
   if (platform === "win32") {
     const appData = env.APPDATA ?? join(home, "AppData", "Roaming");

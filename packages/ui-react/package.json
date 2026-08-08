@@ -14,7 +14,6 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.templates.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",
-    "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },

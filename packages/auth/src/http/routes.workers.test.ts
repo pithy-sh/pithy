@@ -11,6 +11,7 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email } from "@pithy-sh/email/src/capability";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -38,14 +39,26 @@ const TABLES = [
   "pithy_email_events",
 ];
 
-/** Dev-mode secret values (resolved from bindings keyed by the secret name). */
-const SECRET_ENV: Record<string, string> = {
+/**
+ * The registry these cases resolve through — auth's slice plus turnstile's, since one route stacks the
+ * humanity gate. The same merge the `secrets` capability performs across composed capabilities.
+ */
+const REGISTRY = { ...authSecretsRegistry, ...turnstileSecretsRegistry };
+
+/**
+ * Every secret the suite provisions, seeded as encrypted rows before each case.
+ *
+ * All five auth entries are seeded even though most cases read one: `secretsStore` resolves the whole
+ * registry in a batch, so an unprovisioned entry fails the read for every capability sharing the
+ * accessor, not just the one that declared it.
+ */
+const SECRETS: SecretFixture<typeof REGISTRY> = {
   "auth-session-secret": SECRET,
-  "auth-google-credentials": JSON.stringify({ clientId: "g", clientSecret: "g" }),
-  "auth-apple-credentials": JSON.stringify({ clientId: "a", clientSecret: "a" }),
-  "auth-facebook-credentials": JSON.stringify({ clientId: "f", clientSecret: "f" }),
-  "auth-github-credentials": JSON.stringify({ clientId: "h", clientSecret: "h" }),
-  "turnstile-secret-keys": JSON.stringify({ visible: { key: "1x0000000000000000000000000000000AA" } }),
+  "auth-google-credentials": { clientId: "g", clientSecret: "g" },
+  "auth-apple-credentials": { clientId: "a", clientSecret: "a" },
+  "auth-facebook-credentials": { clientId: "f", clientSecret: "f" },
+  "auth-github-credentials": { clientId: "h", clientSecret: "h" },
+  "turnstile-secret-keys": { visible: { key: "1x0000000000000000000000000000000AA" } },
 };
 
 /** A rate-limiter binding stub. By default it allows; pass `allow: false` to block. */
@@ -54,7 +67,7 @@ function rateLimiter(allow = true): RateLimit {
 }
 
 function appEnv(rateLimit: RateLimit = rateLimiter()): Record<string, unknown> {
-  return { ...(env as unknown as Record<string, unknown>), ...SECRET_ENV, AUTH_RATE_LIMITER: rateLimit };
+  return { ...(env as unknown as Record<string, unknown>), AUTH_RATE_LIMITER: rateLimit };
 }
 
 function buildWiring(turnstile?: { mode: "visible" }): AuthWiring {
@@ -143,7 +156,8 @@ beforeEach(async () => {
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);
-  configureSharedSecrets({ registry: { ...authSecretsRegistry, ...turnstileSecretsRegistry } });
+  configureSharedSecrets({ registry: REGISTRY });
+  await seedSecrets(env, REGISTRY, SECRETS);
 });
 
 afterEach(() => {
@@ -465,7 +479,7 @@ describe("auth HTTP routes", () => {
 
   test("with facebook and github enabled, the instance builds — resolve gating reads their credentials", async () => {
     // Exercises resolve.ts's enabled branch and resolveFacebook/GithubCredentials: with the providers on,
-    // building the Better Auth instance resolves their secrets (present in SECRET_ENV). A broken resolver
+    // building the Better Auth instance resolves their secrets (seeded above). A broken resolver
     // or gating would throw here and 500; a served Better Auth route proves the instance built.
     const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
     const wiring: AuthWiring = {

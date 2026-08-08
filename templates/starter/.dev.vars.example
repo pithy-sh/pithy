@@ -1,4 +1,7 @@
-# Copy to .dev.vars (git-ignored), or let pithy generate one per worktree.
+# This file is documentation. Two different `.dev.vars` exist, and they have different owners.
+#
+#   <root>/.dev.vars            yours. The CLI's own Cloudflare credentials, below. Copy this to it.
+#   <root>/apps/<worker>/.dev.vars   generated. pithy writes it; wrangler reads it. Do not edit one.
 #
 # One-time setup:
 #   1. Run `wrangler login` — OAuth, used by `wrangler dev` and `wrangler deploy`.
@@ -7,4 +10,21 @@
 # CLOUDFLARE_ACCOUNT_ID=your-account-id
 # CLOUDFLARE_API_TOKEN=your-bootstrap-token
 #
-# Capability secrets are added here by `pithy add <capability>`.
+# A Worker's `.dev.vars` is generated on every `pithy dev` and `pithy seed`, from the dev secrets file
+# and this machine's `dev.json`. Run `pithy doctor` to see where those are. An edit to a generated file
+# is lost on the next run, and a file pithy did not write is never overwritten — it refuses and says so.
+#
+# To override a value locally, use `.dev.vars.local` — git-ignored, hand-authored, merged last:
+#
+#   <root>/.dev.vars.local            every worker
+#   <root>/apps/<worker>/.dev.vars.local   that worker, and wins
+#
+# It is for overrides, not for variables. A value that should exist in production belongs in
+# `wrangler.jsonc`'s `vars` — committed, reviewed, deployed. A variable that lives only in a `.local`
+# file works in dev and is simply absent in production, and that failure lands at deploy. `pithy doctor`
+# names any such key.
+#
+# Application secrets live in neither. `pithy add <capability>` puts them in the dev secrets file,
+# outside this repository. The registry's `backend` decides: a `d1` secret is read from the secrets
+# store in every environment, dev included. A `cf-secrets-store` secret has no local store to read, so
+# pithy puts its value in the generated file for you.

@@ -136,7 +136,8 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
  * declared in a registry and read through the reader; the registry — `turnstileSecretsRegistry` — decides
  * where it lives), reads the response token from the request, verifies it against Cloudflare siteverify,
  * and on success lets the request continue to its real strategy. The app must have the `secrets`
- * capability (it provides whatever the read needs); in local dev the secret resolves from `.dev.vars`. It
+ * capability (it provides whatever the read needs); the secret is the encrypted row in its `SECRETS` D1,
+ * in local dev exactly as deployed, which is what `pithy turnstile provision` writes. It
  * **fails closed** — every failure throws a `PithyError` subclass (all carrying a `turnstile/*` code), so
  * a bot gate never silently opens. Register `pithyErrorHandler` on the app to map these to HTTP responses.
  *

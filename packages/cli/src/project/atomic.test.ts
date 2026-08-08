@@ -751,18 +751,22 @@ describe("the gate on the gate", () => {
   ]);
 
   /**
-   * Why `source` can reach a rename, or null. Every static import of `node:fs` or `node:fs/promises` is
-   * read: a named clause counts when it binds `rename`, `renameSync`, or `promises` — the export name is
-   * to the left of any `as`, so an alias hides nothing — and anything that is not a named clause is a
-   * namespace or default binding, which carries the whole module. `require` and dynamic `import` hand over
-   * the whole module too.
+   * Why `source` can reach a rename, or null. Every static import of `fs` or `fs/promises` is read: a named
+   * clause counts when it binds `rename`, `renameSync`, or `promises` — the export name is to the left of
+   * any `as`, so an alias hides nothing — and anything that is not a named clause is a namespace or default
+   * binding, which carries the whole module. `require` and dynamic `import` hand over the whole module too.
+   *
+   * **The `node:` prefix is optional, and was not.** The static form hardcoded `node:fs` while the `require`
+   * and dynamic-`import` forms below already allowed the bare specifier — so `import { rename } from
+   * "fs/promises"`, the same module one prefix short, went green through the one rule meant to catch it.
+   * Nothing in this repo writes it that way, which is how long a hole like that goes unnoticed.
    */
   function renameReach(source: string): string | null {
     const found = new Set<string>();
     // The clause may span lines but never a quote or a semicolon: those end the statement before it, so
     // the match cannot start at an earlier `import` and swallow everything down to this one's specifier.
     for (const [, clause] of source.matchAll(
-      /\bimport\s+(?:type\s+)?([^;"']*?)\s*from\s*["']node:fs(?:\/promises)?["']/g,
+      /\bimport\s+(?:type\s+)?([^;"']*?)\s*from\s*["'](?:node:)?fs(?:\/promises)?["']/g,
     )) {
       // The group is not optional, so this is unreachable — and if it ever is reached, the safe reading of
       // an import clause we could not see is that it binds everything.

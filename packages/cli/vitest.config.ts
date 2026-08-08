@@ -6,6 +6,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Every test gets a throwaway Pithy config directory — see `vitest.setup.ts`. Dev secrets live
+    // there now (#156), and without this a suite scaffolding `--name replay` writes to the real one.
+    setupFiles: ["./vitest.setup.ts"],
     // `*.integration.test.ts` need a LIVE Cloudflare environment; run via `bun run test:integration`.
     exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
     testTimeout: 30_000,

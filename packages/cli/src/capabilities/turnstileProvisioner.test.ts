@@ -5,10 +5,13 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { readDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 
 /** A fake CloudflareClients exposing only the turnstile methods the (de)provisioner touches. */
@@ -38,22 +41,36 @@ function fakeDispatcher() {
 const dirs: string[] = [];
 
 /**
- * A project in the per-Worker layout: the root owns the shared `.dev.vars`, and `apps/api/` owns the
- * `wrangler.jsonc` the sitekey vars are written into.
+ * A project in the per-Worker layout: `apps/api/` owns the `wrangler.jsonc` the sitekey vars are written
+ * into, and the generated `.dev.vars` that carries them (#154).
  */
+let projects = 0;
 async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir: string }> {
   const projectDir = await mkdtemp(join(tmpdir(), "pithy-turnstile-"));
   dirs.push(projectDir);
+  // The dev secrets file is keyed on the project's `name` (#156), and a distinct one per call keeps
+  // two tests from sharing a file. `vitest.setup.ts` keeps all of them out of the real config dir.
+  projects += 1;
+  await writeFile(join(projectDir, "pithy.config.ts"), `export default { name: "turnstile-${projects}" };\n`);
   const workerDir = join(projectDir, "apps", "api");
   await mkdir(workerDir, { recursive: true });
   await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
   return { projectDir, workerDir };
 }
 
+/** What the dev secrets file holds for this project — outside the checkout, resolved as the CLI does. */
+async function devSecrets(projectDir: string) {
+  return readDevSecrets(await resolveDevSecretsFile(projectDir));
+}
+
 afterEach(() => vi.clearAllMocks());
 
 describe("CloudflareTurnstileProvisioner", () => {
-  test("writeDev upserts the secret + sitekeys into .dev.vars", async () => {
+  test("writeDev puts the secret in the dev secrets file and the sitekeys in .dev.vars", async () => {
+    // `turnstile-secret-keys` is a `d1` registry secret. It was going straight into `.dev.vars`,
+    // bypassing `writeDevSecrets` and with it the envelope format and the 0600 mode — the fifth
+    // producer of that same defect (#149). The sitekeys are public, UPPER_SNAKE env vars, and stay
+    // where wrangler's namespace belongs.
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -61,9 +78,108 @@ describe("CloudflareTurnstileProvisioner", () => {
 
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
 
-    const content = await readFile(join(projectDir, ".dev.vars"), "utf8");
-    expect(content).toContain(`${TURNSTILE_SECRET_NAME}={"visible":{"key":"1x"}}`);
+    expect(await devSecrets(projectDir)).toEqual({
+      [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"1x"}}' } },
+    });
+    // The Worker's own generated file — where wrangler reads it (#154).
+    const content = await readFile(join(workerDir, ".dev.vars"), "utf8");
     expect(content).toContain("TURNSTILE_SITEKEY_VISIBLE=1x00");
+    // The sitekeys and nothing else (#153). The secret was copied here through the transition, because
+    // dev resolved every secret from its binding; it reads the seeded row now, so a public sitekey no
+    // longer shares a file with the widget secret.
+    expect(parseDevVars(content)[TURNSTILE_SECRET_NAME]).toBeUndefined();
+  });
+
+  test("writeDev leaves nothing about the secret in the checkout, and no .gitignore line either", async () => {
+    // This used to write the project's `.gitignore` before placing the value, and fail the whole
+    // provision when it could not. The widget secret is at `<config>/<project>/secrets.jsonc` now, so
+    // there is nothing in the repository to ignore and nothing for a commit to reach (#156).
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+
+    await p.writeDev('{"visible":{"key":"1x"}}', {});
+
+    await expect(readFile(join(projectDir, ".gitignore"), "utf8")).rejects.toThrow();
+    expect(await devSecrets(projectDir)).toEqual({
+      [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"1x"}}' } },
+    });
+  });
+
+  test("a re-provision replaces the value rather than keeping the first widget's secret", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+
+    await p.writeDev('{"visible":{"key":"first"}}', {});
+    await p.writeDev('{"visible":{"key":"second"}}', {});
+
+    expect(await devSecrets(projectDir)).toEqual({
+      [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": '{"visible":{"key":"second"}}' } },
+    });
+  });
+
+  test("writeDev names the Worker the sitekeys and the injected secret never reached", async () => {
+    // The third call site to throw the delivery report away. `pithy add`'s two were fixed last round;
+    // this one still reported a provision that had placed nothing in the Worker wrangler actually runs.
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
+    const notes: string[] = [];
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      notes: (line) => void notes.push(line),
+    });
+
+    await p.writeDev('{"visible":{"key":"never-printed"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+
+    expect(notes.join("\n")).toContain(workerDir);
+    expect(notes.join("\n")).toMatch(/was not generated by pithy/);
+    // Never the secret, in a line that reaches a terminal scrollback and a CI log.
+    expect(notes.join("\n")).not.toContain("never-printed");
+  });
+
+  test("a clean delivery says nothing — a line per provision about nothing is noise", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const notes: string[] = [];
+    const p = new CloudflareTurnstileProvisioner({
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      notes: (line) => void notes.push(line),
+    });
+
+    await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+
+    expect(notes).toEqual([]);
+  });
+
+  test("without a sink the report still reaches a human — a silent default is the defect again", async () => {
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+
+      await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain(workerDir);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   test("writeManagedSecret dispatches a create with the d1/environment/json routing facts", async () => {
@@ -322,18 +438,33 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     ]);
   });
 
-  test("clearDev strips the secret + sitekey keys from .dev.vars", async () => {
+  test("clearDev takes the sitekey out of the generated .dev.vars, and leaves everything else", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
-    await writeFile(
-      join(projectDir, ".dev.vars"),
-      `CLOUDFLARE_ACCOUNT_ID=acct\n${TURNSTILE_SECRET_NAME}={"visible":{"key":"1x"}}\nTURNSTILE_SITEKEY_VISIBLE=1x00\n`,
-    );
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+    await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00", KEEP: "1" });
     const d = new CloudflareTurnstileDeprovisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
 
     await d.clearDev(["visible"]);
 
-    expect(await readFile(join(projectDir, ".dev.vars"), "utf8")).toBe("CLOUDFLARE_ACCOUNT_ID=acct\n");
+    // The generated file is rebuilt from its sources, so removing the name is what drops the line.
+    expect(parseDevVars(await readFile(join(workerDir, ".dev.vars"), "utf8"))).toEqual({ KEEP: "1" });
+  });
+
+  test("clearDev takes the secret out of the dev secrets file too", async () => {
+    // Otherwise the next `pithy dev` seeds and re-injects a key for a widget that no longer exists, and
+    // every place anyone would look says turnstile is configured.
+    const { cf } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const { projectDir, workerDir } = await project();
+    const p = new CloudflareTurnstileProvisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+    await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+    const d = new CloudflareTurnstileDeprovisioner({ cf, project: PROJECT, projectDir, workerDir, dispatcher });
+
+    await d.clearDev(["visible"]);
+
+    expect(await devSecrets(projectDir)).toEqual({});
+    expect(parseDevVars(await readFile(join(workerDir, ".dev.vars"), "utf8"))).toEqual({});
   });
 });

@@ -33,9 +33,13 @@ export interface SecretsStoreEnv {
   /** The master-key config — a CF Secrets Store binding in deployed envs, a string in local dev. */
   SECRETS_ENCRYPTION_KEYS: SecretBinding | string;
   /**
-   * The deployment environment, stamped into each deployed worker's vars at provision. Its presence as a
-   * `ManagedEnvironment` is what tells the reader it is deployed: deployed reads route strictly by registry
-   * backend, while local dev (this var absent) resolves every secret from its injected `.dev.vars` string.
+   * The deployment environment, stamped into each deployed worker's vars at provision. Absent in local dev.
+   *
+   * **The read seam does not consult it (#153).** Which environment's values a worker reads is already
+   * decided by which `SECRETS` D1 and which master key it is bound to, so routing on this as well was a
+   * second answer to a settled question — and the answer it gave in dev was "resolve every secret from a
+   * plaintext binding, whatever its backend". It stays here because it is genuinely part of a deployed
+   * worker's env: the secrets manager reads it to name the environment it writes to.
    */
   ENVIRONMENT?: ManagedEnvironment;
 }

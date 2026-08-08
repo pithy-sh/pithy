@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { describe, expect, it } from "vitest";
-import { isLedgerCapability, LEDGER_MIGRATION_ORDER, ledger } from "./capability";
+import { isLedgerCapability, LEDGER_MIGRATION_ORDER, type LedgerOptions, ledger } from "./capability";
 import {
   LedgerAccountNotFoundError,
   LedgerCurrencyNotFoundError,
@@ -82,5 +84,42 @@ describe("ledger()", () => {
     const capability = ledger({ currencies });
     expect(isLedgerCapability(capability)).toBe(true);
     expect(capability.ledgerConfig.adminScope).toBe("ledger:admin");
+  });
+});
+
+/**
+ * What `pithy add ledger` writes, checked against what `ledger()` accepts.
+ *
+ * The manifest is the only thing `pithy add` reads, so an option missing from it is an option missing
+ * from the adopter's `pithy.config.ts`. `currencies` was missing, and a fresh scaffold failed `tsc`
+ * with TS2345 before the adopter had touched anything (#168).
+ *
+ * `[]` would have been the cheap fix, and it is the wrong one: `currencies` carries `.min(1)` with a
+ * message saying why, so an empty seed compiles and then throws `too_small` on the first config load —
+ * which `pithy upgrade` reports as "Could not load pithy.config.ts", naming the wrong cause. Both halves
+ * are asserted here: `seeded` is type-annotated, so a shape `ledger()` would reject fails the compile,
+ * and the factory call is what proves it survives the refusal.
+ */
+describe("pithy.manifest.json", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  /** Exactly the object `pithy add` renders: every option's key at its manifest default. */
+  const rendered = Object.fromEntries(manifest.configOptions.map((option) => [option.key, option.default]));
+
+  const seeded: LedgerOptions = {
+    currencies: [{ code: "chips", name: "Chips" }],
+    adminScope: "ledger:admin",
+  };
+
+  it("states every option LedgerConfig requires, at a value the type accepts", () => {
+    expect(rendered).toEqual(seeded);
+  });
+
+  it("seeds a currency the config will actually load — an empty array would not", () => {
+    const capability = ledger(seeded);
+    expect(capability.ledgerConfig.currencies).toEqual([{ code: "chips", name: "Chips", decimals: 0 }]);
+    expect(() => ledger({ ...seeded, currencies: [] })).toThrow();
   });
 });

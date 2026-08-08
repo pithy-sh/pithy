@@ -159,23 +159,26 @@ describe("syncFeatureDevConfig", () => {
     expect(other.block).toEqual(destroyed.block);
   });
 
-  test("wires the worktree's and every worker's .dev.vars to the repo's shared file", async () => {
+  test("touches no .dev.vars at all — a worktree generates its own (#154)", async () => {
+    // The sync used to link the worktree and every worker in it at the main checkout's one shared file.
+    // Each is generated now, from sources that already live outside every checkout, so there is nothing
+    // here to share and nothing to lose.
     await sync(["app"]);
-    expect(await readFile(join(worktreePath, ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
-    // wrangler loads .dev.vars from each worker's own dir and never merges, so each apps/<name> is linked.
-    expect(await readFile(join(worktreePath, "apps", "app", ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
+    await expect(readFile(join(worktreePath, ".dev.vars"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(worktreePath, "apps", "app", ".dev.vars"), "utf8")).rejects.toThrow();
+    // And the main checkout's is untouched.
+    expect(await readFile(join(mainRoot, ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
   });
 
   test("a colleague who pulled the branch gets the whole local setup built for them", async () => {
     // Their machine has the branch and the code, but none of the machine-local state: no .dev.config.json
-    // (git-ignored), no port reservation, no .dev.vars link. One sync creates all of it.
+    // (git-ignored) and no port reservation. One sync creates both.
     await expect(readDevConfig(devConfigPath(worktreePath))).resolves.toBeNull();
 
     const report = await sync(["api", "web"]);
 
     expect(report.added.sort()).toEqual(["api", "web"]);
     expect(await readDevConfig(devConfigPath(worktreePath))).toEqual(report.dev);
-    expect(await readFile(join(worktreePath, "apps", "api", ".dev.vars"), "utf8")).toBe("SECRET=abc\n");
     // Their block is allocated against THEIR registry, which is why ports are never committed.
     expect(JSON.parse(await readFile(join(mainRoot, ".dev-ports.json"), "utf8"))["feature/69-demo"]).toMatchObject({
       block: 0,

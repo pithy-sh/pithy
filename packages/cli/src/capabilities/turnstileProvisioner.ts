@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -16,7 +16,11 @@ import {
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { removeDevVars, upsertDevVars } from "../project/devVars";
+import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
+import { writeDevVars } from "../devSecrets/devVars";
+import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
+import { renderDevVarsNotes } from "../devSecrets/report";
 import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
@@ -66,6 +70,18 @@ export interface CloudflareTurnstileProvisionerOptions {
   dispatcher: SecretDispatcher;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * Where a delivery note goes. Defaults to **stderr**, one line at a time.
+   *
+   * `writeDev` returns `void` — the interface in `@pithy-sh/turnstile` says so — and that is precisely
+   * how the report got dropped: there was nowhere to return it to, so it was discarded and the provision
+   * reported a delivery that had not happened. A seam, so a test can read the lines; stderr by default,
+   * because the alternative to a default is silence, and because `--json` writes its one line to stdout
+   * and a diagnostic must not land in the middle of it.
+   *
+   * Never a value. See `renderDevVarsNotes`.
+   */
+  notes?: (line: string) => void;
 }
 
 /**
@@ -81,6 +97,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
   readonly #audit: CliAuditEmit;
+  readonly #notes: (line: string) => void;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
@@ -89,6 +106,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
     this.#audit = options.audit ?? (async () => {});
+    this.#notes = options.notes ?? ((line: string) => void process.stderr.write(`${line}\n`));
   }
 
   async assertDomainAvailable(domain: string): Promise<void> {
@@ -103,8 +121,34 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     });
   }
 
+  /**
+   * The dev widget's secret and its public sitekeys, each into the file its namespace belongs to.
+   *
+   * **The secret is a `d1` registry secret, so it goes into the dev secrets file (#149)** — through
+   * `writeDevSecrets`, the one funnel every dev secret passes through, at `<config>/<project>/` since
+   * #156. Writing it straight into `.dev.vars` bypassed the format and the mode both, and made this the
+   * fifth producer of the same defect. `replace`, because Cloudflare issued this value: keeping an older
+   * one because a value is already there leaves the project verifying against a widget it no longer has.
+   *
+   * The sitekeys are public, `UPPER_SNAKE`, and wrangler's — they stay in `.dev.vars`, and they are now
+   * the only thing this writes there. The secret itself was copied alongside them until #153, because
+   * dev resolved every secret from its binding whatever its backend; dev reads the seeded row now, so
+   * the copy is gone and a public sitekey no longer shares a file with a widget secret.
+   *
+   * **And what that write says is said, not dropped.** This call took no result at all, so a provision
+   * announced a delivery that may never have happened: a Worker with a `.dev.vars` of its own gets no
+   * sitekey and no secret, and `pithy turnstile provision` still printed "Test secret wired for dev".
+   * The same defect fixed at `pithy add`'s two call sites, in the third one nobody checked — three
+   * producers again, so it goes through the one renderer they share.
+   */
   async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
-    await upsertDevVars(join(this.#projectDir, ".dev.vars"), { [TURNSTILE_SECRET_NAME]: secret, ...sitekeys });
+    const envelope = initialDevSecret(secret);
+    const path = await resolveDevSecretsFile(this.#projectDir);
+    await writeDevSecrets(path, { [TURNSTILE_SECRET_NAME]: envelope }, { replace: true });
+    // The sitekeys alone, through `writeDevVars` — so each is quoted for dotenv and reaches the Worker's
+    // own directory rather than the project root alone. The secret goes to the store, on the next seed.
+    const wrote = await writeDevVars({ projectDir: this.#projectDir, values: { ...sitekeys } });
+    for (const note of renderDevVarsNotes(wrote)) this.#notes(note);
   }
 
   async writeManagedSecret(env: ManagedTurnstileEnv, secret: string): Promise<void> {
@@ -202,9 +246,24 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     }
   }
 
+  /**
+   * Both halves of what {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in the dev
+   * secrets file, and the sitekeys in `.dev.vars`. Leaving the value in the secrets file would have the
+   * next `pithy dev` seed a key for a widget that no longer exists.
+   *
+   * The secret's name is still passed to the removal, and that is deliberate: a project provisioned
+   * before #153 recorded the transitional copy, and teardown is the run that should take it. A name that
+   * is not recorded is a no-op.
+   *
+   * **The adopter's own `.dev.vars` is not touched.** Each Worker's is generated from the bootstrap set,
+   * so taking the names out of that set is what drops the lines — and the project root's file, if there
+   * is one, is theirs. See #154.
+   */
   async clearDev(modes: TurnstileMode[]): Promise<void> {
     const keys = [TURNSTILE_SECRET_NAME, ...modes.map((mode) => sitekeyVarName(mode))];
-    await removeDevVars(join(this.#projectDir, ".dev.vars"), keys);
+    await removeBootstrapVars(this.#projectDir, keys);
+    await writeDevVars({ projectDir: this.#projectDir, values: {} });
+    await removeDevSecrets(await resolveDevSecretsFile(this.#projectDir), [TURNSTILE_SECRET_NAME]);
   }
 
   async clearManagedSitekeys(modes: TurnstileMode[]): Promise<void> {

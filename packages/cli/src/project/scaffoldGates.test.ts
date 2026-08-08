@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { runAdd } from "../capabilities/flow";
 import { runUiAdd } from "../ui/flow";
 import { scaffoldProject } from "./scaffold";
 import { resolveSingleWorker } from "./workerScope";
@@ -187,6 +188,58 @@ describe("a freshly scaffolded project", () => {
     const built = await readdir(join(dir, "dist"));
     expect(built.filter((name) => name.endsWith(".tsbuildinfo")).length).toBeGreaterThan(0);
   });
+});
+
+/**
+ * The path nobody ran end to end: composing a capability.
+ *
+ * `pithy add` renders one `key: default` per manifest option and nothing else, so an option the
+ * capability *requires* and whose manifest did not state it was simply absent. `pithy add secrets`
+ * wrote `secrets({ rotationIntervalDays: 30 })` against a `SecretsConfig` whose `registry` is required,
+ * and the first `bun run typecheck` on a project the adopter had not touched failed TS2741 (#161).
+ *
+ * Secrets is the capability worth spending a gate on: it is the first one most projects add, because
+ * auth, email and payments all read their credentials through it.
+ *
+ * `runAdd` rather than `addCapability`, for the reason the `ui add` block below calls the flow — the
+ * manifest load is half of what broke, and a test handed a hand-built manifest never reads the file
+ * that was wrong. Install and migrate are stubbed: the package is already in the link farm, and D1 is
+ * not what this proves.
+ *
+ * Ahead of `ui add`, so the gate can be plain `tsc -b` — the whole solution file, exactly what the
+ * adopter runs. Once the client is added, one program in that solution needs a package this monorepo
+ * does not install; see the block below.
+ */
+describe("after pithy add secrets", () => {
+  beforeAll(async () => {
+    await runAdd({
+      projectDir: dir,
+      workerDir: join(dir, "apps", WORKER),
+      worker: WORKER,
+      project: PROJECT,
+      capability: "secrets",
+      install: async () => ({ packageManager: "bun" }),
+      migrate: async () => [],
+    });
+  }, 60_000);
+
+  test("registers the capability with every option its config requires", async () => {
+    const config = await readFile(join(dir, "apps", WORKER, "pithy.config.ts"), "utf8");
+    expect(config).toContain('import { secrets } from "@pithy-sh/secrets/src/index";');
+    // Empty, because the contents are the adopter's — and present, because the type is not optional.
+    expect(config).toContain("registry: {},");
+    expect(config).toContain("rotationIntervalDays: 30,");
+  });
+
+  test("still typechecks, with no edit by the adopter", async () => {
+    const { code, output } = await run(dir, tsc(dir), ["-b"]);
+    expect({ code, output }).toMatchObject({ code: 0, output: "" });
+  }, 120_000);
+
+  test("still lints clean", async () => {
+    const { code, output } = await run(dir, biome(dir), ["check", "."]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+  }, 60_000);
 });
 
 describe("after pithy ui add react", () => {

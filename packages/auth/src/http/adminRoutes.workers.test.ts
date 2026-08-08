@@ -15,9 +15,11 @@ import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { EMAIL_MIGRATION_ORDER, email } from "@pithy-sh/email/src/capability";
+import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { auth } from "../capability";
@@ -68,12 +70,16 @@ const PUSH_TOKEN = "apns-push-credential-must-not-leak";
 /** A provider OAuth access token, for the same reason. */
 const OAUTH_ACCESS_TOKEN = "ya29.provider-access-token-must-not-leak";
 
-const SECRET_ENV: Record<string, string> = {
+/** The registry the composed backend aggregates: auth's slice plus the one email declares. */
+const REGISTRY = { ...authSecretsRegistry, ...emailSigningRegistry };
+
+/** Every secret the composed backend resolves — all of them, since the accessor resolves in one batch. */
+const SECRETS: SecretFixture<typeof REGISTRY> = {
   "auth-session-secret": SECRET,
-  "auth-google-credentials": JSON.stringify({ clientId: "g", clientSecret: "g" }),
-  "auth-apple-credentials": JSON.stringify({ clientId: "a", clientSecret: "a" }),
-  "auth-facebook-credentials": JSON.stringify({ clientId: "f", clientSecret: "f" }),
-  "auth-github-credentials": JSON.stringify({ clientId: "h", clientSecret: "h" }),
+  "auth-google-credentials": { clientId: "g", clientSecret: "g" },
+  "auth-apple-credentials": { clientId: "a", clientSecret: "a" },
+  "auth-facebook-credentials": { clientId: "f", clientSecret: "f" },
+  "auth-github-credentials": { clientId: "h", clientSecret: "h" },
   "email-link-signing-key": "dev-link-signing-key",
 };
 
@@ -102,15 +108,17 @@ function memoryKv() {
   };
 }
 
+/**
+ * The Worker env every call carries. `SECRETS` and `SECRETS_ENCRYPTION_KEYS` come from the pool's own
+ * bindings and are the real ones: every secret here is a `d1` entry, read from the row `beforeEach`
+ * seeded rather than from anything on the env (#153).
+ */
 function workerEnv(): Record<string, unknown> {
   return {
     ...(env as unknown as Record<string, unknown>),
-    ...SECRET_ENV,
     ENVIRONMENT,
-    SECRETS: env.DB,
     EMAIL_SUPPRESSIONS: env.DB,
     EMAIL_SENDER: {},
-    SECRETS_ENCRYPTION_KEYS: "unused-in-dev",
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     CONTROL_PLANE: memoryKv(),
   };
@@ -311,6 +319,9 @@ beforeEach(async () => {
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);
+  // The backend composes `secrets`, whose `compose` hook configures the shared accessor with the real
+  // resolver at startup — so the values have to be real rows, written before the first request.
+  await seedSecrets(env, REGISTRY, SECRETS);
 
   emitted = [];
   await grant(ALL_SCOPES);

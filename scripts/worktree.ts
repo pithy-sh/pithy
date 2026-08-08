@@ -11,11 +11,11 @@
  *
  * Dependency-free and runtime-agnostic on purpose: this is the minimal core the
  * future `pithy feature create/destroy` command (issue #25) will wrap, adding the
- * port allocator, `.dev.vars` generation, and ephemeral CF resources on top.
+ * port allocator and ephemeral CF resources on top.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** Run git, return trimmed stdout. Throws on a non-zero exit. */
@@ -69,9 +69,12 @@ function names(issue: string, slug: string): Names {
 }
 
 function setup(issue: string, slug: string): void {
-  const { branch, wtPath, root } = names(issue, slug);
+  const { branch, wtPath } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
+    // Nothing to repair. A worktree used to outlive the link into it — renaming the main checkout left it
+    // pointing at nothing, and re-running `setup` was the obvious thing to reach for and the one thing
+    // that could not fix it. There is no link now (#154), so an existing worktree is already correct.
     console.log(`Worktree exists. ${wtPath}`);
     return;
   }
@@ -84,30 +87,29 @@ function setup(issue: string, slug: string): void {
     git(["worktree", "add", wtPath, "-b", branch, "origin/main"]);
   }
 
-  configure(wtPath, root);
+  configure(wtPath);
 
   console.log(`Worktree ready. ${wtPath}`);
   console.log(`Branch ${branch}.`);
 }
 
 /**
- * Configure a freshly-created worktree so the gates and integration tests run inside it: install
- * deps, then share the main checkout's `.dev.vars` — link the worktree's to the root file, and
- * symlink each package's to the worktree root (the `vars:local` turbo task) so wrangler and the
- * `*.integration.test.ts` files resolve the shared secrets. Idempotent; the `.dev.vars` steps
- * no-op when the main checkout has none.
+ * Configure a freshly-created worktree so the gates and integration tests run inside it: install deps.
+ *
+ * **Nothing is shared any more, and that is #154.** `.dev.vars` used to be linked here — at the worktree
+ * root, and again into each package by a `vars:local` turbo task — because wrangler reads it from the
+ * directory it runs in. Each one is generated now, from sources that are already outside every checkout,
+ * so a worktree builds its own with no link to wire, dangle, delete, or detach.
+ *
+ * **The dev secrets file needs nothing either, and that is #156.** It lives at `<config>/<project>/`,
+ * resolved from the project's *name*, so every worktree of this repo finds the same file with no link,
+ * no copy, and no step here.
+ *
+ * Idempotent.
  */
-function configure(wtPath: string, root: string): void {
+function configure(wtPath: string): void {
   // Install so typecheck/biome/vitest run inside the tree.
   execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
-
-  const rootDevVars = join(root, ".dev.vars");
-  if (!existsSync(rootDevVars)) return;
-
-  const wtDevVars = join(wtPath, ".dev.vars");
-  if (!existsSync(wtDevVars)) symlinkSync(rootDevVars, wtDevVars);
-  execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
-  console.log("Linked .dev.vars (root + per-package via vars:local).");
 }
 
 function teardown(issue: string, slug: string): void {

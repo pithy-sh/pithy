@@ -808,6 +808,7 @@ Alias: installed (`p.` → `pithy`)
 Config dir: ~/.config/pithy
 State file: ~/.config/pithy/state.json
 Dev login:  ~/.config/pithy/acme/dev.json — none yet; sign-in stays magic-link only
+Secrets:    ~/.config/pithy/acme/secrets.jsonc
 Notifier:   enabled (PITHY_NO_UPDATE_NOTIFIER to disable)
 
 Project: pithy.config.ts found
@@ -847,6 +848,16 @@ The same line warns when the pair **came from two places**. The `.dev.vars` over
 The **`Project name:`** line answers the next question: is what I would find there still mine. Every resource this project provisions leads with the root config's `name` (`docs/NAMING.md`), and teardown *recomputes* those names rather than scanning for them — so one edit to `name` orphans everything while every command keeps exiting 0. Doctor requires positive evidence before it says so, because `<app>-<env>-<resource>` is also the ordinary Cloudflare convention and a database you brought with you is not an orphan. Two states fail the exit: **drifted**, where the wiring contradicts the config wholesale (every declared name leads with one and the same other project, and the configured name appears nowhere — the only shape a one-string rename can leave), and **orphaned**, where a database's `pithy_migrations_owner` stamp proves Pithy created it under another project's name. Neither state ever advises deleting a resource. A single foreign name, a mix, an unset name, and an unreadable `wrangler.jsonc` all pass — none of them establishes anything.
 
 The **`Dev login:`** line names the one config file that is per project rather than per machine: `dev.json`, the opt-in that makes `pithy seed` mint a real session instead of leaving you a magic link (`docs/SEED.md`). It sits with `Config dir:` and `State file:` because it answers the same question they do, and it is here because until recently it could not be: the file was resolved against a second, unrelated config root — and on Windows against no valid root at all — so this block named a directory that did not contain it and a developer whose dev login was not working looked there and found nothing. The line reports the resolved path whether or not the file exists, because where it *would* go is most of what anyone asking needs. **No file is not a fault** — magic-link-only is the documented default, and it never gates. A file that will not parse does, and so does one naming no user: `pithy seed` reads an unparseable `dev.json` as an absence, silently, so nothing else in the toolchain would ever mention it. It reports the user the file names and never claims that user is seeded — doctor runs no seed, so it has not established that, and the seed itself already refuses loudly on a name it does not create.
+
+The **`Secrets:`** line names your dev secret values — `<config>/<project>/secrets.jsonc`, the file `pithy add` mints into and `pithy seed` reads. **It is not in your repository, and that is the point.** `.dev.vars` has to sit in the worker's directory because wrangler reads it there; nothing but the CLI reads this one, so it lives outside every checkout — nothing to gitignore, nothing a `git add -A` can reach, nothing an `npm pack` can carry, and nothing an `rm -rf` on the working copy destroys. Delete the whole clone and the secrets are still there. Every worktree of one project resolves the same file with no setup step.
+
+Because nothing in the project points at it, this line prints on **every** run whether or not the file exists — where it *would* go is most of what anyone asking needs, and there is no other way to find out. The directory is `0700` and the file `0600`, held there on every write.
+
+The file is keyed on your `pithy.config.ts` `name`, so two unrelated projects sharing a name share one file, and renaming a project leaves the old directory behind with every value in it. Dev-only values, so this is friction rather than danger — but invisible friction, so when this project has no file and others do, the line names them: `no file yet; secrets exist for acme-old — a renamed project leaves its old name here`.
+
+`PITHY_CONFIG_DIR` moves the whole config directory — state file, `dev.json` and `secrets.jsonc` together. Set it in CI, which has no home directory worth writing to, and in any harness that must not touch your real values.
+
+The committed `.dev.secrets.example.jsonc` stays in the repository. It is documentation: the envelope format, and where the real file is.
 
 The two name lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
 

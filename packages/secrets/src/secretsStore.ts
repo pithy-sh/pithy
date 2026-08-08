@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   currentValue,
   decodeVersionedValue,
@@ -12,22 +12,40 @@ import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import { keyedSecretName } from "./keyspace";
 import type { KeyedSecretName, SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
-import { ManagedEnvironment } from "./scope";
 import { SystemSecretsStore } from "./store/systemSecretsStore";
 
 /**
  * The read seam. `secretsStore(env, registry)` resolves every declared secret locally — no RPC —
- * routing by backend (`d1` decrypts the per-environment row; `cf-secrets-store` reads the bound
- * value) and exposing one uniform API. The call site is identical across environments. Whether the
- * worker is deployed is decided by **one explicit signal — the `ENVIRONMENT` var** (a `ManagedEnvironment`
- * means deployed): in local dev **every** secret resolves from its injected `.dev.vars` string (same shape
- * as stored), so dev needs no `SECRETS` D1 or master key; deployed reads route strictly by backend, so a
- * stray plaintext binding can never shadow a `d1` secret. The accessor's named methods are synchronous.
+ * routing by backend (`d1` decrypts the per-environment row; `cf-secrets-store` reads the bound value)
+ * and exposing one uniform API. The accessor's named methods are synchronous.
+ *
+ * **One path, every environment (#153).** There is no dev branch. `ENVIRONMENT` decides nothing here;
+ * the environment is already expressed by which `SECRETS` D1 and which master key the worker is bound
+ * to, so routing on it as well was a second answer to a question the bindings had already settled. It
+ * had two costs. A `d1` secret resolved from a plaintext binding in dev, which is a shape production
+ * never sees — so `pithy secrets rotate --env dev` exercised a code path only staging ran, and a
+ * multi-version secret silently collapsed to one. And it made `.dev.vars` carry application secrets
+ * under kebab registry names, in wrangler's `UPPER_SNAKE` env-binding file, teaching every adopter that
+ * one of the two conventions was a mistake. Dev now reads the row `pithy dev` seeded, and `.dev.vars`
+ * goes back to being what wrangler says it is.
+ *
+ * The cost is stated plainly: **a worker with any `d1` secret needs its `SECRETS` D1 and a master key in
+ * dev too.** `pithy add secrets` mints both, and a project composing a capability that declares a `d1`
+ * secret already had to.
  *
  * `get(name)` returns the current value — what almost every consumer wants. `getVersions(name)`
  * returns the current pointer plus every still-valid version — for the rare verifier that must
  * check a kid against every valid key (e.g. token verification across a signing-key rotation).
  * Both are available for every secret; the shape is not a per-secret switch.
+ *
+ * **A failure belongs to its secret, not to the batch (#170).** Resolution is eager, so one unset
+ * secret used to take the whole accessor down — and the accessor is shared, so an unconfigured OAuth
+ * provider in `auth` stopped `payments` reading a webhook key, in a capability that never mentions it.
+ * The registry already says which secrets are conditional ("read only when the provider is enabled"),
+ * and eager resolution turned every one of them into a boot requirement. So a secret that fails to
+ * resolve holds its error instead of throwing it, and the error is raised by the read of *that* secret.
+ * Nothing is swallowed: a secret that is genuinely missing still fails loudly, naming itself, at the
+ * first read. A secret nobody reads costs nothing, which is what "conditional" meant all along.
  *
  * **A keyspace is the one asymmetry, and it is honest.** A `keyed` entry covers an unbounded set of
  * members whose keys exist only at runtime — one credential per tenant — so nothing is resolved for it
@@ -68,8 +86,7 @@ export type KeyedSecretSource = (storedName: string) => Promise<VersionedValue |
  * The store is built per read rather than once, so it re-resolves the master key — a
  * `SECRETS_ENCRYPTION_KEYS` rotation is picked up instead of being pinned for the life of a cached
  * accessor. A keyspace has no other home: a Secrets Store binding is declared at build time and a
- * member's name is not, so this is the same path in local dev as deployed. Dev therefore needs the
- * `SECRETS` D1 and a master key **if** it reads a keyspace — which it needs anyway to write one.
+ * member's name is not — which is the argument that has now been made for every `d1` secret (#153).
  */
 export function d1KeyedSource(env: SecretsStoreEnv): KeyedSecretSource {
   return async (storedName) => (await SystemSecretsStore.fromEnv(env)).getValue(storedName);
@@ -108,23 +125,31 @@ function resolveVersioned(entry: SecretRegistryEntry, name: string, value: Versi
 }
 
 /**
- * Decode an injected (non-D1-row) value into the uniform envelope. The canonical (provisioned) value is
- * a JSON-encoded {@link VersionedValue}, so a deployed secret round-trips as `{ currentVersion, versions }`.
- * Local dev `.dev.vars` supplies a bare string instead (wrangler's own `CLOUDFLARE_API_TOKEN`
- * convention), so a raw value that is not a valid envelope is wrapped as a one-version envelope — the
- * same accessor path serves both. A single-version secret is always a one-entry envelope. Used for
- * `cf-secrets-store` bindings and for the local-dev `.dev.vars` form of a `d1` secret alike.
+ * Decode a **`cf-secrets-store`** binding's value into the uniform envelope. The canonical (provisioned)
+ * value is a JSON-encoded {@link VersionedValue}, so a value pithy wrote round-trips as
+ * `{ currentVersion, versions }`; anything else is wrapped as a one-version envelope, and the same
+ * accessor path serves both.
+ *
+ * **The wrap is permanent, and it is not leniency left over from #149.** A Secrets Store entry has no
+ * envelope to find and never will: `pithy token mint` writes a raw token through `putSecret`, and an
+ * entry set by hand in the dashboard or by `wrangler secrets-store secret create` is a plain string too.
+ * Refusing one would refuse the two ways the platform's own tooling writes a secret.
+ *
+ * It is no longer reachable with a `d1` entry. A `d1` secret's stored shape is always an envelope and
+ * always comes from the row — in dev exactly as deployed since #153 — so there is nothing left here to
+ * reinterpret it as. See {@link secretsStore}'s `unprovisioned`, which is where a `d1` secret handed a
+ * binding instead of a row is now answered.
  */
 function decodeInjectedValue(raw: string): VersionedValue {
   try {
     return decodeVersionedValue(raw);
   } catch {
-    // Not a serialized envelope — a bare `.dev.vars` string. Wrap it as a single version.
+    // Not a serialized envelope — a raw Secrets Store entry. Wrap it as a single version.
     return initialVersionedValue(raw);
   }
 }
 
-/** Resolve an injected (`cf-secrets-store` binding or local-dev `d1`) value as the uniform envelope. */
+/** Resolve a `cf-secrets-store` binding's value as the uniform envelope. */
 function resolveInjected(entry: SecretRegistryEntry, name: string, raw: string): Resolved {
   return resolveVersioned(entry, name, decodeInjectedValue(raw));
 }
@@ -139,11 +164,23 @@ export class SecretsAccessor<R extends SecretRegistry> {
   readonly #registry: R;
   readonly #resolved: Record<string, Resolved>;
   readonly #keyedSource: KeyedSecretSource | undefined;
+  readonly #failures: Record<string, Error>;
 
-  constructor(registry: R, resolved: Record<string, Resolved>, keyedSource?: KeyedSecretSource) {
+  /**
+   * `failures` holds the error each unresolved secret raises when *it* is read — see the module note
+   * on #170. It is last and optional because almost nothing constructs one: `secretsStore` does, and
+   * a test that hands over already-resolved values has no failures to carry.
+   */
+  constructor(
+    registry: R,
+    resolved: Record<string, Resolved>,
+    keyedSource?: KeyedSecretSource,
+    failures: Record<string, Error> = {},
+  ) {
     this.#registry = registry;
     this.#resolved = resolved;
     this.#keyedSource = keyedSource;
+    this.#failures = failures;
   }
 
   /** The current value of a declared secret. */
@@ -187,6 +224,10 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * slice. A name in `registry` that this accessor never resolved is simply absent, so a later
    * `get`/`getVersions` fails loudly as `secrets/not_found` rather than returning a silent `undefined`.
    *
+   * A held failure travels with its name and no further. That is the whole point of the slice: the
+   * view a capability gets carries the errors of its own secrets, and cannot be tripped by a
+   * neighbour's unset one.
+   *
    * `keyedSource` defaults to this accessor's own. The shared store passes the current invocation's
    * instead: it hands out views over an accessor cached across requests, and a keyspace read is real
    * I/O, which must run through the binding of the request making it — not of whichever request
@@ -197,11 +238,14 @@ export class SecretsAccessor<R extends SecretRegistry> {
     keyedSource: KeyedSecretSource | undefined = this.#keyedSource,
   ): SecretsAccessor<R2> {
     const resolved: Record<string, Resolved> = {};
+    const failures: Record<string, Error> = {};
     for (const name of Object.keys(registry)) {
       const value = this.#resolved[name];
       if (value) resolved[name] = value;
+      const failure = this.#failures[name];
+      if (failure) failures[name] = failure;
     }
-    return new SecretsAccessor(registry, resolved, keyedSource);
+    return new SecretsAccessor(registry, resolved, keyedSource, failures);
   }
 
   /**
@@ -253,6 +297,9 @@ export class SecretsAccessor<R extends SecretRegistry> {
         detail: `get called on keyspace '${name}'`,
       });
     }
+    // The failure this secret's own resolution held. Raised here, at its read, and nowhere else.
+    const failure = this.#failures[name];
+    if (failure) throw failure;
     const resolved = this.#resolved[name];
     if (!resolved) {
       throw new SecretNotFoundError({
@@ -270,75 +317,132 @@ export class SecretsAccessor<R extends SecretRegistry> {
 }
 
 /**
- * Resolve every secret declared in `registry` from `env` and return a typed accessor. `d1` entries
- * are decrypted in one batch from the per-environment store; `cf-secrets-store` entries are read
- * from their bound values (or `.dev.vars` strings). A declared secret with no value throws
- * `secrets/not_found` so a missing secret fails loudly, never as a silent `undefined`. A keyed entry
- * resolves nothing here — it declares a keyspace, not a value — and its members are fetched at the read.
+ * Resolve every secret declared in `registry` from `env` and return a typed accessor. **Routing is by
+ * registry backend and nothing else**, in every environment: `d1` entries are decrypted in one batch
+ * from the per-environment store, `cf-secrets-store` entries are read from their bound values. A keyed
+ * entry resolves nothing here — it declares a keyspace, not a value — and its members are fetched at
+ * the read.
+ *
+ * **This never rejects because a secret is missing (#170).** A secret that cannot be resolved — no row,
+ * no binding, a value that fails its schema — holds its error, and the read of that secret raises it.
+ * A missing secret still fails loudly and still names itself; it just stops taking every other
+ * capability's secrets down with it. Reject only on something that is nobody's secret in particular.
+ *
+ * Nothing reads `ENVIRONMENT`. A `d1` secret cannot be shadowed by a plaintext binding anywhere, which
+ * used to be true only of deployed workers.
  */
 export async function secretsStore<R extends SecretRegistry>(
   env: SecretsStoreEnv,
   registry: R,
 ): Promise<SecretsAccessor<R>> {
   const resolved: Record<string, Resolved> = {};
+  const failures: Record<string, Error> = {};
   const bindings = env as unknown as Record<string, SecretBinding | string | undefined>;
 
-  // **One explicit signal decides dev vs deployed: `ENVIRONMENT`.** It is stamped into each deployed
-  // worker's vars at provision (`staging` | `prod`); when it is not a `ManagedEnvironment` (absent,
-  // or local dev) the worker is in dev. This is the *only* thing that flips resolution — never the runtime
-  // shape of a value — so a stray plaintext binding can never make a deployed `d1` secret read unencrypted.
-  const deployedEnv = ManagedEnvironment.safeParse(bindings.ENVIRONMENT);
-
-  if (!deployedEnv.success) {
-    // **Local dev is uniform.** Whatever a secret's registry backend, in dev it is injected as a
-    // `.dev.vars` string in the same shape it is stored — so every secret resolves through this one seam,
-    // and dev needs no `SECRETS` D1, master key, or live Secrets Store.
-    for (const name of Object.keys(registry)) {
-      const entry = registry[name];
-      // A keyspace has no binding to inject: its member names do not exist until runtime.
-      if (!entry || entry.keyed) continue;
-      const raw = await resolveBinding(bindings[name], name);
-      resolved[name] = resolveInjected(entry, name, raw);
-    }
-    return new SecretsAccessor(registry, resolved, d1KeyedSource(env));
-  }
-
-  // **Deployed: route strictly by registry backend.** `d1` secrets are ALWAYS decrypted from the
-  // per-environment store (no plaintext shadow); `cf-secrets-store` secrets are read from their bindings.
   const d1Names: string[] = [];
   const cfNames: string[] = [];
   for (const name of Object.keys(registry)) {
     const entry = registry[name];
-    // Keyspaces are skipped either way: batching one would mean decrypting every tenant's credential
-    // to serve a request that wants one, which is the shape this entry type exists to avoid.
+    // Keyspaces are skipped: batching one would mean decrypting every tenant's credential to serve a
+    // request that wants one, which is the shape this entry type exists to avoid.
     if (!entry || entry.keyed) continue;
     if (entry.backend === "cf-secrets-store") cfNames.push(name);
     else d1Names.push(name);
   }
 
   if (d1Names.length > 0) {
-    const store = await SystemSecretsStore.fromEnv(env);
-    const values = await store.getValues(d1Names);
+    let values: Record<string, VersionedValue> = {};
+    let storeFailure: Error | undefined;
+    try {
+      values = await (await SystemSecretsStore.fromEnv(env)).getValues(d1Names);
+    } catch (error) {
+      // The store itself is unreachable — no `SECRETS` D1, or no master key. That is fatal for every
+      // `d1` secret and for none of the others, so it is held against each `d1` name rather than
+      // thrown: a `cf-secrets-store` secret in another capability is unaffected and still reads.
+      storeFailure = held(error);
+    }
     for (const name of d1Names) {
       const entry = registry[name];
-      const value = values[name];
       if (!entry) continue;
-      if (!value) {
-        throw new SecretNotFoundError({
-          message: `Secret '${name}' is declared but not provisioned.`,
-          detail: `d1 secret '${name}' has no row in the secrets store`,
-        });
+      if (storeFailure) {
+        failures[name] = storeFailure;
+        continue;
       }
-      resolved[name] = resolveVersioned(entry, name, value);
+      const value = values[name];
+      try {
+        if (!value) throw unprovisioned(name, isBound(bindings, name));
+        resolved[name] = resolveVersioned(entry, name, value);
+      } catch (error) {
+        failures[name] = held(error);
+      }
     }
   }
 
   for (const name of cfNames) {
     const entry = registry[name];
     if (!entry) continue;
-    const raw = await resolveBinding(bindings[name], name);
-    resolved[name] = resolveInjected(entry, name, raw);
+    try {
+      resolved[name] = resolveInjected(entry, name, await resolveBinding(bindings[name], name));
+    } catch (error) {
+      failures[name] = held(error);
+    }
   }
 
-  return new SecretsAccessor(registry, resolved, d1KeyedSource(env));
+  return new SecretsAccessor(registry, resolved, d1KeyedSource(env), failures);
+}
+
+/**
+ * A caught value as the `Error` a later read will re-throw. Anything thrown by a resolver is already a
+ * `PithyError`; the wrap is for the impossible case, so a held failure is never a bare string that
+ * `throw` would surface without a code. The thrown value is kept as `cause` and never stringified into
+ * `detail` — `detail` reaches logs verbatim, and nothing here has proved what that value holds.
+ */
+function held(error: unknown): Error {
+  if (error instanceof Error) return error;
+  return new InternalError(
+    { message: "Secret resolution failed.", detail: "secret resolution threw a non-error value" },
+    { cause: error },
+  );
+}
+
+/**
+ * Whether a binding of this name is present and carries something — the one question a `d1` secret with
+ * no row has to ask before it says what is wrong.
+ *
+ * `Object.hasOwn`, never `in`: `env` is an ordinary object, so `in` finds `constructor` and `toString`
+ * on the prototype and would report a binding for a secret a capability chose to name either one.
+ */
+function isBound(bindings: Record<string, SecretBinding | string | undefined>, name: string): boolean {
+  if (!Object.hasOwn(bindings, name)) return false;
+  const value = bindings[name];
+  if (typeof value === "string") return value !== "";
+  return typeof value?.get === "function";
+}
+
+/**
+ * What a declared `d1` secret with no row is told — and it is two different sentences, because it is two
+ * different mistakes.
+ *
+ * With no binding it is the plain case: nothing has provisioned it. With a binding of the same name it
+ * is the #153 case, and the binding is the reason the reader is confused rather than a place to fall
+ * back to. Dev used to resolve exactly that string, so this is the one shape an upgrade produces: an
+ * adopter's pre-#149 `.dev.vars` line, or a Workers-runtime test injecting a `d1` value as a bare
+ * string. Reading it would put back the asymmetry this change removed; saying nothing about it would
+ * answer "not provisioned" about a value sitting right there. So it is named, with the fix.
+ *
+ * `validation/invalid_input` rather than `secrets/not_found`: the store is not missing a value, the
+ * caller supplied one in a place it is never read from. Never echoes the value.
+ */
+function unprovisioned(name: string, bound: boolean): Error {
+  if (!bound) {
+    return new SecretNotFoundError({
+      message: `Secret '${name}' is declared but not provisioned.`,
+      detail: `d1 secret '${name}' has no row in the secrets store`,
+    });
+  }
+  return new ValidationError({
+    message: `Secret '${name}' is bound as a plain value, and a d1 secret is never read from a binding.`,
+    action: `Put '${name}' in the dev secrets file and run pithy seed. Deployed environments get it from pithy secrets create.`,
+    detail: `d1 secret '${name}' has no row in the secrets store, and a binding of the same name was ignored`,
+  });
 }

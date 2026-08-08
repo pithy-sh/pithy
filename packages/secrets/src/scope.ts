@@ -5,9 +5,9 @@ import { z } from "zod";
 import type { SecretBackend, SecretScope } from "./registry";
 
 /**
- * The environments Pithy manages remotely. `dev` is local-only — it resolves from `.dev.vars`,
- * never a deployed store — so it is never a write target. A future managed env extends this set,
- * and global replication follows automatically.
+ * The environments Pithy manages remotely. `dev` is local-only — it resolves from the project's own
+ * Miniflare-backed store, seeded from the dev secrets file, never a deployed one — so it is never a
+ * write target here. A future managed env extends this set, and global replication follows automatically.
  *
  * **The deployed subset of core's `ENVIRONMENTS`, spelled the same way.** Every name a manager is
  * deployed under goes through `resourceNames(project).env(environment)`, which refuses anything core

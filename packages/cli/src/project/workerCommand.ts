@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { type KeptDevVars, wireFeatureDevVars } from "../feature/devVars";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, requireProjectName } from "./config";
@@ -85,12 +85,12 @@ export interface AddWorkerReport {
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
   /**
-   * The workers whose `.dev.vars` this left alone, and why — a real file of their own, or a link pointing
-   * somewhere else. This command wires *every* worker it discovers, not just the new one, so a sibling
-   * running on secrets the shared file does not have is a fact about the project the adopter has to be
-   * told. `pithy dev` names it on every run; the command that adds the worker used to say nothing.
+   * One sentence per Worker whose `.dev.vars` this run did not generate — a file pithy did not write, or
+   * a directory it may not write into. This command regenerates *every* Worker it discovers, not just the
+   * new one, so a sibling that will not get its bindings is a fact about the project the adopter has to
+   * be told. `pithy dev` names it on every run; the command that adds the Worker used to say nothing.
    */
-  kept: KeptDevVars[];
+  devVarsRefused: string[];
 }
 
 /** Options for {@link addWorker}. */
@@ -101,12 +101,12 @@ export interface AddWorkerOptions extends WorkerContext {
 }
 
 /**
- * Everything `pithy worker add` does once `apps/<name>/` exists: link the worker's `.dev.vars`, take a
- * port when there is a block to take one from, relink the workspace, and report what the wiring left alone.
+ * Everything `pithy worker add` does once `apps/<name>/` exists: generate the Worker's `.dev.vars`, take a
+ * port when there is a block to take one from, relink the workspace, and report what it could not write.
  *
  * **The install goes last.** It used to run first, and it is the one step here that reaches the network —
- * so when it threw, the `.dev.vars` wiring below it never ran and every worker after the first came out
- * without the link `pithy init` promises every worker has. Ordering fixes that outright: by the time an
+ * so when it threw, the `.dev.vars` step below it never ran and every worker after the first came out
+ * without the file `pithy init` promises every worker has. Ordering fixes that outright: by the time an
  * install can fail, there is nothing left for it to skip.
  */
 async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<AddWorkerReport> {
@@ -122,18 +122,18 @@ async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<
     reconciled = true;
   }
 
-  // In a plain checkout this *is* the wiring — there is no feature port block to reconcile, so nothing
-  // else has run. In a worktree the sync above has already done it and this pass changes nothing: it is
-  // idempotent, and it is here because `SyncReport` does not carry what the wiring left alone. Dropping
-  // that list was how a sibling keeping its own `.dev.vars` went unmentioned by the command that found it.
-  const links = await wireFeatureDevVars({
-    mainRoot,
-    worktreePath: options.projectDir,
-    workers: await discoverWorkers(options.projectDir),
+  // Generated, not linked (#154). The new Worker needs a `.dev.vars` beside it because that is where
+  // wrangler reads one; every sibling is regenerated in the same pass because generation is idempotent by
+  // content and a run that changes nothing writes no bytes. The refusals come back because `SyncReport`
+  // does not carry them, and dropping that list was how a Worker with no bindings went unmentioned by the
+  // command that made it.
+  const devVars = await generateDevVars({
+    projectDir: options.projectDir,
+    workerDirs: (await discoverWorkers(options.projectDir)).map((worker) => worker.dir),
   });
 
   if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
-  return { name: options.name, dir, port, reconciled, kept: links.kept };
+  return { name: options.name, dir, port, reconciled, devVarsRefused: devVars.refused };
 }
 
 /**
@@ -411,6 +411,16 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   }
 
   const to = join(appsDir, options.to);
+  // **Both ends of the move, and the source is the one that was missing.** A rename reads its source path
+  // as well as writing its destination, and `rename` on a symlink moves the *link* — so a link at
+  // `apps/<from>` arrived at `apps/<to>` still pointing outside the project, and the `wrangler.jsonc` and
+  // `package.json` rewrites below then went through it. Reproduced against a canary: `worker rename api
+  // board` left `apps/board` a link and rewrote the canary's two files, reporting success. #164.
+  //
+  // The source is gated as a `move` rather than a `write`: nothing is scaffolded here, and telling an
+  // adopter "the files would land outside the project" about a directory being moved is the same false
+  // sentence a delete borrowing the write wording used to print.
+  await ensureScaffoldPath(options.projectDir, target.dir, "move");
   // Safe first, then free. `ensureScaffoldPath` refuses a link at `apps` or at `apps/<to>` — `rename` onto
   // one is ENOTDIR, and this function had its own `exists()` over `access`, which follows the link and so
   // read a dangling one as "nothing there". The gate cleared, `rename` threw, and a raw node:fs stack trace

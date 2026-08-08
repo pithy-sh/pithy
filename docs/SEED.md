@@ -156,7 +156,7 @@ The context is deliberately narrow: `env`, `project`, a `secret(name)` reader, t
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
-- `secret` resolves from `.dev.vars`, which is where local dev's secrets genuinely live. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
+- `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
 
 ### Seeing the rest of the run: `context.seeded`

@@ -101,6 +101,14 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
       path: join(harness.dir, ".config", "pithy", "acme", "dev.json"),
       user: null,
     }),
+    // Its neighbour, and stubbed for the same reason: the doc transcript pins one path, and the real
+    // check resolves it from a `pithy.config.ts` this harness has none of. Present, because the line
+    // prints on every run whether or not there is a file — that is the whole point of it (#156).
+    checkDevSecretsFile: async () => ({
+      path: join(harness.dir, ".config", "pithy", "acme", "secrets.jsonc"),
+      present: true,
+      orphans: [],
+    }),
     runtime: BUN,
   };
 }

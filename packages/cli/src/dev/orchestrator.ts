@@ -5,9 +5,12 @@ import { execFile, spawn as spawnChild } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
+import { type GenerateDevVarsResult, generateDevVars } from "../devSecrets/generate";
+import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
+import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import {
   buildDevConfig,
   type DevConfig,
@@ -16,7 +19,6 @@ import {
   scanPinnedBlocks,
   writeDevConfig,
 } from "../feature/devConfig";
-import { wireFeatureDevVars } from "../feature/devVars";
 import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
@@ -78,6 +80,10 @@ export interface StartDevOptions {
   json?: boolean;
   /** Test seam: the entitlement composition check, without loading a real `pithy.config.ts`. */
   checkEntitlements?: (workerDir: string) => Promise<string[]>;
+  /** Seam: seed the dev secrets file into the local `SECRETS` store before anything spawns. */
+  seedSecrets?: (projectDir: string) => Promise<DevSecretsSeedReport>;
+  /** Seam: generate each Worker's `.dev.vars` before anything reads one. */
+  generateDevVars?: (projectDir: string, workerDirs: string[]) => Promise<GenerateDevVarsResult>;
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
   /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
@@ -280,29 +286,35 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     });
   }
 
-  // 2. Point every worker at the project's shared `.dev.vars`, before anything reads one.
+  // 2. Generate every worker's `.dev.vars`, before anything reads one (#154).
   //
-  //    The file is git-ignored and so is the link into each `apps/<worker>/`, so neither survives a clone.
-  //    `pithy init` makes the link once, for the developer who created the project; every developer after
-  //    them clones, writes the `.dev.vars` the example tells them to, and gets nothing — wrangler reports
-  //    every secret in it absent while the file sits at the root, unread. Nothing in the project re-made
-  //    the link, which is what a `postinstall` cannot fix either: the usual order is clone, install, *then*
-  //    write `.dev.vars`, so the install that would have wired it ran before there was anything to wire.
+  //    wrangler loads the file beside the worker it runs, so each one needs its own. That was a symlink at
+  //    a shared root file, and the symlink is the thing that never survived a clone: `pithy init` made it
+  //    once for whoever created the project, and every developer after them cloned, wrote the `.dev.vars`
+  //    the example told them to, and got nothing — every secret reported absent while the file sat at the
+  //    root, unread. A `postinstall` could not fix it either, because the usual order is clone, install,
+  //    *then* write `.dev.vars`. Generation removes the question: `pithy dev` is the command that runs
+  //    every time, and it builds each file from the machine-local sources whether or not one is there.
   //
-  //    `pithy dev` is the command that runs after the file exists, every time, and the one whose failure
-  //    the missing link causes. Idempotent, and a no-op when the project has no `.dev.vars` at all, so it
-  //    costs a project that does not need it nothing. It never replaces anything that reaches a real file
-  //    — a worker holding its own `.dev.vars`, or pointing at one somewhere else, keeps it. Both are named
-  //    here rather than passed over: this runs on *every* `pithy dev`, so a swap nobody mentions is a
-  //    worker quietly running with different secrets than the developer put in front of it.
-  const links = await wireFeatureDevVars({ mainRoot: projectDir, worktreePath: projectDir, workers: discovered });
-  for (const keep of links.kept) {
-    const who = discovered.find((w) => w.dir === keep.dir)?.name ?? keep.dir;
-    emitLine(
-      keep.reason === "file"
-        ? `${who}: keeping its own .dev.vars — the project's shared one is not wired here.`
-        : `${who}: its .dev.vars points at ${keep.points} — left there, not re-pointed at the project's shared one.`,
+  //    Idempotent by content, so a second `pithy dev` writes no bytes and wrangler's watcher sees nothing.
+  //    A `.dev.vars` pithy did not generate is never overwritten and never merged — it is named, with the
+  //    supported place for local values, and that worker starts without one rather than with somebody
+  //    else's file replaced underneath it.
+  //
+  //    Non-fatal in every direction. A project whose config directory is unreadable still starts, and
+  //    says why its Workers have no bindings, because the alternative is a dev session that will not run
+  //    at all over a file wrangler would have reported on itself.
+  const generate =
+    options.generateDevVars ??
+    ((dir: string, dirs: string[]) => generateDevVars({ projectDir: dir, workerDirs: dirs }));
+  try {
+    const devVars = await generate(
+      projectDir,
+      discovered.map((worker) => worker.dir),
     );
+    for (const line of renderDevVarsNotes(devVars)) emitLine(line);
+  } catch (error) {
+    emitLine(`.dev.vars not generated. ${messageOf(error)}`);
   }
 
   // 3. Resolve pinned ports from the dev config — never probe. A project that has none yet (a plain
@@ -441,6 +453,22 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     emitLine(`${worker.name}: routes gate on an entitlement, but no capability resolves one — they will deny.`);
     for (const gate of gates) emitLine(dim(`  ${gate}`));
     emitLine(dim("  run: pithy add payments"));
+  }
+
+  // Secrets are seeded before anything spawns, for the same reason the `.dev.vars` link is wired before
+  // anything spawns (#139): a Worker reads its secrets on the first request, and a store seeded after
+  // startup is a store the first sign-in of the session missed. Idempotent, so this is silent on every
+  // run but the one that changed something.
+  //
+  // Non-fatal, in both directions. A project that never composed `secrets` has nothing to seed and
+  // hears nothing. A dev secrets file that will not parse is said out loud and the session still
+  // starts — refusing to run every Worker over one malformed file would be a worse trade than letting
+  // the capability that needs the secret fail with its own error.
+  const seedSecrets = options.seedSecrets ?? ((dir: string) => seedProjectDevSecrets({ projectDir: dir }));
+  try {
+    for (const line of renderDevSecretsNotes(await seedSecrets(projectDir))) emitLine(line);
+  } catch (error) {
+    emitLine(`Secrets not seeded. ${messageOf(error)}`);
   }
 
   emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);

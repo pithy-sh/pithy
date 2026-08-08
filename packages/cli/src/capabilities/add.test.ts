@@ -472,6 +472,29 @@ describe("addCapability", () => {
       await addCapability({ workerDir: worker, manifest: withOptions });
       expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(once);
     });
+
+    test("seeds an empty object or array for an option whose value is the adopter's to write", async () => {
+      // The option a manifest cannot fill in. `@pithy-sh/secrets` requires a `registry` and `add` cannot
+      // invent one, so it wrote every option but that — and left a `pithy.config.ts` that does not
+      // typecheck (#161). The empty literal is what makes the config compile before the adopter has been
+      // told the option exists; `describe` above it is what tells them.
+      const seeded = CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [
+          { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
+          { key: "boards", default: [], describe: "Every board this app ranks." },
+        ],
+      });
+      await addCapability({ workerDir: worker, manifest: seeded });
+
+      const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+      expect(config).toContain("// Your secrets. Declare each one here.");
+      expect(config).toContain("registry: {},");
+      expect(config).toContain("// Every board this app ranks.");
+      expect(config).toContain("boards: [],");
+    });
   });
 });
 
