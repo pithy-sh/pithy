@@ -4,7 +4,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, messageOf, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { z } from "zod";
 import { type CatalogEntry, capabilityPackageDir } from "./catalog";
 
 /** Every capability ships under this npm scope; the CLI resolves them by name. */
@@ -49,11 +50,50 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
     return CapabilityManifest.parse(JSON.parse(raw));
   } catch (cause) {
     throw new InternalError({
-      message: `${SCOPE}/${name} ships a malformed ${MANIFEST_FILE}.`,
+      message: `${SCOPE}/${name} ships a malformed ${MANIFEST_FILE}${firstFault(cause)}`,
       action: "Reinstall the capability, or report this to its maintainer.",
-      detail: cause instanceof Error ? cause.message : String(cause),
+      detail: faults(cause),
     });
   }
+}
+
+/** A Zod issue path as a manifest reader would write it: `configOptions[2].key`, not `configOptions.2.key`. */
+function fieldPath(path: readonly PropertyKey[]): string {
+  if (path.length === 0) return "<root>";
+  return path.reduce<string>(
+    (text, segment) =>
+      typeof segment === "number"
+        ? `${text}[${segment}]`
+        : text === ""
+          ? String(segment)
+          : `${text}.${String(segment)}`,
+    "",
+  );
+}
+
+/**
+ * A manifest's faults, one per line as `<path>: <why>` — the `detail` a refusal carries.
+ *
+ * A `ZodError`'s own `message` is the issue array as JSON, which buries the one sentence that says what
+ * is wrong. The path is what names the option: `configOptions[2].key` is the third option, and #174's
+ * messages carry the offending key or rationale verbatim beside it.
+ */
+function faults(cause: unknown): string {
+  if (!(cause instanceof z.ZodError)) return messageOf(cause);
+  return cause.issues.map((issue) => `${fieldPath(issue.path)}: ${issue.message}`).join("\n");
+}
+
+/**
+ * The first fault, as a clause for the refusal's `message`.
+ *
+ * The manifest is named in the message and the option must be too — a capability with a dozen options
+ * and one bad key is otherwise a refusal that says only "malformed". The rest of the faults stay in
+ * `detail`, which is where throw-site context belongs (CLAUDE.md §Errors).
+ */
+function firstFault(cause: unknown): string {
+  const issue = cause instanceof z.ZodError ? cause.issues[0] : undefined;
+  if (!issue) return ".";
+  return `: ${fieldPath(issue.path)} — ${issue.message}`;
 }
 
 /**

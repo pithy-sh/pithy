@@ -7,7 +7,9 @@ import { type BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bin
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   type CapabilityManifest,
+  ConfigOption,
   ConfigOptionValue,
+  renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -59,16 +61,22 @@ export type MissingBinding = z.infer<typeof MissingBinding>;
 /** A capability config option present in the manifest but not yet written into its pithy.config.ts call. */
 export const MissingConfigKey = z
   .object({
-    key: z.string().describe("The option name to add to the capability's registration call in pithy.config.ts."),
-    // The manifest's own contract, not a copy of it. The copy was a scalar union, so an option whose
-    // value is a literal only the adopter can fill in — the one `pithy add secrets` could not render at
-    // all (#161) — was the one option `pithy upgrade` could not report as missing either. That value is
-    // now a whole worked example (#168), which is exactly why it is rendered through the manifest's own
-    // `renderConfigOptionLine` rather than by anything this file writes itself (#171).
+    // Every field is the manifest's own contract, not a copy of one. The copied `default` was a scalar
+    // union, so an option whose value is a literal only the adopter can fill in — the one `pithy add
+    // secrets` could not render at all (#161) — was the one option `pithy upgrade` could not report as
+    // missing either. That value is now a whole worked example (#168), which is exactly why it is
+    // rendered through the manifest's own `renderConfigOptionLine` rather than by anything this file
+    // writes itself (#171). `key` and `describe` were still bare `z.string()` here after #174 narrowed
+    // them at the manifest, which is the same copy waiting to drift the same way.
+    key: ConfigOption.shape.key.describe(
+      "The option name to add to the capability's registration call in pithy.config.ts.",
+    ),
     default: ConfigOptionValue.describe(
       "The manifest default rendered as the option's value (an adopter can change it afterward).",
     ),
-    describe: z.string().describe("The option's rationale, rendered as the comment above it in pithy.config.ts."),
+    describe: ConfigOption.shape.describe.describe(
+      "The option's rationale, rendered as the comment above it in pithy.config.ts.",
+    ),
   })
   .describe("A manifest config option not yet present in the capability's pithy.config.ts registration.");
 export type MissingConfigKey = z.infer<typeof MissingConfigKey>;
@@ -612,7 +620,7 @@ function appendDurableObjectMigrations(config: WranglerBindings, manifest: Capab
 function renderKeyLines(keys: MissingConfigKey[], indent: string): string {
   const lines: string[] = [];
   for (const key of keys) {
-    lines.push(`${indent}// ${key.describe}`);
+    lines.push(renderConfigOptionComment(key.describe, indent));
     lines.push(renderConfigOptionLine(key.key, key.default, indent));
   }
   return lines.join("\n");

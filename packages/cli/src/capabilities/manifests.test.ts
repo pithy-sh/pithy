@@ -51,6 +51,41 @@ describe("loadManifest", () => {
     await installManifest(dir, "auth", { name: "auth" }); // no package, no requiredBindings
     await expect(loadManifest("auth", dir)).rejects.toThrow();
   });
+
+  /**
+   * A manifest is third-party data, read out of `node_modules`, and its option keys and rationales are
+   * interpolated into the TypeScript `pithy add` writes. #174 narrowed both at the schema; this is the
+   * refusal an adopter actually sees, and it has to say which manifest and which option — a capability
+   * with a dozen options and one bad key is otherwise a "malformed manifest" and nothing more.
+   */
+  test("an option key that is not a bare identifier is refused, naming the manifest and the option", async () => {
+    await installManifest(dir, "auth", {
+      ...authManifest,
+      configOptions: [
+        { key: "basePath", default: "/auth", describe: "Where the auth routes mount." },
+        { key: "content-type", default: "x", describe: "Not renderable as a bare key." },
+      ],
+    });
+
+    const error = (await loadManifest("auth", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("@pithy-sh/auth"); // the manifest
+    expect(error.message).toContain("configOptions[1].key"); // the option
+    expect(error.message).toContain('"content-type"'); // and what it said
+    expect(error.payload.detail).toContain("bare identifier");
+  });
+
+  test("a describe that spans lines is refused the same way", async () => {
+    await installManifest(dir, "auth", {
+      ...authManifest,
+      configOptions: [{ key: "basePath", default: "/auth", describe: "Where the routes mount.\nevil();" }],
+    });
+
+    const error = (await loadManifest("auth", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("configOptions[0].describe");
+    expect(error.message).toContain("one line");
+  });
 });
 
 describe("availableManifests", () => {

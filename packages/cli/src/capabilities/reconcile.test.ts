@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,8 +12,11 @@ import {
   CapabilityManifest,
   CONFIG_LINE_WIDTH,
   CONFIG_OPTION_INDENT,
+  ConfigOption,
+  renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
@@ -875,4 +879,138 @@ describe("every shipped manifest default fits the line Biome would keep", () => 
       });
     }
   }
+});
+
+/** Biome's own binary, from this repo's install — the only thing that can say what Biome would print. */
+const BIOME = join(PACKAGES, "..", "node_modules", "@biomejs", "biome", "bin", "biome");
+
+/** Run `biome check` on one file inside a scaffolded project, so it reads that project's own biome.jsonc. */
+async function biomeCheck(cwd: string, file: string): Promise<{ code: number; output: string }> {
+  return await new Promise((settle) => {
+    const child = spawn(BIOME, ["check", file], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.on("close", (code) => settle({ code: code ?? -1, output }));
+  });
+}
+
+/**
+ * The whole line, checked by the only authority on it.
+ *
+ * The width gate above measures a number; this one asks Biome. #171 narrowed what a manifest may state as
+ * a *value* so the renderer could only be handed shapes it prints the way Biome would — and left the
+ * option's own `key` and its `describe` out, both interpolated raw. A key of `content-type` rendered
+ * `content-type: "x",`, which is not TypeScript at all; a `describe` carrying a newline put its second
+ * line into `pithy.config.ts` as bare code (#174).
+ *
+ * So every shipped option's two lines are rendered into a config in a real scaffold and put through that
+ * scaffold's own `biome check`. The invariant is "Biome leaves it alone", and no regex can answer that.
+ */
+describe("every shipped manifest option renders lines Biome leaves alone", () => {
+  const manifests = shippedManifests();
+
+  test("biome check passes on a config carrying every shipped option", async () => {
+    const lines: string[] = [];
+    for (const [, manifest] of manifests) {
+      if (manifest.configOptions.length === 0) continue;
+      lines.push(`    ${manifest.name}({`);
+      for (const option of manifest.configOptions) {
+        lines.push(renderConfigOptionComment(option.describe, CONFIG_OPTION_INDENT));
+        lines.push(renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT));
+      }
+      lines.push("    }),");
+    }
+    // The shape `pithy add` writes: options at CONFIG_OPTION_INDENT, inside the managed region's array.
+    const source = `const config = {\n  capabilities: [\n${lines.join("\n")}\n  ],\n};\n\nexport default config;\n`;
+
+    // Not vacuous: every option the repo ships is in the file Biome was handed.
+    const options = manifests.flatMap(([, manifest]) => manifest.configOptions);
+    expect(options.length).toBeGreaterThan(30);
+    for (const option of options) expect(source).toContain(`${option.key}:`);
+
+    const path = join(dir, "renderedOptions.ts");
+    await writeFile(path, source);
+    const { code, output } = await biomeCheck(dir, path);
+    expect(code, `biome check rejected the rendered options:\n${output}\n\nSource:\n${source}`).toBe(0);
+  });
+
+  test("the gate bites — biome check rejects the line the old renderer would have written", async () => {
+    // The control for the test above. `content-type` is what a manifest could state before #174, and
+    // what the renderer emitted verbatim; if `biome check` passed on this, the assertion above would
+    // mean nothing. Written by hand because neither the schema nor the renderer will produce it now.
+    const source = `const config = {\n  capabilities: [\n    cap({\n      // A rationale.\n      content-type: "x",\n    }),\n  ],\n};\n\nexport default config;\n`;
+    const path = join(dir, "hostile.ts");
+    await writeFile(path, source);
+    const { code } = await biomeCheck(dir, path);
+    expect(code).not.toBe(0);
+  });
+});
+
+/**
+ * The door #171 left ajar.
+ *
+ * A manifest is third-party data — read from `node_modules/@pithy-sh/<cap>/pithy.manifest.json` — and its
+ * option keys and rationales go straight into generated TypeScript. `renderConfigValue` guarded the keys
+ * of a *nested* object and not the option's own, so the one field on the line that nothing checked was
+ * the one an attacker would pick: `}) ; evil(` closed the call and opened another.
+ *
+ * The fix is #171's own argument applied to the rest of the line — narrow at the schema, so the renderer
+ * cannot be handed something it cannot print — and the renderer stays total over it, because `--set` and
+ * a prompt reach `renderConfigOptionLine` without passing a manifest.
+ */
+describe("a manifest cannot state a key or a rationale the renderer cannot print", () => {
+  /** Every key from #174, each of which the schema parsed and the renderer emitted as broken source. */
+  const hostileKeys = ["content-type", 'a"b', "1", "a b", "}) ; evil("];
+
+  test("a key that is not a bare identifier is refused, and the refusal names it", () => {
+    for (const key of hostileKeys) {
+      const result = ConfigOption.safeParse({ key, default: "x", describe: "Why." });
+      expect(result.success, `${JSON.stringify(key)} parsed as a config option key`).toBe(false);
+      expect(result.error?.issues[0]?.message).toContain(JSON.stringify(key));
+    }
+  });
+
+  test("a bare identifier still parses, reserved words included", () => {
+    for (const key of ["basePath", "_x", "$x", "x9", "default", "class"]) {
+      expect(ConfigOption.safeParse({ key, default: "x", describe: "Why." }).success).toBe(true);
+    }
+  });
+
+  test("a describe that spans lines or trails whitespace is refused", () => {
+    // A line terminator ends a `//` comment: everything after it lands in the file as bare code. Trailing
+    // whitespace parses and then fails `biome format`. Both measured against Biome, not guessed.
+    for (const describe of ["one\ntwo", "one\rtwo", "one\u2028two", "one\u2029two", "Trailing. ", "Trailing.\t"]) {
+      expect(
+        ConfigOption.safeParse({ key: "k", default: "x", describe }).success,
+        `${JSON.stringify(describe)} parsed as a config option describe`,
+      ).toBe(false);
+    }
+  });
+
+  test("a rationale Biome leaves alone still parses", () => {
+    for (const describe of [" leading space is fine", "a\ttab inside is fine", "café — dash.", "ends with */"]) {
+      expect(ConfigOption.safeParse({ key: "k", default: "x", describe }).success).toBe(true);
+    }
+  });
+
+  test("the renderers refuse what the schema refuses — `--set` reaches them without a manifest", () => {
+    for (const key of hostileKeys) {
+      expect(() => renderConfigOptionLine(key, "x", CONFIG_OPTION_INDENT)).toThrow(PithyError);
+    }
+    expect(() => renderConfigOptionComment("one\ntwo", CONFIG_OPTION_INDENT)).toThrow(PithyError);
+    expect(() => renderConfigOptionComment("Trailing. ", CONFIG_OPTION_INDENT)).toThrow(PithyError);
+  });
+
+  test("what the schema admits, biome check keeps", async () => {
+    const source = `const config = {\n  capabilities: [\n    cap({\n${renderConfigOptionComment(" leading space is fine", CONFIG_OPTION_INDENT)}\n${renderConfigOptionLine("basePath", "/x", CONFIG_OPTION_INDENT)}\n    }),\n  ],\n};\n\nexport default config;\n`;
+    const path = join(dir, "admitted.ts");
+    await writeFile(path, source);
+    const { code, output } = await biomeCheck(dir, path);
+    expect(code, output).toBe(0);
+  });
 });
