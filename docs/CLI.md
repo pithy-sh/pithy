@@ -859,6 +859,22 @@ The file is keyed on your `pithy.config.ts` `name`, so two unrelated projects sh
 
 The committed `.dev.secrets.example.jsonc` stays in the repository. It is documentation: the envelope format, and where the real file is.
 
+A **`Dev secrets:`** block appears when something about this project's dev values is wrong. The block *is* the finding — a project whose values are where they belong prints no line saying so. It answers for two files that look alike and are not the same file at all:
+
+| | |
+|---|---|
+| `<root>/.dev.vars` | Hand-written. Read by **the CLI**, for `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` and `R2_CREDENTIALS`. Nothing else reads it — no Worker ever has. |
+| `<root>/apps/<worker>/.dev.vars` | **Generated**, one per Worker. Read by wrangler, and so by the Worker. Built from the dev secrets file and this machine's `dev.json`. |
+
+Four things get a line, and every one of them names an absolute path rather than a convention:
+
+- **A Worker whose generated file has a header and no values.** That Worker starts with none of its bindings and answers every request with `Missing required bindings: …`; before this, that 500 was the only thing that ever said so.
+- **A registry secret sitting in the root `.dev.vars`**, whatever its backend. It is inert there — dev reads a `d1` secret from the seeded store and a `cf-secrets-store` one from the generated file — so the line says which file the value belongs in and in what shape.
+- **A key in the root `.dev.vars` that a Worker needs as a binding**, `SECRETS_ENCRYPTION_KEYS` above all. Real value, wrong file, and never described as deletable.
+- **A key nothing reads at all** — not a Cloudflare credential, not a registry secret, not declared by anything this project composes. That one can go.
+
+Reported, never fixed, and it never fails the exit. Every project that predates the generated file is in this state by definition, and an upgrade that turns a green `pithy doctor` red in CI over a file that still worked yesterday is a surprise rather than a diagnosis — and rewriting somebody's `.dev.vars` for them is worse than either. It does make the report verbose: a Worker that cannot start is worth the ink.
+
 The two name lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
 
 A **`Worker names:`** block appears when a Worker's three names stop agreeing — its `apps/<dir>`, the deployed script name in its `wrangler.jsonc`, and its `vars.WORKER`. It is the hand-rename check: `git mv apps/api apps/board` and one forgotten edit leaves a Worker deploying under one name and stamping its audit events with another, and nothing else in the toolchain notices. Shown per Worker, one line per stamp that disagrees, and it **fails the exit** — the contradiction is between this repo's own directory and its own config, so it is established from local files alone and no account is consulted. Held to the same evidence bar as `Project name:`: a script name that was never composed from `<project>-<worker>` was brought in from somewhere, not renamed, and passes. `pithy worker rename` (§6.6) is what moves all three at once.
@@ -874,12 +890,16 @@ Up to date.
 Shell: zsh
 Alias: installed
 
+Secrets: ~/.config/pithy/acme/secrets.jsonc
+
 Project: pithy.config.ts found
 Project capabilities: all up to date
 
 OS:      macOS 14.5
 Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 ```
+
+The **`Secrets:`** line survives into the terse report, and it is the only one that does. Every other line above reports a fault, and terse is the report saying there is none; this one reports a *location*, and "where is my dev secrets file" is a question, not a complaint — asked most often by the developer whose project is working fine. It stands on its own there, unpadded, because there is no `Config dir:` beside it to align against.
 
 `Runtime:` names the interpreter actually executing. Under Bun, `process.versions.node` is the Node version being emulated, so reporting it alone would name a runtime that is not running — the one thing a diagnostic must not do. On Node it reads `Runtime: Node 22.10.0`, with no compat suffix.
 

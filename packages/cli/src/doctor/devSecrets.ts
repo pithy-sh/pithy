@@ -9,6 +9,7 @@ import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
 import { type StatePathOptions, stateDir } from "../notifier/state";
+import { isCloudflareEnvKey } from "./devVars";
 
 /**
  * Whether this project's secrets are in the file they belong in — the migration notice for every project
@@ -26,9 +27,16 @@ import { type StatePathOptions, stateDir } from "../notifier/state";
  * an upgrade that turns a green `pithy doctor` red in CI over a file that still works is a surprise, not
  * a diagnosis. The rule the block is held to: say it clearly, cost nothing.
  *
- * **`d1` only.** `CLOUDFLARE_API_TOKEN` is `cf-secrets-store`-backed and genuinely lives in `.dev.vars`
- * — there is no local Secrets Store to seed it into — so naming it misplaced would send an adopter to
- * break their own project. The registry's `backend` decides, here exactly as it does in the seeder.
+ * **Every backend, and only the project root's file (#178).** This reads `<root>/.dev.vars` — the
+ * hand-written one, which since #154 nothing but the CLI reads, and which the CLI reads for
+ * {@link CLOUDFLARE_ENV_KEYS} alone. A registry secret sitting there is inert whatever its backend, and
+ * that list is what says so. It used to be inferred from `backend: "d1"` instead, on the grounds that
+ * `CLOUDFLARE_API_TOKEN` has no local Secrets Store to live in — true of that one name, not of the
+ * backend, so the dashboard's own `cf-secrets-store` secrets sat stranded there unreported.
+ *
+ * The generated `apps/<w>/.dev.vars` is a different file and is not read here. A `cf-secrets-store`
+ * secret belongs in *that* one — it is the only place a Worker can read one from, and putting it there
+ * is what `pithy seed` is for.
  *
  * **And every copy it names is now inert (#153).** Through the transition the seeder wrote each `d1`
  * value into `.dev.vars` as well, because that binding was where dev read it — so this block had to tell
@@ -137,10 +145,12 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       // chosen to look like an `Object.prototype` key would be aimed.
       const stranded = Object.hasOwn(inDevVars, name) ? inDevVars[name] : undefined;
       if (stranded !== undefined && stranded !== "") {
-        // `cf-secrets-store` is not misplaced there and never was — `CLOUDFLARE_API_TOKEN` has no local
-        // store to live in, so the binding is its home. Only a `d1` name in that file has anything wrong
-        // with it, and which of the two it is depends only on whether the secrets file states it too.
-        if (entry.backend === "d1")
+        // Whatever the backend. `backend` says where a *seeded* value lands — a D1 row, or a binding —
+        // and it was standing in for a different question: is the root `.dev.vars` a file anything
+        // reads this name out of. {@link CLOUDFLARE_ENV_KEYS} is the whole answer, and it is the list
+        // the readers themselves use. Which of the two states it is depends only on whether the
+        // secrets file states it too.
+        if (!isCloudflareEnvKey(name))
           misplaced.push({ name, state: Object.hasOwn(stated, name) ? "duplicate" : "unmoved" });
         continue;
       }
@@ -244,9 +254,11 @@ function describeMisplaced(name: string, state: MisplacedDevSecretState, path: s
  * Where this project's secrets file is, whether it is there, and which sibling project directories
  * hold one — the block that exists because the file no longer does (#156).
  *
- * **The path prints on every run, healthy or not.** Everything else in `pithy doctor` reports a fault;
- * this reports a location, because a file outside the checkout is invisible otherwise. Nothing in the
- * project names it, `ls` will not find it, and "where are my dev secrets" has no other answer.
+ * **The path prints on every run, healthy or not — terse report included (#166).** Everything else in
+ * `pithy doctor` reports a fault; this reports a location, because a file outside the checkout is
+ * invisible otherwise. Nothing in the project names it, `ls` will not find it, and "where are my dev
+ * secrets" has no other answer. Suppressing it when nothing is wrong hid it from the one developer with
+ * no other symptom to search on.
  *
  * **The orphan list is the rename trail.** The directory is keyed on the project's `name`, so renaming
  * a project — or scaffolding a second one that happens to share a name — silently changes which file

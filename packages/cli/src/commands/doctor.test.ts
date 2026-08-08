@@ -901,6 +901,146 @@ describe("dev login", () => {
   });
 });
 
+/**
+ * The `.dev.vars` files, and the state #178 was reported from: a project whose Worker was getting
+ * nothing while `doctor` called it healthy. Reported, never gated — but never silent either.
+ */
+describe("dev vars", () => {
+  const devVars =
+    (over: Partial<DoctorReport["devVars"] & object> = {}) =>
+    async () => ({ root: [], empty: [], devConfigPath: "/home/u/.config/pithy/acme/dev.json", ...over });
+
+  test("an empty generated file names the Worker and drags the report verbose", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        checkDevVars: devVars({ empty: [{ worker: "board", file: "apps/board/.dev.vars" }] }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Dev secrets:");
+    expect(text).toContain("board has no dev values");
+    expect(text).toContain("apps/board/.dev.vars");
+    // Worth the ink, not worth a red CI: every project that predates the generated file starts here.
+    expect(doctorExitCode(report)).toBe(0);
+    expect(text).toContain("Config dir:");
+  });
+
+  test("a key nothing reads is named, and a credential beside it is not", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        checkDevVars: devVars({
+          root: [
+            { key: "CLOUDFLARE_API_TOKEN", state: "credential", workers: [] },
+            { key: "LEFTOVER_FROM_2024", state: "unread", workers: [] },
+          ],
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("LEFTOVER_FROM_2024 is in .dev.vars and nothing reads it");
+    expect(text).not.toContain("CLOUDFLARE_API_TOKEN");
+  });
+
+  test("a healthy project says nothing and stays terse", async () => {
+    const report = await buildDoctorReport(harness.healthyOptions({ checkDevVars: devVars() }));
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).not.toContain("Dev secrets:");
+    expect(text).not.toContain("Config dir:");
+  });
+
+  test("outside a project the question is never asked", async () => {
+    const probe = vi.fn(devVars());
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ loadProject: undefined, checkDevVars: probe as DoctorReportOptions["checkDevVars"] }),
+    );
+    expect(report.devVars).toBeNull();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  test("--json carries the whole classification, names only", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        checkDevVars: devVars({
+          root: [{ key: "SECRETS_ENCRYPTION_KEYS", state: "binding", workers: ["board"] }],
+          empty: [{ worker: "board", file: "apps/board/.dev.vars" }],
+        }),
+      }),
+    );
+    const json = renderDoctorJson(report) as { devVars: { root: unknown[]; empty: unknown[]; detail: string[] } };
+    expect(json.devVars.root).toHaveLength(1);
+    expect(json.devVars.empty).toHaveLength(1);
+    expect(json.devVars.detail.join("\n")).toContain("SECRETS_ENCRYPTION_KEYS");
+  });
+});
+
+/**
+ * The `Secrets:` line, which is a **location** rather than a finding — the one line in the report that
+ * nothing else in the toolchain could tell you. The file is outside every checkout since #156, so a
+ * report that omits it leaves an adopter with no way to find it at all, and "where is it" is not a
+ * complaint the terse report is entitled to suppress (#166).
+ */
+describe("dev secrets file", () => {
+  const location =
+    (over: Partial<DoctorReport["devSecretsFile"] & object> = {}) =>
+    async () => ({
+      path: "/home/u/.config/pithy/acme/secrets.jsonc",
+      present: true,
+      orphans: [],
+      ...over,
+    });
+
+  test("prints in the verbose report, beside the other config paths", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkDevSecretsFile: location() }));
+    expect(renderDoctorText(report, "/home/u")).toContain("Secrets:    ~/.config/pithy/acme/secrets.jsonc");
+  });
+
+  test("prints in the terse report too — a healthy project is the one most likely to be asking", async () => {
+    const report = await buildDoctorReport(harness.healthyOptions({ checkDevSecretsFile: location() }));
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toBe(
+      [
+        "",
+        "pithy 1.3.0 (installed via brew)",
+        "Up to date.",
+        "",
+        "Shell: zsh",
+        "Alias: installed",
+        "",
+        "Secrets: ~/.config/pithy/acme/secrets.jsonc",
+        "",
+        "Project: pithy.config.ts found",
+        "Project capabilities: all up to date",
+        "",
+        "OS:      macOS 14.5",
+        "Runtime: Node 22.10.0",
+      ].join("\n"),
+    );
+    // A path is not a fault: naming it must not gate CI, and must not drag the rest of the report out.
+    expect(doctorExitCode(report)).toBe(0);
+    expect(text).not.toContain("Config dir:");
+  });
+
+  /**
+   * The rename trail, in the only report that can carry it. `devSecretsFile` is deliberately not a term
+   * in the terse predicate, so a project whose *only* anomaly is a renamed or duplicated config directory
+   * renders terse — and before #166 that put the trail out of reach in exactly the case it was written for.
+   */
+  test("a renamed project's trail prints in the terse report", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkDevSecretsFile: location({ present: false, orphans: ["acme-old"] }) }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Secrets: ~/.config/pithy/acme/secrets.jsonc — no file yet; secrets exist for acme-old — a renamed project leaves its old name here",
+    );
+  });
+
+  test("outside a project there is no line at all — no config, no name to key a path on", async () => {
+    const report = await buildDoctorReport(harness.healthyOptions({ checkDevSecretsFile: async () => null }));
+    expect(report.devSecretsFile).toBeNull();
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Secrets:");
+  });
+});
+
 describe("worker names", () => {
   /** The hand-rename the dashboard did: `apps/board`, still deploying and stamping as `api`. */
   const handRenamed = {

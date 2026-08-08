@@ -5,7 +5,7 @@ import { relative } from "node:path";
 import { DEV_VARS_LOCAL, readLocalOverrides } from "../devSecrets/generate";
 import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
 import { discoverWorkers } from "../project/workers";
-import { readWranglerConfig } from "../project/wrangler";
+import { declaredVars } from "./wranglerVars";
 
 /**
  * What is in a `.dev.vars.local` that nothing else in the project knows about — the footgun `.local`
@@ -21,11 +21,11 @@ import { readWranglerConfig } from "../project/wrangler";
  * common; a dev-only variable is sometimes genuinely dev-only. What is not acceptable is that either be
  * invisible, which is what a git-ignored file is by construction.
  *
- * **`env.<name>.vars` REPLACES the top-level block rather than merging it**, which is the gotcha the
- * starter's own `wrangler.jsonc` comment warns about: every environment repeats every variable. So a key
- * counts as declared if it appears at the top level **or** in any environment — reading only the top
- * level would name a staging-only variable as dev-only, and reading only one environment would name
- * every ordinary variable.
+ * **What counts as declared is {@link declaredVars}'s to say**, and it is shared with the root
+ * `.dev.vars` check next door — `env.<name>.vars` *replaces* the top-level block rather than merging it,
+ * so a key counts if it appears at the top level **or** in any environment. Reading only the top level
+ * names a staging-only variable as dev-only, and reading only one environment names every ordinary
+ * variable. Two checks asking the same question, through one function, so only one can be half-right.
  */
 
 /** One `.dev.vars.local` key with nothing behind it, and where it was written. */
@@ -96,24 +96,6 @@ export async function checkDevVarsLocal(options: CheckDevVarsLocalOptions): Prom
     }
   }
   return devOnly.length === 0 && shadowing.length === 0 ? null : { devOnly, shadowing };
-}
-
-/**
- * Every variable name one Worker's `wrangler.jsonc` declares — the top-level `vars` block **and** every
- * `env.<name>.vars`. An unreadable or absent config declares nothing, which is the honest answer: the
- * health block is where a `wrangler.jsonc` that will not parse gets said, and louder.
- */
-async function declaredVars(workerDir: string): Promise<Set<string>> {
-  const config = (await readWranglerConfig(workerDir).catch(() => null)) as {
-    vars?: Record<string, unknown>;
-    env?: Record<string, { vars?: Record<string, unknown> } | undefined>;
-  } | null;
-  const keys = new Set<string>();
-  for (const key of Object.keys(config?.vars ?? {})) keys.add(key);
-  for (const environment of Object.values(config?.env ?? {})) {
-    for (const key of Object.keys(environment?.vars ?? {})) keys.add(key);
-  }
-  return keys;
 }
 
 /** The lines the report prints. Both findings are worth ink and neither is worth failing an exit over. */
