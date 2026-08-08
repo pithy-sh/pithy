@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { PithyError } from "../error/pithyError";
 import {
   CapabilityManifest,
   CONFIG_LINE_WIDTH,
   CONFIG_OPTION_INDENT,
+  renderCapabilityImport,
+  renderCapabilityRegistration,
   renderConfigOptionLine,
   renderConfigValue,
 } from "./manifest";
@@ -416,5 +419,262 @@ describe("renderConfigOptionLine", () => {
   test("the scaffold's indent is the marker's four columns plus two", () => {
     expect(CONFIG_OPTION_INDENT).toBe("      ");
     expect(CONFIG_LINE_WIDTH).toBe(120);
+  });
+});
+
+/**
+ * The third producer of one defect.
+ *
+ * A manifest is third-party data, read out of `node_modules`, and its `name` reaches generated TypeScript
+ * twice — the import binding and the registration call — while its `package` reaches the import
+ * specifier. Both were `z.string().min(1)`, so `pithy add` wrote
+ * `import { audit }) ; evil( } from "@pithy-sh/audit/src/index";` and reported `Done.` (#183). Both are
+ * reproduced here as the schema now refuses them.
+ */
+describe("a manifest cannot state a name or a package the renderer cannot print", () => {
+  /** A manifest with everything but the field under test, so a refusal can only be about that field. */
+  function withName(name: unknown): unknown {
+    return { name, package: "@pithy-sh/audit", requiredBindings: [] };
+  }
+  function withPackage(pkg: unknown): unknown {
+    return { name: "audit", package: pkg, requiredBindings: [] };
+  }
+
+  test("a name that is not a bare identifier is refused, and the refusal names it", () => {
+    // The first is #183's own reproduction: it closed the capabilities array and opened a call.
+    for (const name of ["audit }) ; evil(", "a-b", "1x", "a b", 'a"b', "", "audit\nevil()", "./../escape"]) {
+      const result = CapabilityManifest.safeParse(withName(name));
+      expect(result.success, `${JSON.stringify(name)} parsed as a capability name`).toBe(false);
+      expect(result.error?.issues[0]?.message).toContain(JSON.stringify(name));
+      expect(result.error?.issues[0]?.message).toContain("bare identifier");
+    }
+  });
+
+  test("a package that is not an npm package name is refused, and the refusal names it", () => {
+    // The second hole on the same line: the specifier is quoted, so the escape closes the quote.
+    for (const pkg of [
+      '@pithy-sh/audit"; evil(); //',
+      "@pithy-sh/audit/src/index",
+      "../../elsewhere",
+      "@pithy-sh/ audit",
+      "_leading",
+      ".leading",
+      "",
+      `@pithy-sh/a${"b".repeat(220)}`,
+    ]) {
+      const result = CapabilityManifest.safeParse(withPackage(pkg));
+      expect(result.success, `${JSON.stringify(pkg)} parsed as a capability package`).toBe(false);
+    }
+  });
+
+  test("every name and package this repo ships still parses", () => {
+    for (const [name, pkg] of [
+      ["auth", "@pithy-sh/auth"],
+      ["controlplane", "@pithy-sh/core"],
+      ["multiplayer", "@pithy-sh/multiplayer"],
+    ] as const) {
+      expect(CapabilityManifest.safeParse({ name, package: pkg, requiredBindings: [] }).success).toBe(true);
+    }
+    // An adopter's own capability, outside the scope and carrying npm's legacy uppercase.
+    expect(CapabilityManifest.safeParse({ name: "billing", package: "MyCap-2.0", requiredBindings: [] }).success).toBe(
+      true,
+    );
+  });
+
+  test("a peer or optional capability is held to the same rule — it names a capability", () => {
+    for (const field of ["peerCapabilities", "optionalCapabilities"]) {
+      const result = CapabilityManifest.safeParse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        [field]: ["email", "}) ; evil("],
+      });
+      expect(result.success, `${field} accepted a name no import could bind`).toBe(false);
+    }
+  });
+});
+
+/**
+ * The two lines #174 left without a producer.
+ *
+ * `renderConfigOptionLine` and `renderConfigOptionComment` made one option's two lines a single
+ * function's output; the import statement and the registration call were still built inline in
+ * `pithy add`, from strings nothing checked. They are functions now, total over what the schema parses,
+ * so the same rule holds for `pithy upgrade`'s conversion of a one-liner into a block.
+ */
+describe("renderCapabilityImport and renderCapabilityRegistration", () => {
+  test("renders the import line pithy add writes", () => {
+    expect(renderCapabilityImport("auth", "@pithy-sh/auth/src/index")).toBe(
+      'import { auth } from "@pithy-sh/auth/src/index";',
+    );
+  });
+
+  test("renders the ejected import, which is composed rather than stated", () => {
+    expect(renderCapabilityImport("auth", "./capabilities/auth")).toBe('import { auth } from "./capabilities/auth";');
+  });
+
+  test("renders the one-liner registration", () => {
+    expect(renderCapabilityRegistration({ name: "auth", indent: "    " })).toBe("    auth(),");
+  });
+
+  test("renders the block registration from already-rendered option lines", () => {
+    expect(
+      renderCapabilityRegistration({
+        name: "auth",
+        indent: "    ",
+        optionLines: ["      // Where the routes mount.", '      basePath: "/auth",'],
+      }),
+    ).toBe('    auth({\n      // Where the routes mount.\n      basePath: "/auth",\n    }),');
+  });
+
+  test("omits the separating comma for pithy upgrade, which splices over a call the file already punctuates", () => {
+    expect(
+      renderCapabilityRegistration({ name: "auth", indent: "  ", optionLines: ["    x: 1,"], trailingComma: false }),
+    ).toBe("  auth({\n    x: 1,\n  })");
+  });
+
+  test("both refuse what the schema refuses — neither is reached only from a manifest", () => {
+    expect(() => renderCapabilityImport("audit }) ; evil(", "@pithy-sh/audit/src/index")).toThrow(PithyError);
+    expect(() => renderCapabilityRegistration({ name: "audit }) ; evil(", indent: "" })).toThrow(PithyError);
+    expect(() => renderCapabilityImport("audit", '@pithy-sh/audit/src/index"; evil(); //')).toThrow(PithyError);
+    expect(() => renderCapabilityImport("audit", "")).toThrow(PithyError);
+    expect(() => renderCapabilityImport("audit", "@pithy-sh/a\nb")).toThrow(PithyError);
+  });
+});
+
+/**
+ * The gate.
+ *
+ * #171, #174 and #183 are one defect with three producers: a manifest field interpolated into generated
+ * TypeScript that nothing narrowed. Each round fixed the field in front of it and left the rule at the
+ * call site, so the next field arrived the same way. Enumerating the fields known today is precisely what
+ * produced the first two misses, so this does not enumerate them.
+ *
+ * It states the invariant instead — **every string a manifest may state is constrained at the schema,
+ * unless it is declared prose the CLI only ever prints** — and enforces it by walking the schema itself.
+ * A string field added to `CapabilityManifest` with no pattern and no refinement fails this test on the
+ * commit that adds it, whatever it is called and wherever it sits, and the only way past is to constrain
+ * it or to say in {@link NEVER_RENDERED} why it can never reach a generated file. Deny by default: the
+ * answer for a field nobody has classified is "fail", not "probably fine".
+ */
+describe("every manifest string that reaches generated source is constrained at the schema", () => {
+  /**
+   * The strings a manifest states that no generated file ever carries, each with the reason it is exempt.
+   *
+   * `scaffold` and `whenToEnable` are prose: the CLI prints them to a terminal and writes them nowhere.
+   * The four `BindingSpec`/`DevSecret` leaves belong to composed contracts with their own rules, and they
+   * reach `wrangler.jsonc` through a JSON serializer that escapes what it is given — not TypeScript
+   * through interpolation. Narrowing those is `BindingSpec`'s call to make, not this schema's.
+   */
+  const NEVER_RENDERED = new Set([
+    "scaffold[]",
+    "whenToEnable",
+    "requiredBindings[].name",
+    "requiredBindings[].className",
+    "requiredBindings[].service",
+    "devSecrets[].name",
+  ]);
+
+  /** A Zod node, as much of one as the walk needs. Zod's own types do not describe a schema generically. */
+  interface ZodNode {
+    readonly _zod?: { readonly def?: Record<string, unknown> };
+  }
+
+  /** A string leaf found in the schema: where it sits, and the checks it carries. */
+  interface StringLeaf {
+    path: string;
+    checks: string[];
+  }
+
+  function isNode(value: unknown): value is ZodNode {
+    return typeof value === "object" && value !== null;
+  }
+
+  /**
+   * Every string leaf under a schema, by path.
+   *
+   * Walks Zod's own definitions rather than a hand-kept list, which is the whole point: nothing here has
+   * to be updated when a field is added. `seen` bounds the recursion `ConfigOptionValue` introduces —
+   * that union refers to itself, and it is a leaf worth reaching, since a nested key or value is source
+   * too.
+   */
+  function stringLeaves(schema: unknown, path = "", seen = new Set<unknown>()): StringLeaf[] {
+    if (!isNode(schema) || seen.has(schema)) return [];
+    seen.add(schema);
+    const def = schema._zod?.def;
+    if (!def) return [];
+    const at = (suffix: string): string => `${path}${suffix}`;
+    switch (def.type) {
+      case "object": {
+        const shape = def.shape as Record<string, unknown>;
+        return Object.entries(shape).flatMap(([key, value]) =>
+          stringLeaves(value, path === "" ? key : `${path}.${key}`, seen),
+        );
+      }
+      case "array":
+        return stringLeaves(def.element, at("[]"), seen);
+      case "record":
+        return [...stringLeaves(def.keyType, at("{key}"), seen), ...stringLeaves(def.valueType, at("{value}"), seen)];
+      case "optional":
+      case "nullable":
+      case "readonly":
+      case "nonoptional":
+      case "prefault":
+      case "default":
+        return stringLeaves(def.innerType, path, seen);
+      case "pipe":
+        return [...stringLeaves(def.in, path, seen), ...stringLeaves(def.out, path, seen)];
+      case "lazy":
+        return stringLeaves((def.getter as () => unknown)(), path, seen);
+      case "union":
+        return (def.options as unknown[]).flatMap((option, index) => stringLeaves(option, at(`|${index}`), seen));
+      case "string": {
+        const checks = ((def.checks ?? []) as ZodNode[]).map((check) => String(check._zod?.def?.check ?? "unknown"));
+        return [{ path: path === "" ? "<root>" : path, checks }];
+      }
+      default:
+        return [];
+    }
+  }
+
+  /**
+   * Whether a check narrows the *shape* of a string rather than its length.
+   *
+   * `min(1)` is not a constraint for this purpose and never was: `audit }) ; evil(` is eleven characters
+   * long and passed it. Only a pattern (`string_format`) or a refinement (`custom`) can say what a string
+   * may contain, and both of the fields #183 closed carried neither.
+   */
+  function narrowsShape(check: string): boolean {
+    return check === "string_format" || check === "custom";
+  }
+
+  const leaves = stringLeaves(CapabilityManifest);
+
+  test("the walk reaches the fields three rounds of this defect were about", () => {
+    // Guards against a walk that silently stops early and passes vacuously.
+    const paths = leaves.map((leaf) => leaf.path);
+    expect(paths).toContain("name");
+    expect(paths).toContain("package");
+    expect(paths).toContain("configOptions[].key");
+    expect(paths).toContain("configOptions[].describe");
+    expect(paths.some((path) => path.startsWith("configOptions[].default"))).toBe(true);
+  });
+
+  test("no manifest string reaches generated source unconstrained", () => {
+    const unguarded = leaves
+      .filter((leaf) => !NEVER_RENDERED.has(leaf.path) && !leaf.checks.some(narrowsShape))
+      .map((leaf) => leaf.path);
+    expect(
+      unguarded,
+      `${unguarded.join(", ")} can be any string a manifest cares to state, and a manifest is third-party data read from node_modules. Constrain it at the schema, or add it to NEVER_RENDERED with the reason no generated file can carry it. This is the rule #171, #174 and #183 each rediscovered one field too late.`,
+    ).toEqual([]);
+  });
+
+  test("the gate bites — an exempt field would fail it if it were not exempt", () => {
+    // The control. `whenToEnable` really is an unconstrained string; the test above passes because it is
+    // declared prose, not because nothing is unconstrained. Drop the exemptions and the gate fires.
+    const withoutExemptions = leaves.filter((leaf) => !leaf.checks.some(narrowsShape)).map((leaf) => leaf.path);
+    expect(withoutExemptions.length).toBeGreaterThan(0);
+    expect(withoutExemptions.every((path) => NEVER_RENDERED.has(path))).toBe(true);
   });
 });

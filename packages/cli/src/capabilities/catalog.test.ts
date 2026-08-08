@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, test } from "vitest";
 import { buildCatalogListing, CAPABILITY_SCOPE, CATALOG, capabilityPackageDir } from "./catalog";
 import { capabilityImportSpecifier } from "./configImports";
@@ -154,4 +155,26 @@ describe("buildCatalogListing", () => {
     expect(listing.map((e) => e.name)).toEqual(CATALOG.map((e) => e.name));
     expect(listing.every((e) => e.installed === false)).toBe(true);
   });
+});
+
+/**
+ * The catalog and the manifests must agree about what a name and a package are.
+ *
+ * `pithy add --list` marks a catalog entry installed by matching its `name` against a *manifest's* name,
+ * and `capabilityPackageName` hands its `package` to the installer. #183 narrowed both fields at the
+ * manifest; a catalog entry the manifest schema would refuse could never be matched, and the capability
+ * would read as not installed forever. Checked here rather than assumed, because the catalog is
+ * hand-maintained.
+ */
+describe("every catalog entry states a name and a package a manifest could state", () => {
+  for (const entry of CATALOG) {
+    test(entry.name, () => {
+      const parsed = CapabilityManifest.safeParse({
+        name: entry.name,
+        package: entry.package,
+        requiredBindings: [],
+      });
+      expect(parsed.success, `${entry.name} (${entry.package}) is not a manifest the schema would accept`).toBe(true);
+    });
+  }
 });

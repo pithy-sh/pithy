@@ -252,6 +252,122 @@ export function renderConfigOptionComment(describe: string, indent: string): str
 }
 
 /**
+ * A capability's own name, as generated source carries it.
+ *
+ * The same shape a config option's key is held to, and for the same reason: it is written **bare**, and
+ * twice — as the binding of the import statement (`import { auth } from …`) and as the registration call
+ * (`auth(),`). Neither position quotes anything, so a name that is not an identifier is not a syntax
+ * error in a string, it is a hole. `audit }) ; evil(` closed the capabilities array and opened a call
+ * (#183).
+ *
+ * It is also the leaf of the fork directory `pithy add --eject` writes (`./capabilities/<name>`), so the
+ * same rule keeps a name from carrying a path separator or a `..`.
+ */
+const CAPABILITY_NAME = BARE_KEY;
+
+/**
+ * The npm package name a capability ships under, as the import specifier carries it.
+ *
+ * Rendered inside a double-quoted specifier — `"@pithy-sh/auth/src/index"` — where the required shape is
+ * an npm package name and not a bare identifier. The registry's own grammar is narrower than "no quote
+ * in it", so that is what is stated: an optional `@scope/`, then a name starting alphanumeric and made of
+ * letters, digits, `.`, `_` and `-`. Uppercase is admitted because npm still serves the legacy names that
+ * carry it; everything npm forbids outright — a leading `.` or `_`, a space, a second `/`, a quote — is
+ * out, and with it the escape `@pithy-sh/audit"; evil(); //` used to close the specifier and append a
+ * statement (#183).
+ *
+ * 214 is npm's own length cap, checked separately so the refusal can say which rule was broken.
+ */
+const PACKAGE_NAME = /^(?:@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** npm's own limit on a package name, counted across the scope and the separator. */
+const PACKAGE_NAME_MAX = 214;
+
+/**
+ * Whether a module specifier prints inside a double-quoted literal Biome leaves exactly as written.
+ *
+ * The same two sequences {@link isPrintableString} keeps out of a value, plus the line terminators that
+ * would end the statement early. A specifier is not a manifest field — it is composed from one
+ * ({@link CapabilityManifest.package}) or from the fork path — so it is checked here rather than at the
+ * schema, and the check is what makes {@link renderCapabilityImport} total over both callers.
+ */
+function isPrintableSpecifier(value: string): boolean {
+  return value.length > 0 && isPrintableString(value) && !LINE_TERMINATOR.test(value);
+}
+
+/** Refuse a capability name generated source cannot carry. Total over what {@link CapabilityManifest} parses. */
+function requireCapabilityName(name: string): void {
+  if (CAPABILITY_NAME.test(name)) return;
+  throw new ValidationError({
+    message: `A capability name must be a bare identifier, and ${JSON.stringify(name)} is not.`,
+    action: "Rename the capability, or wire it by hand in pithy.config.ts.",
+    detail: `It is written bare into the generated pithy.config.ts twice — as the import binding and as the registration call — so ${JSON.stringify(name)} would produce a file that does not parse as TypeScript.`,
+  });
+}
+
+/**
+ * The one import line a capability's wiring is written as.
+ *
+ * Both halves are interpolated raw, and both used to be `z.string().min(1)`: `pithy add` wrote
+ * `import { audit }) ; evil( } from "@pithy-sh/audit/src/index";` from a manifest that parsed, and
+ * reported `Done.` (#183). The line has one producer now, for the same reason
+ * {@link renderConfigOptionLine} does — a rule stated at one call site is a rule the next call site does
+ * not have.
+ *
+ * Total over what {@link CapabilityManifest} parses. A parsed manifest cannot reach either throw; the
+ * fork path `pithy add --eject` composes can, which is why the specifier is checked rather than assumed.
+ */
+export function renderCapabilityImport(name: string, specifier: string): string {
+  requireCapabilityName(name);
+  if (!isPrintableSpecifier(specifier)) {
+    throw new ValidationError({
+      message: `A capability's import specifier may not be empty, span lines, or contain a double quote or "\${".`,
+      action: "Correct the capability's package name, or write the import by hand in pithy.config.ts.",
+      detail: `Rendered as ${JSON.stringify(`from "${specifier}"`)}, the generated pithy.config.ts would either not parse or fail the scaffold's own biome check.`,
+    });
+  }
+  return `import { ${name} } from "${specifier}";`;
+}
+
+/** What {@link renderCapabilityRegistration} writes one registration from. */
+export interface CapabilityRegistration {
+  /** The capability's name — written bare as the call, so a bare identifier and nothing else. */
+  name: string;
+  /** The indent the call sits at, taken by each writer from the file it is editing. */
+  indent: string;
+  /**
+   * The option lines already rendered by {@link renderConfigOptionComment} and
+   * {@link renderConfigOptionLine}, in order. Empty renders the one-liner form.
+   */
+  optionLines?: readonly string[];
+  /**
+   * Whether the registration ends with the array's separating comma. `pithy add` writes a whole entry and
+   * needs it; `pithy upgrade` splices a block over an existing `name()` whose comma is already in the file.
+   */
+  trailingComma?: boolean;
+}
+
+/**
+ * The registration both writers put in `pithy.config.ts` for one capability — `auth(),` with no options,
+ * the block form with them.
+ *
+ * The name is the only thing here that comes from a manifest, and it is the thing that reached generated
+ * source unchecked (#183). One producer, so the rule holds for `pithy add`'s whole-entry write and for
+ * `pithy upgrade`'s conversion of a one-liner into a block alike.
+ */
+export function renderCapabilityRegistration({
+  name,
+  indent,
+  optionLines = [],
+  trailingComma = true,
+}: CapabilityRegistration): string {
+  requireCapabilityName(name);
+  const end = trailingComma ? "," : "";
+  if (optionLines.length === 0) return `${indent}${name}()${end}`;
+  return [`${indent}${name}({`, ...optionLines, `${indent}})${end}`].join("\n");
+}
+
+/**
  * One configurable option a capability exposes. `pithy add` renders each as
  * `cap({ key: default })` in `pithy.config.ts`, with `describe` as the comment
  * above it — the self-documenting config surface (docs/CLI.md §Config). The
@@ -299,20 +415,50 @@ export type ConfigOption = z.infer<typeof ConfigOption>;
  * `wrangler.jsonc` and scaffold config — without executing the package. Plain data, so
  * it's a validated Zod object. `requiredBindings` reuse the `BindingSpec` contract, so a
  * manifest's bindings are normalized (and rejected) exactly like a capability's own.
+ *
+ * **The invariant, stated here rather than at the writers: every string a manifest states that reaches
+ * generated source is constrained to what the renderer can print.** Three rounds got there one field at a
+ * time — #171 narrowed an option's `default`, #174 its `key` and `describe`, #183 the capability's own
+ * `name` and `package` — because each time the rule lived at the call site that had just been fixed. It
+ * lives here now, and `manifest.test.ts` walks this schema and fails the build on a string field that is
+ * neither constrained nor declared prose the CLI only ever prints.
  */
 export const CapabilityManifest = z
   .object({
-    name: z.string().min(1).describe('Capability name, e.g. "auth".'),
-    package: z.string().min(1).describe("npm package providing this capability."),
+    name: z
+      .string()
+      .regex(CAPABILITY_NAME, {
+        error: (issue) =>
+          `A capability name must be a bare identifier, and ${JSON.stringify(issue.input)} is not — it is written bare into pithy.config.ts as both the import binding and the registration call.`,
+      })
+      .describe('Capability name, e.g. "auth"; a bare identifier.'),
+    package: z
+      .string()
+      .max(PACKAGE_NAME_MAX)
+      .regex(PACKAGE_NAME, {
+        error: (issue) =>
+          `A capability's package must be an npm package name, and ${JSON.stringify(issue.input)} is not — it is written into pithy.config.ts as the import specifier.`,
+      })
+      .describe('npm package providing this capability, e.g. "@pithy-sh/auth".'),
     requiredBindings: z
       .array(BindingSpec)
       .describe("Bindings the CLI must wire into wrangler.jsonc (normalized via BindingSpec)."),
     peerCapabilities: z
-      .array(z.string())
+      .array(
+        z.string().regex(CAPABILITY_NAME, {
+          error: (issue) =>
+            `A peer capability is named by its capability name, and ${JSON.stringify(issue.input)} is not a bare identifier.`,
+        }),
+      )
       .default([])
       .describe("Capabilities that must also be present (e.g. auth ⇒ email)."),
     optionalCapabilities: z
-      .array(z.string())
+      .array(
+        z.string().regex(CAPABILITY_NAME, {
+          error: (issue) =>
+            `An optional capability is named by its capability name, and ${JSON.stringify(issue.input)} is not a bare identifier.`,
+        }),
+      )
       .default([])
       .describe("Capabilities that, if present, get wired together (e.g. turnstile onto auth)."),
     migrationNamespace: z

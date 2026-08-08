@@ -13,6 +13,8 @@ import {
   CONFIG_LINE_WIDTH,
   CONFIG_OPTION_INDENT,
   ConfigOption,
+  renderCapabilityImport,
+  renderCapabilityRegistration,
   renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
@@ -21,6 +23,7 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
 import { addCapability } from "./add";
+import { capabilityImportSpecifier } from "./configImports";
 import { applyReconcilePlan, buildReconcilePlan, type ReconcilePlan, type RunMigrate } from "./reconcile";
 
 /**
@@ -1012,5 +1015,103 @@ describe("a manifest cannot state a key or a rationale the renderer cannot print
     await writeFile(path, source);
     const { code, output } = await biomeCheck(dir, path);
     expect(code, output).toBe(0);
+  });
+});
+
+/**
+ * The rest of the generated file, checked by the same authority.
+ *
+ * The block above renders every shipped option's two lines and asks Biome about them. It covers the two
+ * lines #174 gave a producer to, and nothing else — so a manifest's `name` and `package`, which reach the
+ * import statement and the registration call, went through three releases with no check at all. A
+ * manifest declaring `audit }) ; evil(` produced an import that did not parse and a call that opened a
+ * second one, and `pithy add` said `Done.` (#183).
+ *
+ * So this renders the **whole** file `pithy add` would write for every capability the repo ships —
+ * imports, registrations, option lines — and puts it through a real scaffold's own `biome check`.
+ */
+describe("every shipped manifest renders a whole config file Biome leaves alone", () => {
+  const manifests = shippedManifests();
+
+  test("biome check passes on the config pithy add would write for every shipped capability", async () => {
+    const imports: string[] = [];
+    const registrations: string[] = [];
+    for (const [, manifest] of manifests) {
+      imports.push(renderCapabilityImport(manifest.name, capabilityImportSpecifier(manifest.package)));
+      const optionLines = manifest.configOptions.flatMap((option) => [
+        renderConfigOptionComment(option.describe, CONFIG_OPTION_INDENT),
+        renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT),
+      ]);
+      registrations.push(renderCapabilityRegistration({ name: manifest.name, indent: "    ", optionLines }));
+    }
+    const source = `${imports.join("\n")}\n\nconst config = {\n  capabilities: [\n${registrations.join("\n")}\n  ],\n};\n\nexport default config;\n`;
+
+    // Not vacuous: every capability the repo ships is imported and registered in the file Biome was handed.
+    expect(manifests.length).toBeGreaterThan(10);
+    for (const [, manifest] of manifests) {
+      expect(source).toContain(`import { ${manifest.name} }`);
+      expect(source).toContain(`${manifest.name}(`);
+    }
+
+    const path = join(dir, "renderedConfig.ts");
+    await writeFile(path, source);
+    const { code, output } = await biomeCheck(dir, path);
+    expect(code, `biome check rejected the rendered config:\n${output}\n\nSource:\n${source}`).toBe(0);
+  });
+
+  test("the gate bites — biome check rejects the two lines the old renderer wrote", async () => {
+    // #183's own reproduction, written by hand because neither the schema nor the renderer will produce
+    // it now. Without this control the assertion above would prove nothing.
+    const source = `import { audit }) ; evil( } from "@pithy-sh/audit/src/index";\n\nconst config = {\n  capabilities: [\n    audit }) ; evil((),\n  ],\n};\n\nexport default config;\n`;
+    const path = join(dir, "hostileConfig.ts");
+    await writeFile(path, source);
+    const { code } = await biomeCheck(dir, path);
+    expect(code).not.toBe(0);
+  });
+});
+
+/**
+ * The name, at the schema, where the rule belongs.
+ *
+ * `pithy add` reads a manifest out of `node_modules` and writes its `name` into generated TypeScript
+ * twice and its `package` once. Both were `z.string().min(1)` until #183. The renderers refuse them too,
+ * because `pithy upgrade` reaches the registration renderer with a name taken from a plan.
+ */
+describe("a manifest cannot state a name or a package the config file cannot carry", () => {
+  test("the name #183 reproduced is refused by the schema", () => {
+    const result = CapabilityManifest.safeParse({
+      name: "audit }) ; evil(",
+      package: "@pithy-sh/audit",
+      requiredBindings: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("the package #183 reproduced is refused by the schema", () => {
+    const result = CapabilityManifest.safeParse({
+      name: "audit",
+      package: '@pithy-sh/audit/src/index"; evil(); //',
+      requiredBindings: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("the renderers refuse it too — pithy upgrade reaches them from a plan, not from a manifest", () => {
+    expect(() => renderCapabilityImport("audit }) ; evil(", "@pithy-sh/audit/src/index")).toThrow(PithyError);
+    expect(() => renderCapabilityRegistration({ name: "audit }) ; evil(", indent: "    " })).toThrow(PithyError);
+  });
+
+  test("pithy add refuses to wire a capability whose manifest states a name it cannot write", async () => {
+    // The end-to-end shape: an installed manifest with a hostile name never reaches the config file.
+    await writeManifest(dir, { name: "audit", package: "@pithy-sh/audit", requiredBindings: [] });
+    await writeFile(
+      join(dir, "node_modules", "@pithy-sh", "audit", "pithy.manifest.json"),
+      JSON.stringify({ name: "audit }) ; evil(", package: "@pithy-sh/audit", requiredBindings: [] }),
+    );
+
+    const before = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("audit") });
+    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(before);
   });
 });

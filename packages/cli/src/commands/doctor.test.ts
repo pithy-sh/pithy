@@ -1170,3 +1170,49 @@ describe("version checks that could not run", () => {
     expect(versionState("1.2.0", "1.3.0")).toBe("outdated");
   });
 });
+
+/**
+ * The finding `pithy doctor` did not report.
+ *
+ * `availableManifests` skipped a manifest that was present and invalid exactly as it skips a package that
+ * ships none, so the capability was absent from every check the health block runs and the block said the
+ * project was healthy. Doctor is one of the three commands an adopter runs when a capability has gone
+ * missing, and it was one of the three that stayed silent (#184).
+ */
+describe("manifest faults in the health block", () => {
+  /** Install a manifest the schema refuses into the report's own project directory. */
+  async function installBrokenManifest(): Promise<void> {
+    const pkgDir = join(dir, "node_modules", "@pithy-sh", "audit");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(
+      join(pkgDir, "pithy.manifest.json"),
+      JSON.stringify({
+        name: "audit",
+        package: "@pithy-sh/audit",
+        requiredBindings: [],
+        configOptions: [{ key: "content-type", default: "x", describe: "Not a bare key." }],
+      }),
+    );
+  }
+
+  test("names the package and the reason, and fails the exit", async () => {
+    await installBrokenManifest();
+    const report = await buildDoctorReport(healthyOptions({ buildPlan: planStub(cleanPlan) }));
+
+    expect(report.project?.health.manifests.ok).toBe(false);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("@pithy-sh/audit");
+    expect(text).toContain("malformed pithy.manifest.json");
+    expect(text).toContain("configOptions[0].key");
+    // The Worker itself is clean; the project is not, and CI can gate on it.
+    expect(report.project?.health.workers.every((worker) => worker.ok)).toBe(true);
+    expect(doctorExitCode(report)).toBe(1);
+  });
+
+  test("a package that ships no manifest is still skipped in silence", async () => {
+    await mkdir(join(dir, "node_modules", "@pithy-sh", "cli"), { recursive: true });
+    const report = await buildDoctorReport(healthyOptions({ buildPlan: planStub(cleanPlan) }));
+    expect(report.project?.health.manifests).toEqual({ ok: true, faults: [] });
+    expect(doctorExitCode(report)).toBe(0);
+  });
+});
