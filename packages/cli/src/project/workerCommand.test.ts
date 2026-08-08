@@ -46,16 +46,22 @@ describe("addWorker", () => {
     });
 
     expect(installed).toBe(true);
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
+    expect(report).toEqual({
+      name: "web",
+      dir: join(dir, "apps", "web"),
+      port: null,
+      reconciled: false,
+      devVarsRefused: [],
+    });
     await stat(join(dir, "apps", "web", "wrangler.jsonc")); // the scaffold landed
   });
 
-  test("reports the sibling that kept its own .dev.vars, rather than dropping the list on the floor", async () => {
-    // `worker add web` wires *every* worker it discovers. apps/board keeping its own secrets is the
-    // situation `pithy dev` now names out loud, and the command that caused it said nothing at all.
-    await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
+  test("reports the sibling whose .dev.vars pithy did not write, rather than dropping the list", async () => {
+    // `worker add web` regenerates *every* worker it discovers. apps/board keeping its own file is the
+    // situation `pithy dev` names out loud, and the command that met it said nothing at all.
     const boardDir = join(dir, "apps", "board");
     await mkdir(boardDir, { recursive: true });
+    await writeFile(join(boardDir, "wrangler.jsonc"), "{}\n");
     await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
 
     const report = await addWorker({
@@ -66,17 +72,17 @@ describe("addWorker", () => {
       discoverWorkers: discover(dir, ["board", "web"]),
     });
 
-    expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+    expect(report.devVarsRefused.join("\n")).toContain(join(boardDir, ".dev.vars"));
     expect(await readFile(join(boardDir, ".dev.vars"), "utf8")).toBe("BOARD_ONLY=super-secret\n");
   });
 
-  test("in a feature worktree it reports the kept list too — the sync that wires them does not carry it", async () => {
+  test("in a feature worktree it reports the refusals too — SyncReport does not carry them", async () => {
     const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
     const worktree = join(mainRoot, ".worktrees", "73-demo");
     const boardDir = join(worktree, "apps", "board");
     await mkdir(boardDir, { recursive: true });
     await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
-    await writeFile(join(mainRoot, ".dev.vars"), "SHARED=abc\n");
+    await writeFile(join(boardDir, "wrangler.jsonc"), "{}\n");
     await writeFile(join(boardDir, ".dev.vars"), "BOARD_ONLY=super-secret\n");
     try {
       const report = await addWorker({
@@ -88,7 +94,7 @@ describe("addWorker", () => {
         discoverWorkers: discover(worktree, ["board", "web"]),
       });
 
-      expect(report.kept).toEqual([{ dir: boardDir, reason: "file" }]);
+      expect(report.devVarsRefused.join("\n")).toContain(join(boardDir, ".dev.vars"));
     } finally {
       await rm(mainRoot, { recursive: true, force: true });
     }
@@ -140,7 +146,13 @@ describe("addWorker", () => {
       },
       discoverWorkers: discover(dir, ["app", "web"]),
     });
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), port: null, reconciled: false, kept: [] });
+    expect(report).toEqual({
+      name: "web",
+      dir: join(dir, "apps", "web"),
+      port: null,
+      reconciled: false,
+      devVarsRefused: [],
+    });
     await stat(join(dir, "apps", "web", "wrangler.jsonc"));
   });
 
@@ -169,11 +181,9 @@ describe("addWorker", () => {
     }
   });
 
-  test("wires .dev.vars before the install, so a failed install cannot be why a worker has none", async () => {
+  test("generates .dev.vars before the install, so a failed install cannot be why a worker has none", async () => {
     // The ordering that broke every worker after the first: the install ran first and threw, and the
-    // dev-vars link below it never ran at all. The link is the convention `pithy init` established —
-    // one `.dev.vars` at the project root, symlinked into every worker.
-    await writeFile(join(dir, ".dev.vars"), "SHARED=1\n");
+    // dev-vars step below it never ran at all.
     const order: string[] = [];
     await addWorker({
       projectDir: dir,
@@ -182,12 +192,13 @@ describe("addWorker", () => {
       install: async () => {
         order.push("install");
         // Whatever the worker looks like when the install runs is what it looks like afterwards.
-        order.push((await lstat(join(dir, "apps", "web", ".dev.vars"))).isSymbolicLink() ? "linked" : "plain");
+        const entry = await lstat(join(dir, "apps", "web", ".dev.vars")).catch(() => null);
+        order.push(entry?.isFile() ? "generated" : "missing");
       },
       discoverWorkers: discover(dir, ["app", "web"]),
     });
 
-    expect(order).toEqual(["install", "linked"]);
+    expect(order).toEqual(["install", "generated"]);
   });
 
   test("a failed install leaves nothing behind, so the same command works on the retry", async () => {

@@ -17,7 +17,6 @@
     "test:node": "bun run precompile && vitest run --project=node",
     "test:workers": "bun run precompile && vitest run --project=workers",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },

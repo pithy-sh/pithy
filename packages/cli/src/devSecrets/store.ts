@@ -9,7 +9,9 @@ import type { DevSecretsStore } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
 import { Miniflare } from "miniflare";
+import type { StatePathOptions } from "../notifier/state";
 import { resolveStoreIds } from "../seed/drivers";
+import { readBootstrapVars } from "./bootstrapVars";
 
 /**
  * The local `SECRETS` D1, opened the way `wrangler dev` opens it — the same Miniflare store under the
@@ -83,6 +85,8 @@ export interface OpenDevSecretsStoreOptions {
    * `prod` fails to compile, which is stronger than any check it could fail at runtime.
    */
   env?: never;
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
+  paths?: StatePathOptions;
 }
 
 /** Open the local secrets store for one Worker, or say why there is none to open. */
@@ -96,10 +100,15 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     return { ready: false, reason: `No ${SECRETS_D1_BINDING} D1 binding. Run pithy add secrets${scope}.`, ...noop };
   }
 
-  const vars = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
-  const masterKey = vars[MASTER_KEY_BINDING];
+  // The bootstrap store, which is what the Worker's generated `.dev.vars` is built from (#154) — falling
+  // back to a pre-#154 project's root `.dev.vars`, where the key used to live and still does until
+  // `pithy add secrets` adopts it. Reading only the file would have made every upgraded project's store
+  // unopenable; reading only the store would have done the same to every project that has not upgraded.
+  const recorded = await readBootstrapVars(options.projectDir, options.paths ?? {});
+  const legacy = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
+  const masterKey = recorded[MASTER_KEY_BINDING] || legacy[MASTER_KEY_BINDING];
   if (!masterKey) {
-    return { ready: false, reason: `No ${MASTER_KEY_BINDING} in .dev.vars. Run pithy add secrets${scope}.`, ...noop };
+    return { ready: false, reason: `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`, ...noop };
   }
 
   const persistPath = localDevStorePath(options.projectDir);

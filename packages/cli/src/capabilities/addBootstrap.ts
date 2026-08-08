@@ -12,6 +12,7 @@ import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevVarsSource, writeDevVars } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
@@ -21,9 +22,9 @@ import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/
 
 export interface AddBootstrapOptions {
   /**
-   * The project root — owner of the one shared `.dev.vars` every worker symlinks to, so a value written
-   * here reaches every worker at once. The Worker directory would be the wrong file: it is a symlink,
-   * and a project with two workers would get two divergent keys.
+   * The project root. A bootstrap value is recorded against the *project*, not a Worker, so one master
+   * key reaches every Worker's generated `.dev.vars` (#154) — a per-Worker mint would give a project with
+   * two Workers two divergent keys and orphan whichever secrets the loser encrypted.
    */
   projectDir: string;
   /** The manifest of the capability just wired — the authority on which bindings it needs. */
@@ -94,7 +95,8 @@ function provisionNote(capability: string, binding: BindingSpec): string {
 }
 
 /**
- * Mint this project's dev master key into `.dev.vars`, unless one is already there.
+ * Put this project's dev master key where every Worker's generated `.dev.vars` will pick it up, unless
+ * one is already recorded.
  *
  * **A fresh key per project, never a literal.** One key shipped in a template is one key across every
  * adopter, and the first person to copy it into a deployed environment hands everyone else their
@@ -105,36 +107,43 @@ function provisionNote(capability: string, binding: BindingSpec): string {
  * An *empty* value is treated as absent: nothing could have been encrypted under it, so there is
  * nothing to orphan, and leaving it would leave `pithy dev` refusing every request.
  *
- * **`.dev.vars`, never `.dev.vars.example`.** The former is gitignored; the latter is committed, and a
- * key written into it is a key in the repository.
+ * **A key in a pre-#154 project's root `.dev.vars` is adopted, never re-minted.** That file used to be
+ * the store, and it is the one value whose replacement cannot be undone: every secret already encrypted
+ * under the old key becomes unreadable, with no error that names the cause. So the old key is carried
+ * into the bootstrap store as it stands, and the project keeps reading what it already wrote. Their file
+ * is not rewritten — nothing here ever rewrites an adopter's `.dev.vars`.
  */
 async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
-  const path = join(projectDir, ".dev.vars");
+  const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
+  if (recorded) {
+    return [`${MASTER_KEY_BINDING} is already recorded. Left as it is — a new key orphans every stored secret.`];
+  }
   // Through the writer's own reader: only `ENOENT` is "no key here". `.catch(() => "")` answered that
   // for every errno, so an unreadable file read as absent and this minted a second key — and a second
   // master key orphans every secret the first one encrypted, which is what this function exists to
   // prevent. See {@link readDevVarsSource}.
-  const existing = parseDevVars((await readDevVarsSource(path)) ?? "");
-  if (existing[MASTER_KEY_BINDING]) {
-    return [`${MASTER_KEY_BINDING} is already in .dev.vars. Left as it is — a new key orphans every stored secret.`];
-  }
+  const legacy = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
   // Stringified, because that is the shape the binding has in a deployed worker too: the Secrets Store
   // holds the same JSON, and `resolveEncryptionConfig` parses one string in both places.
-  //
-  // Through `writeDevVars`, like every other value that has to reach a Worker. The master key is the
-  // clearest case for it: written to the project root alone it never arrived, and the Worker answered
-  // `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS` on a project that had just minted one.
-  const wrote = await writeDevVars({
-    projectDir,
-    values: { [MASTER_KEY_BINDING]: JSON.stringify(await initialMasterKeyConfig()) },
-  });
-  // Everything the write has to say, not only its refusals. A Worker shadowing the project's `.dev.vars`
-  // or one the link could not be made into is a Worker with no master key, and this used to mint one,
-  // announce it, and say nothing about the Worker that never got it.
+  const value = legacy && legacy !== "" ? legacy : JSON.stringify(await initialMasterKeyConfig());
+  // Through `writeDevVars`, like every other value that has to reach a Worker: it records the value and
+  // regenerates every Worker's file from it. Written to the project root alone, the key never arrived —
+  // the Worker answered `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS` on a project that
+  // had just minted one.
+  const wrote = await writeDevVars({ projectDir, values: { [MASTER_KEY_BINDING]: value } });
+  // Everything the write has to say, not only its refusals. A Worker whose `.dev.vars` pithy may not
+  // write is a Worker with no master key, and this used to mint one, announce it, and say nothing about
+  // the Worker that never got it.
   const delivery = renderDevVarsNotes(wrote);
   if (wrote.written.length === 0) return delivery;
+  if (legacy && legacy !== "") {
+    return [
+      `Adopted the ${MASTER_KEY_BINDING} already in .dev.vars. A new key would orphan every secret the old one encrypted.`,
+      ...delivery,
+    ];
+  }
   return [
-    `Minted a dev master key into .dev.vars as ${MASTER_KEY_BINDING}. Local only.`,
+    `Minted a dev master key as ${MASTER_KEY_BINDING}. Local only, and it reaches each Worker's generated .dev.vars.`,
     "Deployed environments get theirs from pithy secrets provision.",
     ...delivery,
   ];

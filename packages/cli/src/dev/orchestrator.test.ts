@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
+import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import type { PortsRegistry } from "../feature/ports";
 import type { WorkerTarget } from "../project/workers";
@@ -102,6 +103,9 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
   const options: StartDevOptions = {
     projectDir: "/proj",
     discoverWorkers: async () => workers,
+    // Stubbed: these workers are fixtures with no directories on disk, and generating each one's
+    // `.dev.vars` is `devSecrets/generate.test.ts`'s subject rather than this file's.
+    generateDevVars: async () => ({ generated: [], unchanged: [], refused: [], relinked: [], names: [] }),
     loadDevConfig: async () => config,
     tryBind: async () => true,
     sweep: async () => [],
@@ -605,14 +609,24 @@ describe("startDev — dev secrets", () => {
   });
 });
 
-describe("startDev — the .dev.vars link a checkout cannot inherit", () => {
-  /** A real project on disk: `pithy dev` makes a real symlink, so nothing here is faked. */
-  async function project(): Promise<{ dir: string; apiDir: string; options: Partial<StartDevOptions> }> {
+describe("startDev — the .dev.vars a checkout cannot inherit", () => {
+  /** A real project on disk: `pithy dev` writes real files, so nothing here is faked. */
+  async function project(): Promise<{
+    dir: string;
+    config: string;
+    apiDir: string;
+    options: Partial<StartDevOptions>;
+  }> {
     const dir = await mkdtemp(join(tmpdir(), "pithy-dev-vars-"));
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-dev-vars-config-"));
     const apiDir = join(dir, "apps", "api");
     await mkdir(apiDir, { recursive: true });
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    await mkdir(join(configDir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(join(configDir, "replay", "dev.json"), JSON.stringify({ vars: { SECRETS_ENCRYPTION_KEYS: "k" } }));
     return {
       dir,
+      config: configDir,
       apiDir,
       options: {
         projectDir: dir,
@@ -621,32 +635,42 @@ describe("startDev — the .dev.vars link a checkout cannot inherit", () => {
           { name: "api", dir: apiDir, hasWrangler: true, dev: { autostart: true, readySignal: "Ready on https?://" } },
         ],
         loadDevConfig: async () => ({ ...config, workers: { api: { port: 8787, origin: "http://localhost:8787" } } }),
+        generateDevVars: (projectDir, workerDirs) =>
+          generateDevVars({
+            projectDir,
+            workerDirs,
+            paths: { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: configDir } },
+          }),
       },
     };
   }
 
-  test("a fresh clone gets the link made for it, since the link itself can never be committed", async () => {
-    // `.dev.vars` is git-ignored, and so is the link into each `apps/<worker>/`. So the second developer
-    // on a project clones, writes the `.dev.vars` the example tells them to, and wrangler reports every
-    // secret in it absent — the value present, unreachable, and nothing in the project re-making the link.
-    const { dir, apiDir, options } = await project();
+  test("a fresh clone gets its .dev.vars written for it, since the file can never be committed", async () => {
+    // `.dev.vars` is git-ignored, so the second developer on a project clones and has none. There used
+    // to be a symlink to make, which was also git-ignored, so nothing in the project re-made it and
+    // wrangler reported every secret absent while the value sat at the root. Generated, the question
+    // does not exist: `pithy dev` runs after the sources exist, every time.
+    const { dir, config: configDir, apiDir, options } = await project();
     try {
-      await writeFile(join(dir, ".dev.vars"), "SECRETS_ENCRYPTION_KEYS=k\n");
       const h = harness(options);
 
       await startDev(h.options);
 
-      expect((await lstat(join(apiDir, ".dev.vars"))).isSymbolicLink()).toBe(true);
-      expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("SECRETS_ENCRYPTION_KEYS=k\n");
+      const source = await readFile(join(apiDir, ".dev.vars"), "utf8");
+      expect((await lstat(join(apiDir, ".dev.vars"))).isSymbolicLink()).toBe(false);
+      expect(source).toContain("SECRETS_ENCRYPTION_KEYS=k");
+      expect(source.startsWith(GENERATED_MARKER)).toBe(true);
+      // Silence when it worked. A line per Worker per start is how a block stops being read.
+      expect(h.stdoutLines.some((line) => line.includes(".dev.vars"))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
+      await rm(configDir, { recursive: true, force: true });
     }
   });
 
-  test("says so when a worker keeps its own .dev.vars, rather than wiring silently past it", async () => {
-    const { dir, apiDir, options } = await project();
+  test("a .dev.vars pithy did not write is named, never overwritten, and the session still starts", async () => {
+    const { dir, config: configDir, apiDir, options } = await project();
     try {
-      await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
       await writeFile(join(apiDir, ".dev.vars"), "API_ONLY_SECRET=super-secret-value\n");
       const h = harness(options);
 
@@ -654,46 +678,28 @@ describe("startDev — the .dev.vars link a checkout cannot inherit", () => {
 
       expect(await readFile(join(apiDir, ".dev.vars"), "utf8")).toBe("API_ONLY_SECRET=super-secret-value\n");
       const said = h.stdoutLines.find((line) => line.includes(".dev.vars"));
-      expect(said).toContain("api");
+      expect(said).toContain(join(apiDir, ".dev.vars"));
+      expect(said).toContain(".dev.vars.local");
+      // Reported, not fatal: one Worker's file is not a reason to refuse to run the project.
+      expect(h.spawned).toHaveLength(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
+      await rm(configDir, { recursive: true, force: true });
     }
   });
 
-  test("says so when a worker's .dev.vars links elsewhere, rather than swinging it back in silence", async () => {
-    // This runs on every `pithy dev`. A link a developer deliberately pointed at another file decides
-    // which secrets that worker runs with, and undoing it daily without a word is the same substitution
-    // as replacing a real file — by another route.
-    const { dir, apiDir, options } = await project();
+  test("a second run writes no bytes — wrangler watches this file", async () => {
+    const { dir, config: configDir, apiDir, options } = await project();
     try {
-      await writeFile(join(dir, ".dev.vars"), "SHARED=abc\n");
-      const elsewhere = join(dir, "team.dev.vars");
-      await writeFile(elsewhere, "TEAM_ONLY=1\n");
-      await symlink(elsewhere, join(dir, "apps", "api", ".dev.vars"));
-      const h = harness(options);
+      await startDev(harness(options).options);
+      const before = (await lstat(join(apiDir, ".dev.vars"))).mtimeMs;
 
-      await startDev(h.options);
+      await startDev(harness(options).options);
 
-      expect(await readlink(join(apiDir, ".dev.vars"))).toBe(elsewhere);
-      const said = h.stdoutLines.find((line) => line.includes(".dev.vars"));
-      expect(said).toContain("api");
-      expect(said).toContain(elsewhere);
+      expect((await lstat(join(apiDir, ".dev.vars"))).mtimeMs).toBe(before);
     } finally {
       await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a project with no shared .dev.vars starts silently — there is nothing to point at", async () => {
-    const { dir, apiDir, options } = await project();
-    try {
-      const h = harness(options);
-
-      await startDev(h.options);
-
-      await expect(lstat(join(apiDir, ".dev.vars"))).rejects.toThrow();
-      expect(h.stdoutLines.some((line) => line.includes(".dev.vars"))).toBe(false);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(configDir, { recursive: true, force: true });
     }
   });
 });

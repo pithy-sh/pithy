@@ -1,21 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, readFile, readlink, symlink } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { writeFileAtomic } from "../project/atomic";
-import { removeDevVarsContent, upsertDevVarsContent } from "../project/devVars";
-import { ensureScaffoldPath } from "../project/scaffold";
-import { discoverWorkers } from "../project/workers";
-import { tightenMode } from "./mode";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { StatePathOptions } from "../notifier/state";
+import { writeBootstrapVars } from "./bootstrapVars";
+import { generateDevVars } from "./generate";
 
 /**
- * The one place a secret value becomes a `.dev.vars` line — and the one place that makes sure the line
- * reaches the Worker that has to read it.
+ * The one place a value becomes a `.dev.vars` line — and the one place that makes sure the line reaches
+ * the Worker that has to read it.
  *
- * Two defects live here, and both were silent, which is why they get a funnel rather than a fix at each
+ * Two defects lived here, and both were silent, which is why this is a funnel rather than a fix at each
  * of the four call sites that had them.
  *
  * **Values were written raw.** wrangler parses `.dev.vars` with `dotenv`, whose unquoted value grammar
@@ -25,13 +22,10 @@ import { tightenMode } from "./mode";
  * verify, against a value that looks present in every file you would think to check.
  *
  * **And the line went somewhere the Worker does not read.** `pithy dev` spawns wrangler with
- * `cwd: apps/<worker>`, and wrangler loads the `.dev.vars` beside the Worker's own config. The project
- * root's file is linked into each Worker by `pithy feature` and by `pithy worker add` — never by
- * `pithy init`. So on a plain project every value written here landed in a file nothing reads: a fresh
- * `pithy init` + `pithy add auth` + `pithy dev` answered `Secret binding 'auth-session-secret' is not
- * configured.` with the row seeded, the envelope in the dev secrets file, and the line in `.dev.vars`.
- * Writing the value and delivering it are one operation here, so a fifth producer cannot get one right
- * and the other wrong.
+ * `cwd: apps/<worker>`, and wrangler loads the `.dev.vars` beside the Worker's own config — so a value
+ * written to the project root alone landed in a file nothing reads. That was solved with a symlink into
+ * each `apps/<worker>/`, and the symlink produced five defects of its own. It is solved by generation
+ * now: see {@link ./generate}, which owns the whole destination side.
  *
  * **The encoding is verified, not reasoned about.** {@link encodeDevVarsValue} tries the three forms
  * dotenv accepts and keeps the first one that survives a round trip through *both* readers — wrangler's
@@ -39,25 +33,15 @@ import { tightenMode } from "./mode";
  * about which characters are dangerous: the rule would need updating for the shape nobody thought of,
  * and the round trip already covers it.
  *
- * **A refusal is fail-closed.** The binding is the only place a `cf-secrets-store` secret is read from,
- * so a refused value that leaves the superseded line in place hands the Worker the *previous* secret
- * while every report says the value was replaced. Wrong-and-silent beats broken-and-loud for nothing,
- * least of all a secret, so the stale line goes and the refusal says it went.
+ * **A refusal is fail-closed, and now structurally.** The binding is the only place a `cf-secrets-store`
+ * secret is read from, so a refused value that left the superseded line in place handed the Worker the
+ * *previous* secret while every report said the value was replaced. The generated file is built from the
+ * sources every run rather than upserted into, so a refused value has no line to leave behind.
  *
- * **Every directory written beside is gated, through the shared `ensureScaffoldPath` (#167).** The
- * directories come from `discoverWorkers`, which builds `apps/<name>` from a `readdir` that follows
- * whatever `apps` is — so a symlink at either planted a link to the project's shared credential file
- * outside the project, and reported it as `linked`.
- *
- * **And delivery is checked, never assumed.** Three ways it used not to happen, all silently. A failed
- * `symlink()` was swallowed and the directory counted as linked anyway. A worker whose `.dev.vars` is a
- * symlink was skipped without asking where it pointed. And in the layout `pithy feature create` and
- * `pithy worker add` produce — a worktree root and every worker inside it symlinked at the main
- * checkout's one shared file — the atomic write *replaced* the root's link with a private file and left
- * every worker on the untouched original. Verified against a real one: `pithy feature create`, then
- * `writeDevVars`, then `wrangler dev` in the worktree, and the Worker served the superseded value while
- * the result read `written: ["auth-session-secret"], shadowed: []`. So the write follows the link to
- * the file it names, and each worker's link is resolved and compared with the file that was written.
+ * **What this function still owns is persistence.** A generated file cannot be its own source of truth,
+ * so a value written here goes to the machine-local bootstrap store (`./bootstrapVars`) and the Workers'
+ * files are regenerated from it. That is what makes a master key minted by `pithy add secrets` survive to
+ * the next `pithy dev` without `.dev.vars` accumulating state nobody can regenerate.
  */
 
 /** What one value's encoding produced: the bytes to write, or the sentence saying why nothing was. */
@@ -138,208 +122,75 @@ export function encodeDevVarsValue(name: string, value: string): DevVarsEncoding
   };
 }
 
-/** What {@link writeDevVars} needs. `workerDirs` is the seam; it defaults to the project's own Workers. */
+/** What {@link writeDevVars} needs. Every seam defaults to the real project. */
 export interface WriteDevVarsOptions {
-  /** The project root — owner of the one `.dev.vars` every Worker resolves to. */
+  /** The project root — owner of `apps/`, of the `.dev.vars.local` files, and of the project's name. */
   projectDir: string;
-  /** The values to upsert, by variable name. Empty writes nothing and touches nothing. */
+  /** The values to record, by variable name. Empty records nothing and regenerates anyway. */
   values: Record<string, string>;
-  /** The Worker directories to deliver to. Defaults to every discovered Worker with a `wrangler.jsonc`. */
+  /** The Worker directories to generate into. Defaults to every discovered Worker with a `wrangler.jsonc`. */
   workerDirs?: string[];
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
+  paths?: StatePathOptions;
 }
 
 /** What one write did. Every list is sorted, so two runs of the same state read the same. */
 export interface WriteDevVarsResult {
-  /** The variable names actually written. */
+  /** The variable names actually recorded — the ones an encoding survives. */
   written: string[];
-  /** One sentence per value that could not be encoded. Never a value. */
+  /**
+   * One sentence per value or Worker directory that did not get one: a value no quoting survives, a
+   * `.dev.vars` pithy did not generate, a directory this project may not write into. Never a value.
+   */
   refused: string[];
-  /** Worker directories whose `.dev.vars` this call created as a link to the project's. */
-  linked: string[];
-  /**
-   * Worker directories reading a `.dev.vars` that is not the one written — a file of their own, or a
-   * link pointing somewhere else. wrangler reads *that* file, so nothing written here reaches them, and
-   * it is theirs, so it is reported rather than replaced.
-   */
-  shadowed: string[];
-  /**
-   * One sentence per Worker directory the value could not be delivered to: the link could not be made,
-   * the one already there resolves to nothing, or the directory is not one this project may write into
-   * (#167). Either way wrangler will open no `.dev.vars` at all. Separate from {@link shadowed} because
-   * that is somebody's arrangement and this is a failure. Never a value.
-   */
-  undelivered: string[];
+  /** Worker directories whose `.dev.vars` this run wrote. */
+  generated: string[];
+  /** Worker directories whose `.dev.vars` already held exactly these bytes. No bytes written, mtime intact. */
+  unchanged: string[];
+  /** Worker directories whose `.dev.vars` was a symlink from the old shared-file design, now a real file. */
+  relinked: string[];
 }
 
 /**
- * Write values into the project's `.dev.vars` and make sure every Worker resolves to it.
+ * Record values in the machine-local bootstrap store, then regenerate every Worker's `.dev.vars` from it.
  *
- * Mode `0600`, the same as the dev secrets file: through the transition this file holds the very same
- * session keys and link-signing keys, and the umask default is world-readable.
+ * Mode `0600` on every file written, the same as the dev secrets file: this one holds the dev master key
+ * and every `cf-secrets-store` value, and the umask default is world-readable.
  */
 export async function writeDevVars(options: WriteDevVarsOptions): Promise<WriteDevVarsResult> {
   const written: string[] = [];
-  const refusals: { name: string; reason: string }[] = [];
+  const refused: string[] = [];
   const encoded: Record<string, string> = {};
   for (const name of Object.keys(options.values).sort()) {
     const value = options.values[name];
     if (value === undefined) continue;
+    // Encoded here only to decide whether the value can be delivered at all. The bootstrap store keeps
+    // the plain value — quoting is `.dev.vars` grammar, and a quoted value round-tripped through a JSON
+    // file would acquire a second layer of it on the next generation.
     const result = encodeDevVarsValue(name, value);
     if (result.encoded === null) {
-      if (result.refused) refusals.push({ name, reason: result.refused });
+      if (result.refused !== null) refused.push(result.refused);
       continue;
     }
-    encoded[name] = result.encoded;
+    encoded[name] = value;
     written.push(name);
   }
-  if (written.length === 0 && refusals.length === 0) {
-    return { written, refused: [], linked: [], shadowed: [], undelivered: [] };
-  }
 
-  // The path the project names, and the file it actually resolves to. In a feature worktree they are
-  // different: the root's `.dev.vars` is a link at the main checkout's shared file, and writing the link
-  // path atomically renames a new file over the link — cutting the worktree off the file every worker in
-  // it still points at.
-  //
-  // **This resolution belongs in the atomic writer, and it moves there on the rebase.** Resolving the
-  // chain here and handing the result to `writeFileAtomic` makes the write follow a symlink with no rule
-  // about whose link it is: plant `.dev.vars` at a path outside the project and the freshly minted master
-  // key lands there. The rule cannot be stated here, either — a worktree's link points outside the
-  // project *by design*, so location cannot tell the two apart. `writeFileAtomic` on
-  // `fix/scaffold-cannot-run` resolves the chain itself and refuses any link a different uid made, which
-  // is the rule that can. This branch rebases onto it, and this line goes in the same commit.
-  //
-  // Dropping the resolution *before* that branch lands would not close the hole, it would trade it for a
-  // silent delivery failure: the rename would replace the worktree's link with a private file while every
-  // worker in it still read the main checkout's, and the result would still say `written`. That is the
-  // defect this whole file exists to end, and it needs no attacker. See #160 for the threat model that
-  // says the planter can wait and the accident cannot.
-  const path = join(options.projectDir, ".dev.vars");
-  const target = await followLink(path);
-  const content = await readDevVarsSource(target);
-  const before = parseDevVars(content ?? "");
-  // Fail-closed: a value that could not be encoded takes its superseded line with it.
-  const stale = refusals.filter(({ name }) => Object.hasOwn(before, name));
-  const next = upsertDevVarsContent(
-    removeDevVarsContent(
-      content ?? "",
-      stale.map(({ name }) => name),
-    ),
-    encoded,
-  );
-  // Never conjure an empty `.dev.vars` out of a run whose every value was refused, and never rewrite a
-  // file whose bytes would not change. `null` is "no file", and no file plus nothing to say stays that way.
-  if (next !== (content ?? "")) await writeFileAtomic(target, next, { mode: 0o600 });
-  // Unconditionally, and *after* the write: the guard above is right and it left the mode to a write that
-  // may never happen, so a file created at the umask by anything else — an older pithy, an editor, a
-  // `cp` — kept 0644 forever while holding the session key. Narrowing only, so an adopter's deliberate
-  // 0400 survives. See {@link tightenMode}.
-  await tightenMode(target);
-
-  const refused = refusals.map(({ name, reason }) =>
-    stale.some((entry) => entry.name === name)
-      ? `${reason} Its superseded line was removed — a stale value that still works is worse than none.`
-      : reason,
-  );
-  if (written.length === 0) return { written, refused, linked: [], shadowed: [], undelivered: [] };
-
-  const dirs = options.workerDirs ?? (await workerDirs(options.projectDir));
-  const linked: string[] = [];
-  const shadowed: string[] = [];
-  const undelivered: string[] = [];
-  for (const dir of dirs) {
-    if (dir === options.projectDir) continue;
-    // The directory, gated before anything is created inside it (#167). `discoverWorkers` builds
-    // `apps/<name>` out of a `readdir` that follows whatever `apps` is, so a symlink at either had this
-    // planting a `.dev.vars` link — pointing at the project's shared credential file — in a directory
-    // outside the project, and reporting it as `linked`. Whoever can write that directory then reads the
-    // team's secrets through it. `feature/devVars.ts` carries this same comment and has always had the
-    // gate; this module did not import it at all, which is precisely the drift two funnels produce.
-    //
-    // The shared gate, never a second implementation. It is where the rule is, and a private copy here
-    // is how the next producer gets a slightly different one.
-    //
-    // The check stops at the directory, never at `.dev.vars` itself: a link there is the arrangement
-    // this function delivers through, and the policy for it is below.
-    // Reported, not thrown, and that is the one difference from the sibling. By this line the project's
-    // own `.dev.vars` has already been written; a throw here would leave that write done, every note
-    // unprinted, and `pithy dev` refusing to start over one planted link in a directory no Worker of
-    // theirs owns. `undelivered` is where a Worker that will not receive the value already goes.
-    const refusal = await ensureScaffoldPath(options.projectDir, dir).then(() => null, refusalOf);
-    if (refusal !== null) {
-      undelivered.push(`${dir}: nothing was written beside it. ${refusal}`);
-      continue;
-    }
-    const beside = join(dir, ".dev.vars");
-    const stats = await lstat(beside).catch(() => null);
-    if (stats !== null) {
-      // An existing link points where somebody meant it to — at the repo's shared file, most often — so
-      // it is never repointed. But where it points decides whether the value arrived, and that is asked
-      // rather than assumed: a link at some other file is as undelivered as a file of the worker's own.
-      if (stats.isSymbolicLink()) {
-        const resolved = await followLink(beside).catch(() => null);
-        if (resolved === target) continue;
-        // A link that resolves to nothing is not somebody's arrangement, it is a fault: wrangler opens
-        // no file there at all. Reporting it as shadowed would read as "theirs to keep".
-        if (resolved === null) {
-          undelivered.push(`${dir} has a .dev.vars whose symlink chain never ends. wrangler opens nothing there.`);
-          continue;
-        }
-      }
-      shadowed.push(dir);
-      continue;
-    }
-    // Relative, so a project that is copied, moved, or mounted at another path still resolves.
-    const failure = await symlink(relative(dir, path), beside).then(
-      () => null,
-      (err: unknown) => (err instanceof Error ? err.message : String(err)),
-    );
-    // A swallowed failure is a delivery that did not happen, reported as one. For a secret that is the
-    // worst answer available: everything downstream reads as written and the Worker has no binding.
-    if (failure === null) linked.push(dir);
-    else undelivered.push(`${dir} has no .dev.vars and one could not be linked: ${failure}`);
-  }
-  return { written, refused, linked: linked.sort(), shadowed: shadowed.sort(), undelivered: undelivered.sort() };
-}
-
-/**
- * A gate refusal as one sentence. `PithyError`'s `action` is where the whole answer lives — "Remove it,
- * or pick another name" — and `Error.message` alone is "apps/evil is a symlink.", which names the
- * problem and not the fix. `detail` is never included: it is the throw-site context, and these lines
- * reach a terminal.
- */
-function refusalOf(error: unknown): string {
-  if (error instanceof PithyError) return `${error.payload.message} ${error.payload.action ?? ""}`.trim();
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** How many links deep a chain may go before it is called a loop. Well past anything deliberate. */
-const MAX_LINK_HOPS = 32;
-
-/**
- * The real file a path names, following symlinks by hand — `realpath` refuses a dangling link, and a
- * `.dev.vars` link at a main checkout that has not written one yet is exactly that.
- *
- * Bounded, because a symlink loop is a hang and this runs inside `pithy dev`. **At the bound it throws.**
- * It used to return what it had, with a docstring promising the write would then fail loudly — and the
- * write did not fail at all. What came back was still a symlink, so `writeFileAtomic` renamed a fresh
- * file over the link and reported the value written: the same silent detachment the worktree case exists
- * to prevent, reached by a link that points at itself rather than by one that points somewhere else.
- */
-async function followLink(path: string): Promise<string> {
-  let current = path;
-  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
-    const stats = await lstat(current).catch(() => null);
-    if (stats === null || !stats.isSymbolicLink()) return current;
-    const next = await readlink(current).catch(() => null);
-    if (next === null) return current;
-    current = resolve(dirname(current), next);
-  }
-  throw new InternalError({
-    message: `Refusing to touch ${path}: its symlink chain never ends.`,
-    action: "Fix the link — something in the chain points back at itself.",
-    detail: `more than ${MAX_LINK_HOPS} symlinks deep from '${path}'`,
+  const values = await writeBootstrapVars(options.projectDir, encoded, options.paths ?? {});
+  const generated = await generateDevVars({
+    projectDir: options.projectDir,
+    values,
+    ...(options.workerDirs !== undefined ? { workerDirs: options.workerDirs } : {}),
+    ...(options.paths !== undefined ? { paths: options.paths } : {}),
   });
+
+  return {
+    written,
+    refused: [...refused, ...generated.refused].sort(),
+    generated: generated.generated,
+    unchanged: generated.unchanged,
+    relinked: generated.relinked,
+  };
 }
 
 /**
@@ -375,10 +226,4 @@ export async function readDevVarsSource(path: string): Promise<string | null> {
       { cause },
     );
   }
-}
-
-/** Every Worker directory wrangler will run in — the ones with a `wrangler.jsonc` to load `.dev.vars` beside. */
-async function workerDirs(projectDir: string): Promise<string[]> {
-  const workers = await discoverWorkers(projectDir).catch(() => []);
-  return workers.filter((worker) => worker.hasWrangler !== false).map((worker) => worker.dir);
 }

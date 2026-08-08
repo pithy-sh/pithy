@@ -43,40 +43,45 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   lines.push(
     ...renderDevVarsNotes({
       refused: report.devVarsRefused ?? [],
-      ...(report.shadowed !== undefined ? { shadowed: report.shadowed } : {}),
-      ...(report.undelivered !== undefined ? { undelivered: report.undelivered } : {}),
+      ...(report.relinked !== undefined ? { relinked: report.relinked } : {}),
     }),
   );
   return lines;
 }
 
-/** The three ways a `.dev.vars` write does not reach a Worker. Structurally a {@link WriteDevVarsResult}. */
+/** The two ways a generated `.dev.vars` is worth a sentence. Structurally a {@link WriteDevVarsResult}. */
 export interface DevVarsDelivery {
-  /** One sentence per value no quoting survives. See `encodeDevVarsValue`. */
+  /**
+   * One sentence per value or Worker directory that did not get one — a value no quoting survives, a
+   * `.dev.vars` pithy did not generate, a directory it may not write into. Already actionable.
+   */
   refused: readonly string[];
-  /** Worker directories reading a `.dev.vars` that is not the one written. */
-  shadowed?: readonly string[];
-  /** One sentence per Worker directory that will open no `.dev.vars` at all. */
-  undelivered?: readonly string[];
+  /** Worker directories whose `.dev.vars` was a symlink from the old shared-file design, now a real file. */
+  relinked?: readonly string[];
 }
 
 /**
- * What one `.dev.vars` write says out loud.
+ * What one `.dev.vars` generation says out loud.
  *
- * **Shared, because a caller that reads only `refused` puts the defect back.** `writeDevVars` grew
- * `shadowed` and `undelivered` to end a run reporting a delivery that did not happen; `pithy add`'s two
- * direct calls then took `.refused` off the result and dropped the rest, so `pithy add secrets` printed
- * "Minted a dev master key" while the Worker answered `Missing required bindings`. One renderer means
- * the next caller gets every list by taking the only thing there is to take.
+ * **Shared, because a caller that reads only `refused` puts the defect back.** `writeDevVars` grew a
+ * delivery report to end a run claiming a value had arrived when it had not; `pithy add`'s two direct
+ * calls then took `.refused` off the result and dropped the rest, so `pithy add secrets` printed "Minted
+ * a dev master key" while the Worker answered `Missing required bindings`. One renderer means the next
+ * caller gets every list by taking the only thing there is to take.
+ *
+ * **Silence for the ordinary run.** `generated` and `unchanged` say nothing: a file rewritten with the
+ * same three bindings on every `pithy dev` is not news, and a line per Worker per start is how a block
+ * stops being read.
  *
  * A value never appears here. Names and directories only — these lines reach a terminal scrollback.
  */
 export function renderDevVarsNotes(delivery: DevVarsDelivery): string[] {
   const lines = [...delivery.refused];
-  for (const dir of delivery.shadowed ?? []) {
-    lines.push(`${dir} reads a .dev.vars of its own. wrangler opens that one, so nothing written reaches it.`);
+  for (const dir of delivery.relinked ?? []) {
+    lines.push(
+      `${dir}/.dev.vars was a symlink at the project's shared file. It is a generated file now — put anything you kept in that shared file into .dev.vars.local.`,
+    );
   }
-  for (const reason of delivery.undelivered ?? []) lines.push(reason);
   return lines;
 }
 

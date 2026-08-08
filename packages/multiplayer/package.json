@@ -16,7 +16,6 @@
     "test:node": "vitest run --project=node",
     "test:workers": "vitest run --project=workers",
     "costs": "bun scripts/costModel.ts",
-    "vars:local": "ln -sf ../../.dev.vars .dev.vars",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },

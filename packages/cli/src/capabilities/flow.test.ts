@@ -213,8 +213,8 @@ describe("runAdd", () => {
       migrate: vi.fn(async () => noMigrations),
     });
 
-    // The project root's `.dev.vars`, which every worker symlinks to — not the worker directory.
-    const vars = await readFile(join(dir, ".dev.vars"), "utf8");
+    // The Worker's own generated `.dev.vars` — where wrangler reads it (#154).
+    const vars = await readFile(join(worker, ".dev.vars"), "utf8");
     expect(vars).toMatch(/^SECRETS_ENCRYPTION_KEYS=\{"currentVersion":"1"/m);
     expect(result.notes.join(" ")).toMatch(/pithy secrets provision/);
   });

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -17,11 +16,11 @@ import {
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { writeDevVars } from "../devSecrets/devVars";
 import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { renderDevVarsNotes } from "../devSecrets/report";
-import { removeDevVars } from "../project/devVars";
 import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
@@ -252,13 +251,18 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
    * secrets file, and the sitekeys in `.dev.vars`. Leaving the value in the secrets file would have the
    * next `pithy dev` seed a key for a widget that no longer exists.
    *
-   * The secret's name is still passed to `removeDevVars`, and that is deliberate: a project provisioned
-   * before #153 has the transitional copy sitting there, and teardown is the run that should take it.
-   * A name that is not in the file is a no-op.
+   * The secret's name is still passed to the removal, and that is deliberate: a project provisioned
+   * before #153 recorded the transitional copy, and teardown is the run that should take it. A name that
+   * is not recorded is a no-op.
+   *
+   * **The adopter's own `.dev.vars` is not touched.** Each Worker's is generated from the bootstrap set,
+   * so taking the names out of that set is what drops the lines — and the project root's file, if there
+   * is one, is theirs. See #154.
    */
   async clearDev(modes: TurnstileMode[]): Promise<void> {
     const keys = [TURNSTILE_SECRET_NAME, ...modes.map((mode) => sitekeyVarName(mode))];
-    await removeDevVars(join(this.#projectDir, ".dev.vars"), keys);
+    await removeBootstrapVars(this.#projectDir, keys);
+    await writeDevVars({ projectDir: this.#projectDir, values: {} });
     await removeDevSecrets(await resolveDevSecretsFile(this.#projectDir), [TURNSTILE_SECRET_NAME]);
   }
 

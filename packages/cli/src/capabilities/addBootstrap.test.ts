@@ -8,6 +8,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { bootstrapAdd } from "./addBootstrap";
@@ -22,13 +23,17 @@ async function shippedManifest(pkg: string): Promise<CapabilityManifest> {
   return CapabilityManifest.parse(JSON.parse(await readFile(url, "utf8")));
 }
 
-/** The value `.dev.vars` holds for `name` in `dir`, or `undefined` when nothing was written. */
+/**
+ * The value recorded for `name` in `dir`, or `undefined` when nothing was written.
+ *
+ * The machine-local bootstrap store, not the project root's `.dev.vars` — since #154 that file is the
+ * *CLI's* credential file and each Worker's is generated from this set.
+ */
 async function devVar(dir: string, name: string): Promise<string | undefined> {
-  const content = await readFile(join(dir, ".dev.vars"), "utf8").catch(() => "");
-  return parseDevVars(content)[name];
+  return (await readBootstrapVars(dir))[name];
 }
 
-/** The master key `.dev.vars` holds in `dir`, or `undefined` when nothing was written. */
+/** The master key recorded for `dir`, or `undefined` when nothing was written. */
 async function devMasterKey(dir: string): Promise<string | undefined> {
   return devVar(dir, "SECRETS_ENCRYPTION_KEYS");
 }
@@ -80,7 +85,7 @@ describe("bootstrapAdd", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("mints a dev master key into .dev.vars — the one value an adopter cannot invent", async () => {
+  test("mints a dev master key — the one value an adopter cannot invent", async () => {
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
 
     const raw = await devMasterKey(dir);
@@ -119,22 +124,35 @@ describe("bootstrapAdd", () => {
     expect(notes.join(" ")).toMatch(/already/i);
   });
 
-  test("every other line of .dev.vars is left alone", async () => {
-    await writeFile(join(dir, ".dev.vars"), "# creds\nCLOUDFLARE_ACCOUNT_ID=abc\n");
+  test("the adopter's own .dev.vars is not touched at all", async () => {
+    // The project root's file is the CLI's credential file and theirs to maintain (#154). Nothing here
+    // rewrites it, and #142's loss cannot recur through this path.
+    const theirs = "# creds\nCLOUDFLARE_ACCOUNT_ID=abc\n";
+    await writeFile(join(dir, ".dev.vars"), theirs);
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
 
-    const content = await readFile(join(dir, ".dev.vars"), "utf8");
-    expect(content).toContain("# creds");
-    expect(content).toContain("CLOUDFLARE_ACCOUNT_ID=abc");
+    expect(await readFile(join(dir, ".dev.vars"), "utf8")).toBe(theirs);
   });
 
-  test("writes .dev.vars, never the committed .dev.vars.example", async () => {
+  test("a key already in a pre-#154 project's .dev.vars is adopted, never re-minted", async () => {
+    // The one value whose replacement cannot be undone: every secret already encrypted under the old key
+    // becomes unreadable, with no error that names the cause.
+    const existing = JSON.stringify({ currentVersion: "1", versions: { "1": "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleQ==" } });
+    await writeFile(join(dir, ".dev.vars"), `SECRETS_ENCRYPTION_KEYS=${existing}\n`);
+
+    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+
+    expect(await devMasterKey(dir)).toBe(existing);
+    expect(notes.join(" ")).toMatch(/Adopted/);
+  });
+
+  test("nothing is written to the committed .dev.vars.example", async () => {
     const example = "CLOUDFLARE_ACCOUNT_ID=\nCLOUDFLARE_API_TOKEN=\n";
     await writeFile(join(dir, ".dev.vars.example"), example);
 
     await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
 
-    // `.dev.vars` is gitignored; the example is committed. A key in the example is a key in the repo.
+    // The example is committed. A key in it is a key in the repository.
     expect(await readFile(join(dir, ".dev.vars.example"), "utf8")).toBe(example);
     expect(await devMasterKey(dir)).toBeDefined();
   });
@@ -248,7 +266,7 @@ describe("bootstrapAdd", () => {
 
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
 
-    expect(await devVar(dir, "auth-session-secret")).toBe("already-mine");
+    expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
     expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
     expect(notes.join(" ")).toContain("which dev no longer reads");
     // The absolute path, not the file's name: it is outside the checkout, so a name locates nothing.
@@ -289,7 +307,7 @@ describe("bootstrapAdd", () => {
     // Two things reach the same `.dev.vars` delivery note in one `pithy add`: the mint here injects
     // the value it just minted, and the seeder that runs after it injects the same one. Printing the
     // sentence twice reads as two problems. An adopter counts lines.
-    const shared = "apps/board reads a .dev.vars of its own. wrangler opens that one, so nothing written reaches it.";
+    const shared = "apps/board/.dev.vars was not generated by pithy, so nothing was written to it.";
 
     const notes = await bootstrapAdd({
       projectDir: dir,
@@ -302,7 +320,7 @@ describe("bootstrapAdd", () => {
         missing: [],
         undeclared: [],
         skipped: [],
-        shadowed: ["apps/board"],
+        devVarsRefused: [shared],
       }),
     });
 
@@ -357,11 +375,11 @@ describe("bootstrapAdd", () => {
     }
   });
 
-  test("a Worker reading a .dev.vars of its own is named — the minted key never reached it", async () => {
-    // `writeDevVars` grew `shadowed` and `undelivered` precisely so a delivery that did not happen stops
-    // being reported as one. Both direct calls here took `.refused` off the result and dropped the rest,
-    // so the defect survived at the caller: `pithy add secrets` printed "Minted a dev master key" and
-    // the Worker still answered `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`.
+  test("a Worker whose .dev.vars pithy did not write is named — the minted key never reached it", async () => {
+    // `writeDevVars` grew a delivery report precisely so a delivery that did not happen stops being
+    // reported as one. Both direct calls here took `.refused` off the result and dropped the rest, so
+    // the defect survived at the caller: `pithy add secrets` printed "Minted a dev master key" and the
+    // Worker still answered `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`.
     await mkdir(join(dir, "apps", "board"), { recursive: true });
     await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
     await writeFile(join(dir, "apps", "board", ".dev.vars"), "MINE=1\n");
@@ -369,10 +387,11 @@ describe("bootstrapAdd", () => {
     const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets"), seed: emptySeed });
 
     expect(notes.join("\n")).toContain(join(dir, "apps", "board"));
-    expect(notes.join("\n")).toMatch(/wrangler opens that one/);
+    expect(notes.join("\n")).toMatch(/was not generated by pithy/);
+    expect(notes.join("\n")).toContain(".dev.vars.local");
   });
 
-  test("a Worker the master key could not be linked into is named, never counted as delivered", async () => {
+  test("a Worker the master key could not be written into is named, never counted as delivered", async () => {
     await mkdir(join(dir, "apps", "board"), { recursive: true });
     await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
     await chmod(join(dir, "apps", "board"), 0o500);
@@ -383,7 +402,7 @@ describe("bootstrapAdd", () => {
         seed: emptySeed,
       });
 
-      expect(notes.join("\n")).toContain("could not be linked");
+      expect(notes.join("\n")).toContain("could not be written");
       expect(notes.join("\n")).toContain(join(dir, "apps", "board"));
     } finally {
       await chmod(join(dir, "apps", "board"), 0o700);

@@ -127,6 +127,8 @@ describe("seedProjectDevSecrets", () => {
   });
 
   test("a cf-secrets-store secret comes back as a .dev.vars line — there is no local store", async () => {
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
     await writeFile(
       secretsPath,
       '{ "CLOUDFLARE_API_TOKEN": { "currentVersion": "1", "versions": { "1": "cf-token" } } }',
@@ -137,7 +139,9 @@ describe("seedProjectDevSecrets", () => {
     // that reaches `.dev.vars` at all, and asserting containment would not have noticed the difference.
     expect(report.devVars).toEqual(["CLOUDFLARE_API_TOKEN"]);
     expect(store.rows.has("CLOUDFLARE_API_TOKEN")).toBe(false);
-    expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8")).CLOUDFLARE_API_TOKEN).toContain("cf-token");
+    // Where wrangler reads it: the Worker's own generated file, not the project root (#154).
+    const beside = join(dir, "apps", "board", ".dev.vars");
+    expect(parseDevVars(await readFile(beside, "utf8")).CLOUDFLARE_API_TOKEN).toContain("cf-token");
   });
 
   test("re-running seeds nothing and mints nothing — idempotent, and it never rotates", async () => {
@@ -314,8 +318,7 @@ describe("seedProjectDevSecrets", () => {
       undeclared: [],
       skipped: [],
       devVarsRefused: [],
-      shadowed: [],
-      undelivered: [],
+      relinked: [],
     });
   });
 

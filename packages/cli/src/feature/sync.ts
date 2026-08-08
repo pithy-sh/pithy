@@ -13,7 +13,6 @@ import {
   scanPinnedBlocks,
   writeDevConfig,
 } from "./devConfig";
-import { wireFeatureDevVars } from "./devVars";
 import { allocatePortBlock, type PortBlock, reclaimPortBlocks } from "./ports";
 
 /**
@@ -81,22 +80,21 @@ export interface SyncFeatureOptions {
 }
 
 /**
- * Reconcile the feature's `.dev.config.json` with its current workers, then re-point every worker's
- * `.dev.vars` at the repo's shared file. Idempotent: with no worker changes it rewrites the same config and
- * reports nothing added or removed. The port block is reserved on first use and reused thereafter, so a
+ * Reconcile the feature's `.dev.config.json` with its current workers. Idempotent: with no worker changes
+ * it rewrites the same config and reports nothing added or removed. The port block is reserved on first use and reused thereafter, so a
  * feature's ports are stable for its whole life.
  *
  * Refuses to run when `worktreePath` is the main checkout root. `pithy feature sync` derives its identity
  * from the current branch and takes no path argument, so running it from the main checkout while on a
  * feature branch is a plausible slip: it would reserve a port block against the main checkout, write a
- * feature's `.dev.config.json` at the project root, and point every worker there at a file it already
- * owns. The main checkout is not a feature, and none of that is recoverable by re-running anything.
+ * feature's `.dev.config.json` at the project root, and take a port block a real feature is holding. The
+ * main checkout is not a feature, and none of that is recoverable by re-running anything.
  *
- * It no longer guards the `.dev.vars` files themselves. `wireFeatureDevVars` used to `unlink` and replace
- * every real `apps/*.dev.vars` it found, which permanently lost git-ignored content, and this guard was
- * the only thing standing in front of it — for one caller. It now leaves a real file alone and reports it,
- * so the loss is closed at the source, for every caller. This guard stays because syncing the main
- * checkout as a feature is still wrong, not because it is the last line of defence.
+ * It touches no `.dev.vars` at all. It used to `unlink` and replace every real `apps/*.dev.vars` it found,
+ * which permanently lost git-ignored content, and this guard was the only thing standing in front of it —
+ * for one caller. A worktree generates its own from the same machine-local sources now (#154), so there is
+ * nothing here to share and nothing to lose. This guard stays because syncing the main checkout as a
+ * feature is still wrong, not because it is the last line of defence.
  */
 export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise<SyncReport> {
   if (options.worktreePath === options.mainRoot) {
@@ -130,8 +128,6 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
   const previous = await readDevConfig(configPath);
   const dev = buildDevConfig({ branch: options.branch, block, workers, previous });
   await writeDevConfig(configPath, dev);
-
-  await wireFeatureDevVars({ mainRoot: options.mainRoot, worktreePath: options.worktreePath, workers });
 
   const before = new Set(Object.keys(previous?.workers ?? {}));
   const after = new Set(Object.keys(dev.workers));

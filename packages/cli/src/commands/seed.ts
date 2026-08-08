@@ -180,6 +180,11 @@ export default defineCommand({
       if (devSecrets && !args.json) {
         for (const line of renderDevSecretsNotes(devSecrets)) process.stdout.write(`${line}\n`);
       }
+      // A `.dev.vars` pithy did not generate is never overwritten and never merged (#154) — so a Worker
+      // that was supposed to get one has not got one, and that is a failed run. The lines above already
+      // name the file and point at `.dev.vars.local`; this is what makes a script notice. Not a throw:
+      // the fixtures below are the rest of the run and they are worth doing.
+      if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = 1;
 
       const report = await seedProject({
         projectDir,

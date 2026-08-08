@@ -19,6 +19,7 @@ import {
   describeDevSecretsLocation,
   devSecretsHealthy,
 } from "../doctor/devSecrets";
+import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
@@ -134,6 +135,15 @@ export interface DoctorReport {
    */
   devSecrets: DevSecretsCheck | null;
   /**
+   * What is in a `.dev.vars.local` that nothing else in the project knows about — a key that exists only
+   * in dev, and a key that shadows a registry secret. `null` when there is nothing to say, which is every
+   * project with no `.dev.vars.local` anywhere.
+   *
+   * It reports and never fails the exit, for the reason {@link ./devVarsLocal} gives: both states are
+   * legitimate, and neither may be invisible.
+   */
+  devVarsLocal: DevVarsLocalCheck | null;
+  /**
    * Where this project's dev secrets file is, and whether it is there. `null` outside a project with a
    * resolvable name, on the same footing as {@link DoctorReport.devPreferences}.
    *
@@ -230,6 +240,8 @@ export interface DoctorReportOptions {
   checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
+  /** Seam: what this project's `.dev.vars.local` files carry that nothing else declares. */
+  checkDevVarsLocal?: (projectDir: string) => Promise<DevVarsLocalCheck | null>;
   /**
    * Dev-secrets location seam; defaults to {@link checkDevSecretsLocation} resolved against the same
    * `homedir` and `env` the config directory is, so the line can never name a path this report did not
@@ -280,6 +292,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
   const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
+  const probeDevVarsLocal = options.checkDevVarsLocal ?? ((dir: string) => checkDevVarsLocal({ projectDir: dir }));
   const probeDevSecretsFile =
     options.checkDevSecretsFile ??
     ((dir: string) => checkDevSecretsLocation(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -384,6 +397,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Gated the same way, and asked separately: this one needs no registry, so it answers for a project
   // that has never composed `secrets` — which is the project most likely to be asking where the file is.
   const devSecretsFile = inProject ? await probeDevSecretsFile(options.projectDir).catch(() => null) : null;
+  const devVarsLocal = inProject ? await probeDevVarsLocal(options.projectDir).catch(() => null) : null;
 
   return {
     cli,
@@ -401,6 +415,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     devPreferences,
     devSecrets,
     devSecretsFile,
+    devVarsLocal,
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
@@ -693,8 +708,13 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
   // {@link DoctorReport.devSecrets}.
-  if (report.devSecrets) {
-    const lines = describeDevSecrets(report.devSecrets);
+  if (report.devSecrets || report.devVarsLocal) {
+    const lines = [
+      ...(report.devSecrets ? describeDevSecrets(report.devSecrets) : []),
+      // In the same block, because it is the same question asked of the file beside it: what is in a
+      // git-ignored file that nothing else in the project knows about.
+      ...(report.devVarsLocal ? describeDevVarsLocal(report.devVarsLocal) : []),
+    ];
     if (lines.length > 0) blocks.push(["Dev secrets:", ...lines.map((line) => `  ${line}`)].join("\n"));
   }
 
@@ -774,6 +794,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           unreadable: report.devSecrets.unreadable,
           detail: describeDevSecrets(report.devSecrets),
         }
+      : null,
+    devVarsLocal: report.devVarsLocal
+      ? { ...report.devVarsLocal, detail: describeDevVarsLocal(report.devVarsLocal) }
       : null,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,

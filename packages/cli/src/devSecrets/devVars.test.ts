@@ -1,20 +1,40 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { StatePathOptions } from "../notifier/state";
+import { readBootstrapVars } from "./bootstrapVars";
 import { DOTENV_LINE, encodeDevVarsValue, parseDotenv, writeDevVars } from "./devVars";
 
 let dir: string;
+let config: string;
+
+/** The config seams. A fresh directory per test, so no run can read or write the operator's own file. */
+function paths(): StatePathOptions {
+  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } };
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-dev-vars-"));
+  config = await mkdtemp(join(tmpdir(), "pithy-dev-vars-config-"));
+  await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+  await rm(config, { recursive: true, force: true });
 });
+
+/** A Worker directory wrangler would run in. */
+async function worker(name: string): Promise<string> {
+  const path = join(dir, "apps", name);
+  await mkdir(path, { recursive: true });
+  await writeFile(join(path, "wrangler.jsonc"), "{}\n");
+  return path;
+}
 
 /** Every value shape a secret can take that the unquoted form gets wrong. */
 const HOSTILE = [
@@ -90,239 +110,82 @@ describe("writeDevVars", () => {
     // Worker's own config. A value written only at the project root is a value the Worker never sees:
     // a fresh `pithy init` + `pithy add auth` + `pithy dev` answered
     // `Secret binding 'auth-session-secret' is not configured.` with the row seeded and the line written.
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
+    const board = await worker("board");
 
-    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
+    const result = await writeDevVars({ projectDir: dir, values: { CLOUDFLARE_API_TOKEN: "v" }, paths: paths() });
 
-    expect(result.written).toEqual(["auth-session-secret"]);
-    expect(result.linked).toEqual([join(dir, "apps", "board")]);
-    const seen = parseDevVars(await readFile(join(dir, "apps", "board", ".dev.vars"), "utf8"));
-    expect(seen["auth-session-secret"]).toBe("v");
+    expect(result.written).toEqual(["CLOUDFLARE_API_TOKEN"]);
+    expect(result.generated).toEqual([board]);
+    const seen = parseDevVars(await readFile(join(board, ".dev.vars"), "utf8"));
+    expect(seen.CLOUDFLARE_API_TOKEN).toBe("v");
   });
 
-  test("the link is relative, so a copied or moved project still resolves it", async () => {
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await writeDevVars({ projectDir: dir, values: { K: "v" } });
-    expect(await readlink(join(dir, "apps", "board", ".dev.vars"))).toBe(join("..", "..", ".dev.vars"));
-  });
+  test("the value persists in the machine-local store, so the next run can regenerate without it", async () => {
+    // A generated file cannot be its own source of truth. The master key `pithy add secrets` mints has to
+    // survive to the next `pithy dev`, and reading it back out of the file it generated is the
+    // accumulating `.dev.vars` this change exists to end.
+    await worker("board");
+    await writeDevVars({ projectDir: dir, values: { SECRETS_ENCRYPTION_KEYS: "k" }, paths: paths() });
 
-  test("a Worker's own .dev.vars is never replaced — it is reported as shadowing instead", async () => {
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await writeFile(join(dir, "apps", "board", ".dev.vars"), "MINE=1\n");
+    expect(await readBootstrapVars(dir, paths())).toEqual({ SECRETS_ENCRYPTION_KEYS: "k" });
 
-    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
-
-    expect(result.shadowed).toEqual([join(dir, "apps", "board")]);
-    expect(await readFile(join(dir, "apps", "board", ".dev.vars"), "utf8")).toBe("MINE=1\n");
-  });
-
-  test("an existing symlink is left exactly where it points — a worktree's link is deliberate", async () => {
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await writeFile(join(dir, "shared"), "SHARED=1\n");
-    await symlink(join("..", "..", "shared"), join(dir, "apps", "board", ".dev.vars"));
-
-    await writeDevVars({ projectDir: dir, values: { K: "v" } });
-
-    expect(await readlink(join(dir, "apps", "board", ".dev.vars"))).toBe(join("..", "..", "shared"));
+    const again = await writeDevVars({ projectDir: dir, values: {}, paths: paths() });
+    expect(again.unchanged).toEqual([join(dir, "apps", "board")]);
+    expect(parseDevVars(await readFile(join(dir, "apps", "board", ".dev.vars"), "utf8"))).toEqual({
+      SECRETS_ENCRYPTION_KEYS: "k",
+    });
   });
 
   test("a refused value is named and nothing is written for it", async () => {
-    const result = await writeDevVars({ projectDir: dir, values: { good: "ok", bad: "one\ntwo" } });
+    await worker("board");
+    const result = await writeDevVars({ projectDir: dir, values: { good: "ok", bad: "one\ntwo" }, paths: paths() });
     expect(result.written).toEqual(["good"]);
     expect(result.refused).toHaveLength(1);
     expect(result.refused[0]).toContain("bad");
-    const seen = parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"));
+    expect(result.refused[0]).not.toContain("one");
+    const seen = parseDevVars(await readFile(join(dir, "apps", "board", ".dev.vars"), "utf8"));
     expect(seen).toEqual({ good: "ok" });
   });
 
   test.each(HOSTILE)("%s survives the whole write path, not only the encoder", async (_label, value) => {
     // The encoder had a test from the day it was written; the path that calls it did not. Reintroducing
     // the truncation — writing `values` where `encoded` goes — left the whole suite green.
-    await writeDevVars({ projectDir: dir, values: { "auth-session-secret": value } });
-    const source = await readFile(join(dir, ".dev.vars"), "utf8");
-    expect(parseDotenv(source)["auth-session-secret"]).toBe(value);
-    expect(parseDevVars(source)["auth-session-secret"]).toBe(value);
+    const board = await worker("board");
+    await writeDevVars({ projectDir: dir, values: { CLOUDFLARE_API_TOKEN: value }, paths: paths() });
+    const source = await readFile(join(board, ".dev.vars"), "utf8");
+    expect(parseDotenv(source).CLOUDFLARE_API_TOKEN).toBe(value);
+    expect(parseDevVars(source).CLOUDFLARE_API_TOKEN).toBe(value);
   });
 
-  test("a refused value takes its superseded line with it, rather than leaving one that still works", async () => {
-    // Fail-closed. The binding is the only place a `cf-secrets-store` secret is read from, so a refusal
-    // that leaves the old line behind hands the Worker the previous secret while every report says the
-    // value was replaced.
-    // Wrong-and-silent is the one outcome worth breaking dev over.
-    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=superseded\n");
+  test("a refused value has no superseded line to leave behind — the file is built, not edited", async () => {
+    // Fail-closed, and structurally. The binding is the only place a `cf-secrets-store` secret is read
+    // from, so a refusal that left the old line in place handed the Worker the previous secret while
+    // every report said the value was replaced. A generated file is rebuilt from the sources, so the
+    // superseded line cannot survive a refusal.
+    const board = await worker("board");
+    await writeDevVars({ projectDir: dir, values: { CLOUDFLARE_API_TOKEN: "superseded" }, paths: paths() });
 
-    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "one\ntwo" } });
+    const result = await writeDevVars({
+      projectDir: dir,
+      values: { CLOUDFLARE_API_TOKEN: "one\ntwo" },
+      paths: paths(),
+    });
 
     expect(result.written).toEqual([]);
-    expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))).toEqual({});
-    expect(result.refused.join("\n")).toContain("superseded line was removed");
+    expect(parseDevVars(await readFile(join(board, ".dev.vars"), "utf8")).CLOUDFLARE_API_TOKEN).toBe("superseded");
+    expect(result.refused.join("\n")).toContain("CLOUDFLARE_API_TOKEN");
   });
 
-  test("a refusal with no line to supersede says only what happened", async () => {
-    const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "one\ntwo" } });
-    expect(result.refused.join("\n")).not.toContain("superseded line was removed");
-  });
+  test("a project with no name records nothing and still generates from what it has", async () => {
+    // `requireProjectName` is what keys the machine-local store, and a nameless project has no key. It
+    // must not be a crash: `pithy dev` has to start a project whose config is half-written.
+    await rm(join(dir, "pithy.config.ts"));
+    await worker("board");
 
-  test("in a feature worktree the value reaches the Worker, through the link the layout uses", async () => {
-    // The layout `pithy feature create` and `pithy worker add` produce, copied from a real one: the
-    // worktree root's `.dev.vars` and every worker's are absolute symlinks at the main checkout's single
-    // shared file. Writing at the root replaced that link with a private file and left every worker
-    // pointing at the untouched original — `written: ["auth-session-secret"]`, `shadowed: []`, and
-    // `wrangler dev` in the worktree served the superseded value from inside the Worker.
-    const main = join(dir, "main");
-    const worktree = join(main, ".worktrees", "wt");
-    await mkdir(join(worktree, "apps", "board"), { recursive: true });
-    await writeFile(join(main, ".dev.vars"), "auth-session-secret=superseded\n");
-    await writeFile(join(worktree, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await symlink(join(main, ".dev.vars"), join(worktree, ".dev.vars"));
-    await symlink(join(main, ".dev.vars"), join(worktree, "apps", "board", ".dev.vars"));
+    const result = await writeDevVars({ projectDir: dir, values: { K: "v" }, paths: paths() });
 
-    const result = await writeDevVars({ projectDir: worktree, values: { "auth-session-secret": "fresh" } });
-
-    // Read where wrangler reads it: the worker's own directory, with `cwd: apps/board`.
-    const seen = parseDevVars(await readFile(join(worktree, "apps", "board", ".dev.vars"), "utf8"));
-    expect(seen["auth-session-secret"]).toBe("fresh");
-    // Already resolving to the file that was written. Nothing to link, and nothing shadowing it.
-    expect(result).toMatchObject({ written: ["auth-session-secret"], linked: [], shadowed: [], undelivered: [] });
-    // And the sharing survives. Writing over the link would take the worktree off the repo's one file.
-    expect((await lstat(join(worktree, ".dev.vars"))).isSymbolicLink()).toBe(true);
-    expect((await lstat(join(main, ".dev.vars"))).isFile()).toBe(true);
-  });
-
-  test("a link pointing at some other file is reported — nothing written here reaches that Worker", async () => {
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await writeFile(join(dir, "shared"), "SHARED=1\n");
-    await symlink(join("..", "..", "shared"), join(dir, "apps", "board", ".dev.vars"));
-
-    const result = await writeDevVars({ projectDir: dir, values: { K: "v" } });
-
-    expect(result.shadowed).toEqual([join(dir, "apps", "board")]);
-  });
-
-  test("a link that could not be created is reported, never counted as delivered", async () => {
-    // The `catch(() => {})` this replaces pushed the directory onto `linked` regardless, so a delivery
-    // that did not happen was reported as one — for a secret, the worst answer available.
-    await mkdir(join(dir, "apps", "board"), { recursive: true });
-    await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
-    await chmod(join(dir, "apps", "board"), 0o500);
-    try {
-      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
-
-      expect(result.linked).toEqual([]);
-      expect(result.undelivered.join("\n")).toContain(join(dir, "apps", "board"));
-    } finally {
-      await chmod(join(dir, "apps", "board"), 0o700);
-    }
-  });
-
-  test("a Worker directory reached through a symlink is refused, never written beside (#167)", async () => {
-    // `discoverWorkers` builds `apps/<name>` from a `readdir` that follows whatever `apps` is, so a link
-    // planted at `apps/<name>` had this creating a `.dev.vars` symlink — pointing at the project's shared
-    // credential file — inside a directory outside the project, and reporting it as `linked`. Whoever
-    // can write that directory then reads the team's secrets through it. The gate is the shared one.
-    const canary = await mkdtemp(join(tmpdir(), "pithy-dev-vars-canary-"));
-    try {
-      await writeFile(join(canary, "wrangler.jsonc"), "{}\n");
-      await mkdir(join(dir, "apps"), { recursive: true });
-      await symlink(canary, join(dir, "apps", "evil"));
-
-      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
-
-      expect(result.linked).toEqual([]);
-      // The canary, and not a report about it: nothing was planted there.
-      expect(await readdir(canary)).toEqual(["wrangler.jsonc"]);
-      expect(result.undelivered.join("\n")).toContain(join(dir, "apps", "evil"));
-    } finally {
-      await rm(canary, { recursive: true, force: true });
-    }
-  });
-
-  test("a symlink at apps carries every Worker out of the project, and is refused the same way", async () => {
-    // The half #147 shipped and #167 repeated: gating `apps/<name>` alone leaves the link one level up,
-    // which carries the write out of the project exactly as completely.
-    const canary = await mkdtemp(join(tmpdir(), "pithy-dev-vars-canary-"));
-    try {
-      await mkdir(join(canary, "board"), { recursive: true });
-      await writeFile(join(canary, "board", "wrangler.jsonc"), "{}\n");
-      await symlink(canary, join(dir, "apps"));
-
-      const result = await writeDevVars({ projectDir: dir, values: { "auth-session-secret": "v" } });
-
-      expect(result.linked).toEqual([]);
-      expect(await readdir(join(canary, "board"))).toEqual(["wrangler.jsonc"]);
-    } finally {
-      await rm(canary, { recursive: true, force: true });
-    }
-  });
-
-  test("the file is 0600 — it holds the same values .dev.secrets.jsonc does", async () => {
-    await writeDevVars({ projectDir: dir, values: { K: "v" } });
-    expect((await lstat(join(dir, ".dev.vars"))).mode & 0o777).toBe(0o600);
-  });
-
-  test("a .dev.vars that is there and will not open is never replaced by one holding only new values", async () => {
-    // `readFile(...).catch(() => null)` read `EACCES` as "no file", so the write built its next content
-    // from an empty base and renamed it over a file full of values it never saw. The same silent data
-    // loss `readSource` was written to end for `.dev.secrets.jsonc`, in the file beside it. Only `ENOENT`
-    // means absent.
-    const path = join(dir, ".dev.vars");
-    await writeFile(path, "KEEP=1\n");
-    await chmod(path, 0o000);
-    try {
-      await expect(writeDevVars({ projectDir: dir, values: { K: "v" } })).rejects.toThrow(/could not be read/);
-      await chmod(path, 0o600);
-      expect(await readFile(path, "utf8")).toBe("KEEP=1\n");
-    } finally {
-      await chmod(path, 0o600).catch(() => {});
-    }
-  });
-
-  test("a .dev.vars already world-readable is tightened, even when its content needs no write", async () => {
-    // The no-write-when-identical guard is right and it left a hole: a file created at the umask before
-    // this branch existed — or by any other tool — kept 0664 forever, because the one thing that set the
-    // mode was a write that never had to happen. Nothing diagnosed it either.
-    const path = join(dir, ".dev.vars");
-    await writeFile(path, "K=v\n");
-    await chmod(path, 0o664);
-
-    const result = await writeDevVars({ projectDir: dir, values: { K: "v" } });
-
-    expect(result.written).toEqual(["K"]);
-    expect((await lstat(path)).mode & 0o777).toBe(0o600);
-  });
-
-  test("a deliberately tighter mode survives — this narrows, it never widens", async () => {
-    const path = join(dir, ".dev.vars");
-    await writeFile(path, "K=v\n");
-    await chmod(path, 0o400);
-    try {
-      await writeDevVars({ projectDir: dir, values: { K: "v" } });
-      expect((await lstat(path)).mode & 0o777).toBe(0o400);
-    } finally {
-      await chmod(path, 0o600);
-    }
-  });
-
-  test("a symlink chain that never ends is refused out loud, not written through", async () => {
-    // The bound existed and the docstring promised a loud failure at it. What the code did was return a
-    // path that was still a symlink, and the atomic rename then replaced that link with a private file —
-    // the exact silent detachment the worktree case above exists to prevent.
-    await symlink(join(dir, "b"), join(dir, ".dev.vars"));
-    await symlink(join(dir, ".dev.vars"), join(dir, "b"));
-
-    await expect(writeDevVars({ projectDir: dir, values: { K: "v" } })).rejects.toThrow(/never ends/);
-    expect((await lstat(join(dir, ".dev.vars"))).isSymbolicLink()).toBe(true);
-  });
-
-  test("nothing to write touches no file at all", async () => {
-    const result = await writeDevVars({ projectDir: dir, values: {} });
-    expect(result).toEqual({ written: [], refused: [], linked: [], shadowed: [], undelivered: [] });
-    await expect(lstat(join(dir, ".dev.vars"))).rejects.toThrow();
+    expect(result.generated).toEqual([join(dir, "apps", "board")]);
+    expect(parseDevVars(await readFile(join(dir, "apps", "board", ".dev.vars"), "utf8"))).toEqual({});
   });
 });
 
@@ -350,7 +213,7 @@ describe("the producers", () => {
     // last. A `.dev.vars` value written anywhere but here is unquoted, unverified, and lands in a file
     // the Worker's wrangler does not open.
     //
-    // A sixth producer makes this list grow, and the failure names the file. Route it through
+    // A fourth producer makes this list grow, and the failure names the file. Route it through
     // `writeDevVars` and delete the line, or pin it here with the reason it is exempt.
     const writers = (await code())
       .filter(({ text }) => /["'`]\.dev\.vars/.test(text) && /write(FileAtomic|File)\(|upsertDevVars\(/.test(text))
@@ -359,18 +222,17 @@ describe("the producers", () => {
 
     expect(writers).toEqual(
       [
-        // The funnel: it encodes every value, and links it into each Worker's own directory.
-        join("devSecrets", "devVars.ts"),
-        // A minted CLI token — hex, from `pithy token mint`, through its own writer. Out of #149's
-        // scope, and pinned here rather than left for a seventh round of review to discover.
+        // The generator: it encodes every value and writes each Worker's own file (#154). Nothing else
+        // writes an `apps/<worker>/.dev.vars` at all.
+        join("devSecrets", "generate.ts"),
+        // The machine-local store the generator reads. It writes `dev.json`, never a `.dev.vars` — it
+        // is here because it names the variable namespace in a schema description.
+        join("devSecrets", "bootstrapVars.ts"),
+        // A minted CLI token — hex, from `pithy token mint`, through its own writer. It writes the
+        // project root's `.dev.vars`, which is the *CLI's* credential file and not a Worker's.
         join("tokens", "sinks.ts"),
         // Reads `.dev.vars` for a seed driver's credential; the write is the seed artifact, not a var.
         join("seed", "prepare.ts"),
-        // `pithy init` seeds the project's one shared `.dev.vars` from the committed
-        // `.dev.vars.example` — a comment block, at 0600. It writes the *file*, never a value: there
-        // is no secret in existence yet when it runs. Added when this branch met the merged `main`,
-        // which is the first tree in which both writers existed.
-        join("project", "scaffold.ts"),
       ].sort(),
     );
   });

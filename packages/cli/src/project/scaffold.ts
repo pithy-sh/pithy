@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { lstatSync } from "node:fs";
-import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import {
   assertValidProjectName,
   isReservedProjectName,
@@ -13,7 +14,6 @@ import {
   RESERVED_TEST_PREFIX,
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
-import { wireFeatureDevVars } from "../feature/devVars";
 import { errnoOf } from "./atomic";
 import { committedFiles } from "./templateFiles";
 
@@ -527,8 +527,8 @@ export const RENAMED_ON_LANDING: Record<string, string> = {
  * template directory wholesale, so from a checkout it also copied whatever the maintainer's working tree
  * happened to hold — and it held `.dev.vars`, the file `pithy add` and `pithy token mint` write
  * `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into. Reproduced: a maintainer's live token in a
- * stranger's brand-new project, mode 0664 because `cp` copies the source's, and `seedDevVars` then found
- * a `.dev.vars` already there and left it alone. `git status` said nothing, because the file is ignored.
+ * stranger's brand-new project, mode 0664 because `cp` copies the source's, and nothing downstream
+ * looked twice at a `.dev.vars` that was already there. `git status` said nothing: the file is ignored.
  *
  * #145 read the index for the *published tarball* and stopped at the packer. This is the same rule for
  * the other reader of the same directory.
@@ -594,10 +594,11 @@ export async function templateContents(source: TemplateSource): Promise<{ files:
  * worker is copied to `apps/api` and *then* renamed, so a run naming another worker also collides on
  * `apps/<worker>`.
  *
- * And one path is added that the template cannot carry. The scaffold links `apps/<worker>/.dev.vars` at
- * the project's shared file, but the template ships only `.dev.vars.example` — so the one path `init`
- * writes that holds secrets was the one path this walk could not see. A pre-existing worker `.dev.vars`
- * was replaced with a link, and since the file is git-ignored there was no copy of it anywhere.
+ * Nothing is added to the walk. It used to carry `apps/<worker>/.dev.vars`, because the scaffold wrote
+ * one there and the template ships only `.dev.vars.example` — so the one path `init` wrote that held
+ * secrets was the one path this walk could not see, and a pre-existing worker `.dev.vars` was replaced
+ * with a link to a file that was not theirs. `init` writes no `.dev.vars` at all now (#154): each one is
+ * generated, and the generator refuses any file it did not write itself, by name.
  */
 async function templatePaths(worker: string): Promise<{ files: string[]; directories: string[] }> {
   const contents = await templateContents(templateSource());
@@ -607,7 +608,6 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
     return landed ? [path, landed] : [path];
   });
   const directories = [...contents.directories];
-  files.push(join("apps", worker, ".dev.vars"));
   if (worker === DEFAULT_WORKER) return { files, directories };
 
   const from = `apps${sep}${DEFAULT_WORKER}${sep}`;
@@ -714,6 +714,21 @@ function assertNotReserved(appName: string): void {
 }
 
 /** The Worker `pithy init` scaffolds first. Every Worker lives in `apps/<name>/`; this is just the default one. */
+/**
+ * The scaffolded app capability's name — which is also its **migration namespace**, and namespaces admit no
+ * separators (`NAMESPACE_PATTERN`, `^[a-z][a-z0-9]*$`). A worker directory is kebab-case, so the two cannot
+ * be the same string: stamping `admin-api` verbatim writes a config whose first migration is rejected.
+ *
+ * So the directory stays kebab-case and the namespace is derived from it — hyphens dropped, keeping the
+ * worker's identity (`admin-api` → `adminapi`, distinct from every sibling's). A name that starts with a
+ * digit cannot open a namespace, so it takes the `app` prefix the starter's own capability uses
+ * (`2fa-api` → `app2faapi`).
+ */
+export function workerNamespace(name: string): string {
+  const stripped = name.replace(/[^a-z0-9]/g, "");
+  return NAMESPACE_PATTERN.test(stripped) ? stripped : `app${stripped}`;
+}
+
 export const DEFAULT_WORKER = "api";
 
 /**
@@ -822,34 +837,6 @@ async function stampWorkerManifest(path: string, name: string): Promise<void> {
 }
 
 /**
- * Give the project the one `.dev.vars` every worker in it shares, seeded from the example the template
- * ships. Kept if one is already there.
- *
- * The seed is what makes the link below possible: `wireFeatureDevVars` points at a file, and at scaffold
- * time there is none — the example says "copy this to `.dev.vars`" and nobody has yet. So the copy is that
- * instruction, carried out. The example is comments only, so a project starts with the same empty set of
- * variables it started with before, reachable from where the runtime looks.
- *
- * A `.dev.vars` already in the target is the adopter's, holds their credentials, and is never a template
- * path — so nothing else in this module would have refused the run over it. It is left exactly as it is.
- * `doctor` reads credentials from that file before a project exists, so arriving with one is a normal way
- * to start; the worker's copy is the opposite case and {@link ensureScaffoldable} refuses the run over it,
- * because there the scaffold writes a link and would otherwise have written it *through* their secrets.
- *
- * **Owner-only from the moment it exists.** `cp` copies the source file's mode, so the project's one
- * credential file landed 0664 whatever the umask said — world-readable, before `pithy add` and
- * `pithy token mint` write `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into it. The mode is set
- * on the copy this makes and never on a file that was already there: that one is the adopter's, and its
- * permissions are their decision.
- */
-async function seedDevVars(targetDir: string): Promise<void> {
-  const path = join(targetDir, ".dev.vars");
-  if (await pathExists(path)) return;
-  await cp(join(targetDir, ".dev.vars.example"), path);
-  await chmod(path, 0o600);
-}
-
-/**
  * Copy the starter template into `targetDir` and stamp the app name — the pure logic behind `pithy init`.
  *
  * The scaffold is the `apps/` layout: the root carries project identity and policy (`pithy.config.ts`,
@@ -944,21 +931,33 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
       .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`),
   );
 
+  // The worker's own `pithy.config.ts` was copied verbatim, so on any project not scaffolded with the
+  // default worker it named a worker that does not exist — three times. The header pointed at
+  // `apps/api/`, the comment above the managed region told the adopter to run
+  // `pithy add <capability> --worker api`, and the app capability took the template's flat `"app"` where
+  // `pithy worker add` derives a namespace from the worker's own name.
+  //
+  // `pithy worker add` got all three right by generating the file rather than copying one. Two producers
+  // of the same file disagreeing is the shape #136 and #144 were both about, and `scaffoldParity.test.ts`
+  // now holds these two to each other.
+  const workerConfigPath = join(workerDir, "pithy.config.ts");
+  const workerConfig = await readFile(workerConfigPath, "utf8");
+  await writeFile(
+    workerConfigPath,
+    workerConfig
+      .replaceAll(`apps/${DEFAULT_WORKER}/pithy.config.ts`, () => `apps/${worker}/pithy.config.ts`)
+      .replaceAll(`--worker ${DEFAULT_WORKER}`, () => `--worker ${worker}`)
+      .replace('name: "app"', () => `name: "${workerNamespace(worker)}"`),
+  );
+
   await stampWorkerPrograms(options.targetDir, workerDir, worker);
 
-  // Point the worker at the project's shared `.dev.vars`, exactly as `pithy worker add` points every
-  // worker it creates — one implementation of the convention, called from both places that make a worker.
-  // `pithy init` was the one that did not, so a plainly scaffolded project had a root `.dev.vars` the
-  // runtime never opened, and every secret `pithy add` mints into it was invisible to the Worker that
-  // needs it. Wired here rather than left to the first `pithy add`, because it is a property of the
-  // project's layout, not of any capability — and a link that already exists is one nothing has to
-  // remember later.
-  await seedDevVars(options.targetDir);
-  await wireFeatureDevVars({
-    mainRoot: options.targetDir,
-    worktreePath: options.targetDir,
-    workers: [{ name: worker, dir: workerDir }],
-  });
+  // The worker's `.dev.vars` is generated, not copied and not linked (#154). `pithy init` used to seed
+  // one at the root from the committed example and symlink it into `apps/<worker>/`, which is the design
+  // that produced #137, #139, #142 and #146. Nothing is written here at all: `pithy dev` and `pithy seed`
+  // build each worker's file from the machine-local sources on every run, so a freshly scaffolded project
+  // and a fresh clone of it reach the same state by the same path, with no postinstall and nothing to
+  // remember.
 }
 
 /**

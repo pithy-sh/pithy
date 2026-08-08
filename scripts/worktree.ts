@@ -11,11 +11,11 @@
  *
  * Dependency-free and runtime-agnostic on purpose: this is the minimal core the
  * future `pithy feature create/destroy` command (issue #25) will wrap, adding the
- * port allocator, `.dev.vars` generation, and ephemeral CF resources on top.
+ * port allocator and ephemeral CF resources on top.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** Run git, return trimmed stdout. Throws on a non-zero exit. */
@@ -69,15 +69,13 @@ function names(issue: string, slug: string): Names {
 }
 
 function setup(issue: string, slug: string): void {
-  const { branch, wtPath, root } = names(issue, slug);
+  const { branch, wtPath } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
-    // Re-wire rather than return. A worktree outlives the link into it: renaming the main checkout
-    // leaves it pointing at nothing, and re-running `setup` is the obvious thing to reach for. It used
-    // to be the one thing that could not fix it. The install is skipped, because that is the slow half
-    // and an existing worktree has already had it.
+    // Nothing to repair. A worktree used to outlive the link into it — renaming the main checkout left it
+    // pointing at nothing, and re-running `setup` was the obvious thing to reach for and the one thing
+    // that could not fix it. There is no link now (#154), so an existing worktree is already correct.
     console.log(`Worktree exists. ${wtPath}`);
-    wireShared(wtPath, root);
     return;
   }
 
@@ -89,67 +87,29 @@ function setup(issue: string, slug: string): void {
     git(["worktree", "add", wtPath, "-b", branch, "origin/main"]);
   }
 
-  configure(wtPath, root);
+  configure(wtPath);
 
   console.log(`Worktree ready. ${wtPath}`);
   console.log(`Branch ${branch}.`);
 }
 
 /**
- * Configure a freshly-created worktree so the gates and integration tests run inside it: install
- * deps, then share the main checkout's `.dev.vars`.
+ * Configure a freshly-created worktree so the gates and integration tests run inside it: install deps.
  *
- * **`.dev.vars` is the only file that needs wiring, and wrangler is the reason.** Wrangler reads it
- * from the worker's own directory, so it is linked at the worktree root and again into each package by
- * the `vars:local` turbo task — a location that is not ours to choose.
+ * **Nothing is shared any more, and that is #154.** `.dev.vars` used to be linked here — at the worktree
+ * root, and again into each package by a `vars:local` turbo task — because wrangler reads it from the
+ * directory it runs in. Each one is generated now, from sources that are already outside every checkout,
+ * so a worktree builds its own with no link to wire, dangle, delete, or detach.
  *
- * **The dev secrets file needs nothing, and that is #156.** It lives at `<config>/<project>/`, resolved
- * from the project's *name*, so every worktree of this repo finds the same file with no link, no copy,
- * and no step here. #155 asked for a link exactly like `.dev.vars`'s; moving the file removed the
- * question instead — and with it the dangling link a renamed checkout used to leave behind.
+ * **The dev secrets file needs nothing either, and that is #156.** It lives at `<config>/<project>/`,
+ * resolved from the project's *name*, so every worktree of this repo finds the same file with no link,
+ * no copy, and no step here.
  *
  * Idempotent.
  */
-function configure(wtPath: string, root: string): void {
+function configure(wtPath: string): void {
   // Install so typecheck/biome/vitest run inside the tree.
   execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
-  wireShared(wtPath, root);
-}
-
-/**
- * Point the worktree at the main checkout's `.dev.vars`. Separate from {@link configure} because
- * this half is idempotent and cheap, so `setup` can run it against a worktree that already exists to
- * repair its links without paying for a second install.
- */
-function wireShared(wtPath: string, root: string): void {
-  if (share(root, wtPath, ".dev.vars")) {
-    execFileSync("bun", ["run", "vars:local"], { cwd: wtPath, stdio: "inherit" });
-    console.log("Linked .dev.vars (root + per-package via vars:local).");
-  }
-}
-
-/**
- * Link `name` in the worktree to the main checkout's copy. Returns whether the worktree ended up with
- * one — false when the main checkout has none, which is the normal state of a fresh clone.
- *
- * `lstatSync` rather than `existsSync` for the target, because `existsSync` follows the link: a stale
- * one left by a renamed or deleted main checkout reads as *absent*, and `symlinkSync` then fails
- * `EEXIST` on a path that resolves to nothing. Replacing it is the repair, and it is why a re-run over
- * an existing worktree is worth something.
- */
-function share(root: string, wtPath: string, name: string): boolean {
-  const source = join(root, name);
-  if (!existsSync(source)) return false;
-
-  const target = join(wtPath, name);
-  try {
-    lstatSync(target);
-    rmSync(target, { force: true });
-  } catch {
-    // Nothing there. Fine.
-  }
-  symlinkSync(source, target);
-  return true;
 }
 
 function teardown(issue: string, slug: string): void {

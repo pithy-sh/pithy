@@ -52,10 +52,17 @@ describe("renderDevSecretsNotes", () => {
   });
 
   test("a Worker the value could not be delivered to is never silent — that is a binding it will not have", () => {
-    // The one line between "seeded" and a Worker that starts with no secret at all. A failed link used
-    // to be swallowed, and the run reported the delivery as done.
-    const lines = renderDevSecretsNotes({ ...empty, undelivered: ["/p/apps/board has no .dev.vars: EACCES"] });
-    expect(lines).toEqual(["/p/apps/board has no .dev.vars: EACCES"]);
+    // The one line between "seeded" and a Worker that starts with no secret at all. A failed delivery
+    // used to be swallowed, and the run reported it as done. The sentence is already actionable when it
+    // reaches here — it names the file and the supported place for local values.
+    const lines = renderDevSecretsNotes({ ...empty, devVarsRefused: ["/p/apps/board/.dev.vars was not generated"] });
+    expect(lines).toEqual(["/p/apps/board/.dev.vars was not generated"]);
+  });
+
+  test("a Worker upgraded off the old symlink is told, because its secrets changed", () => {
+    const lines = renderDevSecretsNotes({ ...empty, relinked: ["/p/apps/board"] });
+    expect(lines[0]).toContain("/p/apps/board");
+    expect(lines[0]).toContain(".dev.vars.local");
   });
 
   test("an undeclared name is doctor's too — this runs mid-`pithy add`, on a config already rewritten", () => {

@@ -55,9 +55,11 @@ import {
  * `pithy doctor`'s to name, every run, until it is deleted. Nothing here rewrites their file.
  *
  * **The `cf-secrets-store` write goes through {@link writeDevVars}, which is what makes it arrive.**
- * Writing the project root's `.dev.vars` is not the same as reaching the Worker: `pithy dev` runs
- * wrangler with `cwd: apps/<worker>`, and only `pithy feature` and `pithy worker add` ever link that
- * file into a Worker directory.
+ * Writing the project root's `.dev.vars` was never the same as reaching the Worker: `pithy dev` runs
+ * wrangler with `cwd: apps/<worker>`, and wrangler loads the file beside the Worker's own config. Each
+ * Worker's file is **generated** now (#154), from the machine-local bootstrap store and the
+ * `.dev.vars.local` overrides — so there is no link to wire, dangle, delete, or detach, and this seeding
+ * run is one of the two commands that regenerate.
  */
 
 /** One Worker's contribution: its name, its directory, and the registry that decides its destinations. */
@@ -106,16 +108,11 @@ export interface DevSecretsSeedReport {
    */
   devVarsRefused?: string[];
   /**
-   * Worker directories reading a `.dev.vars` that is not the project's — one of their own, or a link at
-   * some other file. wrangler reads *that* file, so the injected copy does not reach them, and it is
-   * theirs to keep — so it is said out loud, never replaced.
+   * Worker directories whose `.dev.vars` was a symlink from the old shared-file design and is now a
+   * generated file (#154). A link holds no content, so nothing was lost — but which secrets a Worker
+   * runs with did change, so it is never silent.
    */
-  shadowed?: string[];
-  /**
-   * One sentence per Worker directory the injected copy could not be delivered to at all: no
-   * `.dev.vars` beside the Worker and no link could be made. Never a value.
-   */
-  undelivered?: string[];
+  relinked?: string[];
 }
 
 /** What {@link seedProjectDevSecrets} needs. Both seams default to the real project. */
@@ -265,7 +262,12 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   for (const target of targets) {
     for (const name of Object.keys(target.registry)) declared.add(name);
 
-    const handle = await openStore({ projectDir, workerDir: target.dir, worker: target.name });
+    const handle = await openStore({
+      projectDir,
+      workerDir: target.dir,
+      worker: target.name,
+      ...(options.paths !== undefined ? { paths: options.paths } : {}),
+    });
     if (!handle.ready) {
       skipped.push({ worker: target.name, reason: handle.reason });
       continue;
@@ -308,8 +310,15 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   }
 
   // One writer, because a `.dev.vars` line has two ways of not arriving and both are silent: a value
-  // dotenv reads differently than it was written, and a file the Worker's wrangler never opens.
-  const wrote = await writeDevVars({ projectDir, values: devVars });
+  // dotenv reads differently than it was written, and a file the Worker's wrangler never opens. It
+  // records the values in the machine-local bootstrap store and regenerates every Worker's file from it
+  // — so this runs even when there is nothing to seed, which is what makes a fresh clone's `pithy dev`
+  // work with no postinstall and nothing to remember (#139, closed by removal).
+  const wrote = await writeDevVars({
+    projectDir,
+    values: devVars,
+    ...(options.paths !== undefined ? { paths: options.paths } : {}),
+  });
 
   // No target is no registry, and no registry is nothing to judge a name against. Calling every secret
   // in the file undeclared because this project has not composed `secrets` yet is a false statement, and
@@ -330,8 +339,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     undeclared: undeclared.sort(),
     skipped,
     devVarsRefused: wrote.refused,
-    shadowed: wrote.shadowed,
-    undelivered: wrote.undelivered,
+    relinked: wrote.relinked,
   };
 }
 
