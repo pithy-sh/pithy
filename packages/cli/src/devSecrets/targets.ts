@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
+import { discoverWorkers } from "../project/workers";
 import { ownProperties } from "./records";
 
 /**
@@ -29,10 +31,44 @@ export interface DevSecretsTarget {
   registry: SecretRegistry;
 }
 
+/** A Worker that has a `pithy.config.ts` and could not be asked what it declares. Never a value. */
+export interface UnresolvableWorker {
+  /** The Worker's name — what the report names, so the adopter knows which config to fix. */
+  name: string;
+  /** The Worker's directory. Its `.dev.vars` is the file that went without. */
+  dir: string;
+  /** Why the config did not import, already actionable. Reaches a terminal, so never `detail`. */
+  reason: string;
+}
+
 /**
- * Every Worker in the project that composes `secrets`, with the registry that Worker actually resolves
- * secrets through. A Worker without the capability is not an error and not a target — it has no
- * `SECRETS` store to seed into, so there is nothing to do and nothing to say about it.
+ * Which Workers declare secrets, **and which ones could not be asked** — the two answers that must not
+ * arrive as one (#199).
+ *
+ * **An array cannot say "and this one is broken", which is the whole defect.** `resolveWorkers` throws
+ * for a config that is present and will not import, deliberately: swallowing it prints "No workers here"
+ * for a project that plainly has workers. {@link devSecretsTargets} caught that throw into `[]` — and
+ * `[]` is also what a project that never composed `secrets` returns. So every consumer read a config
+ * that would not load as a Worker that declares nothing. Since #179 that is not a cosmetic conflation:
+ * a `cf-secrets-store` secret is materialised only from the registry, so an empty registry means the
+ * generated `.dev.vars` is written down to its header and the Worker starts with **no bindings at all**.
+ * `pithy dev` did exactly that and printed `Starting replay-board.` and nothing else.
+ *
+ * Behaviour is unchanged and correct — a registry nobody can read has no honest answer, and the old
+ * answer came from the `dev.json` copy #179 exists to delete. What changes is that the failure is now a
+ * field rather than an absence, so a caller has to drop it on purpose instead of by taking the only
+ * thing there was to take.
+ *
+ * **Resolved one Worker at a time, so a failure costs exactly one.** `resolveWorkers`' fan-out throws on
+ * the first bad config, which took every healthy sibling's registry with it: a project with two Workers
+ * lost both because one of them had a typo. Discovery happens once and the single-Worker path — the same
+ * `pick`-then-load `resolveWorkers` already owns, seams included — is driven per target.
+ *
+ * **A missing `pithy.config.ts` is skipped, not reported.** A Vite frontend joining the dev set through
+ * `pithy.worker.jsonc` alone has no config and declares nothing; that is the ordinary state, not a
+ * failure, and reporting it would put a permanent warning in front of every project with a frontend.
+ * Exactly `core/not_found`, which is the code {@link loadWorkerConfig} raises for the absent file and
+ * nothing else — the same rule, and the same test, `resolveWorkers`' own loop applies.
  *
  * **The registry is the aggregate, not the secrets capability's own slice.** `aggregateSecretRegistries`
  * is the exact call the Worker makes at composition: every capability contributes the secrets it owns,
@@ -41,17 +77,35 @@ export interface DevSecretsTarget {
  * and threw outright in a scaffolded one, where `pithy add secrets` writes `secrets({ rotationIntervalDays })`
  * and leaves `registry` for the adopter — so the slice is `undefined` on a config the CLI itself wrote.
  */
-export async function devSecretsTargets(
+export async function resolveDevSecretsTargets(
   projectDir: string,
   options: DevSecretsTargetsOptions = {},
-): Promise<DevSecretsTarget[]> {
-  const workers = await resolveWorkers({
-    projectDir,
-    ...(options.worker !== undefined ? { worker: options.worker } : {}),
-    ...(options.reload ? { loadConfig: reloadWorkerConfig } : {}),
-  }).catch(() => []);
+): Promise<DevSecretsResolution> {
+  // Never throws. A directory that is not a project has no workers, no secrets, and nothing to report —
+  // `pithy add` runs this wherever the adopter is standing, and refusing there would fail a command that
+  // has nothing to do. That is the one absence this module is still allowed to answer with silence.
+  const discovered = await discoverWorkers(projectDir).catch(() => []);
+  const scoped =
+    options.worker === undefined
+      ? discovered
+      : discovered.filter((target) => target.name === options.worker || target.dir.endsWith(`/${options.worker}`));
+
   const targets: DevSecretsTarget[] = [];
-  for (const resolved of workers) {
+  const unresolvable: UnresolvableWorker[] = [];
+  for (const target of scoped) {
+    const [resolved] = await resolveWorkers({
+      projectDir,
+      worker: target.name,
+      // Discovery is already done; this hands `resolveWorkers` the one target so its single-Worker path
+      // loads exactly this config and its failure belongs to exactly this Worker.
+      discoverWorkers: async () => [target],
+      ...(options.reload ? { loadConfig: reloadWorkerConfig } : {}),
+    }).catch((error: unknown) => {
+      if (error instanceof PithyError && error.payload.code === "core/not_found") return [];
+      unresolvable.push({ name: target.name, dir: target.dir, reason: messageOf(error) });
+      return [];
+    });
+    if (!resolved) continue;
     if (!resolved.capabilities.some(isSecretsCapability)) continue;
     targets.push({
       name: resolved.name,
@@ -61,7 +115,45 @@ export async function devSecretsTargets(
       registry: ownProperties(aggregateSecretRegistries(resolved.capabilities)),
     });
   }
-  return targets;
+  return { targets, unresolvable };
+}
+
+/** Both halves of one resolution: what declared secrets, and what could not be asked. */
+export interface DevSecretsResolution {
+  /** Every Worker that composes `secrets`, with the registry it resolves them through. */
+  targets: DevSecretsTarget[];
+  /** Every Worker with a `pithy.config.ts` that would not import, and why. Empty on an ordinary run. */
+  unresolvable: UnresolvableWorker[];
+}
+
+/**
+ * {@link resolveDevSecretsTargets}, minus the failures — **lossy on purpose, and only where recorded.**
+ *
+ * Kept because four callers legitimately have nothing to do with an unresolvable Worker: the three
+ * `pithy doctor` checks, which are diagnostics running beside a project-health block that already names
+ * the config that would not load, and `pithy add`. A tripwire in this module's test pins that list by
+ * name, so a fifth caller has to add itself and read why — the alternative is the fifth caller quietly
+ * repeating the conflation, which is how this defect class reached four producers in the first place.
+ *
+ * Prefer {@link resolveDevSecretsTargets} anywhere the answer decides what a Worker is given.
+ */
+export async function devSecretsTargets(
+  projectDir: string,
+  options: DevSecretsTargetsOptions = {},
+): Promise<DevSecretsTarget[]> {
+  return (await resolveDevSecretsTargets(projectDir, options)).targets;
+}
+
+/**
+ * One actionable sentence from a thrown failure.
+ *
+ * `message` and `action` together, never `detail`: `detail` is throw-site context — for
+ * {@link loadWorkerConfig} it is the raw module-resolution error — and these lines reach a terminal and
+ * `logs/dev.log`.
+ */
+function messageOf(error: unknown): string {
+  if (error instanceof PithyError) return `${error.payload.message} ${error.payload.action ?? ""}`.trim();
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** How {@link devSecretsTargets} narrows and how it loads. Both default to the whole project, cached. */

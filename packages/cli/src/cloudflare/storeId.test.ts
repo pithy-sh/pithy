@@ -6,8 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CfSecretsStore } from "@pithy-sh/cloudflare/src/secrets/secretsStores";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { StatePathOptions } from "../notifier/state";
-import { cloudflareEnv } from "./config";
+import { type CloudflareConfigOptions, cloudflareEnv } from "./config";
 import { ensureSecretsStoreId } from "./storeId";
 
 /**
@@ -21,8 +20,8 @@ import { ensureSecretsStoreId } from "./storeId";
 
 let dir: string;
 
-function paths(env: Record<string, string> = {}): StatePathOptions {
-  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: dir, ...env } };
+function paths(env: Record<string, string> = {}): CloudflareConfigOptions {
+  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: dir, ...env }, account: null };
 }
 
 /** A store as the account lists it. Only `id` and `name` matter to any assertion below. */
@@ -60,7 +59,12 @@ describe("ensureSecretsStoreId", () => {
   test("the file it writes is owner-only, in an owner-only directory", async () => {
     const nested = join(dir, "deeper");
     await ensureSecretsStoreId({
-      paths: { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: nested, ...CREDENTIALS } },
+      paths: {
+        platform: "linux",
+        homedir: "/home/nobody",
+        env: { PITHY_CONFIG_DIR: nested, ...CREDENTIALS },
+        account: null,
+      },
       listStores: async () => [store("store-abc", "default")],
     });
     expect(((await stat(join(nested, "cloudflare.json"))).mode & 0o777).toString(8)).toBe("600");
@@ -159,5 +163,44 @@ describe("ensureSecretsStoreId", () => {
     // Nothing was written: the overlay already answers, and a file conjured here would be one more
     // place the id has to be kept in step.
     await expect(readFile(join(dir, "cloudflare.json"), "utf8")).rejects.toThrow();
+  });
+});
+
+/**
+ * One store per account, so the store id belongs to whichever account the *project* uses — not to
+ * whichever account happens to own `cloudflare.json` (#206).
+ */
+describe("ensureSecretsStoreId, for a project that names its account", () => {
+  test("records the store id into the file the project selected, never into cloudflare.json", async () => {
+    await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify(CREDENTIALS), { mode: 0o600 });
+    await config({ CLOUDFLARE_ACCOUNT_ID: "other-acct", CLOUDFLARE_API_TOKEN: "other-tok" });
+    const notes = await ensureSecretsStoreId({
+      paths: { ...paths(), account: { accountName: "leed" } },
+      listStores: async () => [store("store-leed", "leed-store")],
+    });
+
+    expect(notes.join(" ")).toContain(join(dir, "cloudflare.leed.json"));
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.leed.json"), "utf8"))).toMatchObject({
+      SECRETS_STORE_ID: "store-leed",
+    });
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.json"), "utf8")).SECRETS_STORE_ID).toBeUndefined();
+  });
+
+  test("a pinned account the credentials do not match is a sentence, never a throw", async () => {
+    // `pithy add secrets` must keep working in exactly the state it is reporting: recording the store id
+    // is a convenience riding on the command, and a convenience that fails the command is not one.
+    await config({ CLOUDFLARE_ACCOUNT_ID: "someone-elses", CLOUDFLARE_API_TOKEN: "tok-1" });
+    const listStores = vi.fn(async () => [store("store-abc", "default")]);
+
+    const notes = await ensureSecretsStoreId({
+      paths: { ...paths(), account: { accountId: "acct-1" } },
+      listStores,
+    });
+
+    expect(notes.join(" ")).toContain("acct-1");
+    expect(notes.join(" ")).toContain("someone-elses");
+    // Nothing was asked of Cloudflare and nothing was written: the credentials are not this project's.
+    expect(listStores).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(join(dir, "cloudflare.json"), "utf8")).SECRETS_STORE_ID).toBeUndefined();
   });
 });

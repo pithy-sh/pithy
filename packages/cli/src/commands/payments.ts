@@ -16,9 +16,9 @@ import {
   loadPayments,
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -76,9 +76,18 @@ async function loadPaymentsConfig(projectDir: string) {
   return capability.paymentsConfig;
 }
 
-/** The CF credentials and Secrets Store id payments provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): { accountId: string; apiToken: string; storeId: string } {
-  const vars = cloudflareEnv();
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  accountId: string;
+  apiToken: string;
+  storeId: string;
+} {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -155,7 +164,7 @@ async function buildProvisioner(projectDir: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
-  const { accountId, apiToken, storeId } = loadCloudflareCreds();
+  const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const paymentsConfig = await loadPaymentsConfig(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   return {

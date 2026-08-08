@@ -259,6 +259,8 @@ describe("renderDoctorText", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
+        "Cloudflare: reachable (token active)",
+        "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
       ].join("\n"),
@@ -297,6 +299,8 @@ describe("renderDoctorText", () => {
         "Alias: installed",
         "",
         "Project: no pithy.config.ts here — run `pithy init`, or change to a project directory",
+        "",
+        "Cloudflare: reachable (token active)",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -681,9 +685,62 @@ describe("cloudflare credentials", () => {
     expect(json.cloudflare.credentialSplit).toEqual(split);
   });
 
-  test("a clean, unsplit setup keeps the Cloudflare line out of the terse report entirely", async () => {
+  test("a clean setup still prints the line, because it names the account, not a complaint", async () => {
+    // The terse report exists to say nothing when nothing is wrong. This line is not a finding — it is a
+    // location, and the run most likely to be about to deploy is the one where everything else is green
+    // (#206). Same rule the `Secrets:` line follows.
     const report = await buildDoctorReport(healthyOptions());
-    expect(renderDoctorText(report, "/home/u")).not.toContain("Cloudflare:");
+    expect(renderDoctorText(report, "/home/u")).toContain("Cloudflare:");
+  });
+
+  test("the resolved file is tilde-abbreviated, exactly as every other path in the report is", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({
+        checkCloudflare: async () => ({
+          state: "ok" as const,
+          missing: [],
+          tokenStatus: "active",
+          credentialSplit: null,
+          configPath: "/home/u/.config/pithy/cloudflare.leed.json",
+          accountName: "leed",
+          accountMismatch: null,
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("~/.config/pithy/cloudflare.leed.json");
+    expect(text).not.toContain("/home/u/.config/pithy/cloudflare.leed.json");
+  });
+
+  test("--json carries the resolved file, the account name, and any mismatch", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({
+        checkCloudflare: async () => ({
+          state: "ok" as const,
+          missing: [],
+          tokenStatus: "active",
+          credentialSplit: null,
+          configPath: "/home/u/.config/pithy/cloudflare.leed.json",
+          accountName: "leed",
+          accountMismatch: null,
+        }),
+      }),
+    );
+    // Absolute here, not abbreviated: an agent reading this needs a path it can open.
+    expect(renderDoctorJson(report).cloudflare).toMatchObject({
+      configPath: "/home/u/.config/pithy/cloudflare.leed.json",
+      accountName: "leed",
+      accountMismatch: null,
+    });
+  });
+
+  test("--json reports null for each of those when nothing named a file", async () => {
+    const report = await buildDoctorReport(healthyOptions());
+    expect(renderDoctorJson(report).cloudflare).toMatchObject({
+      configPath: null,
+      accountName: null,
+      accountMismatch: null,
+    });
   });
 
   test("--json carries the state and a human detail line", async () => {
@@ -1035,6 +1092,8 @@ describe("dev secrets file", () => {
         "",
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
+        "",
+        "Cloudflare: reachable (token active)",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",

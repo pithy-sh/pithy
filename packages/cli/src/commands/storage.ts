@@ -18,9 +18,9 @@ import {
   loadStorage,
   type StorageEnvResources,
 } from "../capabilities/storageProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -72,14 +72,19 @@ async function loadStorageConfig(projectDir: string) {
   return capability.storageConfig;
 }
 
-/** The CF credentials and Secrets Store id storage provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): {
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   accountId: string;
   apiToken: string;
   storeId: string;
   r2Raw: string | undefined;
 } {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -177,7 +182,7 @@ const provision = defineCommand({
       // names to find what to delete (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
       const { provisionStorage } = await loadStorage();
-      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds();
+      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const storageConfig = await loadStorageConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
       const cf = new CloudflareClients({ accountId, apiToken });
@@ -250,7 +255,7 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionStorage } = await loadStorage();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds();
+      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the sweep workers gone
       // and the buckets standing — a half-torn-down environment for a mistake we can catch here.

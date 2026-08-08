@@ -2,11 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { basename, join, resolve } from "node:path";
+import { type CfAccount, listCloudflareAccounts } from "@pithy-sh/cloudflare/src/client/accounts";
+import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { defineCommand } from "citty";
-import { cloudflareConfigPath, cloudflareEnv, writeCloudflareConfig } from "../cloudflare/config";
+import {
+  CloudflareAccountName,
+  type CloudflareConfigOptions,
+  cloudflareAccountFile,
+  cloudflareConfigPath,
+  resolveCloudflare,
+  writeCloudflareConfig,
+} from "../cloudflare/config";
+import { stateDir } from "../notifier/state";
 import { askDomains, writeDomains } from "../project/askDomains";
+import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -46,42 +58,264 @@ async function ask(message: string, fallback: string, json: boolean): Promise<{ 
 }
 
 /**
- * Record the account's Cloudflare credentials, if this machine has none yet.
+ * The prompts `init` asks, as a seam.
  *
- * **This is the one moment the operator is holding both**, which is the whole reason it belongs in
- * `init`: the token is needed to list zones two prompts later, and every command after this needs it.
- * They are account-scoped, so this writes `<config>/cloudflare.json` — outside every checkout, `0600`,
- * in the `0700` config directory (#182). Nothing minted or typed here goes into the project.
- *
- * **Skipped when they already resolve**, from the file or from the environment: a second project on the
- * same account has nothing to ask, and CI has no one to ask. Skipped when nobody is at a terminal, for
- * the same reason every other prompt here is. Skippable by pressing enter — a project scaffolded before
- * the account exists is a legitimate thing to do, and `pithy doctor` says the credentials are absent on
- * every run until they are not.
- *
- * The token is read with `password`, so it does not land in the terminal's scrollback.
+ * `@clack/prompts` needs a TTY, and the account flow below is the part of `init` most worth testing:
+ * it lists accounts, slugifies a free-text name into something that becomes a *file name*, and decides
+ * what goes into the repository. A suite that could only reach it through a terminal would not reach it.
  */
-async function askCloudflareCredentials(json: boolean): Promise<string[]> {
-  const vars = cloudflareEnv();
-  if (vars.CLOUDFLARE_ACCOUNT_ID && vars.CLOUDFLARE_API_TOKEN) return [];
-  if (!interactive(json)) return [];
+export interface InitPrompt {
+  text(options: { message: string; defaultValue?: string; placeholder?: string }): Promise<string | symbol>;
+  password(options: { message: string }): Promise<string | symbol>;
+  select(options: { message: string; options: { value: string; label: string }[] }): Promise<string | symbol>;
+  confirm(options: { message: string; initialValue?: boolean }): Promise<boolean | symbol>;
+  isCancel(value: unknown): boolean;
+}
 
-  const { isCancel, password, text } = await import("@clack/prompts");
-  process.stdout.write(
-    `${dim("Cloudflare credentials are per account, not per project — one set for every project you scaffold.")}\n${dim(`They are kept in ${cloudflareConfigPath()}, never in this repository.`)}\n${dim("Press enter to skip; pithy doctor names them until they are set.")}\n\n`,
-  );
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? (await text({ message: "Cloudflare account id:", defaultValue: "" }));
-  if (isCancel(accountId)) return [];
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? (await password({ message: "Cloudflare API token:" }));
-  if (isCancel(apiToken)) return [];
-  if (!accountId && !apiToken) return [];
+/** The real prompts. Imported lazily, as every other `@clack/prompts` use here is. */
+async function clackPrompt(): Promise<InitPrompt> {
+  const clack = await import("@clack/prompts");
+  return {
+    text: (options) => clack.text(options),
+    password: (options) => clack.password(options),
+    select: (options) => clack.select(options) as Promise<string | symbol>,
+    confirm: (options) => clack.confirm(options),
+    isCancel: (value) => clack.isCancel(value as never),
+  };
+}
 
-  const written = await writeCloudflareConfig({
-    ...(accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {}),
-    ...(apiToken ? { CLOUDFLARE_API_TOKEN: apiToken } : {}),
+/** The `cloudflare` block `init` writes into the root config, or `null` when it discovered nothing. */
+export interface CloudflareBlock {
+  /** The nickname selecting `<config>/cloudflare.<name>.json`. Always a validated bare token. */
+  accountName?: string;
+  /** The pin — written by default, declinable. Always the id read from the account, never one typed. */
+  accountId?: string;
+}
+
+/** What {@link askCloudflareAccount} decided. */
+export interface CloudflareAccountAnswer {
+  /** The block to write into `pithy.config.ts`, or `null` when nothing named an account. */
+  block: CloudflareBlock | null;
+  /** Lines to print. Paths and names only — never a token. */
+  notes: string[];
+  /** Whether anything was actually asked. */
+  prompted: boolean;
+}
+
+/** What {@link askCloudflareAccount} needs. Both seams default to the real account and the real prompts. */
+export interface AskCloudflareAccountOptions {
+  /** Whether a human is attached. False asks nothing and writes nothing. */
+  interactive: boolean;
+  /** Where the config directory is, and which account inside it. Defaults to the real one. */
+  paths?: CloudflareConfigOptions;
+  /** Seam: the accounts a token can see. Defaults to the real REST call. */
+  listAccounts?: (apiToken: string) => Promise<CfAccount[]>;
+  /** Seam: the prompts. Defaults to `@clack/prompts`. */
+  prompt?: InitPrompt;
+}
+
+/**
+ * Record the Cloudflare credentials and discover which account they belong to.
+ *
+ * **This is the one moment the operator is holding the token**, which is the whole reason it belongs in
+ * `init`: the token is needed to list zones two prompts later, and every command after this needs it.
+ * The credentials are account-scoped, so they are written to `<config>/cloudflare.json` — or, once an
+ * account has a name, `<config>/cloudflare.<name>.json` — outside every checkout, `0600`, in the `0700`
+ * config directory (#182, #206). Nothing minted or typed here goes into the project except the account's
+ * *name* and *id*, and neither of those is a secret.
+ *
+ * **The account is discovered, not asked for.** `init` used to take an account id on trust: pasted,
+ * unverified, and wrong often enough that a token for one account against another account's id is a
+ * documented failure mode. The token can list the accounts it can see, so it is asked — one account is a
+ * confirmation, several are a picker, and choosing the account *is* choosing the nickname. A narrowly
+ * scoped token that cannot list falls back to asking for the id, exactly as before, and `init` completes.
+ *
+ * **A slugified Cloudflare name goes through the same schema as a typed one.** Account names are free
+ * text (`Leed, Inc.`), and the result becomes a file name — so there is one validation, not two, or the
+ * rule would only be true of one of the ways a name arrives. A name that slugifies to nothing is asked
+ * for rather than guessed at.
+ *
+ * **Skipped when nobody is at a terminal**, for the same reason every other prompt here is: CI scaffolds
+ * projects and there is nobody to ask, so it writes no `cloudflare` block and resolves `cloudflare.json`
+ * exactly as it always has. Skipped, too, when the credentials already resolve *and* the token sees one
+ * account — that is the single-account machine, and it has nothing to be asked about.
+ */
+export async function askCloudflareAccount(options: AskCloudflareAccountOptions): Promise<CloudflareAccountAnswer> {
+  const nothing: CloudflareAccountAnswer = { block: null, notes: [], prompted: false };
+  if (!options.interactive) return nothing;
+
+  const paths = options.paths ?? { account: null };
+  const listAccounts = options.listAccounts ?? ((apiToken: string) => listCloudflareAccounts({ apiToken }));
+  const prompt = options.prompt ?? (await clackPrompt());
+  const existing = resolveCloudflare(paths).vars;
+  const configured = Boolean(existing.CLOUDFLARE_ACCOUNT_ID && existing.CLOUDFLARE_API_TOKEN);
+
+  if (!configured) {
+    process.stdout.write(
+      `${dim("Cloudflare credentials are per account, not per project — one set for every project on that account.")}\n${dim(`They are kept under ${stateDir(paths)}, never in this repository.`)}\n${dim("Press enter to skip; pithy doctor names them until they are set.")}\n\n`,
+    );
+  }
+
+  // The token first, because it is what the account listing needs. An already-resolving one is reused:
+  // nothing asks for a credential the machine already holds.
+  const apiToken =
+    existing.CLOUDFLARE_API_TOKEN ?? asString(await prompt.password({ message: "Cloudflare API token:" }), prompt);
+  // Cancelled, or skipped with an empty answer. Both are legitimate: a project scaffolded before the
+  // account exists is an ordinary thing to do, and `pithy doctor` names the missing keys until they are set.
+  if (!apiToken) return nothing;
+
+  // Never fatal. A narrowly scoped token, an unreachable network, and an account list of zero all mean
+  // the same thing here: there is no picker, so ask.
+  const accounts = await listAccounts(apiToken).catch(() => []);
+
+  // A configured machine whose token sees one account is the single-account case #182 was written for.
+  // It has nothing to choose, so it is not asked — this is the run that must stay exactly as it was.
+  if (configured && accounts.length <= 1) return nothing;
+
+  if (accounts.length === 0) return await askAccountIdOnly({ apiToken, existing, paths, prompt });
+
+  const chosen = await chooseAccount(accounts, prompt);
+  if (chosen === null) return nothing;
+
+  const named = await askAccountName(chosen, prompt);
+  if (named === null) return nothing;
+
+  const pin = await prompt.confirm({
+    message: `Pin account ${chosen.id} in pithy.config.ts? It is an identifier, not a secret, and it is what stops another machine's "${named.accountName}" from meaning a different account.`,
+    initialValue: true,
   });
-  // The path, never a value. A token echoed into a terminal is a token in a scrollback and a CI log.
-  return [`Recorded ${Object.keys(written).sort().join(" and ")} in ${cloudflareConfigPath()}.`];
+  const pinned = !prompt.isCancel(pin) && pin === true;
+
+  const account = { accountName: named.accountName };
+  await writeCloudflareConfig(
+    { CLOUDFLARE_ACCOUNT_ID: chosen.id, CLOUDFLARE_API_TOKEN: apiToken },
+    { ...paths, account },
+  );
+
+  return {
+    // The path and the account's name, never a value. A token echoed into a terminal is a token in a
+    // scrollback and a CI log.
+    notes: [...named.notes, `Recorded ${chosen.name}'s credentials in ${cloudflareConfigPath({ ...paths, account })}.`],
+    block: { accountName: named.accountName, ...(pinned ? { accountId: chosen.id } : {}) },
+    prompted: true,
+  };
+}
+
+/** The fallback: a token that cannot list accounts, asked for an id exactly as `init` always asked. */
+async function askAccountIdOnly(context: {
+  apiToken: string;
+  existing: Record<string, string>;
+  paths: CloudflareConfigOptions;
+  prompt: InitPrompt;
+}): Promise<CloudflareAccountAnswer> {
+  const { apiToken, existing, paths, prompt } = context;
+  const accountId =
+    existing.CLOUDFLARE_ACCOUNT_ID ??
+    asString(await prompt.text({ message: "Cloudflare account id:", defaultValue: "" }), prompt);
+  if (accountId === null) return { block: null, notes: [], prompted: true };
+
+  const written = await writeCloudflareConfig(
+    { ...(accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {}), CLOUDFLARE_API_TOKEN: apiToken },
+    { ...paths, account: null },
+  );
+  return {
+    // No block: nothing discovered a name, and inventing one at a prompt is the guess this replaced.
+    block: null,
+    notes: [
+      `Recorded ${Object.keys(written).sort().join(" and ")} in ${cloudflareConfigPath({ ...paths, account: null })}.`,
+    ],
+    prompted: true,
+  };
+}
+
+/** One account, confirmed or picked. Choosing the account is what supplies both the id and the name. */
+async function chooseAccount(accounts: CfAccount[], prompt: InitPrompt): Promise<CfAccount | null> {
+  const only = accounts[0];
+  if (accounts.length === 1 && only) return only;
+  const choice = await prompt.select({
+    message: "Which Cloudflare account is this project for?",
+    options: accounts.map((account) => ({ value: account.id, label: `${account.name} (${account.id})` })),
+  });
+  if (prompt.isCancel(choice)) return null;
+  return accounts.find((account) => account.id === choice) ?? null;
+}
+
+/**
+ * The nickname for the account's credentials file, offered as the account's own slugified name.
+ *
+ * The slug and the typed answer go through {@link CloudflareAccountName} at the same line — that is the
+ * point. `kebab` is core's, the same normalizer every project name goes through, so `Leed, Inc.` offers
+ * `leed-inc`; a name that slugifies to nothing offers nothing and asks.
+ */
+async function askAccountName(
+  account: CfAccount,
+  prompt: InitPrompt,
+): Promise<{ accountName: string; notes: string[] } | null> {
+  const suggestion = kebab(account.name);
+  const notes: string[] = [];
+  const defaultValue = CloudflareAccountName.safeParse(suggestion).success ? suggestion : "";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const answer = asString(
+      await prompt.text({
+        // The account is named in the question, so a single-account run confirms *which* account it
+        // used in the same keypress that accepts the nickname — nothing is chosen silently.
+        message: `Credentials file for ${account.name} (${account.id}) — <config>/cloudflare.<name>.json. Name:`,
+        defaultValue,
+        placeholder: defaultValue,
+      }),
+      prompt,
+    );
+    if (answer === null) return null;
+    const parsed = CloudflareAccountName.safeParse(answer.trim());
+    if (parsed.success) return { accountName: parsed.data, notes };
+    notes.push(`"${answer.trim()}" is not a bare token — lowercase letters, digits, and single hyphens.`);
+    process.stdout.write(`${notes[notes.length - 1]}\n`);
+  }
+  return null;
+}
+
+/** A prompt's answer as a string, or `null` when the operator cancelled. */
+function asString(value: string | symbol, prompt: InitPrompt): string | null {
+  if (prompt.isCancel(value)) return null;
+  return typeof value === "string" ? value : null;
+}
+
+/** The `cloudflare` block, as an adopter would write it by hand. */
+export function renderCloudflareBlock(block: CloudflareBlock): string {
+  const lines = [
+    "  // Which Cloudflare account this project belongs to. `accountName` selects",
+    "  // <config>/cloudflare.<name>.json; `accountId` pins the account those credentials",
+    "  // must belong to. An account id is an identifier, not a secret.",
+    "  cloudflare: {",
+    ...(block.accountName ? [`    accountName: ${JSON.stringify(block.accountName)},`] : []),
+    ...(block.accountId ? [`    accountId: ${JSON.stringify(block.accountId)},`] : []),
+    "  },",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+/** Where the block is spliced into the scaffolded config: immediately inside the object it exports. */
+const CONFIG_OPEN = "const config = {\n";
+
+/**
+ * Write the `cloudflare` block into the scaffolded root `pithy.config.ts`.
+ *
+ * **The name is validated again on the way in.** It has already been through
+ * {@link CloudflareAccountName} at the prompt, and it goes through it here too, because this is the
+ * function that puts it in a file every later command builds a path from.
+ *
+ * A config this cannot place the block in is reported rather than rewritten — `init` prints the block
+ * for the adopter to paste, the same way an unplaceable `domains` declaration is handled. Guessing at
+ * the shape of a file somebody may have already edited is how a scaffold eats an edit.
+ */
+export async function writeCloudflareBlock(projectDir: string, block: CloudflareBlock): Promise<{ declared: boolean }> {
+  if (block.accountName !== undefined) cloudflareAccountFile(block.accountName);
+  const path = join(projectDir, "pithy.config.ts");
+  const source = await readOptionalFile(path);
+  if (source === null || !source.includes(CONFIG_OPEN)) return { declared: false };
+  const at = source.indexOf(CONFIG_OPEN) + CONFIG_OPEN.length;
+  await writeFileAtomic(path, `${source.slice(0, at)}${renderCloudflareBlock(block)}\n${source.slice(at)}`);
+  return { declared: true };
 }
 
 export default defineCommand({
@@ -129,14 +363,22 @@ export default defineCommand({
       const appName = name.value;
       await scaffoldProject({ targetDir, appName, worker: worker.value });
 
-      // Asked before the zones are, because listing them needs the token. Answered once per machine.
-      const credentials = await askCloudflareCredentials(args.json);
+      // Asked before the zones are, because listing them needs the token — and the same token answers
+      // which account this project is for, so the two questions collapse into one.
+      const account = await askCloudflareAccount({ interactive: interactive(args.json) });
+      const credentials = [...account.notes];
+      // The block goes into the config the scaffold just wrote, so `loadProject` reads it on the very
+      // next command. A config it could not be placed in is printed rather than dropped.
+      const declared = account.block ? await writeCloudflareBlock(targetDir, account.block) : null;
 
       // Where the Worker answers, asked against the account's real zones. Skippable — a project without
       // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
       // scaffold exists, because the answer is written into files this just created.
       const asked = await askDomains({
         projectDir: targetDir,
+        // The account this run just recorded — the zones offered below belong to it, not to whatever
+        // `cloudflare.json` happens to hold on this machine.
+        account: account.block,
         workerName: worker.value,
         interactive: interactive(args.json),
       });
@@ -144,7 +386,7 @@ export default defineCommand({
       // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
       // source of truth, and an adopter who answered the prompt needs to know it did not land.
       const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
-      const prompted = name.prompted || worker.prompted || asked.prompted || credentials.length > 0;
+      const prompted = name.prompted || worker.prompted || asked.prompted || account.prompted;
 
       if (args.json) {
         process.stdout.write(
@@ -153,6 +395,11 @@ export default defineCommand({
         return;
       }
       for (const note of credentials) process.stdout.write(`${note}\n`);
+      if (declared && !declared.declared && account.block) {
+        process.stdout.write(
+          `Could not write the cloudflare block into pithy.config.ts. Add it by hand:\n${renderCloudflareBlock(account.block)}`,
+        );
+      }
       if (wrote && !wrote.declared && asked.domains) {
         process.stdout.write(
           `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,

@@ -36,7 +36,7 @@ import { deployProject } from "./deploy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.join(__dirname, "..", "..");
-const vars = cloudflareEnv();
+const vars = cloudflareEnv({ account: null });
 const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
 const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
 const hasCreds = Boolean(accountId && apiToken);
@@ -147,11 +147,11 @@ describe.skipIf(!hasCreds)("deploy across workers — LIVE", () => {
     // assumed, it was false, and the suite leaked real Workers for four runs. The fixture no longer
     // carries them: they are account-scoped and outside every checkout (#182), so there is nothing to
     // write into the project and nothing for the run to disagree with.
-    const forDeploy = cloudflareEnv();
+    const forDeploy = cloudflareEnv({ account: null });
     expect(forDeploy.CLOUDFLARE_ACCOUNT_ID).toBe(accountId);
     expect(forDeploy.CLOUDFLARE_API_TOKEN).toBe(apiToken);
 
-    const deploys = await deployProject({ projectDir: dir });
+    const deploys = await deployProject({ account: null, projectDir: dir });
     // Recorded before any assertion can throw, so teardown knows what must exist.
     for (const deploy of deploys) if (deploy.ok) deployed.add(deploy.name);
 

@@ -38,6 +38,12 @@ import { join, sep } from "node:path";
  * before `bun install`, and the async form bought a sequential `await` per directory rather than any
  * concurrency. This module imports nothing but `node:fs` and `node:path` for the same reason: the
  * planner has to run with no dependencies installed.
+ *
+ * **That this is the only walk is a gate, not a claim.** #185 said it in a changeset and it was not true —
+ * five private traversals were never migrated, and none of them received the ENOENT tolerance above or
+ * #192's `templates` exclusion (#202). `sourceFiles.test.ts` now fails the build on any module that defines
+ * a function which lists a directory and calls itself, with the handful that cannot reach this one written
+ * down by name and reason.
  */
 
 /** A file the walk found, with the text it still held when the walk read it. */

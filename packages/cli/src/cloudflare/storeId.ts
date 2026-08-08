@@ -3,8 +3,13 @@
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CfSecretsStore } from "@pithy-sh/cloudflare/src/secrets/secretsStores";
-import type { StatePathOptions } from "../notifier/state";
-import { cloudflareConfigPath, cloudflareEnv, writeCloudflareConfig } from "./config";
+import {
+  type CloudflareConfigOptions,
+  cloudflareConfigPath,
+  describeCloudflareAccountMismatch,
+  resolveCloudflare,
+  writeCloudflareConfig,
+} from "./config";
 
 /**
  * Resolve the account's Secrets Store id **once, at provisioning time**, and record it in
@@ -33,8 +38,13 @@ import { cloudflareConfigPath, cloudflareEnv, writeCloudflareConfig } from "./co
 
 /** What {@link ensureSecretsStoreId} needs. Both seams default to the real account and the real config. */
 export interface EnsureSecretsStoreIdOptions {
-  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
-  paths?: StatePathOptions;
+  /**
+   * Where the Pithy config directory is, and **which account's file inside it**.
+   *
+   * Required, because the account is: one store per account means the store id belongs to whichever
+   * account the project uses, and a default would be a guess about the most consequential part.
+   */
+  paths: CloudflareConfigOptions;
   /**
    * Seam: list the account's Secrets Stores. Defaults to the real REST call. A test passing this never
    * reaches Cloudflare — and the default is what makes "no credentials" a decision this module owns
@@ -44,9 +54,19 @@ export interface EnsureSecretsStoreIdOptions {
 }
 
 /** The lines `pithy add secrets` prints for the store id. Empty when there was nothing worth saying. */
-export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions = {}): Promise<string[]> {
-  const paths = options.paths ?? {};
-  const vars = cloudflareEnv(paths);
+export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions): Promise<string[]> {
+  const paths = options.paths;
+  // Resolved rather than read: a project that pins `cloudflare.accountId` and finds credentials for a
+  // different account must get a sentence here, not the throw `cloudflareEnv` raises. Recording the store
+  // id is a convenience riding on `pithy add secrets`, and a convenience that fails its command is not
+  // one — while writing another account's store id into this project's file would be worse than either.
+  const resolution = resolveCloudflare(paths);
+  if (resolution.mismatch) {
+    return [
+      `${describeCloudflareAccountMismatch(resolution.mismatch)} SECRETS_STORE_ID was not recorded — a store id belongs to the account the project claims.`,
+    ];
+  }
+  const vars = resolution.vars;
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const recorded = vars.SECRETS_STORE_ID ?? "";

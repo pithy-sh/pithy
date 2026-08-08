@@ -13,7 +13,7 @@ import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 
 /**
  * The seed driver resolves each backend a seed set touches to a live handle — the only thing that
@@ -94,6 +94,12 @@ export interface SeedDriverOptions {
   persistRoot: string;
   /** Target environment. `dev` resolves locally via Miniflare; other environments resolve over REST. */
   env: string;
+  /**
+   * The Cloudflare account this project belongs to. A remote seed writes rows into a real D1 and objects
+   * into a real R2; the wrong account's credentials write this project's fixtures into another company's
+   * tenant (#206).
+   */
+  account?: CloudflareAccountSelection | null;
   /** Test seam for the remote D1 client. */
   remoteD1?: RemoteD1Factory;
   /** Test seam for the remote KV client. */
@@ -344,11 +350,11 @@ interface LazyClients {
 }
 
 /** Build the credential-lazy clients accessor shared by the remote resources and the always-remote assets. */
-function lazyClients(config: WranglerSeedConfig): LazyClients {
+function lazyClients(config: WranglerSeedConfig, account: CloudflareAccountSelection | null): LazyClients {
   let clients: CloudflareClients | undefined;
   let vars: Record<string, string> | undefined;
   const env = (): Record<string, string> => {
-    vars ??= cloudflareEnv();
+    vars ??= cloudflareEnv({ account });
     return vars;
   };
   return {
@@ -408,7 +414,7 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
   const config = await readWranglerConfig(options.workerDir);
-  const clients = lazyClients(config);
+  const clients = lazyClients(config, options.account ?? null);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
 }

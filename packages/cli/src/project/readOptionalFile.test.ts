@@ -155,10 +155,24 @@ describe("readFileOutcome", () => {
  * **It is a scan over source text, with the limits `atomic.test.ts` records**: TypeScript 7 ships no
  * parser API, so there is no AST to walk. It reads import clauses — so an alias, a namespace binding, a
  * `require` and a dynamic `import` all count — and then brace-matches the `catch` that would receive the
- * failure. What it cannot see is a read reached through a module that re-exports one, or a handler that
- * discards by calling something that swallows. `project/envInventory.ts` is the live example of the
- * last: it names `ENOENT` about a read it does through `readWranglerConfig`, which this scan does not
- * know is a read. Its branch is correct — it rethrows — and routing it means changing `wrangler.ts`.
+ * failure. **What it cannot see is a read behind a wrapper.** A module calling `readWranglerConfig` is
+ * reading a file; this scan knows the leaf calls that hand bytes back, and nothing about who wraps them.
+ *
+ * That limit is now a measurement rather than a sentence (#204). Seventy-four exported functions across
+ * sixty modules perform a content read, and forty modules call one — so "a read behind a wrapper" is the
+ * ordinary case in this tree, not the exception. The population that takes either rule's *shape*, though,
+ * is nine call sites: nine handlers that discard a wrapped read's failure, eight of them reads of a
+ * `wrangler.jsonc`. Seven are the read-only `doctor`, `deploy` and inventory surfaces rule 2 is scoped
+ * away from on purpose. The two that both discard and write are in `capabilities/reconcile.ts`, already
+ * on the list below for its own `readFile`. Rule 1 has none: `project/envInventory.ts` was the one, and
+ * `readWranglerConfig` goes through the primitive now, so the branch it spelled out by hand is gone.
+ *
+ * **So the gate is not extended to recognise wrappers, and that is a decision rather than an omission.**
+ * Doing it means a second pass resolving every local import to the function it names and asking whether
+ * that function reads — writable, but a whole-tree symbol resolution living inside a test, and what it
+ * would have found is one site that was already correct and one module already declared. What the survey
+ * buys instead is the number. If it moves — if writing modules discarding a wrapped read stop being one
+ * file's two lines — the answer changes, and re-running the survey is how that gets noticed.
  *
  * **The walk is `ci/sourceFiles.ts`**, the one the rename, follower, recursive-delete, editor and
  * runtime-export tripwires already read this tree through (#185). A seventh traversal to enforce a rule

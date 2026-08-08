@@ -30,7 +30,7 @@ import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from 
 import { classifyBump } from "../notifier/version";
 import { readRcFile } from "../platform/rc";
 import { detectShell, type ShellInfo } from "../platform/shell";
-import { loadProject, type ProjectConfig } from "../project/config";
+import { loadProject, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -309,9 +309,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const detect = options.detectShell ?? (() => detectShell());
   const readRc = options.readRc ?? readRcFile;
   const listCapabilities = options.installedCapabilities ?? installedCapabilityVersions;
+  // The account this project belongs to, read before the probe so `doctor` reports on the credentials
+  // this project's own commands resolve. Outside a project there is none, and the unnamed file is the
+  // right answer — a config that will not load is what the `Project:` line is for, not this one.
+  const account = await projectCloudflareAccount(options.projectDir).catch(() => null);
   const probeCloudflare =
     options.checkCloudflare ??
-    (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env }));
+    (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account }));
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeDevPreferences =
@@ -701,6 +705,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
           return `${path} (run \`pithy secrets edit\`)${detail ? ` — ${detail}` : ""}`;
         })();
 
+  /**
+   * The `Cloudflare:` line, built once and rendered in **both** forms — the same rule `Secrets:` follows,
+   * and for the same reason.
+   *
+   * It names the credentials file this run resolved, and "which account am I about to deploy to" is not a
+   * complaint: it is a location, so it does not belong behind the not-healthy predicate. A machine holding
+   * `cloudflare.leed.json` beside `cloudflare.other-co.json` cannot answer it any other way, and the run
+   * that most needs the answer — everything green, about to deploy — was the one run that omitted it (#206).
+   */
+  const cloudflareLine = `Cloudflare: ${describeCloudflareAccess(report.cloudflare, home)}`;
+
   // CLI version.
   const cliLines = [`pithy ${report.cli.installed} (installed via ${report.cli.installer})`];
   if (report.cli.state === "outdated" && report.cli.latest) {
@@ -769,13 +784,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push("Project: no pithy.config.ts here — run `pithy init`, or change to a project directory");
   }
 
-  // Cloudflare credentials. Shown whenever it is not a clean pass, and in the verbose report either way —
-  // a reachable account is worth confirming explicitly when something else is already being explained.
-  // A split credential group earns this one line without turning the whole report verbose: the rest of the
-  // toolchain really is fine, and only this line has anything to say.
-  if (!terse || report.cloudflare.credentialSplit) {
-    blocks.push(`Cloudflare: ${describeCloudflareAccess(report.cloudflare)}`);
-  }
+  // Cloudflare credentials, on every run. See `cloudflareLine` above for why this one is not gated on
+  // the report having something to complain about.
+  blocks.push(cloudflareLine);
 
   // The project name, reconciled against what is provisioned. Its own block rather than a second
   // Cloudflare line: the credentials answer "can I reach the account", this answers "is what I would
@@ -841,6 +852,11 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       missing: report.cloudflare.missing,
       tokenStatus: report.cloudflare.tokenStatus,
       credentialSplit: report.cloudflare.credentialSplit,
+      // The resolved file, absolute here rather than tilde-abbreviated, on the same rule as every other
+      // path in this payload: `--json` is read by agents and scripts, which need a path they can open.
+      configPath: report.cloudflare.configPath ?? null,
+      accountName: report.cloudflare.accountName ?? null,
+      accountMismatch: report.cloudflare.accountMismatch ?? null,
       detail: describeCloudflareAccess(report.cloudflare),
     },
     // `null` alongside a `null` project: one fact, one shape, both keys agreeing that there is no project

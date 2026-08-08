@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { chmodSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -38,6 +38,34 @@ describe("readRcFile", () => {
     const path = join(home, ".zshrc");
     await writeFile(path, "export FOO=1\n");
     expect(await readRcFile(path)).toBe("export FOO=1\n");
+  });
+
+  test("an rc file that is there and will not open is a PithyError naming it, not node's own", async () => {
+    // The two commands that read an rc file — `pithy alias` and `pithy doctor` — are the two most likely
+    // to be run *because* something is already wrong. A bare EACCES with a stack is the failure the error
+    // model exists to prevent. A directory where the file should be is EISDIR for every uid, root included.
+    const path = join(home, ".zshrc");
+    await mkdir(path);
+
+    const thrown = (await readRcFile(path).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    // The file, so the adopter knows which one; an action, so they know what to do about it.
+    expect(thrown.payload.message).toContain(path);
+    expect(thrown.payload.action ?? "").not.toBe("");
+    // The errno stays in `detail`, which the HTTP codec strips, with node's own error as the cause.
+    expect(thrown.payload.detail).toContain("EISDIR");
+    expect((thrown.cause as { code?: string } | undefined)?.code).toBe("EISDIR");
+  });
+
+  test("the refusal carries no line of the rc file it could not read", async () => {
+    // An rc file is where a developer keeps `export GITHUB_TOKEN=…`. A refusal that quotes it is a leak.
+    const path = join(home, ".zshrc");
+    await writeFile(path, "export GITHUB_TOKEN=super-secret-value\n");
+    await chmod(path, 0o000);
+
+    const thrown = await readRcFile(path).catch((error: unknown) => error);
+    if (typeof thrown === "string") return; // root reads a 0o000 file; nothing to assert on this box.
+    expect(JSON.stringify((thrown as PithyError).payload)).not.toContain("super-secret-value");
   });
 });
 

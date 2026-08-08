@@ -16,7 +16,7 @@ import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
@@ -241,7 +241,7 @@ async function buildProvisioner(projectDir: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account: await projectCloudflareAccount(projectDir) });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {

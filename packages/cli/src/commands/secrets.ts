@@ -16,10 +16,10 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -54,7 +54,7 @@ async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry
  * Cloudflare credentials or the audit capability aren't there, never a blocker.
  */
 async function buildAudit(projectDir: string, env: string) {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account: await projectCloudflareAccount(projectDir) });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
@@ -81,18 +81,21 @@ async function buildAudit(projectDir: string, env: string) {
  * dispatch this project's values into another project's manager.
  */
 async function buildDispatcher(projectDir: string): Promise<SecretDispatcher> {
-  const { accountId, apiToken } = loadCloudflareCreds();
+  const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
 }
 
 /** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(options: { requireStore?: boolean } = {}): {
+function loadCloudflareCreds(
+  account: CloudflareAccountSelection | null,
+  options: { requireStore?: boolean } = {},
+): {
   accountId: string;
   apiToken: string;
   storeId: string;
 } {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -259,7 +262,9 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken, storeId } = loadCloudflareCreds({ requireStore: true });
+      const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
+        requireStore: true,
+      });
       // Never `resolveProjectName`: every Secrets Store entry and the manager's token name derive from
       // this, and deprovision has to recompute them exactly. A guessed name would name resources
       // teardown can never find again.
@@ -298,7 +303,9 @@ const deprovision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken, storeId } = loadCloudflareCreds({ requireStore: true });
+      const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
+        requireStore: true,
+      });
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareSecretsDeprovisioner({
         cf,

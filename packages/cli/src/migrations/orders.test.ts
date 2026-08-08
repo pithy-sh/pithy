@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { readSource, sourcePaths } from "../ci/sourceFiles";
 
 /**
  * Migration orders must be unique per database, across every capability the repo ships.
@@ -84,18 +85,6 @@ const PACKAGES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
  */
 const ORDER_DECLARATION = /^\s*(?:export\s+)?const\s+([A-Z][A-Z0-9_]*_MIGRATION_ORDER)\s*=\s*(\d+)\s*;/gm;
 
-/** Every `.ts` file under a directory, recursively, skipping `node_modules` and build output. */
-function sourceFiles(dir: string): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === "dist" || entry === ".turbo") continue;
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) found.push(...sourceFiles(path));
-    else if (entry.endsWith(".ts") && !entry.endsWith(".test.ts")) found.push(path);
-  }
-  return found;
-}
-
 /**
  * Scan every package's source for declared orders — core included.
  *
@@ -105,19 +94,21 @@ function sourceFiles(dir: string): string[] {
  * any other capability. Leaving the skip in place would have meant core's order was the one number in
  * the repo nothing checked for collision — precisely the uncoordinated allocation this file exists to
  * prevent.
+ *
+ * The traversal is `ci/sourceFiles.ts`, the one walk over this tree's own source. What used to be here was a
+ * private copy with a bare `statSync`: an entry that vanished between the listing and the probe threw, and
+ * the `try` around it swallowed the throw by skipping **the whole package** — so the scan under-reported in
+ * silence and the failure surfaced as `DECLARED names a constant no capability declares any more`, which is
+ * the wrong sentence entirely (#202). A file that is not there is not a file that breaks a rule.
  */
 function scanDeclaredOrders(): Map<string, number> {
   const orders = new Map<string, number>();
-  for (const pkg of readdirSync(PACKAGES)) {
-    const src = join(PACKAGES, pkg, "src");
-    let files: string[];
-    try {
-      files = sourceFiles(src);
-    } catch {
-      continue; // Not a package with sources.
-    }
-    for (const file of files) {
-      for (const match of readFileSync(file, "utf8").matchAll(ORDER_DECLARATION)) {
+  for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    for (const file of sourcePaths(join(PACKAGES, pkg.name, "src"))) {
+      const source = readSource(file);
+      if (source === null) continue;
+      for (const match of source.matchAll(ORDER_DECLARATION)) {
         const [, name, value] = match;
         if (name && value) orders.set(name, Number(value));
       }

@@ -18,8 +18,8 @@ import {
 } from "../capabilities/mediaProvisioner";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
-import { cloudflareEnv } from "../cloudflare/config";
-import { loadProject, requireProjectName } from "../project/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -72,14 +72,19 @@ async function loadMediaConfig(projectDir: string) {
   return capability.mediaConfig;
 }
 
-/** The CF credentials and Secrets Store id media provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): {
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   accountId: string;
   apiToken: string;
   storeId: string;
   r2Raw: string | undefined;
 } {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -182,7 +187,7 @@ const provision = defineCommand({
       // find what to delete (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
       const { provisionMedia } = await loadMedia();
-      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds();
+      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const mediaConfig = await loadMediaConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
       const cf = new CloudflareClients({ accountId, apiToken });
@@ -242,7 +247,7 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionMedia } = await loadMedia();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds();
+      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the media workers gone
       // and the bucket standing — a half-torn-down environment for a mistake we can catch here.

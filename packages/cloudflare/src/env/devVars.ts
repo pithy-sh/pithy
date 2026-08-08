@@ -9,9 +9,10 @@
  * the Secrets Store, so no scoped token is ever supplied or kept here.
  *
  * **Where they are read from is not this module's answer any more (#182).** They are account-scoped, so
- * they live in `<config>/cloudflare.json` — see `@pithy-sh/cli`'s `cloudflare/config`, which owns the
- * file, the `process.env` overlay, and the split diagnostic. The names stay here because both ends need
- * them and the Worker-side package is the one both can import.
+ * they live in `<config>/cloudflare.json` — or, since #206, in `<config>/cloudflare.<name>.json` when a
+ * project's root config names its account. See `@pithy-sh/cli`'s `cloudflare/config`, which owns the
+ * file, which file, the `process.env` overlay, and the split diagnostic. The names stay here because
+ * both ends need them and the Worker-side package is the one both can import.
  */
 export const CLOUDFLARE_ENV_KEYS = [
   "CLOUDFLARE_ACCOUNT_ID",
@@ -48,6 +49,10 @@ export function parseDevVars(content: string): Record<string, string> {
  * that does not belong to the account in the endpoint will not sign. Only the pair can *quietly* succeed
  * somewhere unintended — a live token against another account's id is a 403 or an empty listing much
  * later — so only the pair is a group. That is the whole test for membership.
+ *
+ * **A whole file can be the wrong account too.** This pair is the *half-file, half-environment* case; one
+ * level up, a file that is entirely coherent in itself can belong to a different company than the project
+ * reading it, which is what a project's `cloudflare.accountName` and its `accountId` pin answer (#206).
  *
  * `SECRETS_STORE_ID` used to be excluded on the grounds that it is "routinely passed per environment
  * while the pair sits in the file". That was never true: Cloudflare permits **one Secrets Store per

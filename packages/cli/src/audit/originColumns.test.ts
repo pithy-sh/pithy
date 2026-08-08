@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readSource, sourcePaths } from "../ci/sourceFiles";
 
 /**
  * Origin belongs in its columns, never back in the `metadata` bag.
@@ -32,24 +33,19 @@ const PACKAGES = join(REPO_ROOT, "packages");
  */
 const ORIGIN_KEYS = new Set(["project", "environment", "env", "worker"]);
 
-/** Every non-test source file under each package's own `src` directory. */
+/**
+ * Every non-test source file under each package's own `src` directory.
+ *
+ * The traversal is `ci/sourceFiles.ts`, the one walk over this tree's own source — so this reader gets the
+ * hardening the shared walker has accumulated (#185, #192) rather than a private copy of the walk that gets
+ * none of it (#202). Listing `packages/` itself stays here: that is one directory, not a traversal.
+ */
 function sourceFiles(): string[] {
   const found: string[] = [];
-  const walk = (dir: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry === "node_modules" || entry === "dist") continue;
-      const path = join(dir, entry);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (entry.endsWith(".ts") && !path.includes(".test.")) found.push(path);
-    }
-  };
-  for (const pkg of readdirSync(PACKAGES)) walk(join(PACKAGES, pkg, "src"));
+  for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    found.push(...sourcePaths(join(PACKAGES, pkg.name, "src")));
+  }
   return found;
 }
 
@@ -126,7 +122,7 @@ describe("audit origin stays in its columns", () => {
   it("finds the metadata literals it is meant to police", () => {
     // And the extractor has to actually extract. If `metadata:` were renamed, or the brace matcher
     // broke, the offender list below would be empty for the wrong reason.
-    const withMetadata = files.filter((file) => metadataLiterals(readFileSync(file, "utf8")).length > 0);
+    const withMetadata = files.filter((file) => metadataLiterals(readSource(file) ?? "").length > 0);
     expect(withMetadata.length).toBeGreaterThan(5);
   });
 
@@ -142,7 +138,7 @@ describe("audit origin stays in its columns", () => {
   it("no emitter writes an origin key into the metadata bag", () => {
     const offenders: string[] = [];
     for (const file of files) {
-      for (const literal of metadataLiterals(readFileSync(file, "utf8"))) {
+      for (const literal of metadataLiterals(readSource(file) ?? "")) {
         for (const key of topLevelKeys(literal)) {
           if (ORIGIN_KEYS.has(key)) offenders.push(`${file.slice(REPO_ROOT.length + 1)}: metadata.${key}`);
         }

@@ -284,7 +284,7 @@ function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): st
     case "credential":
       // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
       // class of value in this file that is worth naming twice rather than removing on somebody's behalf.
-      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — run pithy adopt to put it in ${cloudflareConfigPath()}, or export it.`;
+      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — run pithy adopt to put it in ${cloudflareConfigPath({ account: null })}, or export it.`;
     case "secret":
       return null; // `describeDevSecrets` names it, and says which file it belongs in.
     case "binding": {

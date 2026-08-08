@@ -4,8 +4,9 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { countPendingMigrations } from "../migrations/run";
+import { projectCloudflareAccount } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
@@ -34,8 +35,8 @@ async function pendingFor(projectDir: string, env: string): Promise<number | und
  * has audit wired. A bare `pithy deploy` (no `--env`) still targets the project's own app database, the
  * same one `dev` reads (see `resolveAuditDatabaseId`), so the fallback lines up with the real target.
  */
-async function buildAudit(projectDir: string, env: string) {
-  const vars = cloudflareEnv();
+async function buildAudit(projectDir: string, env: string, account: CloudflareAccountSelection | null) {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
@@ -70,9 +71,13 @@ export default defineCommand({
       // The migration warning only makes sense against a concrete remote target. A bare `pithy deploy`
       // ships each worker's top-level config, whose deployed schema is not the local dev D1 — so skip the
       // check (and its REST round trip) unless an `--env` names the environment being deployed.
+      // The account first, before anything resolves a credential. It is read from the project's own
+      // config and passed to every step below, rather than left to whatever a later load happens to
+      // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
+      const account = await projectCloudflareAccount(projectDir);
       const pending = env ? await pendingFor(projectDir, env) : undefined;
-      const audit = await buildAudit(projectDir, env ?? "dev");
-      const deploys = await deployProject({ projectDir, env, audit });
+      const audit = await buildAudit(projectDir, env ?? "dev", account);
+      const deploys = await deployProject({ projectDir, account, env, audit });
       // A deploy that shipped but is not the thing answering at the declared address is a failure too,
       // and it fails the pipeline rather than printing a line nobody reads. Only a *consistent* mismatch
       // counts — a gradual rollout and a Worker that cannot report its version are both inconclusive,

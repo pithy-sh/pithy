@@ -10,8 +10,8 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
-import { cloudflareEnv } from "../cloudflare/config";
-import { loadProject, requireProjectName } from "../project/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -31,9 +31,19 @@ import {
 // signature — so `token.test.ts`'s direct tests of it keep passing unchanged.
 export { resolveAuditDatabaseId as resolveAppDatabaseId } from "../audit/cliAudit";
 
-/** The CF credentials the token engine needs, from `.dev.vars` then `process.env`. */
-function loadCreds(): { accountId: string; apiToken: string; storeId: string } {
-  const vars = cloudflareEnv();
+/**
+ * The CF credentials the token engine needs, for the account the project belongs to.
+ *
+ * **The account is a parameter, so this cannot run before the project is loaded.** `pithy token mint`
+ * writes real credentials into a real account; resolving them from a file the project did not select
+ * would mint another company's token under this project's name (#206).
+ */
+function loadCreds(account: CloudflareAccountSelection | null): {
+  accountId: string;
+  apiToken: string;
+  storeId: string;
+} {
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -158,13 +168,15 @@ function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistr
 
 /** Assemble the token engine: the aggregated profiles, the secret-registry backends, and the audit sink. */
 async function buildEngine(projectDir: string, env: string): Promise<TokenEngine> {
-  const { accountId, apiToken, storeId } = loadCreds();
-  const cf = new CloudflareClients({ accountId, apiToken });
   // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
   // The root config is required here, not best-effort: every token name and Secrets Store entry starts
   // with the project name, and `revoke` deletes every account token of the name it computes. Guessing
   // it would point that sweep at another project's credentials.
+  //
+  // Read *before* the credentials, because it is also what says which account they come from.
   const config = await loadProject(projectDir);
+  const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
+  const cf = new CloudflareClients({ accountId, apiToken });
   const workers = await resolveWorkers({ projectDir }).catch(() => []);
   const capabilities = projectCapabilities(workers);
   const registry = mergedSecretRegistry(workers);

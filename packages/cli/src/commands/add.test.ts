@@ -48,6 +48,7 @@ describe("buildAudit", () => {
     try {
       const emit = await buildAudit({
         projectDir,
+        account: null,
         worker: "api",
         env: "staging", // the shape `pithy remove --drop --env staging` builds
         capabilities: [],
@@ -76,6 +77,7 @@ describe("buildAudit", () => {
     try {
       const emit = await buildAudit({
         projectDir,
+        account: null,
         worker: "api",
         env: "dev",
         capabilities: [],

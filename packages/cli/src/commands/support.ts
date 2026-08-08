@@ -16,8 +16,8 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
-import { loadProject, requireProjectName } from "../project/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -75,13 +75,18 @@ async function loadSupportConfig(projectDir: string) {
   return capability.supportConfig;
 }
 
-/** The CF credentials support provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(): {
+/**
+ * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
+ *
+ * The account is a parameter rather than an ambient, so this cannot resolve before something has
+ * established which account the project is for (#206).
+ */
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   accountId: string;
   apiToken: string;
   r2Raw: string | undefined;
 } {
-  const vars = cloudflareEnv();
+  const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -188,7 +193,7 @@ const provision = defineCommand({
       // another project's inbox (docs/NAMING.md).
       const project = requireProjectName(await loadProject(projectDir));
       const { provisionSupport } = await loadSupport();
-      const { accountId, apiToken } = loadCloudflareCreds();
+      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const supportConfig = await loadSupportConfig(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
@@ -277,7 +282,7 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const project = requireProjectName(await loadProject(projectDir));
       const { deprovisionSupport } = await loadSupport();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds();
+      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the workers gone and the
       // bucket standing — a half-torn-down inbox for a mistake we can catch here.

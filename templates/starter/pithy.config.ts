@@ -20,6 +20,25 @@ const config = {
   // `pithy doctor` checks that it still matches what your workers declare.
   name: "pithy-app",
 
+  // Which Cloudflare account this project belongs to. `pithy init` writes this
+  // block when it can discover the account from your token.
+  //
+  // `accountName` selects the credentials file: <config>/cloudflare.<name>.json
+  // rather than <config>/cloudflare.json. One machine, several companies, one
+  // file each — without it every project on the machine reads the same file, so
+  // switching accounts means editing that file in place and every project
+  // silently follows. A bare token: lowercase, digits, single hyphens. It
+  // becomes a file name, so nothing else is accepted.
+  //
+  // `accountId` pins the account those credentials must belong to. Every command
+  // that resolves them compares the two and refuses on a mismatch, naming both.
+  // The nickname above means whatever each machine says it means; this is what
+  // makes the repository the authority. An account id is an identifier, not a
+  // secret — wrangler.toml commits them — so it is safe here, including in a
+  // public repository. Optional, and it earns its keep the moment more than one
+  // person deploys.
+  // cloudflare: { accountName: "acme", accountId: "" },
+
   // Overrides for the predefined Cloudflare API token profiles (`pithy token`).
   // Account-level, so it lives here rather than on a Worker.
   // tokens: { overrides: {} },

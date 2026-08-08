@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
@@ -39,6 +39,15 @@ export type RunBuild = (
 export interface DeployProjectOptions {
   /** The project root — the parent of `apps/`, where every Worker lives. */
   projectDir: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)` — or
+   * `null` for a project that names none.
+   *
+   * **Required, and stated by the caller rather than defaulted.** An omitted account would resolve
+   * whatever the last-loaded project happened to select, and the failure that produces is a successful
+   * deploy to the wrong tenant. There is no safe default, so there is no default (#206).
+   */
+  account: CloudflareAccountSelection | null;
   /** Target environment; omitted deploys each worker's top-level config (no `--env`). */
   env?: string;
   /** Test seam: run one worker's deploy and return its captured stdout. Defaults to real wrangler. */
@@ -122,10 +131,15 @@ function reasonOf(error: unknown): string {
  * The default deploy step: `wrangler deploy [--env <env>]` in the worker's directory, quiet on
  * success (its output is captured and summarized, not streamed — the brand voice). Wrangler reads
  * `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`, so CI needs no interactive login; we also pass them
- * from `<config>/cloudflare.json` so a local deploy authenticates the same way.
+ * from the project's own credentials file so a local deploy authenticates the same way.
+ *
+ * **The account is an argument, and that is load-bearing here more than anywhere.** This is the exact
+ * pair handed to `wrangler deploy`: resolving it against the wrong account does not fail, it ships to
+ * another company's tenant and exits 0. A pinned `accountId` that disagrees refuses before wrangler is
+ * ever spawned (#206).
  */
-function defaultRunDeploy(): RunDeploy {
-  const vars = cloudflareEnv();
+function defaultRunDeploy(account: CloudflareAccountSelection | null): RunDeploy {
+  const vars = cloudflareEnv({ account });
   const env: Record<string, string> = {};
   if (vars.CLOUDFLARE_API_TOKEN) env.CLOUDFLARE_API_TOKEN = vars.CLOUDFLARE_API_TOKEN;
   if (vars.CLOUDFLARE_ACCOUNT_ID) env.CLOUDFLARE_ACCOUNT_ID = vars.CLOUDFLARE_ACCOUNT_ID;
@@ -238,7 +252,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
     });
   }
 
-  const run = options.runDeploy ?? defaultRunDeploy();
+  const run = options.runDeploy ?? defaultRunDeploy(options.account);
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
   const args = options.env ? ["deploy", "--env", options.env] : ["deploy"];
