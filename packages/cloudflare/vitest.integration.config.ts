@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 
 // Integration tests run against a LIVE Cloudflare environment using credentials from `.dev.vars`
 // (a CF API token + account id). They cover control-plane paths that cannot be mocked — creating
@@ -9,6 +10,9 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
+    // account; it has never needed the operator's real config directory (#200).
+    setupFiles: [CONFIG_DIR_SETUP],
     // One debris sweep per run, across every resource kind, before a single suite is collected. It lives
     // here rather than in a suite's `beforeAll` because Vitest runs no hooks inside a `describe.skipIf`
     // — which gated each reaper on exactly the credential whose absence lets debris accumulate. See

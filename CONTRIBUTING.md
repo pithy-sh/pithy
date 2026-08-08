@@ -60,6 +60,58 @@ bun scripts/license-headers.ts --fix     # fix it
 
 Two things it deliberately leaves alone. The copyright line is free-form — edit it and the gate won't argue, so naming an entity later costs one pass, not a rewrite of every file. And `templates/` trees are never stamped: those files are copied verbatim into the adopter's repo by `pithy init` and `pithy ui add`, where they become the adopter's code, under the adopter's copyright.
 
+## Tests do not touch your machine
+
+**No test in this repository resolves your real config directory or your real Cloudflare account.** Two defects in two weeks were the same defect, and it is worth knowing what the guards are before you write a config.
+
+One `bun run test` used to leave 36 directories in a maintainer's `~/.config/pithy`, each holding a genuinely minted AES master key, and write `SECRETS_STORE_ID` into their real `cloudflare.json` (#200). Separately, every unit suite that resolved a credential was talking to a live account, because `cloudflareEnv` overlays `process.env` per key — correct, and CI depends on it — and anyone who has run `pithy deploy` has a token exported (#198).
+
+Three things now stand in the way, and you get all three by writing a config the way the others are written:
+
+1. **[`vitest.setup.ts`](vitest.setup.ts) at the repo root** gives every test file its own throwaway `PITHY_CONFIG_DIR`. Every project loads it, unit and integration alike.
+2. **[`vitest.shared.ts`](vitest.shared.ts) exports `NO_ACCOUNT`**, every `CLOUDFLARE_ENV_KEYS` name blanked. Every unit project states it; an integration project must not, because reaching a real account is what it is for.
+3. **`stateDir` refuses.** Under vitest it resolves `PITHY_CONFIG_DIR`, or seams you passed — never `process.env` and never `os.homedir()`. A test that forgets its seam fails loudly at the moment of the mistake instead of quietly writing to your home directory.
+
+A new package's config:
+
+```ts
+import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        test: {
+          name: "node",
+          include: ["src/**/*.test.ts"],
+          env: { ...NO_ACCOUNT },
+          setupFiles: [CONFIG_DIR_SETUP],
+        },
+      },
+    ],
+  },
+});
+```
+
+**Both lines go on the project, not on the root `test` block.** Measured on vitest 4.1.9: a root `env` reaches an inline project and a root `setupFiles` does not. Stating them at the wrong level is a guard that never runs.
+
+`*.workers.test.ts` projects state neither, deliberately. workerd does not inherit the host environment — a test there sees seven `process.env` keys, all miniflare bindings, no token and no `HOME` — so there is nothing to blank and nothing to relocate.
+
+[`packages/cli/src/ci/testIsolation.test.ts`](packages/cli/src/ci/testIsolation.test.ts) is the gate. It **loads** each config and inspects the object vitest is handed, rather than reading the source, because #198's first guard was a second `env:` key on one object literal — which JavaScript discards without a word, so the file said covered and the run was not. A guard that is present but inert fails there exactly like a missing one.
+
+**A suite that genuinely needs your real config directory** sets `PITHY_ALLOW_REAL_CONFIG_DIR=1`. Nothing in this repository does, and the gate fails if a vitest config ever sets it: that is a decision for one suite to make out loud, not one a config makes for a whole package.
+
+**Cleaning up a machine that ran the suite before this landed.** Everything the old runs left is named after a scaffolded test project, so it is safe to identify by name:
+
+```bash
+ls ~/.config/pithy                       # look first — your own projects live here too
+rm -rf ~/.config/pithy/bootstrap-*  ~/.config/pithy/turnstile-*
+rm -rf ~/.config/pithy/flow-test ~/.config/pithy/gates ~/.config/pithy/acme
+```
+
+Then open `~/.config/pithy/cloudflare.json`. If it holds a `SECRETS_STORE_ID` you did not put there, a test wrote it — remove that key. Leave anything you recognise as a real project of yours.
+
 ## Live integration tests
 
 Most tests run locally (node + Miniflare). A few exercise live Cloudflare, are excluded from the default suite, and are named `*.integration.test.ts` — run with `bun run --filter <package> test:integration`. They are required before a release.

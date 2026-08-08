@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 
 // Integration tests run against the LIVE Cloudflare Email Service using credentials from
 // `.dev.vars` (the account with the `pithy.sh` apex sending domain onboarded). They send real email
@@ -16,6 +17,9 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
+    // account; it has never needed the operator's real config directory (#200).
+    setupFiles: [CONFIG_DIR_SETUP],
     testTimeout: 120_000,
     pool: "forks",
     passWithNoTests: true,

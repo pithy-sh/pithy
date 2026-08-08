@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 
 // Integration tests run against a LIVE Cloudflare environment using credentials from `.dev.vars`
 // (a CF API token, account id, a real Secrets Store, a deployed manager Workflow). They cover the
@@ -13,6 +14,9 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
+    // account; it has never needed the operator's real config directory (#200).
+    setupFiles: [CONFIG_DIR_SETUP],
     // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`
     // for why this cannot live in a suite's `beforeAll`. This package writes real Secrets Store entries,
     // the kind that had no reaper at all.

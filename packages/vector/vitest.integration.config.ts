@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 
 // Integration tests run against a LIVE Cloudflare account using credentials from `.dev.vars` (a CF API token
 // + account id). They cover what no mock and no local runtime can: Cloudflare ships no emulation for Vectorize
@@ -13,6 +14,9 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
+    // account; it has never needed the operator's real config directory (#200).
+    setupFiles: [CONFIG_DIR_SETUP],
     // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
     // This package mints Vectorize indexes and previously reaped none of them: the only index reaper
     // lived in `@pithy-sh/cloudflare`, so `--filter @pithy-sh/vector` created and never reclaimed.

@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 
 // Integration tests run against a LIVE Cloudflare environment using credentials from `.dev.vars`
 // (a CF API token + account id + Secrets Store id). They cover control-plane paths that cannot be
@@ -9,8 +10,9 @@ export default defineConfig({
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
-    // The same floor the default suite has: no test writes to the operator's real config directory.
-    setupFiles: ["./vitest.setup.ts"],
+    // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
+    // account; it has never needed the operator's real config directory (#200).
+    setupFiles: [CONFIG_DIR_SETUP],
     // One debris sweep per run, across every kind — see `@pithy-sh/cloudflare`'s `src/test-utils/reap.ts`.
     globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     testTimeout: 300_000,

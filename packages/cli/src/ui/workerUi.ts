@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { WORKER_MANIFEST_FILE, type WorkerUi } from "../project/workerManifest";
 
 /**
@@ -32,14 +32,29 @@ type ManifestDocument = Record<string, unknown> & {
   ui?: Record<string, unknown>;
 };
 
-/** Parse `<dir>/pithy.worker.jsonc` comment-preserving, or an empty document when the file is absent. */
+/**
+ * Parse `<dir>/pithy.worker.jsonc` comment-preserving, or an empty document when the file is **absent**.
+ *
+ * Absent means `ENOENT` and nothing else — the decision is {@link readOptionalFile}'s, and the words are
+ * this file's. A read that answered `{}` for every failure was #142 with a different file name: the caller
+ * merges its two blocks into that empty base and {@link writeManifestDocument} renames the result over a
+ * file whose every other block the process never saw. Committed rather than gitignored, so the loss is
+ * recoverable from git — but only by someone who notices before committing over it.
+ */
 export async function readManifestDocument(workerDir: string): Promise<ManifestDocument> {
-  let raw: string;
-  try {
-    raw = await readFile(join(workerDir, WORKER_MANIFEST_FILE), "utf8");
-  } catch {
-    return {};
-  }
+  const path = join(workerDir, WORKER_MANIFEST_FILE);
+  const raw = await readOptionalFile(path, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Cannot update ${path}: Pithy could not read what is already in it.`,
+          action: "Fix the file's permissions, or move it aside, and run the command again.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+  });
+  if (raw === null) return {};
   let value: unknown;
   try {
     value = parse(raw);

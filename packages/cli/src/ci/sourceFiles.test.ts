@@ -115,6 +115,66 @@ describe("sourcePaths — what the walk never descends into", () => {
 });
 
 /**
+ * The one non-dotted transient, and the reason it cannot simply be dotted or moved (#192).
+ *
+ * `packages/cli/templates` is the copy of the repo root's `templates/starter` that `prepack` vendors in
+ * and `postpack` takes out again. `files` in the CLI's manifest carries exactly that path — it is the
+ * whole mechanism by which a published `@pithy-sh/cli` ships a starter (#143, #152) — so it is not
+ * dotted and the dotted rule above does not reach it.
+ *
+ * The fixture is the two trees a pack has in flight, built in a temp root. Nothing here runs `prepack`,
+ * which would put a real vendored copy under the checkout every other suite is walking.
+ */
+describe("sourcePaths — the vendored copy of the starter template", () => {
+  /** The repo root's starter, the copy inside `packages/cli`, and one ordinary CLI source beside it. */
+  async function midPack(): Promise<void> {
+    for (const base of ["templates/starter", "packages/cli/templates/starter"]) {
+      await file(`${base}/pithy.config.ts`);
+      await file(`${base}/apps/api/src/index.ts`);
+      await file(`${base}/apps/api/src/bindings.workers.test.ts`);
+    }
+    await file("packages/cli/src/bin.ts");
+  }
+
+  test("each template source once, whether or not a pack is in flight", async () => {
+    await midPack();
+    expect(named(sourcePaths(root))).toEqual([
+      "packages/cli/src/bin.ts",
+      "templates/starter/apps/api/src/index.ts",
+      "templates/starter/pithy.config.ts",
+    ]);
+  });
+
+  test("nor its tests, which CI's change planner would otherwise attribute to the CLI", async () => {
+    // `crossPackageReads.ts` walks each workspace package for `*.test.ts`. The starter's own
+    // `bindings.workers.test.ts` belongs to the repo root, which is not a package; through the vendored
+    // copy it becomes a CLI test file, and the planner's answer changes with the pack.
+    await midPack();
+    expect(named(sourcePaths(root, { keep: isTestFile }))).toEqual([
+      "templates/starter/apps/api/src/bindings.workers.test.ts",
+    ]);
+  });
+
+  test("skipped by where it is, so a walk starting inside the package skips it too", async () => {
+    await midPack();
+    expect(named(sourcePaths(join(root, "packages", "cli")))).toEqual(["packages/cli/src/bin.ts"]);
+  });
+
+  test("but a `templates` directory anywhere else is source like any other", async () => {
+    // By path, not by name. The copy is the only one that is a copy; the repo root's starter is the
+    // source of truth the template tripwires exist to read, and a package may hold templates of its own.
+    await file("templates/starter/pithy.config.ts");
+    await file("packages/core/templates/a.ts");
+    await file("tooling/license-headers/templates/b.ts");
+    expect(named(sourcePaths(root))).toEqual([
+      "packages/core/templates/a.ts",
+      "templates/starter/pithy.config.ts",
+      "tooling/license-headers/templates/b.ts",
+    ]);
+  });
+});
+
+/**
  * The half of #185 that hardening buys and moving the scaffolds cannot: the tree is not still while the
  * walk runs. Six tripwires in this repository read source across the whole tree, and any one of them can
  * be walking `packages/cli` at the moment another suite tears its scaffold down. A gate that fails on

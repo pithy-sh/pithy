@@ -117,43 +117,54 @@ describe("readFileOutcome", () => {
 });
 
 /**
- * The gate. **A module that puts bytes on disk must not read a file and discard the failure.**
+ * The gate — **two rules over one walk**, because the defect has two spellings.
  *
- * Stated about any module that writes rather than about the three readers `readOptionalFile` was built
- * for: enumerating the known instances is exactly what produced the second and the third. A fourth
- * reader will be written by someone who has read none of them, and `.catch(() => null)` is shorter than
- * the correct version — so the rule has to be something a build fails on, not something a docstring asks
- * for.
+ * 1. **Only `readOptionalFile.ts` may name `ENOENT` where a file's contents were read.** No allowlist,
+ *    no judgement about which modules write, no per-entry reasoning: a hand-written errno branch on a
+ *    read is a copy of the primitive, and there is exactly one place that decision is allowed to live.
+ * 2. **A module that puts bytes on disk must not read a file and discard the failure.** The shape that
+ *    names no errno at all — `.catch(() => null)` — which rule 1 cannot see and which is *shorter* than
+ *    the correct version, so it is the thing that gets typed.
  *
- * **Why the rule is about writing modules, and what that costs.** The invariant everyone would rather
- * state is the issue's own sentence — *no module reads a file with a catch that discards the error* — and
- * it is not shippable today: this tree has 32 of them, and a 32-entry allowlist is a muted tripwire with
- * extra steps. Worse, some of those discards are correct and permanent. The `doctor` surface throws six
- * read failures away on purpose: a diagnostic has to work in the broken environment it exists to
- * diagnose, and it writes nothing, so the worst its discard can cost is a line missing from a report the
- * adopter is already reading. That is the distinction this scope draws structurally rather than by
- * judgement — **reading a file you are about to act on, against reading one to report on.** A module that
- * cannot write cannot destroy what it failed to read.
+ * Rule 1 landed with #197, once the six readers that still spelled the branch out by hand
+ * (`devSecrets/file.ts`, `project/devVars.ts`, `platform/rc.ts`, `feature/manifest.ts`,
+ * `feature/ports.ts`, `seed/media.ts`) were routed through the primitive. All six were *correct*; they
+ * were six copies of one sentence, and a copy is what a seventh author reads instead of the original.
+ * Both call-site errors and both call-site error *classes* survived the routing — that is what
+ * `options.unreadable` and `readFileOutcome` are for.
  *
- * The cost is honest and it is written here so nobody has to rediscover it: the third producer,
- * `capabilities/manifests.ts`, is *not* a writing module. Its defect was a capability vanishing from
- * `pithy add --list`, which no rule below would have caught. The narrower rule that would — only
- * `readOptionalFile.ts` may name `ENOENT` — is not shippable either until the six readers that still
- * spell out the errno branch by hand (`devSecrets/file.ts`, `project/devVars.ts`, `platform/rc.ts`,
- * `feature/manifest.ts`, `feature/ports.ts`, `seed/media.ts`) are routed through the primitive. They are
- * all *correct*; they are just six copies. Routing them is the follow-up that makes that gate free.
+ * **What rule 1 is scoped to, and why it is not scoped tighter or looser.** Not "no module but this one
+ * may contain the string `ENOENT`": `atomic.ts` maps the errno of a *write* onto a message, and
+ * `scaffold.ts`'s `probe` keeps the same three answers about a path's *existence* — both are the rule
+ * applied, not evaded, and exempting them by name would put an allowlist back. Scoping to the handler
+ * that receives a content read draws that line structurally instead. It is not scoped to writing
+ * modules either, which is the axis rule 2 could never reach: `capabilities/manifests.ts`, the third
+ * producer, writes nothing, and its defect was a capability vanishing from `pithy add --list`.
+ *
+ * **Why rule 2 stays, and why its two lists stay with it.** Rule 1 does not subsume it. A module can
+ * still answer "no file" for every failure without typing an errno, and that is precisely the form the
+ * first three defects took. The invariant everyone would rather state — *no module reads a file with a
+ * catch that discards the error* — is still not shippable: this tree has 32 of them, and a 32-entry
+ * allowlist is a muted tripwire with extra steps. Some are correct and permanent: the `doctor` surface
+ * throws six read failures away on purpose, because a diagnostic has to work in the broken environment
+ * it exists to diagnose, and it writes nothing. That is the distinction rule 2's scope draws
+ * structurally rather than by judgement — **reading a file you are about to act on, against reading one
+ * to report on.** A module that cannot write cannot destroy what it failed to read. So the two lists
+ * below belong to rule 2 alone; rule 1 has none and must never grow one.
  *
  * **It is a scan over source text, with the limits `atomic.test.ts` records**: TypeScript 7 ships no
  * parser API, so there is no AST to walk. It reads import clauses — so an alias, a namespace binding, a
  * `require` and a dynamic `import` all count — and then brace-matches the `catch` that would receive the
  * failure. What it cannot see is a read reached through a module that re-exports one, or a handler that
- * discards by calling something that swallows.
+ * discards by calling something that swallows. `project/envInventory.ts` is the live example of the
+ * last: it names `ENOENT` about a read it does through `readWranglerConfig`, which this scan does not
+ * know is a read. Its branch is correct — it rethrows — and routing it means changing `wrangler.ts`.
  *
  * **The walk is `ci/sourceFiles.ts`**, the one the rename, follower, recursive-delete, editor and
  * runtime-export tripwires already read this tree through (#185). A seventh traversal to enforce a rule
  * about not repeating yourself would be its own joke.
  */
-describe("a module that writes must not read a file and discard the failure", () => {
+describe("only readOptionalFile.ts decides what a failed read means", () => {
   /** `packages/` — this file lives at `packages/cli/src/project/`. Asserted below, so a move fails loudly. */
   const PACKAGES = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -161,7 +172,14 @@ describe("a module that writes must not read a file and discard the failure", ()
   const named = (path: string): string => relative(PACKAGES, path).split(sep).join("/");
 
   /**
-   * The reads that discard the failure and stay: path → what it reads, and why the discard is safe there.
+   * **Rule 2's list, and rule 2's alone.** The reads that discard the failure and stay: path → what it
+   * reads, and why the discard is safe there.
+   *
+   * It survived #197 because rule 1 has nothing to say about any line in it. Not one of these modules
+   * names an errno — that is the whole shape: `.catch(() => null)` decides that every failure is an
+   * absence without ever writing down which one it means. Rule 1 reads what a handler says; these say
+   * nothing, and a rule about a string cannot see a silence. So the list is re-earned rather than
+   * carried: each entry is an argument that this particular silence costs nothing.
    *
    * An entry is a claim, and the test holds it to both halves — an undeclared discard fails, and a
    * declared one that has since been fixed or moved fails too, so the list cannot go stale. Adding a line
@@ -211,20 +229,18 @@ describe("a module that writes must not read a file and discard the failure", ()
   };
 
   /**
-   * The discards that predate this rule and are **not** blessed by it: path → what it reads, and what the
+   * The discards that predate rule 2 and are **not** blessed by it: path → what it reads, and what the
    * discard costs when the file is there and will not open.
    *
-   * A debt inventory, not an allowlist. Every one of these was written before the primitive existed, none
-   * has been reviewed against it, and each `costs` is the sentence that says why it is worth an issue.
-   * The count below is a ratchet: it may fall as these are routed through `readOptionalFile`, and a change
+   * A debt inventory, not an allowlist — the distinction being that every line here is meant to leave.
+   * Every one was written before the primitive existed, none has been reviewed against it, and each
+   * `costs` is the sentence that says why it is worth an issue. Rule 1 sees none of them for the reason
+   * above: they name no errno, they simply answer "no file" for everything.
+   *
+   * The count below is a ratchet: it falls as these are routed through `readOptionalFile`, and a change
    * that raises it is a change adding a fourth instance of the defect this file exists to end.
    */
   const NOT_YET_ROUTED: Record<string, { reads: string; costs: string }> = {
-    "cli/src/ui/workerUi.ts": {
-      reads: "readFile",
-      costs:
-        "An unreadable-but-present `pithy.worker.jsonc` reads as `{}`, and `writeManifestDocument` then renames a document holding only the `dev` and `ui` blocks over it. Every other block the adopter wrote is gone. This is the `.dev.vars` defect with a different file name.",
-    },
     "cli/src/capabilities/remove.ts": {
       reads: "readFile",
       costs:
@@ -367,26 +383,27 @@ describe("a module that writes must not read a file and discard the failure", ()
     return text.length - 1;
   }
 
-  /** Every `try` block in a module, with the body of the `catch` clause that would receive its failure. */
-  function tryBlocks(text: string): { start: number; end: number; handler: string }[] {
+  /** Every `try` block in a module, with the span of the `catch` clause body that receives its failure. */
+  function tryBlocks(text: string): { start: number; end: number; handler: [number, number] | null }[] {
     return [...text.matchAll(/\btry\s*\{/g)].map((match) => {
       const open = match.index + match[0].length - 1;
       const end = closing(text, open, "{}");
       const clause = /^\s*catch\s*(?:\([^)]*\))?\s*\{/.exec(text.slice(end + 1));
-      if (clause === null) return { start: open, end, handler: "" };
+      if (clause === null) return { start: open, end, handler: null };
       const handlerOpen = end + clause[0].length;
-      return { start: open, end, handler: text.slice(handlerOpen, closing(text, handlerOpen, "{}") + 1) };
+      return { start: open, end, handler: [handlerOpen, closing(text, handlerOpen, "{}") + 1] as [number, number] };
     });
   }
 
   /**
-   * The reads in `source` whose failure is thrown away, by local name.
+   * Every file-content read in a module, paired with the handler that receives its failure.
    *
-   * A handler counts as discarding when it contains no `throw`: the error stops there and the caller is
-   * handed a value it cannot tell from a successful read of an absent file. A handler that rethrows —
-   * `if (code !== "ENOENT") throw …` — is the correct shape and is not reported, whatever else it does.
+   * The one walk both rules ask their question of. Each handler comes back twice over the same span:
+   * `code` has strings blanked, so a brace or the word `throw` inside a quote cannot be read as one;
+   * `quoted` keeps them, because `code === "ENOENT"` *is* a string and rule 1 is about exactly that
+   * string. `stripComments` and `blankStrings` both preserve length, so one span indexes both.
    */
-  function discardedReads(source: string): string[] {
+  function readFailures(source: string): { read: string; code: string; quoted: string }[] {
     const stripped = stripComments(source);
     const text = blankStrings(stripped);
     const names = readers(stripped);
@@ -395,28 +412,58 @@ describe("a module that writes must not read a file and discard the failure", ()
       ? /(?:\.\s*)?\b(readFile|readFileSync)\s*\(/g
       : new RegExp(`\\b(${[...names].join("|")})\\s*\\(`, "g");
     const blocks = tryBlocks(text);
-    const found = new Set<string>();
+    const found: { read: string; code: string; quoted: string }[] = [];
+    const at = (read: string, [from, to]: [number, number]): void => {
+      found.push({ read, code: text.slice(from, to), quoted: stripped.slice(from, to) });
+    };
 
     for (const call of text.matchAll(callee)) {
+      const read = call[1] ?? "readFile";
       const open = call.index + call[0].length - 1;
       // The chain hanging off the call: `readFile(…).catch(…)`, `.then(…).catch(…)`.
       let after = closing(text, open, "()") + 1;
-      let discarded = false;
       for (let member = /^\s*\.\s*(\w+)\s*\(/.exec(text.slice(after)); member !== null; ) {
         const memberOpen = after + member[0].length - 1;
         const memberEnd = closing(text, memberOpen, "()");
-        if (member[1] === "catch" && !/\bthrow\b/.test(text.slice(memberOpen, memberEnd + 1))) discarded = true;
+        if (member[1] === "catch") at(read, [memberOpen, memberEnd + 1]);
         after = memberEnd + 1;
         member = /^\s*\.\s*(\w+)\s*\(/.exec(text.slice(after));
       }
-      // Otherwise the innermost `try` around it, if any.
+      // And the innermost `try` around it, if any.
       const enclosing = blocks
         .filter((block) => block.start < call.index && call.index < block.end)
         .sort((first, second) => second.start - first.start)[0];
-      if (enclosing !== undefined && enclosing.handler !== "" && !/\bthrow\b/.test(enclosing.handler)) discarded = true;
-      if (discarded) found.add(call[1] ?? "readFile");
+      if (enclosing?.handler != null) at(read, enclosing.handler);
     }
-    return [...found].sort();
+    return found;
+  }
+
+  /**
+   * Rule 1: the reads in `source` whose handler decides for itself that `ENOENT` means absence.
+   *
+   * A `probe`'s errno is not a read's, and a write's errno is not either — only a handler that receives
+   * a call handing back a file's *contents* is asked. That is what keeps this rule free of an allowlist.
+   */
+  function enoentReads(source: string): string[] {
+    const named = readFailures(source)
+      .filter(({ quoted }) => /\bENOENT\b/.test(quoted))
+      .map(({ read }) => read);
+    return [...new Set(named)].sort();
+  }
+
+  /**
+   * Rule 2: the reads in `source` whose failure is thrown away, by local name.
+   *
+   * A handler counts as discarding when it contains no `throw`: the error stops there and the caller is
+   * handed a value it cannot tell from a successful read of an absent file. A handler that rethrows —
+   * `if (code !== "ENOENT") throw …` — is the correct shape and is not reported by this rule, whatever
+   * else it does. Rule 1 is the one that has something to say about it.
+   */
+  function discardedReads(source: string): string[] {
+    const discarding = readFailures(source)
+      .filter(({ code }) => !/\bthrow\b/.test(code))
+      .map(({ read }) => read);
+    return [...new Set(discarding)].sort();
   }
 
   /**
@@ -448,6 +495,22 @@ describe("a module that writes must not read a file and discard the failure", ()
     return found;
   }
 
+  /** The one module the errno decision belongs to. Everything else asks it. */
+  const PRIMITIVE = "cli/src/project/readOptionalFile.ts";
+
+  /** Every module but the primitive that decides `ENOENT` for itself on a read: path → the reads. */
+  async function decidingEnoent(): Promise<Record<string, string>> {
+    const found: Record<string, string> = {};
+    for (const path of await modules()) {
+      if (named(path) === PRIMITIVE) continue;
+      const source = readSource(path);
+      if (source === null) continue;
+      const reads = enoentReads(source);
+      if (reads.length > 0) found[named(path)] = reads.join(", ");
+    }
+    return found;
+  }
+
   test("the walk reaches every package, not one directory of the CLI", async () => {
     // A silent walk that finds nothing passes every rule below it. So the walk is asserted before the
     // rule is: this is the failure mode that turned `atomic.test.ts`'s tripwire into decoration (#185).
@@ -455,6 +518,52 @@ describe("a module that writes must not read a file and discard the failure", ()
     expect(found).toContain(join(PACKAGES, "core", "src", "error", "pithyError.ts"));
     expect(found).toContain(join(PACKAGES, "cli", "src", "project", "readOptionalFile.ts"));
     expect(new Set(found.map((path) => named(path).split("/")[0])).size).toBeGreaterThan(3);
+  });
+
+  test("no module but readOptionalFile.ts names ENOENT about a file it read", async () => {
+    // Rule 1, and it has no allowlist by construction — there is nowhere to write an exemption. A hit
+    // here is a module that has copied the primitive's one sentence into itself, correct today and one
+    // edit from the fourth instance of the defect the primitive exists to end.
+    expect(
+      await decidingEnoent(),
+      "route the read through readOptionalFile — the errno decision has one home and this is not it",
+    ).toEqual({});
+  });
+
+  test("the ENOENT rule sees a read's handler, and not an errno that is about anything else", () => {
+    const reader = 'import { readFile } from "node:fs/promises";\n';
+    // The two shapes the six were written in: the `try` form and the `.catch` form.
+    expect(
+      enoentReads(
+        `${reader}try { return await readFile(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; }`,
+      ),
+    ).toEqual(["readFile"]);
+    expect(
+      enoentReads(`${reader}await readFile(p).catch((e) => { if (errnoOf(e) === "ENOENT") return null; throw e; });`),
+    ).toEqual(["readFile"]);
+    // An alias hides nothing here either — the same import walk both rules share.
+    expect(
+      enoentReads(
+        `import { readFile as rf } from "fs/promises";\ntry { rf(p); } catch (e) { if (x === "ENOENT") return ""; }`,
+      ),
+    ).toEqual(["rf"]);
+    // A probe's errno is not a read's. `scaffold.ts` keeps three answers about whether a path is there,
+    // which is this rule applied rather than evaded, and a gate that fired on it would need an allowlist.
+    expect(
+      enoentReads(
+        `import { lstat, readFile } from "node:fs/promises";\ntry { await lstat(p); } catch (e) { if (e.code === "ENOENT") return null; }\nawait readFile(p);`,
+      ),
+    ).toEqual([]);
+    // Nor is a write's. `atomic.ts` maps the errno of a failed rename onto a sentence, and reads nothing.
+    expect(
+      enoentReads(
+        `import { rename } from "node:fs/promises";\ntry { await rename(a, b); } catch (e) { if (e.code === "ENOENT") throw new NotFoundError({}); }`,
+      ),
+    ).toEqual([]);
+    // Prose about the rule is not the rule. Every docstring in this tree names the errno on purpose.
+    expect(enoentReads(`${reader}// only ENOENT means absent\ntry { readFile(p); } catch { return null; }`)).toEqual(
+      [],
+    );
   });
 
   test("the scan sees both shapes, and neither of the two that are not defects", () => {
@@ -505,9 +614,10 @@ describe("a module that writes must not read a file and discard the failure", ()
   });
 
   test("the debt list only shrinks", () => {
-    // Five when this rule landed. Lower this number as they are routed through the primitive; a change
-    // that needs it raised is a change writing the fifth, sixth or seventh instance of the same defect.
-    expect(Object.keys(NOT_YET_ROUTED).length).toBeLessThanOrEqual(5);
+    // Five when this rule landed; four since `ui/workerUi.ts` was routed (#196), which was the one on
+    // the list that lost data rather than answered wrongly. Lower this number as the rest are routed; a
+    // change that needs it raised is a change writing the fifth, sixth or seventh instance of the defect.
+    expect(Object.keys(NOT_YET_ROUTED).length).toBeLessThanOrEqual(4);
     // And nothing may sit in both lists — blessed and owed are different claims about the same read.
     for (const path of Object.keys(NOT_YET_ROUTED)) expect(DISCARDS_ON_PURPOSE[path]).toBeUndefined();
   });

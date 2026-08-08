@@ -8,6 +8,7 @@ import { buildAssetMetadata } from "@pithy-sh/core/src/seed/metadata";
 import type { MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
+import { readFileOutcome } from "../project/readOptionalFile";
 
 /**
  * The filesystem side of media seeding — the only part of `pithy seed` that reads fixture bytes and
@@ -68,13 +69,15 @@ export interface MediaFs {
 export const nodeMediaFs: MediaFs = {
   readBytes: (path) => readFile(path),
   readText: async (path) => {
-    try {
-      return await readFile(path, "utf8");
-    } catch (error) {
-      // A missing sidecar is the expected first-run state — not an error. Anything else propagates.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
+    // A missing sidecar is the expected first-run state — not an error. Anything else propagates, and
+    // which errno is which is {@link readFileOutcome}'s decision rather than this module's: a sidecar
+    // that is there and will not open reads as "never uploaded", and `writeTextAtomic` then renames a
+    // fresh id over the one recorded in it. Through the outcome rather than `readOptionalFile` because
+    // this seam rethrows node's own error untouched, and the refusal is a `PithyError` by construction.
+    const read = await readFileOutcome(path);
+    if (read.state === "read") return read.text;
+    if (read.state === "absent") return null;
+    throw read.cause;
   },
   writeTextAtomic: (path, text) => writeFileAtomic(path, text),
 };
