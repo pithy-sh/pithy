@@ -47,7 +47,7 @@ export interface UnresolvableWorker {
  *
  * **An array cannot say "and this one is broken", which is the whole defect.** `resolveWorkers` throws
  * for a config that is present and will not import, deliberately: swallowing it prints "No workers here"
- * for a project that plainly has workers. {@link devSecretsTargets} caught that throw into `[]` — and
+ * for a project that plainly has workers. A lossy wrapper here caught that throw into `[]` — and
  * `[]` is also what a project that never composed `secrets` returns. So every consumer read a config
  * that would not load as a Worker that declares nothing. Since #179 that is not a cosmetic conflation:
  * a `cf-secrets-store` secret is materialised only from the registry, so an empty registry means the
@@ -127,24 +127,6 @@ export interface DevSecretsResolution {
 }
 
 /**
- * {@link resolveDevSecretsTargets}, minus the failures — **lossy on purpose, and only where recorded.**
- *
- * Kept because four callers legitimately have nothing to do with an unresolvable Worker: the three
- * `pithy doctor` checks, which are diagnostics running beside a project-health block that already names
- * the config that would not load, and `pithy add`. A tripwire in this module's test pins that list by
- * name, so a fifth caller has to add itself and read why — the alternative is the fifth caller quietly
- * repeating the conflation, which is how this defect class reached four producers in the first place.
- *
- * Prefer {@link resolveDevSecretsTargets} anywhere the answer decides what a Worker is given.
- */
-export async function devSecretsTargets(
-  projectDir: string,
-  options: DevSecretsTargetsOptions = {},
-): Promise<DevSecretsTarget[]> {
-  return (await resolveDevSecretsTargets(projectDir, options)).targets;
-}
-
-/**
  * One actionable sentence from a thrown failure.
  *
  * `message` and `action` together, never `detail`: `detail` is throw-site context — for
@@ -156,7 +138,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** How {@link devSecretsTargets} narrows and how it loads. Both default to the whole project, cached. */
+/** How {@link resolveDevSecretsTargets} narrows and how it loads. Both default to the whole project, cached. */
 export interface DevSecretsTargetsOptions {
   /** Narrow to one Worker, by the name `pithy worker list` shows or its `apps/<dir>` basename. */
   worker?: string;

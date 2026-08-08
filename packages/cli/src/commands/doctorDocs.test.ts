@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import {
   cleanPlanFor,
@@ -177,7 +178,7 @@ describe("docs/CLI.md §5.6", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example.
     expect(TRANSCRIPTS).toHaveLength(3);
     expect(JSON_SAMPLES).toHaveLength(1);
-    expect(FRAGMENTS).toHaveLength(1);
+    expect(FRAGMENTS).toHaveLength(2);
     expect(BLOCKS).toHaveLength(TRANSCRIPTS.length + JSON_SAMPLES.length + FRAGMENTS.length);
   });
 
@@ -262,6 +263,32 @@ describe("docs/CLI.md §5.6", () => {
     };
     const fragment = FRAGMENTS[0];
     if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the Project health fragment.");
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The `Alias: unknown` fragment (#210), pinned against a report whose rc file would not open.
+   *
+   * The third alias state is a sentence about a file, and the document is where an adopter meets it
+   * before their machine does. Pinned like every other example here, so it cannot be reworded into a
+   * line the renderer never prints — which is exactly what a state nobody can reproduce on purpose
+   * would otherwise drift into.
+   */
+  test("the unknown-alias fragment is what the renderer prints for an rc file that will not open", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.healthyOptions({
+          readRc: async (path: string) => {
+            throw new ConflictError({
+              message: `Can't read ${path}.`,
+              action: "Fix the file's permissions, or add the Pithy alias to your shell config yourself.",
+            });
+          },
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[1];
+    if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the unknown-alias fragment.");
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 });

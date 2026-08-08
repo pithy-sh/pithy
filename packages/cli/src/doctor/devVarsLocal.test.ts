@@ -54,7 +54,9 @@ describe("checkDevVarsLocal", () => {
     const check = await checkDevVarsLocal({ projectDir: dir, workerDirs: [board], targets: targets([board]) });
 
     expect(check?.devOnly).toEqual([{ key: "FEATURE_FLAG", file: ".dev.vars.local" }]);
-    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [] })[0]).toContain("wrangler.jsonc vars");
+    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [], unresolvable: [] })[0]).toContain(
+      "wrangler.jsonc vars",
+    );
   });
 
   test("a key declared in wrangler.jsonc vars is not dev-only", async () => {
@@ -81,7 +83,7 @@ describe("checkDevVarsLocal", () => {
 
     expect(check?.shadowing).toEqual([{ key: "auth-session-secret", file: join("apps", "board", ".dev.vars.local") }]);
     expect(check?.devOnly).toEqual([]);
-    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [] })[0]).toContain("shadows");
+    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [], unresolvable: [] })[0]).toContain("shadows");
   });
 
   test("the root file is judged against every Worker's vars, because it reaches every Worker", async () => {
@@ -101,6 +103,56 @@ describe("checkDevVarsLocal", () => {
     const check = await checkDevVarsLocal({ projectDir: dir, workerDirs: [board], targets: targets([board]) });
 
     expect(JSON.stringify(check)).not.toContain("s3cr3t");
-    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [] }).join("\n")).not.toContain("s3cr3t");
+    expect(describeDevVarsLocal(check ?? { devOnly: [], shadowing: [], unresolvable: [] }).join("\n")).not.toContain(
+      "s3cr3t",
+    );
+  });
+});
+
+/**
+ * A Worker whose `pithy.config.ts` will not import (#208).
+ *
+ * `devOnly` is the negative claim — "nothing but this file knows about this key" — and a registry that
+ * would not load is exactly what could have known about it. `shadowing` is positive evidence and survives.
+ */
+describe("a Worker nobody could ask (#208)", () => {
+  const broken = [{ name: "board", dir: "/p/apps/board", reason: "pithy.config.ts would not import." }];
+
+  test("no key is called dev-only on the strength of a registry nobody could read", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(board, ".dev.vars.local"), "MAYBE_A_SECRET=x\n");
+
+    const result = await checkDevVarsLocal({
+      projectDir: dir,
+      workerDirs: [board],
+      targets: [],
+      unresolvable: broken,
+    });
+
+    expect(result?.devOnly).toEqual([]);
+    expect(result?.unresolvable).toEqual(broken);
+  });
+
+  test("a key a readable registry declares still shadows — positive evidence survives", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(board, ".dev.vars.local"), "auth-session-secret=x\n");
+
+    const result = await checkDevVarsLocal({
+      projectDir: dir,
+      workerDirs: [board],
+      targets: targets([board]),
+      unresolvable: broken,
+    });
+
+    expect(result?.shadowing.map((entry) => entry.key)).toEqual(["auth-session-secret"]);
+  });
+
+  test("with every config readable the dev-only claim is made exactly as before", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(board, ".dev.vars.local"), "MAYBE_A_SECRET=x\n");
+
+    const result = await checkDevVarsLocal({ projectDir: dir, workerDirs: [board], targets: targets([board]) });
+
+    expect(result?.devOnly.map((entry) => entry.key)).toEqual(["MAYBE_A_SECRET"]);
   });
 });

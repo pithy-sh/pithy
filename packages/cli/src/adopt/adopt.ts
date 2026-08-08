@@ -8,7 +8,7 @@ import { cloudflareConfigPath, parseCloudflareConfig, writeCloudflareConfig } fr
 import { readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
+import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type CheckDevVarsOptions, checkDevVars, type RootDevVar } from "../doctor/devVars";
 import type { StatePathOptions } from "../notifier/state";
 import { loadProject, requireProjectName } from "../project/config";
@@ -62,6 +62,20 @@ export const ADOPT_KINDS = [
   "binding",
   /** A credential the old `dev-vars` token sink left in `.dev.vars.<env>`: `<config>/<project>/tokens.json`. */
   "token",
+  /**
+   * A Worker's `pithy.config.ts` would not import, so **what this value is was never established** (#208).
+   *
+   * `doctor`'s state of the same name, arriving here because the classification is doctor's and this
+   * command reads its verdict. It is the one kind with no destination and no advice: every other verdict
+   * rests on positive evidence, and this one is what is left when the registry that would have supplied
+   * it could not be read. It is refused, named, and the run exits non-zero.
+   *
+   * **Why it matters more here than anywhere.** `adopt` never deletes, so its verdicts are what an
+   * adopter acts on — including which lines are now safe to delete by hand. Classifying against a
+   * registry that would not load reads a declared secret as a key nothing composes, and the loss arrives
+   * one step later, on this command's advice.
+   */
+  "unclassified",
   /** Nothing reads it: not a credential, not declared by anything this project composes. It goes nowhere. */
   "unread",
 ] as const;
@@ -135,6 +149,11 @@ export interface RunAdoptOptions {
   /** The Workers whose registries declare the secrets. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
   /**
+   * The Workers whose `pithy.config.ts` would not import. Read only when {@link targets} is supplied —
+   * both halves of one resolution, so a seam cannot state one and let the other default to a lie.
+   */
+  unresolvable?: UnresolvableWorker[];
+  /**
    * The Workers whose required bindings and `wrangler.jsonc` `vars` decide what a `binding` key is.
    * Defaults to every Worker under `apps/`. Forwarded verbatim to {@link checkDevVars}, which is what
    * keeps the classification here identical to the one `pithy doctor` printed.
@@ -161,12 +180,18 @@ export interface RunAdoptOptions {
 export async function runAdopt(options: RunAdoptOptions): Promise<AdoptResult> {
   const paths = options.paths ?? {};
   const project = await projectName(options.projectDir);
-  const targets = options.targets ?? (await devSecretsTargets(options.projectDir).catch(() => []));
+  // Both halves of one resolution (#208). The lossy wrapper's `.catch(() => [])` stood here, and this is
+  // the caller where reading "declares nothing" for a config that would not import is worse than
+  // unhelpful: the plan below decides where every value belongs by asking this registry.
+  const { targets, unresolvable } =
+    options.targets === undefined
+      ? await resolveDevSecretsTargets(options.projectDir)
+      : { targets: options.targets, unresolvable: options.unresolvable ?? [] };
   const registry = mergedRegistry(targets);
 
-  const sources = await collect(options.projectDir, paths, targets, options.workers);
+  const sources = await collect(options.projectDir, paths, targets, unresolvable, options.workers);
   const destinations = await load(options.projectDir, project, paths);
-  const { entries, pending } = plan(sources, destinations, registry, project, paths);
+  const { entries, pending } = plan(sources, destinations, registry, project, paths, unresolvable);
 
   options.onPlan?.(entries);
   if (options.apply === true) await write(options.projectDir, project, entries, pending, paths);
@@ -222,9 +247,18 @@ async function collect(
   projectDir: string,
   paths: StatePathOptions,
   targets: DevSecretsTarget[],
+  unresolvable: UnresolvableWorker[],
   workers: CheckDevVarsOptions["workers"],
 ): Promise<Source[]> {
-  const check = await checkDevVars({ projectDir, targets, paths, ...(workers === undefined ? {} : { workers }) });
+  // Both halves handed over together, so `checkDevVars` classifies against exactly the resolution this
+  // run made rather than resolving a second time and possibly disagreeing with it (#208).
+  const check = await checkDevVars({
+    projectDir,
+    targets,
+    unresolvable,
+    paths,
+    ...(workers === undefined ? {} : { workers }),
+  });
   const found: Source[] = [];
 
   const rootPath = join(projectDir, ".dev.vars");
@@ -285,6 +319,7 @@ function plan(
   registry: Record<string, { valueType: string }>,
   project: string | null,
   paths: StatePathOptions,
+  unresolvable: UnresolvableWorker[],
 ): { entries: AdoptEntry[]; pending: Map<string, unknown> } {
   /**
    * What this run will have put at each `<destination>\0<key>`, so a second source is judged against it —
@@ -294,7 +329,7 @@ function plan(
   const entries: AdoptEntry[] = [];
 
   for (const source of sources) {
-    entries.push(planOne(source, destinations, registry, project, paths, pending));
+    entries.push(planOne(source, destinations, registry, project, paths, pending, unresolvable));
   }
   entries.sort((a, b) => a.source.localeCompare(b.source) || a.key.localeCompare(b.key));
   return { entries, pending };
@@ -308,9 +343,23 @@ function planOne(
   project: string | null,
   paths: StatePathOptions,
   pending: Map<string, unknown>,
+  unresolvable: UnresolvableWorker[],
 ): AdoptEntry {
   const base = { key: source.key, source: source.path, env: source.env, kind: source.kind };
 
+  // Refused before any destination is considered, because there is no verdict to reach: nothing
+  // established what this value is. It is refused rather than left, so it fails the exit and is never
+  // listed as safe to remove (#208).
+  if (source.kind === "unclassified") {
+    const named = unresolvable.map((worker) => worker.name).join(", ");
+    return {
+      ...base,
+      destination: null,
+      action: "refused",
+      reason: `${source.key} could not be classified: ${named || "a Worker"}'s pithy.config.ts would not import, so nothing knows what declares it. Fix that, then run this again.`,
+      safeToRemove: false,
+    };
+  }
   if (source.kind === "unread") {
     return { ...base, destination: null, action: "leave", reason: null, safeToRemove: false };
   }
@@ -483,7 +532,15 @@ export function renderAdoptText(result: AdoptResult, home = process.env.HOME ?? 
   const rows = result.entries.map((entry) => ({
     key: entry.key,
     from: tildify(entry.source, home),
-    to: entry.destination === null ? "nothing reads it" : tildify(entry.destination, home),
+    // "nothing reads it" is a claim, and only `leave` establishes it. A refused entry also has no
+    // destination — because none could be worked out — and printing the two the same way is how a value
+    // nobody classified reads as one nobody needs (#208).
+    to:
+      entry.destination !== null
+        ? tildify(entry.destination, home)
+        : entry.action === "leave"
+          ? "nothing reads it"
+          : "unknown",
     verdict: verdictOf(entry, result.applied),
   }));
   const keyWidth = Math.max(...rows.map((row) => row.key.length));

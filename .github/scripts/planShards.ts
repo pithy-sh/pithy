@@ -17,10 +17,17 @@
  *      but it is a proxy that never goes stale, and on the tree where this landed it cut the
  *      worst shard from 63.7s to 56.1s against a 47.8s ideal. A measured-weight table would
  *      reach 50.0s and start rotting the day it landed; this is the cheaper two-thirds.
+ *
+ * It imports `packages/cli/src/ci/sourceFiles.ts` by relative path and nothing else. That module
+ * imports nothing but `node:fs` and `node:path`, which is what keeps this script runnable in the
+ * `plan` job — the one job in `ci.yml` that deliberately has no `bun install` step, because a dry
+ * run reads the workspace manifests and nothing else and this job is pure latency in front of every
+ * test job. `crossPackageReads.ts` next door reaches the same module the same way.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isTestFile, sourcePaths } from "../../packages/cli/src/ci/sourceFiles";
 
 /** A task as `turbo run --dry=json` reports it. Only the fields this planner reads. */
 type DryTask = {
@@ -55,27 +62,24 @@ type Shard = {
 /** The marker `turbo` uses for a task whose package does not define the script. */
 const NONEXISTENT = "<NONEXISTENT>";
 
-/** Counts a package's test files — the LPT weight. Integration suites never run in this job. */
+/**
+ * Counts a package's test files — the LPT weight. Integration suites never run in this job.
+ *
+ * The traversal is `packages/cli/src/ci/sourceFiles.ts`, the one walk over this repository's own source
+ * (#185, #202, #211). It had written its own, and that copy carried the exact defect the shared one exists
+ * to hold in one place: the `readdirSync` was guarded and the `statSync` was not, so a file that vanished
+ * between the listing and the probe threw — out of `testFileCount`, out of `runnables`, out of `main`, and
+ * the `plan` job died with it. Every test job in the matrix is gated on that job's outputs, so one entry
+ * disappearing under the walk skipped the entire suite, and a workflow that plans nothing is green.
+ *
+ * The one narrowing this needs on top of the shared predicate is `*.integration.test.ts`: those need a live
+ * Cloudflare environment, are excluded from every package's vitest config, and never run in this matrix, so
+ * counting them would weight a shard with work no runner does.
+ */
 export function testFileCount(packageDir: string): number {
-  const walk = (dir: string): number => {
-    let total = 0;
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      return 0;
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry);
-      if (statSync(path).isDirectory()) {
-        total += walk(path);
-      } else if (entry.endsWith(".test.ts") && !entry.endsWith(".integration.test.ts")) {
-        total += 1;
-      }
-    }
-    return total;
-  };
-  return walk(join(packageDir, "src"));
+  return sourcePaths(join(packageDir, "src"), {
+    keep: (name) => isTestFile(name) && !name.endsWith(".integration.test.ts"),
+  }).length;
 }
 
 /**

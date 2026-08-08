@@ -51,6 +51,67 @@ import { formatJsonLine, withErrorReporting } from "../terminal/output";
 /** The alias-block marker `pithy alias` writes — reused here to detect an installed `p.` shortcut. */
 const ALIAS_MARKER = "# >>> pithy alias >>>";
 
+/**
+ * Whether the `p.` alias is installed — **three states, because a boolean cannot say "I could not tell"**
+ * (#210).
+ *
+ * The rc file is the one thing in this report `doctor` reads out of the adopter's own shell config, and
+ * an unreadable one — wrong mode, a dangling symlink, an `EIO` — used to throw out of
+ * {@link buildDoctorReport} and take the entire report with it: Cloudflare reachability, the secrets
+ * paths, project health, dev secrets. The least important line in the report cost every other line.
+ *
+ * Catching it to `false` is not the fix, and is why #203 stopped at making the failure legible.
+ * `Alias: not installed` about a file nothing could read is a lie, and the adopter's next move on reading
+ * it is `pithy alias` — which fails on the same file. So the third state is said out loud, and it names
+ * the file, which is the only thing anybody can act on.
+ */
+export type AliasState = "installed" | "not-installed" | "unknown";
+
+/** The alias line's whole answer: which state, about which file, and why when nobody could tell. */
+export interface AliasStatus {
+  state: AliasState;
+  /** The rc file the answer is about, or `null` when no shell was detected and none was resolved. */
+  rcPath: string | null;
+  /**
+   * Why the file would not read. Set exactly when {@link AliasStatus.state} is `unknown`.
+   *
+   * The refusal's own sentence — `readRcFile` owns those words (#203) — and never a byte of the file's
+   * contents: an rc file is where a developer keeps `export GITHUB_TOKEN=…`.
+   */
+  reason: string | null;
+}
+
+/**
+ * One actionable sentence from a thrown failure — `message` and `action`, never `detail`.
+ *
+ * `detail` is throw-site context and the HTTP codec strips it for a reason; these lines reach a terminal
+ * and `--json`.
+ */
+function messageOf(error: unknown): string {
+  if (error instanceof PithyError) return `${error.payload.message} ${error.payload.action ?? ""}`.trim();
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read the rc file and answer all three ways it can go.
+ *
+ * No shell is `not-installed` rather than `unknown`: nothing was refused, there is simply no rc file this
+ * platform's detection would write to, and `pithy alias` prints manual instructions for exactly that case.
+ */
+async function aliasStatus(shell: ShellInfo | null, readRc: (path: string) => Promise<string>): Promise<AliasStatus> {
+  if (!shell) return { state: "not-installed", rcPath: null, reason: null };
+  try {
+    const contents = await readRc(shell.rcPath);
+    return {
+      state: contents.includes(ALIAS_MARKER) ? "installed" : "not-installed",
+      rcPath: shell.rcPath,
+      reason: null,
+    };
+  } catch (error) {
+    return { state: "unknown", rcPath: shell.rcPath, reason: messageOf(error) };
+  }
+}
+
 const VERSION = (
   JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }
 ).version;
@@ -92,7 +153,8 @@ export interface ProjectStatus {
 export interface DoctorReport {
   cli: CliStatus;
   shell: ShellInfo | null;
-  aliasInstalled: boolean;
+  /** Whether the `p.` alias is installed, or whether its rc file could not be read at all (#210). */
+  alias: AliasStatus;
   configDir: string;
   stateFile: string;
   notifierEnabled: boolean;
@@ -337,13 +399,17 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
   const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
   const state = await readState(file);
+  // Discarded on failure, like every read in this command and for the same reason (#210). The notifier
+  // cache is bookkeeping for the *next* run — a config directory that will not take a write is exactly
+  // the machine somebody runs `doctor` on, and losing the whole report over a file nothing in it reports
+  // is the shape this command exists to not have.
   await writeState(file, {
     ...state,
     lastCheck: now(),
     latestVersion: cliLatest?.version ?? state.latestVersion,
     securityFlagged: cliLatest?.securityFlagged ?? state.securityFlagged,
     installer: state.installer === "unknown" ? installer : state.installer,
-  });
+  }).catch(() => undefined);
 
   const cli: CliStatus = {
     installed,
@@ -353,9 +419,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     upgradeCommand: upgradeCommandFor(installer),
   };
 
-  // Shell / alias.
+  // Shell / alias. The rc read is the only one in this report that reaches into the adopter's own shell
+  // config, and it is the least important line here — so it becomes a state rather than an exception.
   const shell = await detect();
-  const aliasInstalled = shell ? (await readRc(shell.rcPath)).includes(ALIAS_MARKER) : false;
+  const alias = await aliasStatus(shell, readRc);
 
   // Notifier state for display.
   const disabledByEnv = Boolean(env.PITHY_NO_UPDATE_NOTIFIER);
@@ -443,7 +510,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   return {
     cli,
     shell,
-    aliasInstalled,
+    alias,
     configDir: stateDir({ homedir: options.homedir, env }),
     stateFile: file,
     notifierEnabled,
@@ -504,6 +571,26 @@ export function doctorExitCode(report: DoctorReport): number {
 /** Abbreviate a home-relative path to `~/…` for display. */
 function tildify(path: string, home: string): string {
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+/**
+ * The `Alias:` line, in all three states.
+ *
+ * The third one **names the file and nothing else about it** (#210). The reason `readRcFile` raised is
+ * carried in `--json`, where a script can read it; here the file is the whole actionable fact, and it is
+ * tilde-abbreviated like every other path in this report. What the line must never do is offer
+ * `pithy alias` — that command reads the same file and fails on it — so it names the order the two things
+ * have to happen in.
+ */
+function aliasLine(alias: AliasStatus, terse: boolean, home: string): string {
+  switch (alias.state) {
+    case "installed":
+      return terse ? "Alias: installed" : "Alias: installed (`p.` → `pithy`)";
+    case "not-installed":
+      return terse ? "Alias: not installed" : "Alias: not installed (run `pithy alias`)";
+    case "unknown":
+      return `Alias: unknown — can't read ${tildify(alias.rcPath ?? "your shell config", home)}. Fix that first; \`pithy alias\` reads the same file.`;
+  }
 }
 
 /**
@@ -664,6 +751,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
   // but a report that called this project healthy is what #178 was reported about.
   const devVarsOk = !report.devVars || devVarsHealthy(report.devVars);
+  // An alias nobody could read keeps the report verbose, on the same rule the `unknown` version state
+  // follows: "I could not check" is information, and the terse form is the report saying there is nothing
+  // to look at. It still never fails the exit — toolchain state does not (#210).
+  const aliasOk = report.alias.state !== "unknown";
   // An unknown keeps the report verbose on purpose: "I could not check" is information worth surfacing.
   const terse =
     report.cli.state === "current" &&
@@ -675,6 +766,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     devPreferencesOk &&
     devSecretsOk &&
     devVarsOk &&
+    aliasOk &&
     !report.projectLoadError;
 
   const blocks: string[] = [];
@@ -732,14 +824,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   const shellName = report.shell ? report.shell.kind : "unknown";
   const shellLine =
     terse || !report.shell ? `Shell: ${shellName}` : `Shell: ${shellName} (${tildify(report.shell.rcPath, home)})`;
-  const aliasLine = report.aliasInstalled
-    ? terse
-      ? "Alias: installed"
-      : "Alias: installed (`p.` → `pithy`)"
-    : terse
-      ? "Alias: not installed"
-      : "Alias: not installed (run `pithy alias`)";
-  blocks.push([shellLine, aliasLine].join("\n"));
+  blocks.push([shellLine, aliasLine(report.alias, terse, home)].join("\n"));
 
   // Config / State / Notifier — verbose only.
   if (!terse) {
@@ -834,7 +919,11 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
   return {
     cli: report.cli,
     shell: report.shell?.kind ?? null,
-    alias: report.aliasInstalled ? "installed" : "not installed",
+    // An object rather than the string it used to be, because the answer is tri-state now and a third
+    // string would leave a script no way to reach the file the third state is about (#210). `state` is
+    // `installed`, `not-installed`, or `unknown`; `rcPath` is the file, absolute here like every other
+    // path in this payload; `reason` is the refusal's own sentence, and `null` on the two known states.
+    alias: report.alias,
     configDir: report.configDir,
     stateFile: report.stateFile,
     notifier: report.notifierEnabled ? "enabled" : "disabled",
@@ -897,6 +986,10 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           undeclared: report.devSecrets.undeclared,
           mode: report.devSecrets.mode === null ? null : report.devSecrets.mode.toString(8),
           unreadable: report.devSecrets.unreadable,
+          // The Workers this project has that nobody could ask what they declare (#208). Carried here
+          // because a `devSecrets` object with no targets and a `null` one used to be the same answer,
+          // and an agent reading either had no way to tell "no secrets" from "nothing loaded".
+          unresolvable: report.devSecrets.unresolvable,
           detail: describeDevSecrets(report.devSecrets),
         }
       : null,

@@ -264,7 +264,9 @@ describe("the root .dev.vars — is anything reading it", () => {
     const result = await check([board]);
 
     expect(result.root.map((entry) => entry.key).sort()).toEqual([...keys].sort());
-    expect(new Set(result.root.map((entry) => entry.state))).toEqual(new Set(ROOT_DEV_VAR_STATES));
+    // Every state but `unclassified`, which needs a Worker nobody could ask — see the #208 block below.
+    const classified = ROOT_DEV_VAR_STATES.filter((state) => state !== "unclassified");
+    expect(new Set(result.root.map((entry) => entry.state))).toEqual(new Set(classified));
   });
 
   test("every state either prints a sentence or is another check's to print — none is merely forgotten", () => {
@@ -282,8 +284,13 @@ describe("the root .dev.vars — is anything reading it", () => {
         minted: [],
         devJsonSecrets: [],
         devConfigPath: "/config/replay/dev.json",
+        // Stated, because `unclassified` only exists when one is — and the sentence it earns names it.
+        unresolvable: [{ name: "replay-board", dir: "/p/apps/board", reason: "pithy.config.ts would not import." }],
       });
-      expect(lines.length === 0).toBe(silent.includes(state));
+      // The unresolvable Worker is itself a line, so every state here is judged on the lines *its own*
+      // key adds rather than on the block being empty.
+      const own = lines.filter((line) => line.startsWith("SOME_KEY"));
+      expect(own.length === 0).toBe(silent.includes(state));
     }
   });
 
@@ -313,5 +320,84 @@ describe("isCloudflareEnvKey", () => {
     for (const key of CLOUDFLARE_ENV_KEYS) expect(isCloudflareEnvKey(key)).toBe(true);
     expect(isCloudflareEnvKey("CONNECTION_KEY_ENCRYPTION_KEY")).toBe(false);
     expect(isCloudflareEnvKey("auth-session-secret")).toBe(false);
+  });
+});
+
+/**
+ * A Worker whose `pithy.config.ts` will not import is not a Worker that declares nothing (#208).
+ *
+ * the lossy wrapper answered both states with `[]`, and this check read the second as the first: with
+ * no registry, every key in the root `.dev.vars` classified as `unread` — "nothing reads it, delete it" —
+ * including the registry secrets the broken Worker declares. Registries merge project-wide, so a healthy
+ * sibling does not save it: the answer for the *project* is missing whatever the unreadable one held.
+ *
+ * `doctor` is run because something is already wrong, so the fix is never a refusal. It names the Worker,
+ * withholds the one claim it cannot make, and prints the rest of the report.
+ */
+describe("a Worker nobody could ask (#208)", () => {
+  const broken = [
+    { name: "replay-board", dir: "/p/apps/board", reason: "apps/board/pithy.config.ts would not import. Fix it." },
+  ];
+
+  test("a key nothing appears to read is unclassified, never 'delete it'", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=x\n");
+
+    const result = await checkDevVars({
+      projectDir: dir,
+      workers: [board],
+      // The state a broken config leaves: no registry resolved, and a Worker that could not be asked.
+      targets: [],
+      unresolvable: broken,
+      paths: paths(),
+    });
+
+    expect(result.root).toEqual([{ key: "auth-session-secret", state: "unclassified", workers: [] }]);
+    expect(describeDevVars(result).join("\n")).not.toContain("Delete it");
+  });
+
+  test("the report names the Worker and why, and keeps everything else it had to say", async () => {
+    const board = await worker("board", { vars: {} });
+    await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=tok\nSOMETHING_ELSE=x\n");
+
+    const result = await checkDevVars({
+      projectDir: dir,
+      workers: [board],
+      targets: [],
+      unresolvable: broken,
+      paths: paths(),
+    });
+    const lines = describeDevVars(result);
+
+    expect(lines[0]).toContain("replay-board");
+    expect(lines[0]).toContain("would not import");
+    // The credential line is decided by `CLOUDFLARE_ENV_KEYS`, not by any registry, so it is still said.
+    expect(lines.join("\n")).toContain("CLOUDFLARE_API_TOKEN is in .dev.vars");
+    expect(lines.join("\n")).toContain("SOMETHING_ELSE");
+    expect(devVarsHealthy(result)).toBe(false);
+  });
+
+  test("a healthy sibling's registry still classifies its own secrets — a partial read is not no read", async () => {
+    const api = await worker("api", { vars: {} });
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=x\nSTRAY=y\n");
+
+    const result = await checkDevVars({
+      projectDir: dir,
+      workers: [api],
+      targets: targets([api]),
+      unresolvable: broken,
+      paths: paths(),
+    });
+
+    // Positive evidence survives a partial read: `api` declares this one, and that is a fact.
+    expect(result.root.find((entry) => entry.key === "auth-session-secret")?.state).toBe("secret");
+    // The negative claim does not: `board` may declare `STRAY`, and nobody can say it does not.
+    expect(result.root.find((entry) => entry.key === "STRAY")?.state).toBe("unclassified");
+  });
+
+  test("nothing unresolvable is silence — the check carries it whether or not it prints", async () => {
+    const board = await worker("board", { vars: {} });
+    const result = await checkDevVars({ projectDir: dir, workers: [board], targets: targets([board]), paths: paths() });
+    expect(result.unresolvable).toEqual([]);
   });
 });

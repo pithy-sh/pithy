@@ -42,6 +42,25 @@ describe("devSecretsFile", () => {
     expect(devSecretsDir("replay", options())).toBe(join(config, "replay"));
   });
 
+  test("a name that is not a valid project name is refused, naming the value (#212)", () => {
+    // Safe today — every caller has been through `requireProjectName` or `kebab`. The rule now lives at
+    // the join instead of at each of them, because this directory holds every dev secret a project has
+    // and `ensureScaffoldPath` guards writes *inside a project*, which this path is outside of.
+    for (const name of ["../evil", "a/b", "..", "", "Acme Corp"]) {
+      const thrown = (() => {
+        try {
+          devSecretsDir(name, options());
+        } catch (error) {
+          return error as PithyError;
+        }
+        return null;
+      })();
+      expect(thrown, JSON.stringify(name)).toBeInstanceOf(PithyError);
+    }
+    // And the file below it, which is the same join one segment further down.
+    expect(() => devSecretsFile("../evil", options())).toThrow(PithyError);
+  });
+
   test("follows the platform resolver rather than a second one — no PITHY_CONFIG_DIR, no home guess", () => {
     // The whole point of reusing #131's `stateDir`: two answers to "where does config live" is the
     // defect this move exists to remove, not one to reproduce one directory over.

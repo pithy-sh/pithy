@@ -5,10 +5,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { sourceFiles } from "../ci/sourceFiles";
-import { devSecretsTargets, resolveDevSecretsTargets } from "./targets";
+import { resolveDevSecretsTargets } from "./targets";
 
 /**
- * {@link devSecretsTargets} against a real project on disk, because the defect it hides is not
+ * {@link resolveDevSecretsTargets} against a real project on disk, because the defect it hides is not
  * visible against a fake. It read the **secrets capability's own `registry` option** rather than
  * `aggregateSecretRegistries` — the call the Worker itself makes at composition — and that took two
  * rounds in the live CLI to find: `pithy add secrets` writes `secrets({ rotationIntervalDays })` and
@@ -55,11 +55,11 @@ export default {
 };
 `;
 
-describe("devSecretsTargets", () => {
+describe("resolveDevSecretsTargets", () => {
   test("the registry is the aggregate every capability contributes to, not the secrets slice", async () => {
     await worker("board", SECRETS_AND_EMAIL);
 
-    const targets = await devSecretsTargets(dir);
+    const { targets } = await resolveDevSecretsTargets(dir);
 
     expect(targets.map((t) => t.name)).toEqual(["replay-board"]);
     // email declares this; nobody re-types it into `secrets({ registry })`. Reading the slice alone
@@ -71,20 +71,20 @@ describe("devSecretsTargets", () => {
   test("a Worker that never composed secrets is not a target, and not an error either", async () => {
     await worker("site", "export default { capabilities: [] };\n");
 
-    expect(await devSecretsTargets(dir)).toEqual([]);
+    expect((await resolveDevSecretsTargets(dir)).targets).toEqual([]);
   });
 
   test("a project with no workers at all answers with none rather than throwing", async () => {
     // `pithy add` runs this in a directory that may be anything. Refusing here would make an empty
     // project fail a command that has nothing to do for it.
-    expect(await devSecretsTargets(dir)).toEqual([]);
+    expect((await resolveDevSecretsTargets(dir)).targets).toEqual([]);
   });
 
   test("only the named Worker is a target when one is named", async () => {
     await worker("board", SECRETS_AND_EMAIL);
     await worker("api", SECRETS_AND_EMAIL);
 
-    const targets = await devSecretsTargets(dir, { worker: "replay-board" });
+    const { targets } = await resolveDevSecretsTargets(dir, { worker: "replay-board" });
 
     expect(targets.map((t) => t.name)).toEqual(["replay-board"]);
   });
@@ -135,12 +135,12 @@ describe("devSecretsTargets", () => {
     // module it imported before the write. Without a reload the run seeds against the composition
     // from *before* the add — so the value it has just minted never reaches the store.
     await worker("board", "export default { capabilities: [] };\n");
-    expect(await devSecretsTargets(dir)).toEqual([]);
+    expect((await resolveDevSecretsTargets(dir)).targets).toEqual([]);
 
     await worker("board", SECRETS_AND_EMAIL);
 
-    expect(await devSecretsTargets(dir)).toEqual([]);
-    const fresh = await devSecretsTargets(dir, { reload: true });
+    expect((await resolveDevSecretsTargets(dir)).targets).toEqual([]);
+    const { targets: fresh } = await resolveDevSecretsTargets(dir, { reload: true });
     expect(Object.keys(fresh[0]?.registry ?? {})).toContain("email-link-signing-key");
   });
 });
@@ -148,38 +148,39 @@ describe("devSecretsTargets", () => {
 /**
  * **The tripwire, because this defect class has never had one producer (#199).**
  *
- * {@link devSecretsTargets} answers "which Workers declare secrets" with an array, and an array cannot
- * say "and this one could not be asked". Every caller that takes it therefore reads a config that will
- * not import as a Worker that declares nothing — which is how `pithy dev` came to write a `.dev.vars`
- * with no bindings in it and print not one word. Four callers had already made the same mistake
- * independently, each with its own `.catch(() => [])`, which is the exact shape `readDevVarsSource`,
- * `readDevJson`, `availableManifests` and `workerUi` each had before it cost something.
+ * There used to be a lossy wrapper here — `devSecretsTargets`, which answered "which Workers declare
+ * secrets" with a bare array. An array cannot say "and this one could not be asked", so every caller
+ * read a config that would not import as a Worker that declares nothing. That is how `pithy dev` came
+ * to write a `.dev.vars` with no bindings in it and print not one word, and four callers had made the
+ * same mistake independently — the exact shape `readDevVarsSource`, `readDevJson`, `availableManifests`
+ * and `workerUi` each had before it cost something.
  *
- * So the lossy form is allowed only where it is recorded. A new call site fails this test, and the way
- * to pass it is to reach for {@link resolveDevSecretsTargets} — which cannot drop the failure, because
- * the failure is a field — or to add yourself here having read why the two are different.
+ * All four are routed now and the wrapper is deleted, so there is no lossy form to reach for. What is
+ * left is the one thing a caller can still do: take `.targets` and drop `.unresolvable` on the floor.
  *
- * Names, not counts. A count passes when one caller is deleted and another is added.
+ * **That is sometimes right**, which is why this is a recorded list rather than a ban. `pithy seed`
+ * drops it deliberately and says why at the call site: the command fails outright on an unloadable
+ * config long before this runs, and inside `pithy dev` the generation step has already said it in one
+ * sentence — saying it twice, in two blocks, is the correlation problem that sentence exists to end.
+ *
+ * So a new dropper costs a line here and a reason there. The first phrasing of this gate banned the
+ * access outright and failed on exactly that one correct caller, which is the argument for recording
+ * rather than forbidding: the shape is not wrong, it is wrong *unexplained*.
  */
-const LOSSY_CALLERS = [
-  // Diagnostics. Each returns "nothing to report" for a config that will not import; `pithy doctor`
-  // names the unloadable config in its project-health block, so the state is said out loud by the
-  // command even though these three checks cannot see it. Not this lane's to change.
-  join("doctor", "devSecrets.ts"),
-  join("doctor", "devVars.ts"),
-  join("doctor", "devVarsLocal.ts"),
-  // `pithy add`. It rewrites the config it is about to resolve, so an unresolvable one is a state it
-  // can itself produce — and it currently says nothing about it. Recorded, not fixed here.
-  join("adopt", "adopt.ts"),
+const DROPS_UNRESOLVABLE = [
+  // `pithy seed`. Reported already, twice over, before this function is reached — see the comment
+  // above the call, which is the thing a fifth dropper has to write for itself.
+  join("devSecrets", "seed.ts"),
 ];
 
-test("every caller of the lossy target list is recorded (#199)", () => {
+test("every module that drops the unresolvable half is recorded (#199)", () => {
   const src = join(import.meta.dirname, "..");
-  const callers = sourceFiles(src)
+  const droppers = sourceFiles(src)
+    .filter((file) => !file.path.endsWith(".test.ts"))
     .filter((file) => !file.path.endsWith(join("devSecrets", "targets.ts")))
-    .filter((file) => /\bdevSecretsTargets\s*\(/.test(file.text))
+    .filter((file) => /\)\.targets\b|\bdevSecretsTargets\b/.test(file.text))
     .map((file) => file.path.slice(src.length + 1))
     .sort();
 
-  expect(callers).toEqual([...LOSSY_CALLERS].sort());
+  expect(droppers).toEqual([...DROPS_UNRESOLVABLE].sort());
 });

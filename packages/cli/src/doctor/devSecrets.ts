@@ -7,7 +7,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
+import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
 import { isCloudflareEnvKey } from "./devVars";
 
@@ -96,12 +96,27 @@ export interface DevSecretsCheck {
    * Names in the secrets file that no capability declares — the residue of a removed capability, or a
    * typo. **Not a fault either**, and never fatal to a seed: a stale line must not brick dev. Reported so
    * a value nobody reads can be deleted rather than maintained.
+   *
+   * Empty when {@link unreadable}, and empty when anything is {@link unresolvable}: both are the same
+   * rule, which is that "no capability declares this" is a *negative* claim and a registry nobody could
+   * read is exactly what might have declared it.
    */
   undeclared: string[];
   /** The file's permission bits, or `null` when there is no file. Anything wider than `0o600` is a finding. */
   mode: number | null;
   /** Whether the file is there and will not parse — the one state that hides everything else. */
   unreadable: boolean;
+  /**
+   * Every Worker with a `pithy.config.ts` that would not import, and why (#208). Empty on an ordinary run.
+   *
+   * **This is what makes `null` mean one thing again.** `checkDevSecrets` returned `null` whenever the
+   * target list was empty, over a comment reading "`null` means no Worker composes `secrets`" — and it
+   * also meant every Worker's config failed to import, because the lossy target list answered both with
+   * `[]`. So the whole `Dev secrets:` block vanished in the one state it was written for. The sentence
+   * naming the Worker is {@link ./devVars}'s, which prints first in that block; this field is what stops
+   * *this* check from claiming a registry it never read.
+   */
+  unresolvable: UnresolvableWorker[];
 }
 
 /** What {@link checkDevSecrets} needs. `targets` is the seam; it defaults to the real project's Workers. */
@@ -110,18 +125,30 @@ export interface CheckDevSecretsOptions {
   projectDir: string;
   /** The Workers whose registries declare the secrets. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
+  /**
+   * The Workers whose `pithy.config.ts` would not import. Read only when {@link targets} is supplied —
+   * both halves of one resolution, so a seam cannot state one and let the other default to a lie.
+   */
+  unresolvable?: UnresolvableWorker[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
   paths?: StatePathOptions;
 }
 
 /**
  * Read the two files and compare them against the registry. Never throws — a diagnostic has to work in
- * the broken environment it exists to diagnose. `null` means no Worker composes `secrets`, so there is
- * no registry, no declared name, and no question to answer.
+ * the broken environment it exists to diagnose.
+ *
+ * **`null` means no Worker composes `secrets`, and now only that** (#208). It used to mean that *or* that
+ * every Worker's config failed to import, because the lossy target list answered both states with `[]` —
+ * so the block that had the most to say was the one that said nothing. A resolution that failed is
+ * carried in {@link DevSecretsCheck.unresolvable} and reported.
  */
 export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<DevSecretsCheck | null> {
-  const targets = options.targets ?? (await devSecretsTargets(options.projectDir));
-  if (targets.length === 0) return null;
+  const { targets, unresolvable } =
+    options.targets === undefined
+      ? await resolveDevSecretsTargets(options.projectDir)
+      : { targets: options.targets, unresolvable: options.unresolvable ?? [] };
+  if (targets.length === 0 && unresolvable.length === 0) return null;
 
   const path = await resolveDevSecretsFile(options.projectDir, options.paths ?? {});
   const inDevVars = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
@@ -176,11 +203,14 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
   // A file that will not parse tells us nothing about what is in it, so every declared secret would read
   // as missing and nothing in it could be judged declared. Saying "your file is broken" once beats saying
   // it again eleven times in other words.
-  const undeclared = unreadable
-    ? []
-    : Object.keys(stated)
-        .filter((name) => !seen.has(name))
-        .sort();
+  // The same rule once more for a registry nobody could read (#208): the stated name may be the broken
+  // Worker's own declaration, and this is the negative claim of the four.
+  const undeclared =
+    unreadable || unresolvable.length > 0
+      ? []
+      : Object.keys(stated)
+          .filter((name) => !seen.has(name))
+          .sort();
   return {
     path,
     // Nor can it say anything true about `.dev.vars`. Both states are decided against what the secrets
@@ -192,6 +222,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     undeclared,
     mode,
     unreadable,
+    unresolvable,
   };
 }
 

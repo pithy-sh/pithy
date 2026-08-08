@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
-import { readFileOutcome, readOptionalFile } from "./readOptionalFile";
+import { readFileOutcome, readOptionalFile, requireRecord } from "./readOptionalFile";
 
 let dir: string;
 
@@ -113,6 +114,75 @@ describe("readFileOutcome", () => {
     // `availableManifests` reads sixteen packages and must report the broken one without losing the
     // other fifteen. A read that threw would take the listing with it.
     await expect(readFileOutcome(join(dir, "gone.txt"))).resolves.toBeDefined();
+  });
+});
+
+/**
+ * The second half of the same sentence: a read that **succeeded** and produced something that is not a
+ * document. Three readers decided independently that such a value was an empty base to write from —
+ * `pithy.worker.jsonc` (#204), `tokens.json` and `dev.json` (#209) — which is this repository's count for
+ * a rule that belongs at the thing being called.
+ */
+describe("requireRecord", () => {
+  const path = "/config/pithy/replay/tokens.json";
+
+  test("a record is handed straight back", () => {
+    const document = { dev: { CF_TOKEN: "v" } };
+    expect(requireRecord(path, document)).toBe(document);
+  });
+
+  test("null, a string, a number and a boolean are each refused — a null check alone is not the rule", () => {
+    // `typeof null === "object"` is the first half of why. Each of these is what a hand-edited credential
+    // file has parsed to at least once, and every one of them used to be an empty base to write from.
+    for (const value of [null, "react", 12345, true, false, []]) {
+      expect(() => requireRecord(path, value), JSON.stringify(value)).toThrow(PithyError);
+    }
+  });
+
+  test("a top-level scalar boxed by comment-json is refused — the second half of why", () => {
+    // `parse('"react"')` is a `String` *object*, so it has somewhere to hang the file's comments. It
+    // passes `typeof x === "object"` and it is not `null`, which is exactly the gap the tag closes.
+    const boxed = parse('"react"');
+    expect(typeof boxed).toBe("object");
+    expect(boxed).not.toBeNull();
+    expect(() => requireRecord(path, boxed)).toThrow(PithyError);
+    expect(() => requireRecord(path, parse("42"))).toThrow(PithyError);
+    expect(() => requireRecord(path, parse("true"))).toThrow(PithyError);
+  });
+
+  test("the refusal names the path and the shape, and never a byte of the value", () => {
+    const thrown = (() => {
+      try {
+        requireRecord(path, "CLOUDFLARE_API_TOKEN=super-secret-value");
+      } catch (error) {
+        return error as PithyError;
+      }
+      return null;
+    })();
+
+    expect(thrown).toBeInstanceOf(PithyError);
+    const payload = (thrown as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(path);
+    expect(whole).toContain("a string");
+    expect(whole).not.toContain("super-secret-value");
+  });
+
+  test("a call site may write its own refusal, and is handed the shape in words", () => {
+    const thrown = (() => {
+      try {
+        requireRecord(path, [1, 2], {
+          notARecord: ({ found }) =>
+            new ConflictError({ message: `Cannot update ${path}: it holds ${found}.`, action: "Fix it." }),
+        });
+      } catch (error) {
+        return error as ConflictError;
+      }
+      return null;
+    })();
+
+    expect(thrown).toBeInstanceOf(ConflictError);
+    expect((thrown as ConflictError).payload.message).toContain("it holds an array");
   });
 });
 

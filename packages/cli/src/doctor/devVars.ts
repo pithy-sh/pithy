@@ -8,7 +8,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { cloudflareConfigPath } from "../cloudflare/config";
 import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { isGeneratedDevVars } from "../devSecrets/generate";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
+import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveWorkers } from "../project/workerScope";
 import { declaredVars } from "./wranglerVars";
@@ -63,6 +63,21 @@ export const ROOT_DEV_VAR_STATES = [
    * from this file, which no Worker reads. The value is real and its home is elsewhere.
    */
   "binding",
+  /**
+   * A Worker's `pithy.config.ts` would not import, so **nothing here can say what reads this** (#208).
+   *
+   * The state that exists because `unread` is a *negative* claim — "nothing this project composes
+   * declares it" — and a registry nobody could read is exactly what might have declared it. Registries
+   * merge project-wide, so a healthy sibling does not settle it either: its registry is real, and it is
+   * not the project's answer. Until #208 an unresolvable config answered `[]` like a project with no
+   * secrets, so every key in the file classified `unread` and the report said "delete it" about the
+   * broken Worker's own secrets.
+   *
+   * The three states above survive a partial read because each is positive evidence: a fixed credential
+   * list, a registry that *did* declare the name, a composition that *does* want it. This one is what is
+   * left when the only remaining answer would have been an inference from files nobody could open.
+   */
+  "unclassified",
   /** Nothing reads it: not a credential, not declared by anything this project composes. */
   "unread",
 ] as const;
@@ -121,6 +136,15 @@ export interface DevVarsCheck {
    * used to make, which nothing reads since #179. Names only, sorted. Never a value.
    */
   devJsonSecrets: string[];
+  /**
+   * Every Worker with a `pithy.config.ts` that would not import, and why (#208). Empty on an ordinary run.
+   *
+   * It is a field rather than an absence because an absence is what the defect was: the lossy target list
+   * answered `[]` for this state and for a project that never composed `secrets`, so every consumer read
+   * a config that would not load as a Worker that declares nothing. A caller now has to drop it on
+   * purpose. It also decides {@link RootDevVarState} — see `unclassified`.
+   */
+  unresolvable: UnresolvableWorker[];
 }
 
 /** One `.dev.vars.<env>` the old token sink left in the checkout. */
@@ -137,6 +161,11 @@ export interface CheckDevVarsOptions {
   projectDir: string;
   /** The Workers whose registries declare the secrets. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
+  /**
+   * The Workers whose `pithy.config.ts` would not import. Read only when {@link targets} is supplied —
+   * both halves of one resolution, so a seam cannot state one and let the other default to a lie.
+   */
+  unresolvable?: UnresolvableWorker[];
   /** The Workers whose bindings are read and whose generated files are checked. Defaults to all of them. */
   workers?: { name: string; dir: string; capabilities: Capability[] }[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
@@ -155,7 +184,13 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
       dir: worker.dir,
       capabilities: worker.capabilities,
     }));
-  const targets = options.targets ?? (await devSecretsTargets(options.projectDir).catch(() => []));
+  // Both halves of one resolution (#208). `resolveDevSecretsTargets` cannot drop the failure, because
+  // the failure is a field — the lossy wrapper's `.catch(() => [])` used to stand here and answered a
+  // config that would not import exactly as it answered a project with no secrets.
+  const { targets, unresolvable } =
+    options.targets === undefined
+      ? await resolveDevSecretsTargets(options.projectDir)
+      : { targets: options.targets, unresolvable: options.unresolvable ?? [] };
 
   // What the registries declare, and what the compositions require. Two different answers to "does
   // anything read this name", kept apart because they have two different fixes.
@@ -173,7 +208,11 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
   const inRoot = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
   const root: RootDevVar[] = Object.keys(inRoot)
     .sort()
-    .map((key) => ({ key, state: classify(key, declaredSecrets, wants), workers: wants.get(key) ?? [] }));
+    .map((key) => ({
+      key,
+      state: classify(key, declaredSecrets, wants, unresolvable.length > 0),
+      workers: wants.get(key) ?? [],
+    }));
 
   const empty: EmptyDevVars[] = [];
   for (const worker of workers) {
@@ -198,6 +237,7 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
     devConfigPath: await bootstrapVarsPath(options.projectDir, options.paths ?? {}).catch(() => null),
     minted: await mintedDevVarsFiles(options.projectDir),
     devJsonSecrets: devJsonSecrets.sort(),
+    unresolvable,
   };
 }
 
@@ -233,12 +273,23 @@ export function isCloudflareEnvKey(name: string): boolean {
   return (CLOUDFLARE_ENV_KEYS as readonly string[]).includes(name);
 }
 
-/** One root key's state. Ordered by who reads it: the CLI, then a registry, then a composition. */
-function classify(key: string, declaredSecrets: Set<string>, wants: Map<string, string[]>): RootDevVarState {
+/**
+ * One root key's state. Ordered by who reads it: the CLI, then a registry, then a composition.
+ *
+ * The first three are positive evidence and survive a `partial` read — a fixed credential list, a
+ * registry that did declare the name, a composition that does want it. `unread` is the one negative
+ * claim, so with a Worker nobody could ask it becomes `unclassified` instead (#208).
+ */
+function classify(
+  key: string,
+  declaredSecrets: Set<string>,
+  wants: Map<string, string[]>,
+  partial: boolean,
+): RootDevVarState {
   if (isCloudflareEnvKey(key)) return "credential";
   if (declaredSecrets.has(key)) return "secret";
   if (wants.has(key)) return "binding";
-  return "unread";
+  return partial ? "unclassified" : "unread";
 }
 
 /**
@@ -250,6 +301,15 @@ function classify(key: string, declaredSecrets: Set<string>, wants: Map<string, 
  */
 export function describeDevVars(check: DevVarsCheck): string[] {
   const lines: string[] = [];
+  // First, above everything, because it is the sentence that explains the lines under it: a Worker
+  // nobody could ask is why half of them say "unclassified" rather than naming a destination. `doctor`
+  // is run *because* something is already wrong, so this is a finding and never a refusal — the rest of
+  // the block still prints (#208).
+  for (const worker of check.unresolvable) {
+    lines.push(
+      `${worker.name}'s pithy.config.ts would not import, so nothing here knows what it declares. ${worker.reason}`,
+    );
+  }
   for (const { file, env } of check.minted) {
     lines.push(
       `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — run pithy adopt to copy it out, then delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
@@ -267,7 +327,7 @@ export function describeDevVars(check: DevVarsCheck): string[] {
     );
   }
   for (const entry of check.root) {
-    const line = describeRootDevVar(entry, check.devConfigPath);
+    const line = describeRootDevVar(entry, check.devConfigPath, check.unresolvable);
     if (line !== null) lines.push(line);
   }
   return lines;
@@ -279,7 +339,11 @@ export function describeDevVars(check: DevVarsCheck): string[] {
  * A switch over {@link RootDevVarState} with no default, so adding a state is a type error here rather
  * than a key class that goes quiet — which is exactly how the `d1`-only check lost the other backend.
  */
-function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): string | null {
+function describeRootDevVar(
+  entry: RootDevVar,
+  devConfigPath: string | null,
+  unresolvable: UnresolvableWorker[],
+): string | null {
   switch (entry.state) {
     case "credential":
       // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
@@ -294,6 +358,14 @@ function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): st
       const wanted = entry.workers.length > 0 ? entry.workers.join(", ") : "this project";
       const home = devConfigPath === null ? "this machine's dev config" : devConfigPath;
       return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home} under "vars". Run pithy adopt.`;
+    }
+    case "unclassified": {
+      // Named, never advised on. The one thing this line must not do is repeat what `unread` says: the
+      // whole point is that "nothing reads it, delete it" is the claim nobody could establish, and this
+      // key may be the unreadable Worker's own registry secret.
+      const named = unresolvable.map((worker) => worker.name).join(", ");
+      const who = named === "" ? "a Worker whose pithy.config.ts will not import" : named;
+      return `${entry.key} is in .dev.vars, and nothing here can say what reads it while ${who} will not import. Fix that first.`;
     }
     case "unread":
       return `${entry.key} is in .dev.vars and nothing reads it — not a Cloudflare credential, and nothing this project composes declares it. Delete it.`;

@@ -11,7 +11,14 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { DevSecretsTarget } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
-import { type AdoptEntry, type AdoptResult, renderAdoptText, runAdopt } from "./adopt";
+import {
+  type AdoptEntry,
+  type AdoptResult,
+  adoptRefusals,
+  adoptSafeToRemove,
+  renderAdoptText,
+  runAdopt,
+} from "./adopt";
 
 /**
  * `pithy adopt` — the migration `pithy doctor` reports (#187).
@@ -33,7 +40,7 @@ function paths(): StatePathOptions {
   return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } };
 }
 
-/** The project's registry, as a `devSecretsTargets` seam: one Worker, three declared secrets. */
+/** The project's registry, as a `resolveDevSecretsTargets` seam: one Worker, three declared secrets. */
 function targets(): DevSecretsTarget[] {
   const registry: SecretRegistry = {
     "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
@@ -321,5 +328,187 @@ describe("renderAdoptText", () => {
     expect(text).toContain("CLOUDFLARE_ACCOUNT_ID");
     // `unread` has no copy anywhere, so it is never called safe to remove — it gets doctor's sentence.
     expect(text).toContain("nothing reads");
+  });
+});
+
+/**
+ * A Worker whose `pithy.config.ts` will not import (#208).
+ *
+ * This is the caller where the conflation is worse than unhelpful. `adopt` decides where each value
+ * belongs by asking the registry what the project declares, and an unresolvable config answered
+ * "declares nothing" — so a registry secret read as a key nothing composes, and the report said so. It
+ * deletes nothing itself, which is exactly why that matters: the loss arrives one step later, by hand,
+ * on this command's advice.
+ *
+ * So it refuses to classify for a Worker it could not ask, names it, and moves everything it still has
+ * positive evidence for. The shape already existed — it refuses per key on a conflict.
+ */
+describe("a Worker nobody could ask (#208)", () => {
+  const broken = [
+    {
+      name: "replay-board",
+      dir: join("apps", "board"),
+      reason: "apps/board/pithy.config.ts would not import. Install dependencies, or fix the file.",
+    },
+  ];
+
+  /** The state one broken config leaves: no registry, no Worker set, and one Worker named. */
+  function unresolved(options: { apply?: boolean } = {}): Promise<AdoptResult> {
+    return runAdopt({
+      projectDir: dir,
+      paths: paths(),
+      targets: [],
+      unresolvable: broken.map((entry) => ({ ...entry, dir: join(dir, entry.dir) })),
+      workers: [],
+      ...options,
+    });
+  }
+
+  test("a value it could not classify is refused, not called safe to remove", async () => {
+    await devVars({ "auth-session-secret": "session-value" });
+
+    const result = await unresolved();
+    const found = entry(result, "auth-session-secret");
+
+    expect(found.kind).toBe("unclassified");
+    expect(found.action).toBe("refused");
+    expect(found.safeToRemove).toBe(false);
+    expect(found.destination).toBeNull();
+    expect(found.reason).toContain("replay-board");
+  });
+
+  test("it never reports the value as deletable — that verdict is what an adopter acts on", async () => {
+    await devVars({ "auth-session-secret": "session-value" });
+
+    const applied = await unresolved({ apply: true });
+
+    expect(adoptSafeToRemove(applied)).toEqual([]);
+    const text = renderAdoptText(applied, "/home/nobody");
+    expect(text).not.toContain("nothing reads it");
+    expect(text).not.toContain("delete these yourself");
+    expect(text).toContain("replay-board");
+  });
+
+  test("a refusal fails the exit, so a script notices", async () => {
+    await devVars({ "auth-session-secret": "session-value" });
+    expect(adoptRefusals(await unresolved()).length).toBe(1);
+  });
+
+  test("the rest still moves — a Cloudflare credential needs no registry to place", async () => {
+    await devVars({ CLOUDFLARE_ACCOUNT_ID: "acct-id", LEGACY_THING: "x" });
+
+    const result = await unresolved({ apply: true });
+
+    expect(entry(result, "CLOUDFLARE_ACCOUNT_ID").action).toBe("copy");
+    expect(entry(result, "LEGACY_THING").action).toBe("refused");
+    expect(JSON.parse(await readFile(join(config, "cloudflare.json"), "utf8"))).toMatchObject({
+      CLOUDFLARE_ACCOUNT_ID: "acct-id",
+    });
+  });
+
+  test("no value reaches the refusal, on this path either", async () => {
+    await devVars({ "auth-session-secret": "session-value", LEGACY_THING: "nothing-reads-this" });
+
+    const result = await unresolved();
+
+    expect(JSON.stringify(result)).not.toContain("session-value");
+    expect(renderAdoptText(result, "/home/nobody")).not.toContain("nothing-reads-this");
+  });
+
+  test("with every config readable, nothing changes", async () => {
+    await devVars({ "auth-session-secret": "session-value", LEGACY_THING: "x" });
+
+    const result = await adopt();
+
+    expect(entry(result, "auth-session-secret").action).toBe("copy");
+    expect(entry(result, "LEGACY_THING").action).toBe("leave");
+  });
+});
+
+/**
+ * The two-Worker case, against real configs on disk — because registries merge project-wide.
+ *
+ * Every test above supplies the resolution through a seam, which is right for the classification rules
+ * and cannot catch the thing #199 and #208 are about: whether the *resolution itself* tells a config that
+ * would not import apart from a Worker that declares nothing. One broken Worker beside a healthy one is
+ * the case that catches a wrong claim — the healthy sibling's registry is real, and it is not the whole
+ * project's answer.
+ *
+ * The scaffold lands **inside the package** for the reason every on-disk suite here does: the config's
+ * `@pithy-sh/*` imports resolve against the workspace `node_modules`, and vitest only transforms a TS
+ * config under the project root.
+ */
+describe("a broken config beside a healthy sibling, on disk (#208)", () => {
+  let root: string;
+  let configDir: string;
+
+  /** What `pithy add secrets` writes, plus a capability that declares a secret of its own. */
+  const COMPOSES_SECRETS = `
+import { email } from "@pithy-sh/email/src/index";
+import { secrets } from "@pithy-sh/secrets/src/index";
+
+export default {
+  capabilities: [
+    secrets({ rotationIntervalDays: 30 }),
+    email({ fromAddress: "noreply@example.com", fromName: "Replay", baseUrl: "https://board.example.com" }),
+  ],
+};
+`;
+
+  async function onDiskWorker(name: string, config: string): Promise<void> {
+    const workerDir = join(root, "apps", name);
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: `replay-${name}` }));
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
+    await writeFile(join(workerDir, "pithy.config.ts"), config);
+  }
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(import.meta.dirname, "..", "..", ".e2e-adopt-"));
+    configDir = await mkdtemp(join(tmpdir(), "pithy-adopt-e2e-config-"));
+    await writeFile(join(root, "pithy.config.ts"), `export default { name: "replay" };\n`);
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  });
+
+  test("the broken Worker is named, and its keys are refused rather than sorted", async () => {
+    await onDiskWorker("board", "export default { capabilities: [] };\n{{{ not typescript =");
+    await onDiskWorker("api", COMPOSES_SECRETS);
+    await writeFile(
+      join(root, ".dev.vars"),
+      "email-link-signing-key=known\nMYSTERY_KEY=unknown\nCLOUDFLARE_ACCOUNT_ID=acct\n",
+      { mode: 0o600 },
+    );
+
+    const result = await runAdopt({
+      projectDir: root,
+      paths: { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: configDir } },
+    });
+
+    // `api` resolved, so what it declares is still placed — a partial read is not no read.
+    expect(entry(result, "email-link-signing-key").kind).toBe("secret");
+    expect(entry(result, "CLOUDFLARE_ACCOUNT_ID").action).toBe("copy");
+    // `board` did not, so nothing may claim it declares nothing.
+    const mystery = entry(result, "MYSTERY_KEY");
+    expect(mystery.kind).toBe("unclassified");
+    expect(mystery.action).toBe("refused");
+    expect(mystery.reason).toContain("replay-board");
+    expect(adoptSafeToRemove(result)).toEqual([]);
+  });
+
+  test("with both configs readable, the same file sorts exactly as it always did", async () => {
+    await onDiskWorker("board", COMPOSES_SECRETS);
+    await onDiskWorker("api", COMPOSES_SECRETS);
+    await writeFile(join(root, ".dev.vars"), "email-link-signing-key=known\nMYSTERY_KEY=unknown\n", { mode: 0o600 });
+
+    const result = await runAdopt({
+      projectDir: root,
+      paths: { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: configDir } },
+    });
+
+    expect(entry(result, "email-link-signing-key").kind).toBe("secret");
+    expect(entry(result, "MYSTERY_KEY").kind).toBe("unread");
   });
 });

@@ -8,6 +8,7 @@ import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   allCapabilities,
+  classifyConfigLoadFailure,
   loadProject,
   loadProjectCloudflare,
   loadWorkerConfig,
@@ -62,6 +63,152 @@ describe("loadProject", () => {
     const error = await loadProject(dir).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.action).toContain("dependencies");
+  });
+});
+
+/**
+ * #207: a config that will not load must say **why**. Before this, a stray brace and an uninstalled
+ * dependency produced byte-identical output — `Could not load <path>.` plus "Install the project's
+ * dependencies (e.g. bun install), then check the config for errors." — because the real cause went
+ * into `detail`, which the CLI renderer never prints. `bun install` is confidently wrong for a syntax
+ * error, and an adopter follows it.
+ *
+ * #172 was the same defect: a config that would not load named the wrong cause, and the diagnosis was
+ * wrong twice before someone traced the import edge.
+ */
+describe("a config that will not load names its own cause (#207)", () => {
+  /** The payload from loading a root config with this source. */
+  async function refusal(source: string): Promise<{ message: string; action?: string; detail?: string }> {
+    // A fresh directory per case: `importConfig` imports live, and a module-cache hit would answer with
+    // another case's config.
+    const projectDir = join(dir, `p${Math.random().toString(36).slice(2)}`);
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "pithy.config.ts"), source);
+    const error = await loadProject(projectDir).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    // The one thing `message` is allowed to say, exactly. Asserted per case rather than once, because
+    // this is the security boundary and each cause is a different chance to breach it.
+    expect(payload.message).toBe(`Could not load ${join(projectDir, "pithy.config.ts")}.`);
+    return payload;
+  }
+
+  const UNRESOLVED = 'import "@pithy-sh/does-not-exist";\nexport default { name: "acme" };\n';
+  const SYNTAX = "export default {{ name: 'acme' };\n";
+  const THROWS = 'throw new Error("the config threw");\nexport default {};\n';
+
+  test("an unresolved import names the specifier and says to install", async () => {
+    const payload = await refusal(UNRESOLVED);
+    expect(payload.action).toContain("@pithy-sh/does-not-exist");
+    expect(payload.action).toMatch(/install/i);
+  });
+
+  test("a syntax error says the file does not parse, and never says to install", async () => {
+    const payload = await refusal(SYNTAX);
+    expect(payload.action).toMatch(/does not parse/i);
+    // The whole point: `bun install` cannot fix a stray brace, and an action that says so is followed.
+    expect(payload.action).not.toMatch(/\binstall the project's dependencies\b/i);
+    expect(payload.action).not.toMatch(/\bbun install\b/i);
+  });
+
+  test("a config that throws while loading says so, and never says to install", async () => {
+    const payload = await refusal(THROWS);
+    expect(payload.action).toContain("the config threw");
+    expect(payload.action).not.toMatch(/\bbun install\b/i);
+  });
+
+  test("the three causes no longer produce identical output — the defect in one assertion", async () => {
+    const actions = [await refusal(UNRESOLVED), await refusal(SYNTAX), await refusal(THROWS)].map(
+      (payload) => payload.action,
+    );
+    expect(new Set(actions).size).toBe(3);
+  });
+
+  test("no throw-site context reaches message or action — not a stack, not a path, not an escape code", async () => {
+    // Under vitest the transform's own parse diagnostic is a multi-line, ANSI-coloured box that quotes
+    // the file's path and source; under Bun it is a clean one-liner. Neither may be pasted through.
+    for (const source of [UNRESOLVED, SYNTAX, THROWS]) {
+      const payload = await refusal(source);
+      const action = payload.action ?? "";
+      expect(action).not.toContain("\n");
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape code is exactly what must not leak.
+      expect(action).not.toMatch(/\u001b\[/);
+      expect(action).not.toMatch(/\bat .*:\d+:\d+/); // a stack frame
+      expect(action).not.toContain(dir); // any absolute path from this run
+      expect(action.length).toBeLessThan(300);
+      // The raw cause is still captured — it just stays where the renderer cannot print it.
+      expect(payload.detail).toBeTruthy();
+    }
+  });
+});
+
+/**
+ * The classifier itself, against the error shapes each runtime actually throws. The CLI's `bin` runs on
+ * **Bun**, whose `ResolveMessage`/`BuildMessage` these tests reconstruct — vitest runs on Node, so the
+ * runtime that adopters use is otherwise the one runtime the suite could not reach.
+ */
+describe("classifyConfigLoadFailure", () => {
+  // Not `new Error(...)`. Bun's ResolveMessage and BuildMessage are their OWN classes and are NOT
+  // `instanceof Error` — checked against Bun 1.3. Fixtures built on `Error` passed while the shipping
+  // runtime silently lost the parser's own sentence, so they are plain objects here, as they really are.
+  test("Bun's ResolveMessage is not an Error: the specifier is still named, the referrer path is not", () => {
+    const cause = {
+      name: "ResolveMessage",
+      message: "Cannot find module '@pithy-sh/core/src/x' from '/home/a/pithy.config.ts'",
+      code: "ERR_MODULE_NOT_FOUND",
+      specifier: "@pithy-sh/core/src/x",
+      referrer: "/home/a/pithy.config.ts",
+    };
+    const { kind, action } = classifyConfigLoadFailure(cause);
+    expect(kind).toBe("unresolved-import");
+    expect(action).toContain("@pithy-sh/core/src/x");
+    expect(action).not.toContain("/home/a/pithy.config.ts");
+    expect(action).toMatch(/install/i);
+  });
+
+  test("Node's ERR_MODULE_NOT_FOUND: the specifier is parsed out, the 'imported from' path is dropped", () => {
+    const cause = Object.assign(
+      new Error("Cannot find package '@pithy-sh/does-not-exist' imported from /home/a/pithy.config.ts"),
+      { code: "ERR_MODULE_NOT_FOUND" },
+    );
+    const { kind, action } = classifyConfigLoadFailure(cause);
+    expect(kind).toBe("unresolved-import");
+    expect(action).toContain("@pithy-sh/does-not-exist");
+    expect(action).not.toContain("/home/a");
+  });
+
+  test("Bun's BuildMessage is not an Error: the parser's own reason and position still reach the adopter", () => {
+    const cause = {
+      name: "BuildMessage",
+      message: 'Expected identifier but found "{"',
+      position: { file: "/home/a/pithy.config.ts", line: 31, column: 17, lineText: "const config = {{" },
+    };
+    const { kind, action } = classifyConfigLoadFailure(cause);
+    expect(kind).toBe("parse-error");
+    expect(action).toContain('Expected identifier but found "{"');
+    expect(action).toContain("Line 31, column 17");
+    expect(action).not.toContain("/home/a");
+    expect(action).not.toContain("const config = {{"); // the source line is throw-site context
+    expect(action).not.toMatch(/\bbun install\b/i);
+  });
+
+  test("a multi-line diagnostic contributes its position and nothing else", () => {
+    const cause = new Error(
+      "Transform failed with 1 error:\n\n[31m[PARSE_ERROR] [0mUnexpected token\n  ╭─[ .smoke-x/pithy.config.ts:1:17 ]",
+    );
+    const { kind, action } = classifyConfigLoadFailure(cause);
+    expect(kind).toBe("parse-error");
+    expect(action).toContain("Line 1, column 17");
+    expect(action).not.toContain("\n");
+    expect(action).not.toContain("PARSE_ERROR");
+    expect(action).not.toContain("pithy.config.ts:1:17");
+  });
+
+  test("an unrecognised cause gets no remedy at all — a wrong action is worse than none", () => {
+    const { kind, action } = classifyConfigLoadFailure({ not: "an error" });
+    expect(kind).toBe("unknown");
+    expect(action).not.toMatch(/\bbun install\b/i);
+    expect(action).not.toMatch(/does not parse/i);
   });
 });
 

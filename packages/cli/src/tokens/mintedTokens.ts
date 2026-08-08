@@ -8,7 +8,7 @@ import { devSecretsDir } from "../devSecrets/location";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
-import { readOptionalFile } from "../project/readOptionalFile";
+import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 
 /**
  * Where `pithy token mint --store dev-vars` puts a minted token: `<config>/<project>/tokens.json`,
@@ -75,9 +75,11 @@ export function mintedTokensPath(project: string, options: StatePathOptions = {}
  * Record one minted token under its environment, and answer the file it landed in.
  *
  * **Read-modify-write over a credential file, so an unreadable-but-present one refuses** rather than
- * being replaced — only `ENOENT` licenses starting from `{}`. Writing this document over one that could
- * not be read would delete every other environment's token with no copy anywhere, which is the exact
- * shape of #142 and of the two `.dev.vars` losses before it.
+ * being replaced — and so does one that parsed to something that is not a document (#209). Only `ENOENT`
+ * licenses starting from `{}`. Writing this document over one that could not be read, or one whose shape
+ * was never understood, would delete every other environment's token with no copy anywhere, which is the
+ * exact shape of #142 and of the two `.dev.vars` losses before it. Both refusals are
+ * {@link readMintedTokens}'s, because it is the one that can tell an absence from an answer.
  */
 export async function writeMintedToken(
   project: string,
@@ -98,11 +100,22 @@ export async function writeMintedToken(
 }
 
 /**
- * The document at `path`, or `{}` — and `{}` only when there is no file.
+ * The document at `path`, or `{}` — and `{}` only when there is no file, or when there is one nothing
+ * can be made of at all.
  *
- * A file that is there and will not parse resolves to `{}` for a *read*, because a caller reading a
- * token has nothing to destroy; the writer above is the one that refuses, because it is the one that
- * could.
+ * **Three ways in, and two of them are refusals.** The file is not there: `{}`, and {@link
+ * readOptionalFile} is what decides that. The file is there and will not open: refused, because writing
+ * over what could not be read is #142 with a fifth file name. The file opened and **parsed to something
+ * that is not a document**: refused too, and that one is not the writer's to catch. This docstring used
+ * to say the writer above was the one that refused — true of an unreadable file, false of a
+ * present-but-non-record one, which reached the writer as `{}` and was merged into and renamed over
+ * (#209). `tokens.json` is keyed by environment, so what that replaced was every *other* environment's
+ * live Cloudflare credential, with the run reporting a clean write.
+ *
+ * A file that will not **parse** is still `{}` here, and that asymmetry stays: nothing can be made of it
+ * either way, and a reader has nothing to destroy. A value that *parsed* is a different claim — something
+ * is in this file, this is not what it is — and {@link requireRecord} answers it in one place for every
+ * reader in the family rather than at the third, fourth and fifth call site.
  */
 export async function readMintedTokens(path: string): Promise<MintedTokens> {
   const source = await readOptionalFile(path, {
@@ -118,7 +131,18 @@ export async function readMintedTokens(path: string): Promise<MintedTokens> {
       ),
   });
   if (source === null) return {};
-  const parsed = MintedTokens.safeParse(safeJson(source));
+  const value = safeJson(source);
+  if (value === undefined) return {};
+  const document = requireRecord(path, value, {
+    notARecord: ({ found }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it holds ${found}, not a document of minted tokens.`,
+        action:
+          "Restore it to a JSON object keyed by environment, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not make sense of.",
+        detail: `${MINTED_TOKENS_FILE_NAME} at ${path} parsed to ${found}`,
+      }),
+  });
+  const parsed = MintedTokens.safeParse(document);
   return parsed.success ? parsed.data : {};
 }
 

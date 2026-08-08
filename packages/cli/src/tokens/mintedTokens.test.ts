@@ -127,6 +127,56 @@ describe("writeMintedToken", () => {
     expect(whole).not.toContain("fresh");
   });
 
+  test("**refuses a file that parsed to something that is not a document, rather than replacing it**", async () => {
+    // The same defect one step further in: this read *succeeded*. A hand edit that wrapped the document
+    // in brackets leaves three environments' live credentials on disk and nothing that reads as a
+    // document — and an empty base merged with the one token being written renames over all three.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    const held = `${JSON.stringify([
+      {
+        dev: { CF_TOKEN_CI_SYSTEM: "dev-value" },
+        staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+        production: { CF_TOKEN_CI_SYSTEM: "production-value" },
+      },
+    ])}\n`;
+    await writeFile(file(), held, { mode: 0o600 });
+
+    await expect(writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths())).rejects.toThrow(PithyError);
+
+    // Byte for byte. Nothing was written, so every environment in it is still there to be recovered.
+    expect(await readFile(file(), "utf8")).toBe(held);
+  });
+
+  test("the four shapes a `null` check would let through are each refused", async () => {
+    // `typeof null === "object"`, so a null check reads as the whole rule and is a quarter of it. Every
+    // one of these is a plausible hand edit, and every one used to be an empty base to write from.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    for (const source of ["null", '"a-token"', "12345", "true"]) {
+      await writeFile(file(), source, { mode: 0o600 });
+      await expect(writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths()), source).rejects.toThrow(
+        PithyError,
+      );
+      expect(await readFile(file(), "utf8"), source).toBe(source);
+    }
+  });
+
+  test("the shape refusal names the file and what it found, and never a token value", async () => {
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(file(), '"a-live-credential"', { mode: 0o600 });
+
+    const error = await writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(file());
+    expect(whole).toContain("a string");
+    expect(whole).not.toContain("a-live-credential");
+    expect(whole).not.toContain("fresh");
+  });
+
   test("only ENOENT starts from an empty document — a directory at the path is not an absence", async () => {
     // The other half of the same rule, and the portable stand-in for "present and will not open as a
     // file" on a machine where the test runs as root and 0o000 means nothing.
@@ -155,6 +205,17 @@ describe("readMintedTokens", () => {
     await writeFile(file(), JSON.stringify({ dev: { CF_TOKEN_CI_SYSTEM: 12345 } }), { mode: 0o600 });
 
     expect(await readMintedTokens(file())).toEqual({});
+  });
+
+  test("a file that parsed to a value that is not a document refuses here too", async () => {
+    // The asymmetry above is about a file that will not *parse* — the reader has nothing to destroy and
+    // says "nothing here". A file that parsed to a string is a different claim: something is in it, this
+    // is not what it is, and answering `{}` is what let the writer replace it. Same rule as an unreadable
+    // one, and it is the file's rather than each caller's.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(file(), '"a-token"', { mode: 0o600 });
+
+    await expect(readMintedTokens(file())).rejects.toThrow(PithyError);
   });
 
   test("an unreadable file refuses here too — the rule is the file's, not the caller's", async () => {

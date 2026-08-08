@@ -182,7 +182,180 @@ function isProjectConfig(value: unknown): value is ProjectConfig {
   return typeof value === "object" && value !== null;
 }
 
-/** Import a `pithy.config.ts` and return its default export, with actionable errors for the two failure modes. */
+/**
+ * Why a `pithy.config.ts` would not import. Three causes an adopter fixes three different ways, plus the
+ * honest fourth: the classifier does not recognise this one and will not invent a remedy for it.
+ */
+export type ConfigLoadFailureKind = "unresolved-import" | "parse-error" | "threw-on-load" | "unknown";
+
+/** A classified config-load failure: what went wrong, and the one sentence that fits it. */
+export interface ConfigLoadFailure {
+  /** Which of the four causes this is. */
+  kind: ConfigLoadFailureKind;
+  /** The `action` line for the refusal — chosen from the failure, never asserted over it. */
+  action: string;
+}
+
+/** Escape sequences a runtime colours its diagnostics with. They are formatting, and they never travel. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping the control characters is the point.
+const ANSI = /\u001b\[[0-9;]*m/g;
+
+/** Anything that looks like the start of an absolute path — POSIX, `~`, or a Windows drive. */
+const ABSOLUTE_PATH = /(^|[\s'"(])(\/|~\/|[A-Za-z]:[\\/])/;
+
+/**
+ * The cause's own message, but **only when the whole of it is one safe sentence.**
+ *
+ * This is the seam the issue turns on. A `SyntaxError`'s reason (`Expected identifier but found "{"`) is
+ * a sentence the adopter acts on; the diagnostic vite wraps the same fault in is a multi-line ANSI box
+ * quoting the file's absolute path and its source line, which is throw-site context wearing a message's
+ * clothes. There is no way to tell them apart by *where they came from* — only by what they contain. So
+ * the test is on the content: one line, no absolute path, no stack frame, and short. Everything else is
+ * dropped, and the caller says less rather than something it should not.
+ *
+ * Whatever is dropped here is still captured in `detail`, which the CLI renderer never prints.
+ */
+function safeReason(cause: unknown): string | undefined {
+  const text = rawMessage(cause).trim();
+  if (text.length === 0 || text.length > 160) return undefined;
+  if (text.includes("\n")) return undefined;
+  if (ABSOLUTE_PATH.test(text)) return undefined;
+  if (/\bat \S+:\d+:\d+/.test(text)) return undefined;
+  return text.replace(/\.$/, "");
+}
+
+/** Read a property off an unknown throwable without widening anything to `any`. */
+function prop(cause: unknown, key: string): unknown {
+  if (typeof cause !== "object" || cause === null) return undefined;
+  return (cause as Record<string, unknown>)[key];
+}
+
+/**
+ * The thrown value's message, de-coloured — `undefined` when it has none.
+ *
+ * **Duck-typed, and that is not laxity.** Bun's `ResolveMessage` and `BuildMessage` — the two shapes the
+ * shipping `bin` actually catches, since `bin` runs on Bun — are their own classes and are **not**
+ * `instanceof Error`. An earlier draft here gated on `instanceof Error` and passed its whole suite,
+ * because vitest runs on Node and the Bun fixtures were built out of real `Error`s; on Bun it silently
+ * dropped the parser's own sentence, which is the one thing this change exists to deliver. Anything
+ * carrying a string `message` is read. What may be *said* is decided by {@link safeReason}, on content.
+ */
+function causeMessage(cause: unknown): string | undefined {
+  const message = prop(cause, "message");
+  return typeof message === "string" ? message.replace(ANSI, "") : undefined;
+}
+
+/** The message, de-coloured, for pattern tests only — never for output. */
+function rawMessage(cause: unknown): string {
+  return causeMessage(cause) ?? "";
+}
+
+/**
+ * The specifier that did not resolve. Bun's `ResolveMessage` carries it as a field; Node states it in
+ * prose. Taken as a *field* wherever possible, because the prose around it names the referrer's absolute
+ * path and that must not travel — the specifier is the adopter's own import, the path is our frame.
+ */
+function unresolvedSpecifier(cause: unknown): string | undefined {
+  const field = prop(cause, "specifier");
+  if (typeof field === "string" && field.length > 0) return field;
+  const match = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(rawMessage(cause));
+  return match?.[1];
+}
+
+/** `line`/`column`, from the structured position where a runtime gives one, else from `…:LINE:COL`. */
+function failurePosition(cause: unknown): { line: number; column: number } | undefined {
+  const position = prop(cause, "position");
+  const line = prop(position, "line");
+  const column = prop(position, "column");
+  if (typeof line === "number" && line > 0 && typeof column === "number") return { line, column };
+  // Only the two numbers are lifted out — never the path they are appended to.
+  const match = /:(\d+):(\d+)/.exec(rawMessage(cause));
+  if (!match?.[1] || !match[2]) return undefined;
+  return { line: Number(match[1]), column: Number(match[2]) };
+}
+
+function isUnresolvedImport(cause: unknown): boolean {
+  const code = prop(cause, "code");
+  if (
+    code === "ERR_MODULE_NOT_FOUND" ||
+    code === "MODULE_NOT_FOUND" ||
+    code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ||
+    code === "ERR_UNSUPPORTED_DIR_IMPORT"
+  ) {
+    return true;
+  }
+  if (prop(cause, "name") === "ResolveMessage") return true;
+  return /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url /.test(
+    rawMessage(cause),
+  );
+}
+
+function isParseError(cause: unknown): boolean {
+  const name = prop(cause, "name");
+  if (name === "SyntaxError" || name === "BuildMessage") return true;
+  if (prop(cause, "code") === "PARSE_ERROR") return true;
+  return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
+    rawMessage(cause),
+  );
+}
+
+/**
+ * Choose the refusal's `action` **from** the failure rather than asserting one over it (#207).
+ *
+ * A `pithy.config.ts` that will not import used to get one sentence whatever went wrong: *install the
+ * project's dependencies, then check the config for errors*. For a missing dependency that is right. For
+ * a stray brace it is confidently wrong, and being confidently wrong is worse than saying nothing —
+ * an adopter runs `bun install`, nothing changes, and the parser's own message, which would have told
+ * them, was captured into `detail` and discarded one frame up. That is #172 recurring: a config that
+ * would not load naming the wrong cause, diagnosed wrong twice before anyone traced the import edge.
+ *
+ * So each cause gets the sentence that fits it, and the fourth gets none:
+ *
+ * - **unresolved-import** — the specifier is named, and `bun install` is right *here*, where it was earned.
+ * - **parse-error** — the parser's reason and position. It says installing will not help, because the
+ *   adopter has read the opposite for as long as this refusal has existed.
+ * - **threw-on-load** — the config's own error, which is neither of the above.
+ * - **unknown** — no remedy. A wrong action is worse than no action, because it is followed.
+ *
+ * Exported because the runtime that ships (`bin` runs on Bun, whose `ResolveMessage`/`BuildMessage` are
+ * their own shapes) is not the runtime the suite runs on. Tested directly, it is tested for both.
+ */
+export function classifyConfigLoadFailure(cause: unknown): ConfigLoadFailure {
+  if (isUnresolvedImport(cause)) {
+    const specifier = unresolvedSpecifier(cause);
+    return {
+      kind: "unresolved-import",
+      action: specifier
+        ? `Nothing resolves "${specifier}". Install the project's dependencies (bun install), or correct that import.`
+        : "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.",
+    };
+  }
+
+  if (isParseError(cause)) {
+    const reason = safeReason(cause);
+    const at = failurePosition(cause);
+    const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
+    return {
+      kind: "parse-error",
+      action: `The config does not parse${reason ? `: ${reason}` : ""}.${where} Fix the file — installing dependencies will not help.`,
+    };
+  }
+
+  // Anything that carries a message, whether or not it extends `Error` — the config's own throw.
+  if (causeMessage(cause) !== undefined) {
+    const reason = safeReason(cause);
+    return {
+      kind: "threw-on-load",
+      action: reason
+        ? `The config threw while loading: ${reason}. Fix that in the config.`
+        : "The config threw while loading. Run the file directly to see what it throws.",
+    };
+  }
+
+  return { kind: "unknown", action: "Check pithy.config.ts. Run the file directly to see how it fails." };
+}
+
+/** Import a `pithy.config.ts` and return its default export, with an error that names its own cause. */
 async function importConfig(path: string, missing: () => never): Promise<unknown> {
   try {
     await access(path);
@@ -194,13 +367,16 @@ async function importConfig(path: string, missing: () => never): Promise<unknown
   try {
     module = (await import(pathToFileURL(path).href)) as { default?: unknown };
   } catch (cause) {
-    // The file is present but could not be imported — most often its `@pithy-sh/*` imports do not resolve
-    // because dependencies are not installed yet, or the config has a syntax/runtime error. Surface an
-    // actionable error rather than the raw module-resolution stack (which every consumer would otherwise leak).
+    // The file is present but would not import. Which of the three ways it failed decides what to tell
+    // the adopter — see {@link classifyConfigLoadFailure}. The raw cause still goes to `detail` and stops
+    // there: the CLI renderer prints `message` and `action` only, and the HTTP codec strips `detail`.
+    // That boundary is unchanged. What changed is that the part of the cause an adopter can act on now
+    // reaches them through `action`, in a form that carries no path, no source line, and no stack.
+    const { kind, action } = classifyConfigLoadFailure(cause);
     throw new InternalError({
       message: `Could not load ${path}.`,
-      action: "Install the project's dependencies (e.g. bun install), then check the config for errors.",
-      detail: cause instanceof Error ? cause.message : String(cause),
+      action,
+      detail: `${kind}: ${causeMessage(cause) ?? String(cause)}`,
     });
   }
   return module.default;

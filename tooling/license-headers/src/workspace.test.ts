@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -116,5 +116,27 @@ describe("sourceFiles", () => {
     put("packages/core/package.json", "{}");
 
     expect(sourceFiles(join(root, "packages/core"))).toEqual([]);
+  });
+
+  /**
+   * #185's half of the defect, in the walk that stayed separate on purpose (#211).
+   *
+   * This runs on every commit through `lint-staged` and in CI over a tree other suites scaffold into and
+   * tear down. A directory that cannot be listed used to throw out of the walk and out of the commit; a
+   * gate that dies on somebody else's teardown is one people learn to pass with `--no-verify`.
+   */
+  test("a directory it cannot list is skipped, not fatal", () => {
+    put("packages/core/src/index.ts", "");
+    put("packages/core/src/locked/hidden.ts", "");
+    chmodSync(join(root, "packages/core/src/locked"), 0o000);
+
+    try {
+      expect(sourceFiles(join(root, "packages/core")).map((f) => f.replace(`${root}/`, ""))).toEqual([
+        "packages/core/src/index.ts",
+      ]);
+    } finally {
+      // Restore it or the temp root cannot be removed.
+      chmodSync(join(root, "packages/core/src/locked"), 0o755);
+    }
   });
 });

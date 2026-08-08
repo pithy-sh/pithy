@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
-import { readOptionalFile } from "../project/readOptionalFile";
+import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 import { WORKER_MANIFEST_FILE, type WorkerUi } from "../project/workerManifest";
 
 /**
@@ -46,6 +46,11 @@ type ManifestDocument = Record<string, unknown> & {
  * "the read succeeded" to "start from an empty base" (#204) — `typeof null === "object"` let `null`
  * through, and an array passed the same check and then lost every key `stringify` drops off it. Such a
  * file is malformed either way, which changes what the loss costs, not whether it is the same defect.
+ *
+ * The tag check that decides the third was written here and is {@link requireRecord}'s now (#209): the
+ * two credential files reached the same conclusion independently, which is the count at which a rule
+ * stops belonging to the call site. The words below are still this file's — a `pithy.worker.jsonc` names
+ * a manifest object, not a document — and only the decision moved.
  */
 export async function readManifestDocument(workerDir: string): Promise<ManifestDocument> {
   const path = join(workerDir, WORKER_MANIFEST_FILE);
@@ -71,32 +76,14 @@ export async function readManifestDocument(workerDir: string): Promise<ManifestD
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
-  const found = shapeOf(value);
-  if (found !== "object") {
-    throw new ConflictError({
-      message: `Cannot update ${path}: it holds ${asWords(found)}, not a manifest object.`,
-      action: "Restore it to a JSONC object, or move it aside, and run the command again.",
-      detail: `${WORKER_MANIFEST_FILE} in ${workerDir} parsed to ${asWords(found)}`,
-    });
-  }
-  return value as ManifestDocument;
-}
-
-/**
- * What was found in place of a document, by shape alone — never a byte of what the file holds.
- *
- * By the value's own tag rather than by `typeof`, which answers this question wrong twice: `null` is an
- * `"object"`, and **comment-json boxes a top-level primitive** so it has somewhere to hang the file's
- * comments — `parse('"react"')` is a `String` object, and `typeof` calls that an `"object"` too.
- */
-function shapeOf(value: unknown): string {
-  return Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
-}
-
-/** The shape as the sentence names it: `null`, `an array`, `a string`. */
-function asWords(shape: string): string {
-  if (shape === "null" || shape === "undefined") return shape;
-  return /^[aeiou]/.test(shape) ? `an ${shape}` : `a ${shape}`;
+  return requireRecord(path, value, {
+    notARecord: ({ found }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it holds ${found}, not a manifest object.`,
+        action: "Restore it to a JSONC object, or move it aside, and run the command again.",
+        detail: `${WORKER_MANIFEST_FILE} in ${workerDir} parsed to ${found}`,
+      }),
+  }) as ManifestDocument;
 }
 
 /** Write the document back, 2-space with a trailing newline — the repo's JSONC formatting. */
