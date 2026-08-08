@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
 import { committedFiles } from "./templateFiles";
 
 let dir: string;
@@ -13,7 +14,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-index-"));
 });
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await removeTempDir(dir);
 });
 
 describe("committedFiles", () => {
@@ -26,7 +27,7 @@ describe("committedFiles", () => {
     // The two shapes an exclusion filter has to predict, and did not: gitignored, and merely untracked.
     await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=real\n");
     await writeFile(join(dir, "scratch.md"), "notes\n");
-    execFileSync("git", ["-C", dir, "init", "-q"]);
+    execFileSync("git", ["-C", dir, ...GIT_NO_MAINTENANCE, "init", "-q"]);
     execFileSync("git", ["-C", dir, "add", "package.json", "apps/api/index.ts", ".gitignore"]);
 
     expect(committedFiles(dir)).toEqual([".gitignore", join("apps", "api", "index.ts"), "package.json"]);

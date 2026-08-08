@@ -3,12 +3,13 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
 import { createWorktree, featureNames, mainRepoRoot, teardownWorktree } from "./worktree";
 
 const run = promisify(execFile);
@@ -20,7 +21,7 @@ describe("worktree (real git)", () => {
   beforeEach(async () => {
     originalCwd = process.cwd();
     repo = await mkdtemp(join(tmpdir(), "pithy-worktree-"));
-    await run("git", ["init"], { cwd: repo });
+    await run("git", [...GIT_NO_MAINTENANCE, "init"], { cwd: repo });
     await run("git", ["config", "user.email", "test@example.com"], { cwd: repo });
     await run("git", ["config", "user.name", "Test"], { cwd: repo });
     await writeFile(join(repo, "README.md"), "hello\n");
@@ -32,7 +33,7 @@ describe("worktree (real git)", () => {
 
   afterEach(async () => {
     process.chdir(originalCwd);
-    await rm(repo, { recursive: true, force: true });
+    await removeTempDir(repo);
   });
 
   test("createWorktree creates the branch and worktree, and is idempotent", async () => {
