@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
-import { type CapabilityManifest, renderConfigValue } from "@pithy-sh/core/src/capability/manifest";
+import { type CapabilityManifest, renderConfigOptionLine } from "@pithy-sh/core/src/capability/manifest";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -156,7 +156,9 @@ function renderRegistration(
   for (const option of manifest.configOptions) {
     const value = configValues[option.key] ?? option.default;
     lines.push(`${inner}// ${option.describe}`);
-    lines.push(`${inner}${option.key}: ${renderConfigValue(value)},`);
+    // The same line `pithy upgrade` writes, from the same function. Two renderers of one line is how
+    // `add` and `upgrade` came to disagree about a nested default in the first place (#171).
+    lines.push(renderConfigOptionLine(option.key, value, inner));
   }
   lines.push(`${indent}}),`);
   return lines.join("\n");

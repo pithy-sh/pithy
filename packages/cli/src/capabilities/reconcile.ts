@@ -5,7 +5,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { type CapabilityManifest, ConfigOptionValue } from "@pithy-sh/core/src/capability/manifest";
+import {
+  type CapabilityManifest,
+  ConfigOptionValue,
+  renderConfigOptionLine,
+} from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -57,8 +61,10 @@ export const MissingConfigKey = z
   .object({
     key: z.string().describe("The option name to add to the capability's registration call in pithy.config.ts."),
     // The manifest's own contract, not a copy of it. The copy was a scalar union, so an option whose
-    // value is an empty literal an adopter fills in by hand — the one `pithy add secrets` could not
-    // render at all (#161) — was the one option `pithy upgrade` could not report as missing either.
+    // value is a literal only the adopter can fill in — the one `pithy add secrets` could not render at
+    // all (#161) — was the one option `pithy upgrade` could not report as missing either. That value is
+    // now a whole worked example (#168), which is exactly why it is rendered through the manifest's own
+    // `renderConfigOptionLine` rather than by anything this file writes itself (#171).
     default: ConfigOptionValue.describe(
       "The manifest default rendered as the option's value (an adopter can change it afterward).",
     ),
@@ -596,12 +602,18 @@ function appendDurableObjectMigrations(config: WranglerBindings, manifest: Capab
   }
 }
 
-/** Render one option's `// describe` + `key: default` lines at a given indent, matching `pithy add`. */
+/**
+ * Render one option's `// describe` + `key: default` lines at a given indent — the same two lines
+ * `pithy add` renders, through the same function, because "matching `pithy add`" was a comment and not
+ * a mechanism. This called `JSON.stringify` while `add` called `renderConfigValue`, so one manifest
+ * default came out as `{"code":"chips"}` here and `{ code: "chips" }` there, and only the second
+ * survived the `biome check` a scaffolded project runs on itself (#171).
+ */
 function renderKeyLines(keys: MissingConfigKey[], indent: string): string {
   const lines: string[] = [];
   for (const key of keys) {
     lines.push(`${indent}// ${key.describe}`);
-    lines.push(`${indent}${key.key}: ${JSON.stringify(key.default)},`);
+    lines.push(renderConfigOptionLine(key.key, key.default, indent));
   }
   return lines.join("\n");
 }
@@ -639,7 +651,10 @@ function insertIntoBlock(source: string, closeIndex: number, keys: MissingConfig
     return `${withComma.slice(0, lineStart)}${renderKeyLines(keys, inner)}\n${withComma.slice(lineStart)}`;
   }
   // Inline block (`name({ x: 1 })`) — append `key: value,` before the closing brace.
-  const inline = keys.map((key) => ` ${key.key}: ${JSON.stringify(key.default)},`).join("");
+  // One space stands in for the indent: an inline block has no line of its own to sit on. The value is
+  // rendered by the same function as every other writer's, so a hand-written block gets Biome's shape
+  // too — the whole point of there being one renderer (#171).
+  const inline = keys.map((key) => renderConfigOptionLine(key.key, key.default, " ")).join("");
   return `${withComma.slice(0, close)}${inline}${withComma.slice(close)}`;
 }
 

@@ -2,7 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { CapabilityManifest, renderConfigValue } from "./manifest";
+import {
+  CapabilityManifest,
+  CONFIG_LINE_WIDTH,
+  CONFIG_OPTION_INDENT,
+  renderConfigOptionLine,
+  renderConfigValue,
+} from "./manifest";
+
+/**
+ * The string `"${x}"`, escaped into a template literal rather than written as one.
+ *
+ * Written plainly it trips `lint/suspicious/noTemplateCurlyInString` here — which is the whole reason
+ * the schema refuses it in a manifest default, so the test proving that should not emit it either.
+ */
+const TEMPLATE_LIKE = `\${x}`;
 
 describe("CapabilityManifest", () => {
   test("parses a full auth manifest", () => {
@@ -194,6 +208,74 @@ describe("CapabilityManifest", () => {
     ).toThrow();
   });
 
+  test("rejects a default carrying a character the renderer cannot print as Biome would", () => {
+    // The type narrowed rather than the renderer growing a copy of Biome's quote heuristic. A `"` inside
+    // the value makes Biome reprint the whole literal in single quotes; `${` trips
+    // noTemplateCurlyInString. Both land in a file the adopter never opened, which is the #161/#168
+    // defect. A manifest default is a worked example, and an example needing either is too clever.
+    for (const bad of ['he said "hi"', TEMPLATE_LIKE, 'a "b" c']) {
+      expect(() =>
+        CapabilityManifest.parse({
+          name: "auth",
+          package: "@pithy-sh/auth",
+          requiredBindings: [],
+          configOptions: [{ key: "basePath", default: bad, describe: "Mount path." }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  test("rejects a default carrying an unprintable string however deep it is buried", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "multiplayer",
+        package: "@pithy-sh/multiplayer",
+        requiredBindings: [],
+        configOptions: [{ key: "games", default: [{ rules: { label: 'say "go"' } }], describe: "Every game." }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an object key the renderer cannot print as Biome would", () => {
+    // A key that cannot be written bare is quoted, so it carries the same hazard as a value.
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "headers", default: { 'a"b': "x" }, describe: "Extra headers." }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects a number no plain decimal spells", () => {
+    // `String(1e21)` is "1e+21"; Biome prints `1e21`. Checked against Biome, not inferred.
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "sessionDays", default: 1e21, describe: "Refresh-token lifetime in days." }],
+      }),
+    ).toThrow();
+  });
+
+  test("keeps the strings Biome leaves alone — an apostrophe, a backslash, an accent", () => {
+    // The narrowing is only as wide as the mismatch. With no `"` to escape, Biome keeps double quotes,
+    // and it reprints none of these.
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [
+        { key: "greeting", default: "it's fine", describe: "A greeting." },
+        { key: "path", default: "a\\b", describe: "A path." },
+        { key: "city", default: "café", describe: "A city." },
+      ],
+    });
+    expect(parsed.configOptions.map((option) => option.default)).toEqual(["it's fine", "a\\b", "café"]);
+  });
+
   test("rejects a configOption with an empty key", () => {
     expect(() =>
       CapabilityManifest.parse({
@@ -287,7 +369,52 @@ describe("renderConfigValue", () => {
     expect(renderConfigValue({ "content-type": "application/json" })).toBe('{ "content-type": "application/json" }');
   });
 
-  test("escapes a string the way source has to", () => {
-    expect(renderConfigValue('a "quoted" \\ value')).toBe('"a \\"quoted\\" \\\\ value"');
+  test("escapes a backslash, which Biome leaves escaped", () => {
+    expect(renderConfigValue("a \\ value")).toBe('"a \\\\ value"');
+  });
+
+  test("keeps double quotes around a string carrying an apostrophe", () => {
+    // Biome only switches to single quotes to avoid escaping a `"`. With none to escape it keeps ours.
+    expect(renderConfigValue("it's fine")).toBe('"it\'s fine"');
+  });
+
+  test("refuses a value it cannot print as Biome would, rather than printing something Biome reprints", () => {
+    // The schema keeps these out of a manifest. This is the other door: `pithy add --set` hands a string
+    // straight through, and a refusal at the command is better than a config file that fails the
+    // scaffold's own lint gate. The old test pinned `"he said \"hi\""` as correct; Biome prints
+    // `'he said "hi"'`, so what it pinned was a violation of this function's own contract (#171).
+    expect(() => renderConfigValue('he said "hi"')).toThrow(/double quote/);
+    expect(() => renderConfigValue(TEMPLATE_LIKE)).toThrow();
+    expect(() => renderConfigValue({ 'a"b': 1 })).toThrow();
+    expect(() => renderConfigValue([{ nested: 'a "b"' }])).toThrow();
+  });
+
+  test("refuses a number no plain decimal spells", () => {
+    expect(() => renderConfigValue(1e21)).toThrow(/plain decimal/);
+    expect(() => renderConfigValue(1e-7)).toThrow();
+    expect(renderConfigValue(0.5)).toBe("0.5");
+    expect(renderConfigValue(-3)).toBe("-3");
+  });
+});
+
+/**
+ * The line, not just the value. Both writers put an option on one line at one indent, and Biome only
+ * breaks a literal that exceeds its configured width — so the rule that keeps a scaffold lint-clean is
+ * about the whole line, and it belongs where the renderer is.
+ */
+describe("renderConfigOptionLine", () => {
+  test("renders the line pithy add and pithy upgrade both write", () => {
+    expect(renderConfigOptionLine("currencies", [{ code: "chips", name: "Chips" }], CONFIG_OPTION_INDENT)).toBe(
+      '      currencies: [{ code: "chips", name: "Chips" }],',
+    );
+  });
+
+  test("takes its indent from the caller, because both writers take theirs from the file", () => {
+    expect(renderConfigOptionLine("basePath", "/auth", " ")).toBe(' basePath: "/auth",');
+  });
+
+  test("the scaffold's indent is the marker's four columns plus two", () => {
+    expect(CONFIG_OPTION_INDENT).toBe("      ");
+    expect(CONFIG_LINE_WIDTH).toBe(120);
   });
 });
