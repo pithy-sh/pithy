@@ -17,9 +17,14 @@
   ],
   "configOptions": [
     {
+      "key": "currencies",
+      "default": [{ "code": "chips", "name": "Chips" }],
+      "describe": "Every currency this app's ledger holds. Replace this example — one currency is the smallest ledger that does anything, and `chips` is the schema's own first example of a unit that is plainly not money. `code` is a lowercase id, used as a URL path segment and an account key; `name` is what a player sees; optional `decimals` is display scale only, because a balance is always stored as an integer in the minor unit (`decimals: 2` shows a stored 150 as 1.50). At least one currency is required."
+    },
+    {
       "key": "adminScope",
       "default": "ledger:admin",
-      "describe": "The scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative — mint it for your trusted server's token, never a player's. Edit the `currencies` array by hand to define your economy's units."
+      "describe": "The scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative — mint it for your trusted server's token, never a player's."
     }
   ]
 }

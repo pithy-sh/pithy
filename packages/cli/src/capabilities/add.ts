@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
-import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { type CapabilityManifest, renderConfigValue } from "@pithy-sh/core/src/capability/manifest";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -154,9 +154,9 @@ function renderRegistration(
   const inner = `${indent}  `;
   const lines = [`${indent}${manifest.name}({`];
   for (const option of manifest.configOptions) {
-    const value = option.key in configValues ? configValues[option.key] : option.default;
+    const value = configValues[option.key] ?? option.default;
     lines.push(`${inner}// ${option.describe}`);
-    lines.push(`${inner}${option.key}: ${JSON.stringify(value)},`);
+    lines.push(`${inner}${option.key}: ${renderConfigValue(value)},`);
   }
   lines.push(`${indent}}),`);
   return lines.join("\n");

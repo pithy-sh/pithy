@@ -1,8 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, it } from "vitest";
-import { isLeaderboardCapability, LEADERBOARD_MIGRATION_ORDER, leaderboard, needsRankWorker } from "./capability";
+import {
+  isLeaderboardCapability,
+  LEADERBOARD_MIGRATION_ORDER,
+  type LeaderboardOptions,
+  leaderboard,
+  needsRankWorker,
+} from "./capability";
 import { LeaderboardConfig } from "./config/config";
 
 const boards = [{ key: "b1", direction: "desc" as const }];
@@ -101,5 +109,48 @@ describe("needsRankWorker", () => {
 
   it("is true when rank is materialized", () => {
     expect(needsRankWorker(parse({ boards, rank: { materialize: "0 * * * *" } }))).toBe(true);
+  });
+});
+
+/**
+ * What `pithy add leaderboard` writes, checked against what `leaderboard()` accepts.
+ *
+ * Two defects, one of them hiding the other. `serverAuthoritative` was defaulted to the **string**
+ * `"true"` against a boolean field, and that error is reported first — so the missing `boards` only
+ * appeared once the typo was fixed (#168).
+ *
+ * `boards: []` would have been the cheap fix for the second, and it is the wrong one: `boards` carries
+ * `.min(1)` with a message saying why, so an empty seed compiles and then throws `too_small` on the
+ * first config load. Both halves are asserted here: `seeded` is type-annotated, so a shape
+ * `leaderboard()` would reject fails the compile, and the factory call proves it survives the refusal.
+ */
+describe("pithy.manifest.json", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  /** Exactly the object `pithy add` renders: every option's key at its manifest default. */
+  const rendered = Object.fromEntries(manifest.configOptions.map((option) => [option.key, option.default]));
+
+  const seeded: LeaderboardOptions = {
+    boards: [{ key: "high-scores", direction: "desc" }],
+    rank: "live",
+    serverAuthoritative: true,
+  };
+
+  it("states every option LeaderboardConfig requires, at a value the type accepts", () => {
+    expect(rendered).toEqual(seeded);
+  });
+
+  it("seeds a board the config will actually load — an empty array would not", () => {
+    const capability = leaderboard(seeded);
+    expect(capability.leaderboardConfig.boards.map((board) => board.key)).toEqual(["high-scores"]);
+    expect(() => leaderboard({ ...seeded, boards: [] })).toThrow();
+  });
+
+  it("seeds the one board shape that needs no rank worker", () => {
+    // All-time and live: nothing to prune, nothing to refresh. A seeded board that quietly obliged the
+    // adopter to deploy a cron worker would be a worse default than no board at all.
+    expect(needsRankWorker(LeaderboardConfig.parse(seeded))).toBe(false);
   });
 });

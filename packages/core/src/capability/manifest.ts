@@ -7,25 +7,66 @@ import { BindingSpec } from "./bindings";
 import { DevSecret } from "./devSecret";
 
 /**
- * What a manifest states as an option's rendered value.
+ * What a manifest states as an option's rendered value: any JSON value except `null`, nested freely.
  *
  * A scalar is what an option normally is, and every `--set` override still coerces to one — the CLI
  * takes strings from a flag or a prompt, and neither can carry an object.
  *
- * The empty object and empty array are here for the case that had no expression at all: an option the
- * capability's config type **requires** and whose contents only the adopter can write. `SecretsConfig`
- * requires a `registry`; a manifest could not state one, so `pithy add secrets` rendered every option
- * but that and left a `pithy.config.ts` failing `tsc` with TS2741 on a project nobody had touched yet
- * (#161). The empty literal is what makes that config compile, and the option's `describe` — rendered
- * as the comment directly above it — is what tells the adopter what belongs inside.
+ * Objects and arrays are here for the options a scalar cannot express: one the capability's config type
+ * **requires** and whose contents only the adopter can write. `SecretsConfig` requires a `registry`; a
+ * manifest could not state one, so `pithy add secrets` rendered every option but that and left a
+ * `pithy.config.ts` failing `tsc` with TS2741 on a project nobody had touched yet (#161).
  *
- * Contents are `unknown` because nothing here reads them: the value is `JSON.stringify`d straight into
- * the config file. A manifest that states a deeper default gets it rendered verbatim, on one line.
+ * #161 admitted only the **empty** literal, which is right for a registry — an empty registry is a legal
+ * registry. It is wrong everywhere the collection is required to be non-empty. `ledger.currencies`,
+ * `leaderboard.boards` and `multiplayer.games` each carry `.min(1)` with a message saying why, so an
+ * empty seed typechecks and then throws `too_small` on the first config load — and `pithy upgrade`
+ * reports that as "Could not load pithy.config.ts", naming the wrong cause (#168). So a default may now
+ * be a **complete, minimal, working example**: one currency, one board, one game. The option's
+ * `describe`, rendered as the comment directly above it, is what tells the adopter to replace it.
+ *
+ * `null` stays out. `typeof null === "object"`, and the CLI reads exactly that to decide an option is
+ * hand-written and therefore not settable from `--set` or a prompt; a null default would be mistaken for
+ * a collection nobody can fill.
+ *
+ * The recursion is this widening's cost, paid in the open. Every shape admitted here has to come back
+ * out as valid TypeScript — see {@link renderConfigValue}, which is total over this type and takes no
+ * other input.
  */
-export const ConfigOptionValue = z
-  .union([z.string(), z.number(), z.boolean(), z.array(z.unknown()), z.record(z.string(), z.unknown())])
-  .describe("An option's rendered value: a JSON scalar, or the empty literal an adopter fills in by hand.");
-export type ConfigOptionValue = z.infer<typeof ConfigOptionValue>;
+export type ConfigOptionValue = string | number | boolean | ConfigOptionValue[] | { [key: string]: ConfigOptionValue };
+
+export const ConfigOptionValue: z.ZodType<ConfigOptionValue> = z
+  .lazy(() =>
+    z.union([z.string(), z.number(), z.boolean(), z.array(ConfigOptionValue), z.record(z.string(), ConfigOptionValue)]),
+  )
+  .describe("An option's rendered value: a JSON scalar, or a minimal worked example the adopter replaces.");
+
+/** An object key that can be written bare in a TypeScript object literal. */
+const BARE_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Render a manifest default as TypeScript source, on one line.
+ *
+ * `pithy add` writes this straight into the adopter's `pithy.config.ts`, which the scaffold's own
+ * `biome check` then reads — so *valid* TypeScript is not the bar. It has to be the TypeScript Biome
+ * would have printed. `JSON.stringify` is not: it quotes every key, and Biome's `quoteProperties`
+ * default rewrites `{"code":"chips"}` to `{ code: "chips" }`, failing the lint gate on a project the
+ * adopter has not touched. This prints Biome's shape directly — bare keys wherever they are legal,
+ * spaces inside braces, `, ` between entries, `{}` and `[]` for the empty literals #161 relies on.
+ *
+ * One line, always. Biome only breaks a literal that exceeds its 120-column width, so a default has to
+ * stay small enough to fit under the indent `add` renders it at. That is the same constraint the
+ * contract already states: the seed is a worked example, not a configuration.
+ */
+export function renderConfigValue(value: ConfigOptionValue): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[${value.map(renderConfigValue).join(", ")}]`;
+  const entries = Object.entries(value).map(
+    ([key, nested]) => `${BARE_KEY.test(key) ? key : JSON.stringify(key)}: ${renderConfigValue(nested)}`,
+  );
+  return entries.length === 0 ? "{}" : `{ ${entries.join(", ")} }`;
+}
 
 /**
  * One configurable option a capability exposes. `pithy add` renders each as

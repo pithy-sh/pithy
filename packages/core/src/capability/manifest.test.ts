@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { CapabilityManifest } from "./manifest";
+import { CapabilityManifest, renderConfigValue } from "./manifest";
 
 describe("CapabilityManifest", () => {
   test("parses a full auth manifest", () => {
@@ -146,6 +146,41 @@ describe("CapabilityManifest", () => {
     expect(parsed.configOptions.map((option) => option.default)).toEqual([{}, []]);
   });
 
+  test("parses a nested default — the worked example an adopter replaces", () => {
+    // #161 admitted the empty literal, which is right for a registry: an empty registry is legal. It is
+    // wrong for `ledger.currencies`, `leaderboard.boards` and `multiplayer.games`, which each carry a
+    // `.min(1)` refusal — an empty seed typechecks and then throws `too_small` on the first config load,
+    // reported as "Could not load pithy.config.ts" (#168). So a default nests as deep as an example needs.
+    const parsed = CapabilityManifest.parse({
+      name: "multiplayer",
+      package: "@pithy-sh/multiplayer",
+      requiredBindings: [],
+      configOptions: [
+        {
+          key: "games",
+          default: [{ key: "tic-tac-toe", kind: "connect-n", rules: { rows: 3, cols: 3, connect: 3 } }],
+          describe: "Every game this app runs.",
+        },
+      ],
+    });
+    expect(parsed.configOptions[0]?.default).toEqual([
+      { key: "tic-tac-toe", kind: "connect-n", rules: { rows: 3, cols: 3, connect: 3 } },
+    ]);
+  });
+
+  test("rejects a null buried inside a default, not just one at the top", () => {
+    // The recursion is what makes this reachable at all. Before it, contents were `unknown` and a null
+    // three levels down parsed fine, then rendered as `null` into someone's config file.
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "multiplayer",
+        package: "@pithy-sh/multiplayer",
+        requiredBindings: [],
+        configOptions: [{ key: "games", default: [{ rules: { rows: null } }], describe: "Every game." }],
+      }),
+    ).toThrow();
+  });
+
   test("rejects a configOption with a default no config file could carry", () => {
     // The union is JSON, so `null` and an undefined-valued key are both out: `add` renders the default
     // verbatim, and a capability that means "unset" says so by leaving the option off the manifest.
@@ -216,5 +251,43 @@ describe("CapabilityManifest", () => {
         configOptions: [{ key: "basePath", default: "/auth" }],
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * The renderer is the other half of the widening. A default that parses but prints as something Biome
+ * would have printed differently fails the scaffold's own `lint` gate on a project the adopter has not
+ * touched — the exact class of defect #161 and #168 are about, moved one gate along.
+ */
+describe("renderConfigValue", () => {
+  test("prints scalars as a config file carries them", () => {
+    expect(renderConfigValue("live")).toBe('"live"');
+    expect(renderConfigValue(30)).toBe("30");
+    expect(renderConfigValue(true)).toBe("true");
+  });
+
+  test("keeps the empty literals #161 relies on", () => {
+    expect(renderConfigValue({})).toBe("{}");
+    expect(renderConfigValue([])).toBe("[]");
+  });
+
+  test("prints object keys bare, because Biome's formatter would", () => {
+    // `JSON.stringify` writes `{"code":"chips"}`; Biome rewrites that to `{ code: "chips" }` and exits
+    // non-zero on the difference. The generated file has to already be in the shape Biome prints.
+    expect(renderConfigValue([{ code: "chips", name: "Chips" }])).toBe('[{ code: "chips", name: "Chips" }]');
+  });
+
+  test("nests, on one line", () => {
+    expect(renderConfigValue([{ key: "tic-tac-toe", rules: { rows: 3, cols: 3, connect: 3 } }])).toBe(
+      '[{ key: "tic-tac-toe", rules: { rows: 3, cols: 3, connect: 3 } }]',
+    );
+  });
+
+  test("quotes a key that cannot be written bare", () => {
+    expect(renderConfigValue({ "content-type": "application/json" })).toBe('{ "content-type": "application/json" }');
+  });
+
+  test("escapes a string the way source has to", () => {
+    expect(renderConfigValue('a "quoted" \\ value')).toBe('"a \\"quoted\\" \\\\ value"');
   });
 });
