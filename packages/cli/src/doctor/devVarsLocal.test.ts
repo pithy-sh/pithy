@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { DevSecretsTarget } from "../devSecrets/seed";
+import type { DevSecretsTarget } from "../devSecrets/targets";
 import { checkDevVarsLocal, describeDevVarsLocal } from "./devVarsLocal";
 
 const registry = defineSecretRegistry({

@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { bootstrapVarsPath } from "../devSecrets/bootstrapVars";
+import { cloudflareConfigPath } from "../cloudflare/config";
+import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { isGeneratedDevVars } from "../devSecrets/generate";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/seed";
+import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveWorkers } from "../project/workerScope";
 import { declaredVars } from "./wranglerVars";
@@ -47,7 +48,10 @@ import { declaredVars } from "./wranglerVars";
  * sentence to print for it is a key class that would go silent, which is this module's whole subject.
  */
 export const ROOT_DEV_VAR_STATES = [
-  /** One of {@link CLOUDFLARE_ENV_KEYS}. The CLI reads it out of exactly this file. Nothing to do. */
+  /**
+   * One of {@link CLOUDFLARE_ENV_KEYS}. The CLI read these out of exactly this file until #182; they are
+   * account-scoped, so they live in `<config>/cloudflare.json` now and nothing reads this copy.
+   */
   "credential",
   /**
    * A secret some Worker's registry declares. It belongs in the dev secrets file whatever its backend,
@@ -103,6 +107,28 @@ export interface DevVarsCheck {
    * path in the report declines under.
    */
   devConfigPath: string | null;
+  /**
+   * Minted-credential files left in the project by the old `dev-vars` token sink — `.dev.vars.<env>`,
+   * one per environment, each holding that environment's live Cloudflare token (#182). Sorted.
+   *
+   * **Named, never deleted.** #142 is why: a run that rewrote an adopter's `.dev.vars` deleted gitignored
+   * secrets with no copy anywhere. The value in a `.dev.vars.production` may be the only copy of a
+   * production credential that exists, and this report is the thing that tells somebody it is there.
+   */
+  minted: MintedDevVarsFile[];
+  /**
+   * Registry secrets still sitting in `<config>/<project>/dev.json` under `vars` — the copy `pithy seed`
+   * used to make, which nothing reads since #179. Names only, sorted. Never a value.
+   */
+  devJsonSecrets: string[];
+}
+
+/** One `.dev.vars.<env>` the old token sink left in the checkout. */
+export interface MintedDevVarsFile {
+  /** The file, relative to the project root. */
+  file: string;
+  /** The environment it was minted for — the whole point of naming it. */
+  env: string;
 }
 
 /** What {@link checkDevVars} needs. Every seam defaults to the real project. */
@@ -161,11 +187,37 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
     empty.push({ worker: worker.name, file: relative(options.projectDir, path) });
   }
 
+  // The registry is what says a `dev.json` value has a better home now. A name nothing declares is a
+  // legitimate machine-local variable — a Turnstile sitekey — and `dev.json` is still where it belongs.
+  const recorded = await readBootstrapVars(options.projectDir, options.paths ?? {}).catch(() => ({}));
+  const devJsonSecrets = Object.keys(recorded).filter((key) => declaredSecrets.has(key));
+
   return {
     root,
     empty: empty.sort((a, b) => a.worker.localeCompare(b.worker)),
     devConfigPath: await bootstrapVarsPath(options.projectDir, options.paths ?? {}).catch(() => null),
+    minted: await mintedDevVarsFiles(options.projectDir),
+    devJsonSecrets: devJsonSecrets.sort(),
   };
+}
+
+/**
+ * Every `.dev.vars.<env>` still in the project root.
+ *
+ * Read by listing the directory rather than by composing a name per known environment: the old sink
+ * wrote whatever `--env` it was handed, so a project can hold a `.dev.vars.qa` no list here would guess.
+ * `.dev.vars` and `.dev.vars.local` and `.dev.vars.example` are all other things and are not this.
+ */
+async function mintedDevVarsFiles(projectDir: string): Promise<MintedDevVarsFile[]> {
+  const entries = await readdir(projectDir, { withFileTypes: true }).catch(() => []);
+  const found: MintedDevVarsFile[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const env = /^\.dev\.vars\.(.+)$/.exec(entry.name)?.[1];
+    if (env === undefined || env === "local" || env === "example") continue;
+    found.push({ file: entry.name, env });
+  }
+  return found.sort((a, b) => a.file.localeCompare(b.file));
 }
 
 /**
@@ -198,6 +250,17 @@ function classify(key: string, declaredSecrets: Set<string>, wants: Map<string, 
  */
 export function describeDevVars(check: DevVarsCheck): string[] {
   const lines: string[] = [];
+  for (const { file, env } of check.minted) {
+    lines.push(
+      `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — move it out and delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
+    );
+  }
+  if (check.devJsonSecrets.length > 0) {
+    const home = check.devConfigPath === null ? "this machine's dev config" : check.devConfigPath;
+    lines.push(
+      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy secrets edit.`,
+    );
+  }
   for (const { worker, file } of check.empty) {
     lines.push(
       `${worker} has no dev values: ${file} was generated with none. That Worker starts with none of its bindings. Run pithy seed.`,
@@ -219,7 +282,9 @@ export function describeDevVars(check: DevVarsCheck): string[] {
 function describeRootDevVar(entry: RootDevVar, devConfigPath: string | null): string | null {
   switch (entry.state) {
     case "credential":
-      return null; // The CLI reads it here. This is the file it belongs in.
+      // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
+      // class of value in this file that is worth naming twice rather than removing on somebody's behalf.
+      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — put it in ${cloudflareConfigPath()}, or export it.`;
     case "secret":
       return null; // `describeDevSecrets` names it, and says which file it belongs in.
     case "binding": {

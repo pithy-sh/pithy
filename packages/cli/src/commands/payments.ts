@@ -4,7 +4,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
@@ -17,6 +16,7 @@ import {
   loadPayments,
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
+import { cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
@@ -77,21 +77,22 @@ async function loadPaymentsConfig(projectDir: string) {
 }
 
 /** The CF credentials and Secrets Store id payments provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken: string; storeId: string } {
-  const vars = loadCloudflareEnv(projectDir);
+function loadCloudflareCreds(): { accountId: string; apiToken: string; storeId: string } {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
     throw new ValidationError({
       message: "The CF Secrets Store id is missing.",
-      action: "Set SECRETS_STORE_ID in .dev.vars (the reconcile worker decrypts the rails' credentials from it).",
+      action:
+        "Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).",
     });
   }
   return { accountId, apiToken, storeId };
@@ -154,7 +155,7 @@ async function buildProvisioner(projectDir: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
-  const { accountId, apiToken, storeId } = loadCloudflareCreds(projectDir);
+  const { accountId, apiToken, storeId } = loadCloudflareCreds();
   const paymentsConfig = await loadPaymentsConfig(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   return {

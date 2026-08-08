@@ -165,7 +165,7 @@ describe("runSecretWrite", () => {
 describe("resolveSecretRegistry", () => {
   test("finds the secrets capability's registry in a loaded worker config", () => {
     const config: WorkerConfig = { capabilities: [secrets({ registry })] };
-    expect(resolveSecretRegistry(config)).toBe(registry);
+    expect(resolveSecretRegistry(config)).toMatchObject(registry);
   });
 
   test("throws when the worker doesn't enable the secrets capability", () => {

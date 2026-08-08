@@ -4,7 +4,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
@@ -13,6 +12,7 @@ import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManage
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
+import { cloudflareEnv } from "../cloudflare/config";
 import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsProvisioner } from "./secretsProvisioner";
 
 /**
@@ -32,12 +32,12 @@ import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsPr
  * and lands inside the `pithy-int-` reservation rather than a real project's namespace. Teardown
  * recomputes exactly those names, so it can only ever delete its own.
  *
- * It is still gated on `PITHY_LIVE_DEPLOY=1` as well as CF creds in `.dev.vars`: it really does deploy
+ * It is still gated on `PITHY_LIVE_DEPLOY=1` as well as CF creds in `<config>/cloudflare.json`: it really does deploy
  * Workers, run Workflows, and write to the account's one Secrets Store. Run it deliberately.
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const vars = loadCloudflareEnv(path.join(__dirname, "../.."));
+const vars = cloudflareEnv();
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
 const optedIn = process.env.PITHY_LIVE_DEPLOY === "1";
 

@@ -7,18 +7,21 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { type EnsureSecretsStoreIdOptions, ensureSecretsStoreId } from "../cloudflare/storeId";
 import { readBootstrapVars } from "../devSecrets/bootstrapVars";
-import { readDevVarsSource, writeDevVars } from "../devSecrets/devVars";
+import { readDevVarsSource } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { ownProperties } from "../devSecrets/records";
-import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
+import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
+import type { StatePathOptions } from "../notifier/state";
 
 export interface AddBootstrapOptions {
   /**
@@ -36,6 +39,13 @@ export interface AddBootstrapOptions {
    * only way to prove they say it once is to make both of them say it.
    */
   seed?: (projectDir: string) => Promise<DevSecretsSeedReport>;
+  /**
+   * Seam: resolve and record the account's `SECRETS_STORE_ID`. Defaults to the real one, which reaches
+   * Cloudflare — so a test that does not pass this would list an operator's real account.
+   */
+  ensureStoreId?: (options: EnsureSecretsStoreIdOptions) => Promise<string[]>;
+  /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
+  paths?: StatePathOptions;
 }
 
 /**
@@ -51,8 +61,21 @@ export interface AddBootstrapOptions {
  *
  * Returns the lines to print (`AddResult.notes`), in order. Nothing here ever prints a value.
  */
-export async function bootstrapAdd({ projectDir, manifest, seed }: AddBootstrapOptions): Promise<string[]> {
+export async function bootstrapAdd({
+  projectDir,
+  manifest,
+  seed,
+  ensureStoreId,
+  paths,
+}: AddBootstrapOptions): Promise<string[]> {
   const notes: string[] = [];
+  // The account's Secrets Store id, resolved once and recorded in `<config>/cloudflare.json` — the one
+  // moment in its life anything asks Cloudflare where the store is (#182). Before the bindings loop,
+  // because the sentence it may print ("no credentials yet") is the same one that explains why the
+  // provisioning notes below are the next step. Never fatal: see {@link ensureSecretsStoreId}.
+  if (manifest.name === SECRETS_CAPABILITY) {
+    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)(paths !== undefined ? { paths } : {})));
+  }
   for (const binding of manifest.requiredBindings) {
     // Optional bindings are skipped for the same reason `validateBindings` skips them: nothing refuses
     // a request over one, so a note would send the adopter provisioning what their app never asks for.
@@ -114,39 +137,59 @@ function provisionNote(capability: string, binding: BindingSpec): string {
  * is not rewritten — nothing here ever rewrites an adopter's `.dev.vars`.
  */
 async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
-  const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
-  if (recorded) {
-    return [`${MASTER_KEY_BINDING} is already recorded. Left as it is — a new key orphans every stored secret.`];
+  const path = await resolveDevSecretsFile(projectDir);
+  if ((await readDevSecrets(path))[MASTER_KEY_BINDING]) {
+    return [`${MASTER_KEY_BINDING} is already in ${path}. Left as it is — a new key orphans every stored secret.`];
   }
-  // Through the writer's own reader: only `ENOENT` is "no key here". `.catch(() => "")` answered that
-  // for every errno, so an unreadable file read as absent and this minted a second key — and a second
-  // master key orphans every secret the first one encrypted, which is what this function exists to
-  // prevent. See {@link readDevVarsSource}.
-  const legacy = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
-  // Stringified, because that is the shape the binding has in a deployed worker too: the Secrets Store
-  // holds the same JSON, and `resolveEncryptionConfig` parses one string in both places.
-  const value = legacy && legacy !== "" ? legacy : JSON.stringify(await initialMasterKeyConfig());
-  // Through `writeDevVars`, like every other value that has to reach a Worker: it records the value and
-  // regenerates every Worker's file from it. Written to the project root alone, the key never arrived —
-  // the Worker answered `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS` on a project that
-  // had just minted one.
-  const wrote = await writeDevVars({ projectDir, values: { [MASTER_KEY_BINDING]: value } });
-  // Everything the write has to say, not only its refusals. A Worker whose `.dev.vars` pithy may not
-  // write is a Worker with no master key, and this used to mint one, announce it, and say nothing about
-  // the Worker that never got it.
-  const delivery = renderDevVarsNotes(wrote);
-  if (wrote.written.length === 0) return delivery;
-  if (legacy && legacy !== "") {
+  // Both older homes, in the order they were used: `dev.json` since #154, the project root's `.dev.vars`
+  // before it. Adopted rather than re-minted — this is the one value whose replacement cannot be undone,
+  // because every secret already encrypted under the old key becomes unreadable with no error that names
+  // the cause. Their `.dev.vars` is not rewritten; nothing here ever rewrites an adopter's.
+  //
+  // The `.dev.vars` read goes through the writer's own reader, where only `ENOENT` is "no key here".
+  // `.catch(() => "")` answered that for every errno, so an unreadable file read as absent and this
+  // minted a second key. See {@link readDevVarsSource}.
+  const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
+  const stranded = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
+  const adopted = firstValue(recorded, stranded);
+  // The file states the `EncryptionConfig` itself, inside the envelope every dev secret is written as —
+  // so a hand-edit that breaks it is caught by the registry's own schema, naming the secret, rather than
+  // by a Worker answering every request with `secrets/crypto_failed`. An adopted value arrives as the
+  // string a binding carried, so it is parsed back into the object the file holds.
+  const config = adopted === undefined ? await initialMasterKeyConfig() : parseConfig(adopted);
+  if (config === null) {
     return [
-      `Adopted the ${MASTER_KEY_BINDING} already in .dev.vars. A new key would orphan every secret the old one encrypted.`,
-      ...delivery,
+      `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was adopted.`,
+      `Put a valid one in ${path}, or delete it and run pithy add secrets again to mint a new one — a new key orphans every secret the old one encrypted.`,
+    ];
+  }
+  const wrote = await writeDevSecrets(path, { [MASTER_KEY_BINDING]: initialDevSecret(config) });
+  if (wrote.length === 0) return [];
+  if (adopted !== undefined) {
+    return [
+      `Adopted the ${MASTER_KEY_BINDING} this machine already had, into ${path}. A new key would orphan every secret the old one encrypted.`,
     ];
   }
   return [
-    `Minted a dev master key as ${MASTER_KEY_BINDING}. Local only, and it reaches each Worker's generated .dev.vars.`,
+    `Minted a dev master key as ${MASTER_KEY_BINDING}, into ${path}. Local only, and it reaches each Worker's generated .dev.vars.`,
     "Deployed environments get theirs from pithy secrets provision.",
-    ...delivery,
   ];
+}
+
+/** The first non-empty of the older homes, or `undefined` when this machine has no key at all. */
+function firstValue(...candidates: (string | undefined)[]): string | undefined {
+  for (const candidate of candidates) if (candidate !== undefined && candidate !== "") return candidate;
+  return undefined;
+}
+
+/** A binding's string parsed back into the `EncryptionConfig` the file states, or `null` when it is not one. */
+function parseConfig(value: string): EncryptionConfig | null {
+  try {
+    const parsed = EncryptionConfig.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

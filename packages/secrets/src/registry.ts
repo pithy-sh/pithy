@@ -71,6 +71,38 @@ interface SecretRegistryEntryBase {
    * capability's own tests assert the two agree.
    */
   devValue?: DevSecretValue;
+  /**
+   * Whether this secret is read **straight from its binding**, by code that runs before the store it
+   * would otherwise be decoded through exists.
+   *
+   * **Read this before deleting it as a special case for one secret.** It has exactly one member today —
+   * `SECRETS_ENCRYPTION_KEYS` — and that is not the same thing as being a special case. It describes an
+   * asymmetry that **already exists in production and predates this axis**: `ensureMasterKey` has always
+   * written the master key into the Secrets Store as a bare `EncryptionConfig`, and
+   * `resolveEncryptionConfig` has always parsed its binding directly. Nothing was changed to make that
+   * true; this only writes it down where the code that materialises a value can see it.
+   *
+   * **Why it cannot be otherwise.** Every other secret is stored — in the Secrets Store, in a D1 row, and
+   * in a `.dev.vars` line — as an encoded `{ currentVersion, versions }` envelope, and read back through
+   * {@link decodeVersionedValue}. The master key is what that decoder's *decryption* needs in order to
+   * exist: it is resolved first, before any secret can be read at all, so it cannot arrive in a form
+   * whose reading depends on it. Its binding therefore carries the value, and a `bootstrap` secret's
+   * materialised value is its **current version's value** rather than the envelope.
+   *
+   * **What deleting it would cost.** Making the master key uniform means changing what
+   * `resolveEncryptionConfig` accepts and rewriting the stored value in every already-provisioned
+   * environment — a data migration of the one value that, botched, makes every other secret unreadable
+   * with no error naming the cause. Weigh that before treating this field as tidying.
+   *
+   * The file still states a full envelope for it, like every other secret, and a future *value* rotation
+   * of the master key is a rotation of the `EncryptionConfig`'s own `versions` map — the axis that key
+   * has always rotated on, and the reason `rotatable` stays false.
+   *
+   * Enforced at define time: a `bootstrap` entry must be `cf-secrets-store` (a D1 row cannot be read
+   * before the store that decrypts it is open) and must not be `keyed` (a keyspace has no one value to
+   * bind). See {@link defineSecretRegistry}.
+   */
+  bootstrap?: boolean;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -179,6 +211,26 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
       if (entry.keyed) {
         throw new InternalError({
           message: `secret registry: keyed entry "${name}" must not declare devValue — a keyspace has no one value.`,
+        });
+      }
+    }
+    if (entry.bootstrap !== undefined) {
+      if (typeof entry.bootstrap !== "boolean") {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" must declare bootstrap as a boolean.`,
+        });
+      }
+      // A bootstrap secret is one a Worker reads from a binding before the store exists, so the D1 store
+      // is not a place it can come from. Caught here, where the author is, rather than at a read that
+      // finds a row nothing will ever look at.
+      if (entry.bootstrap && entry.backend !== "cf-secrets-store") {
+        throw new InternalError({
+          message: `secret registry: bootstrap entry "${name}" must use the cf-secrets-store backend — it is read from its binding, before any store is open.`,
+        });
+      }
+      if (entry.bootstrap && entry.keyed) {
+        throw new InternalError({
+          message: `secret registry: keyed entry "${name}" must not declare bootstrap — a keyspace has no one value to bind.`,
         });
       }
     }

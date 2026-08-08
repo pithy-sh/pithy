@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
@@ -16,6 +15,7 @@ import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
+import { cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadWorkerConfig, loadWorkerDomains, requireProjectName } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
@@ -73,14 +73,14 @@ function resolveModes(config: TurnstileConfig): TurnstileMode[] {
 }
 
 /** The CF credentials provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(projectDir: string): { accountId: string; apiToken: string } {
-  const vars = loadCloudflareEnv(projectDir);
+function loadCloudflareCreds(): { accountId: string; apiToken: string } {
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .dev.vars.",
+      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   return { accountId, apiToken };
@@ -150,7 +150,7 @@ const provision = defineCommand({
       const projectDir = process.cwd();
       const config = await loadTurnstileConfig(projectDir);
       const modes = resolveModes(config);
-      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken } = loadCloudflareCreds();
       const worker = await resolveSingleWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
@@ -208,7 +208,7 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       const config = await loadTurnstileConfig(projectDir);
       const modes = resolveModes(config);
-      const { accountId, apiToken } = loadCloudflareCreds(projectDir);
+      const { accountId, apiToken } = loadCloudflareCreds();
       const worker = await resolveSingleWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),

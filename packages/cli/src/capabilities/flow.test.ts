@@ -6,8 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest, type ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { readDevSecrets } from "../devSecrets/file";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import type { DatabaseRun } from "../migrations/run";
 import { installPackage } from "../project/packageManager";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
@@ -213,9 +216,17 @@ describe("runAdd", () => {
       migrate: vi.fn(async () => noMigrations),
     });
 
-    // The Worker's own generated `.dev.vars` — where wrangler reads it (#154).
-    const vars = await readFile(join(worker, ".dev.vars"), "utf8");
-    expect(vars).toMatch(/^SECRETS_ENCRYPTION_KEYS=\{"currentVersion":"1"/m);
+    // The dev secrets file — the one source of dev secret values, and where `pithy add secrets` mints
+    // the master key now (#179). It used to land in `dev.json` under `vars`, from which the generator
+    // copied it into each Worker's `.dev.vars`; the generator reads this file directly instead.
+    //
+    // **The generated `.dev.vars` is not asserted here, and that is the fixture's limit rather than the
+    // behaviour's.** Materialising a `cf-secrets-store` secret needs the Worker's *composition* — the
+    // registry is what says the master key is one — and this fixture is scaffolded in the OS tmpdir,
+    // where `pithy.config.ts`'s `@pithy-sh/*` imports resolve against nothing. `targets.test.ts` and
+    // `generate.test.ts` scaffold inside the package for exactly that reason, and cover the rest.
+    const stated = (await readDevSecrets(await resolveDevSecretsFile(dir))).SECRETS_ENCRYPTION_KEYS;
+    expect(EncryptionConfig.parse(stated?.versions[stated.currentVersion]).currentVersion).toBe("1");
     expect(result.notes.join(" ")).toMatch(/pithy secrets provision/);
   });
 

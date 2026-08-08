@@ -378,7 +378,7 @@ describe("renameWorker", () => {
 
   /** An account that answers, holding exactly `live`. */
   const account = (...live: string[]): DeployedScriptProbe => {
-    return async (_projectDir, scripts) => ({ live: scripts.filter((script) => live.includes(script)), checked: true });
+    return async (scripts) => ({ live: scripts.filter((script) => live.includes(script)), checked: true });
   };
 
   /** An account nothing could be learned from — no credentials, offline, a refused listing. */
@@ -454,7 +454,7 @@ describe("renameWorker", () => {
       to: "board",
       mainRoot: dir,
       discoverWorkers: discover(dir, ["api"]),
-      probeDeployed: async (_projectDir, scripts) => {
+      probeDeployed: async (scripts) => {
         asked = scripts;
         return { live: [], checked: true };
       },

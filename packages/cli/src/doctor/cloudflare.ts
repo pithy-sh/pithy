@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import {
-  CLOUDFLARE_CREDENTIAL_KEYS,
-  type CloudflareCredentialSplit,
-  cloudflareCredentialSplit,
-  loadCloudflareEnv,
-} from "@pithy-sh/cloudflare/src/env/devVars";
+import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { type CloudflareCredentialSplit, cloudflareCredentialSplit, cloudflareEnv } from "../cloudflare/config";
+import type { StatePathOptions } from "../notifier/state";
 
 /**
  * Whether `pithy doctor` can reach Cloudflare with the credentials the project is configured with.
@@ -41,7 +38,7 @@ export interface CloudflareAccess {
   tokenStatus: string | null;
   /**
    * Set when the account id and the token came from **different sources** — part of the pair from
-   * `.dev.vars`, the rest overlaid from the ambient environment.
+   * `<config>/cloudflare.json`, the rest overlaid from the ambient environment.
    *
    * Reported alongside the state rather than as one, because it is orthogonal to reachability: mixed
    * credentials may well reach *an* account. It never fails the exit — the pair may be valid, and only a
@@ -85,17 +82,23 @@ async function verifyByKind(clients: CloudflareClients, apiToken: string): Promi
 }
 
 /**
- * Probe the configured Cloudflare credentials, reading `.dev.vars` with the `process.env` overlay
- * {@link loadCloudflareEnv} applies — so this reports the same credentials every other command resolves,
- * in CI as well as locally.
+ * Probe the configured Cloudflare credentials, reading `<config>/cloudflare.json` with the `process.env`
+ * overlay {@link cloudflareEnv} applies — so this reports the same credentials every other command
+ * resolves, in CI as well as locally.
+ *
+ * **It takes no project directory, and that is the finding rather than a simplification.** The
+ * credentials are account-scoped (#182): one account holds many projects, and "can I reach Cloudflare"
+ * has the same answer in every checkout on this machine. Passing a project root implied otherwise, and
+ * the file it named was inside one.
  *
  * Never throws: a diagnostic command has to keep working in exactly the broken environment it exists to
  * diagnose, so every failure becomes a state rather than an exception.
  */
-export async function checkCloudflareAccess(projectDir: string): Promise<CloudflareAccess> {
-  const vars = loadCloudflareEnv(projectDir);
-  // Read from the same directory as the credentials, so what is reported is a fact about *this* resolution.
-  const credentialSplit = cloudflareCredentialSplit(projectDir);
+export async function checkCloudflareAccess(options: StatePathOptions = {}): Promise<CloudflareAccess> {
+  const vars = cloudflareEnv(options);
+  // Resolved from the same file and the same environment, so what is reported is a fact about *this*
+  // resolution rather than about a second one taken a moment later.
+  const credentialSplit = cloudflareCredentialSplit(options);
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
   if (missing.length > 0) return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit };
 
@@ -120,7 +123,7 @@ function describeState(access: CloudflareAccess): string {
     case "ok":
       return `reachable (token ${access.tokenStatus ?? "verified"})`;
     case "unconfigured":
-      return `not configured (set ${access.missing.join(" and ")} in .dev.vars)`;
+      return `not configured (set ${access.missing.join(" and ")} in ~/.config/pithy/cloudflare.json, or the environment)`;
     case "token_invalid":
       return "CLOUDFLARE_API_TOKEN rejected — check the value, or mint a new bootstrap token";
     case "account_unreachable":
@@ -138,5 +141,5 @@ export function describeCloudflareAccess(access: CloudflareAccess): string {
   const state = describeState(access);
   const split = access.credentialSplit;
   if (!split) return state;
-  return `${state}; credentials come from two places — .dev.vars sets ${split.fromFile.join(" and ")}, the environment supplies ${split.fromEnvironment.join(" and ")} — set the whole pair in one of them`;
+  return `${state}; credentials come from two places — cloudflare.json sets ${split.fromFile.join(" and ")}, the environment supplies ${split.fromEnvironment.join(" and ")} — set the whole pair in one of them`;
 }

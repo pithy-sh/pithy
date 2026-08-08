@@ -8,7 +8,7 @@ Config resolves per environment: **dev** (local), **staging** (test users), **pr
 
 ## Credentials
 
-Out-of-Worker commands read wrangler's own env vars: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Locally they live in `.dev.vars` (git-ignored). In CI, pass them as environment variables — GitHub Actions secrets, no `.dev.vars` file, no interactive `wrangler login`. The bootstrap token works; a least-privilege `<project>-<env>-ci-system` token minted by `pithy token mint` is what CI should run under. See [`TOKENS.md`](TOKENS.md).
+Out-of-Worker commands read wrangler's own env vars: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Locally they live in `<config>/cloudflare.json` — account-scoped, mode `0600`, outside every checkout, written by `pithy init`. In CI, pass them as environment variables — GitHub Actions secrets, no config file, no interactive `wrangler login`. The bootstrap token works; a least-privilege `<project>-<env>-ci-system` token minted by `pithy token mint` is what CI should run under. See [`TOKENS.md`](TOKENS.md).
 
 ## Migrate
 

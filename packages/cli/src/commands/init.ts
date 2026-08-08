@@ -4,6 +4,7 @@
 import { basename, join, resolve } from "node:path";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { defineCommand } from "citty";
+import { cloudflareConfigPath, cloudflareEnv, writeCloudflareConfig } from "../cloudflare/config";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
@@ -42,6 +43,45 @@ async function ask(message: string, fallback: string, json: boolean): Promise<{ 
     process.exit(1);
   }
   return { value: answer, prompted: true };
+}
+
+/**
+ * Record the account's Cloudflare credentials, if this machine has none yet.
+ *
+ * **This is the one moment the operator is holding both**, which is the whole reason it belongs in
+ * `init`: the token is needed to list zones two prompts later, and every command after this needs it.
+ * They are account-scoped, so this writes `<config>/cloudflare.json` — outside every checkout, `0600`,
+ * in the `0700` config directory (#182). Nothing minted or typed here goes into the project.
+ *
+ * **Skipped when they already resolve**, from the file or from the environment: a second project on the
+ * same account has nothing to ask, and CI has no one to ask. Skipped when nobody is at a terminal, for
+ * the same reason every other prompt here is. Skippable by pressing enter — a project scaffolded before
+ * the account exists is a legitimate thing to do, and `pithy doctor` says the credentials are absent on
+ * every run until they are not.
+ *
+ * The token is read with `password`, so it does not land in the terminal's scrollback.
+ */
+async function askCloudflareCredentials(json: boolean): Promise<string[]> {
+  const vars = cloudflareEnv();
+  if (vars.CLOUDFLARE_ACCOUNT_ID && vars.CLOUDFLARE_API_TOKEN) return [];
+  if (!interactive(json)) return [];
+
+  const { isCancel, password, text } = await import("@clack/prompts");
+  process.stdout.write(
+    `${dim("Cloudflare credentials are per account, not per project — one set for every project you scaffold.")}\n${dim(`They are kept in ${cloudflareConfigPath()}, never in this repository.`)}\n${dim("Press enter to skip; pithy doctor names them until they are set.")}\n\n`,
+  );
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? (await text({ message: "Cloudflare account id:", defaultValue: "" }));
+  if (isCancel(accountId)) return [];
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? (await password({ message: "Cloudflare API token:" }));
+  if (isCancel(apiToken)) return [];
+  if (!accountId && !apiToken) return [];
+
+  const written = await writeCloudflareConfig({
+    ...(accountId ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {}),
+    ...(apiToken ? { CLOUDFLARE_API_TOKEN: apiToken } : {}),
+  });
+  // The path, never a value. A token echoed into a terminal is a token in a scrollback and a CI log.
+  return [`Recorded ${Object.keys(written).sort().join(" and ")} in ${cloudflareConfigPath()}.`];
 }
 
 export default defineCommand({
@@ -89,6 +129,9 @@ export default defineCommand({
       const appName = name.value;
       await scaffoldProject({ targetDir, appName, worker: worker.value });
 
+      // Asked before the zones are, because listing them needs the token. Answered once per machine.
+      const credentials = await askCloudflareCredentials(args.json);
+
       // Where the Worker answers, asked against the account's real zones. Skippable — a project without
       // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
       // scaffold exists, because the answer is written into files this just created.
@@ -101,7 +144,7 @@ export default defineCommand({
       // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
       // source of truth, and an adopter who answered the prompt needs to know it did not land.
       const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
-      const prompted = name.prompted || worker.prompted || asked.prompted;
+      const prompted = name.prompted || worker.prompted || asked.prompted || credentials.length > 0;
 
       if (args.json) {
         process.stdout.write(
@@ -109,6 +152,7 @@ export default defineCommand({
         );
         return;
       }
+      for (const note of credentials) process.stdout.write(`${note}\n`);
       if (wrote && !wrote.declared && asked.domains) {
         process.stdout.write(
           `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,

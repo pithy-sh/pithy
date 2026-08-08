@@ -176,6 +176,10 @@ describe("a module that writes must not read a file and discard the failure", ()
       reads: "readFile",
       why: "`readBootstrapVars` argues it at length: every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale, and `writeBootstrapVars` does its own read through `readOptionalFile` and refuses. A `dev.json` half-typed by hand must not stop `pithy dev`.",
     },
+    "cli/src/cloudflare/config.ts": {
+      reads: "readFileSync",
+      why: "`readCloudflareConfigSync` hands its answer to a Cloudflare client and rewrites nothing, so a `cloudflare.json` that will not open costs a set of credentials and is reported by `pithy doctor` as `Cloudflare: unconfigured` — every command in the CLI resolves these, and refusing them all over one permission bit would break the command that fixes it. `writeCloudflareConfig` does its own read through `readOptionalFile` and refuses, because it is the one that could destroy what it could not read.",
+    },
     "cli/src/devSecrets/edit.ts": {
       reads: "readFile",
       why: "`readDraft` asks what the editor left behind. A draft it cannot read abandons the edit, which writes nothing: the draft stays where the message says it is, and the secrets file is untouched. The discard prevents a write rather than licensing one.",

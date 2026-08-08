@@ -6,12 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { StatePathOptions } from "../notifier/state";
 import { buildEnvInventory } from "./envInventory";
 
 let dir: string;
+let configDir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-env-inv-"));
+  configDir = await mkdtemp(join(tmpdir(), "pithy-env-inv-cfg-"));
   // Keep the account id deterministic regardless of the ambient environment.
   vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", undefined);
 });
@@ -19,6 +22,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   await rm(dir, { recursive: true, force: true });
+  await rm(configDir, { recursive: true, force: true });
 });
 
 /** Write one Worker under `apps/<name>/` with the given wrangler.jsonc. Discovery keys on that file. */
@@ -34,22 +38,32 @@ async function writeWrangler(config: unknown): Promise<void> {
   await writeWorker("api", config);
 }
 
+/**
+ * The account id, written where the CLI actually reads it: `<config>/cloudflare.json`, account-scoped
+ * and outside every checkout (#182). `PITHY_CONFIG_DIR` points at a temp directory for the same reason
+ * it does everywhere else — the real file holds the operator's live API token.
+ */
 async function writeAccountId(id: string): Promise<void> {
-  await writeFile(join(dir, ".dev.vars"), `CLOUDFLARE_ACCOUNT_ID=${id}\n`);
+  await writeFile(join(configDir, "cloudflare.json"), JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: id }));
+}
+
+/** The config-directory seam every call in this suite passes. */
+function paths(): StatePathOptions {
+  return { platform: "linux", homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: configDir } };
 }
 
 /** The first (or only) Worker's environments. */
 async function environmentsOf(worker = 0) {
-  const inv = await buildEnvInventory({ projectDir: dir });
+  const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
   return inv.workers[worker]?.environments ?? [];
 }
 
 describe("buildEnvInventory", () => {
   test("a project with no workers throws a NotFoundError with an action", async () => {
-    await expect(buildEnvInventory({ projectDir: dir })).rejects.toMatchObject({
+    await expect(buildEnvInventory({ projectDir: dir, paths: paths() })).rejects.toMatchObject({
       payload: { code: "core/not_found", action: expect.any(String) },
     });
-    await expect(buildEnvInventory({ projectDir: dir })).rejects.toBeInstanceOf(PithyError);
+    await expect(buildEnvInventory({ projectDir: dir, paths: paths() })).rejects.toBeInstanceOf(PithyError);
   });
 
   test("enumerates dev (top-level) plus every env.<name>", async () => {
@@ -58,7 +72,7 @@ describe("buildEnvInventory", () => {
       d1_databases: [],
       env: { staging: {}, prod: {} },
     });
-    const inv = await buildEnvInventory({ projectDir: dir });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.workers).toHaveLength(1);
     expect(inv.workers[0]).toMatchObject({ worker: "pithy-app", dir: join("apps", "api") });
     const environments = inv.workers[0]?.environments ?? [];
@@ -73,7 +87,7 @@ describe("buildEnvInventory", () => {
       name: "pithy-app",
       d1_databases: [{ binding: "DB", database_id: "db-uuid" }],
     });
-    const inv = await buildEnvInventory({ projectDir: dir });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.accountId).toBe("acct-9");
     const dev = inv.workers[0]?.environments[0];
     expect(dev?.resources[0]).toMatchObject({
@@ -151,7 +165,7 @@ describe("buildEnvInventory", () => {
       name: "pithy-app",
       d1_databases: [{ binding: "DB", database_id: "db-uuid" }],
     });
-    const inv = await buildEnvInventory({ projectDir: dir });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.accountId).toBeNull();
     expect(inv.workers[0]?.environments[0]?.workerDashboardUrl).toBeNull();
     expect(inv.workers[0]?.environments[0]?.resources[0]).toMatchObject({ provisioned: true, dashboardUrl: null });
@@ -186,7 +200,7 @@ describe("buildEnvInventory — per Worker", () => {
       kv_namespaces: [{ binding: "PRESENCE", id: "ns-2" }],
     });
 
-    const inv = await buildEnvInventory({ projectDir: dir });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api", "acme-collab"]);
     expect(inv.workers[0]?.environments.map((e) => e.name)).toEqual(["dev", "prod"]);
     expect(inv.workers[1]?.environments.map((e) => e.name)).toEqual(["dev"]);
@@ -199,16 +213,16 @@ describe("buildEnvInventory — per Worker", () => {
     await writeWorker("api", { name: "acme-api" });
     await writeWorker("collab", { name: "acme-collab" });
 
-    const byName = await buildEnvInventory({ projectDir: dir, worker: "acme-collab" });
+    const byName = await buildEnvInventory({ projectDir: dir, paths: paths(), worker: "acme-collab" });
     expect(byName.workers.map((worker) => worker.worker)).toEqual(["acme-collab"]);
 
-    const byDir = await buildEnvInventory({ projectDir: dir, worker: "collab" });
+    const byDir = await buildEnvInventory({ projectDir: dir, paths: paths(), worker: "collab" });
     expect(byDir.workers.map((worker) => worker.worker)).toEqual(["acme-collab"]);
   });
 
   test("an unknown --worker names the known ones", async () => {
     await writeWorker("api", { name: "acme-api" });
-    await expect(buildEnvInventory({ projectDir: dir, worker: "nope" })).rejects.toMatchObject({
+    await expect(buildEnvInventory({ projectDir: dir, paths: paths(), worker: "nope" })).rejects.toMatchObject({
       payload: { code: "core/not_found", action: expect.stringContaining("acme-api") },
     });
   });
@@ -219,7 +233,7 @@ describe("buildEnvInventory — per Worker", () => {
     await mkdir(webDir, { recursive: true });
     await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
 
-    const inv = await buildEnvInventory({ projectDir: dir });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);
   });
 });

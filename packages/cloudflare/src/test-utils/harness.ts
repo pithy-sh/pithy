@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,7 +14,7 @@ import {
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { fitSegment, kebab, MAX_RESOURCE_NAME, RESERVED_TEST_PREFIX } from "@pithy-sh/core/src/naming/resource";
 import { CloudflareClients } from "../client/clients";
-import { loadCloudflareEnv } from "../env/devVars";
+import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "../env/devVars";
 import { R2Credentials } from "../r2/r2Credentials";
 
 /**
@@ -28,13 +29,35 @@ import { R2Credentials } from "../r2/r2Credentials";
  * harness, so its credentials come from `packages/cloudflare/.dev.vars` too, and a `.dev.vars` beside the
  * importing package is read by nothing. See `README.md` § "Live integration tests".
  *
- * Nothing creates that file. It was a symlink to the repository root's, wired by a `vars:local` task that
- * #154 deleted along with every other `.dev.vars` link, and generation does not replace it here: `apps/`
- * is the registry, so `pithy dev` and `pithy seed` reach an adopter's Workers and never a kit package.
- * Write it by hand, or export the keys — {@link loadCloudflareEnv} overlays `process.env` per key for
+ * Nothing creates that file, and nothing in the CLI reads one any more — adopter credentials moved to
+ * the account-scoped `<config>/cloudflare.json` (#182), and this package cannot resolve that directory
+ * without a second implementation of where Pithy's config lives. So this stays a **maintainer-authored
+ * file for the live suites and nothing else**: no command writes it, no adopter has one, and it holds
+ * whatever account the person running `test:integration` wants the throwaway resources created in.
+ * Write it by hand, or export the keys — {@link loadIntegrationEnv} overlays `process.env` per key for
  * anything the file does not set, which is how CI runs with no file at all.
  */
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+/**
+ * The live-suite credentials: this package's own `.dev.vars`, then `process.env` per key for anything it
+ * did not set. The `.dev.vars` half is why this is here rather than in `../env/devVars` — nothing outside
+ * a live test reads a `.dev.vars` for credentials now, and a shared function that still did would be an
+ * invitation to point a command back at the checkout.
+ */
+function loadIntegrationEnv(): Record<string, string> {
+  let vars: Record<string, string> = {};
+  try {
+    vars = parseDevVars(readFileSync(path.join(PACKAGE_ROOT, ".dev.vars"), "utf8"));
+  } catch {
+    // No file — rely on the environment overlay below.
+  }
+  for (const key of CLOUDFLARE_ENV_KEYS) {
+    const fromEnv = process.env[key];
+    if (!vars[key] && fromEnv) vars[key] = fromEnv;
+  }
+  return vars;
+}
 
 /** Cloudflare credentials for a live run, plus whether enough of them are present to run at all. */
 export interface IntegrationCreds {
@@ -67,7 +90,7 @@ export function parseR2Creds(raw: string | undefined): R2Credentials | null {
  * suite with `describe.skipIf(!loadIntegrationCreds().hasCreds)` so it skips cleanly with no creds.
  */
 export function loadIntegrationCreds(): IntegrationCreds {
-  const vars = loadCloudflareEnv(PACKAGE_ROOT);
+  const vars = loadIntegrationEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   return {

@@ -6,8 +6,8 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { syncFeatureDevConfig } from "../feature/sync";
@@ -310,16 +310,16 @@ export interface DeployedScripts {
 }
 
 /** The account seam — asked which of `scripts` are live, so a unit test never reaches Cloudflare. */
-export type DeployedScriptProbe = (projectDir: string, scripts: string[]) => Promise<DeployedScripts>;
+export type DeployedScriptProbe = (scripts: string[]) => Promise<DeployedScripts>;
 
 /**
  * Ask the account which of these script names are deployed. Never throws: every failure is `checked:
  * false`, because "I could not find out" and "nothing is there" must not become the same answer when the
  * difference decides whether a rename orphans a live Worker.
  */
-export const probeDeployedScripts: DeployedScriptProbe = async (projectDir, scripts) => {
+export const probeDeployedScripts: DeployedScriptProbe = async (scripts) => {
   if (scripts.length === 0) return { live: [], checked: true };
-  const vars = loadCloudflareEnv(projectDir);
+  const vars = cloudflareEnv();
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return { live: [], checked: false };
@@ -449,10 +449,7 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
 
   // The account is asked before anything moves, and asked even under `force`: the point of the flag is to
   // proceed knowing what is being orphaned, which means the report still has to name it.
-  const deployed = await (options.probeDeployed ?? probeDeployedScripts)(
-    options.projectDir,
-    deployedScriptNames(config),
-  );
+  const deployed = await (options.probeDeployed ?? probeDeployedScripts)(deployedScriptNames(config));
   if (deployed.live.length > 0 && !options.force) {
     throw new ConflictError({
       message: `${options.from} is deployed as ${deployed.live.join(", ")}.`,

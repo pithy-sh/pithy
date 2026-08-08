@@ -5,7 +5,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { loadCloudflareEnv } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { CloudflareKVManager } from "@pithy-sh/cloudflare/src/kv/kvManager";
 import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
@@ -14,13 +13,14 @@ import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
+import { cloudflareEnv } from "../cloudflare/config";
 
 /**
  * The seed driver resolves each backend a seed set touches to a live handle — the only thing that
  * differs between a local (`dev`) run and a live (`staging`/`prod`) one, exactly as the migration
  * driver does for D1. `dev` resolves D1, KV, and R2 from the same Miniflare stores `wrangler dev` uses
  * under `.wrangler/state`; other environments resolve them from `@pithy-sh/cloudflare` REST managers,
- * with ids read from the target env's `wrangler.jsonc` block and credentials from `loadCloudflareEnv`.
+ * with ids read from the target env's `wrangler.jsonc` block and credentials from `cloudflareEnv`.
  *
  * Images and Stream have no local emulation, so they are **always** remote: the driver builds them from
  * credentials regardless of `--env`, and only when a set actually has media (the clients are lazy, so a
@@ -344,11 +344,11 @@ interface LazyClients {
 }
 
 /** Build the credential-lazy clients accessor shared by the remote resources and the always-remote assets. */
-function lazyClients(persistRoot: string, config: WranglerSeedConfig): LazyClients {
+function lazyClients(config: WranglerSeedConfig): LazyClients {
   let clients: CloudflareClients | undefined;
   let vars: Record<string, string> | undefined;
   const env = (): Record<string, string> => {
-    vars ??= loadCloudflareEnv(persistRoot);
+    vars ??= cloudflareEnv();
     return vars;
   };
   return {
@@ -408,7 +408,7 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
   const config = await readWranglerConfig(options.workerDir);
-  const clients = lazyClients(options.persistRoot, config);
+  const clients = lazyClients(config);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
 }
