@@ -4,6 +4,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { StatePathOptions } from "../notifier/state";
 import { bootstrapVarsPath, readBootstrapVars, removeBootstrapVars, writeBootstrapVars } from "./bootstrapVars";
@@ -77,6 +78,57 @@ describe("bootstrapVars", () => {
       await chmod(path, 0o600);
     }
     expect(await readBootstrapVars(dir, paths())).toEqual({ K: "v" });
+  });
+
+  test("a write refuses a file that parsed to something that is not a document (#209)", async () => {
+    // The read succeeded, which is why neither the errno gate nor `readOptionalFile` sees this. A hand
+    // edit that wrapped `dev.json` in brackets leaves the dev-login preference and this module's own set
+    // on disk — and `{}` as a merge base renames a document holding one key over both of them.
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    const held = `${JSON.stringify([{ devLogin: { email: "me@example.com" }, vars: { K: "v" } }])}\n`;
+    await writeFile(path, held, { mode: 0o600 });
+
+    await expect(writeBootstrapVars(dir, { K: "w" }, paths())).rejects.toThrow(PithyError);
+
+    // Byte for byte: the other tenant is still there, and so is every value this module had.
+    expect(await readFile(path, "utf8")).toBe(held);
+  });
+
+  test("null, a string, a number and a boolean are each refused — a null check is not the rule", async () => {
+    // `typeof null === "object"`, and comment-json boxes a top-level scalar, so neither a `null` check
+    // nor a `typeof` closes this. Each of these parses, and each used to be an empty base to write from.
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    for (const source of ["null", '"a-preference"', "12345", "true"]) {
+      await writeFile(path, source, { mode: 0o600 });
+      await expect(writeBootstrapVars(dir, { K: "w" }, paths()), source).rejects.toThrow(PithyError);
+      await expect(removeBootstrapVars(dir, ["K"], paths()), source).rejects.toThrow(PithyError);
+      expect(await readFile(path, "utf8"), source).toBe(source);
+    }
+  });
+
+  test("the refusal names the file and what it found, and never what was in it", async () => {
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(path, '"a-dev-master-key"', { mode: 0o600 });
+
+    const error = await writeBootstrapVars(dir, { K: "w" }, paths()).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(path);
+    expect(whole).toContain("a string");
+    expect(whole).not.toContain("a-dev-master-key");
+  });
+
+  test("the reader still answers empty for it — it rewrites nothing, and pithy dev must start", async () => {
+    // The asymmetry `readBootstrapVars` argues at length, held to. The refusal belongs to the two calls
+    // that merge into a file and rename the result, not to the one that hands a Worker its bindings.
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "replay", "dev.json"), '"a-preference"');
+    expect(await readBootstrapVars(dir, paths())).toEqual({});
   });
 
   test("a hand-edited file that will not parse reads as empty rather than stopping pithy dev", async () => {

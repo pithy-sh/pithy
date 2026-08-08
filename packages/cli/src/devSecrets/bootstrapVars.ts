@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { loadProject, requireProjectName } from "../project/config";
-import { readOptionalFile } from "../project/readOptionalFile";
+import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 import { devPreferencesPath } from "../seed/prepare";
 import { ensureDevSecretsDir } from "./location";
 import { tightenMode } from "./mode";
@@ -106,7 +106,8 @@ export async function readBootstrapVars(projectDir: string, options: StatePathOp
  *
  * **Read-modify-write over a file with other tenants**, so an unreadable-but-present file refuses rather
  * than being replaced: writing this set over a `dev.json` that could not be read would silently delete a
- * developer's dev-login preference. Only `ENOENT` licenses starting from `{}`.
+ * developer's dev-login preference. So does one that parsed to something which is not a document (#209),
+ * for the same reason and with the same cost. Only `ENOENT` licenses starting from `{}`.
  *
  * A value is never removed here. A name that leaves the registry leaves a line nothing reads; `pithy
  * doctor` is where a value nobody declares gets named, in this file exactly as in its neighbour.
@@ -159,8 +160,17 @@ export async function removeBootstrapVars(
 }
 
 /**
- * The parsed `dev.json`, with every tenant's key intact. `{}` for an absent file and for one whose JSON
- * is not an object; a present file that will not read at all is the caller's refusal, not a fresh start.
+ * The parsed `dev.json`, with every tenant's key intact. `{}` for an absent file and for one that will
+ * not parse at all; a present file that will not read, **or that parsed to something which is not a
+ * document**, is a refusal rather than a fresh start.
+ *
+ * It used to answer `{}` for a non-object too, and this docstring used to say so as if it were a
+ * decision (#209). It was the same defect as the unreadable file one line up, one step further in: the
+ * read succeeded, the value was not a document, and the two writers below merged into that `{}` and
+ * renamed the result over a file with other tenants in it — the dev-login preference and this module's
+ * own set, gone, with the run reporting a clean write. A file that will not *parse* stays `{}`: nothing
+ * can be made of it either way. A value that *parsed* is a claim about what is in the file, and
+ * {@link requireRecord} answers that for every reader in this family in one place.
  *
  * The `ENOENT`-only rule is {@link readOptionalFile}'s (`../project/`); the words below are this file's,
  * because "cannot update" is what a read-modify-write over somebody else's tenants has to say.
@@ -178,7 +188,17 @@ async function readDevJson(path: string): Promise<Record<string, unknown>> {
       ),
   });
   if (source === null) return {};
-  const parsed = DevJson.safeParse(safeJson(source));
+  const value = safeJson(source);
+  if (value === undefined) return {};
+  const document = requireRecord(path, value, {
+    notARecord: ({ found }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it holds ${found}, not a document.`,
+        action: "Restore it to a JSON object, or move it aside, and run the command again.",
+        detail: `dev.json at ${path} parsed to ${found}, and other tenants' keys would be replaced by a write from it`,
+      }),
+  });
+  const parsed = DevJson.safeParse(document);
   return parsed.success ? parsed.data : {};
 }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { errnoOf } from "./atomic";
 
 /**
@@ -114,4 +114,80 @@ function defaultRefusal({ path, code, cause }: UnreadableFile): PithyError {
     },
     { cause },
   );
+}
+
+/**
+ * The second half of the same sentence, for the reader that parses what it read.
+ *
+ * {@link readOptionalFile} closes *"the file would not open"*. It cannot close *"the file opened and is
+ * not a document"*, because that read genuinely succeeded — the loss happens one step later, when a
+ * writer merges into a value it decided was empty and renames the result over everything the process
+ * never saw. Three readers reached that decision independently: `pithy.worker.jsonc` (#204),
+ * `tokens.json` and `dev.json` (#209, both credential files holding other tenants' keys). Three is this
+ * repository's count for a rule living at call sites instead of at the thing being called, so it lives
+ * here, beside the other decision no reader may make for itself.
+ *
+ * **Absent is `{}` and is the caller's answer to make. Present-but-not-a-record is this one's refusal.**
+ * A reader that has nothing to destroy may still choose `{}` for a file that will not *parse*; what no
+ * reader may choose is that a value which parsed to a string is a document to write from.
+ *
+ * All three producers ask this one, `ui/workerUi.ts` included — the tag check was written there for
+ * #204, and moving it here rather than copying it is the difference between a rule and a convention.
+ * Each keeps its own sentence through `options.notARecord`, exactly as each keeps its own refusal for a
+ * file that would not open.
+ */
+export function requireRecord(
+  path: string,
+  value: unknown,
+  options: RequireRecordOptions = {},
+): Record<string, unknown> {
+  const shape = shapeOf(value);
+  if (shape === "object") return value as Record<string, unknown>;
+  const failure = { path, found: asWords(shape) };
+  throw options.notARecord?.(failure) ?? defaultShapeRefusal(failure);
+}
+
+/** What a call site is told about a value that parsed and is not a record. Never the value itself. */
+export interface NotARecord {
+  /** The file the value came out of, exactly as it was asked for. */
+  readonly path: string;
+  /** The shape as a sentence names it — `null`, `an array`, `a string`. Never a byte of the file. */
+  readonly found: string;
+}
+
+/** How {@link requireRecord} refuses. */
+export interface RequireRecordOptions {
+  /**
+   * The refusal this file deserves, in this command's words — a `tokens.json` and a `pithy.worker.jsonc`
+   * name different things and want different error classes. Returning anything but a `PithyError` is not
+   * possible, so a caller cannot quietly turn the refusal back into an empty document here.
+   */
+  readonly notARecord?: (failure: NotARecord) => PithyError;
+}
+
+/**
+ * The value's shape, by its own tag rather than by `typeof`, which answers this wrong twice.
+ *
+ * `null` is a `"object"` — so a `null` check reads as the whole rule and is half of it. And
+ * **comment-json boxes a top-level primitive** so it has somewhere to hang the file's comments:
+ * `parse('"react"')` is a `String` object, not `null`, and `typeof` calls it an `"object"` too. Only a
+ * `String` *object* would survive both checks, which is why this asks the tag.
+ */
+function shapeOf(value: unknown): string {
+  return Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
+}
+
+/** The shape as the sentence names it: `null`, `an array`, `a string`. */
+function asWords(shape: string): string {
+  if (shape === "null" || shape === "undefined") return shape;
+  return /^[aeiou]/.test(shape) ? `an ${shape}` : `a ${shape}`;
+}
+
+/** The refusal a caller that named no words of its own gets: the path and the shape, never the value. */
+function defaultShapeRefusal({ path, found }: NotARecord): PithyError {
+  return new ConflictError({
+    message: `Cannot update ${path}: it holds ${found}, not a document.`,
+    action: "Restore it to a JSON object, or move it aside, and run the command again.",
+    detail: `${path} parsed to ${found}`,
+  });
 }
