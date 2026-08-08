@@ -304,6 +304,30 @@ describe("buildReconcilePlan — config keys", () => {
     });
   });
 
+  test("reports and writes an option the adopter fills in by hand, as the empty literal", async () => {
+    // The other half of #161. `pithy add secrets` now scaffolds the required `registry`, but a project
+    // that composed secrets before it did has a registration missing the key — and `pithy upgrade` is
+    // what closes that gap. Its own copy of the option's value type was the scalar union, so a manifest
+    // stating `{}` failed to parse and the one key an existing project needed was the one it could not
+    // report. Written empty, for the reason `add` writes it empty: the contents are the adopter's.
+    await writeManifest(dir, {
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [{ key: "registry", default: {}, describe: "Your secrets. Declare each one here." }],
+    });
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
+
+    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const auth = plan.perCapability.find((cap) => cap.name === "auth");
+    expect(auth?.missingConfigKeys).toEqual([
+      { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
+    ]);
+
+    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toContain("registry: {},");
+  });
+
   test("never reports a key already present, even with an adopter-changed value", async () => {
     await writeManifest(dir, authManifest);
     await writeFile(

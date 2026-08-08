@@ -4,14 +4,14 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { CapabilityManifest, type ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
 import { installPackage } from "../project/packageManager";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
-import { coerceSetFlags, collectSetFlags, runAdd } from "./flow";
+import { coerceSetFlags, collectSetFlags, isHandWritten, runAdd } from "./flow";
 
 const optionManifest = CapabilityManifest.parse({
   name: "auth",
@@ -21,6 +21,17 @@ const optionManifest = CapabilityManifest.parse({
     { key: "basePath", default: "/auth", describe: "Where the auth routes mount." },
     { key: "sessionDays", default: 30, describe: "Refresh-token lifetime in days." },
     { key: "cookies", default: true, describe: "Enable cookie sessions." },
+  ],
+});
+
+/** Options a manifest can only scaffold empty — the shape `@pithy-sh/secrets` needs for its registry. */
+const handWrittenManifest = CapabilityManifest.parse({
+  name: "secrets",
+  package: "@pithy-sh/secrets",
+  requiredBindings: [],
+  configOptions: [
+    { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
+    { key: "boards", default: [], describe: "Every board this app ranks." },
   ],
 });
 
@@ -46,6 +57,24 @@ describe("coerceSetFlags", () => {
   test("a non-numeric number and a non-boolean boolean fail", () => {
     expect(() => coerceSetFlags(optionManifest, ["sessionDays=lots"])).toThrow(/number/);
     expect(() => coerceSetFlags(optionManifest, ["cookies=maybe"])).toThrow(/boolean/);
+  });
+
+  test("an option the adopter writes by hand is refused, not stringified", () => {
+    // The secrets registry: a manifest states it as `{}` so the generated config compiles (#161), and
+    // there it stops. `--set` carries a string, and the old fall-through returned the raw one — which
+    // would have composed `registry: "d1"` as the registry and been accepted by nothing.
+    const error = coerceSetFlags.bind(null, handWrittenManifest, ["registry=d1"]);
+    expect(error).toThrow(PithyError);
+    expect(error).toThrow(/not settable from the command line/);
+  });
+});
+
+describe("isHandWritten", () => {
+  test("is true for an option whose value is an object or an array, false for the scalars", () => {
+    const byKey = new Map(handWrittenManifest.configOptions.map((option) => [option.key, option]));
+    expect(isHandWritten(byKey.get("registry") as ConfigOption)).toBe(true);
+    expect(isHandWritten(byKey.get("boards") as ConfigOption)).toBe(true);
+    for (const option of optionManifest.configOptions) expect(isHandWritten(option)).toBe(false);
   });
 });
 

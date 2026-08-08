@@ -130,6 +130,35 @@ describe("CapabilityManifest", () => {
     ]);
   });
 
+  test("parses an object or array default — the option an adopter fills in by hand", () => {
+    // `SecretsConfig.registry` is required and only the adopter can write its contents. While a default
+    // could only be a scalar, the manifest could not state the option at all, so `pithy add secrets`
+    // rendered a registration missing a required key and the scaffolded project failed `tsc` (#161).
+    const parsed = CapabilityManifest.parse({
+      name: "secrets",
+      package: "@pithy-sh/secrets",
+      requiredBindings: [],
+      configOptions: [
+        { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
+        { key: "boards", default: [], describe: "Every board this app ranks." },
+      ],
+    });
+    expect(parsed.configOptions.map((option) => option.default)).toEqual([{}, []]);
+  });
+
+  test("rejects a configOption with a default no config file could carry", () => {
+    // The union is JSON, so `null` and an undefined-valued key are both out: `add` renders the default
+    // verbatim, and a capability that means "unset" says so by leaving the option off the manifest.
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "basePath", default: null, describe: "Mount path." }],
+      }),
+    ).toThrow();
+  });
+
   test("rejects a configOption with an empty key", () => {
     expect(() =>
       CapabilityManifest.parse({

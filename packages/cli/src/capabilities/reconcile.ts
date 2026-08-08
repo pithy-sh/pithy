@@ -5,7 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { type CapabilityManifest, ConfigOptionValue } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -56,9 +56,12 @@ export type MissingBinding = z.infer<typeof MissingBinding>;
 export const MissingConfigKey = z
   .object({
     key: z.string().describe("The option name to add to the capability's registration call in pithy.config.ts."),
-    default: z
-      .union([z.string(), z.number(), z.boolean()])
-      .describe("The manifest default rendered as the option's value (an adopter can change it afterward)."),
+    // The manifest's own contract, not a copy of it. The copy was a scalar union, so an option whose
+    // value is an empty literal an adopter fills in by hand — the one `pithy add secrets` could not
+    // render at all (#161) — was the one option `pithy upgrade` could not report as missing either.
+    default: ConfigOptionValue.describe(
+      "The manifest default rendered as the option's value (an adopter can change it afterward).",
+    ),
     describe: z.string().describe("The option's rationale, rendered as the comment above it in pithy.config.ts."),
   })
   .describe("A manifest config option not yet present in the capability's pithy.config.ts registration.");
