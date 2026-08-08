@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
 
 /**
  * A secret's declared `backend` must be where the value physically goes.
@@ -29,26 +30,27 @@ import { describe, expect, test } from "vitest";
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..");
 const PACKAGES = join(REPO_ROOT, "packages");
 
-/** Every file under each package's `src` matching `predicate`, skipping `dist` and test files. */
-function sourceFiles(predicate: (path: string) => boolean): string[] {
+/**
+ * Every file under each package's `src` whose name `keep` accepts.
+ *
+ * The traversal is `ci/sourceFiles.ts`, the one every reader of this tree's own source goes through — so
+ * the ENOENT tolerance and the `packages/cli/templates` exclusion that landed after this file was written
+ * (#185, #192) reach it too, instead of stopping at the walker they were written in (#202). Listing
+ * `packages/` itself stays here: that is one directory, not a traversal.
+ */
+function sourceFiles(keep: (name: string) => boolean): string[] {
   const found: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir)) {
-      if (entry === "dist" || entry === "node_modules") continue;
-      const path = join(dir, entry);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (predicate(path) && !path.includes(".test.")) found.push(path);
-    }
-  };
-  for (const pkg of readdirSync(PACKAGES)) {
-    const src = join(PACKAGES, pkg, "src");
-    try {
-      if (statSync(src).isDirectory()) walk(src);
-    } catch {
-      // A package without a src/ directory is not a source package.
-    }
+  for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    // A package without a `src/` contributes nothing rather than throwing.
+    found.push(...sourcePaths(join(PACKAGES, pkg.name, "src"), { keep }));
   }
   return found;
+}
+
+/** A committed wrangler template, by base name. */
+function isWranglerTemplate(name: string): boolean {
+  return name === "wrangler.jsonc";
 }
 
 /**
@@ -61,9 +63,9 @@ function sourceFiles(predicate: (path: string) => boolean): string[] {
  */
 function declaredStoreBackedKeys(): string[] {
   const keys: string[] = [];
-  for (const path of sourceFiles((p) => p.endsWith(".ts"))) {
-    const source = readFileSync(path, "utf8");
-    if (!source.includes('backend: "cf-secrets-store"')) continue;
+  for (const path of sourceFiles(isShippedSource)) {
+    const source = readSource(path);
+    if (source === null || !source.includes('backend: "cf-secrets-store"')) continue;
     // Walk each declaration and take the nearest preceding object key.
     for (const match of source.matchAll(
       /(?:^|\n)\s*(?:\[([A-Z0-9_]+)\]|([A-Za-z0-9_]+)):\s*\{[^}]*?backend:\s*"cf-secrets-store"/gs,
@@ -76,7 +78,7 @@ function declaredStoreBackedKeys(): string[] {
 
 /** The bindings one wrangler template declares, split by the two blocks this test cares about. */
 function templateBindings(path: string): { store: string[]; d1: string[] } {
-  const source = readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const source = (readSource(path) ?? "").replace(/^\s*\/\/.*$/gm, "");
   const blockOf = (key: string): string =>
     source.match(new RegExp(`"${key}"\\s*:\\s*\\[(.*?)\\n\\s*\\]`, "s"))?.[1] ?? "";
   const bindingsIn = (block: string): string[] =>
@@ -86,7 +88,7 @@ function templateBindings(path: string): { store: string[]; d1: string[] } {
 
 /** Every committed wrangler template, with its bindings. */
 function templates(): { path: string; store: string[]; d1: string[] }[] {
-  return sourceFiles((p) => p.endsWith("wrangler.jsonc")).map((path) => ({ path, ...templateBindings(path) }));
+  return sourceFiles(isWranglerTemplate).map((path) => ({ path, ...templateBindings(path) }));
 }
 
 /** Every `secrets_store_secrets[].binding` across every committed wrangler template. */
@@ -132,9 +134,9 @@ describe("the at-rest encryption key stays in the Cloudflare Secrets Store", () 
   test("it is store-backed, and never declared as a D1 row", () => {
     expect(boundStoreBindings()).toContain(MASTER_KEY_BINDING);
 
-    const asD1 = sourceFiles((p) => p.endsWith(".ts")).filter((path) => {
-      const source = readFileSync(path, "utf8");
-      return new RegExp(`${MASTER_KEY_BINDING}[^}]*?backend:\\s*"d1"`, "s").test(source);
+    const asD1 = sourceFiles(isShippedSource).filter((path) => {
+      const source = readSource(path);
+      return source !== null && new RegExp(`${MASTER_KEY_BINDING}[^}]*?backend:\\s*"d1"`, "s").test(source);
     });
     expect(asD1).toEqual([]);
   });

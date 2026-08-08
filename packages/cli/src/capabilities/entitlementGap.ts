@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { gateCallSites } from "@pithy-sh/core/src/entitlement/gateScan";
+import { readSource, sourcePaths } from "../ci/sourceFiles";
 
 /**
  * The entitlement composition check — the CLI half of the entitlement seam.
@@ -27,34 +27,31 @@ import { gateCallSites } from "@pithy-sh/core/src/entitlement/gateScan";
 /** Source extensions a Worker's routes can live in. `.tsx` is included — a route file may render. */
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
 
-/** Directories never scanned: dependencies, build output, and caches. */
-const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", ".turbo", ".wrangler", "coverage", ".git"]);
-
-/** Every scannable source file under `dir`, recursively, as paths relative to `dir`. */
-async function sourceFiles(dir: string, root: string): Promise<string[]> {
-  // No such directory — a Worker need not have a `src/`, and a health check never fails on that.
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-  const found: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
-      found.push(...(await sourceFiles(join(dir, entry.name), root)));
-    } else if (SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
-      found.push(relative(root, join(dir, entry.name)).split(sep).join("/"));
-    }
-  }
-  return found;
+/** A file a Worker's routes could live in, by base name. */
+function isWorkerSource(name: string): boolean {
+  return SOURCE_EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
 /**
  * The Worker's own source files that gate a route on an entitlement, relative to the Worker directory
  * and sorted. Only `src/` is scanned: `node_modules` holds the seam's own source, so scanning it would
  * report a gap on every project that installed `@pithy-sh/core`.
+ *
+ * The traversal is `ci/sourceFiles.ts` — the one walk in this repository, which skips dependencies, build
+ * output and dotted directories, never descends a symlink, and treats a directory it cannot list and a file
+ * that vanished between the listing and the read as skipped rather than fatal. This is the one of the five
+ * private walks #202 found that was not a test: it runs inside `pithy doctor` and `pithy dev`, against a
+ * directory the adopter is editing while it runs, so a throw here is a command that fails on a file the
+ * adopter had just moved. Synchronous, like the walk it now shares; the signature stays async because the
+ * scan it feeds is the caller's contract.
  */
 export async function entitlementGates(workerDir: string): Promise<string[]> {
-  const files = await sourceFiles(join(workerDir, "src"), workerDir);
-  const sources = await Promise.all(files.map(async (file) => [file, await readFile(join(workerDir, file), "utf8")]));
-  return gateCallSites(Object.fromEntries(sources));
+  const sources: Record<string, string> = {};
+  for (const path of sourcePaths(join(workerDir, "src"), { keep: isWorkerSource })) {
+    const text = readSource(path);
+    if (text !== null) sources[relative(workerDir, path).split(sep).join("/")] = text;
+  }
+  return gateCallSites(sources);
 }
 
 /** The composed capability that fills the entitlement seam, by name, or null when none does. */

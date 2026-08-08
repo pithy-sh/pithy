@@ -3,7 +3,7 @@
 
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { isShippedSource, isTestFile, readSource, sourceFiles, sourcePaths } from "./sourceFiles";
 
@@ -232,5 +232,335 @@ describe("the predicates a caller picks between", () => {
     expect(isTestFile("scaffold.test.ts")).toBe(true);
     expect(isTestFile("worker.workers.test.ts")).toBe(true);
     expect(isTestFile("scaffold.ts")).toBe(false);
+  });
+});
+
+/**
+ * The gate: **no module writes its own recursive walk over a directory tree.**
+ *
+ * The module above is the answer to a defect that had six producers. #185 consolidated them and said so in
+ * a changeset — *"every reader of this tree's own source now goes through `ci/sourceFiles.ts`"*. That was
+ * not true. Five private traversals were never migrated, and nothing noticed, because a sentence in a
+ * release note is not something a build can fail on. Every hardening since reached one walker and not the
+ * others: #185's own ENOENT tolerance, and #192's vendored-path exclusion (#202).
+ *
+ * So the claim is stated here instead, where getting it wrong costs a red build.
+ *
+ * **The rule: a module must not define a function that lists a directory and calls itself.** That is the
+ * shape all six had, and it is the shape that has to decide, on its own and therefore differently, what to
+ * skip, whether to follow a link, and what a vanished entry means.
+ *
+ * **What it deliberately does not ban: `readdir(dir, { recursive: true })`.** Node walks that one, not the
+ * author — there is no per-entry `stat` to throw, no skip list to get wrong, no link followed by accident —
+ * so it cannot drift from this module the way six hand-written copies did. Eight call sites in this tree use
+ * it, most over a directory the test itself just made under `os.tmpdir()`, and banning it would buy an
+ * eight-entry allowlist against a shape that has never produced the defect. A listing that does not recurse
+ * is not banned either: `readdir` over one directory is its ordinary use, all over this package.
+ *
+ * **It is a scan over source text, with the limits `atomic.test.ts` records**: TypeScript 7 ships no parser
+ * API, so there is no AST to walk. Comments, string bodies and regular-expression bodies are blanked in one
+ * pass, and a function's body is taken by indentation — this repository is Biome-formatted, so a body ends
+ * at the first line indented no further than its header. What that cannot see is mutual recursion between
+ * two functions, and a walk reached through a module that exports one. `.tsx` is out of scope on purpose:
+ * JSX prose (`<h1>You're in.</h1>`) is not distinguishable from a string without a parser, and a scan that
+ * mis-reads a file under-reports in silence. Nothing in this tree renders a screen and walks a disk.
+ */
+describe("no module writes its own walk over a directory tree", () => {
+  /** The repository. This file lives at `packages/cli/src/ci/`; asserted below, so a move fails loudly. */
+  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+  /** A module's key below: its path under the repo root, in posix separators. */
+  const named = (path: string): string => relative(REPO_ROOT, path).split(sep).join("/");
+
+  /** The one module the walk belongs to. Everything else asks it. */
+  const PRIMITIVE = "packages/cli/src/ci/sourceFiles.ts";
+
+  /**
+   * The walks that stay, because their module cannot reach the primitive: path → the function, and why.
+   *
+   * An entry is a claim, and the test holds it to both halves — an undeclared walk fails, and a declared one
+   * that has since been routed or moved fails too, so the list cannot go stale. Adding a line is the
+   * reviewable act; that is the whole point of it. The question each `why` has to answer is the one #202
+   * asked five times: **what stops this one from being routed, and is it a fact about the workspace or an
+   * edit nobody made?** The second answer belongs in {@link NOT_YET_ROUTED}, not here.
+   */
+  const SEPARATE_ON_PURPOSE: Record<string, { walk: string; why: string }> = {
+    "packages/ui-react/src/templates.test.ts": {
+      walk: "treeFiles",
+      why: "`@pithy-sh/ui-react` cannot import `@pithy-sh/cli`: the CLI depends on it, so the edge would be a cycle in the workspace graph. It reads `packages/ui-react/templates`, a committed tree nothing scaffolds into or deletes mid-run, so the race the primitive was hardened against cannot reach it.",
+    },
+    "tooling/license-headers/src/workspace.ts": {
+      walk: "walk",
+      why: "`tooling/*` cannot resolve `@pithy-sh/cli` at all — the workspace is installed isolated and this package declares no dependency on the CLI, so the import does not resolve, in tsc or at runtime. Routing it means adding that edge to its manifest or moving the walk somewhere both trees reach; #202 fixed the four it could and wrote this down rather than leaving it unmigrated in silence a second time.",
+    },
+    "tooling/license-headers/src/audit.ts": {
+      walk: "walk",
+      why: "Same package and the same missing edge, and this one would not fit even with it: `templateFiles` wants every file of every extension under a `templates/` tree, and the primitive skips `packages/cli/templates` by path on purpose (#192) — which is one of the roots the licence audit exists to check.",
+    },
+  };
+
+  /**
+   * The walks that predate this rule and are **not** blessed by it: path → the function, and what it costs.
+   *
+   * A debt inventory, not an allowlist — the distinction being that every line here is meant to leave. Each
+   * `costs` is the sentence that says why it is worth an issue. The count below is a ratchet: it falls as
+   * these are routed, and a change that raises it is a change writing the seventh copy of one traversal.
+   */
+  const NOT_YET_ROUTED: Record<string, { walk: string; costs: string }> = {
+    ".github/scripts/planShards.ts": {
+      walk: "walk",
+      costs:
+        "`testFileCount` counts `*.test.ts` under each package's `src` to weight the CI shards. Its `readdirSync` is guarded and its `statSync` is not, so an entry that vanishes between the listing and the probe throws inside the planner and takes the whole test matrix with it. It can reach the primitive — `crossPackageReads.ts` beside it already imports it, and running before `bun install` is the entire reason that module imports nothing but `node:fs` and `node:path` — so this is an edit nobody has made rather than one nobody can.",
+    },
+  };
+
+  /** The calls that hand back a directory's entries. A module reaching one of these lists a directory. */
+  const LISTINGS = ["readdir", "readdirSync", "opendir", "opendirSync", "glob", "globSync"];
+
+  /**
+   * Comments, string bodies and regular-expression bodies blanked, length and newlines preserved.
+   *
+   * One pass rather than a chain of `replace`s, because the chain gets this wrong in both directions: a
+   * `/*` inside a line comment opens a block comment that swallows the code after it, and a `//` inside a
+   * string closes a line that never opened. Reading left to right, whichever of the four opens first wins,
+   * which is what the language does.
+   */
+  function blank(text: string): string {
+    const out = [...text];
+    const wipe = (from: number, to: number): void => {
+      for (let index = from; index < to && index < out.length; index += 1) {
+        if (out[index] !== "\n") out[index] = " ";
+      }
+    };
+    // The last character that was not whitespace, which is what says whether a `/` opens a regex or divides.
+    let previous = "";
+    let index = 0;
+    while (index < text.length) {
+      const here = text[index] as string;
+      const next = text[index + 1];
+      if (here === "/" && next === "/") {
+        const line = text.indexOf("\n", index);
+        const stop = line < 0 ? text.length : line;
+        wipe(index, stop);
+        index = stop;
+        continue;
+      }
+      if (here === "/" && next === "*") {
+        const close = text.indexOf("*/", index + 2);
+        const stop = close < 0 ? text.length : close + 2;
+        wipe(index, stop);
+        index = stop;
+        continue;
+      }
+      if (here === '"' || here === "'" || here === "`") {
+        // A template's `${…}` is blanked with the rest of it, which is right: nothing inside one is a walk.
+        let cursor = index + 1;
+        while (cursor < text.length && text[cursor] !== here) cursor += text[cursor] === "\\" ? 2 : 1;
+        wipe(index + 1, cursor);
+        index = cursor + 1;
+        previous = here;
+        continue;
+      }
+      if (here === "/" && previous !== "" && !/[\w$)\]]/.test(previous)) {
+        let cursor = index + 1;
+        let inClass = false;
+        while (cursor < text.length && text[cursor] !== "\n") {
+          const character = text[cursor];
+          if (character === "\\") {
+            cursor += 2;
+            continue;
+          }
+          if (character === "[") inClass = true;
+          else if (character === "]") inClass = false;
+          else if (character === "/" && !inClass) break;
+          cursor += 1;
+        }
+        if (text[cursor] === "/") {
+          wipe(index + 1, cursor);
+          index = cursor + 1;
+          previous = "/";
+          continue;
+        }
+      }
+      if (!/\s/.test(here)) previous = here;
+      index += 1;
+    }
+    return out.join("");
+  }
+
+  /**
+   * The local names in a module that list a directory, or `*` when it took the whole `fs` namespace and any
+   * member call could be one. Read from the unblanked text, because an import specifier is a string.
+   */
+  function listers(source: string): Set<string> {
+    const names = new Set<string>();
+    for (const statement of source.matchAll(/\bimport\s+(?:type\s+)?([^;]*?)\s*from\s*["']([^"']+)["']/g)) {
+      const clause = (statement[1] ?? "").trim();
+      if (!/^(?:node:)?fs(?:\/promises)?$/.test(statement[2] ?? "")) continue;
+      if (!clause.startsWith("{")) {
+        names.add("*");
+        continue;
+      }
+      for (const binding of clause.slice(1, -1).split(",")) {
+        const [exported, alias] = binding
+          .trim()
+          .replace(/^type\s+/, "")
+          .split(/\s+as\s+/);
+        if (exported !== undefined && LISTINGS.includes(exported)) names.add(alias ?? exported);
+      }
+    }
+    if (/\b(?:require|import)\(\s*["'](?:node:)?fs(?:\/promises)?["']\s*\)/.test(source)) names.add("*");
+    return names;
+  }
+
+  /** A function header, at any indentation: `function walk(`, `const walk = `, and the exported forms. */
+  const HEADER =
+    /^(\s*)(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([\w$]+)|(?:const|let|var)\s+([\w$]+)\s*(?::[^=]*)?=)/;
+
+  /** Every function in `source` that lists a directory and calls itself, by name, sorted. */
+  function privateWalks(source: string): string[] {
+    const names = listers(source);
+    if (names.size === 0) return [];
+    const lists = names.has("*")
+      ? new RegExp(`(?:\\.\\s*)?\\b(?:${LISTINGS.join("|")})\\s*\\(`)
+      : new RegExp(`\\b(?:${[...names].join("|")})\\s*\\(`);
+    const lines = blank(source).split("\n");
+    const found = new Set<string>();
+    for (let start = 0; start < lines.length; start += 1) {
+      const header = HEADER.exec(lines[start] as string);
+      const name = header?.[2] ?? header?.[3];
+      if (header === null || name === undefined) continue;
+      const indent = (header[1] as string).length;
+      // The body runs to the first line indented no further than the header — its own closing brace.
+      let end = start + 1;
+      for (; end < lines.length; end += 1) {
+        const line = lines[end] as string;
+        if (line.trim() !== "" && line.length - line.trimStart().length <= indent) break;
+      }
+      const body = lines.slice(start + 1, end).join("\n");
+      if (lists.test(body) && new RegExp(`\\b${name}\\s*\\(`).test(body)) found.add(name);
+    }
+    return [...found].sort();
+  }
+
+  /**
+   * Every module this rule covers: every `.ts` in the repository, tests included.
+   *
+   * Wider than #189's and #190's scope, which is each package's `src`, and it has to be: four of the five
+   * walks #202 found were tests, one was in `.github/scripts`, and one was in `tooling/`. A rule about there
+   * being one walk cannot be scoped to the places that already use it.
+   */
+  function modules(): string[] {
+    return sourcePaths(REPO_ROOT, { keep: (name) => name.endsWith(".ts") && !name.endsWith(".d.ts") });
+  }
+
+  /** Every module but the primitive that walks a tree itself: path → the functions that do, sorted. */
+  function walking(): Record<string, string> {
+    const found: Record<string, string> = {};
+    for (const path of modules()) {
+      const key = named(path);
+      if (key === PRIMITIVE) continue;
+      const source = readSource(path);
+      if (source === null) continue;
+      const walks = privateWalks(source);
+      if (walks.length > 0) found[key] = walks.join(", ");
+    }
+    return found;
+  }
+
+  test("the scan reaches the whole repository, not one package's source", () => {
+    // A silent scan that finds nothing passes every rule below it, and a scan narrowed to `packages/*/src`
+    // passes every module outside it — which is where three of #202's five were. So the scope is asserted
+    // before the rule is, the failure mode that turned `atomic.test.ts`'s tripwire into decoration (#185).
+    const found = modules().map(named);
+    expect(found).toContain(PRIMITIVE);
+    expect(found).toContain(".github/scripts/planShards.ts");
+    expect(found).toContain("tooling/license-headers/src/workspace.ts");
+    expect(found).toContain("packages/core/src/error/pithyError.ts");
+    expect(found.length).toBeGreaterThan(1000);
+  });
+
+  test("the scan sees a hand-rolled walk in every shape this tree writes one in", () => {
+    const sync = 'import { readdirSync, statSync } from "node:fs";\n';
+    // The two spellings the five were written in: a named function, and a nested arrow.
+    expect(privateWalks(`${sync}function walk(dir) {\n  for (const e of readdirSync(dir)) walk(e);\n}\n`)).toEqual([
+      "walk",
+    ]);
+    expect(
+      privateWalks(
+        `${sync}function collect(root) {\n  const walk = (dir) => {\n    for (const e of readdirSync(dir)) walk(e);\n  };\n  walk(root);\n}\n`,
+      ),
+    ).toEqual(["walk"]);
+    // An alias hides nothing, and neither does taking the whole namespace or the promises form.
+    expect(
+      privateWalks(
+        `import { readdirSync as ls } from "fs";\nconst walk = (dir) => {\n  for (const e of ls(dir)) walk(e);\n};\n`,
+      ),
+    ).toEqual(["walk"]);
+    expect(
+      privateWalks(
+        `import fs from "node:fs";\nfunction walk(dir) {\n  for (const e of fs.readdirSync(dir)) walk(e);\n}\n`,
+      ),
+    ).toEqual(["walk"]);
+    expect(
+      privateWalks(
+        `import { readdir } from "node:fs/promises";\nasync function walk(dir) {\n  for (const e of await readdir(dir)) await walk(e);\n}\n`,
+      ),
+    ).toEqual(["walk"]);
+  });
+
+  test("and none of the shapes that are not one", () => {
+    const sync = 'import { readdirSync } from "node:fs";\n';
+    // Listing one directory is `readdir`'s ordinary use, and this package does it everywhere.
+    expect(privateWalks(`${sync}function packages(dir) {\n  return readdirSync(dir);\n}\n`)).toEqual([]);
+    // Node's own recursive listing is not a walk this repository wrote. See the docstring above.
+    expect(privateWalks(`${sync}function packed(dir) {\n  return readdirSync(dir, { recursive: true });\n}\n`)).toEqual(
+      [],
+    );
+    // Recursion over something that is not a directory listing is not this rule's business.
+    expect(
+      privateWalks(`${sync}function depth(node) {\n  return 1 + Math.max(...node.children.map(depth));\n}\n`),
+    ).toEqual([]);
+    // A caller that lists a directory and calls a walker is not itself the walker.
+    expect(
+      privateWalks(`${sync}function all(root) {\n  return readdirSync(root).flatMap((p) => sourcePaths(p));\n}\n`),
+    ).toEqual([]);
+    // Prose about a walk is not a walk. Every docstring in this tree describes one on purpose.
+    expect(
+      privateWalks(`${sync}// walk(dir) used to recurse here\nfunction walk(dir) {\n  return sourcePaths(dir);\n}\n`),
+    ).toEqual([]);
+    // Nor a string that spells one out — this file's own fixtures are exactly that.
+    expect(privateWalks(`${sync}const shape = "function walk(d) { readdirSync(d); walk(d); }";\n`)).toEqual([]);
+  });
+
+  test("only the walks written down here are hand-rolled", () => {
+    const declared = Object.fromEntries([
+      ...Object.entries(SEPARATE_ON_PURPOSE).map(([path, { walk }]) => [path, walk]),
+      ...Object.entries(NOT_YET_ROUTED).map(([path, { walk }]) => [path, walk]),
+    ]);
+
+    // One equality, failing from both sides. A module that starts walking is not in `declared` and shows up;
+    // a declared one that was routed no longer matches and shows up too, so the list cannot rot. The message
+    // is for the first case, which is the one that ships the seventh copy of this module.
+    expect(walking(), "route it through ci/sourceFiles.ts, or say why this module cannot reach it").toEqual(declared);
+  });
+
+  test("and every walk that stays says why, in a sentence somebody has to disagree with", () => {
+    // A reason nobody wrote is a reason nobody reviewed, and these lists are only worth having if adding to
+    // either costs an argument. #202 exists because a changeset sentence cost none.
+    for (const [path, { why }] of Object.entries(SEPARATE_ON_PURPOSE)) {
+      expect(why.trim().length, path).toBeGreaterThan(40);
+    }
+    for (const [path, { costs }] of Object.entries(NOT_YET_ROUTED)) {
+      expect(costs.trim().length, path).toBeGreaterThan(40);
+    }
+  });
+
+  test("the debt list only shrinks", () => {
+    // One when this rule landed. Lower it as the rest are routed; a change that needs it raised is a change
+    // writing another private traversal into a repository that has spent three issues removing them.
+    expect(Object.keys(NOT_YET_ROUTED).length).toBeLessThanOrEqual(1);
+    // And nothing may sit in both lists — unreachable and unrouted are different claims about one walk.
+    for (const path of Object.keys(NOT_YET_ROUTED)) expect(SEPARATE_ON_PURPOSE[path]).toBeUndefined();
   });
 });
