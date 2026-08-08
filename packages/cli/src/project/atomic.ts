@@ -148,6 +148,9 @@ export async function writeFileAtomic(path: string, content: string, options?: A
  * it. Left unchecked it is not a race at all: replace the temp file with a symlink any time before the
  * rename and the link gets installed over the target, which is exactly the escape the random name and the
  * exclusive create were meant to end.
+ *
+ * The window that remains is accepted, not overlooked: `docs/ACCEPTED-LIMITS.md`, "The inode check →
+ * `rename` window".
  */
 async function ensureUnswapped(tmp: string, target: string, written: Stats): Promise<void> {
   const now = await lstat(tmp).catch(() => undefined);
@@ -252,6 +255,10 @@ export function errnoOf(err: unknown): string | undefined {
  *
  * The same limit as {@link ensureOurs} applies: a platform with no uid model — Windows — has nothing to
  * compare and adopts from anyone. The ceiling holds there, and it is the half that stops a widening.
+ *
+ * What the ownership check and the ceiling together still leave — a file we own, pre-positioned by someone
+ * who can write the directory — is accepted rather than overlooked: `docs/ACCEPTED-LIMITS.md`, "A
+ * pre-positioned file we already own" and "Windows has no uid model".
  */
 async function adoptableModeOf(path: string, requested: number | undefined): Promise<number | undefined> {
   try {
@@ -296,6 +303,9 @@ const ROOT_UID = 0;
  * compare and is not protected by this. And the check and the `readlink` after it are separate syscalls,
  * so a planter who can win a window that narrow is not stopped; closing that needs `openat`, which Node
  * does not expose for a directory-relative walk.
+ *
+ * Both are accepted, and the threat model that decides how much they matter is written down with them:
+ * `docs/ACCEPTED-LIMITS.md`, "The `lstat` → `readlink` window" and "Windows has no uid model".
  */
 function ensureOurs(link: string, uid: number, requested: string): void {
   const us = process.geteuid?.();
