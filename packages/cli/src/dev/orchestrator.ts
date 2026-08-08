@@ -313,6 +313,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       discovered.map((worker) => worker.dir),
     );
     for (const line of renderDevVarsNotes(devVars)) emitLine(line);
+    // A Worker whose `pithy.config.ts` would not import (#199). Emitted here rather than folded into
+    // `renderDevVarsNotes`, because this is not a delivery outcome: the file was written, and written
+    // empty on purpose. It is the one thing a `pithy dev` in this state has to say, and until now it
+    // said nothing — the session started, the Worker came up with no bindings, and the only line about
+    // it was `Starting <worker>.` Every run, not once: the state persists until the config is fixed,
+    // and the run after the one they missed is the one that has to reach them.
+    for (const line of devVars.unresolvable) emitLine(line);
   } catch (error) {
     emitLine(`.dev.vars not generated. ${messageOf(error)}`);
   }

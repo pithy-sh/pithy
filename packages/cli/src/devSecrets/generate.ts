@@ -17,7 +17,12 @@ import { readDevSecrets } from "./file";
 import { resolveDevSecretsFile } from "./location";
 import { tightenMode } from "./mode";
 import { ownProperties } from "./records";
-import { type DevSecretsTarget, devSecretsTargets } from "./targets";
+import {
+  type DevSecretsResolution,
+  type DevSecretsTarget,
+  resolveDevSecretsTargets,
+  type UnresolvableWorker,
+} from "./targets";
 
 /**
  * `apps/<worker>/.dev.vars` is **generated, one per Worker** — never shared by symlink (#154).
@@ -167,6 +172,13 @@ export interface GenerateDevVarsOptions {
    * `secrets`. A seam, and the one `pithy add` uses to hand over a freshly-reloaded composition.
    */
   targets?: DevSecretsTarget[];
+  /**
+   * The Workers whose `pithy.config.ts` would not import, for {@link GenerateDevVarsResult.unresolvable}
+   * to state. Travels with `targets`, because a caller that resolved the composition itself is the only
+   * one that knows what failed while it did — supplied by neither real caller, which both let this
+   * module resolve.
+   */
+  unresolvable?: readonly UnresolvableWorker[];
 }
 
 /** What one generation run did. Every list is sorted, so two runs of the same state read the same. */
@@ -189,6 +201,21 @@ export interface GenerateDevVarsResult {
   relinked: string[];
   /** The variable names the generated files carry, sorted. Names only — never a value, anywhere. */
   names: string[];
+  /**
+   * One sentence per Worker whose `pithy.config.ts` would not import — **the consequence first, then the
+   * cause** (#199).
+   *
+   * Its own list rather than a line in {@link refused}, because nothing was refused: the file *was*
+   * written, down to its header, and that is deliberate. A registry nobody can read has no honest answer
+   * about which secrets a Worker gets, and the previous answer came from the `dev.json` copy #179 exists
+   * to delete. So the Worker really does start with no bindings, and the only thing wrong was that
+   * nothing said so.
+   *
+   * Both facts in one sentence on purpose. Reported separately — the import error in one block, the
+   * absent bindings inferred from another — is the adopter correlating them, and the adopter here is
+   * mid-edit on the config they have just broken and looking at the wrong suspect. Never a value.
+   */
+  unresolvable: string[];
 }
 
 /**
@@ -200,7 +227,10 @@ export interface GenerateDevVarsResult {
  * reason.
  */
 export async function generateDevVars(options: GenerateDevVarsOptions): Promise<GenerateDevVarsResult> {
-  const bootstrap = options.values ?? (await devVarsSources(options));
+  // Resolved once, here, so the value set and the report of what could not be asked for it come from one
+  // answer. Two resolutions would be two chances to disagree about which Workers were readable.
+  const resolution = await devSecretsResolution(options);
+  const bootstrap = options.values ?? (await devVarsSources(options, resolution.targets));
   const rootLocal = await readLocalOverrides(options.projectDir);
   const dirs = options.workerDirs ?? (await workerDirs(options.projectDir));
 
@@ -272,7 +302,47 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
     refused: refused.sort(),
     relinked: relinked.sort(),
     names: [...names].sort(),
+    unresolvable: resolution.unresolvable.map(unresolvableSentence).sort(),
   };
+}
+
+/**
+ * One Worker's unresolvable config, as the sentence that reaches a terminal.
+ *
+ * **The consequence leads.** "Could not load pithy.config.ts" is the cause and answers the wrong
+ * question: the adopter already knows they are editing that file. What they do not know — and what
+ * changed under them at #179 — is that the Worker in front of them now resolves none of its own
+ * secrets, which is why they are about to go looking at the secrets change instead of at their own
+ * typo. The `.dev.vars` path is named because that is the file they will open to check.
+ *
+ * **"Of its own", because a sibling's registry still reaches this file.** {@link devVarsSources} merges
+ * every resolved Worker's registry into one set and writes it to every Worker directory, so in a project
+ * where another Worker composes `secrets` the generated file is not empty — it simply holds nothing this
+ * Worker was asked about. A sentence claiming the file was "generated empty" is true of the
+ * single-Worker project and a lie in the multi-Worker one, and a message that overstates on some
+ * projects is one an adopter learns to disbelieve on all of them.
+ */
+function unresolvableSentence(worker: UnresolvableWorker): string {
+  return `${worker.name} starts with no bindings of its own: its pithy.config.ts did not import, so nothing knows which secrets it declares and none reached ${join(worker.dir, ".dev.vars")}. ${worker.reason}`;
+}
+
+/**
+ * The composition this run generates against, and what it could not read.
+ *
+ * A caller that supplied either half already resolved the composition itself — `pithy add`, holding a
+ * reloaded one — and re-resolving would answer against a different import than the one it acted on. A
+ * caller that supplied `values` bypassed the sources outright and has no registry to speak of.
+ *
+ * The catch keeps {@link devVarsSources}' "never throws" contract for the one thing left that can:
+ * a capability whose registry aggregation itself fails. Costing a Worker its bindings is the same
+ * outcome as an unreadable config, and it is `pithy doctor`'s to name.
+ */
+async function devSecretsResolution(options: GenerateDevVarsOptions): Promise<DevSecretsResolution> {
+  if (options.targets !== undefined || options.unresolvable !== undefined) {
+    return { targets: options.targets ?? [], unresolvable: [...(options.unresolvable ?? [])] };
+  }
+  if (options.values !== undefined) return { targets: [], unresolvable: [] };
+  return resolveDevSecretsTargets(options.projectDir).catch(() => ({ targets: [], unresolvable: [] }));
 }
 
 /**
@@ -285,14 +355,21 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
  * deleting a secret from `secrets.jsonc` deletes it from every generated file rather than falling back
  * to the copy the old seeder left behind.
  *
- * **Never throws.** This runs inside `pithy dev`. A project with no name to key a config directory on, a
- * `secrets.jsonc` that will not parse, a Worker whose config will not import — each costs the bindings it
- * would have contributed and is reported by `pithy seed` and `pithy doctor`, which are the commands whose
- * job it is to say so. Stopping every Worker in the project over one of them is the worse answer.
+ * **Never throws.** This runs inside `pithy dev`. A project with no name to key a config directory on and
+ * a `secrets.jsonc` that will not parse each cost the bindings they would have contributed, and are
+ * reported by `pithy seed` and `pithy doctor`, which are the commands whose job it is to say so. Stopping
+ * every Worker in the project over one of them is the worse answer.
+ *
+ * **A Worker whose config will not import used to be on that list, and that was the bug (#199).** It
+ * reached here as an absent target, indistinguishable from a Worker that declares nothing, and neither
+ * of the two commands named above ever saw it — `pithy dev` wrote the empty file and said nothing at all.
+ * The failure travels beside the targets now and {@link generateDevVars} states it.
  */
-async function devVarsSources(options: GenerateDevVarsOptions): Promise<Record<string, string>> {
+async function devVarsSources(
+  options: GenerateDevVarsOptions,
+  targets: readonly DevSecretsTarget[],
+): Promise<Record<string, string>> {
   const paths = options.paths ?? {};
-  const targets = options.targets ?? (await devSecretsTargets(options.projectDir).catch(() => []));
   const registry: SecretRegistry = ownProperties(
     Object.assign({}, ...targets.map((target) => target.registry)) as SecretRegistry,
   );

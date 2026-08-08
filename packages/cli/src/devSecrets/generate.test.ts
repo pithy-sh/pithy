@@ -283,6 +283,47 @@ describe("generateDevVars", () => {
 
   test("a project with no Workers generates nothing and says nothing", async () => {
     const result = await generateDevVars({ projectDir: dir, values: { K: "v" } });
-    expect(result).toEqual({ generated: [], unchanged: [], refused: [], relinked: [], names: [] });
+    expect(result).toEqual({ generated: [], unchanged: [], refused: [], relinked: [], names: [], unresolvable: [] });
+  });
+
+  test("an unresolvable Worker is named, and the sentence states the consequence (#199)", async () => {
+    // The report is the whole mitigation. A config that will not import is the state an adopter is in
+    // *while fixing something*, and since #179 that state also costs them every binding — so the run
+    // that takes them away has to be the run that says so, in one sentence carrying both facts. Two
+    // messages in different blocks is the adopter correlating them, which is what nobody did.
+    const board = await worker("board");
+    const result = await generateDevVars({
+      projectDir: dir,
+      unresolvable: [{ name: "replay-board", dir: board, reason: "Could not load pithy.config.ts. Syntax error." }],
+      values: {},
+    });
+
+    expect(result.unresolvable).toHaveLength(1);
+    const sentence = result.unresolvable[0] ?? "";
+    expect(sentence).toContain("replay-board");
+    // The consequence, not only the cause. "Could not load" alone leaves "so what happens now?" unanswered.
+    expect(sentence).toContain("no bindings");
+    expect(sentence).toContain("Syntax error.");
+  });
+
+  test("the sentence does not claim an empty file, because a sibling's registry still fills one (#199)", async () => {
+    // Every resolved Worker's registry is merged into one set and written to every Worker directory, so
+    // in a project where something else composes `secrets` the unresolvable Worker's `.dev.vars` is not
+    // empty — it just holds nothing that Worker was asked about. The first draft of this sentence said
+    // "was generated empty", which was true of the single-Worker project it was written against and a
+    // lie beside a healthy sibling. A message that overstates on some projects gets disbelieved on all.
+    const board = await worker("board");
+    const result = await generateDevVars({
+      projectDir: dir,
+      values: { SECRETS_ENCRYPTION_KEYS: "from-the-sibling" },
+      unresolvable: [{ name: "replay-board", dir: board, reason: "Could not load pithy.config.ts." }],
+    });
+
+    expect(parseDevVars(await readFile(join(board, ".dev.vars"), "utf8")).SECRETS_ENCRYPTION_KEYS).toBe(
+      "from-the-sibling",
+    );
+    expect(result.unresolvable[0]).not.toContain("empty");
+    // Still said, because this Worker's own declarations are still unknown.
+    expect(result.unresolvable[0]).toContain("no bindings of its own");
   });
 });

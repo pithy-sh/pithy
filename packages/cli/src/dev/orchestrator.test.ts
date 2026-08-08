@@ -105,7 +105,14 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     discoverWorkers: async () => workers,
     // Stubbed: these workers are fixtures with no directories on disk, and generating each one's
     // `.dev.vars` is `devSecrets/generate.test.ts`'s subject rather than this file's.
-    generateDevVars: async () => ({ generated: [], unchanged: [], refused: [], relinked: [], names: [] }),
+    generateDevVars: async () => ({
+      generated: [],
+      unchanged: [],
+      refused: [],
+      relinked: [],
+      names: [],
+      unresolvable: [],
+    }),
     loadDevConfig: async () => config,
     tryBind: async () => true,
     sweep: async () => [],
@@ -701,5 +708,39 @@ describe("startDev — the .dev.vars a checkout cannot inherit", () => {
       await rm(dir, { recursive: true, force: true });
       await rm(configDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("startDev — a Worker whose config will not import", () => {
+  test("says so, names the Worker, and states that it has no bindings (#199)", async () => {
+    // The silent path this closes. Since #179 a `cf-secrets-store` secret is materialised only if the
+    // Worker's `pithy.config.ts` imports — correct, because the registry decides which secrets a Worker
+    // gets and an unreadable registry has no honest answer. But an unresolvable Worker reached the
+    // generator as an empty target list, which is also what a project with no secrets looks like. So
+    // `pithy dev` rewrote the Worker's `.dev.vars` down to its header, started it with no bindings at
+    // all, and printed one line: `Starting replay-board.`
+    //
+    // The adopter breaking their own config is the *likely* reader of this, and they are mid-edit with
+    // something else on their mind. The run that costs them their bindings has to be the run that says
+    // so, and it has to say both halves in one sentence — there is no second block to correlate with.
+    const h = harness({
+      generateDevVars: async () => ({
+        generated: [],
+        unchanged: [],
+        refused: [],
+        relinked: [],
+        names: [],
+        unresolvable: ["replay-board: its pithy.config.ts did not import, so it starts with no bindings. Boom."],
+      }),
+    });
+
+    await startDev(h.options);
+
+    const said = h.stdoutLines.find((line) => line.includes("replay-board"));
+    expect(said).toContain("no bindings");
+    expect(said).toContain("did not import");
+    // Reported, never fatal. One Worker's broken config is not a reason to refuse to run the project —
+    // and refusing would take away the dev loop they are using to fix it.
+    expect(h.spawned.length).toBeGreaterThan(0);
   });
 });

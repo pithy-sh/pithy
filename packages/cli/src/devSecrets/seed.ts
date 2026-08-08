@@ -16,7 +16,7 @@ import {
   type OpenDevSecretsStoreOptions,
   openDevSecretsStore,
 } from "./store";
-import { type DevSecretsTarget, devSecretsTargets } from "./targets";
+import { type DevSecretsTarget, resolveDevSecretsTargets } from "./targets";
 
 /**
  * `pithy seed`'s dev-secrets half: take `<config>/<project>/secrets.jsonc`, mint what is missing and
@@ -140,7 +140,12 @@ export interface SeedProjectDevSecretsOptions {
 export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOptions): Promise<DevSecretsSeedReport> {
   const projectDir = options.projectDir;
   const openStore = options.openStore ?? openDevSecretsStore;
-  const targets = options.targets ?? (await devSecretsTargets(projectDir, { reload: options.reload === true }));
+  // Resolved through the form that cannot drop a failure (#199). The unresolvable half is deliberately
+  // not re-reported from here: `pithy seed` fails outright on an unloadable config long before it
+  // reaches this function, and inside `pithy dev` the generation step has already said it in one
+  // sentence. Saying it twice, in two blocks, is the correlation problem the sentence exists to end.
+  const targets =
+    options.targets ?? (await resolveDevSecretsTargets(projectDir, { reload: options.reload === true })).targets;
 
   const seeded = new Set<string>();
   const unchanged = new Set<string>();
