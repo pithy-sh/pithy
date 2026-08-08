@@ -853,6 +853,16 @@ Project health:
   api: healthy ✓
 ```
 
+The **`Alias:`** line has three states, not two: installed, not installed, and **unknown** — because the rc file it reads may not open. A wrong mode, a dangling symlink, an `EIO`: the read used to throw and take the entire report with it, so the least important line here cost Cloudflare reachability, the secrets paths, project health and dev secrets. Catching it to `not installed` would have been worse than the crash — it is a claim about a file nothing could read, and the adopter's next move on reading it is `pithy alias`, which fails on the same file. So the third state says what it is and names the file:
+
+```
+Alias: unknown — can't read ~/.zshrc. Fix that first; `pithy alias` reads the same file.
+```
+
+It keeps the report verbose, because "I could not check" is worth the ink, and it never fails the exit — toolchain state does not. In `--json` the field is an object: `state` (`installed`, `not-installed`, `unknown`), `rcPath` (absolute, `null` when no shell was detected), and `reason` (the refusal's own sentence, `null` on the two known states, and never a byte of the file's contents).
+
+That is the rule the whole command is held to, and the rc read was the one place it was not: **one optional line's failure must not cost every other line.** Doctor discards every read failure it meets — an unreadable `wrangler.jsonc`, a `dev.json` that will not parse, a `.dev.vars` it cannot open — and it discards the *write* to its own notifier cache too, since a config directory that will not take a write is exactly the machine somebody runs `doctor` on. A diagnostic has to work in the environment it diagnoses.
+
 The **`Cloudflare:`** line answers "can I reach the account" — the bootstrap `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` pair, verified against Cloudflare rather than merely read (`docs/TOKENS.md`). A configured-but-broken credential fails the exit; an absent one does not, because a project that has not been provisioned yet is a legitimate state.
 
 **Those credentials live in `<config>/cloudflare.json`, not in your repository.** They are functions of the *account*, not of a project: one account holds many Pithy projects, Cloudflare permits one Secrets Store per account, and a per-project home would keep one copy of the same token per project and make rotation an N-place edit. So `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `SECRETS_STORE_ID` and `R2_CREDENTIALS` sit in one file beside `state.json`, mode `0600` in the `0700` config directory. `pithy init` writes the pair at the one moment you are holding both — it needs the token to list your zones two prompts later — and skips the question when they already resolve. Nothing about them is in the checkout, so there is nothing to gitignore and nothing an `npm pack` can carry.
@@ -904,7 +914,9 @@ A **`Dev secrets:`** block appears when something about this project's dev value
 | `<root>/apps/<worker>/.dev.vars` | **Generated**, one per Worker. Read by wrangler, and so by the Worker. Built from the dev secrets file and this machine's `dev.json`. |
 | `<root>/.dev.vars.<env>` | A minted credential the old `pithy token mint --store dev-vars` left in the checkout, one per environment. Nothing writes one now; a minted token goes to `<config>/<project>/tokens.json`. |
 
-Seven things get a line, and every one of them names an absolute path rather than a convention:
+Nine things get a line, and every one of them names an absolute path rather than a convention:
+
+- **A Worker whose `pithy.config.ts` will not import.** The line names the Worker and why, and it comes first, because it explains every line under it. A registry nobody could read is not a Worker that declares nothing, and the difference decides what the rest of this block may say: `doctor` used to answer both states with an empty target list, so the whole `Dev secrets:` block disappeared in the one state it was written for. A diagnostic that dies on what it is diagnosing is worse than one that names it.
 
 - **A `.dev.vars.<env>` still in the checkout.** It holds a credential minted for that environment — a live production Cloudflare token, in the worst and most ordinary case. The line names the file and the environment. Gitignored is not enough: `npm pack` does not read `.gitignore` when `files` is set.
 - **A registry secret still copied into `<config>/<project>/dev.json` under `"vars"`.** `pithy seed` used to make that copy and the generator used to read it; the generator reads `secrets.jsonc` directly now, so nothing reads the copy. A value there that *no* registry declares — a Turnstile sitekey — is a legitimate tenant of that file and says nothing.
@@ -913,6 +925,7 @@ Seven things get a line, and every one of them names an absolute path rather tha
 - **A registry secret sitting in the root `.dev.vars`**, whatever its backend. It is inert there — dev reads a `d1` secret from the seeded store and a `cf-secrets-store` one from the generated file — so the line says which file the value belongs in and in what shape.
 - **A key in the root `.dev.vars` that a Worker needs as a binding.** Real value, wrong file, and never described as deletable.
 - **A key nothing reads at all** — not a Cloudflare credential, not a registry secret, not declared by anything this project composes. That one can go.
+- **A key nobody could classify**, because a Worker's config would not import. It is named, and nothing else is claimed about it. "Nothing reads it, delete it" is a *negative* claim, and the registry that would have settled it is exactly the one that could not be read — so that sentence is withheld until it can be made. The three verdicts above it survive a partial read, because each rests on positive evidence: a fixed credential list, a registry that did declare the name, a composition that does want it.
 
 And one more, from the neighbouring `Dev secrets:` lines: **a project with no `SECRETS_ENCRYPTION_KEYS` at all** is told to run `pithy add secrets`, which mints one into `secrets.jsonc`. It is the one declared secret nobody outside the project issues, and until it exists the local `SECRETS` store cannot be opened.
 
@@ -975,12 +988,12 @@ The `Cloudflare:` check still runs there, and it is the one check that never nee
 
 ```
 $ pithy doctor --json
-{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":"installed","configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"env":"dev"},"entitlements":{"ok":true,"gates":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
+{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"env":"dev"},"entitlements":{"ok":true,"gates":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
 ```
 
 Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognised by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `devPreferences`, `devSecretsFile`, `devSecrets`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.
 
-`project.health.manifests` is the `manifests:` block above, and it is project-wide rather than per Worker for the same reason. `devSecrets.mode` is octal-formatted (`600`), because `384` is not a permission anybody recognises. `runtime` is the interpreter that ran, `node` the version it emulates — equal on Node, different under Bun.
+`project.health.manifests` is the `manifests:` block above, and it is project-wide rather than per Worker for the same reason. `devSecrets.mode` is octal-formatted (`600`), because `384` is not a permission anybody recognises. `devSecrets.unresolvable` and `devVars.unresolvable` are the Workers whose `pithy.config.ts` would not import, each naming the Worker, its directory and the reason — a `devSecrets` object carrying one is how a script tells "nothing loaded" from the `null` that means this project composes no secrets. `runtime` is the interpreter that ran, `node` the version it emulates — equal on Node, different under Bun.
 
 ### 5.7 Project capability updates
 
@@ -1016,6 +1029,7 @@ $ pithy add --list --json
 | A dev value a Worker needs as a binding and no registry declares — a Turnstile sitekey | `<config>/<project>/dev.json` under `"vars"` |
 | A minted credential in a `.dev.vars.<env>` | `<config>/<project>/tokens.json`, keyed by environment |
 | A key nothing this project composes declares | nowhere. It is named, and left where it is |
+| A key nobody could classify, because a Worker's `pithy.config.ts` would not import | nowhere. It is **refused** by name, and the run exits non-zero |
 
 Six rules, and each one is the answer to a way this could go wrong.
 
@@ -1026,6 +1040,8 @@ Six rules, and each one is the answer to a way this could go wrong.
 **A value that differs from the one already at its destination is refused, never overwritten.** Two different values under one name is exactly the state that produces "which one signed this?", and picking one silently is how a project ends up with a secret nobody can account for. The refusal is per key — the others still move — and it fails the exit.
 
 **A key it cannot place is named, not guessed.** A project whose root `pithy.config.ts` sets no `name` has no per-project directory to key on, and every destination but `cloudflare.json` is refused by name. A `json` registry secret whose `.dev.vars` line is not JSON is refused the same way, rather than written as a string the next `pithy seed` would reject.
+
+**A value it could not classify is refused, and never called safe to remove.** `adopt` decides where each value belongs by asking the registry what this project declares, and a `pithy.config.ts` that will not import used to answer "declares nothing" — indistinguishable from a project with no secrets. So a registry secret read as a key nothing composes, and the report said so. This command deletes nothing itself, which is exactly why that matters: its verdicts are what an adopter acts on, and the loss would arrive one step later, by hand, on this advice. It names the Worker, refuses that value, moves everything it still has positive evidence for — a Cloudflare credential needs no registry to place — and fails the exit.
 
 **It is idempotent.** A second run copies nothing and says so. A value already at its destination is `already there`, not re-copied — and that is the state the whole project reaches once, permanently.
 
@@ -1062,7 +1078,7 @@ Done.
 
 **The exit code is non-zero when anything was refused** — a conflicting value, or one with nowhere to go. A key nothing composes is not a refusal and does not gate: it is the ordinary residue of an old project, and deleting it is a judgement only its author can make.
 
-`pithy adopt --json` carries six fields. `command` is the command's name and `project` the root config's `name` (`null` when it sets none). `applied` says whether this run wrote anything. `entries` is the whole plan, one object per value found, each carrying its `key`, the absolute `source` file it is in, the `env` a minted token was minted for (`null` otherwise), its `kind` (`credential`, `secret`, `binding`, `token`, `unread`), the absolute `destination` (`null` when nothing composes it), the `action` taken (`copy`, `present`, `conflict`, `refused`, `leave`), a `reason` sentence for a refusal (`null` otherwise), and `safeToRemove`. `safeToRemove` at the top level is the same list as a pair of `file` and `key` — empty on a dry run, because nothing was written and so nothing is safe to delete yet. `refused` is the same shape, for every value that was not placed.
+`pithy adopt --json` carries six fields. `command` is the command's name and `project` the root config's `name` (`null` when it sets none). `applied` says whether this run wrote anything. `entries` is the whole plan, one object per value found, each carrying its `key`, the absolute `source` file it is in, the `env` a minted token was minted for (`null` otherwise), its `kind` (`credential`, `secret`, `binding`, `token`, `unclassified`, `unread`), the absolute `destination` (`null` when nothing composes it), the `action` taken (`copy`, `present`, `conflict`, `refused`, `leave`), a `reason` sentence for a refusal (`null` otherwise), and `safeToRemove`. `safeToRemove` at the top level is the same list as a pair of `file` and `key` — empty on a dry run, because nothing was written and so nothing is safe to delete yet. `refused` is the same shape, for every value that was not placed.
 
 ```
 $ pithy adopt --json

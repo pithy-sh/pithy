@@ -219,6 +219,7 @@ describe("devSecretsHealthy", () => {
     undeclared: [],
     mode: 0o600,
     unreadable: false,
+    unresolvable: [],
   };
 
   test("a master key nobody has minted yet is named with the command that mints it", () => {
@@ -254,6 +255,7 @@ describe("describeDevSecrets", () => {
       bootstrapMissing: [],
       undeclared: [],
       mode: 0o600,
+      unresolvable: [],
       unreadable: false,
     });
     expect(lines).toEqual([]);
@@ -266,6 +268,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       undeclared: [],
+      unresolvable: [],
       mode: null,
       unreadable: false,
     });
@@ -281,6 +284,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       undeclared: [],
+      unresolvable: [],
       mode: 0o600,
       unreadable: false,
     });
@@ -297,6 +301,7 @@ describe("describeDevSecrets", () => {
       bootstrapMissing: [],
       undeclared: [],
       mode: 0o644,
+      unresolvable: [],
       unreadable: false,
     });
     expect(lines.join("\n")).toContain("644");
@@ -311,6 +316,7 @@ describe("describeDevSecrets", () => {
       bootstrapMissing: [],
       undeclared: [],
       mode: 0o600,
+      unresolvable: [],
       unreadable: true,
     });
     expect(lines.join("\n")).toMatch(/will not parse|unreadable/i);
@@ -360,5 +366,60 @@ describe("checkDevSecretsLocation", () => {
   test("no project name is no question — it declines rather than guessing a directory", async () => {
     await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
     expect(await checkDevSecretsLocation(dir, paths())).toBeNull();
+  });
+});
+
+/**
+ * `null` means no Worker composes `secrets` — and until #208 it also meant every Worker's config failed
+ * to import.
+ *
+ * `checkDevSecrets` took the lossy target list, so an unresolvable project answered `[]` exactly as a
+ * project with no secrets does, and the whole `Dev secrets:` block disappeared. That is the least useful
+ * behaviour available to a diagnostic: the report goes quiet in the one state it was written for (#166 was
+ * the same shape). The two states are now different values, and neither is an exception.
+ */
+describe("a Worker nobody could ask (#208)", () => {
+  const broken = [{ name: "board", dir: join("/p", "apps", "board"), reason: "pithy.config.ts would not import." }];
+
+  test("a project whose every config failed is not a project with no secrets", async () => {
+    const result = await checkDevSecrets({ projectDir: dir, targets: [], unresolvable: broken, paths: paths() });
+
+    expect(result).not.toBeNull();
+    expect(result?.unresolvable).toEqual(broken);
+    // The path is still resolved, which is most of what this check is for.
+    expect(result?.path).toBe(path);
+  });
+
+  test("no Worker composes secrets, and nothing failed — that is still null", async () => {
+    expect(await checkDevSecrets({ projectDir: dir, targets: [], unresolvable: [], paths: paths() })).toBeNull();
+  });
+
+  test("a name the file states is not called undeclared on a registry nobody could read", async () => {
+    // `undeclared` is the negative claim — "no capability declares this" — and it is exactly the claim a
+    // registry that would not load cannot support. The stated name may be the broken Worker's own.
+    await writeFile(path, JSON.stringify({ "mystery-key": { currentVersion: "1", versions: { "1": "v" } } }));
+
+    const withBroken = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      unresolvable: broken,
+      paths: paths(),
+    });
+    expect(withBroken?.undeclared).toEqual([]);
+
+    // With every config readable, the same file says the same thing and the claim is sound.
+    const clean = await checkDevSecrets({ projectDir: dir, targets: [board()], paths: paths() });
+    expect(clean?.undeclared).toEqual(["mystery-key"]);
+  });
+
+  test("what a readable registry declares is still judged — a partial read is not no read", async () => {
+    await writeFile(join(dir, ".dev.vars"), "auth-session-secret=old\n");
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      unresolvable: broken,
+      paths: paths(),
+    });
+    expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "unmoved" }]);
   });
 });

@@ -3,7 +3,7 @@
 
 import { relative } from "node:path";
 import { DEV_VARS_LOCAL, readLocalOverrides } from "../devSecrets/generate";
-import { type DevSecretsTarget, devSecretsTargets } from "../devSecrets/targets";
+import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { discoverWorkers } from "../project/workers";
 import { declaredVars } from "./wranglerVars";
 
@@ -41,6 +41,10 @@ export interface DevVarsLocalCheck {
   /**
    * Keys that are neither a registry secret nor declared in any `wrangler.jsonc` `vars` block. They
    * exist in dev and nowhere else. Sorted by file, then key.
+   *
+   * **Empty whenever anything is {@link DevVarsLocalCheck.unresolvable}** (#208). "Nowhere else knows
+   * about this key" is a negative claim, and a registry that would not load is exactly what might have
+   * known. Saying it anyway is how an adopter is told a declared secret is dev-only.
    */
   devOnly: DevOnlyVar[];
   /**
@@ -48,6 +52,13 @@ export interface DevVarsLocalCheck {
    * a Worker running on a value that is not the one the secrets file states is a fact worth one line.
    */
   shadowing: DevOnlyVar[];
+  /**
+   * Every Worker with a `pithy.config.ts` that would not import, and why (#208). Empty on an ordinary run.
+   *
+   * The sentence naming it belongs to `./devVars`, which prints first in the same `Dev secrets:` block;
+   * this field is what stops this check from making a claim about a registry it never read.
+   */
+  unresolvable: UnresolvableWorker[];
 }
 
 /** What {@link checkDevVarsLocal} needs. Every seam defaults to the real project. */
@@ -56,6 +67,11 @@ export interface CheckDevVarsLocalOptions {
   projectDir: string;
   /** The Workers whose registries declare the secrets. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
+  /**
+   * The Workers whose `pithy.config.ts` would not import. Read only when {@link targets} is supplied —
+   * both halves of one resolution, so a seam cannot state one and let the other default to a lie.
+   */
+  unresolvable?: UnresolvableWorker[];
   /** The Worker directories to look in. Defaults to every discovered Worker. */
   workerDirs?: string[];
 }
@@ -68,7 +84,12 @@ export interface CheckDevVarsLocalOptions {
 export async function checkDevVarsLocal(options: CheckDevVarsLocalOptions): Promise<DevVarsLocalCheck | null> {
   const workerDirs =
     options.workerDirs ?? (await discoverWorkers(options.projectDir).catch(() => [])).map((w) => w.dir);
-  const targets = options.targets ?? (await devSecretsTargets(options.projectDir).catch(() => []));
+  // Both halves of one resolution (#208) — the lossy wrapper's `.catch(() => [])` stood here and read a
+  // config that would not import as a Worker that declares nothing.
+  const { targets, unresolvable } =
+    options.targets === undefined
+      ? await resolveDevSecretsTargets(options.projectDir)
+      : { targets: options.targets, unresolvable: options.unresolvable ?? [] };
   const declaredSecrets = new Set(targets.flatMap((target) => Object.keys(target.registry)));
 
   const devOnly: DevOnlyVar[] = [];
@@ -92,10 +113,14 @@ export async function checkDevVarsLocal(options: CheckDevVarsLocalOptions): Prom
     const file = at === "" ? DEV_VARS_LOCAL : `${at}/${DEV_VARS_LOCAL}`;
     for (const key of Object.keys(await readLocalOverrides(scope.dir).catch(() => ({}))).sort()) {
       if (declaredSecrets.has(key)) shadowing.push({ key, file });
-      else if (!scope.declared.has(key)) devOnly.push({ key, file });
+      // The negative claim, and the one a partial resolution cannot support. Withheld rather than
+      // hedged: `doctor` already says "this Worker's config would not import" once, in this same block,
+      // and saying it again in other words per key is the noise `unreadable` next door avoids too.
+      else if (!scope.declared.has(key) && unresolvable.length === 0) devOnly.push({ key, file });
     }
   }
-  return devOnly.length === 0 && shadowing.length === 0 ? null : { devOnly, shadowing };
+  if (devOnly.length === 0 && shadowing.length === 0 && unresolvable.length === 0) return null;
+  return { devOnly, shadowing, unresolvable };
 }
 
 /** The lines the report prints. Both findings are worth ink and neither is worth failing an exit over. */

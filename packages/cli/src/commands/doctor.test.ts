@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { buildReconcilePlan } from "../capabilities/reconcile";
 import type { FetchLike } from "../notifier/check";
@@ -418,7 +418,7 @@ describe("renderDoctorJson", () => {
     const json = renderDoctorJson(report);
     expect(json.cli).toMatchObject({ installed: "1.2.0", latest: "1.3.0", installer: "bun", state: "outdated" });
     expect(json.shell).toBe("zsh");
-    expect(json.alias).toBe("installed");
+    expect(json.alias).toEqual({ state: "installed", rcPath: "/home/u/.zshrc", reason: null });
     expect(json.notifier).toBe("enabled");
     expect(json.os).toBe("macOS 14.5");
     expect(json.node).toBe("22.10.0");
@@ -973,6 +973,7 @@ describe("dev vars", () => {
       minted: [],
       devJsonSecrets: [],
       devConfigPath: "/home/u/.config/pithy/acme/dev.json",
+      unresolvable: [],
       ...over,
     });
 
@@ -1298,5 +1299,210 @@ describe("manifest faults in the health block", () => {
     const report = await buildDoctorReport(healthyOptions({ buildPlan: planStub(cleanPlan) }));
     expect(report.project?.health.manifests).toEqual({ ok: true, faults: [] });
     expect(doctorExitCode(report)).toBe(0);
+  });
+});
+
+/**
+ * One optional line's failure must not cost every other line (#210).
+ *
+ * `doctor` deliberately discards read failures — a diagnostic has to work in the environment it
+ * diagnoses — and the shell rc read was the one that did not follow the rule. An unreadable `~/.bashrc`
+ * threw out of `buildDoctorReport` and the whole report went with it: Cloudflare reachability, the
+ * secrets paths, project health, dev secrets. The least important line in the report took the other
+ * twenty with it.
+ *
+ * Catching it to `false` is not the fix and is why #203 left it alone: `Alias: not installed` about a
+ * file nothing could read is a lie, and the adopter's next move is `pithy alias`, which fails on the
+ * same file. The field is tri-state, and the third state names the file.
+ */
+describe("one unreadable file must not cost the whole report (#210)", () => {
+  /** The refusal `readRcFile` raises for a file that is there and will not open. */
+  const unreadableRc = async (path: string): Promise<string> => {
+    throw new ConflictError({
+      message: `Can't read ${path}.`,
+      action: "Fix the file's permissions, or add the Pithy alias to your shell config yourself.",
+      detail: `EACCES while reading ${path}`,
+    });
+  };
+
+  test("an unreadable rc file produces a report, not an exception", async () => {
+    const report = await buildDoctorReport(healthyOptions({ readRc: unreadableRc }));
+
+    // Everything the crash used to take with it is still here.
+    expect(report.cloudflare.state).toBe("ok");
+    expect(report.project).not.toBeNull();
+    expect(report.os).toEqual({ name: "macOS", version: "14.5" });
+  });
+
+  test("the alias status is unknown, and names the file — never 'not installed'", async () => {
+    const report = await buildDoctorReport(healthyOptions({ readRc: unreadableRc }));
+
+    expect(report.alias.state).toBe("unknown");
+    expect(report.alias.rcPath).toBe("/home/u/.zshrc");
+    expect(report.alias.reason).toContain("Can't read /home/u/.zshrc.");
+
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Alias: unknown — can't read ~/.zshrc");
+    expect(text).not.toContain("Alias: not installed");
+  });
+
+  test("an unknown alias keeps the report verbose — 'I could not check' is worth the ink", async () => {
+    const report = await buildDoctorReport(healthyOptions({ readRc: unreadableRc }));
+    // The terse report drops the rc path from the `Shell:` line. A state nobody established must not
+    // be reported in the form that says there is nothing to look at.
+    expect(renderDoctorText(report, "/home/u")).toContain("Shell: zsh (~/.zshrc)");
+  });
+
+  test("--json carries the third state, and the two ordinary ones keep their shape", async () => {
+    const unknown = renderDoctorJson(await buildDoctorReport(healthyOptions({ readRc: unreadableRc })));
+    expect(unknown.alias).toEqual({
+      state: "unknown",
+      rcPath: "/home/u/.zshrc",
+      reason: expect.stringContaining("Can't read /home/u/.zshrc."),
+    });
+
+    const installed = renderDoctorJson(await buildDoctorReport(healthyOptions()));
+    expect(installed.alias).toEqual({ state: "installed", rcPath: "/home/u/.zshrc", reason: null });
+
+    const absent = renderDoctorJson(await buildDoctorReport(healthyOptions({ readRc: async () => "" })));
+    expect(absent.alias).toEqual({ state: "not-installed", rcPath: "/home/u/.zshrc", reason: null });
+  });
+
+  test("an alias nobody could read never fails the exit — toolchain state never does", async () => {
+    const report = await buildDoctorReport(healthyOptions({ readRc: unreadableRc }));
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  /**
+   * The general case, which is the point rather than the rc file. `doctor` also *writes* one file — the
+   * notifier cache — and a config directory it cannot write to is exactly the machine somebody runs
+   * `doctor` on. That write is bookkeeping for the next run; it must not cost this one its report.
+   */
+  test("a config directory that cannot be written still produces a report", async () => {
+    const readOnly = join(dir, "read-only");
+    await mkdir(readOnly, { recursive: true });
+    await chmod(readOnly, 0o500);
+    try {
+      const report = await buildDoctorReport(healthyOptions({ stateFile: join(readOnly, "state.json") }));
+      expect(report.cli.installed).toBe("1.3.0");
+      expect(report.project).not.toBeNull();
+    } finally {
+      await chmod(readOnly, 0o700);
+    }
+  });
+
+  /**
+   * Every file the real checks read, made unreadable one at a time against a real scaffold.
+   *
+   * The rule is not "doctor should catch more" — it is that no single read may cost every other line, and
+   * the only way to know that is to break each of them. Every seam here is the real function: stubbing
+   * them would test the stubs.
+   */
+  test("no single unreadable file in a real project prevents the report", async () => {
+    const projectDir = join(dir, "unreadable");
+    await scaffoldProject({ targetDir: projectDir, appName: "replay", worker: "board" });
+    const worker = join(projectDir, "apps", "board");
+    await writeFile(join(projectDir, ".dev.vars"), "OLD_FLAG=1\n");
+    await writeFile(join(worker, ".dev.vars.local"), "LOCAL_ONLY=1\n");
+
+    const files = [
+      join(projectDir, ".dev.vars"),
+      join(worker, ".dev.vars.local"),
+      join(worker, "wrangler.jsonc"),
+      join(worker, "pithy.worker.jsonc"),
+      join(worker, "pithy.config.ts"),
+      join(projectDir, "pithy.config.ts"),
+    ];
+
+    for (const file of files) {
+      await chmod(file, 0o000);
+      try {
+        const report = await buildDoctorReport(
+          baseOptions({
+            projectDir,
+            buildPlan: planStub(cleanPlanFor("board")),
+            resolveWorkers: undefined,
+            // The real name check too — it reads every `wrangler.jsonc` in the project, and with no
+            // credentials resolved (`NO_ACCOUNT`) it never reaches an account. Only the Cloudflare probe
+            // stays stubbed, because that one is the network.
+            checkProjectName: undefined,
+          }),
+        );
+        expect(report.os, `${file} took the report with it`).toEqual({ name: "macOS", version: "14.5" });
+      } finally {
+        await chmod(file, 0o644);
+      }
+    }
+  });
+});
+
+/**
+ * A Worker nobody could ask, in the report (#208).
+ *
+ * The `Dev secrets:` block used to disappear entirely when every `pithy.config.ts` failed to import: the
+ * lossy target list answered `[]`, `checkDevSecrets` read that as "no Worker composes secrets" and
+ * returned `null`, and the report went quiet in the one state it was written for. Same shape as #166 —
+ * a line that vanishes in the report that needed it.
+ */
+describe("a Worker nobody could ask, in the report (#208)", () => {
+  const broken = [
+    { name: "replay-board", dir: "/p/apps/board", reason: "apps/board/pithy.config.ts would not import. Fix it." },
+  ];
+
+  const options = () =>
+    harness.healthyOptions({
+      checkDevVars: async () => ({
+        root: [{ key: "MYSTERY_KEY", state: "unclassified" as const, workers: [] }],
+        empty: [],
+        minted: [],
+        devJsonSecrets: [],
+        devConfigPath: "/home/u/.config/pithy/acme/dev.json",
+        unresolvable: broken,
+      }),
+      checkDevSecrets: async () => ({
+        path: "/home/u/.config/pithy/acme/secrets.jsonc",
+        misplaced: [],
+        missing: [],
+        bootstrapMissing: [],
+        undeclared: [],
+        mode: null,
+        unreadable: false,
+        unresolvable: broken,
+      }),
+    });
+
+  test("the block prints, names the Worker, and never says the value can go", async () => {
+    const text = renderDoctorText(await buildDoctorReport(options()), "/home/u");
+
+    expect(text).toContain("Dev secrets:");
+    expect(text).toContain("replay-board's pithy.config.ts would not import");
+    expect(text).toContain("MYSTERY_KEY is in .dev.vars, and nothing here can say what reads it");
+    expect(text).not.toContain("Delete it.");
+  });
+
+  test("the rest of the report is still there — a diagnostic reports, it does not refuse", async () => {
+    const report = await buildDoctorReport(options());
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("Cloudflare: reachable");
+    expect(text).toContain("Project: pithy.config.ts found");
+    expect(text).toContain("OS:      macOS 14.5");
+    // Reported, never gated: an unloadable Worker config is the `Project:` block's to fail the exit on.
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("--json tells 'no Worker composes secrets' from 'nothing would load'", async () => {
+    const named = renderDoctorJson(await buildDoctorReport(options())) as {
+      devSecrets: { unresolvable: { name: string }[] };
+      devVars: { unresolvable: { name: string }[] };
+    };
+    expect(named.devSecrets.unresolvable.map((worker) => worker.name)).toEqual(["replay-board"]);
+    expect(named.devVars.unresolvable.map((worker) => worker.name)).toEqual(["replay-board"]);
+
+    // The project with no secrets keeps the shape it always had: one `null`, one fact.
+    const quiet = renderDoctorJson(
+      await buildDoctorReport(harness.healthyOptions({ checkDevSecrets: async () => null })),
+    );
+    expect(quiet.devSecrets).toBeNull();
   });
 });
