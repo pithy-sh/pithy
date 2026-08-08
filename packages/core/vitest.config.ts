@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
 
 // One `vitest run`, two projects. Vitest 4 drives multiple projects through
 // `test.projects` — workspace files (`vitest.workspace.ts`) were removed.
@@ -15,6 +16,9 @@ export default defineConfig({
           environment: "node",
           include: ["src/**/*.test.ts"],
           exclude: ["src/**/*.workers.test.ts", "node_modules/**"],
+          // No ambient account, no real config directory. #198, #200 — see `vitest.shared.ts`.
+          env: { ...NO_ACCOUNT },
+          setupFiles: [CONFIG_DIR_SETUP],
         },
       },
       "./vitest.workers.config.ts",

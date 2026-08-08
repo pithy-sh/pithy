@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
 
 // Node-only tests: the CLI runs outside the Worker. The migrate tests spawn
 // real D1 through Miniflare, so they get a longer timeout than pure logic needs.
@@ -6,9 +7,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
-    // Every test gets a throwaway Pithy config directory — see `vitest.setup.ts`. Dev secrets live
-    // there now (#156), and without this a suite scaffolding `--name replay` writes to the real one.
-    setupFiles: ["./vitest.setup.ts"],
+    // Every test gets a throwaway Pithy config directory — see the repo-root `vitest.setup.ts`. Dev
+    // secrets live there now (#156), and without this a suite scaffolding `--name replay` writes to the
+    // real one. It moved to the root with #200: every package loads the same file, because this one was
+    // the only package that had it and the mistake it prevents is not this package's alone.
+    setupFiles: [CONFIG_DIR_SETUP],
     // `*.integration.test.ts` need a LIVE Cloudflare environment; run via `bun run test:integration`.
     exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
     testTimeout: 30_000,
@@ -28,13 +31,11 @@ export default defineConfig({
     // Stores, which made that a live call rather than a latent one. Empty is unset, exactly as the
     // overlay treats it. The integration config deliberately does *not* set this: those suites need the
     // real credentials, and that is the whole point of them.
-    env: {
-      NO_COLOR: "1",
-      CLOUDFLARE_ACCOUNT_ID: "",
-      CLOUDFLARE_API_TOKEN: "",
-      SECRETS_STORE_ID: "",
-      R2_CREDENTIALS: "",
-    },
+    //
+    // The four names used to be written out here. `NO_ACCOUNT` derives them from `CLOUDFLARE_ENV_KEYS`
+    // instead (#198), so a fifth key is covered by the commit that adds it rather than by whoever
+    // remembers twenty-two configs exist.
+    env: { ...NO_ACCOUNT, NO_COLOR: "1" },
     // No `server.deps.inline` for picocolors. An earlier comment here claimed the inline was needed
     // so `vi.resetModules()` could re-evaluate picocolors' import-time color detection — but
     // `terminal/style.ts` never consults that detection. It computes its own `enabled` flag from

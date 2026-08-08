@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
@@ -52,7 +52,15 @@ async function devMasterKey(dir: string): Promise<EncryptionConfig | undefined> 
  *
  * **A distinct name per call, which is the whole reason this is a function.** Two projects sharing a
  * name share one secrets file, so "the key is random per project" would compare a value with itself
- * and pass for the wrong reason. `vitest.setup.ts` keeps every one of them out of the real config dir.
+ * and pass for the wrong reason.
+ *
+ * **`bootstrap-1` … `bootstrap-29` are the names #200 found sitting in a maintainer's real
+ * `~/.config/pithy`, each holding a genuinely minted AES master key.** This suite passes no `paths`
+ * seam, deliberately: it asserts what `pithy add secrets` does, and the command resolves the directory
+ * itself. Two things now stand between that and the operator's machine — the repo-root
+ * `vitest.setup.ts`, which gives every test file a throwaway `PITHY_CONFIG_DIR`, and `stateDir`, which
+ * refuses to resolve the real directory under vitest at all. The first test below asserts the result
+ * rather than trusting either.
  */
 let projects = 0;
 async function project(): Promise<string> {
@@ -91,6 +99,18 @@ describe("bootstrapAdd", () => {
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  test("the key it mints lands in a throwaway directory, never the operator's own (#200)", async () => {
+    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+
+    const configDir = process.env.PITHY_CONFIG_DIR;
+    expect(configDir).toBeTruthy();
+    // Asserted on the real artefact — where the file this suite just wrote actually is. The version of
+    // this suite that shipped #200 would have passed every other test in this file while writing a real
+    // master key to `~/.config/pithy/bootstrap-1/secrets.jsonc`, because nothing looked.
+    expect(await secretsPath(dir)).toContain(`${configDir}/`);
+    expect(await secretsPath(dir)).not.toContain(join(homedir(), ".config", "pithy"));
   });
 
   test("mints a dev master key — the one value an adopter cannot invent", async () => {

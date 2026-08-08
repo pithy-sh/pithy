@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   defaultState,
   type NotifierState,
@@ -68,6 +69,88 @@ describe("stateDir / stateFilePath", () => {
     expect(stateDir({ platform: "linux", homedir: "/home/u", env: { PITHY_CONFIG_DIR: "  " } })).toBe(
       "/home/u/.config/pithy",
     );
+  });
+});
+
+/**
+ * #200. **Under vitest, this resolver refuses to answer with the operator's own machine.**
+ *
+ * One `bun run test` left 36 directories in a maintainer's real `~/.config/pithy`, each holding a
+ * genuinely minted AES master key, and wrote `SECRETS_STORE_ID` into their real `cloudflare.json`.
+ * `addBootstrap.test.ts` passed no `paths` seam, so `bootstrapAdd` resolved the real directory, and
+ * nothing anywhere said no.
+ *
+ * The repo-root `vitest.setup.ts` is the floor: every test gets a throwaway `PITHY_CONFIG_DIR`. This is
+ * the thing the floor cannot do. A safe default still lets a test opt back into the real directory by
+ * accident — one `vi.stubEnv`, one curated env map, one suite that clears the variable — and it does so
+ * silently, because a real path looks exactly like a fake one. A resolver that refuses cannot.
+ *
+ * **What counts as an answer the caller chose:** `PITHY_CONFIG_DIR`, or the seam. `process.env` is the
+ * operator's shell and `os.homedir()` is their home directory; neither is chosen by a test, so neither
+ * is reachable from one. Nothing here fires outside vitest, so a real `pithy` run is untouched.
+ */
+describe("stateDir under vitest", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** No override, no injected environment, nothing chosen — the exact shape `addBootstrap.test.ts` had. */
+  function noSeam(): void {
+    vi.stubEnv("PITHY_CONFIG_DIR", "");
+  }
+
+  test("no seam at all is a refusal, not the operator's directory", () => {
+    noSeam();
+    const thrown = (() => {
+      try {
+        return stateDir();
+      } catch (error: unknown) {
+        return error;
+      }
+    })();
+
+    expect(thrown).toBeInstanceOf(PithyError);
+    // The message has to name the fix, because whoever sees it wrote a test and not this file.
+    expect((thrown as PithyError).payload.message).toContain("PITHY_CONFIG_DIR");
+    expect((thrown as PithyError).payload.action).toContain("PITHY_ALLOW_REAL_CONFIG_DIR");
+  });
+
+  test("an injected environment is not enough when the answer still comes from the real home", () => {
+    // The environment is the caller's, the home directory is the machine's. `XDG_CONFIG_HOME` unset is
+    // the ordinary case on macOS, so this is the branch a forgetful test lands on.
+    expect(() => stateDir({ platform: "linux", env: {} })).toThrow(PithyError);
+    expect(() => stateDir({ platform: "win32", env: {} })).toThrow(PithyError);
+  });
+
+  test("a synthetic answer is fine — nothing real was reached", () => {
+    // No home directory is consulted on either of these branches, so there is nothing to refuse.
+    expect(stateDir({ platform: "linux", env: { XDG_CONFIG_HOME: "/cfg" } })).toBe("/cfg/pithy");
+    expect(stateDir({ platform: "win32", env: { APPDATA: "C:\\x" } })).toBe(join("C:\\x", "pithy"));
+  });
+
+  test("the seam satisfies it, in both of its spellings", () => {
+    noSeam();
+    expect(stateDir({ env: { PITHY_CONFIG_DIR: "/run/pithy" } })).toBe("/run/pithy");
+    expect(stateDir({ platform: "linux", homedir: "/home/u", env: {} })).toBe("/home/u/.config/pithy");
+  });
+
+  test("the floor under every suite: the setup file's directory is the answer, unasked", () => {
+    // `vitest.setup.ts` at the repo root sets this before a test file is imported, which is why the
+    // twelve hundred tests that never think about it still resolve somewhere disposable.
+    const configured = process.env.PITHY_CONFIG_DIR;
+    expect(configured).toBeTruthy();
+    expect(stateDir()).toBe(configured);
+    // The shape the setup file mints, asserted rather than assumed. A developer who exports
+    // `PITHY_CONFIG_DIR` in their own shell would otherwise satisfy the two lines above without the
+    // setup file having run at all, and this test is the one that says it did.
+    expect(configured).toContain(join(tmpdir(), "pithy-test-config-"));
+  });
+
+  test("an integration suite that means the real directory says so, once, out loud", () => {
+    noSeam();
+    vi.stubEnv("XDG_CONFIG_HOME", "");
+    vi.stubEnv("PITHY_ALLOW_REAL_CONFIG_DIR", "1");
+    expect(stateDir({ platform: "linux" })).toBe(join(homedir(), ".config", "pithy"));
   });
 });
 

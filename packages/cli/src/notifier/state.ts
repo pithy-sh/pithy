@@ -4,6 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
 
@@ -68,6 +69,55 @@ export interface StatePathOptions {
 const CONFIG_DIR_ENV = "PITHY_CONFIG_DIR";
 
 /**
+ * The one way a test may resolve the operator's real config directory: say so, in the environment, and
+ * mean it. Any non-blank value.
+ *
+ * It exists so {@link stateDir}'s refusal is a rule rather than a wall — a suite that genuinely needs the
+ * real location has an answer, and it is one line a reviewer can see. Nothing in this repository sets it,
+ * and `packages/cli/src/ci/testIsolation.test.ts` fails if a vitest config ever does: granting the
+ * exemption to one suite is a decision, granting it to a whole package is an accident waiting.
+ */
+const ALLOW_REAL_ENV = "PITHY_ALLOW_REAL_CONFIG_DIR";
+
+/**
+ * Whether this process is a vitest run.
+ *
+ * Two signals, because either alone has a gap. `VITEST` is set in every worker and is inherited by a CLI
+ * this suite spawns — which is the point, since a spawned `pithy` inherits `PITHY_CONFIG_DIR` with it.
+ * `__vitest_worker__` is on the runner's `globalThis` and survives a test that hands product code a
+ * curated environment, which the variable does not.
+ */
+function underVitest(): boolean {
+  if ((process.env.VITEST ?? "").length > 0) return true;
+  return "__vitest_worker__" in globalThis;
+}
+
+/**
+ * Refuse to answer with the operator's own machine.
+ *
+ * Called at each point where the resolution is about to read something the caller did not choose:
+ * `process.env` is the operator's shell, `os.homedir()` is their home directory. Outside vitest both are
+ * exactly the right answer, so this returns and the resolver carries on.
+ */
+function refuseRealDirectory(env: NodeJS.ProcessEnv, detail: string): void {
+  if (!underVitest()) return;
+  const allowed = env[ALLOW_REAL_ENV];
+  if (allowed !== undefined && allowed.trim().length > 0) return;
+  throw new ConflictError({
+    message: `A test asked for the real Pithy config directory. Set ${CONFIG_DIR_ENV} to a throwaway directory instead.`,
+    action: `Pass \`paths\`/\`StatePathOptions\` at the call site, or let the repo-root \`vitest.setup.ts\` set ${CONFIG_DIR_ENV}. A suite that means the operator's own directory sets ${ALLOW_REAL_ENV}=1.`,
+    detail: `stateDir() refused under vitest: ${detail}. That directory holds minted dev master keys and account credentials — #200.`,
+  });
+}
+
+/** The home directory to resolve against. Refuses to hand back the operator's under vitest. */
+function homeDirectory(options: StatePathOptions, env: NodeJS.ProcessEnv): string {
+  if (options.homedir !== undefined) return options.homedir;
+  refuseRealDirectory(env, "no injected homedir, so the answer would be the operator's home directory");
+  return osHomedir();
+}
+
+/**
  * The Pithy config directory: `$PITHY_CONFIG_DIR` when set, else `%APPDATA%\pithy` on Windows,
  * `$XDG_CONFIG_HOME/pithy` when that is set, else `~/.config/pithy`. This is the exact directory
  * `pithy doctor` reports (tilde-abbreviated).
@@ -81,21 +131,33 @@ const CONFIG_DIR_ENV = "PITHY_CONFIG_DIR";
  * about a file under this directory names its absolute path, and a relative root would make that path
  * mean a different place in each command that resolves its own working directory. Blank is no override:
  * an unset variable and one exported empty by a shell script are the same intention.
+ *
+ * **Under vitest it refuses rather than resolve the operator's own machine (#200).** This is the single
+ * resolver — dev secrets, dev preferences, `cloudflare.json` and the notifier state all come through
+ * here — which is what makes the invariant checkable in one place. A test may answer with
+ * `PITHY_CONFIG_DIR`, or with seams that supply whatever the resolution needs; it may not answer with
+ * `process.env` or `os.homedir()`, because a test chose neither. A suite that means the real directory
+ * sets {@link ALLOW_REAL_ENV}. Outside vitest nothing changes, and a real `pithy` run never sees this.
  */
 export function stateDir(options: StatePathOptions = {}): string {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  const home = options.homedir ?? osHomedir();
 
   const override = env[CONFIG_DIR_ENV];
   if (override !== undefined && override.trim().length > 0) return resolve(override);
 
+  // No override, and the environment about to decide the answer is the operator's shell rather than one
+  // the caller built. Everything below this line would be their machine.
+  if (options.env === undefined) {
+    refuseRealDirectory(env, `${CONFIG_DIR_ENV} is unset and no environment was injected`);
+  }
+
   if (platform === "win32") {
-    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const appData = env.APPDATA ?? join(homeDirectory(options, env), "AppData", "Roaming");
     return join(appData, "pithy");
   }
   const xdg = env.XDG_CONFIG_HOME;
-  return xdg ? join(xdg, "pithy") : join(home, ".config", "pithy");
+  return xdg ? join(xdg, "pithy") : join(homeDirectory(options, env), ".config", "pithy");
 }
 
 /** The state file path: `<stateDir>/state.json`. */
