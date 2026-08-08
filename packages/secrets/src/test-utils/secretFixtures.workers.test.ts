@@ -32,7 +32,7 @@ const registry = defineSecretRegistry({
   credentials: { backend: "d1", scope: "environment", rotatable: false, valueType: "json", schema: Credentials },
 });
 
-/** The same text entry alone, for cases that assert a read — `secretsStore` resolves a registry whole. */
+/** The same text entry alone, for cases whose subject is the text path and nothing else. */
 const textOnly = defineSecretRegistry({
   "session-key": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
 });
@@ -83,7 +83,12 @@ describe("seedSecrets", () => {
   test("a name the fixture omits stays unprovisioned, and reading it says so", async () => {
     await seedSecrets(workerEnv, registry, { "session-key": "k" });
 
-    await expect(secretsStore(workerEnv, registry)).rejects.toBeInstanceOf(SecretNotFoundError);
+    const secrets = await secretsStore(workerEnv, registry);
+
+    // Only the omitted name fails, and only when it is read (#170). The seeded one beside it is
+    // untouched — which is what lets a suite seed exactly the secrets its case exercises.
+    expect(secrets.get("session-key")).toBe("k");
+    expect(() => secrets.get("credentials")).toThrow(SecretNotFoundError);
   });
 });
 

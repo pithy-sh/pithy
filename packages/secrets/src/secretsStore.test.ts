@@ -17,6 +17,16 @@ function envWith(bindings: Record<string, unknown>): SecretsStoreEnv {
 
 const Emailer = z.object({ apiKey: z.string().min(8).describe("API key.") }).describe("Emailer credentials.");
 
+/** The error a synchronous read threw, for assertions about its payload. Fails if it threw nothing. */
+function throwsFrom(read: () => unknown): unknown {
+  try {
+    read();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the read to throw");
+}
+
 describe("secretsStore — cf-secrets-store backend", () => {
   test("get resolves a value from a .get() binding", async () => {
     const registry = defineSecretRegistry({
@@ -57,7 +67,7 @@ describe("secretsStore — cf-secrets-store backend", () => {
     expect(store.get("EMAILER")).toEqual({ apiKey: "abcdefgh" });
   });
 
-  test("an invalid json value throws — and the error never echoes the secret material", async () => {
+  test("an invalid json value throws at its read — and the error never echoes the secret material", async () => {
     const registry = defineSecretRegistry({
       EMAILER: {
         backend: "cf-secrets-store",
@@ -67,9 +77,8 @@ describe("secretsStore — cf-secrets-store backend", () => {
         schema: Emailer,
       },
     });
-    const error = await secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "SECRET6" }) }), registry).catch(
-      (e: unknown) => e,
-    );
+    const store = await secretsStore(envWith({ EMAILER: JSON.stringify({ apiKey: "SECRET6" }) }), registry);
+    const error = throwsFrom(() => store.get("EMAILER"));
     expect(error).toBeInstanceOf(SecretInvalidValueError);
     const payload = (error as SecretInvalidValueError).payload;
     expect(payload.detail).toContain("apiKey:too_small");
@@ -77,7 +86,7 @@ describe("secretsStore — cf-secrets-store backend", () => {
     expect(payload.message).not.toContain("SECRET6");
   });
 
-  test("non-JSON for a json entry throws SecretInvalidValueError", async () => {
+  test("non-JSON for a json entry throws SecretInvalidValueError at its read", async () => {
     const registry = defineSecretRegistry({
       EMAILER: {
         backend: "cf-secrets-store",
@@ -87,16 +96,16 @@ describe("secretsStore — cf-secrets-store backend", () => {
         schema: Emailer,
       },
     });
-    await expect(secretsStore(envWith({ EMAILER: "not json" }), registry)).rejects.toBeInstanceOf(
-      SecretInvalidValueError,
-    );
+    const store = await secretsStore(envWith({ EMAILER: "not json" }), registry);
+    expect(() => store.get("EMAILER")).toThrow(SecretInvalidValueError);
   });
 
-  test("a missing binding fails loudly", async () => {
+  test("a missing binding fails loudly at its read", async () => {
     const registry = defineSecretRegistry({
       NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
     });
-    await expect(secretsStore(envWith({}), registry)).rejects.toBeInstanceOf(SecretNotFoundError);
+    const store = await secretsStore(envWith({}), registry);
+    expect(() => store.get("NPM_TOKEN")).toThrow(SecretNotFoundError);
   });
 
   test("get rejects an undeclared name; toJSON redacts the values", async () => {
@@ -121,12 +130,82 @@ describe("secretsStore — d1 backend routes to the store, in every environment"
   });
 
   test("a deployed d1 secret is never shadowed by a same-named plaintext binding", async () => {
-    await expect(secretsStore(envWith({ ENVIRONMENT: "prod", FOO: "plaintext" }), registry)).rejects.toThrow();
+    const store = await secretsStore(envWith({ ENVIRONMENT: "prod", FOO: "plaintext" }), registry);
+    expect(() => store.get("FOO")).toThrow();
   });
 
   test("and neither is a dev one — the two branches collapsed into the same path", async () => {
     // The whole of #153 in one line: no `ENVIRONMENT`, and the binding is still not a place to read from.
-    await expect(secretsStore(envWith({ FOO: "plaintext" }), registry)).rejects.toThrow();
+    const store = await secretsStore(envWith({ FOO: "plaintext" }), registry);
+    expect(() => store.get("FOO")).toThrow();
+  });
+});
+
+describe("secretsStore — a failure belongs to its secret, not to the store (#170)", () => {
+  // The bug, in the shape that produced it: `auth` declares a session secret and a social-provider
+  // credential the registry documents as read only when that provider is enabled. Nothing configures
+  // the provider, so its binding is absent — and that used to make every capability's read fail.
+  const auth = defineSecretRegistry({
+    "auth-session-secret": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
+    "auth-google-credentials": {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "json",
+      schema: Emailer,
+      notes: "Read only when the provider is enabled.",
+    },
+  });
+
+  test("an unset secret does not stop the accessor being built", async () => {
+    await expect(secretsStore(envWith({ "auth-session-secret": "sess" }), auth)).resolves.toBeInstanceOf(
+      SecretsAccessor,
+    );
+  });
+
+  test("a sibling secret still reads, synchronously", async () => {
+    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    expect(store.get("auth-session-secret")).toBe("sess");
+    expect(store.getVersions("auth-session-secret")).toEqual({ currentVersion: "1", versions: { "1": "sess" } });
+  });
+
+  test("the unset secret still fails when read, and names itself and not its neighbour", async () => {
+    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    const error = throwsFrom(() => store.get("auth-google-credentials"));
+    expect(error).toBeInstanceOf(SecretNotFoundError);
+    const serialized = JSON.stringify((error as SecretNotFoundError).payload);
+    expect(serialized).toContain("auth-google-credentials");
+    expect(serialized).not.toContain("auth-session-secret");
+  });
+
+  test("a d1 store nobody can reach is held against its own secrets, not the cf ones beside them", async () => {
+    // No `SECRETS` D1 and no master key here, so the batch cannot even be attempted. That is fatal for
+    // the `d1` secret and irrelevant to the binding sitting next to it.
+    const mixed = defineSecretRegistry({
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+      NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const store = await secretsStore(envWith({ NPM_TOKEN: "npm-abc" }), mixed);
+    expect(store.get("NPM_TOKEN")).toBe("npm-abc");
+    expect(() => store.get("auth-session-secret")).toThrow();
+  });
+
+  test("a held failure survives subset, and stays with its own name", async () => {
+    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    const session = defineSecretRegistry({
+      "auth-session-secret": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
+    });
+    const google = defineSecretRegistry({
+      "auth-google-credentials": {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: false,
+        valueType: "json",
+        schema: Emailer,
+      },
+    });
+    expect(store.subset(session).get("auth-session-secret")).toBe("sess");
+    expect(() => store.subset(google).get("auth-google-credentials")).toThrow(SecretNotFoundError);
   });
 });
 

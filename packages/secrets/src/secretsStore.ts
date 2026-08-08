@@ -38,6 +38,15 @@ import { SystemSecretsStore } from "./store/systemSecretsStore";
  * check a kid against every valid key (e.g. token verification across a signing-key rotation).
  * Both are available for every secret; the shape is not a per-secret switch.
  *
+ * **A failure belongs to its secret, not to the batch (#170).** Resolution is eager, so one unset
+ * secret used to take the whole accessor down — and the accessor is shared, so an unconfigured OAuth
+ * provider in `auth` stopped `payments` reading a webhook key, in a capability that never mentions it.
+ * The registry already says which secrets are conditional ("read only when the provider is enabled"),
+ * and eager resolution turned every one of them into a boot requirement. So a secret that fails to
+ * resolve holds its error instead of throwing it, and the error is raised by the read of *that* secret.
+ * Nothing is swallowed: a secret that is genuinely missing still fails loudly, naming itself, at the
+ * first read. A secret nobody reads costs nothing, which is what "conditional" meant all along.
+ *
  * **A keyspace is the one asymmetry, and it is honest.** A `keyed` entry covers an unbounded set of
  * members whose keys exist only at runtime — one credential per tenant — so nothing is resolved for it
  * up front, and `getKeyed(name, key)` / `getKeyedVersions(name, key)` are async: they fetch exactly the
@@ -155,11 +164,23 @@ export class SecretsAccessor<R extends SecretRegistry> {
   readonly #registry: R;
   readonly #resolved: Record<string, Resolved>;
   readonly #keyedSource: KeyedSecretSource | undefined;
+  readonly #failures: Record<string, Error>;
 
-  constructor(registry: R, resolved: Record<string, Resolved>, keyedSource?: KeyedSecretSource) {
+  /**
+   * `failures` holds the error each unresolved secret raises when *it* is read — see the module note
+   * on #170. It is last and optional because almost nothing constructs one: `secretsStore` does, and
+   * a test that hands over already-resolved values has no failures to carry.
+   */
+  constructor(
+    registry: R,
+    resolved: Record<string, Resolved>,
+    keyedSource?: KeyedSecretSource,
+    failures: Record<string, Error> = {},
+  ) {
     this.#registry = registry;
     this.#resolved = resolved;
     this.#keyedSource = keyedSource;
+    this.#failures = failures;
   }
 
   /** The current value of a declared secret. */
@@ -203,6 +224,10 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * slice. A name in `registry` that this accessor never resolved is simply absent, so a later
    * `get`/`getVersions` fails loudly as `secrets/not_found` rather than returning a silent `undefined`.
    *
+   * A held failure travels with its name and no further. That is the whole point of the slice: the
+   * view a capability gets carries the errors of its own secrets, and cannot be tripped by a
+   * neighbour's unset one.
+   *
    * `keyedSource` defaults to this accessor's own. The shared store passes the current invocation's
    * instead: it hands out views over an accessor cached across requests, and a keyspace read is real
    * I/O, which must run through the binding of the request making it — not of whichever request
@@ -213,11 +238,14 @@ export class SecretsAccessor<R extends SecretRegistry> {
     keyedSource: KeyedSecretSource | undefined = this.#keyedSource,
   ): SecretsAccessor<R2> {
     const resolved: Record<string, Resolved> = {};
+    const failures: Record<string, Error> = {};
     for (const name of Object.keys(registry)) {
       const value = this.#resolved[name];
       if (value) resolved[name] = value;
+      const failure = this.#failures[name];
+      if (failure) failures[name] = failure;
     }
-    return new SecretsAccessor(registry, resolved, keyedSource);
+    return new SecretsAccessor(registry, resolved, keyedSource, failures);
   }
 
   /**
@@ -269,6 +297,9 @@ export class SecretsAccessor<R extends SecretRegistry> {
         detail: `get called on keyspace '${name}'`,
       });
     }
+    // The failure this secret's own resolution held. Raised here, at its read, and nowhere else.
+    const failure = this.#failures[name];
+    if (failure) throw failure;
     const resolved = this.#resolved[name];
     if (!resolved) {
       throw new SecretNotFoundError({
@@ -288,10 +319,14 @@ export class SecretsAccessor<R extends SecretRegistry> {
 /**
  * Resolve every secret declared in `registry` from `env` and return a typed accessor. **Routing is by
  * registry backend and nothing else**, in every environment: `d1` entries are decrypted in one batch
- * from the per-environment store, `cf-secrets-store` entries are read from their bound values. A
- * declared secret with no value throws so a missing secret fails loudly, never as a silent `undefined`.
- * A keyed entry resolves nothing here — it declares a keyspace, not a value — and its members are
- * fetched at the read.
+ * from the per-environment store, `cf-secrets-store` entries are read from their bound values. A keyed
+ * entry resolves nothing here — it declares a keyspace, not a value — and its members are fetched at
+ * the read.
+ *
+ * **This never rejects because a secret is missing (#170).** A secret that cannot be resolved — no row,
+ * no binding, a value that fails its schema — holds its error, and the read of that secret raises it.
+ * A missing secret still fails loudly and still names itself; it just stops taking every other
+ * capability's secrets down with it. Reject only on something that is nobody's secret in particular.
  *
  * Nothing reads `ENVIRONMENT`. A `d1` secret cannot be shadowed by a plaintext binding anywhere, which
  * used to be true only of deployed workers.
@@ -301,6 +336,7 @@ export async function secretsStore<R extends SecretRegistry>(
   registry: R,
 ): Promise<SecretsAccessor<R>> {
   const resolved: Record<string, Resolved> = {};
+  const failures: Record<string, Error> = {};
   const bindings = env as unknown as Record<string, SecretBinding | string | undefined>;
 
   const d1Names: string[] = [];
@@ -315,25 +351,58 @@ export async function secretsStore<R extends SecretRegistry>(
   }
 
   if (d1Names.length > 0) {
-    const store = await SystemSecretsStore.fromEnv(env);
-    const values = await store.getValues(d1Names);
+    let values: Record<string, VersionedValue> = {};
+    let storeFailure: Error | undefined;
+    try {
+      values = await (await SystemSecretsStore.fromEnv(env)).getValues(d1Names);
+    } catch (error) {
+      // The store itself is unreachable — no `SECRETS` D1, or no master key. That is fatal for every
+      // `d1` secret and for none of the others, so it is held against each `d1` name rather than
+      // thrown: a `cf-secrets-store` secret in another capability is unaffected and still reads.
+      storeFailure = held(error);
+    }
     for (const name of d1Names) {
       const entry = registry[name];
-      const value = values[name];
       if (!entry) continue;
-      if (!value) throw unprovisioned(name, isBound(bindings, name));
-      resolved[name] = resolveVersioned(entry, name, value);
+      if (storeFailure) {
+        failures[name] = storeFailure;
+        continue;
+      }
+      const value = values[name];
+      try {
+        if (!value) throw unprovisioned(name, isBound(bindings, name));
+        resolved[name] = resolveVersioned(entry, name, value);
+      } catch (error) {
+        failures[name] = held(error);
+      }
     }
   }
 
   for (const name of cfNames) {
     const entry = registry[name];
     if (!entry) continue;
-    const raw = await resolveBinding(bindings[name], name);
-    resolved[name] = resolveInjected(entry, name, raw);
+    try {
+      resolved[name] = resolveInjected(entry, name, await resolveBinding(bindings[name], name));
+    } catch (error) {
+      failures[name] = held(error);
+    }
   }
 
-  return new SecretsAccessor(registry, resolved, d1KeyedSource(env));
+  return new SecretsAccessor(registry, resolved, d1KeyedSource(env), failures);
+}
+
+/**
+ * A caught value as the `Error` a later read will re-throw. Anything thrown by a resolver is already a
+ * `PithyError`; the wrap is for the impossible case, so a held failure is never a bare string that
+ * `throw` would surface without a code. The thrown value is kept as `cause` and never stringified into
+ * `detail` — `detail` reaches logs verbatim, and nothing here has proved what that value holds.
+ */
+function held(error: unknown): Error {
+  if (error instanceof Error) return error;
+  return new InternalError(
+    { message: "Secret resolution failed.", detail: "secret resolution threw a non-error value" },
+    { cause: error },
+  );
 }
 
 /**

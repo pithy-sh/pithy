@@ -78,8 +78,9 @@ describe("secrets capability compose hook", () => {
     });
     const env = {} as Parameters<typeof sharedSecretsStore>[0];
     await expect(sharedSecretsStore(env, undeclared)).rejects.toThrowError(/not in the aggregated registry/);
-    // Both the project secret and the email slice are members (membership guard passes; resolution then
-    // proceeds against the empty env, which is irrelevant to this assertion).
-    await expect(sharedSecretsStore(env, emailSlice)).rejects.not.toThrowError(/not in the aggregated registry/);
+    // Both the project secret and the email slice are members, so the guard passes and resolution
+    // proceeds — against an empty env, which no longer fails the resolution: an unresolvable secret
+    // holds its error for its own read (#170).
+    await expect(sharedSecretsStore(env, emailSlice)).resolves.toBeDefined();
   });
 });

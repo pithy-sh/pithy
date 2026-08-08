@@ -50,6 +50,16 @@ function devEnvWith(extra: Record<string, unknown> = {}): SecretsStoreEnv {
   } as unknown as SecretsStoreEnv;
 }
 
+/** The error a synchronous read threw, for assertions about its payload. Fails if it threw nothing. */
+function throwsFrom(read: () => unknown): unknown {
+  try {
+    read();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the read to throw");
+}
+
 function store(): SystemSecretsStore {
   return new SystemSecretsStore(createDatabase(env.SECRETS, secretsTables), config);
 }
@@ -158,12 +168,32 @@ describe("secretsStore — d1 backend", () => {
     });
   });
 
-  test("a declared d1 secret that was never written fails loudly", async () => {
+  test("a declared d1 secret that was never written fails loudly when it is read", async () => {
     const registry = defineSecretRegistry({
       missing: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
     });
 
-    await expect(secretsStore(envWith(), registry)).rejects.toBeInstanceOf(SecretNotFoundError);
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(() => secrets.get("missing")).toThrow(SecretNotFoundError);
+  });
+
+  test("an unwritten secret costs the secret beside it nothing (#170)", async () => {
+    // The defect: one unset secret in the combined registry took every capability's read down with it.
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+    const registry = defineSecretRegistry({
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+      "auth-google-credentials": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    expect(secrets.get("auth-session-secret")).toBe("seeded-session-key");
+    const error = throwsFrom(() => secrets.get("auth-google-credentials"));
+    expect(error).toBeInstanceOf(SecretNotFoundError);
+    const serialized = JSON.stringify((error as SecretNotFoundError).payload);
+    expect(serialized).toContain("auth-google-credentials");
+    expect(serialized).not.toContain("auth-session-secret");
   });
 });
 
@@ -202,9 +232,8 @@ describe("secretsStore — dev reads the seeded row, not a binding (#153)", () =
   test("no row but a binding of the same name names the secret and the fix", async () => {
     // The one shape an upgrade produces: a pre-#149 `.dev.vars` line, or a Workers-runtime test injecting
     // a `d1` value as a bare string. "not provisioned" would be a poor answer about a value sitting there.
-    const error = await secretsStore(devEnvWith({ "auth-session-secret": "REDACT_ME" }), registry).catch(
-      (e: unknown) => e,
-    );
+    const secrets = await secretsStore(devEnvWith({ "auth-session-secret": "REDACT_ME" }), registry);
+    const error = throwsFrom(() => secrets.get("auth-session-secret"));
 
     expect(error).toBeInstanceOf(ValidationError);
     const payload = (error as ValidationError).payload;
