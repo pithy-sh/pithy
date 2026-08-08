@@ -17,6 +17,8 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
+import { editDevSecrets } from "../devSecrets/edit";
+import { resolveDevSecretsFile } from "../devSecrets/location";
 import { loadProject, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
@@ -214,6 +216,42 @@ const ls = defineCommand({
     }),
 });
 
+/**
+ * `pithy secrets edit` — the local dev values, in the adopter's editor (#157).
+ *
+ * The odd one out in this file, and deliberately: every other subcommand here writes a **managed**
+ * secret through the manager Workflow, and this one touches nothing but the machine-local file at
+ * `<config>/<project>/secrets.jsonc`. They are siblings because they are the same question — "where does
+ * this value live" — asked about the two environments a project has.
+ *
+ * It resolves the path, opens it, validates what comes back, and writes it atomically at `0600`. It
+ * prints a path and a count, and never a name or a value: `secrets ls` is what lists names.
+ */
+const edit = defineCommand({
+  meta: { name: "edit", description: "Edit this machine's dev secret values in your editor" },
+  args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      // The one resolution of where the file is (`devSecrets/location.ts`). It requires a project name
+      // rather than guessing one: a guess would open one checkout's secrets from another's worktree.
+      const path = await resolveDevSecretsFile(process.cwd());
+      const result = await editDevSecrets({ path });
+
+      if (args.json) {
+        process.stdout.write(
+          `${formatJsonLine({ command: "secrets edit", path, changed: result.changed, secrets: result.secrets })}\n`,
+        );
+        return;
+      }
+      process.stdout.write(
+        result.changed
+          ? `${path} written. ${result.secrets} ${result.secrets === 1 ? "secret" : "secrets"}.\n`
+          : `${path} unchanged.\n`,
+      );
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
 const provision = defineCommand({
   meta: { name: "provision", description: "Provision the per-environment secrets infrastructure" },
   args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
@@ -281,5 +319,5 @@ const deprovision = defineCommand({
 
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rm, ls, provision, deprovision },
+  subCommands: { create, update, rm, ls, edit, provision, deprovision },
 });

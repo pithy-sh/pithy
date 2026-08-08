@@ -859,6 +859,16 @@ The file is keyed on your `pithy.config.ts` `name`, so two unrelated projects sh
 
 The committed `.dev.secrets.example.jsonc` stays in the repository. It is documentation: the envelope format, and where the real file is.
 
+**`pithy secrets edit` opens it.** Knowing the path is not the same as having a way to edit it, and "resolve it yourself and open it" is not a workflow. The command resolves the file, opens it in your editor, validates what comes back, and writes it atomically at `0600`.
+
+A symlink from the project would have done the first half and is the one thing that must not happen: a link puts the file back in the field of view of every tool that follows one — `tar`, backup software, a Docker build context, `npm pack`. It also cannot do the second half. A malformed `secrets.jsonc` breaks every later command, and catching it while you still remember what you typed is worth more than the convenience.
+
+- **The editor is `$VISUAL`, then `$EDITOR`, then `notepad` on Windows and `nano` (else `vi`) elsewhere.**
+- **An editor that opens a window and returns is refused by name, with the flag to add**: `code --wait`, `subl --wait`, `gvim -f`. Without it, the command would validate a file you have not touched yet and report success while you are still typing.
+- **A malformed edit is reported and handed straight back to you, with your text intact.** Nothing is written until it parses and validates, and nothing you typed is ever discarded — the value in front of you may be the only copy of it that exists. An edit that cannot be saved is kept in a file beside the real one, and the error names it.
+- **Without a terminal it refuses and prints the path**, rather than hanging on an editor nothing will close. That is CI, and it is the one place this command has nothing to offer.
+- **It prints a path and a count. Never a name, and never a value** — including when validation fails. `pithy secrets ls` is what lists names.
+
 A **`Dev secrets:`** block appears when something about this project's dev values is wrong. The block *is* the finding — a project whose values are where they belong prints no line saying so. It answers for two files that look alike and are not the same file at all:
 
 | | |

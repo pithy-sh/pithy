@@ -36,6 +36,16 @@ So these are accepted, not ignored. The bar they fail is relevance, not severity
 
 The rule separating a developer's symlink from a planted one is ownership: `symlink(2)` stamps the creating uid, and only root may `chown` it afterwards. Windows has nothing to compare, so `ensureOurs` returns early there and `adoptableModeOf` adopts from anyone. The mode ceiling still holds, and that is the half that stops a widening. The source says so at both sites.
 
+### An editor we have nothing to say about
+
+`resolveEditor` in `packages/cli/src/platform/editor.ts` refuses a **known** GUI editor given no wait flag — `code`, `subl`, `gvim` and the rest — and names the flag to add. There is no portable way to ask a program whether it will block, so an editor absent from that table is spawned and waited on, and one that returns immediately hands back a draft nobody has typed into yet.
+
+What that costs is bounded on purpose. An untouched draft is byte-identical to the file it was copied from, so the run reports `unchanged` and writes nothing; it never overwrites the edit still in progress in the window. The adopter's later save lands in the draft file beside the real one, which is where the text stays until they move it. `pithy secrets edit` is not the command that loses an edit.
+
+### Windows runs the editor through a shell
+
+`runEditor` in the same module spawns with `shell: true` on Windows. Every GUI editor there is a `.cmd` shim, and Node refuses to spawn one directly. The whole command line then becomes one string `cmd.exe /d /s /c` re-splits, so anything carrying a space is quoted here — a `"` cannot appear in a Windows path, so there is nothing left to escape. What reaches that shell unquoted is the adopter's own `$EDITOR`, which is what `$EDITOR` means on every other tool too. Not verified on a Windows host: the branch is covered by an injected spawn, which is what a POSIX CI can prove.
+
 ### The tripwires read source text
 
 `packages/cli/src/project/scaffold.test.ts` holds three rules that fail the build on a new producer: no writing module probes with something that follows a link, no module runs its own recursive delete, and every filesystem call on a path composed from an adopter's name goes through `ensureScaffoldPath`.

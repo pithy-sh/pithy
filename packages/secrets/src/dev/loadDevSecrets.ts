@@ -60,7 +60,13 @@ export function loadDevSecrets(source: string, options: LoadDevSecretsOptions = 
     // position is kept, because a line and a column are not a value.
     throw new ValidationError({
       message: `${path} is not valid JSONC.`,
-      action: "Fix the syntax and run pithy seed. Comments and trailing commas are fine; unquoted keys are not.",
+      // **No command named here.** It said "run pithy seed", and the seed is rarely what failed —
+      // `pithy dev`, `pithy add` and `pithy secrets edit` all read this file, and the last of those
+      // printed advice to run itself while the adopter was inside it (#157). This function does not
+      // know which command is running, so it says what is wrong and leaves the command to the caller.
+      // The path is in `message`, which is what an adopter actually needs: the file is outside the
+      // checkout (#156), so naming it is the difference between a fixable fault and a hunt.
+      action: "Fix the syntax and try again. Comments and trailing commas are fine; unquoted keys are not.",
       detail: `dev secrets file '${path}' failed to parse${position(cause)}`,
     });
   }
