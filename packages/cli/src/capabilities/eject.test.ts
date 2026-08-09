@@ -110,6 +110,35 @@ describe("ejectCapability", () => {
     });
   }
 
+  /**
+   * The package manifest that will not open, and the one that will not parse (#217).
+   *
+   * One `try` wrapped the read and the parse and answered both with *Reinstall <pkg>*. Reinstalling is
+   * right for a package that is absent or corrupt on disk; it is not what an operator does about a mode
+   * bit or a directory sitting where a file belongs, and `pithy eject` is a one-way door to be sure of.
+   */
+  test("a package.json that is a directory is not answered with 'reinstall'", async () => {
+    const manifest = join(dir, "node_modules", "@pithy-sh", "turnstile", "package.json");
+    await rm(manifest);
+    await mkdir(manifest);
+
+    await expect(eject()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/reinstall/i);
+      return true;
+    });
+  });
+
+  test("a package.json that is not JSON says so, and reinstalling is still the remedy", async () => {
+    const manifest = join(dir, "node_modules", "@pithy-sh", "turnstile", "package.json");
+    await writeFile(manifest, '{ "name": "x",, }');
+
+    await expect(eject()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.message).toMatch(/JSON/i);
+      expect(error.payload.action).toMatch(/reinstall/i);
+      return true;
+    });
+  });
+
   test("copies the package src tree into capabilities/<cap>/, preserving structure", async () => {
     const result = await eject();
     expect(await readFile(join(worker, "capabilities/turnstile/index.ts"), "utf8")).toContain("export { turnstile }");

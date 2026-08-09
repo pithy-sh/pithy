@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { capabilityLoadError } from "./loadFailure";
 
 /**
  * `@pithy-sh/testers` is an **optional** capability, so the CLI must not hard-depend on it. Types come
@@ -47,13 +47,6 @@ export async function loadTesters(): Promise<TestersModule> {
     ]);
     return { ...capability, ...tables, ...read, ...write, ...daily, ...view, ...config };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The testers capability is not installed.",
-        action: "Run `pithy add testers`, then re-run this command.",
-        detail: "@pithy-sh/testers could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("testers", "@pithy-sh/testers", error);
   }
 }

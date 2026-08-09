@@ -3,11 +3,12 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse, stringify } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
 import type { WorkerConfig } from "../project/config";
 import { alreadyProvided, execArgs, type PackageManager } from "../project/packageManager";
+import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { deriveWorkerFirst } from "./routeAllowlist";
@@ -220,16 +221,31 @@ export interface PackageChange {
  */
 export async function wirePackage(projectDir: string, workerDir: string, stub: UiStub): Promise<PackageChange> {
   const path = join(workerDir, "package.json");
-  let pkg: WorkerPackage;
+  // One `try` used to wrap the read and the parse and answer both with *pithy worker add creates one*
+  // (#217). That command refuses on a worker that already exists, so a `package.json` holding a stray
+  // comma sent the adopter to a door that was already shut — and an `EACCES` sent them there too. Three
+  // failures, three answers: absence is the only one `pithy worker add` addresses, `readOptionalFile`
+  // owns the errno that is not absence, and the parse gets its own. `requireRecord` closes the fourth:
+  // `[]` parses, and the merge below would have hung `dependencies` off an array and written it back.
+  const raw = await readOptionalFile(path);
+  if (raw === null) {
+    throw new NotFoundError({
+      message: `No package.json in ${workerDir}.`,
+      action: "Every worker under apps/ needs a package.json. pithy worker add creates one.",
+    });
+  }
+
+  let parsed: unknown;
   try {
-    pkg = JSON.parse(await readFile(path, "utf8")) as WorkerPackage;
+    parsed = JSON.parse(raw);
   } catch (cause) {
     throw new InternalError({
-      message: `Could not read ${path}.`,
-      action: "Every worker under apps/ needs a package.json. pithy worker add creates one.",
+      message: `${path} is not valid JSON.`,
+      action: "Fix that file's JSON, then run the command again.",
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
+  const pkg = requireRecord(path, parsed) as WorkerPackage;
 
   pkg.dependencies ??= {};
   pkg.devDependencies ??= {};
