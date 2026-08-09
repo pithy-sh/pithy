@@ -45,9 +45,47 @@ describe("startCommand", () => {
       hasWrangler: true,
       dev: { autostart: true, readySignal: "Ready on https?://" },
     };
-    expect(startCommand(worker, 8787, launch, "/p/.wrangler/state")).toEqual({
+    expect(startCommand(worker, 8787, launch, "/p/.wrangler/state", {})).toEqual({
       command: "bun",
       args: ["x", "wrangler", "dev", "--port", "8787", "--inspector-port", "0", "--persist-to", "/p/.wrangler/state"],
+    });
+  });
+
+  describe("forwarding CI into the Worker", () => {
+    const api: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
+
+    test("a wrangler worker gets CI as a var, because the host env does not cross into workerd", () => {
+      // `process.env` inside a Worker is that script's own vars and nothing else, so a capability that
+      // refuses to register under CI cannot otherwise see the `CI=true` the runner set out here.
+      const { args } = startCommand(api, 8787, launch, "/p/state", { CI: "true" });
+      expect(args.slice(-2)).toEqual(["--var", "CI:true"]);
+    });
+
+    test("the value travels verbatim — any non-blank one is CI at both ends", () => {
+      expect(startCommand(api, 8787, launch, "/p/state", { CI: "1" }).args.slice(-2)).toEqual(["--var", "CI:1"]);
+      expect(startCommand(api, 8787, launch, "/p/state", { CI: "buildkite" }).args.slice(-2)).toEqual([
+        "--var",
+        "CI:buildkite",
+      ]);
+    });
+
+    test("off CI nothing is forwarded — an ordinary run's Worker env is unchanged", () => {
+      expect(startCommand(api, 8787, launch, "/p/state", {}).args).not.toContain("--var");
+      expect(startCommand(api, 8787, launch, "/p/state", { CI: "" }).args).not.toContain("--var");
+      expect(startCommand(api, 8787, launch, "/p/state", { CI: "  " }).args).not.toContain("--var");
+    });
+
+    test("a dev.command worker gets no --var — it inherits the real environment already", () => {
+      const web: WorkerTarget = {
+        name: "web",
+        dir: "/p/apps/web",
+        hasWrangler: false,
+        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+      };
+      expect(startCommand(web, 5173, launch, "/p/state", { CI: "true" })).toEqual({
+        command: "vite",
+        args: ["--host"],
+      });
     });
   });
 
@@ -59,7 +97,7 @@ describe("startCommand", () => {
     const store = "/p/.wrangler/state";
 
     const persistArgs = (worker: WorkerTarget, port: number) => {
-      const { args } = startCommand(worker, port, launch, store);
+      const { args } = startCommand(worker, port, launch, store, {});
       return args.slice(args.indexOf("--persist-to"));
     };
 
@@ -74,7 +112,7 @@ describe("startCommand", () => {
       hasWrangler: false,
       dev: { autostart: true, readySignal: "ready in", command: ["vite", "--host"] },
     };
-    expect(startCommand(worker, 5173, launch, "/p/.wrangler/state")).toEqual({ command: "vite", args: ["--host"] });
+    expect(startCommand(worker, 5173, launch, "/p/.wrangler/state", {})).toEqual({ command: "vite", args: ["--host"] });
   });
 
   test("{port} in a dev.command is replaced with the pinned port", () => {
@@ -90,7 +128,7 @@ describe("startCommand", () => {
         command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"],
       },
     };
-    expect(startCommand(worker, 8790, launch, "/p/.wrangler/state")).toEqual({
+    expect(startCommand(worker, 8790, launch, "/p/.wrangler/state", {})).toEqual({
       command: "bun",
       args: ["x", "vite", "dev", "--strictPort", "--port", "8790"],
     });
@@ -107,7 +145,7 @@ describe("startCommand", () => {
         command: ["serve", "--port={port}", "--origin=http://localhost:{port}/{port}"],
       },
     };
-    expect(startCommand(worker, 5200, launch, "/p/.wrangler/state")).toEqual({
+    expect(startCommand(worker, 5200, launch, "/p/.wrangler/state", {})).toEqual({
       command: "serve",
       args: ["--port=5200", "--origin=http://localhost:5200/5200"],
     });
@@ -115,7 +153,7 @@ describe("startCommand", () => {
 
   test("the wrangler branch is untouched by the token — it never appears in a wrangler argv", () => {
     const worker: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
-    const { args } = startCommand(worker, 8787, launch, "/p/.wrangler/state");
+    const { args } = startCommand(worker, 8787, launch, "/p/.wrangler/state", {});
     expect(args).not.toContain("{port}");
     expect(args).toEqual([
       "x",

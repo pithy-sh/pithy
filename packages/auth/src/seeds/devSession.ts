@@ -62,6 +62,16 @@ const USERS_TABLE = "pithyAuthUsers";
  */
 export const DEV_SESSION_COOKIE_NAME = "better-auth.session_token";
 
+/**
+ * The prefix every seeded dev session's id and token carry.
+ *
+ * It is what makes a dev session **findable without being told**, which is what the dev-login route
+ * needs: the route reads the session out of D1 and has no artifact to consult (a Worker has no
+ * filesystem). And it is what makes one identifiable at all — a `pithy_auth_sessions` row minted by a
+ * seed is otherwise indistinguishable from one a real sign-in created.
+ */
+export const DEV_SESSION_TOKEN_PREFIX = "dev-session-";
+
 /** How long a seeded session lives. Long, because reseeding to restore a dev login is the friction this removes. */
 const DEV_SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -114,7 +124,7 @@ export interface MintedDevSession {
  * better-call 1.3.6 — the version Better Auth 1.6.19 resolves — and pinned by a round-trip test that makes
  * a real instance accept the result, which is the only check that actually matters.
  */
-async function signCookieValue(value: string, secret: string): Promise<string> {
+export async function signCookieValue(value: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -135,7 +145,7 @@ async function signCookieValue(value: string, secret: string): Promise<string> {
  * changes the token *and* invalidates every cookie signed with the old one, for free. A truncated digest,
  * never the secret: the token is written to a file and read back by tooling.
  */
-async function secretFingerprint(secret: string): Promise<string> {
+export async function secretFingerprint(secret: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return Array.from(new Uint8Array(digest).slice(0, FINGERPRINT_BYTES))
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -162,7 +172,7 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + DEV_SESSION_LIFETIME_MS);
   const fingerprint = await secretFingerprint(input.secret);
-  const token = `dev-session-${input.user.id}-${fingerprint}`;
+  const token = `${DEV_SESSION_TOKEN_PREFIX}${input.user.id}-${fingerprint}`;
 
   const session: Session = {
     id: token,

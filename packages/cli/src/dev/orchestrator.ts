@@ -5,6 +5,7 @@ import { execFile, spawn as spawnChild } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
@@ -25,9 +26,12 @@ import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { dim, workerColor } from "../terminal/style";
-import { devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
+import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
+import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
 import { buildWorkerEnv, startCommand, type WranglerLauncher } from "./env";
+import { type KeyReader, readKeys as readKeysDefault } from "./keys";
 import { type DataStream, teeStream } from "./logging";
+import { openUrl as openUrlDefault } from "./openUrl";
 import {
   isAlive as isAliveDefault,
   type Sleep,
@@ -102,6 +106,12 @@ export interface StartDevOptions {
   stdout?: (text: string) => void;
   /** Seam: the seeded dev login the ready banner offers, if `pithy seed` wrote one. */
   readDevLogin?: (projectDir: string) => Promise<DevLogin | undefined>;
+  /** Seam: which started workers carry the dev-login route (they compose auth). */
+  devLoginTargets?: (started: readonly { name: string; dir: string; origin: string }[]) => Promise<DevLoginTarget[]>;
+  /** Seam: the raw-mode key reader. Answers `active: false` on every non-TTY, and is never entered there. */
+  readKeys?: typeof readKeysDefault;
+  /** Seam: hand a URL to the platform's browser opener. */
+  openUrl?: (url: string) => Promise<void>;
   openLog?: (path: string) => LogSink;
   baseEnv?: NodeJS.ProcessEnv;
   now?: () => Date;
@@ -268,6 +278,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const hasSetsid = options.hasSetsid ?? process.platform !== "win32";
   const stdout = options.stdout ?? ((text: string) => void process.stdout.write(text));
   const readDevLogin = options.readDevLogin ?? readDevLoginDefault;
+  const resolveDevLoginTargets =
+    options.devLoginTargets ??
+    ((started: readonly { name: string; dir: string; origin: string }[]) => devLoginTargetsDefault({ started }));
+  const readKeys = options.readKeys ?? readKeysDefault;
+  const openUrl = options.openUrl ?? ((url: string) => openUrlDefault(url));
   const openLog = options.openLog ?? openLogDefault;
   const now = options.now ?? (() => new Date());
   const readState = options.readState ?? readDevState;
@@ -385,7 +400,18 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   log.write(
     `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
   );
-  const childEnv = buildWorkerEnv(config, options.baseEnv ?? process.env);
+  const baseEnv = options.baseEnv ?? process.env;
+  // The keypress follows the route. Under CI the auth capability registers none, so `l` would open a
+  // 404 — the read is the same one the capability makes, from the same module, and it is the only
+  // refusal the supervisor can see coming rather than discover.
+  const ci = isContinuousIntegration(baseEnv);
+  // Which running workers carry `GET /__pithy/dev-login` — the ones composing auth. Resolved only when
+  // there is a session to open, so a project with no dev login never loads a Worker config for this.
+  const devLoginWorkers: DevLoginTarget[] =
+    devLogin && !ci
+      ? await resolveDevLoginTargets(started.map((s) => ({ name: s.worker.name, dir: s.worker.dir, origin: s.origin })))
+      : [];
+  const childEnv = buildWorkerEnv(config, baseEnv);
   // One local store for the whole project. Each worker runs in its own apps/<name>/, where wrangler would
   // otherwise create a private `.wrangler/` — so two workers sharing a binding would not share the data.
   const persistTo = join(projectDir, ".wrangler", "state");
@@ -410,15 +436,54 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     if (bannerShown || [...readyState.values()].some((r) => !r)) return;
     bannerShown = true;
     if (!options.json) {
+      // Bindings go live with the banner, not before it: `l` opens a URL, and a URL that answers is a
+      // worker that has already matched its ready signal. `--json` gets none — its output is being read
+      // by a script, and a supervisor that entered raw mode for a machine would be holding a terminal
+      // nobody is at.
+      startKeys();
       emitLine("Ready.");
       for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
       // The banner is the discovery mechanism. A seeded session nobody finds has removed no friction, and
-      // the line below is the only place a developer reliably looks after `pithy dev`.
-      for (const line of devLoginLines(devLogin, now())) emitLine(line);
+      // the line below is the only place a developer reliably looks after `pithy dev`. It says that there
+      // is a session and how to reach it — never what the session *is*.
+      for (const line of devLoginLines(devLogin, now(), { interactive: keys.active, targets: devLoginWorkers, ci })) {
+        emitLine(line);
+      }
       emitLine(dim(`logs → ${logPath}`));
     }
     for (const s of started) log.write(`ready: ${s.worker.name} ${s.origin}`);
     resolveReady();
+  };
+
+  /**
+   * `l` — open a signed-in browser.
+   *
+   * The decision is {@link devLoginKeyAction}'s and is made without touching the terminal, so the only
+   * work here is saying it and handing the URL over. A failed open is reported and survived: `pithy dev`
+   * supervises workers, and no browser is a reason for a sentence, not for tearing a session down.
+   */
+  const openDevLogin = async (): Promise<void> => {
+    const action = devLoginKeyAction(devLogin, now(), devLoginWorkers, ci);
+    for (const line of action.lines) emitLine(line);
+    if (!action.url) return;
+    try {
+      await openUrl(action.url);
+    } catch (error) {
+      emitLine(messageOf(error));
+    }
+  };
+
+  // Scoped to `l`. A second binding is one more entry here — `r` to restart and `o` to open the app are
+  // the obvious neighbours — and neither is this issue.
+  let keys: KeyReader = { active: false, stop: () => {} };
+  const startKeys = () => {
+    keys = readKeys({
+      bindings: [{ key: "l", run: openDevLogin }],
+      // Raw mode takes the terminal's own Ctrl-C handling away, so the supervisor has to put it back.
+      // Without this line `pithy dev` becomes unstoppable from the keyboard.
+      onInterrupt: () => void shutdown("interrupted"),
+      onError: (error) => emitLine(messageOf(error)),
+    });
   };
 
   const signalChild = (pid: number | undefined, signal: NodeJS.Signals) => {
@@ -433,6 +498,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const shutdown = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // First, before anything can take time: give the terminal back. A session that died with the
+    // terminal in raw mode leaves a shell that echoes nothing.
+    keys.stop();
     emitLine(`Stopping — ${reason}.`);
     log.write(`stopping — ${reason}`);
     for (const { child } of children) signalChild(child.pid, "SIGTERM");
@@ -483,7 +551,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   for (const { worker, port } of started) {
     readyState.set(worker.name, false);
     readyRegex.set(worker.name, readyRegexFor(worker));
-    const { command, args } = startCommand(worker, port, launchWrangler, persistTo);
+    const { command, args } = startCommand(worker, port, launchWrangler, persistTo, baseEnv);
     const child = spawn(command, args, { cwd: worker.dir, env: childEnv, detached: hasSetsid });
     children.push({ name: worker.name, child });
 

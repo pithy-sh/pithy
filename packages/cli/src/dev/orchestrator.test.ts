@@ -114,6 +114,14 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
       unresolvable: [],
     }),
     loadDevConfig: async () => config,
+    // Stubbed for the same reason: which worker composes auth is read off a real `pithy.config.ts`, and
+    // `devLoginTargets.test.ts` owns that question. `api` is the wrangler worker in this fixture set.
+    devLoginTargets: async (started) =>
+      started.filter((s) => s.name === "api").map(({ name, origin }) => ({ name, origin })),
+    // No terminal by default: these cases drive the supervisor, not a keyboard. A case that wants keys
+    // overrides this with a reader that hands its bindings back.
+    readKeys: () => ({ active: false, stop: () => {} }),
+    openUrl: async () => {},
     tryBind: async () => true,
     sweep: async () => [],
     spawn,
@@ -360,6 +368,165 @@ async function signalReady(h: ReturnType<typeof harness>): Promise<void> {
   await flush();
 }
 
+/** The one value that must never reach a line — asserted directly rather than left to review. */
+const COOKIE_VALUE = "dev-session-example-ada-abcd.c2ln";
+
+/** What `pithy seed` wrote, as `readDevLogin` hands it over. */
+const seededLogin = async () => ({
+  email: "ada@example.com",
+  userId: "example-ada",
+  cookieName: "better-auth.session_token",
+  cookieValue: COOKIE_VALUE,
+  expiresAt: new Date("2027-07-27T00:00:00.000Z"),
+});
+
+/** A key reader that hands its bindings back, so a test can press a key without a terminal. */
+function pressable(): { readKeys: StartDevOptions["readKeys"]; press: (key: string) => Promise<void>; stops: number } {
+  const state = { bindings: [] as { key: string; run: () => void | Promise<void> }[], stops: 0 };
+  return {
+    readKeys: (options) => {
+      state.bindings = [...options.bindings];
+      return {
+        active: true,
+        stop: () => {
+          state.stops += 1;
+        },
+      };
+    },
+    press: async (key) => {
+      await state.bindings.find((binding) => binding.key === key)?.run();
+      await flush();
+    },
+    get stops() {
+      return state.stops;
+    },
+  };
+}
+
+describe("startDev — the l keypress", () => {
+  test("opens the worker that carries the route, and says what it opened", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogin: seededLogin,
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+
+    expect(opened).toEqual(["http://localhost:8787/__pithy/dev-login"]);
+    expect(h.stdoutLines).toContain("Opening http://localhost:8787/__pithy/dev-login as ada@example.com.");
+  });
+
+  test("names pithy seed rather than opening a URL that 404s", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogin: async () => undefined,
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+
+    expect(opened).toEqual([]);
+    expect(h.stdoutLines).toContain("No dev login is seeded. Run pithy seed, then press l again.");
+  });
+
+  test("a browser that will not open is a sentence, not a dead session", async () => {
+    const keys = pressable();
+    const h = harness({
+      readDevLogin: seededLogin,
+      readKeys: keys.readKeys,
+      openUrl: () => Promise.reject(new ValidationError({ message: "Could not open a browser." })),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+
+    expect(h.stdoutLines).toContain("Could not open a browser.");
+    // The supervisor is still up: no browser is not a reason to tear a dev session down.
+    expect(h.stdoutLines).not.toContain("Stopping — interrupted.");
+  });
+
+  test("gives the terminal back on shutdown, before anything that can take time", async () => {
+    const keys = pressable();
+    const h = harness({ readDevLogin: seededLogin, readKeys: keys.readKeys });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await handle.shutdown("interrupted");
+
+    expect(keys.stops).toBe(1);
+  });
+
+  test("Ctrl-C still stops the session — raw mode is what takes that away", async () => {
+    let interrupt: (() => void) | undefined;
+    const h = harness({
+      readDevLogin: seededLogin,
+      readKeys: (options) => {
+        interrupt = options.onInterrupt;
+        return { active: true, stop: () => {} };
+      },
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    interrupt?.();
+    await handle.closed;
+
+    expect(h.stdoutLines).toContain("Stopping — interrupted.");
+  });
+
+  test("under CI it offers nothing and opens nothing — the capability registers no route there", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogin: seededLogin,
+      baseEnv: { PATH: "/usr/bin", CI: "true" },
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(h.stdoutLines).toContain("Dev login: ada@example.com — the dev-login route is not registered under CI.");
+
+    await keys.press("l");
+    expect(opened).toEqual([]);
+    expect(h.stdoutLines).toContain("Not opening — the dev-login route is not registered under CI.");
+  });
+
+  test("--json enters no raw mode at all — its output is being read by a script", async () => {
+    let started = false;
+    const h = harness({
+      json: true,
+      readDevLogin: seededLogin,
+      readKeys: () => {
+        started = true;
+        return { active: true, stop: () => {} };
+      },
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(started).toBe(false);
+  });
+});
+
 describe("startDev — ready banner", () => {
   test("fires only once every started worker matches its ready signal", async () => {
     const h = harness();
@@ -385,21 +552,54 @@ describe("startDev — ready banner", () => {
   });
 
   test("offers the seeded dev login, so the banner is where signing in is discovered", async () => {
+    const h = harness({ readDevLogin: seededLogin });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    // No terminal in this harness, so the URL is what the banner can honestly offer.
+    expect(h.stdoutLines).toContain(
+      "Dev login: ada@example.com — open http://localhost:8787/__pithy/dev-login to sign in.",
+    );
+  });
+
+  test("the cookie reaches neither the terminal nor logs/dev.log", async () => {
+    // The reason this feature exists. `pithy dev`'s output is read, piped, tee'd and screenshotted, so a
+    // session token printed once is a session token at rest.
+    const h = harness({ readDevLogin: seededLogin });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    for (const line of [...h.stdoutLines, ...h.logLines]) {
+      expect(line).not.toContain(COOKIE_VALUE);
+      expect(line).not.toContain("better-auth.session_token");
+      expect(line).not.toContain("document.cookie");
+    }
+  });
+
+  test("offers the keypress where there is a terminal to press it on", async () => {
+    const h = harness({ readDevLogin: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(h.stdoutLines).toContain("Dev login: ada@example.com — press l to open a signed-in browser.");
+  });
+
+  test("says so rather than offering a keypress when no running worker composes auth", async () => {
     const h = harness({
-      readDevLogin: async () => ({
-        email: "ada@example.com",
-        userId: "example-ada",
-        cookieName: "better-auth.session_token",
-        cookieValue: "dev-session-example-ada-abcd.c2ln",
-        expiresAt: new Date("2027-07-27T00:00:00.000Z"),
-      }),
+      readDevLogin: seededLogin,
+      devLoginTargets: async () => [],
+      readKeys: () => ({ active: true, stop: () => {} }),
     });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
 
-    expect(h.stdoutLines).toContain("Dev login: ada@example.com. Paste into the browser console, then reload.");
-    expect(h.stdoutLines.some((line) => line.includes("better-auth.session_token="))).toBe(true);
+    expect(h.stdoutLines).toContain(
+      "Dev login: ada@example.com — no running worker composes auth, so there is nothing to open.",
+    );
   });
 
   test("says nothing about signing in when no seed wrote a login", async () => {

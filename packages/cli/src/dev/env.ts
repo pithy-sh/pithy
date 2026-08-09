@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { CI_ENV, isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
@@ -69,13 +70,46 @@ export function startCommand(
   port: number,
   launchWrangler: WranglerLauncher,
   persistTo: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
 ): StartCommand {
   const custom = worker.dev?.command;
   if (custom && custom.length > 0) {
     // A custom command is run verbatim: it is not necessarily wrangler, so no flag is appended. The only
-    // edit is `{port}` → the pinned port, in every element that carries it.
+    // edit is `{port}` → the pinned port, in every element that carries it. It also gets no `--var`: the
+    // process already inherits the real environment through `buildWorkerEnv`, which is exactly what the
+    // forwarding below exists to work around for workerd.
     const resolved = custom.map((part) => part.replaceAll(DEV_PORT_TOKEN, String(port)));
     return { command: resolved[0] as string, args: resolved.slice(1) };
   }
-  return launchWrangler(["dev", "--port", String(port), "--inspector-port", "0", "--persist-to", persistTo]);
+  return launchWrangler([
+    "dev",
+    "--port",
+    String(port),
+    "--inspector-port",
+    "0",
+    "--persist-to",
+    persistTo,
+    ...ciVarArgs(baseEnv),
+  ]);
+}
+
+/**
+ * Forward `CI` into the Worker as a var, when this process is running under one.
+ *
+ * **The host's environment does not cross into workerd.** With `nodejs_compat`, `process.env` inside a
+ * Worker is populated from that script's own `vars` and secrets and nothing else — verified against a
+ * real `wrangler dev`, where `Object.keys(process.env)` at module scope is exactly the declared vars. So
+ * a capability that refuses to register itself under CI (`@pithy-sh/auth`'s dev-login route is the first)
+ * cannot see the `CI=true` that GitHub Actions set in the shell that ran this command. One `--var` is
+ * what makes that read truthful for every Worker Pithy starts.
+ *
+ * Nothing is forwarded off CI, so an ordinary `pithy dev` writes no var and the Worker's `process.env` is
+ * byte-identical to what it was. And the forwarding is a convenience, never the security boundary: the
+ * capability's environment gate refuses in `staging` and `prod` with no cooperation from anything here.
+ */
+function ciVarArgs(env: NodeJS.ProcessEnv): string[] {
+  if (!isContinuousIntegration(env)) return [];
+  // The value travels verbatim rather than normalised to `true`: "any non-blank value" is the rule at
+  // both ends (#218), and rewriting it here would be this file inventing a second one.
+  return ["--var", `${CI_ENV}:${env[CI_ENV] ?? ""}`];
 }
