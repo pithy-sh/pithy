@@ -12,6 +12,7 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { createCliAudit } from "../audit/cliAudit";
+import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { cloudflareEnv } from "../cloudflare/config";
@@ -173,7 +174,16 @@ async function openTesters(requested: string) {
     });
   }
 
-  const driver = await openSeedDriver({ workerDir: worker.dir, persistRoot: projectDir, env });
+  // The account this project belongs to, before the driver resolves a credential. For any env but
+  // `dev` this driver is a REST client writing into a real D1 and a real R2, and `openSeedDriver`'s own
+  // doc comment calls this the guard against putting this project's rows in another company's tenant
+  // (#206). `buildProvisioner` below has named its account since then; this door had not.
+  const driver = await openSeedDriver({
+    workerDir: worker.dir,
+    persistRoot: projectDir,
+    env,
+    account: await projectCloudflareAccount(projectDir),
+  });
   const modules = await loadTesters();
   return {
     driver,
@@ -186,6 +196,47 @@ async function openTesters(requested: string) {
 }
 
 /**
+ * What a failed optional email import is classified *as*. The package half is what decides "ours or
+ * theirs"; the subpath is `detail` only.
+ */
+const EMAIL_MODULE = "@pithy-sh/email/src/capability";
+
+/**
+ * Run an optional `@pithy-sh/email` import, answering `undefined` **only** for a package that is
+ * genuinely absent (#230).
+ *
+ * Email really is optional to `pithy testers`: a project that composes none still advances the roster,
+ * records the day, and writes its snapshot — it just sends nothing, and both call sites say so. So
+ * `undefined` is a real answer and not a swallowed error.
+ *
+ * But it is one of four answers this import can give, and the other three mean the package is right
+ * there: a dependency of its own that does not resolve, an export map that does not, and source that
+ * will not parse. Two bare `catch { … undefined }` blocks answered all four the same way, and the run
+ * then reported `sends: false` and printed *"no email capability is configured in this project"* about
+ * a capability the adopter had installed. Nothing in the output was a lie the adopter could catch: the
+ * one fact that would have told them apart was in the caught error, discarded a frame later.
+ *
+ * That is `docs/CONVENTIONS.md` §Refusals — **a `catch` reachable by more than one underlying failure
+ * may not name a single specific remedy** — and {@link classifyCapabilityLoadFailure} is the function
+ * #217 left for it. Exported so it is tested as a pure function against both runtimes' cause shapes,
+ * per the same convention: the `bin` runs on Bun, whose resolver errors are not `instanceof Error`.
+ */
+export async function loadOptionalEmail<T>(load: () => Promise<T> | T): Promise<T | undefined> {
+  try {
+    return await load();
+  } catch (error) {
+    const failure = classifyCapabilityLoadFailure("email", EMAIL_MODULE, error);
+    // The only absence there is. Everything else is a fault, and a fault that reads as an absence is
+    // the defect this exists to remove.
+    if (failure.kind === "not-installed") return undefined;
+    throw new ValidationError(
+      { message: failure.message, action: failure.action, detail: failure.detail },
+      { cause: error },
+    );
+  }
+}
+
+/**
  * The email enqueue seam, built from the project's own email configuration.
  *
  * **The CLI needs no sending domain of its own.** `enqueueEmail` writes a row into `pithy_email_jobs`;
@@ -194,37 +245,39 @@ async function openTesters(requested: string) {
  * capability in `pithy.config.ts` — no secret, no deployed worker, and it works against any environment.
  *
  * Returns `undefined` when email is not composed, so the pass still advances state and records the day
- * rather than failing over a dependency this path can do without.
+ * rather than failing over a dependency this path can do without. **Not composed and not installed are
+ * the only two silences** — see {@link loadOptionalEmail} for why an installed-and-broken package is
+ * not a third.
  */
 async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>, d1: D1Database) {
-  try {
-    const { isEmailCapability } = await import("@pithy-sh/email/src/capability");
-    const { enqueueEmail } = await import("@pithy-sh/email/src/send/enqueue");
-    const { emailDatabase } = await import("@pithy-sh/email/src/data/tables");
+  const modules = await loadOptionalEmail(async () => ({
+    ...(await import("@pithy-sh/email/src/capability")),
+    ...(await import("@pithy-sh/email/src/send/enqueue")),
+    ...(await import("@pithy-sh/email/src/data/tables")),
+  }));
+  if (!modules) return undefined;
+  const { isEmailCapability, enqueueEmail, emailDatabase } = modules;
 
-    const email = projectCapabilities(workers).find(isEmailCapability);
-    if (!email) return undefined;
+  const email = projectCapabilities(workers).find(isEmailCapability);
+  if (!email) return undefined;
 
-    const config = email.emailConfig;
-    return async (input: { to: string; template: string; payload: unknown }) =>
-      enqueueEmail(
-        {
-          db: emailDatabase(d1),
-          fromAddress: config.fromAddress,
-          fromName: config.fromName,
-          // Already resolved on the capability — the preset and any overrides were merged at assembly.
-          theme: config.theme,
-          // No send-Workflow binding from a terminal, so the row stays `pending` and the email worker's
-          // every-minute scheduler picks it up. Slower by up to a minute, and it loses nothing.
-          sender: undefined,
-          now: new Date(),
-          newId: () => crypto.randomUUID(),
-        },
-        input,
-      );
-  } catch {
-    return undefined;
-  }
+  const config = email.emailConfig;
+  return async (input: { to: string; template: string; payload: unknown }) =>
+    enqueueEmail(
+      {
+        db: emailDatabase(d1),
+        fromAddress: config.fromAddress,
+        fromName: config.fromName,
+        // Already resolved on the capability — the preset and any overrides were merged at assembly.
+        theme: config.theme,
+        // No send-Workflow binding from a terminal, so the row stays `pending` and the email worker's
+        // every-minute scheduler picks it up. Slower by up to a minute, and it loses nothing.
+        sender: undefined,
+        now: new Date(),
+        newId: () => crypto.randomUUID(),
+      },
+      input,
+    );
 }
 
 /**
@@ -264,21 +317,18 @@ async function buildProvisioner(projectDir: string) {
 
   // Undefined when no email capability is composed. The pass then advances state and writes its
   // snapshot but sends nothing — a real state, and better than deploying a host that mails from a
-  // domain the adopter's DKIM does not cover.
-  let email: { fromAddress: string; fromName: string; theme: unknown } | undefined;
-  try {
-    const { isEmailCapability } = await import("@pithy-sh/email/src/capability");
-    const composed = capabilities.find(isEmailCapability);
-    if (composed) {
-      email = {
+  // domain the adopter's DKIM does not cover. Installed-and-broken is not that state, and refuses,
+  // through the same classifier as the enqueue seam: deploying a host that silently never mails is the
+  // other half of the same mistake.
+  const emailModule = await loadOptionalEmail(() => import("@pithy-sh/email/src/capability"));
+  const composed = emailModule && capabilities.find(emailModule.isEmailCapability);
+  const email: { fromAddress: string; fromName: string; theme: unknown } | undefined = composed
+    ? {
         fromAddress: composed.emailConfig.fromAddress,
         fromName: composed.emailConfig.fromName,
         theme: composed.emailConfig.theme,
-      };
-    }
-  } catch {
-    email = undefined;
-  }
+      }
+    : undefined;
 
   const cf = new CloudflareClients({ accountId, apiToken });
   return {

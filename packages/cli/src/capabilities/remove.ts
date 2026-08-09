@@ -7,6 +7,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { uninstallPackage } from "../project/packageManager";
 import { removeScaffoldPath } from "../project/scaffold";
@@ -301,6 +302,13 @@ export interface DefaultRemoveStepsOptions {
    * remove --drop` reversed another project's migrations on a shared D1 and exited 0.
    */
   project: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required (#234): `--drop --env staging` reverses migrations against a
+   * live database, and `dropCapabilityTables`'s account was optional and omitted here, so it reversed
+   * them in whichever account `<config>/cloudflare.json` happened to hold credentials for.
+   */
+  account: CloudflareAccountSelection | null;
 }
 
 /**
@@ -314,7 +322,14 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
   return {
     loadCapabilities: options.loadCapabilities,
     dropTables: (capability, env) =>
-      dropCapabilityTables({ capability, workerDir, persistRoot: projectDir, env, project: options.project }),
+      dropCapabilityTables({
+        capability,
+        workerDir,
+        persistRoot: projectDir,
+        env,
+        project: options.project,
+        account: options.account,
+      }),
     uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
     // Gated (#158). This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of
     // names — handed to a recursive delete. A symlink at any of them carried the delete onto whatever

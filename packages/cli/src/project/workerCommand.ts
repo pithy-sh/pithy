@@ -15,6 +15,7 @@ import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
 import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
+import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -77,8 +78,7 @@ async function resolveRoots(ctx: WorkerContext): Promise<{ mainRoot: string; inW
 }
 
 /** The outcome of {@link addWorker}: where it landed, its pinned port (when reconciled), and whether it was. */
-export interface AddWorkerReport {
-  name: string;
+export interface AddWorkerReport extends WorkerIdentity {
   dir: string;
   /** The port pinned for this worker, when run inside a feature worktree; null in a plain checkout. */
   port: number | null;
@@ -112,13 +112,21 @@ export interface AddWorkerOptions extends WorkerContext {
 async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<AddWorkerReport> {
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
   const { mainRoot, inWorktree } = await resolveRoots(options);
+  // One discovery, over the tree the scaffold has already landed in, and the source of both names below.
+  const workers = await discoverWorkers(options.projectDir);
+  const identity = await addedIdentity(workers, dir);
 
   let port: number | null = null;
   let reconciled = false;
   if (inWorktree) {
     const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
     const report = await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
-    port = report.dev.workers[options.name]?.port ?? null;
+    // **Keyed on `deployedAs`, because that is what the registry is keyed on.** `dev.workers` is built
+    // from `WorkerTarget.name` — `<project>-<worker>` for anything pithy scaffolded — and this looked the
+    // new Worker up by the `apps/<dir>` basename the adopter typed. Those cannot match, so inside a
+    // feature worktree the port came back `null` beside `reconciled: true`, and `worker add` then told
+    // the adopter to run `pithy feature sync` to assign the port it had just assigned. #229.
+    port = report.dev.workers[identity.deployedAs]?.port ?? null;
     reconciled = true;
   }
 
@@ -129,11 +137,27 @@ async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<
   // command that made it.
   const devVars = await generateDevVars({
     projectDir: options.projectDir,
-    workerDirs: (await discoverWorkers(options.projectDir)).map((worker) => worker.dir),
+    workerDirs: workers.map((worker) => worker.dir),
   });
 
   if (!options.skipInstall) await (options.install ?? defaultInstall)(options.projectDir);
-  return { name: options.name, dir, port, reconciled, devVarsRefused: devVars.refused };
+  return { ...identity, dir, port, reconciled, devVarsRefused: devVars.refused };
+}
+
+/**
+ * The new Worker's two names: the `apps/` directory, and the script name it will deploy under.
+ *
+ * Read off the discovered set, so the deployed name is the one every other command will see rather than
+ * one recomposed here from a naming rule — `scaffoldWorker` writes `<project>-<worker>`, but a Worker is
+ * free to be renamed afterwards and this must not be a second place that decides. Falling back to the
+ * Worker's own `wrangler.jsonc` covers the one case discovery can miss it (a caller that fixes the worker
+ * set), and to the directory basename when that file names nothing — which is discovery's own fallback.
+ */
+async function addedIdentity(workers: readonly WorkerTarget[], dir: string): Promise<WorkerIdentity> {
+  const target = workers.find((worker) => worker.dir === dir);
+  if (target) return workerIdentity(target);
+  const declared = ((await readWranglerConfig(dir).catch(() => ({}))) as { name?: string }).name;
+  return workerIdentity({ name: declared ?? basename(dir), dir });
 }
 
 /**
@@ -182,9 +206,8 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   }
 }
 
-/** One row of {@link listWorkers}: a worker's name, dir, whether it autostarts, and its pinned dev port. */
-export interface WorkerListing {
-  name: string;
+/** One row of {@link listWorkers}: a worker's two names, dir, whether it autostarts, and its pinned dev port. */
+export interface WorkerListing extends WorkerIdentity {
   dir: string;
   autostart: boolean;
   hasWrangler: boolean;
@@ -198,17 +221,17 @@ export async function listWorkers(options: WorkerContext): Promise<WorkerListing
   const workers = await discoverWorkers(options.projectDir);
   const config = await readDevConfig(devConfigPath(options.projectDir));
   return workers.map((worker) => ({
-    name: worker.name,
+    ...workerIdentity(worker),
     dir: worker.dir,
     autostart: worker.dev?.autostart ?? true,
     hasWrangler: worker.hasWrangler !== false,
+    // The registry's key is the deployed name, which is what `workerIdentity` reports as `deployedAs`.
     port: config?.workers[worker.name]?.port ?? null,
   }));
 }
 
 /** The outcome of {@link removeWorker}: what was deleted and whether the feature's ports were reconciled. */
-export interface RemoveWorkerReport {
-  name: string;
+export interface RemoveWorkerReport extends WorkerIdentity {
   dir: string;
   reconciled: boolean;
 }
@@ -248,11 +271,12 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
   await removeScaffoldPath(options.projectDir, target.dir);
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
-  if (!inWorktree) return { name: target.name, dir: target.dir, reconciled: false };
+  const identity = workerIdentity(target);
+  if (!inWorktree) return { ...identity, dir: target.dir, reconciled: false };
 
   const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
   await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
-  return { name: target.name, dir: target.dir, reconciled: true };
+  return { ...identity, dir: target.dir, reconciled: true };
 }
 
 /**
@@ -336,8 +360,15 @@ export const probeDeployedScripts: DeployedScriptProbe = async (scripts, account
   }
 };
 
-/** The outcome of {@link renameWorker}. */
-export interface RenameWorkerReport {
+/**
+ * The outcome of {@link renameWorker}.
+ *
+ * `worker` and `deployedAs` are the Worker **after** the move, so a caller reading the identity keys gets
+ * the same two facts here it gets from every other subcommand. `from`/`to`/`script` are what a rename adds
+ * on top of them: the transition. `deployedAs` therefore always names the script the Worker deploys under
+ * now, including when `script` is `null` because the adopter's own name was left alone.
+ */
+export interface RenameWorkerReport extends WorkerIdentity {
   from: string;
   to: string;
   /** Where the worker now lives — `apps/<to>`. */
@@ -490,6 +521,9 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
   const report: RenameWorkerReport = {
+    // Read off the config this run just wrote — the same fallback discovery uses when a `wrangler.jsonc`
+    // names no script — so the identity reported is the one `worker list` will report a moment later.
+    ...workerIdentity({ name: config.name ?? options.to, dir: to }),
     from,
     to: options.to,
     dir: to,

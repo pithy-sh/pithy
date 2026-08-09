@@ -50,8 +50,14 @@ export interface AddBootstrapOptions {
   /**
    * The Cloudflare account this project belongs to. One Secrets Store per account, so the store id
    * recorded here belongs to whichever account the project uses (#206).
+   *
+   * **Required, with `null` the explicit "this project names none" (#234).** It was `account?:` until
+   * then, and its one caller — `capabilities/flow.ts` — omitted it, so `pithy add secrets` wrote the
+   * default account's `SECRETS_STORE_ID` into whichever `cloudflare.<name>.json` the project had
+   * named. An omission and a deliberate `null` are the same bytes at a call site, which is why the
+   * compiler is the only reviewer that can tell them apart.
    */
-  account?: CloudflareAccountSelection | null;
+  account: CloudflareAccountSelection | null;
 }
 
 /**
@@ -81,7 +87,7 @@ export async function bootstrapAdd({
   // because the sentence it may print ("no credentials yet") is the same one that explains why the
   // provisioning notes below are the next step. Never fatal: see {@link ensureSecretsStoreId}.
   if (manifest.name === SECRETS_CAPABILITY) {
-    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)({ paths: { ...paths, account: account ?? null } })));
+    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)({ paths: { ...paths, account } })));
   }
   for (const binding of manifest.requiredBindings) {
     // Optional bindings are skipped for the same reason `validateBindings` skips them: nothing refuses

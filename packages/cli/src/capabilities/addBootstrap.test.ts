@@ -102,7 +102,7 @@ describe("bootstrapAdd", () => {
   });
 
   test("the key it mints lands in a throwaway directory, never the operator's own (#200)", async () => {
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     const configDir = process.env.PITHY_CONFIG_DIR;
     expect(configDir).toBeTruthy();
@@ -114,7 +114,7 @@ describe("bootstrapAdd", () => {
   });
 
   test("mints a dev master key — the one value an adopter cannot invent", async () => {
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     const config = await devMasterKey(dir);
     expect(config).toBeDefined();
@@ -133,8 +133,8 @@ describe("bootstrapAdd", () => {
     const other = await project();
     try {
       const manifest = await shippedManifest("secrets");
-      await bootstrapAdd({ projectDir: dir, manifest });
-      await bootstrapAdd({ projectDir: other, manifest });
+      await bootstrapAdd({ account: null, projectDir: dir, manifest });
+      await bootstrapAdd({ account: null, projectDir: other, manifest });
       expect(await devMasterKey(dir)).not.toEqual(await devMasterKey(other));
     } finally {
       await rm(other, { recursive: true, force: true });
@@ -143,10 +143,10 @@ describe("bootstrapAdd", () => {
 
   test("an existing key survives a re-run — replacing it orphans every secret already stored", async () => {
     const manifest = await shippedManifest("secrets");
-    await bootstrapAdd({ projectDir: dir, manifest });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest });
     const minted = await devMasterKey(dir);
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest });
 
     expect(await devMasterKey(dir)).toEqual(minted);
     expect(notes.join(" ")).toMatch(/already/i);
@@ -157,7 +157,7 @@ describe("bootstrapAdd", () => {
     // rewrites it, and #142's loss cannot recur through this path.
     const theirs = "# creds\nCLOUDFLARE_ACCOUNT_ID=abc\n";
     await writeFile(join(dir, ".dev.vars"), theirs);
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     expect(await readFile(join(dir, ".dev.vars"), "utf8")).toBe(theirs);
   });
@@ -172,7 +172,7 @@ describe("bootstrapAdd", () => {
     };
     await writeFile(join(dir, ".dev.vars"), `SECRETS_ENCRYPTION_KEYS=${JSON.stringify(existing)}\n`);
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     expect(await devMasterKey(dir)).toEqual(existing);
     expect(notes.join(" ")).toMatch(/Adopted/);
@@ -182,7 +182,7 @@ describe("bootstrapAdd", () => {
     const example = "CLOUDFLARE_ACCOUNT_ID=\nCLOUDFLARE_API_TOKEN=\n";
     await writeFile(join(dir, ".dev.vars.example"), example);
 
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     // The example is committed. A key in it is a key in the repository.
     expect(await readFile(join(dir, ".dev.vars.example"), "utf8")).toBe(example);
@@ -190,7 +190,7 @@ describe("bootstrapAdd", () => {
   });
 
   test("email says what EMAIL_SENDER needs, and fabricates nothing for it", async () => {
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("email") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("email") });
 
     expect(notes.join(" ")).toContain("EMAIL_SENDER");
     expect(notes.join(" ")).toContain("pithy email provision");
@@ -199,19 +199,23 @@ describe("bootstrapAdd", () => {
   });
 
   test("a capability whose bindings pithy add writes, and which declares no dev secret, has nothing to say", async () => {
-    expect(await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("audit") })).toEqual([]);
+    expect(await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("audit") })).toEqual(
+      [],
+    );
   });
 
   test("an optional binding says nothing — the fail-fast never asks for one", async () => {
     // payments declares `workflow:PAYMENTS_RECONCILE` optional; a note would send the adopter
     // provisioning a Workflow nothing in their app requires.
-    expect(await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("payments") })).toEqual([]);
+    expect(await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("payments") })).toEqual(
+      [],
+    );
   });
 
   test("mints the session secret auth reads lazily — nothing else names it before the first sign-in", async () => {
     // Auth's required bindings are its D1 and its rate limiter, so the Worker boots healthy without
     // this one and fails at the first sign-in with `secrets/not_found`. Minting it is the difference.
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
     const value = await devSecret(dir, "auth-session-secret");
     expect(typeof value).toBe("string");
@@ -227,7 +231,7 @@ describe("bootstrapAdd", () => {
     // The dual-write, deleted. `.dev.vars` carried a copy while dev resolved every secret from its
     // injected binding whatever its backend; dev reads the seeded row now, so a copy there would be a
     // second plaintext of the session key in wrangler's env-binding file, under a kebab name, unread.
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
     const value = await devSecret(dir, "auth-session-secret");
     expect(value).toBeDefined();
@@ -237,15 +241,15 @@ describe("bootstrapAdd", () => {
 
   test("re-running names the file rather than minting a second value", async () => {
     const manifest = await shippedManifest("auth");
-    await bootstrapAdd({ projectDir: dir, manifest });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest });
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest });
 
     expect(notes.join(" ")).toContain(`already in ${await secretsPath(dir)}`);
   });
 
   test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
     const envelope = (await readDevSecrets(await secretsPath(dir)))["auth-session-secret"];
     expect(envelope?.currentVersion).toBe("1");
@@ -253,12 +257,12 @@ describe("bootstrapAdd", () => {
   });
 
   test("the file it writes is 0600 — it will hold OAuth client secrets next to this one", async () => {
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
     expect((await stat(await secretsPath(dir))).mode & 0o777).toBe(0o600);
   });
 
   test("mints the email link-signing key beside the note about EMAIL_SENDER", async () => {
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("email") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("email") });
 
     const value = await devSecret(dir, "email-link-signing-key");
     expect(value).toBeDefined();
@@ -270,8 +274,8 @@ describe("bootstrapAdd", () => {
     const other = await project();
     try {
       const manifest = await shippedManifest("auth");
-      await bootstrapAdd({ projectDir: dir, manifest });
-      await bootstrapAdd({ projectDir: other, manifest });
+      await bootstrapAdd({ account: null, projectDir: dir, manifest });
+      await bootstrapAdd({ account: null, projectDir: other, manifest });
       expect(await devSecret(dir, "auth-session-secret")).not.toBe(await devSecret(other, "auth-session-secret"));
     } finally {
       await rm(other, { recursive: true, force: true });
@@ -280,10 +284,10 @@ describe("bootstrapAdd", () => {
 
   test("an existing dev secret survives a re-run — a new session secret signs nobody out politely", async () => {
     const manifest = await shippedManifest("auth");
-    await bootstrapAdd({ projectDir: dir, manifest });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest });
     const minted = await devSecret(dir, "auth-session-secret");
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest });
 
     expect(await devSecret(dir, "auth-session-secret")).toBe(minted);
     expect(notes.join(" ")).toMatch(/already/i);
@@ -296,7 +300,7 @@ describe("bootstrapAdd", () => {
     // So the value is minted, their file is not touched, and the stranded line is named.
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=already-mine\n");
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
     expect(parseDevVars(await readFile(join(dir, ".dev.vars"), "utf8"))["auth-session-secret"]).toBe("already-mine");
     expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
@@ -310,7 +314,7 @@ describe("bootstrapAdd", () => {
     await writeFile(join(dir, ".dev.vars.example"), example);
     await writeFile(join(dir, ".dev.secrets.example.jsonc"), "{}\n");
 
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
     expect(await readFile(join(dir, ".dev.vars.example"), "utf8")).toBe(example);
     expect(await readFile(join(dir, ".dev.secrets.example.jsonc"), "utf8")).toBe("{}\n");
@@ -320,7 +324,7 @@ describe("bootstrapAdd", () => {
   test("nothing is invented for a secret whose value must match a third party", async () => {
     // The four OAuth credential pairs are registered with a provider; payments' is a Stripe key. A
     // generated value for either is a value that authenticates against nothing, hiding the real gap.
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth") });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
     const file = await readDevSecrets(await secretsPath(dir));
     for (const name of ["google", "apple", "facebook", "github"]) {
       expect(file[`auth-${name}-credentials`]).toBeUndefined();
@@ -328,7 +332,9 @@ describe("bootstrapAdd", () => {
 
     const payments = await project();
     try {
-      expect(await bootstrapAdd({ projectDir: payments, manifest: await shippedManifest("payments") })).toEqual([]);
+      expect(
+        await bootstrapAdd({ account: null, projectDir: payments, manifest: await shippedManifest("payments") }),
+      ).toEqual([]);
       await expect(readFile(await secretsPath(payments), "utf8")).rejects.toThrow();
     } finally {
       await rm(payments, { recursive: true, force: true });
@@ -342,6 +348,7 @@ describe("bootstrapAdd", () => {
     const shared = "apps/board/.dev.vars was not generated by pithy, so nothing was written to it.";
 
     const notes = await bootstrapAdd({
+      account: null,
       projectDir: dir,
       manifest: await shippedManifest("auth"),
       seed: async () => ({
@@ -365,9 +372,9 @@ describe("bootstrapAdd", () => {
     const nameless = await mkdtemp(join(tmpdir(), "pithy-bootstrap-"));
     await writeFile(join(nameless, "pithy.config.ts"), "export default {};\n");
     try {
-      await expect(bootstrapAdd({ projectDir: nameless, manifest: await shippedManifest("auth") })).rejects.toThrow(
-        /name/,
-      );
+      await expect(
+        bootstrapAdd({ account: null, projectDir: nameless, manifest: await shippedManifest("auth") }),
+      ).rejects.toThrow(/name/);
     } finally {
       await rm(nameless, { recursive: true, force: true });
     }
@@ -376,12 +383,17 @@ describe("bootstrapAdd", () => {
   test("deleting the secret from the file mints a fresh one, whatever .dev.vars holds", async () => {
     // Deleting the entry is how you ask for a new value. A line left in `.dev.vars` used to suppress
     // every mint after the first one, silently and for good.
-    await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+    await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
     const first = await devSecret(dir, "auth-session-secret");
     await writeFile(join(dir, ".dev.vars"), "auth-session-secret=left-over\n");
     await rm(await secretsPath(dir));
 
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed });
+    const notes = await bootstrapAdd({
+      account: null,
+      projectDir: dir,
+      manifest: await shippedManifest("auth"),
+      seed: emptySeed,
+    });
 
     expect(notes.join("\n")).toContain("Minted a dev auth-session-secret");
     expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
@@ -397,7 +409,7 @@ describe("bootstrapAdd", () => {
     await chmod(path, 0o000);
     try {
       await expect(
-        bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed }),
+        bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth"), seed: emptySeed }),
       ).rejects.toThrow(/could not be read/);
 
       await chmod(path, 0o600);
@@ -418,7 +430,7 @@ describe("bootstrapAdd", () => {
 
     // The real seeder, because it is what regenerates now: the master key goes into `secrets.jsonc`
     // and the generation that materialises it into each Worker's file is the seeding run's (#179).
-    const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     expect(notes.join("\n")).toContain(join(dir, "apps", "board"));
     expect(notes.join("\n")).toMatch(/was not generated by pithy/);
@@ -430,7 +442,7 @@ describe("bootstrapAdd", () => {
     await writeFile(join(dir, "apps", "board", "wrangler.jsonc"), "{}\n");
     await chmod(join(dir, "apps", "board"), 0o500);
     try {
-      const notes = await bootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+      const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
       expect(notes.join("\n")).toContain("could not be written");
       expect(notes.join("\n")).toContain(join(dir, "apps", "board"));

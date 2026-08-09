@@ -9,7 +9,8 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { addWorker, type DeployedScriptProbe, listWorkers, removeWorker, renameWorker } from "./workerCommand";
-import type { WorkerTarget } from "./workers";
+import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
+import { discoverWorkers, type WorkerTarget } from "./workers";
 
 /** A discover-workers seam over the current apps/ dirs, so tests fix the set without real discovery. */
 function discover(root: string, names: string[]): () => Promise<WorkerTarget[]> {
@@ -17,6 +18,25 @@ function discover(root: string, names: string[]): () => Promise<WorkerTarget[]> 
     names.map((name) => ({
       name,
       dir: name === "app" ? root : join(root, "apps", name),
+      dev: { autostart: true, readySignal: "Ready on https?://" },
+      hasWrangler: true,
+    }));
+}
+
+/**
+ * The same seam, with the two names a scaffolded Worker actually has: `apps/<name>` on disk, and
+ * `<project>-<name>` in its `wrangler.jsonc` — which is what discovery reports as `WorkerTarget.name`
+ * and what every port registry, plan and listing keys on.
+ *
+ * `discover` above gives both the same string, and that is the fixture shape #136 is the story of: it
+ * makes indexing one by the other look correct. Every assertion about *which* name a report carries, or
+ * which name a map was keyed by, uses this one instead.
+ */
+function discoverDeployed(root: string, names: string[]): () => Promise<WorkerTarget[]> {
+  return async () =>
+    names.map((name) => ({
+      name: `acme-${name}`,
+      dir: join(root, "apps", name),
       dev: { autostart: true, readySignal: "Ready on https?://" },
       hasWrangler: true,
     }));
@@ -47,7 +67,8 @@ describe("addWorker", () => {
 
     expect(installed).toBe(true);
     expect(report).toEqual({
-      name: "web",
+      worker: "web",
+      deployedAs: "web",
       dir: join(dir, "apps", "web"),
       port: null,
       reconciled: false,
@@ -147,7 +168,8 @@ describe("addWorker", () => {
       discoverWorkers: discover(dir, ["app", "web"]),
     });
     expect(report).toEqual({
-      name: "web",
+      worker: "web",
+      deployedAs: "web",
       dir: join(dir, "apps", "web"),
       port: null,
       reconciled: false,
@@ -176,6 +198,36 @@ describe("addWorker", () => {
 
       const config = await readDevConfig(devConfigPath(worktree));
       expect(config?.workers.web?.port).toBe(report.port);
+    } finally {
+      await rm(mainRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("in a feature worktree: reports the port it pinned, keyed by the name the registry is keyed on", async () => {
+    // The port map is keyed on `WorkerTarget.name` — `acme-web` for a scaffolded Worker — and the lookup
+    // used the `apps/<dir>` basename the adopter typed. The two never match unless a fixture makes them,
+    // so `port` came back `null` beside `reconciled: true` and the human path then offered to assign a
+    // port that had just been assigned. This is the only place the path runs: inside a feature worktree.
+    const mainRoot = await mkdtemp(join(tmpdir(), "pithy-main-"));
+    const worktree = join(mainRoot, ".worktrees", "73-demo");
+    await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    try {
+      const report = await addWorker({
+        projectDir: worktree,
+        name: "web",
+        mainRoot,
+        branch: "feature/73-demo",
+        skipInstall: true,
+        discoverWorkers: discoverDeployed(worktree, ["app", "web"]),
+      });
+
+      expect(report.reconciled).toBe(true);
+      expect(report.port).not.toBeNull();
+
+      // And it is the port the feature actually wrote, under the key the feature actually used.
+      const config = await readDevConfig(devConfigPath(worktree));
+      expect(config?.workers["acme-web"]?.port).toBe(report.port);
     } finally {
       await rm(mainRoot, { recursive: true, force: true });
     }
@@ -268,25 +320,41 @@ describe("listWorkers", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("reports autostart state and pinned port from .dev.config.json", async () => {
+  test("reports both names, the autostart state, and the port the registry holds under the deployed name", async () => {
+    // The registry is keyed on the deployed name, so that is the key the fixture writes — and the listing
+    // has to find it under that key while reporting the directory the adopter acts on beside it.
     await writeFile(
       devConfigPath(dir),
       `${JSON.stringify({
         version: 1,
         branch: "feature/73-demo",
         ports: { index: 0, base: 8787, size: 10 },
-        workers: { app: { port: 8787, origin: "http://localhost:8787" } },
+        workers: { "acme-app": { port: 8787, origin: "http://localhost:8787" } },
       })}\n`,
     );
 
     const workers = await listWorkers({
       projectDir: dir,
-      discoverWorkers: discover(dir, ["app", "web"]),
+      discoverWorkers: discoverDeployed(dir, ["app", "web"]),
     });
 
     expect(workers).toEqual([
-      { name: "app", dir, autostart: true, hasWrangler: true, port: 8787 },
-      { name: "web", dir: join(dir, "apps", "web"), autostart: true, hasWrangler: true, port: null },
+      {
+        worker: "app",
+        deployedAs: "acme-app",
+        dir: join(dir, "apps", "app"),
+        autostart: true,
+        hasWrangler: true,
+        port: 8787,
+      },
+      {
+        worker: "web",
+        deployedAs: "acme-web",
+        dir: join(dir, "apps", "web"),
+        autostart: true,
+        hasWrangler: true,
+        port: null,
+      },
     ]);
   });
 });
@@ -311,7 +379,7 @@ describe("removeWorker", () => {
       discoverWorkers: discover(dir, ["app", "web"]),
     });
 
-    expect(report).toEqual({ name: "web", dir: join(dir, "apps", "web"), reconciled: false });
+    expect(report).toEqual({ worker: "web", deployedAs: "web", dir: join(dir, "apps", "web"), reconciled: false });
     await expect(stat(join(dir, "apps", "web"))).rejects.toThrow();
   });
 
@@ -331,7 +399,8 @@ describe("removeWorker", () => {
       discoverWorkers: discoverRenamed,
     });
 
-    expect(report).toEqual({ name: "my-service", dir: apiDir, reconciled: false });
+    // Addressed by the deployed name, reported under both: `worker` is the directory it lived in.
+    expect(report).toEqual({ worker: "api", deployedAs: "my-service", dir: apiDir, reconciled: false });
     await expect(stat(apiDir)).rejects.toThrow();
   });
 
@@ -411,6 +480,8 @@ describe("renameWorker", () => {
     });
 
     expect(report).toEqual({
+      worker: "board",
+      deployedAs: "acme-board",
       from: "api",
       to: "board",
       dir: join(dir, "apps", "board"),
@@ -701,6 +772,70 @@ describe("renameWorker", () => {
       expect(config?.workers.api).toBeUndefined();
     } finally {
       await rm(mainRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * **The assertion is agreement, because the defect was disagreement.**
+ *
+ * `worker sync` reported `worker`/`deployedAs` through `workerIdentity`; `add`, `list`, `remove` and
+ * `rename` reported `name`/`dir` — and `name` was the directory in `add` and the deployed script name in
+ * the other three. Nothing failed, because nothing compared two of them. A per-subcommand shape test would
+ * not have either: each was internally consistent and individually documented. So this walks one Worker
+ * through every subcommand and asserts they name it the same way, which is the only assertion the old
+ * shape could not have passed (#229, #144).
+ *
+ * Real discovery throughout — no worker-set stub. A stub is free to make the two names identical, and a
+ * fixture that did exactly that is the whole of #136.
+ */
+describe("the five worker subcommands report one identity", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-worker-identity-"));
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Just the identity keys, so the comparison is between the two names and nothing else. */
+  const identity = (report: WorkerIdentity): WorkerIdentity => ({
+    worker: report.worker,
+    deployedAs: report.deployedAs,
+  });
+
+  test("add, list, remove, rename and sync name the same Worker the same way", async () => {
+    const added = await addWorker({ projectDir: dir, name: "web", mainRoot: dir, skipInstall: true });
+    // The scaffold writes `<project>-<worker>`, so the two names differ from the first command onwards.
+    expect(identity(added)).toEqual({ worker: "web", deployedAs: "acme-web" });
+
+    const [listed] = await listWorkers({ projectDir: dir });
+    if (!listed) throw new Error("the Worker that was just added must be discoverable.");
+    expect(identity(listed)).toEqual(identity(added));
+
+    const renamed = await renameWorker({
+      projectDir: dir,
+      from: "web",
+      to: "board",
+      mainRoot: dir,
+      probeDeployed: async () => ({ live: [], checked: true }),
+    });
+    // `sync` emits `workerIdentity(target)` over the discovered Worker (commands/worker.ts), so the
+    // discovered Worker after the move is exactly what that subcommand would report.
+    const [target] = await discoverWorkers(dir);
+    if (!target) throw new Error("the renamed Worker must still be discoverable.");
+    expect(workerIdentity(target)).toEqual(identity(renamed));
+
+    const removed = await removeWorker({ projectDir: dir, name: "board", mainRoot: dir });
+    expect(identity(removed)).toEqual(identity(renamed));
+
+    // And the ambiguous field is gone from all four, rather than joined by two more. `name` meant the
+    // directory in one report and the deployed name in the others; a payload carrying both spellings
+    // would leave every consumer of the old one reading whichever half it was written against.
+    for (const report of [added, listed, renamed, removed]) {
+      expect(Object.keys(report)).toEqual(expect.arrayContaining(["worker", "deployedAs"]));
+      expect(report).not.toHaveProperty("name");
     }
   });
 });

@@ -100,6 +100,7 @@ describe("installAlias", () => {
     const out = captureStdout();
     await installAlias({ json: true });
     expect(JSON.parse(out.join("").trim())).toEqual({
+      command: "alias",
       action: "install",
       installed: true,
       alreadyInstalled: false,
@@ -183,5 +184,80 @@ describe("handleHiddenFlags", () => {
 
   test("returns false when no hidden flag is present", async () => {
     expect(await handleHiddenFlags(["alias", "--status"])).toBe(false);
+  });
+});
+
+/**
+ * **Every payload names the command, and every payload names its action.**
+ *
+ * `logManualInstructions` emitted `{ shell, manual, alias }` for both install and remove, so an agent
+ * keying on `action` — as every other alias payload lets it — read `undefined` on the one path where
+ * nothing was written to any file. That is the case it most needs to detect, and the one the payload
+ * would not say. `command` was missing from all five, alone in this CLI. #231.
+ */
+describe("the alias --json payloads", () => {
+  /** Every alias payload, by the path that produces it. */
+  async function payloads(): Promise<Record<string, Record<string, unknown>>> {
+    const emitted: Record<string, Record<string, unknown>> = {};
+    const read = (out: string[]): Record<string, unknown> => JSON.parse(out.join("").trim()) as Record<string, unknown>;
+
+    let out = captureStdout();
+    await installAlias({ json: true });
+    emitted.install = read(out);
+
+    out = captureStdout();
+    await installAlias({ json: true }); // the same command again: already installed
+    emitted.installAgain = read(out);
+
+    out = captureStdout();
+    await aliasStatus({ json: true });
+    emitted.status = read(out);
+
+    out = captureStdout();
+    await removeAlias({ json: true });
+    emitted.remove = read(out);
+
+    // The unknown shell: nothing is written, and there is no rc file to name.
+    process.env.SHELL = "/usr/bin/xonsh";
+    out = captureStdout();
+    await installAlias({ json: true });
+    emitted.manualInstall = read(out);
+
+    out = captureStdout();
+    await removeAlias({ json: true });
+    emitted.manualRemove = read(out);
+
+    out = captureStdout();
+    await aliasStatus({ json: true });
+    emitted.manualStatus = read(out);
+    return emitted;
+  }
+
+  test("carry `command` and `action`, on every path including the one that writes nothing", async () => {
+    const emitted = await payloads();
+    expect(Object.keys(emitted)).toHaveLength(7);
+    for (const [path, payload] of Object.entries(emitted)) {
+      expect({ path, command: payload.command }).toEqual({ path, command: "alias" });
+      expect({ path, action: payload.action }).toEqual({
+        path,
+        action: path.toLowerCase().includes("remove")
+          ? "remove"
+          : path.toLowerCase().includes("status")
+            ? "status"
+            : "install",
+      });
+    }
+  });
+
+  test("the unknown-shell payload says which action was refused, and that nothing was written", async () => {
+    const emitted = await payloads();
+    expect(emitted.manualInstall).toEqual({
+      command: "alias",
+      action: "install",
+      shell: null,
+      manual: true,
+      alias: ZSH_ALIAS,
+    });
+    expect(emitted.manualRemove).toMatchObject({ action: "remove", manual: true });
   });
 });

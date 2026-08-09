@@ -24,7 +24,7 @@ import {
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { isProductionEnv } from "../seed/safety";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -236,10 +236,14 @@ async function withRegistry<T>(
   options: { env: string; worker?: string },
   work: (registry: ConnectionRegistry) => Promise<T>,
 ): Promise<T> {
-  // Every subcommand opens the registry, so this is the one door the `--env` check belongs behind.
+  // Every subcommand opens the registry, so this is the one door the `--env` check belongs behind —
+  // and the one place the project's account is resolved for it (#234). A `--env staging` lookup opens
+  // the app database over REST, and it is this project's account that says which one that is.
+  const projectDir = process.cwd();
   const registry = await openConnectionRegistry({
-    projectDir: process.cwd(),
+    projectDir,
     env: requireEnvironment(options.env),
+    account: await projectCloudflareAccount(projectDir),
     ...(options.worker === undefined ? {} : { worker: options.worker }),
   });
   try {

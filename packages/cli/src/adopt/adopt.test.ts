@@ -312,6 +312,110 @@ describe("runAdopt", () => {
   });
 });
 
+/**
+ * A destination this plan could not be computed against (#222).
+ *
+ * The refusal existed and it arrived at the **write**, part-way through the entry loop, because `load`
+ * read `tokens.json` and `dev.json` leniently and planned every value against what it got. So a broken
+ * credential file was planned as *"the destination is empty"*, the adopter was shown that plan, some
+ * entries copied, and then it stopped.
+ *
+ * For this command that is worse than a late failure. Its whole contract is *show the plan, copy, then
+ * say what is safe to delete* — and a plan built against a file nothing could read may call a value safe
+ * to remove when the destination does not hold what the plan claimed. It refuses per key on a conflict
+ * precisely so the report can be trusted; reading leniently to build that report undercut it.
+ *
+ * So the planning read is the merge-base read, and a migration refuses where a migration should: before
+ * it has told anybody anything.
+ */
+describe("a destination the plan could not be computed against (#222)", () => {
+  /** Every source this fixture starts with, so a refusal can be held to changing none of them. */
+  async function sources(): Promise<Record<string, string>> {
+    await devVars({ CLOUDFLARE_ACCOUNT_ID: "acct-id", "auth-session-secret": "session-value" });
+    await writeFile(join(dir, ".dev.vars.production"), "CF_TOKEN_CI_SYSTEM=prod-token\n", { mode: 0o600 });
+    return {
+      [join(dir, ".dev.vars")]: await readFile(join(dir, ".dev.vars"), "utf8"),
+      [join(dir, ".dev.vars.production")]: await readFile(join(dir, ".dev.vars.production"), "utf8"),
+    };
+  }
+
+  /** Run it, and answer whether the plan was ever handed over. A refusal that planned first is the bug. */
+  async function refuses(): Promise<PithyError> {
+    let planned = false;
+    const thrown = (await adopt({
+      apply: true,
+      onPlan: () => {
+        planned = true;
+      },
+    }).catch((error: unknown) => error)) as PithyError;
+    expect(thrown, "the run did not refuse at all").toBeInstanceOf(PithyError);
+    expect(planned, "the plan was handed over before the refusal — it was built against a file nothing read").toBe(
+      false,
+    );
+    return thrown;
+  }
+
+  /** Nothing was written to any destination this run would have copied into. */
+  async function copiedNothing(): Promise<void> {
+    for (const path of [join(config, "cloudflare.json"), join(config, "replay", "secrets.jsonc")]) {
+      await expect(stat(path), path).rejects.toThrow();
+    }
+  }
+
+  test("a tokens.json that will not parse refuses before the plan, and copies nothing", async () => {
+    // The likelier hand edit by far: a stray brace after someone opened a credential file to look at it.
+    const held = `{ not json\n${JSON.stringify({ production: { CF_TOKEN_CI_SYSTEM: "live-token" } })}\n`;
+    const before = await sources();
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "replay", "tokens.json"), held, { mode: 0o600 });
+
+    const thrown = await refuses();
+
+    expect(thrown.payload.message).toContain(join(config, "replay", "tokens.json"));
+    await copiedNothing();
+    expect(await readFile(join(config, "replay", "tokens.json"), "utf8")).toBe(held);
+    for (const [path, text] of Object.entries(before)) expect(await readFile(path, "utf8"), path).toBe(text);
+  });
+
+  test("a dev.json that is not the document Pithy keeps there refuses the same way", async () => {
+    const held = `${JSON.stringify({ devLogin: { email: "me@example.com" }, vars: { K: 7 } }, null, 2)}\n`;
+    const before = await sources();
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "replay", "dev.json"), held, { mode: 0o600 });
+
+    const thrown = await refuses();
+
+    expect(thrown.payload.message).toContain(join(config, "replay", "dev.json"));
+    await copiedNothing();
+    expect(await readFile(join(config, "replay", "dev.json"), "utf8")).toBe(held);
+    for (const [path, text] of Object.entries(before)) expect(await readFile(path, "utf8"), path).toBe(text);
+  });
+
+  test("a dry run refuses too — the plan it would print is the thing that is wrong", async () => {
+    await sources();
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(join(config, "replay", "tokens.json"), "{ not json", { mode: 0o600 });
+    await expect(adopt()).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("and the refusal names the file without quoting a byte of it", async () => {
+    await sources();
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(config, "replay", "tokens.json"),
+      `{ "production": { "CF_TOKEN_CI_SYSTEM": "live-token-VALUE" }`,
+      { mode: 0o600 },
+    );
+
+    const thrown = await refuses();
+    const payload = thrown.payload;
+
+    // `message` may never quote the file — #219 drops `JSON.parse`'s own error for exactly this reason.
+    expect(payload.message).toContain(join(config, "replay", "tokens.json"));
+    expect(JSON.stringify(payload)).not.toContain("live-token-VALUE");
+  });
+});
+
 describe("renderAdoptText", () => {
   test("the dry run names the flag that performs it, and says nothing was written", async () => {
     await devVars({ CLOUDFLARE_ACCOUNT_ID: "acct" });

@@ -52,17 +52,20 @@ What `rename` does not touch is everything outside the Worker's own directory: t
 
 One line, one object, one shape per subcommand. The `command` field is the subcommand's dotted name, matching `feature.create` and `ui.add` rather than the space-separated form the resource commands use.
 
+**All five subcommands name the Worker the same way.** `worker` is the `apps/` directory — what the adopter typed, what `--worker` accepts, and what every path in the same payload is relative to. `deployedAs` is the script name from `wrangler.jsonc` — what the Cloudflare dashboard shows, and what `wrangler deploy` writes. They are two identities and not interchangeable; a Worker scaffolded as `web` in project `acme` is `web` and `acme-web` at once, and `pithy worker rename` can leave the two unrelated entirely. Read `worker` to act on a Worker, `deployedAs` to find it in an account.
+
 ```
 $ pithy worker add web --json
-{"command":"worker.add","name":"web","dir":"/repo/apps/web","port":null,"reconciled":false,"devVarsRefused":[],"domains":null}
+{"command":"worker.add","worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","port":null,"reconciled":false,"devVarsRefused":[],"domains":null}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.add"` | The subcommand that produced the line |
-| `name` | `string` | The Worker as named on the command line — the `apps/<name>` directory, not the deployed script name |
+| `worker` | `string` | The `apps/` directory the Worker was scaffolded at — the name given on the command line |
+| `deployedAs` | `string` | The script name it will deploy under, `<project>-<worker>` as scaffolded |
 | `dir` | `string` | The absolute directory the Worker was scaffolded at |
-| `port` | `number \| null` | The port pinned for this Worker, or `null` when none was. `pithy worker list` is the authoritative per-Worker port view |
+| `port` | `number \| null` | The port pinned for this Worker, or `null` when none was — which is what a plain checkout looks like, since there is no feature block to take one from. Inside a feature worktree it is the port the reconcile just assigned. `pithy worker list` is the authoritative per-Worker port view |
 | `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten. Only ever true inside a feature worktree |
 | `devVarsRefused` | `string[]` | One sentence per Worker whose `.dev.vars` this run did not generate — a file pithy did not write, or a directory it may not write into. This command regenerates every Worker it discovers, so a sibling that will not get its bindings is named here |
 | `domains` | `object \| null` | The `domains` declaration this run wrote, or `null` when none was. Always `null` under `--json`: the picker is interactive, and a headless run declares `domains` in `pithy.config.ts` directly |
@@ -73,14 +76,15 @@ $ pithy worker add web --json
 
 ```
 $ pithy worker list --json
-{"command":"worker.list","workers":[{"name":"acme-api","dir":"/repo/apps/api","autostart":true,"hasWrangler":true,"port":8787}]}
+{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"hasWrangler":true,"port":8787}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.list"` | The subcommand that produced the line |
 | `workers` | `object[]` | The discovered Workers, in discovery order |
-| `workers[].name` | `string` | The Worker's `wrangler.jsonc` `name` — the deployed script name — or the directory basename when the file declares none |
+| `workers[].worker` | `string` | The Worker's `apps/` directory |
+| `workers[].deployedAs` | `string` | The Worker's `wrangler.jsonc` `name` — the deployed script name — or the directory basename when the file declares none |
 | `workers[].dir` | `string` | The Worker's directory |
 | `workers[].autostart` | `boolean` | Whether `pithy dev` starts it. From the Worker's `pithy.worker.jsonc` `dev.autostart`, defaulting to `true` |
 | `workers[].hasWrangler` | `boolean` | Whether the directory holds a `wrangler.jsonc`. `false` means a non-Worker process in the dev set, which `pithy deploy` skips |
@@ -88,24 +92,31 @@ $ pithy worker list --json
 
 ```
 $ pithy worker remove web --json
-{"command":"worker.remove","name":"acme-web","dir":"/repo/apps/web","reconciled":true}
+{"command":"worker.remove","worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","reconciled":true}
 ```
+
+The name argument is matched against either identity, so both `pithy worker remove web` and `pithy worker remove acme-web` find the same Worker. The payload always reports both.
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.remove"` | The subcommand that produced the line |
-| `name` | `string` | The removed Worker as discovery named it — its `wrangler.jsonc` `name`, or the directory basename when it declares none |
+| `worker` | `string` | The removed Worker's `apps/` directory |
+| `deployedAs` | `string` | The script name it deployed under — its `wrangler.jsonc` `name`, or the directory basename when it declares none |
 | `dir` | `string` | The directory that was deleted |
 | `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten, returning the freed port to the block. Only ever true inside a feature worktree |
 
 ```
 $ pithy worker rename api board --json
-{"command":"worker.rename","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
+{"command":"worker.rename","worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
 ```
+
+`worker` and `deployedAs` describe the Worker **after** the move, so a caller reading the identity keys gets the same two facts here it gets from the other four subcommands. `from`, `to` and `script` are what a rename adds on top: the transition. `deployedAs` is therefore always the script name the Worker deploys under now — including when `script` is `null` because a name the adopter chose was left alone.
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.rename"` | The subcommand that produced the line |
+| `worker` | `string` | The Worker's `apps/` directory after the move. The same string as `to` |
+| `deployedAs` | `string` | The script name it deploys under after the move. The same string as `script.to`, and the unchanged declared name when `script` is `null` |
 | `from` | `string` | The `apps/` directory basename before the move |
 | `to` | `string` | The new name — the directory, the script's Worker segment, and the `WORKER` var |
 | `dir` | `string` | Where the Worker now lives: `apps/<to>` |
@@ -135,7 +146,7 @@ $ pithy worker sync --worker api --json
 | `runs[].crons` | `string[]` | The cron schedules that environment's `triggers` now carries |
 | `runs[].changed` | `boolean` | Whether anything moved. `false` on a re-run with nothing to change |
 
-`worker` and `deployedAs` are two identities and not interchangeable — `worker` is the directory the adopter typed and can act on, `deployedAs` is the string Cloudflare shows. That split holds across every command that reports both. Note that `add`, `list`, `remove`, and `rename` predate it and report `name`/`dir` instead; each table above says which of the two their `name` is.
+That split holds across every command that reports a Worker, `pithy add`, `pithy ui` and `pithy upgrade` included. It did not always: `add`, `list`, `remove` and `rename` reported a single `name`, and it was the *directory* in `add` and the *deployed script name* in the other three — one key, two meanings, with nothing in the payload saying which. The two coincide whenever a project and its Worker are named alike, which is what kept it hidden. `name` is gone from all four rather than redefined; a payload carrying both spellings would leave every consumer of the old one reading whichever half it happened to be written against.
 
 ## Errors
 
@@ -200,12 +211,21 @@ Ports are assigned when you run pithy feature create or sync.
 Done.
 ```
 
-See what the project has.
+The same command inside a feature worktree, where there is a port block to take a port from.
+
+```
+$ pithy worker add web
+Worker web scaffolded at /repo/.worktrees/73-media/apps/web.
+Pinned to port 8791.
+Done.
+```
+
+See what the project has. The deployed script name leads each row; the `apps/` directory follows it, because the two are free to differ and neither can be inferred from the other.
 
 ```
 $ pithy worker list
-acme-api  autostart  port 8787
-acme-web  autostart  port 8788
+acme-api  api  autostart  port 8787
+acme-web  web  autostart  port 8788
 ```
 
 Rename, when nothing is deployed under the old name.

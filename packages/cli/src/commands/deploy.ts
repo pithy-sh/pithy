@@ -20,10 +20,19 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * Deploy ships every Worker, so the count does too — it fans out over `apps/*` exactly as `pithy migrate`
  * would. The warning is about the project's schema being behind, and a table any Worker owns is one this
  * deploy's code may read.
+ *
+ * **Best-effort is not unattributed.** The count reaches a remote D1 for any `--env`, so it takes the
+ * same account the deploy beside it does. Omitting it resolved `<config>/cloudflare.json` while the
+ * deploy resolved the project's named account — one command, one run, two tenants, and a number about
+ * somebody else's schema printed as though it were this project's (#206, #226).
  */
-async function pendingFor(projectDir: string, env: string): Promise<number | undefined> {
+async function pendingFor(
+  projectDir: string,
+  env: string,
+  account: CloudflareAccountSelection | null,
+): Promise<number | undefined> {
   try {
-    return await countPendingMigrations({ projectDir, env });
+    return await countPendingMigrations({ projectDir, env, account });
   } catch {
     return undefined;
   }
@@ -75,7 +84,7 @@ export default defineCommand({
       // config and passed to every step below, rather than left to whatever a later load happens to
       // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
       const account = await projectCloudflareAccount(projectDir);
-      const pending = env ? await pendingFor(projectDir, env) : undefined;
+      const pending = env ? await pendingFor(projectDir, env, account) : undefined;
       const audit = await buildAudit(projectDir, env ?? "dev", account);
       const deploys = await deployProject({ projectDir, account, env, audit });
       // A deploy that shipped but is not the thing answering at the declared address is a failure too,

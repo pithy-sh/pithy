@@ -75,6 +75,7 @@ describe("applied rendering", () => {
   test("reports what was added and notes still-pending migrations when not migrated", () => {
     const applied: ReconcileApplied = {
       worker: "api",
+      deployedAs: "acme-api",
       perCapability: [
         { name: "auth", addedBindings: [{ env: "dev", name: "DB", type: "d1" }], addedConfigKeys: ["basePath"] },
       ],
@@ -92,6 +93,7 @@ describe("applied rendering", () => {
   test("reports a completed migration run instead of a pending note", () => {
     const applied: ReconcileApplied = {
       worker: "api",
+      deployedAs: "acme-api",
       perCapability: [],
       ejectedSkipped: [],
       migrated: true,
@@ -142,6 +144,7 @@ describe("worker grouping", () => {
   test("an applied run renders the applied lines, not the plan's", () => {
     const applied: ReconcileApplied = {
       worker: "api",
+      deployedAs: "acme-api",
       perCapability: [{ name: "auth", addedBindings: [], addedConfigKeys: ["basePath"] }],
       ejectedSkipped: [],
       migrated: false,
@@ -231,7 +234,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   const base = { env: "dev", dryRun: true, migrate: false, countPending: async () => 0 } as const;
 
   test("plans every worker, one entry each, in discovery order", async () => {
-    const { workers: results } = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
+    const { workers: results } = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
     expect(results.map((result) => result.plan.worker)).toEqual(["api", "collab"]);
     for (const { plan, applied } of results) {
       expect(applied).toBeNull(); // dry run writes nothing
@@ -241,6 +244,7 @@ describe("runUpgrade — fan-out over apps/", () => {
 
   test("--worker narrows the fan-out to one worker", async () => {
     const { workers: results } = await runUpgrade({
+      account: null,
       ...base,
       projectDir: dir,
       worker: "collab",
@@ -258,14 +262,14 @@ describe("runUpgrade — fan-out over apps/", () => {
       raw.replaceAll('"d1_databases": [],', '"d1_databases": [{ "binding": "DB" }],'),
     );
 
-    const { workers: results } = await runUpgrade({ ...base, projectDir: dir, resolveWorkers: resolve });
+    const { workers: results } = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
     const byWorker = new Map(results.map((result) => [result.plan.worker, result.plan]));
     expect(byWorker.get("api")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toEqual([]);
     expect(byWorker.get("collab")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
   });
 
   test("applying writes each worker's own wiring, and re-running finds nothing left", async () => {
-    const applyOptions = { ...base, dryRun: false, projectDir: dir, resolveWorkers: resolve };
+    const applyOptions = { ...base, account: null, dryRun: false, projectDir: dir, resolveWorkers: resolve };
     const applied = await runUpgrade(applyOptions);
     expect(applied.workers.map((result) => result.applied?.worker)).toEqual(["api", "collab"]);
 
@@ -278,6 +282,28 @@ describe("runUpgrade — fan-out over apps/", () => {
     for (const { applied: result } of second.workers) expect(result?.perCapability).toEqual([]);
   });
 
+  test("the applied entry carries the identity the plan does — a dry run and a real one are one array", async () => {
+    // `--json` reports `applied ?? plan` from the same `workers` array, so a key the plan carries and the
+    // apply drops is a payload that changes shape with a flag. A consumer that read `deployedAs` worked
+    // under `--dry-run` and got `undefined` on the run that wrote something. #231.
+    const { workers: results } = await runUpgrade({
+      account: null,
+      ...base,
+      dryRun: false,
+      projectDir: dir,
+      resolveWorkers: resolve,
+    });
+
+    expect(results).toHaveLength(2);
+    for (const { plan, applied } of results) {
+      expect(plan.deployedAs).not.toBe("");
+      expect({ worker: applied?.worker, deployedAs: applied?.deployedAs }).toEqual({
+        worker: plan.worker,
+        deployedAs: plan.deployedAs,
+      });
+    }
+  });
+
   test("never writes a capability another worker composes into a worker that does not (regression)", async () => {
     // auth is installed once at the project root and wired into api alone. collab composes nothing, so it
     // must plan nothing and keep its wrangler.jsonc byte-identical — foreign bindings on a script that never
@@ -285,6 +311,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     const before = await readFile(join(collabDir, "wrangler.jsonc"), "utf8");
 
     const { workers: results } = await runUpgrade({
+      account: null,
       ...base,
       dryRun: false,
       projectDir: dir,
@@ -306,7 +333,14 @@ describe("runUpgrade — fan-out over apps/", () => {
     // `<project>-<env>-<binding>`; if `upgrade` wired the same capability with a bare binding, whichever
     // command an adopter happened to run would decide whether their database carried the project segment
     // — and an unscoped name is the one a second Pithy project in the account silently adopts.
-    await runUpgrade({ ...base, dryRun: false, projectDir: dir, worker: "api", resolveWorkers: resolve });
+    await runUpgrade({
+      account: null,
+      ...base,
+      dryRun: false,
+      projectDir: dir,
+      worker: "api",
+      resolveWorkers: resolve,
+    });
 
     const wrangler = await readFile(join(apiDir, "wrangler.jsonc"), "utf8");
     expect(wrangler).toContain('"database_name": "upgrade-test-dev-db"');
@@ -315,7 +349,14 @@ describe("runUpgrade — fan-out over apps/", () => {
 
   test("--worker leaves the other worker's files untouched", async () => {
     const before = await readFile(join(collabDir, "wrangler.jsonc"), "utf8");
-    await runUpgrade({ ...base, dryRun: false, projectDir: dir, worker: "api", resolveWorkers: resolve });
+    await runUpgrade({
+      account: null,
+      ...base,
+      dryRun: false,
+      projectDir: dir,
+      worker: "api",
+      resolveWorkers: resolve,
+    });
     expect(await readFile(join(collabDir, "wrangler.jsonc"), "utf8")).toBe(before);
     expect(await readFile(join(apiDir, "wrangler.jsonc"), "utf8")).not.toBe(before);
   });
@@ -323,6 +364,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   test("--migrate runs migrations once per worker, scoped to that worker's directory", async () => {
     const seen: { worker: string; workerDir: string }[] = [];
     await runUpgrade({
+      account: null,
       ...base,
       dryRun: false,
       migrate: true,

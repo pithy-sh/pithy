@@ -22,9 +22,19 @@ export interface AliasOptions {
   json?: boolean;
 }
 
-/** Print one JSON line to stdout. */
-function emitJson(payload: Record<string, unknown>): void {
-  process.stdout.write(`${formatJsonLine(payload)}\n`);
+/** What an alias payload says was being attempted — the discriminant every one of them leads with. */
+type AliasAction = "install" | "remove" | "status";
+
+/**
+ * Print one JSON line to stdout, led by the two keys every payload in this CLI carries.
+ *
+ * `command` is here rather than at each call site because this command's payloads are the only ones that
+ * were written without it, and a helper is the one place that cannot be forgotten on the next path added.
+ * `action` is the discriminant: alias has no subcommands, so it is what tells `install` from `remove` from
+ * `status`, and a payload without it is a line a consumer cannot classify (#231).
+ */
+function emitJson(action: AliasAction, payload: Record<string, unknown>): void {
+  process.stdout.write(`${formatJsonLine({ command: "alias", action, ...payload })}\n`);
 }
 
 /** Print one human line (with trailing newline) to stdout. */
@@ -35,10 +45,15 @@ function emit(line: string): void {
 /**
  * The unknown-shell path: we never write to an rc file we don't recognize. Print the alias line and how
  * to add it by hand, then return cleanly (exit 0).
+ *
+ * **The action is a parameter because the payload has to name it.** Both `installAlias` and `removeAlias`
+ * end here, and the payload used to say only that a shell was not detected — so the one path where
+ * nothing was written to any file was the one path a consumer keying on `action` could not classify. It
+ * is the case that most needs detecting: the command exited 0 and changed nothing.
  */
-function logManualInstructions(opts: AliasOptions): void {
+function logManualInstructions(action: Extract<AliasAction, "install" | "remove">, opts: AliasOptions): void {
   if (opts.json) {
-    emitJson({ shell: null, manual: true, alias: DEFAULT_ALIAS });
+    emitJson(action, { shell: null, manual: true, alias: DEFAULT_ALIAS });
     return;
   }
   emit("Couldn't detect your shell.");
@@ -58,15 +73,14 @@ function alreadyInstalled(contents: string): boolean {
 export async function installAlias(opts: AliasOptions = {}): Promise<void> {
   const shell = await detectShell();
   if (!shell) {
-    logManualInstructions(opts);
+    logManualInstructions("install", opts);
     return;
   }
 
   const contents = await readRcFile(shell.rcPath);
   if (alreadyInstalled(contents)) {
     if (opts.json) {
-      emitJson({
-        action: "install",
+      emitJson("install", {
         installed: true,
         alreadyInstalled: true,
         shell: shell.kind,
@@ -83,8 +97,7 @@ export async function installAlias(opts: AliasOptions = {}): Promise<void> {
   await appendToRcFile(shell.rcPath, `\n${block}\n`);
 
   if (opts.json) {
-    emitJson({
-      action: "install",
+    emitJson("install", {
       installed: true,
       alreadyInstalled: false,
       shell: shell.kind,
@@ -101,13 +114,13 @@ export async function installAlias(opts: AliasOptions = {}): Promise<void> {
 export async function removeAlias(opts: AliasOptions = {}): Promise<void> {
   const shell = await detectShell();
   if (!shell) {
-    logManualInstructions(opts);
+    logManualInstructions("remove", opts);
     return;
   }
 
   const removed = await removeFromRcFile(shell.rcPath, MARKER_OPEN, MARKER_CLOSE);
   if (opts.json) {
-    emitJson({ action: "remove", removed, rcPath: shell.rcPath });
+    emitJson("remove", { removed, rcPath: shell.rcPath });
     return;
   }
   if (!removed) {
@@ -123,7 +136,7 @@ export async function aliasStatus(opts: AliasOptions = {}): Promise<void> {
   const shell = await detectShell();
   if (!shell) {
     if (opts.json) {
-      emitJson({ action: "status", installed: false, shell: null, rcPath: null });
+      emitJson("status", { installed: false, shell: null, rcPath: null });
       return;
     }
     emit("Unable to detect shell.");
@@ -133,7 +146,7 @@ export async function aliasStatus(opts: AliasOptions = {}): Promise<void> {
   const contents = await readRcFile(shell.rcPath);
   const installed = contents.includes(MARKER_OPEN);
   if (opts.json) {
-    emitJson({ action: "status", installed, shell: shell.kind, rcPath: shell.rcPath });
+    emitJson("status", { installed, shell: shell.kind, rcPath: shell.rcPath });
     return;
   }
   if (installed) emit(`Installed in ${shell.rcPath}`);

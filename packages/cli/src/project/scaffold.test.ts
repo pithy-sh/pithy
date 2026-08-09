@@ -912,6 +912,7 @@ describe("a symlinked apps/ in front of a delete", () => {
     // the config says was ejected. The steps are the real ones — this is the seam `pithy remove` uses.
     const workerDir = join(project, "apps", "board");
     const steps = defaultRemoveSteps({
+      account: null,
       projectDir: project,
       workerDir,
       loadCapabilities: async () => [],

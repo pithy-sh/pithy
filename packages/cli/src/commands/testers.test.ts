@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { CommandDef } from "citty";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import testers from "./testers";
+import testers, { loadOptionalEmail } from "./testers";
 
 /**
  * The project name is resolved at this command edge, and the provisioning subcommands lead every name
@@ -22,10 +23,15 @@ vi.mock("@pithy-sh/cloudflare/src/env/devVars", async (importOriginal) => ({
   loadCloudflareEnv: () => ({}),
 }));
 
+/** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
+const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
+
 // Only the root config is stubbed. `requireProjectName` stays real, so this exercises the actual refusal.
+// `projectCloudflareAccount` stands in for a config that names an account — the one source of a value.
 vi.mock("../project/config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/config")>()),
   loadProject: async () => root.config,
+  projectCloudflareAccount: async () => ACCOUNT,
 }));
 
 /** Every argument each read command handed `readCohort`, so the sixth can be inspected. */
@@ -62,10 +68,16 @@ vi.mock("../project/workerScope", async (importOriginal) => ({
   ],
 }));
 
+/** The options every `openSeedDriver` call was handed. */
+const opened = vi.hoisted(() => ({ calls: [] as unknown[] }));
+
 // No Miniflare, no D1. The read commands only pass the handle through to the stubbed reader.
 vi.mock("../seed/drivers", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../seed/drivers")>()),
-  openSeedDriver: async () => ({ d1: () => ({}), dispose: async () => {} }),
+  openSeedDriver: async (options: unknown) => {
+    opened.calls.push(options);
+    return { d1: () => ({}), dispose: async () => {} };
+  },
 }));
 
 function subcommand(name: string): CommandDef {
@@ -138,5 +150,111 @@ describe("the read commands hand readCohort a logger", () => {
     expect(roster.readCohortCalls).toHaveLength(1);
     const log = roster.readCohortCalls[0]?.[5] as Logger | undefined;
     expect(typeof log?.warn).toBe("function");
+  });
+});
+
+/**
+ * **An installed-but-broken `@pithy-sh/email` is not an absent one (#230).**
+ *
+ * Two sites here loaded the email capability inside a bare `catch { … undefined }` — the enqueue seam
+ * and the provisioner's sending identity. Both then reported `sends: false` and printed *"no email
+ * capability is configured in this project."* That sentence is true for exactly one of the four
+ * failures the catch admits, and wrong for the three that mean the package is right there: a
+ * dependency that does not resolve, an export map that does not, and source that will not parse.
+ *
+ * That is the class #217 closed one level down, and `classifyCapabilityLoadFailure` is the function it
+ * left behind (`docs/CONVENTIONS.md` §Refusals). Tested here as a pure function against real cause
+ * shapes, per the same convention: the runtime the suite reaches is not the runtime that ships, so a
+ * classifier reachable only through an integration path is tested for neither.
+ */
+describe("the optional email import classifies rather than asserts", () => {
+  /** Node's shape for a package that is not installed. */
+  const missingPackage = (specifier: string) =>
+    Object.assign(new Error(`Cannot find package '${specifier}' imported from /somewhere/testers.ts`), {
+      code: "ERR_MODULE_NOT_FOUND",
+    });
+
+  test("absent is the one thing that answers undefined", async () => {
+    expect(
+      await loadOptionalEmail(() => {
+        throw missingPackage("@pithy-sh/email");
+      }),
+    ).toBeUndefined();
+  });
+
+  test("a resolved load is passed straight through", async () => {
+    expect(await loadOptionalEmail(async () => ({ ok: true }))).toEqual({ ok: true });
+  });
+
+  // The #207 bug, one level up: the package is installed, something it imports is not, and `pithy add
+  // email` reinstalls what is already there.
+  test("installed with an unresolved dependency refuses, and does not claim absence", async () => {
+    const thrown = await loadOptionalEmail(() => {
+      throw missingPackage("some-transitive-dep");
+    }).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(ValidationError);
+    const { message, action } = (thrown as ValidationError).payload;
+    expect(message).not.toMatch(/not installed/i);
+    expect(action).toContain("some-transitive-dep");
+    expect(action).not.toMatch(/pithy add email/);
+  });
+
+  test("installed and unparseable refuses, naming the package rather than the remedy for absence", async () => {
+    const thrown = await loadOptionalEmail(() => {
+      throw new SyntaxError("Unexpected token '}'");
+    }).catch((error: unknown) => error);
+    expect((thrown as ValidationError).payload.message).toBe("The email capability is installed and will not load.");
+  });
+
+  test("installed with a bad export map refuses as incomplete, not as absent", async () => {
+    const thrown = await loadOptionalEmail(() => {
+      throw Object.assign(new Error('Subpath is not defined by "exports"'), {
+        code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+      });
+    }).catch((error: unknown) => error);
+    expect((thrown as ValidationError).payload.message).toBe("The email capability is installed but incomplete.");
+  });
+
+  // The `bin` ships on Bun, whose `ResolveMessage` is not `instanceof Error`. Vitest runs on Node, so a
+  // fixture built out of `Error` proves nothing about the runtime adopters use.
+  test("a Bun-shaped ResolveMessage for the package itself is still an absence", async () => {
+    expect(
+      await loadOptionalEmail(() => {
+        throw { name: "ResolveMessage", message: "Could not resolve", specifier: "@pithy-sh/email" };
+      }),
+    ).toBeUndefined();
+  });
+
+  test("a Bun-shaped ResolveMessage for a dependency is not", async () => {
+    const thrown = await loadOptionalEmail(() => {
+      throw { name: "ResolveMessage", message: "Could not resolve", specifier: "react-email" };
+    }).catch((error: unknown) => error);
+    expect((thrown as ValidationError).payload.action).toContain("react-email");
+  });
+});
+
+/**
+ * **A remote seed driver writes rows into a real D1 and objects into a real R2 (#226, #230).**
+ *
+ * `openSeedDriver`'s own doc comment calls its `account` the #206 guard against writing this project's
+ * fixtures into another company's tenant. It was optional, and the roster commands never passed it — so
+ * `pithy testers roster --env production` resolved `<config>/cloudflare.json` and reached whatever
+ * account that file happened to hold. `buildProvisioner` in this same file had named its account since
+ * #206; the door beside it had not.
+ */
+describe("the roster commands open the driver for the account the project names", () => {
+  beforeEach(() => {
+    opened.calls.length = 0;
+  });
+
+  test.each(["list", "roster", "status"])("%s", async (name) => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await subcommand(name).run?.({ args: { env: "dev", json: true, cohort: COHORT.name }, rawArgs: [] } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+    expect(opened.calls).toHaveLength(1);
+    expect((opened.calls[0] as { account?: unknown }).account).toEqual(ACCOUNT);
   });
 });

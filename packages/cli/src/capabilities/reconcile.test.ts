@@ -96,7 +96,13 @@ const authManifest = {
 describe("buildReconcilePlan — bindings", () => {
   test("reports a required binding missing from every environment", async () => {
     await writeManifest(dir, authManifest);
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
 
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth).toBeDefined();
@@ -121,7 +127,13 @@ describe("buildReconcilePlan — bindings", () => {
       raw.replace('"d1_databases": [],', '"d1_databases": [{ "binding": "DB" }],'),
     );
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingBindings).toEqual([
       { env: "staging", name: "DB", type: "d1" },
@@ -139,6 +151,7 @@ describe("buildReconcilePlan — bindings", () => {
       ],
     });
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "dev",
@@ -154,7 +167,13 @@ describe("buildReconcilePlan — bindings", () => {
 describe("buildReconcilePlan — per Worker", () => {
   test("names the Worker by its directory, and reports the deployed name separately", async () => {
     await writeManifest(dir, authManifest);
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     // No config to read, so both fall back to the directory.
     expect(plan).toMatchObject({ worker: "api", deployedAs: "api" });
 
@@ -162,6 +181,7 @@ describe("buildReconcilePlan — per Worker", () => {
     // accepts and every path is relative to — while the deployed name goes to its own field. This test
     // asserted the opposite before pithy-sh/pithy#144, against its own title.
     const named = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       worker: "reconcile-test-api",
@@ -186,8 +206,14 @@ describe("buildReconcilePlan — per Worker", () => {
       raw.replaceAll('"d1_databases": [],', '"d1_databases": [{ "binding": "DB" }],'),
     );
 
-    const api = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
-    const collab = await buildReconcilePlan({ projectDir: dir, workerDir: collabDir, env: "dev", capabilities: AUTH });
+    const api = await buildReconcilePlan({ account: null, projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const collab = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir: collabDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
 
     expect(api.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toEqual([]);
     expect(collab.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
@@ -201,8 +227,9 @@ describe("buildReconcilePlan — per Worker", () => {
     await writeManifest(dir, authManifest);
     const collabDir = await addWorker("collab");
 
-    const api = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const api = await buildReconcilePlan({ account: null, projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
     const collab = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir: collabDir,
       env: "dev",
@@ -224,6 +251,7 @@ describe("buildReconcilePlan — per Worker", () => {
     const before = await readFile(join(webDir, "wrangler.jsonc"), "utf8");
 
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir: webDir,
       env: "dev",
@@ -233,6 +261,7 @@ describe("buildReconcilePlan — per Worker", () => {
 
     // And applying that plan writes nothing — no binding, no `migrations` tag.
     await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir: webDir,
       plan,
@@ -247,6 +276,7 @@ describe("buildReconcilePlan — per Worker", () => {
     await writeManifest(dir, authManifest);
     const seen: { projectDir: string; workerDir: string; env: string }[] = [];
     await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "staging",
@@ -262,7 +292,13 @@ describe("buildReconcilePlan — per Worker", () => {
   test("a Worker with no wrangler.jsonc reports no binding drift rather than failing", async () => {
     await writeManifest(dir, authManifest);
     await rm(join(workerDir, "wrangler.jsonc"));
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     expect(plan.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toEqual([]);
   });
 });
@@ -278,6 +314,7 @@ describe("buildReconcilePlan — ejected", () => {
     );
 
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "dev",
@@ -295,6 +332,7 @@ describe("buildReconcilePlan — ejected", () => {
       `import { billing } from "./capabilities/billing";\nexport default { name: "reconcile-test" };\n`,
     );
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "dev",
@@ -310,7 +348,13 @@ describe("buildReconcilePlan — config keys", () => {
     await writeManifest(dir, authManifest);
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingConfigKeys.map((key) => key.key)).toEqual(["basePath", "sessionDays"]);
     expect(auth?.missingConfigKeys[0]).toEqual({
@@ -334,13 +378,27 @@ describe("buildReconcilePlan — config keys", () => {
     });
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingConfigKeys).toEqual([
       { key: "registry", default: {}, describe: "Your secrets. Declare each one here." },
     ]);
 
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toContain("registry: {},");
   });
 
@@ -351,7 +409,13 @@ describe("buildReconcilePlan — config keys", () => {
       configWith('    auth({\n      // Where the auth routes mount.\n      basePath: "/custom",\n    }),'),
     );
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingConfigKeys.map((key) => key.key)).toEqual(["sessionDays"]);
   });
@@ -361,6 +425,7 @@ describe("buildReconcilePlan — migrations and purity", () => {
   test("surfaces the pending-migration count for the env", async () => {
     await writeManifest(dir, authManifest);
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "staging",
@@ -379,7 +444,13 @@ describe("buildReconcilePlan — migrations and purity", () => {
       'app.get("/reports", requireEntitlement("pro"), (c) => c.json({}));\n',
       "utf8",
     );
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     expect(plan.entitlementGap).toEqual(["src/reports.ts"]);
   });
 
@@ -388,6 +459,7 @@ describe("buildReconcilePlan — migrations and purity", () => {
     await mkdir(join(workerDir, "src"), { recursive: true });
     await writeFile(join(workerDir, "src", "reports.ts"), 'requireEntitlement("pro");\n', "utf8");
     const plan = await buildReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       env: "dev",
@@ -402,7 +474,7 @@ describe("buildReconcilePlan — migrations and purity", () => {
     const configBefore = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     const wranglerBefore = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
 
-    await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    await buildReconcilePlan({ account: null, projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
 
     expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(configBefore);
     expect(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")).toBe(wranglerBefore);
@@ -418,6 +490,7 @@ interface WranglerBindings {
 /** A plan for `apps/api`, scoped to the capabilities that Worker composes (defaulting to auth). */
 async function planFor(env: string, ...names: string[]): Promise<ReconcilePlan> {
   return buildReconcilePlan({
+    account: null,
     projectDir: dir,
     workerDir,
     env,
@@ -430,6 +503,7 @@ describe("applyReconcilePlan — bindings", () => {
     await writeManifest(dir, authManifest);
     const plan = await planFor("dev");
     const applied = await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan,
@@ -453,6 +527,7 @@ describe("applyReconcilePlan — bindings", () => {
     const collabBefore = await readFile(join(collabDir, "wrangler.jsonc"), "utf8");
 
     await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan: await planFor("dev"),
@@ -472,7 +547,15 @@ describe("applyReconcilePlan — bindings", () => {
       requiredBindings: [{ type: "durable_object", name: "ROOMS", className: "MultiplayerSession" }],
     });
     const plan = await planFor("dev", "multiplayer");
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
 
     interface DoWrangler {
       durable_objects?: { bindings: { name: string; class_name: string }[] };
@@ -503,6 +586,7 @@ describe("applyReconcilePlan — proposed resource names", () => {
   test("proposes the same <project>-<env>-<binding> database name `pithy add` would", async () => {
     await writeManifest(dir, authManifest);
     await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan: await planFor("dev"),
@@ -526,6 +610,7 @@ describe("applyReconcilePlan — proposed resource names", () => {
   test("no project name proposes nothing — the entries carry only their binding", async () => {
     await writeManifest(dir, authManifest);
     await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan: await planFor("dev"),
@@ -542,6 +627,7 @@ describe("applyReconcilePlan — proposed resource names", () => {
     const stale = await planFor("dev");
     const apply = () =>
       applyReconcilePlan({
+        account: null,
         projectDir: dir,
         workerDir,
         plan: stale,
@@ -570,6 +656,7 @@ describe("applyReconcilePlan — config keys", () => {
 
     const plan = await planFor("dev");
     const applied = await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan,
@@ -599,7 +686,15 @@ describe("applyReconcilePlan — config keys", () => {
     );
 
     const plan = await planFor("dev");
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
 
     const config = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     expect(config).toContain('basePath: "/custom",'); // untouched
@@ -614,10 +709,26 @@ describe("applyReconcilePlan — config keys", () => {
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
 
     const plan = await planFor("dev");
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     const once = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     // Re-applying the same (now stale) plan must change nothing.
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(once);
     expect(once.match(/sessionDays:/g)).toHaveLength(1);
   });
@@ -627,6 +738,7 @@ describe("applyReconcilePlan — config keys", () => {
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
 
     await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan: await planFor("dev"),
@@ -658,6 +770,7 @@ describe("applyReconcilePlan — migrations", () => {
     const { calls, runMigrate } = recorder();
 
     const notMigrated = await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan,
@@ -671,6 +784,7 @@ describe("applyReconcilePlan — migrations", () => {
     expect(notMigrated.migrated).toBe(false);
 
     const migrated = await applyReconcilePlan({
+      account: null,
       projectDir: dir,
       workerDir,
       plan,
@@ -695,7 +809,16 @@ describe("applyReconcilePlan — migrations", () => {
     // Reconciling wiring without a project name is fine — the entries just carry their binding. Writing
     // to a database is not: an unstamped database is one any other project can later claim.
     await expect(
-      applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: true, env: "dev", capabilities: [], runMigrate }),
+      applyReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir,
+        plan,
+        migrate: true,
+        env: "dev",
+        capabilities: [],
+        runMigrate,
+      }),
     ).rejects.toThrow(/project name/i);
 
     expect(calls).toHaveLength(0);
@@ -716,8 +839,22 @@ describe("applyReconcilePlan — config-key insertion edge cases (regression)", 
     await writeManifest(dir, debugManifest);
     await writeFile(join(workerDir, "pithy.config.ts"), configWith('    auth({ basePath: "/auth" }),'));
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
 
     const src = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     // The separating comma is present — the prior property is not run into the new key (valid TS).
@@ -725,8 +862,22 @@ describe("applyReconcilePlan — config-key insertion edge cases (regression)", 
     expect(src).not.toMatch(/"\/auth"\s+debug/); // no missing-comma corruption
 
     // Re-apply is a no-op: the key is not duplicated.
-    const plan2 = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan: plan2, migrate: false, env: "dev", capabilities: [] });
+    const plan2 = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan: plan2,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     const src2 = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     expect(src2).toBe(src);
     expect((src2.match(/debug:/g) ?? []).length).toBe(1);
@@ -736,7 +887,13 @@ describe("applyReconcilePlan — config-key insertion edge cases (regression)", 
     await writeManifest(dir, debugManifest);
     await writeFile(join(workerDir, "pithy.config.ts"), configWith('    auth({\n      "debug": true,\n    }),'));
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingConfigKeys).toHaveLength(0);
   });
@@ -748,11 +905,25 @@ describe("applyReconcilePlan — config-key insertion edge cases (regression)", 
       configWith('    auth({\n      /* note with a } brace and a ) paren */\n      basePath: "/x",\n    }),'),
     );
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: AUTH });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
     const auth = plan.perCapability.find((cap) => cap.name === "auth");
     expect(auth?.missingConfigKeys.map((k) => k.key)).toEqual(["debug"]);
 
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     const src = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     expect(src).toContain('basePath: "/x"');
     expect(src).toContain("debug: false,");
@@ -799,8 +970,22 @@ describe("pithy add and pithy upgrade render one default one way", () => {
 
     // `pithy upgrade` splices the same options into a one-liner registration in the other Worker.
     await writeFile(join(workerDir, "pithy.config.ts"), configWith("    ledger(),"));
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("ledger") });
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("ledger"),
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     const upgraded = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
 
     for (const key of ["currencies", "adminScope"]) {
@@ -815,8 +1000,22 @@ describe("pithy add and pithy upgrade render one default one way", () => {
     await writeManifest(dir, ledgerManifest);
     await writeFile(join(workerDir, "pithy.config.ts"), configWith('    ledger({ adminScope: "ops:admin" }),'));
 
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("ledger") });
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("ledger"),
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
 
     const src = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
     expect(src).toContain('currencies: [{ code: "chips", name: "Chips" }],');
@@ -1110,8 +1309,22 @@ describe("a manifest cannot state a name or a package the config file cannot car
     );
 
     const before = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
-    const plan = await buildReconcilePlan({ projectDir: dir, workerDir, env: "dev", capabilities: composes("audit") });
-    await applyReconcilePlan({ projectDir: dir, workerDir, plan, migrate: false, env: "dev", capabilities: [] });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("audit"),
+    });
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    });
     expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(before);
   });
 });

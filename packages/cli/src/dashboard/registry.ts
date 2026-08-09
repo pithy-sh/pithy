@@ -11,6 +11,7 @@ import {
 } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { discoverWorkers } from "../project/workers";
 import { openSeedDriver, type SeedDriver } from "../seed/drivers";
 
@@ -137,8 +138,20 @@ export function connectionRegistry(
   };
 }
 
-/** Test seam: open the backend driver for a Worker and environment. */
-export type OpenDriver = (options: { workerDir: string; persistRoot: string; env: string }) => Promise<SeedDriver>;
+/**
+ * Test seam: open the backend driver for a Worker and environment.
+ *
+ * **It carries the account (#234).** The seam is shaped by what {@link openSeedDriver} needs, and that
+ * function's `account` was optional until then — so this type could not name one, so `openConnectionRegistry`
+ * could not pass one even once it wanted to. A registry lookup on a non-`dev` environment opens a real D1
+ * over REST, and it was opening it against whichever account `<config>/cloudflare.json` held.
+ */
+export type OpenDriver = (options: {
+  workerDir: string;
+  persistRoot: string;
+  env: string;
+  account: CloudflareAccountSelection | null;
+}) => Promise<SeedDriver>;
 
 /** Options for {@link openConnectionRegistry}. */
 export interface OpenConnectionRegistryOptions {
@@ -146,6 +159,12 @@ export interface OpenConnectionRegistryOptions {
   projectDir: string;
   /** The environment whose registration is being read or written. */
   env: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required (#234): every non-`dev` environment resolves the app database
+   * over REST, and the credentials that reads it with belong to exactly one account.
+   */
+  account: CloudflareAccountSelection | null;
   /** Narrow the database lookup to one Worker (`--worker`). Optional; the first with a `DB` wins. */
   worker?: string;
   /** Driver seam (default: {@link openSeedDriver}), so a test needs no Miniflare of the CLI's making. */
@@ -178,7 +197,12 @@ export async function openConnectionRegistry(options: OpenConnectionRegistryOpti
 
   const refusals: string[] = [];
   for (const candidate of candidates) {
-    const driver = await open({ workerDir: candidate.dir, persistRoot: options.projectDir, env: options.env });
+    const driver = await open({
+      workerDir: candidate.dir,
+      persistRoot: options.projectDir,
+      env: options.env,
+      account: options.account,
+    });
     try {
       const d1 = driver.d1("DB");
       return connectionRegistry(controlPlaneDatabase(d1), options.env, () => driver.dispose());

@@ -12,7 +12,8 @@ import {
   type ReconcilePlan,
   type RunMigrate,
 } from "../capabilities/reconcile";
-import { loadProject, requireProjectName } from "../project/config";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -43,6 +44,12 @@ export interface UpgradeRunOptions {
   projectDir: string;
   /** The environment the pending-migration count (and any `--migrate` run) targets. */
   env: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required (#234): `--migrate --env staging` applies migrations to a live
+   * schema, which is the write this must never make under credentials the project did not claim.
+   */
+  account: CloudflareAccountSelection | null;
   /** Narrow the fan-out to one Worker, by name or `apps/<dir>` basename. */
   worker?: string;
   /** Build the plans without applying them. */
@@ -119,6 +126,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
       workerDir: worker.dir,
       worker: worker.name,
       env: options.env,
+      account: options.account,
       capabilities: worker.capabilities,
       ...(options.countPending ? { countPending: options.countPending } : {}),
     });
@@ -132,6 +140,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
       plan,
       migrate: options.migrate,
       env: options.env,
+      account: options.account,
       ...(project === undefined ? {} : { project }),
       capabilities: worker.capabilities,
       ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
@@ -240,9 +249,11 @@ export default defineCommand({
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
       const dryRun = args["dry-run"];
+      const projectDir = process.cwd();
       const run = await runUpgrade({
-        projectDir: process.cwd(),
+        projectDir,
         env,
+        account: await projectCloudflareAccount(projectDir),
         ...(args.worker ? { worker: args.worker } : {}),
         dryRun,
         migrate: args.migrate,

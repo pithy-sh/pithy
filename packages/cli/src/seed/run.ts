@@ -17,6 +17,7 @@ import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import {
   previewReset,
   type ResetPreviewEntry,
@@ -70,6 +71,17 @@ export interface SeedProjectOptions {
    * shares. A run that cannot name its project must not upload.
    */
   project: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)` — or
+   * `null` when the project names none.
+   *
+   * **This seam carried no account at all until #234**, which is why `seed/run.ts` could not pass one
+   * to `openSeedDriver` even after that parameter existed: there was nothing to pass. A non-`dev` seed
+   * writes rows into a real D1 and objects into a real R2, and Images/Stream have no local emulation at
+   * all, so even a `dev` seed with a media fixture reaches an account. Which account that is was, until
+   * now, whatever `<config>/cloudflare.json` happened to hold.
+   */
+  account: CloudflareAccountSelection | null;
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
   /**
@@ -494,6 +506,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
   const resetScope = {
     projectDir: options.projectDir,
     project: options.project,
+    account: options.account,
     env: options.env,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     ...(options.workers !== undefined ? { workers: options.workers } : {}),
@@ -652,6 +665,7 @@ async function writeWorker(
     workerDir: entry.worker.dir,
     persistRoot: options.projectDir,
     env: options.env,
+    account: options.account,
     remoteD1: options.remoteD1,
     remoteKv: options.remoteKv,
     remoteR2: options.remoteR2,

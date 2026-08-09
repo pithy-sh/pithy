@@ -63,18 +63,31 @@ describe("project ownership", () => {
   test("stamps the project on the first run, and re-runs clean", async () => {
     const workers = [h.api([appCapability()])];
 
-    const first = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+    const first = await migrateProject({
+      account: null,
+      projectDir: h.projectDir,
+      workers,
+      env: "dev",
+      project: "acme",
+    });
     expect(first[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
     expect((await ownerOf())?.project).toBe("acme");
 
     // Idempotent: the same project migrates again with nothing to do and no complaint.
-    const second = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+    const second = await migrateProject({
+      account: null,
+      projectDir: h.projectDir,
+      workers,
+      env: "dev",
+      project: "acme",
+    });
     expect(second[0]?.databases[0]?.results).toEqual([]);
     expect((await ownerOf())?.project).toBe("acme");
   });
 
   test("refuses a database another project owns, naming both, and applies nothing", async () => {
     await migrateProject({
+      account: null,
       projectDir: h.projectDir,
       workers: [h.api([appCapability()])],
       env: "dev",
@@ -83,6 +96,7 @@ describe("project ownership", () => {
 
     // A second project, its own capability, pointed at the same local D1 by the same binding.
     const failure = await migrateProject({
+      account: null,
       projectDir: h.projectDir,
       workers: [h.api([multiplayerCapability("DB")])],
       env: "dev",
@@ -104,10 +118,10 @@ describe("project ownership", () => {
 
   test("a rollback is guarded too — the foreign project cannot step acme's schema back", async () => {
     const workers = [h.api([appCapability()])];
-    await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+    await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
     await expect(
-      migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "beta", rollback: true }),
+      migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "beta", rollback: true }),
     ).rejects.toThrow(/acme/);
 
     expect(await hasTable("things")).toBe(true);
@@ -115,18 +129,19 @@ describe("project ownership", () => {
 
   test("a reset is guarded too — a foreign project cannot rebuild the schema", async () => {
     const workers = [h.api([appCapability()])];
-    await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+    await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
     // `pithy seed --redo` rolls every applied migration's `down` before reseeding — the most destructive
     // thing the CLI does. It must carry the project through to the same guard `pithy migrate` passes.
     await expect(
-      seedProject({ projectDir: h.projectDir, workers, env: "dev", project: "beta", redo: true }),
+      seedProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "beta", redo: true }),
     ).rejects.toThrow(/acme/);
     expect(await hasTable("things")).toBe(true);
   });
 
   test("a capability drop is guarded too — through the step `pithy remove` actually builds", async () => {
     await migrateProject({
+      account: null,
       projectDir: h.projectDir,
       workers: [h.api([appCapability()])],
       env: "dev",
@@ -137,6 +152,7 @@ describe("project ownership", () => {
     // project the real caller never passed is exactly how this path shipped unguarded: the assertion
     // held while `pithy remove` dropped another project's tables and exited 0.
     const steps = defaultRemoveSteps({
+      account: null,
       projectDir: h.projectDir,
       workerDir: join(h.projectDir, "apps", "api"),
       loadCapabilities: async () => [appCapability()],
@@ -150,7 +166,13 @@ describe("project ownership", () => {
   test("two workers sharing one database both claim the same owner — the supported topology", async () => {
     const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability("DB")])];
 
-    const runs = await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+    const runs = await migrateProject({
+      account: null,
+      projectDir: h.projectDir,
+      workers,
+      env: "dev",
+      project: "acme",
+    });
     expect(runs.map((run) => run.worker)).toEqual(["api", "collab"]);
     expect((await ownerOf())?.project).toBe("acme");
   });
@@ -188,7 +210,13 @@ describe("project ownership", () => {
 
   test("an empty project name is refused too — a caller cannot opt out by passing nothing", async () => {
     await expect(
-      migrateProject({ projectDir: h.projectDir, workers: [h.api([appCapability()])], env: "dev", project: "  " }),
+      migrateProject({
+        account: null,
+        projectDir: h.projectDir,
+        workers: [h.api([appCapability()])],
+        env: "dev",
+        project: "  ",
+      }),
     ).rejects.toThrow(/project name/i);
     expect(await hasTable("things")).toBe(false);
   });

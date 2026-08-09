@@ -3,18 +3,19 @@
 
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { type DevSecretEnvelope, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { cloudflareConfigPath, parseCloudflareConfig, writeCloudflareConfig } from "../cloudflare/config";
-import { readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
+import { BOOTSTRAP_VARS_KEY, DevJson, readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type CheckDevVarsOptions, checkDevVars, type RootDevVar } from "../doctor/devVars";
 import type { StatePathOptions } from "../notifier/state";
 import { loadProject, requireProjectName } from "../project/config";
-import { readOptionalFile } from "../project/readOptionalFile";
+import { type MergeBaseOptions, readMergeBase, readOptionalFile } from "../project/readOptionalFile";
 import { devPreferencesPath } from "../seed/prepare";
-import { mintedTokensPath, readMintedTokens, writeMintedToken } from "../tokens/mintedTokens";
+import { MintedTokens, mintedTokensPath, writeMintedToken } from "../tokens/mintedTokens";
 
 /**
  * `pithy adopt` — the sort `pithy doctor` reports, performed (#187).
@@ -172,10 +173,12 @@ export interface RunAdoptOptions {
 /**
  * Build the plan, hand it over, and — only when asked — perform it.
  *
- * Throws when a *destination* is there and will not open. That is the one failure worth stopping for:
- * every one of these writers does a read-modify-write over a credential file, and "it would not open"
- * answered as "there is nothing in it" is how a `tokens.json` holding four environments is replaced by
- * one holding the token being written. The refusal is {@link readOptionalFile}'s, in each writer's words.
+ * **Throws when a destination cannot be read, before {@link RunAdoptOptions.onPlan} is called.** Every one
+ * of these writers does a read-modify-write over a credential file, and "it would not open" answered as
+ * "there is nothing in it" is how a `tokens.json` holding four environments is replaced by one holding
+ * the token being written. That refusal is {@link load}'s now rather than each writer's (#222), which
+ * moves it from part-way through the entry loop to before a plan exists — because the plan is the thing
+ * a lenient read gets wrong, and the plan is what an adopter deletes by hand on the strength of.
  */
 export async function runAdopt(options: RunAdoptOptions): Promise<AdoptResult> {
   const paths = options.paths ?? {};
@@ -190,7 +193,7 @@ export async function runAdopt(options: RunAdoptOptions): Promise<AdoptResult> {
   const registry = mergedRegistry(targets);
 
   const sources = await collect(options.projectDir, paths, targets, unresolvable, options.workers);
-  const destinations = await load(options.projectDir, project, paths);
+  const destinations = await load(project, paths);
   const { entries, pending } = plan(sources, destinations, registry, project, paths, unresolvable);
 
   options.onPlan?.(entries);
@@ -291,17 +294,83 @@ async function collect(
   return found;
 }
 
-/** What every destination already holds. An absent file is empty; one that will not open throws. */
-async function load(projectDir: string, project: string | null, paths: StatePathOptions): Promise<Destinations> {
+/**
+ * What every destination already holds — **read strictly, because the plan is computed against it.**
+ *
+ * An absent file is empty. Every other state is a refusal, and it arrives here rather than at the write
+ * (#222). `tokens.json` and `dev.json` used to be read leniently, so a credential file that would not
+ * parse was planned as *"the destination is empty"*: the adopter was shown a plan built on that, entries
+ * copied, and the writers' own refusal stopped the run part-way through the loop.
+ *
+ * Nothing was lost — the writers refuse (#219) — and the report was the thing that broke. This command
+ * copies and then says which source lines are now safe to delete, and a plan built against a file nothing
+ * read can say a value is safe to remove when the destination does not hold what the plan claimed. The
+ * refusal per key on a conflict exists so that report can be trusted; a lenient planning read undercut it.
+ *
+ * So `readMergeBase` is asked here, with this command's own words, and a migration refuses before it has
+ * told anybody anything. Every destination is named from the project rather than resolved a second time,
+ * which is also why the project root is no longer a parameter: this reads files, and they are all keyed
+ * on the name.
+ */
+async function load(project: string | null, paths: StatePathOptions): Promise<Destinations> {
   const cloudflare = parseCloudflareConfig(
     (await readOptionalFile(cloudflareConfigPath({ ...paths, account: null }))) ?? "",
   );
   if (project === null) return { cloudflare, secrets: {}, bootstrap: {}, tokens: {} };
+  const devJson = devPreferencesPath(project, paths);
+  const tokens = mintedTokensPath(project, paths);
   return {
     cloudflare,
     secrets: await readDevSecrets(devSecretsFile(project, paths)),
-    bootstrap: await readBootstrapVars(projectDir, paths),
-    tokens: await readMintedTokens(mintedTokensPath(project, paths)),
+    bootstrap: (await readMergeBase(devJson, DevJson, unplannable(devJson))).document[BOOTSTRAP_VARS_KEY] ?? {},
+    tokens: (await readMergeBase(tokens, MintedTokens, unplannable(tokens))).document,
+  };
+}
+
+/**
+ * The four ways a destination stops this plan, in one voice — because they are one sentence.
+ *
+ * *Pithy will not plan a migration against a file it could not read.* Unopenable, not JSON, parsed to
+ * something that is not a document, a document of something else: each is the same failure to establish
+ * what is already at the destination, and each would produce the same wrong report — a value called safe
+ * to delete on the strength of a base that was invented rather than read.
+ *
+ * **No refusal quotes the file.** `tokens.json` holds live Cloudflare tokens and `dev.json` holds the dev
+ * master key. The path, the errno, the shape and the key path that failed are what an operator needs;
+ * `readMergeBase` drops the parser's own message for the same reason (#219).
+ */
+function unplannable(path: string): MergeBaseOptions {
+  const action = "Fix it, or move it aside, and run pithy adopt again.";
+  return {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Cannot plan against ${path}: Pithy could not read what is already in it.`,
+          action: "Fix the file's permissions, or move it aside, and run pithy adopt again.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+    unparseable: () =>
+      new ConflictError({
+        message: `Cannot plan against ${path}: it is there and is not JSON.`,
+        action,
+        // Never the parser's own message: it quotes the line it choked on, and these lines are credentials.
+        detail: `${path} did not parse, so nothing knows what is already at this destination`,
+      }),
+    notARecord: ({ found }) =>
+      new ConflictError({
+        message: `Cannot plan against ${path}: it holds ${found}, not a document.`,
+        action,
+        detail: `${path} parsed to ${found}, so nothing knows what is already at this destination`,
+      }),
+    invalid: ({ at }) =>
+      new ConflictError({
+        message: `Cannot plan against ${path}: it is not the document Pithy keeps there.`,
+        action,
+        // The key path, so the line can be found. Never the value on it, which may be a live token.
+        detail: `${path} failed its schema at ${at}`,
+      }),
   };
 }
 

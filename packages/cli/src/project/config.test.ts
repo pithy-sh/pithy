@@ -3,11 +3,12 @@
 
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import {
   allCapabilities,
   classifyConfigLoadFailure,
@@ -196,7 +197,7 @@ describe("classifyConfigLoadFailure", () => {
 
   test("a multi-line diagnostic contributes its position and nothing else", () => {
     const cause = new Error(
-      "Transform failed with 1 error:\n\n[31m[PARSE_ERROR] [0mUnexpected token\n  ╭─[ .smoke-x/pithy.config.ts:1:17 ]",
+      "Transform failed with 1 error:\n\n\u001b[31m[PARSE_ERROR] \u001b[0mUnexpected token\n  ╭─[ .smoke-x/pithy.config.ts:1:17 ]",
     );
     const { kind, action } = classifyConfigLoadFailure(cause);
     expect(kind).toBe("parse-error");
@@ -304,7 +305,7 @@ describe("Bun wraps two or more build diagnostics, and a cascade is the common c
     expect(action).not.toContain("4 errors building"); // the wrapper's own message
     expect(action).not.toContain("\n");
     // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape code is exactly what must not leak.
-    expect(action).not.toMatch(/\[/);
+    expect(action).not.toMatch(/\u001b\[/);
     expect(action).not.toMatch(/\bat .*:\d+:\d+/);
     expect(action.length).toBeLessThan(300);
   });
@@ -707,5 +708,118 @@ describe("the project's cloudflare block", () => {
     const dirA = await project('export default { name: "acme", cloudflare: { accountId: "a1" } };\n');
     expect(loadProjectCloudflare(await loadProject(dirA))).toEqual({ accountId: "a1" });
     expect(await projectCloudflareAccount(dirA)).toEqual({ accountId: "a1" });
+  });
+});
+
+/**
+ * **The gate on the filter: no module outside `@pithy-sh/core` decides whether a cause's message is safe
+ * to show (#228).**
+ *
+ * `safeReason` is the control that stops a parser diagnostic — a multi-line ANSI box quoting an absolute
+ * path and the adopter's own source line — from landing in a `PithyError`'s `action`, which the CLI
+ * renderer prints and the HTTP codec does not strip. It existed three times: here, in
+ * `capabilities/loadFailure.ts`, and in `@pithy-sh/vite`'s `workerConfig.ts`, near-verbatim.
+ *
+ * **A security control in triplicate is one fix away from being a security control in duplicate**, and
+ * that is not a hypothetical. #223 found that testing *content* let Bun's build-failure wrapper through —
+ * `2 errors building "app/config:12:5.ts"` has no leading slash, so it passed the absolute-path check and
+ * dragged a fabricated `Line 12, column 5` out of the file name with it — and closing it meant editing
+ * three files, correctly, by someone who knew all three were there. The fourth copy is the one nobody
+ * tells.
+ *
+ * So the copies are gone and this is what keeps them gone. It lives in the CLI because the CLI is where
+ * the repository-wide tripwires live and where the walk they share (`ci/sourceFiles.ts`) is, and beside
+ * the classifier that held the first copy.
+ *
+ * **What it asks is the decidable question**, in `atomic.test.ts`'s sense: not "does this module mean to
+ * filter a message", which is intent and is exactly what an evader controls, but **does this module
+ * declare a message-safety filter of its own** — a declaration named for the safety of a reason or a
+ * message, or its own recogniser for an absolute path, which is the one constant no copy of this filter
+ * managed to do without. Both are what the three copies were, and both are what a fourth would have to
+ * write.
+ *
+ * It deliberately does **not** flag de-colouring. `dev/logging.ts` strips ANSI to render a dev-server log
+ * and is right to; stripping escapes is formatting, not a decision about what an adopter may be told.
+ */
+describe("the gate on the filter (#228)", () => {
+  /** `packages/cli/src/project` → the repository. Asserted below, so a moved file fails loudly. */
+  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+  /** The one module allowed to decide it, and why. Adding a line here is the review. */
+  const ALLOWED = new Map<string, string>([
+    [
+      "packages/core/src/error/cause.ts",
+      "The one that is allowed to. `safeReason` and `failurePosition` live here, with the provenance suppression #223 needed, and every surface imports them — including @pithy-sh/vite, which depends on core and on nothing else in the kit.",
+    ],
+  ]);
+
+  /**
+   * Why `source` decides message safety, or null.
+   *
+   * Two signals, each of which every copy of this filter had. A declaration named for the safety of a
+   * reason or a message is the filter itself; a recogniser for an absolute path is the test it cannot be
+   * written without — a message-safety filter that does not know what a path looks like does not stop one
+   * from travelling. Either alone is enough to want a human to look.
+   */
+  function decidesMessageSafety(source: string): string | null {
+    const found: string[] = [];
+    const declaration = /\b(?:function|const|let|var)\s+(\w*[sS]afe(?:Reason|Message|Text|Detail)\w*)\s*[(=:]/g;
+    for (const [, name] of source.matchAll(declaration)) if (name) found.push(`declares ${name}`);
+    // The absolute-path character class, in the spelling all three copies used, and the name they gave it.
+    if (source.includes("[A-Za-z]:[")) found.push("recognises an absolute path");
+    if (/\bABSOLUTE_PATH\b/.test(source)) found.push("declares ABSOLUTE_PATH");
+    return found.length === 0 ? null : [...new Set(found)].join(", ");
+  }
+
+  test("scans the repository, not one package of it", () => {
+    // A silent walk that finds nothing would pass every assertion below, so the walk is asserted first.
+    expect(sourcePaths(REPO_ROOT).length).toBeGreaterThan(500);
+    expect(sourcePaths(REPO_ROOT).some((path) => path.endsWith(join("core", "src", "error", "cause.ts")))).toBe(true);
+    expect(sourcePaths(REPO_ROOT).some((path) => path.includes(`${sep}vite${sep}`))).toBe(true);
+  });
+
+  test("only core decides whether a cause's message is safe to show", () => {
+    const deciders = new Map<string, string>();
+    for (const source of sourceFiles(REPO_ROOT)) {
+      const how = decidesMessageSafety(source.text);
+      if (how !== null) deciders.set(relative(REPO_ROOT, source.path).split(sep).join("/"), how);
+    }
+
+    expect(
+      [...deciders.keys()].sort(),
+      "import safeReason from @pithy-sh/core/src/error/cause — do not write a second one",
+    ).toEqual([...ALLOWED.keys()].sort());
+  });
+
+  test("the rule is not vacuous: it reads core's own filter as a decision", () => {
+    // If `safeReason` were renamed or rewritten past this rule, the assertion above would pass by finding
+    // nothing anywhere — a gate that has quietly stopped guarding. This is what makes that state red.
+    const cause = sourceFiles(REPO_ROOT).find((file) => file.path.endsWith(join("core", "src", "error", "cause.ts")));
+    expect(cause).toBeDefined();
+    expect(decidesMessageSafety(cause?.text ?? "")).toContain("safeReason");
+  });
+
+  test("the gate bites: a fourth copy of the filter is named, wherever it is planted", () => {
+    // Verbatim from `project/config.ts` before this issue — the copy that is now core's, planted back.
+    const planted = [
+      "const ABSOLUTE_PATH = /(^|[\\s'\"(])(\\/|~\\/|[A-Za-z]:[\\\\/])/;",
+      "function safeReason(cause: unknown): string | undefined {",
+      "  const text = rawMessage(cause).trim();",
+      "  if (text.includes(String.fromCharCode(10))) return undefined;",
+      "  if (ABSOLUTE_PATH.test(text)) return undefined;",
+      "  return text;",
+      "}",
+    ].join("\n");
+
+    expect(decidesMessageSafety(planted)).toContain("declares safeReason");
+    expect(decidesMessageSafety(planted)).toContain("recognises an absolute path");
+    // And a module that merely uses core's filter is not a module that decides anything.
+    expect(
+      decidesMessageSafety(
+        'import { safeReason } from "@pithy-sh/core/src/error/cause";\nconst reason = safeReason(cause);\n',
+      ),
+    ).toBeNull();
+    // Nor is one that de-colours a log line for display — `dev/logging.ts` does exactly that.
+    expect(decidesMessageSafety("const ANSI = /\\u001b\\[[0-9;]*m/g;\nline.replace(ANSI, '');\n")).toBeNull();
   });
 });

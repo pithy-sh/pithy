@@ -90,6 +90,96 @@ describe("a null account is a claim, and every claim is written down", () => {
   });
 
   /**
+   * **The second half of the same rule: an `account` that may be *omitted* (#226, #230).**
+   *
+   * The table above holds every deliberate `null` to a written reason, and it was believed to be the
+   * whole gate. It is not, because it can only see a value. Four call sites — `pithy env`, `pithy
+   * migrate`, `pithy deploy`'s pending count, and the roster commands' seed driver — passed it while
+   * naming no account at all, because the parameter they were omitting was declared `account?:`.
+   *
+   * An omission and a deliberate `null` are the same bytes at the call site: nothing. So the compiler
+   * says nothing, this gate saw nothing, and a reviewer had nothing to look at. That is precisely what
+   * #206 argued a *required* argument removes — and `account?: T | null` puts it back, with the added
+   * cruelty that the type reads as though it had been thought about.
+   *
+   * So an optional declaration is itself the reviewable act now. The table below is the complete set
+   * still in shipped source; the test holds it to both halves, exactly as the one above does, so a new
+   * one cannot appear quietly and a fixed one cannot be left listed.
+   *
+   * Every entry is **debt, not a design**. The reason each carries is what it would cost to make it
+   * required, which is the only honest thing to write when the answer is "not in this change".
+   *
+   * **It is empty, and that is the finished state (#234).** All six declarations #226's audit found are
+   * required now, and the two seams that carried no account at all — `SeedProjectOptions` and
+   * `dashboard/registry.ts`'s `OpenDriver` — carry one. An empty table is not a table with nothing left
+   * to say: it is the assertion that *nowhere in shipped source* can a credential-resolving parameter be
+   * omitted, kept by the walk below rather than by anybody's memory. The next optional account fails
+   * this test on the commit that writes it, and the only way past is a line here with a reason on it.
+   */
+  const OPTIONAL_ACCOUNT_OWED: Record<string, string> = {};
+
+  /**
+   * An optional `account` property, or one defaulted to `null` in a parameter list. Both are omissions
+   * the compiler permits; a default is the sneakier of the two, because the `null` is written down at
+   * the declaration and so reads like a claim somebody made at the call site.
+   */
+  const OPTIONAL_ACCOUNT =
+    /account\?:\s*CloudflareAccountSelection|account:\s*CloudflareAccountSelection[^,;=]*=\s*null/;
+
+  test("every optional account is declared, and every declaration is still optional", () => {
+    const found = new Set<string>();
+    for (const path of walked) {
+      const source = readSource(path);
+      if (source === null) continue;
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+      if (OPTIONAL_ACCOUNT.test(code)) found.add(named(path));
+    }
+    expect({
+      undeclared: [...found].filter((path) => !(path in OPTIONAL_ACCOUNT_OWED)).sort(),
+      stale: Object.keys(OPTIONAL_ACCOUNT_OWED)
+        .filter((path) => !found.has(path))
+        .sort(),
+    }).toEqual({ undeclared: [], stale: [] });
+  });
+
+  /**
+   * **Every declaration the audit found, pinned by name.**
+   *
+   * The walk above cannot see this, and that is the gap this closes. It fails on an account that is
+   * *optional*; a declaration deleted outright, or renamed, or moved behind a different type, leaves it
+   * with nothing to find and nothing to say — the quietest possible revert. So each module that reached
+   * required is named here with the shape it reached, and the two assertions are opposite halves: the
+   * required form is present, and no optional form is.
+   *
+   * `envInventory.ts` is the one #226 fixed — `pithy env` *prints* an account id and builds every
+   * dashboard link out of it, so an inventory resolved against the default file labels this project's
+   * bindings with another company's account and links there. The other five are #234's, and the two at
+   * the end are seams that carried no account **at all** until it, which is why plumbing had to come
+   * before threading: `seed/run.ts` could not pass one to a driver that had just started requiring it.
+   */
+  const REQUIRED_ACCOUNT = [
+    "project/envInventory.ts",
+    "migrations/run.ts",
+    "seed/drivers.ts",
+    "capabilities/addBootstrap.ts",
+    "doctor/projectName.ts",
+    "seed/run.ts",
+    "dashboard/registry.ts",
+  ];
+
+  test.each(REQUIRED_ACCOUNT)("%s takes a required account", (relativePath) => {
+    const source = readSource(resolve(PACKAGES, "cli", "src", relativePath)) ?? "";
+    expect({ file: relativePath, declares: /account:\s*CloudflareAccountSelection\s*\|\s*null/.test(source) }).toEqual({
+      file: relativePath,
+      declares: true,
+    });
+    expect({ file: relativePath, optional: OPTIONAL_ACCOUNT.test(source) }).toEqual({
+      file: relativePath,
+      optional: false,
+    });
+  });
+
+  /**
    * The six that started it, by name. Not a rule — a record, so the next person reading the required
    * argument and wondering whether it earns its keep has the list rather than the assertion.
    */

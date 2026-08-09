@@ -33,7 +33,7 @@ const add = defineCommand({
       const asked = await askDomains({
         projectDir,
         account: await projectCloudflareAccount(projectDir),
-        workerName: report.name,
+        workerName: report.worker,
         interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
       });
       // A declaration the writer could not place must not vanish. `writeDomains` still generates the
@@ -47,14 +47,20 @@ const add = defineCommand({
         );
         return;
       }
-      process.stdout.write(`Worker ${report.name} scaffolded at ${report.dir}.\n`);
+      process.stdout.write(`Worker ${report.worker} scaffolded at ${report.dir}.\n`);
       if (wrote && !wrote.declared && asked.domains) {
         process.stdout.write(
           `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
         );
       }
-      if (report.reconciled && report.port !== null) {
+      // Three states, not two. A reconciled run that pinned nothing used to print the sentence below it —
+      // "run pithy feature sync to assign a port" — immediately after a sync had assigned one, because the
+      // port lookup could not find it (#229). The lookup is fixed; the branch stays three-way so the
+      // sentence about assigning a port is only ever printed where none has been.
+      if (report.port !== null) {
         process.stdout.write(`Pinned to port ${report.port}.\n`);
+      } else if (report.reconciled) {
+        process.stdout.write("Reconciled the feature's ports. This worker took none.\n");
       } else {
         process.stdout.write("Ports are assigned when you run pithy feature create or sync.\n");
       }
@@ -87,7 +93,11 @@ const list = defineCommand({
       const rows = workers.map((worker) => {
         const port = worker.port === null ? "—" : String(worker.port);
         const auto = worker.autostart ? "autostart" : "manual";
-        return { name: worker.name, description: dim(`${auto}  port ${port}`) };
+        // The deployed name leads the row, because it is the string the Cloudflare dashboard shows and
+        // the one `--worker`, `remove` and `rename` all also accept. The directory is what the adopter
+        // acts on, so it is named too rather than left to be inferred from the deployed one — the two
+        // are free to be unrelated, which is the whole reason they are separate fields (#144).
+        return { name: worker.deployedAs, description: dim(`${worker.worker}  ${auto}  port ${port}`) };
       });
       process.stdout.write(`${formatList(rows)}\n`);
     }),
@@ -107,7 +117,7 @@ const remove = defineCommand({
         process.stdout.write(`${formatJsonLine({ command: "worker.remove", ...report })}\n`);
         return;
       }
-      process.stdout.write(`Removed ${report.name}.\n`);
+      process.stdout.write(`Removed ${report.worker}.\n`);
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

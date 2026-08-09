@@ -97,9 +97,10 @@ export interface SeedDriverOptions {
   /**
    * The Cloudflare account this project belongs to. A remote seed writes rows into a real D1 and objects
    * into a real R2; the wrong account's credentials write this project's fixtures into another company's
-   * tenant (#206).
+   * tenant (#206). Required (#234) — of the six declarations #226 measured, this is the one with the
+   * most to lose, and both of its non-test callers (`seed/run.ts`, `dashboard/registry.ts`) omitted it.
    */
-  account?: CloudflareAccountSelection | null;
+  account: CloudflareAccountSelection | null;
   /** Test seam for the remote D1 client. */
   remoteD1?: RemoteD1Factory;
   /** Test seam for the remote KV client. */
@@ -414,7 +415,7 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
   const config = await readWranglerConfig(options.workerDir);
-  const clients = lazyClients(config, options.account ?? null);
+  const clients = lazyClients(config, options.account);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
 }

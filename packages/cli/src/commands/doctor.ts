@@ -489,6 +489,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     const health = await buildProjectHealth({
       projectDir: options.projectDir,
       env: "dev",
+      // The same account the `Cloudflare:` block above reports on, resolved once at the top of this
+      // function. A doctor that counted pending migrations against one account and named another in the
+      // line beside it would be two reports in one (#234).
+      account,
       workers: workers.map((worker) => ({ name: worker.name, dir: worker.dir, capabilities: worker.capabilities })),
       buildPlan: options.buildPlan,
       countPending: options.countPending,

@@ -13,7 +13,7 @@ import {
 } from "@pithy-sh/core/src/naming/feature";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { migrateProject } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { provisionableBindings, serviceBindings } from "./bindings";
@@ -152,16 +152,31 @@ export type BackendRunner = (args: { env: string; projectDir: string }) => Promi
 // writes is what refuses a later run from another project. A feature environment's D1 is brand new, so
 // this run is the one that adopts it — skip the name here and the database stays unowned for good.
 const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
-  const project = requireProjectName(await loadProject(projectDir));
-  await migrateProject({ env, projectDir, project });
+  // One config load, two facts, both from the worktree's own root config: the project the brand-new D1 is
+  // stamped for, and the account it is created and migrated in. A feature environment is remote by
+  // definition, so this is the account that decides *whose tenant* the schema lands in (#234).
+  const config = await loadProject(projectDir);
+  await migrateProject({
+    env,
+    projectDir,
+    project: requireProjectName(config),
+    account: loadProjectCloudflare(config) ?? null,
+  });
 };
 
 // The seed names its project because a fixture can mint Cloudflare Images/Stream assets, and those two
 // account-flat stores carry no name we chose — only the owner in their metadata. `requireProjectName`,
 // the same resolver every feature resource name already leads with.
 const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
-  const project = requireProjectName(await loadProject(projectDir));
-  await seedProject({ env, projectDir, project, yes: true, json: true });
+  const config = await loadProject(projectDir);
+  await seedProject({
+    env,
+    projectDir,
+    project: requireProjectName(config),
+    account: loadProjectCloudflare(config) ?? null,
+    yes: true,
+    json: true,
+  });
 };
 
 /** One provisioned resource in the report: what it is, and whether this run created it or reused it. */
@@ -170,7 +185,13 @@ export interface ProvisionedResource extends FeatureResource {
   created: boolean;
 }
 
-/** The structured outcome of `pithy feature provision` — the `--json` payload and the human summary source. */
+/**
+ * The structured outcome of `pithy feature provision` — the `--json` payload and the human summary source.
+ *
+ * **No `migrated`/`seeded` pair, for the reason `CreateReport` states (#231).** Both were literal `true`s
+ * beside the two `await`s that ran the steps, and both steps throw, so the report's own existence already
+ * carried the fact. A constant is not a field.
+ */
 export interface ProvisionReport {
   /** The command that produced the report. */
   command: "feature.provision";
@@ -182,10 +203,6 @@ export interface ProvisionReport {
   workers: { worker: string; name: string }[];
   /** Each service binding and the feature-scoped Worker it now targets. */
   services: { binding: string; service: string }[];
-  /** Whether remote migrations ran. */
-  migrated: boolean;
-  /** Whether the remote seed ran. */
-  seeded: boolean;
 }
 
 /** Options for {@link provisionFeature}. */
@@ -354,8 +371,6 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     resources,
     workers: workers.map((worker) => ({ worker: worker.name, name: featureWorkerName(options.identity, worker.name) })),
     services,
-    migrated: true,
-    seeded: true,
   };
 }
 

@@ -282,6 +282,43 @@ describe("readMergeBase", () => {
     expect(await said("d.json", JSON.stringify({ dev: { K: 1 } }))).toBe("invalid");
   });
 
+  /**
+   * The one thing about a file that is neither a refusal nor the schema: how its bytes become a value.
+   *
+   * `pithy.worker.jsonc` is JSONC, and `JSON.parse` refuses a file with a comment in it — which for that
+   * manifest is not a malformed file, it is the ordinary one (#222). That is a property of the file, not
+   * a decision about what a failure means, so it is the caller's to supply and nothing else moves with
+   * it: the four refusals are the same four, and the parser's own error is dropped the same way.
+   *
+   * **Whether the parsed object itself survives is the schema's business, not this seam's** — an object
+   * schema rebuilds what it validates, and comment-json hangs the file's notes off the object as
+   * symbol-keyed properties. `../ui/workerUi.ts` is where that is decided and where it is asserted.
+   */
+  test("a caller may bring its own parser, and the four refusals are unchanged by it", async () => {
+    const jsonc = { parse: (source: string) => parse(source) };
+    const path = join(dir, "manifest.jsonc");
+    await writeFile(path, '{\n  // a note\n  "dev": { "autostart": "yes" }\n}\n');
+
+    // The default parser cannot read this file at all, which is the whole reason the seam exists.
+    await expect(readMergeBase(path, Doc)).rejects.toThrow(PithyError);
+    expect((await readMergeBase(path, Doc, jsonc)).document).toEqual({ dev: { autostart: "yes" } });
+
+    await writeFile(path, "{ not json");
+    await expect(readMergeBase(path, Doc, jsonc)).rejects.toThrow(PithyError);
+  });
+
+  test("and the borrowed parser's own error is dropped exactly as JSON.parse's is", async () => {
+    // comment-json quotes the line it choked on too. The seam is which parser, never which leak.
+    const path = join(dir, "manifest.jsonc");
+    await writeFile(path, '{ "dev": { "CF_TOKEN": "super-secret-value" }');
+
+    const thrown = (await readMergeBase(path, Doc, { parse: (source: string) => parse(source) }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(JSON.stringify(thrown.payload)).not.toContain("super-secret-value");
+  });
+
   test("a schema that cannot read `{}` as a document says so rather than inventing one", async () => {
     // Absent licenses starting from empty, and what "empty" is belongs to the schema, not to this module.
     const closed = z.object({ required: z.string().describe("A key with no default.") }).catchall(z.unknown());
@@ -403,7 +440,7 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
   const DISCARDS_ON_PURPOSE: Record<string, { reads: string; why: string }> = {
     "cli/src/devSecrets/bootstrapVars.ts": {
       reads: "readFile",
-      why: "`readBootstrapVars` argues it at length, and the argument is about that call rather than about the file (#219): every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale — and a `dev.json` half-typed by hand must not stop `pithy dev`. The two writers beside it read their own base through `readMergeBase`, which refuses in every state but absence, and they take a `MergeBase` so this lenient answer cannot be handed to them by accident.",
+      why: "`readBootstrapVars` argues it at length, and the argument is about that call rather than about the file (#219): every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale — and a `dev.json` half-typed by hand must not stop `pithy dev`. The two writers beside it read their own base through `readMergeBase`, which refuses in every state but absence, and they take a `MergeBase` so this lenient answer cannot be handed to them by accident. The split is by *power*, not by file, which is why both writers now return through this read when their own arguments say they will write nothing (#222) — an empty `values`, an empty `names` — rather than refusing over a file they were never going to touch.",
     },
     "cli/src/cloudflare/config.ts": {
       reads: "readFileSync",

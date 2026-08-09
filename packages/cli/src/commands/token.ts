@@ -288,7 +288,15 @@ const revoke = defineCommand({
       const engine = await buildEngine(process.cwd(), env);
       const result = await revokeProfileToken(engine, args.profile, env);
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "token revoke", ...result })}\n`);
+        // **A count is published as `revokedCount` (#235).** `pithy dashboard revoke-key` emits
+        // `revoked` as a `boolean` — did that key come out — and this one is "how many tokens of that
+        // name were deleted", where `0` is an ordinary answer. So `revoked` was a yes/no in one command
+        // and a number in another, and the number's falsy value is the one that means "nothing was
+        // revoked" in both readings while `revoked: 0` and `revoked: false` are not the same claim. The
+        // count is the outlier — every other `<verb>ed` key in this CLI is a boolean — so it takes the
+        // suffix. `RevokeResult` keeps `revoked`: the published name is decided here.
+        const { revoked: revokedCount, ...rest } = result;
+        process.stdout.write(`${formatJsonLine({ command: "token revoke", ...rest, revokedCount })}\n`);
         return;
       }
       process.stdout.write(`${result.profile}: revoked ${result.revoked} token${result.revoked === 1 ? "" : "s"}.\n`);

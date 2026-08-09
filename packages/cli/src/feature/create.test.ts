@@ -67,7 +67,7 @@ describe("createFeature → destroyFeature round-trip", () => {
 
     // Worktree + branch created.
     expect(createReport.branch).toBe("feature/77-demo");
-    expect(createReport.created).toBe(true);
+    expect(createReport.worktreeCreated).toBe(true);
     await expect(stat(createReport.worktree)).resolves.toBeTruthy();
 
     // A port block was reserved and the app worker's port pinned from it.
@@ -86,6 +86,12 @@ describe("createFeature → destroyFeature round-trip", () => {
     // Local migrate + seed ran against the worktree.
     expect(migrated).toEqual([createReport.worktree]);
     expect(seeded).toEqual([createReport.worktree]);
+
+    // **And the report does not say so (#231).** Both steps throw on failure, so a report existing at all
+    // is the proof they ran; a `migrated: true, seeded: true` pair beside it is a constant dressed as a
+    // fact, and the only branch a consumer could write on it is one that can never fire. `feature sync`
+    // has a real answer to give here because `--skip-data` can make it `false`; create has none.
+    expect(Object.keys(createReport).sort()).toEqual(["branch", "command", "dev", "worktree", "worktreeCreated"]);
 
     // Destroy reverses everything: frees the port block and prunes the worktree.
     const destroyReport = await destroyFeature({
@@ -120,10 +126,10 @@ describe("createFeature → destroyFeature round-trip", () => {
       seed: async () => {},
     };
     const first = await createFeature(opts);
-    expect(first.created).toBe(true);
+    expect(first.worktreeCreated).toBe(true);
 
     const second = await createFeature(opts);
-    expect(second.created).toBe(false);
+    expect(second.worktreeCreated).toBe(false);
     // The pinned ports are stable across re-runs — a feature's addresses never move under it.
     expect(second.dev.workers).toEqual(first.dev.workers);
   });

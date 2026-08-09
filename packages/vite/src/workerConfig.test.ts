@@ -196,7 +196,7 @@ describe("classifyWorkerConfigFailure", () => {
 
   test("a multi-line ANSI diagnostic contributes its position and nothing else", () => {
     const cause = new Error(
-      "Transform failed with 1 error:\n\n[31m[PARSE_ERROR] [0mUnexpected token\n  ╭─[ /a/pithy.config.ts:1:17 ]",
+      "Transform failed with 1 error:\n\n\u001b[31m[PARSE_ERROR] \u001b[0mUnexpected token\n  ╭─[ /a/pithy.config.ts:1:17 ]",
     );
     const { kind, action } = classifyWorkerConfigFailure(cause);
     expect(kind).toBe("parse-error");

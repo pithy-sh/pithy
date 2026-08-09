@@ -22,9 +22,16 @@ describe("seedProject", () => {
   test("writes D1 rows and KV entries locally, idempotently", async () => {
     await h.writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+    await migrateProject({
+      account: null,
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+      project: "acme",
+    });
 
     const report = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -48,7 +55,13 @@ describe("seedProject", () => {
       expect(await store.kv.get("notes:a")).toBe(JSON.stringify({ body: "hello" }));
 
       // Re-running seeds nothing new: INSERT OR IGNORE keeps the row count at 2.
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
       const again = await store.d1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
       expect(again?.n).toBe(2);
     } finally {
@@ -59,9 +72,16 @@ describe("seedProject", () => {
   test("a dry run computes the plan and writes nothing", async () => {
     await h.writeWrangler(localWrangler);
     const capabilities = [dataCapability()];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+    await migrateProject({
+      account: null,
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+      project: "acme",
+    });
 
     const report = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -86,6 +106,7 @@ describe("seedProject", () => {
       await h.writeWrangler(localWrangler);
       // The set lists only dev/staging; a production run composes it into skippedByEnv, not the plan.
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -100,6 +121,7 @@ describe("seedProject", () => {
     test("staging refuses to run without --yes", async () => {
       await h.writeWrangler(localWrangler);
       const failure = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -114,6 +136,7 @@ describe("seedProject", () => {
       const capabilities = [dataCapability(["dev", "prod"])];
 
       const noPhrase = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -124,6 +147,7 @@ describe("seedProject", () => {
       expect(noPhrase).toBeInstanceOf(PithyError);
 
       const wrongPhrase = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -138,6 +162,7 @@ describe("seedProject", () => {
     test("a dry run needs no confirmation for a non-dev env", async () => {
       await h.writeWrangler(localWrangler);
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -177,6 +202,7 @@ describe("seedProject", () => {
       try {
         // Create the table in the fake remote D1 through the same remote orchestration.
         await migrateProject({
+          account: null,
           workers: [h.api(capabilities)],
           projectDir: h.projectDir,
           env: "staging",
@@ -185,6 +211,7 @@ describe("seedProject", () => {
         });
 
         const report = await seedProject({
+          account: null,
           project: "acme",
           workers: [h.api(capabilities)],
           projectDir: h.projectDir,
@@ -239,7 +266,13 @@ describe("seedProject", () => {
       const capabilities = [r2Capability()];
 
       // First run writes the object.
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
       let store = await openLocalR2();
       try {
         expect(await (await store.bucket.get("logo.png"))?.text()).toBe("NEWBYTES");
@@ -249,7 +282,13 @@ describe("seedProject", () => {
         await store.dispose();
       }
 
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
       store = await openLocalR2();
       try {
         // The existing object is untouched — seeding is non-destructive, like INSERT OR IGNORE.
@@ -315,6 +354,7 @@ describe("seedProject", () => {
 
       const first = fakeUploader();
       const firstReport = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -331,6 +371,7 @@ describe("seedProject", () => {
       // A second run reads the sidecar, skips the upload, and reuses the recorded id.
       const second = fakeUploader();
       const secondReport = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -352,6 +393,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const first = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -363,6 +405,7 @@ describe("seedProject", () => {
       ]);
 
       const second = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -387,6 +430,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -413,6 +457,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const failure = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -444,6 +489,7 @@ describe("seedProject", () => {
       } as unknown as CloudflareImageManager;
 
       const report = await seedProject({
+        account: null,
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         project: "acme",
@@ -466,6 +512,7 @@ describe("seedProject", () => {
 
       const { uploader, calls } = fakeUploader();
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,

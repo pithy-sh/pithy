@@ -53,10 +53,11 @@ describe("the dev-session seed, through the real secret reader", () => {
 
     const capabilities = [auth({ baseURL: "http://localhost:8787" })];
     const workers = [h.api(capabilities)];
-    await migrateProject({ workers, projectDir: h.projectDir, env: "dev", project: PROJECT });
+    await migrateProject({ account: null, workers, projectDir: h.projectDir, env: "dev", project: PROJECT });
 
     // No `secret` seam. The run resolves the value itself, from the file `pithy seed` writes.
     await seedProject({
+      account: null,
       project: PROJECT,
       workers,
       projectDir: h.projectDir,

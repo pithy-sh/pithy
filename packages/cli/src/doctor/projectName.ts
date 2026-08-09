@@ -7,7 +7,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { assertValidProjectName, isValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { loadProject, type ProjectConfig } from "../project/config";
+import { loadProject, loadProjectCloudflare, type ProjectConfig } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 
@@ -334,8 +334,15 @@ export interface AccountEvidence {
  * The account seam: per-name evidence for the candidates, keyed by resource name. A name with no entry was
  * never established either way (no credentials, an unreachable account, a listing that was refused), which
  * is reported as unknown rather than as absence.
+ *
+ * **The account is on the seam, not behind it (#234).** A stub that took only the candidates would let the
+ * real implementation keep a defaulted account and no test would ever notice, which is exactly the state
+ * this replaced.
  */
-export type AccountProbe = (candidates: MisnamedCandidate[]) => Promise<Map<string, AccountEvidence>>;
+export type AccountProbe = (
+  candidates: MisnamedCandidate[],
+  account: CloudflareAccountSelection | null,
+) => Promise<Map<string, AccountEvidence>>;
 
 /**
  * The recorded owner of a database, read through the one read-only seam `@pithy-sh/core` exposes.
@@ -361,6 +368,21 @@ async function ownerStampOf(clients: CloudflareClients, databaseId: string): Pro
 export async function probeAccountEvidence(
   candidates: MisnamedCandidate[],
   /**
+   * The Cloudflare account this project belongs to, from its own root `pithy.config.ts`. The verdict this
+   * function can reach — `orphaned`, "a live database is not yours" — is one no adopter should ever read
+   * off the wrong account (#206).
+   *
+   * **Required, and ahead of the `connect` seam, because it used to be `= null` behind it (#234).** A
+   * default parameter is the quietest of the three shapes an optional account can take: the `null` is
+   * written at the declaration, so it reads like a decision somebody made, while every call site says
+   * nothing at all. And the failure it produces is not a failed call — it is a *sentence*. A project on
+   * `cloudflare.accountName` got the default account's credentials here, found no database by its own
+   * name in a tenant that was never asked, and the deduction it fed says the adopter's live production
+   * database belongs to someone else. Wrong credentials that refuse are a bad afternoon; wrong
+   * credentials that answer confidently are the bug this parameter exists to make unwritable.
+   */
+  account: CloudflareAccountSelection | null,
+  /**
    * How the account is reached. Injectable for the same reason `probeAccount` is one level up, but a level
    * lower: stubbing `probeAccount` replaces this whole function, so the branching *inside* it — which kinds
    * get probed, how a missing database differs from an unreadable listing, whether a stamp is read at all —
@@ -369,14 +391,21 @@ export async function probeAccountEvidence(
    */
   connect: (credentials: { accountId: string; apiToken: string }) => CloudflareClients = (credentials) =>
     new CloudflareClients(credentials),
-  /**
-   * The Cloudflare account this project belongs to. The verdict this function can reach — `orphaned`,
-   * "a live database is not yours" — is one no adopter should ever read off the wrong account (#206).
-   */
-  account: CloudflareAccountSelection | null = null,
 ): Promise<Map<string, AccountEvidence>> {
   const evidence = new Map<string, AccountEvidence>();
-  const vars = cloudflareEnv({ account });
+  // **A pin the credentials contradict ends the probe, before the network.** `cloudflareEnv` throws on a
+  // mismatch, which is right everywhere it is a command's own resolution — but this is a diagnostic, and a
+  // `pithy doctor` that exits on the fault it exists to report tells nobody anything. So the refusal is
+  // kept and the throw is not: there is no account this run is entitled to ask, so it asks none and
+  // establishes nothing, which leaves the verdict on the local deduction and out of reach of `orphaned`.
+  // The mismatch itself is already a line of this same report — `Cloudflare:`, `account_mismatch` — and
+  // one fact belongs in one line, which is the rule the rest of this file is written to.
+  let vars: Record<string, string>;
+  try {
+    vars = cloudflareEnv({ account });
+  } catch {
+    return evidence;
+  }
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return evidence;
@@ -467,7 +496,11 @@ export async function checkProjectName(
   const candidates = misnamedResources(project, resources);
   if (candidates.length === 0) return nothingToSay;
 
-  const evidence = await (options.probeAccount ?? probeAccountEvidence)(candidates);
+  // The account comes from the config already loaded above — the same value `projectCloudflareAccount`
+  // returns, without a second import of the adopter's `pithy.config.ts`. A project naming none passes
+  // `null`, which is a claim about this project rather than an omission (#234).
+  const account = loadProjectCloudflare(config) ?? null;
+  const evidence = await (options.probeAccount ?? probeAccountEvidence)(candidates, account);
   const misnamed: MisnamedResource[] = candidates.map((entry) => {
     const found = evidence.get(entry.name);
     return { ...entry, provisioned: found ? found.exists : null, owner: found?.owner ?? null };

@@ -629,6 +629,33 @@ describe("no module writes its own walk over a directory tree", () => {
 });
 
 /**
+ * The repository. This file lives at `packages/cli/src/ci/`; the anchor assertions below fail if it moves.
+ *
+ * At module scope because three gates in this file measure the same tree, and a third `resolve` spelled
+ * out is a third thing to correct the day this file moves.
+ */
+const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+/** The byte, never a literal one. It is also what `git ls-files -z` separates paths with. */
+const NUL = String.fromCharCode(0);
+
+/**
+ * Every path in git's index. `-z` because a path may hold anything but this byte and a slash.
+ *
+ * **Two gates read this listing, and its scope is asserted once**, in the first test below — a scan that
+ * silently reaches nothing passes every rule written under it (#185). A second copy of this function
+ * would be a second thing to keep in step with what git actually tracks.
+ */
+function tracked(): string[] {
+  const listing = execFileSync("git", ["ls-files", "-z"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return listing.split(NUL).filter((path) => path !== "");
+}
+
+/**
  * **The rule: no file this repository commits contains a NUL byte.**
  *
  * A NUL is what makes git call a file binary, and a binary file has no line diff. `git diff` prints
@@ -655,12 +682,6 @@ describe("no module writes its own walk over a directory tree", () => {
  * instance of what it exists to catch.
  */
 describe("no file this repository commits is binary to git", () => {
-  /** The repository. This file lives at `packages/cli/src/ci/`; the scope test below fails if it moves. */
-  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
-
-  /** The byte, never a literal one. It is also what `git ls-files -z` separates paths with. */
-  const NUL = String.fromCharCode(0);
-
   /**
    * Files allowed to hold it: path → why.
    *
@@ -669,16 +690,6 @@ describe("no file this repository commits is binary to git", () => {
    * the argument that a genuinely binary asset belongs in a tree that is otherwise all text.
    */
   const BINARY_ON_PURPOSE: Record<string, string> = {};
-
-  /** Every path in git's index. `-z` because a path may hold anything but this byte and a slash. */
-  function tracked(): string[] {
-    const listing = execFileSync("git", ["ls-files", "-z"], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return listing.split(NUL).filter((path) => path !== "");
-  }
 
   /** Where `path` first holds the byte, or `-1`. A file the index names but the tree lacks holds nothing. */
   function nulOffset(path: string): number {
@@ -730,6 +741,195 @@ describe("no file this repository commits is binary to git", () => {
 });
 
 /**
+ * **The rule: no file this repository commits carries a bidirectional control, or a C0 control other
+ * than tab, newline and carriage return.**
+ *
+ * #216 gated the one class of invisible character git itself notices — a byte that makes a file binary,
+ * so its diff never renders at all. This is the other class: characters git renders perfectly happily,
+ * and a reviewer still cannot see. The gate above and this one are the same argument about two sets.
+ *
+ * **U+202E is why it is worth having.** A right-to-left override reorders how the text after it
+ * *displays* without changing a byte of what the compiler reads — the Trojan Source technique
+ * (CVE-2021-42574). The canonical demonstration is a comment or string that visually terminates early,
+ * so a reviewer reads an admin guard opening and the compiler reads something else entirely. This
+ * repository is the right kind of target: the kit is MIT and public, adopters run `pithy` against their
+ * own Cloudflare accounts, and the CLI mints and reads credentials. An override landing in a template, a
+ * generated config line or a capability manifest would be invisible in exactly the review that exists to
+ * catch it.
+ *
+ * Nothing here was ever malicious, and **the first run over the committed tree still found ten across
+ * five files.** Two were deliberate test input — the override and the BEL in
+ * `packages/testers/src/nudge/copy.test.ts`, the suite that proves hostile control characters never reach
+ * a nudge body, which is the right thing to test. The other eight were a raw ESC nobody meant: seven in
+ * esbuild error fixtures copied between three packages, and one in **shipped source** —
+ * `@pithy-sh/vite`'s ANSI-stripping regex, where two other copies of the same pattern spelled the escape
+ * and that one held the byte. Drift, in a filter, that no review could have seen. #228 consolidated those
+ * three copies into `@pithy-sh/core` and took it with them, before this gate ran.
+ *
+ * That is the whole argument (#221), and it is now demonstrated rather than hypothetical: **the
+ * repository had no way to tell the deliberate two from the accidental eight.** #216 made it about a NUL
+ * and found two more the moment it looked.
+ *
+ * The bidi set is the one rustc's `text_direction_codepoint_in_literal` lint uses: the embeddings and
+ * overrides U+202A–U+202E, the isolates U+2066–U+2069, the marks U+200E and U+200F, and U+061C. The C0
+ * half is everything below U+0020 except the three that give a text file its structure. NUL falls in
+ * that range and is therefore refused twice, here and above — one rule is about what git renders and the
+ * other about what a reader can see, and a byte is entitled to fail both.
+ *
+ * **The whole file, and git's index**, for #216's two reasons. The first matters more here than it did
+ * there: git decides binary from the first 8000 bytes, so a gate that asks git turns itself off as a
+ * file grows — and there is nothing about an override that confines it to a file's first page.
+ *
+ * Every refused character is a number below, and constructed where one is needed. Writing a test *about*
+ * an override is the easiest way to put one in the test file — and unlike a NUL, one that landed here
+ * would reorder the line a reviewer was reading it in.
+ */
+describe("no file this repository commits hides what it says", () => {
+  /**
+   * The bidirectional controls, as code points: rustc's `text_direction_codepoint_in_literal` set.
+   *
+   * Numbers rather than characters, throughout. There is no spelling of one of these in this file that a
+   * reviewer cannot see.
+   */
+  const BIDI = [0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069];
+
+  /** The three C0 controls a text file is made of. Everything else below U+0020 is refused. */
+  const STRUCTURAL = new Set([0x09, 0x0a, 0x0d]);
+
+  /**
+   * Files allowed to carry one: path → why.
+   *
+   * **Empty, and it should stay that way.** A file that genuinely needs one of these as *input* builds
+   * it with `String.fromCharCode`, or spells it as a six-character `\u` escape — exactly as
+   * `copy.test.ts` now does, and as #216's own gate builds its NUL. That keeps the fixture and makes it
+   * visible, which is the whole of what this rule asks for. A line here is a claim that some file cannot
+   * do that, and adding one costs the argument.
+   */
+  const INVISIBLE_ON_PURPOSE: Record<string, string> = {};
+
+  /**
+   * Files that hold one today and should not: path → what it costs to leave it.
+   *
+   * Seven raw ESC bytes across three files, every one of them inside an esbuild error message copied
+   * verbatim into a fixture, every one of them beside a `\n` its own line already spells as an escape —
+   * the same shape #216 found. Each is a one-character edit, the raw byte for its own escape, in
+   * three packages this change does not otherwise touch.
+   *
+   * **This list only shrinks.** A new violation does not belong on it: the fix for a character nobody
+   * can see is to spell it, not to write down that it is there.
+   */
+  /**
+   * Empty, and that is the point.
+   *
+   * Seven raw ESC bytes sat in three esbuild `Transform failed` fixtures when this gate was written —
+   * two in `capabilities/loadFailure.test.ts`, three in `project/config.test.ts` (one inside a regex
+   * literal, where an invisible character is a rule nobody reviewing the pattern can read), and two more
+   * in `vite/src/workerConfig.test.ts`, which is how one unreadable line becomes three. Each was a
+   * one-character edit to `\u001b`, and all seven were made before this landed.
+   *
+   * An eighth lived in shipped source — `vite/src/workerConfig.ts`'s ANSI-stripping regex — and went
+   * with #228's consolidation into core. That one was never deliberate: three copies of one regex had
+   * drifted, two spelling the escape and one carrying the byte, and nobody could see it. It is the
+   * reason this gate exists rather than an argument for it.
+   *
+   * The list stays, empty, so the next raw byte has somewhere to be written down and a reason to be
+   * argued for — and so the test below fails if anyone writes an entry that is no longer true.
+   */
+  const NOT_YET_ESCAPED: Record<string, { costs: string }> = {};
+
+  /** Whether a code point is one this rule refuses. */
+  function refused(code: number): boolean {
+    return (code < 0x20 && !STRUCTURAL.has(code)) || BIDI.includes(code);
+  }
+
+  /** `U+202E`, from a number. The only way one of these is named anywhere in this repository's source. */
+  function named(code: number): string {
+    return `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+
+  /**
+   * The first refused character in `path`, named with its byte offset, or `null`.
+   *
+   * Read as text and scanned to the end — the offset is reported in bytes because that is what a
+   * reviewer needs to find it, and the two differ the moment anything above ASCII precedes it. A file
+   * the index names but the tree lacks carries nothing.
+   */
+  function firstInvisible(path: string): string | null {
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      if (refused(code)) return `${named(code)} at byte ${new TextEncoder().encode(text.slice(0, index)).length}`;
+    }
+    return null;
+  }
+
+  test("it sees one wherever it sits, including past the point git stops looking", async () => {
+    // Built, never typed — see this block's opening note. `const a = "x` is twelve characters, so the
+    // offset is stated rather than derived, and a change to either would have to be deliberate.
+    const override = String.fromCharCode(0x202e);
+    const bell = String.fromCharCode(0x07);
+    const near = await file("near.ts", `const a = "x${override}y";\n`);
+    const padding = "// padding\n".repeat(900);
+    const far = await file("far.ts", `${padding}const b = "x${bell}y";\n`);
+    expect(firstInvisible(near)).toBe("U+202E at byte 12");
+    expect(firstInvisible(far)).toBe(`U+0007 at byte ${padding.length + 12}`);
+    // Past the window git decides binary from, which is the reason this reads bytes rather than asking.
+    expect(padding.length + 12).toBeGreaterThan(8000);
+  });
+
+  test("and the three characters a text file is made of are not among them", async () => {
+    // A rule that flagged a tab would be turned off within a day, which is the failure mode that matters
+    // most for a gate nobody can visually verify.
+    const clean = await file("clean.ts", 'const c = "x\ty";\r\n// a comment\n');
+    expect(firstInvisible(clean)).toBeNull();
+  });
+
+  test("no committed file carries one", () => {
+    // The scope of `tracked()` is asserted by the gate above, on the same listing.
+    const found: Record<string, string> = {};
+    for (const path of tracked()) {
+      if (path in INVISIBLE_ON_PURPOSE || path in NOT_YET_ESCAPED) continue;
+      const first = firstInvisible(join(REPO_ROOT, path));
+      if (first !== null) found[path] = first;
+    }
+    expect(found, "spell it — `\\u202e`, `\\u001b` — or build it; a raw one is invisible in review").toEqual({});
+  });
+
+  test("and both lists say why, in a sentence somebody has to disagree with", () => {
+    for (const [path, why] of Object.entries(INVISIBLE_ON_PURPOSE)) {
+      expect(why.trim().length, path).toBeGreaterThan(40);
+    }
+    for (const [path, { costs }] of Object.entries(NOT_YET_ESCAPED)) {
+      expect(costs.trim().length, path).toBeGreaterThan(40);
+    }
+  });
+
+  test("the debt list only shrinks", () => {
+    // Three when this rule landed. It cannot rise: a change that needs this number raised is a change
+    // committing a character nobody reviewing it can see, which is the thing being gated.
+    expect(Object.keys(NOT_YET_ESCAPED).length).toBeLessThanOrEqual(3);
+    // And nothing may sit in both lists — "cannot be spelled" and "has not been spelled yet" are
+    // different claims about one character.
+    for (const path of Object.keys(NOT_YET_ESCAPED)) expect(INVISIBLE_ON_PURPOSE[path]).toBeUndefined();
+  });
+
+  test("every path on the debt list is still there, holding what the list says it holds", () => {
+    // A list that outlives the file it names is a list that quietly excuses a path somebody else later
+    // creates. Both halves fail here: a path that was fixed, and a path that was deleted.
+    const stale: string[] = [];
+    for (const path of Object.keys(NOT_YET_ESCAPED)) {
+      if (firstInvisible(join(REPO_ROOT, path)) === null) stale.push(path);
+    }
+    expect(stale, "escaped or gone — take it off the list").toEqual([]);
+  });
+});
+
+/**
  * **The rule: nothing the `plan` job runs may import anything that has to be installed.**
  *
  * `ci.yml`'s `plan` job has no `bun install` step, deliberately — a `turbo --dry=json` run reads the
@@ -747,9 +947,6 @@ describe("no file this repository commits is binary to git", () => {
  * now have to satisfy this rule too, and that is a thing to notice rather than to inherit.
  */
 describe("the plan job runs before `bun install`, so its scripts import only builtins and relative paths", () => {
-  /** The repository. This file lives at `packages/cli/src/ci/`. */
-  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
-
   /** What CI runs, and therefore what the closure starts from. */
   const ENTRY_POINTS = [".github/scripts/crossPackageReads.ts", ".github/scripts/planShards.ts"];
 

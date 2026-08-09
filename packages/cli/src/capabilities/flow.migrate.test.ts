@@ -84,6 +84,7 @@ export function widgets() {
 
 test("add runs the capability's dev migrations and reports what moved", async () => {
   const result = await runAdd({
+    account: null,
     projectDir: dir,
     workerDir: worker,
     project: "acme",
@@ -102,6 +103,7 @@ test("add runs the capability's dev migrations and reports what moved", async ()
 
 test("add --eject copies the source, repoints the import, and still migrates via the local copy", async () => {
   const result = await runAdd({
+    account: null,
     projectDir: dir,
     workerDir: worker,
     project: "acme",

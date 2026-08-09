@@ -171,7 +171,7 @@ describe("classifyCapabilityLoadFailure", () => {
 
   test("a multi-line ANSI diagnostic contributes nothing quotable to action", () => {
     const cause = new Error(
-      "Transform failed with 1 error:\n\n[31m[PARSE_ERROR] [0mUnexpected token\n  ╭─[ /p/x.ts:1:17 ]",
+      "Transform failed with 1 error:\n\n\u001b[31m[PARSE_ERROR] \u001b[0mUnexpected token\n  ╭─[ /p/x.ts:1:17 ]",
     );
     const { action } = classifyCapabilityLoadFailure("storage", "@pithy-sh/storage", cause);
     expect(action).not.toContain("\n");

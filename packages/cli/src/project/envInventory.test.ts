@@ -55,16 +55,18 @@ function paths(): StatePathOptions {
 
 /** The first (or only) Worker's environments. */
 async function environmentsOf(worker = 0) {
-  const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+  const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
   return inv.workers[worker]?.environments ?? [];
 }
 
 describe("buildEnvInventory", () => {
   test("a project with no workers throws a NotFoundError with an action", async () => {
-    await expect(buildEnvInventory({ projectDir: dir, paths: paths() })).rejects.toMatchObject({
+    await expect(buildEnvInventory({ projectDir: dir, paths: paths(), account: null })).rejects.toMatchObject({
       payload: { code: "core/not_found", action: expect.any(String) },
     });
-    await expect(buildEnvInventory({ projectDir: dir, paths: paths() })).rejects.toBeInstanceOf(PithyError);
+    await expect(buildEnvInventory({ projectDir: dir, paths: paths(), account: null })).rejects.toBeInstanceOf(
+      PithyError,
+    );
   });
 
   test("enumerates dev (top-level) plus every env.<name>", async () => {
@@ -73,7 +75,7 @@ describe("buildEnvInventory", () => {
       d1_databases: [],
       env: { staging: {}, prod: {} },
     });
-    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.workers).toHaveLength(1);
     expect(inv.workers[0]).toMatchObject({ worker: "pithy-app", dir: join("apps", "api") });
     const environments = inv.workers[0]?.environments ?? [];
@@ -88,7 +90,7 @@ describe("buildEnvInventory", () => {
       name: "pithy-app",
       d1_databases: [{ binding: "DB", database_id: "db-uuid" }],
     });
-    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.accountId).toBe("acct-9");
     const dev = inv.workers[0]?.environments[0];
     expect(dev?.resources[0]).toMatchObject({
@@ -166,7 +168,7 @@ describe("buildEnvInventory", () => {
       name: "pithy-app",
       d1_databases: [{ binding: "DB", database_id: "db-uuid" }],
     });
-    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.accountId).toBeNull();
     expect(inv.workers[0]?.environments[0]?.workerDashboardUrl).toBeNull();
     expect(inv.workers[0]?.environments[0]?.resources[0]).toMatchObject({ provisioned: true, dashboardUrl: null });
@@ -201,7 +203,7 @@ describe("buildEnvInventory — per Worker", () => {
       kv_namespaces: [{ binding: "PRESENCE", id: "ns-2" }],
     });
 
-    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api", "acme-collab"]);
     expect(inv.workers[0]?.environments.map((e) => e.name)).toEqual(["dev", "prod"]);
     expect(inv.workers[1]?.environments.map((e) => e.name)).toEqual(["dev"]);
@@ -214,16 +216,18 @@ describe("buildEnvInventory — per Worker", () => {
     await writeWorker("api", { name: "acme-api" });
     await writeWorker("collab", { name: "acme-collab" });
 
-    const byName = await buildEnvInventory({ projectDir: dir, paths: paths(), worker: "acme-collab" });
+    const byName = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null, worker: "acme-collab" });
     expect(byName.workers.map((worker) => worker.worker)).toEqual(["acme-collab"]);
 
-    const byDir = await buildEnvInventory({ projectDir: dir, paths: paths(), worker: "collab" });
+    const byDir = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null, worker: "collab" });
     expect(byDir.workers.map((worker) => worker.worker)).toEqual(["acme-collab"]);
   });
 
   test("an unknown --worker names the known ones", async () => {
     await writeWorker("api", { name: "acme-api" });
-    await expect(buildEnvInventory({ projectDir: dir, paths: paths(), worker: "nope" })).rejects.toMatchObject({
+    await expect(
+      buildEnvInventory({ projectDir: dir, paths: paths(), account: null, worker: "nope" }),
+    ).rejects.toMatchObject({
       payload: { code: "core/not_found", action: expect.stringContaining("acme-api") },
     });
   });
@@ -234,7 +238,7 @@ describe("buildEnvInventory — per Worker", () => {
     await mkdir(webDir, { recursive: true });
     await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
 
-    const inv = await buildEnvInventory({ projectDir: dir, paths: paths() });
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);
   });
 });
@@ -261,6 +265,7 @@ describe("buildEnvInventory — a wrangler.jsonc that did not come back", () => 
     const inv = await buildEnvInventory({
       projectDir: dir,
       paths: paths(),
+      account: null,
       discoverWorkers: discovering(["acme-api", "api"], ["gone", "gone"]),
     });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);
@@ -275,9 +280,72 @@ describe("buildEnvInventory — a wrangler.jsonc that did not come back", () => 
     const thrown = (await buildEnvInventory({
       projectDir: dir,
       paths: paths(),
+      account: null,
       discoverWorkers: discovering(["acme-api", "api"], ["broken", "broken"]),
     }).catch((error: unknown) => error)) as PithyError;
     expect(thrown).toBeInstanceOf(PithyError);
     expect(thrown.payload.message).toContain(join(dir, "apps", "broken", "wrangler.jsonc"));
+  });
+});
+
+/**
+ * **Two projects on one machine, naming two accounts, each reading its own file (#226).**
+ *
+ * `cloudflare.<name>.json` is what makes a second account possible; the *pin* is what makes the
+ * nickname mean the same thing twice. This suite is the pair of them at the one seam that prints an
+ * account id: an inventory labelled with the wrong account is not a degraded report, it is a report
+ * about somebody else's tenant with this project's Worker names on it.
+ */
+describe("buildEnvInventory reads the account the project names", () => {
+  /** Write a named account's credentials file — `<config>/cloudflare.<name>.json`. */
+  async function writeNamedAccount(name: string, id: string): Promise<void> {
+    await writeFile(join(configDir, `cloudflare.${name}.json`), JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: id }));
+  }
+
+  beforeEach(async () => {
+    await writeWrangler({ name: "acme-api" });
+    await writeAccountId("acct-default");
+    await writeNamedAccount("leed", "acct-leed");
+    await writeNamedAccount("holt", "acct-holt");
+  });
+
+  test("a project naming no account reads the unnamed file, exactly as before", async () => {
+    const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
+    expect(inv.accountId).toBe("acct-default");
+  });
+
+  test("two projects on one machine each resolve their own account's file", async () => {
+    const leed = await buildEnvInventory({ projectDir: dir, paths: paths(), account: { accountName: "leed" } });
+    const holt = await buildEnvInventory({ projectDir: dir, paths: paths(), account: { accountName: "holt" } });
+    expect([leed.accountId, holt.accountId]).toEqual(["acct-leed", "acct-holt"]);
+    // And neither of them is the default, which is what an omitted account used to resolve to.
+    expect([leed.accountId, holt.accountId]).not.toContain("acct-default");
+  });
+
+  /**
+   * The nickname is local and the pin is in the repository, so the pin is the authority. A file that
+   * holds another account's credentials under this project's nickname is exactly the state two
+   * developers reach by naming the same thing differently — and it refuses here, before a Worker is
+   * read or a link is built, rather than reporting an account nobody in the room chose.
+   */
+  test("a pinned account id the credentials disagree with refuses, and names both", async () => {
+    const thrown = (await buildEnvInventory({
+      projectDir: dir,
+      paths: paths(),
+      account: { accountName: "leed", accountId: "acct-holt" },
+    }).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(thrown.payload.code).toBe("core/conflict");
+    expect(thrown.payload.message).toContain("acct-holt");
+    expect(thrown.payload.message).toContain("acct-leed");
+  });
+
+  test("a pin that agrees is silent", async () => {
+    const inv = await buildEnvInventory({
+      projectDir: dir,
+      paths: paths(),
+      account: { accountName: "leed", accountId: "acct-leed" },
+    });
+    expect(inv.accountId).toBe("acct-leed");
   });
 });

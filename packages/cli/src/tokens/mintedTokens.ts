@@ -163,8 +163,22 @@ async function mintedTokensBase(path: string): Promise<MergeBase<MintedTokens>> 
 /**
  * **The reporting read**, for a caller that wants to know what has been minted and will rewrite nothing.
  *
- * `pithy adopt` is the caller: it reads every destination to say what it would move where. The write
- * that follows goes through {@link writeMintedToken}, which reads its own base through
+ * **It has no production caller today, and that is a true statement about this file rather than dead
+ * code left behind.** `pithy adopt` was the one, until #222 routed its planning pass through
+ * {@link mintedTokensBase} — because a plan computed against a file it could not read is a plan that
+ * may tell an adopter a value is safe to delete. Nothing else reads `tokens.json` at all: #224
+ * established that the `dev-vars` sink's consumer is a person, who opens the file and pastes the
+ * `ci-system` token into CI.
+ *
+ * **It stays because the split is the design, not because something might want it.** #219's whole
+ * argument is that a reporting read and a merge base are different things and a call site must not be
+ * able to reach for the wrong one by accident. Deleting the reporting half would leave the next caller
+ * that wants to *report* on this file with only the strict read — which refuses where reporting should
+ * shrug — and the obvious move then is to re-add a lenient read locally, which is exactly how all five
+ * instances of that defect happened. The command #224 proposes, a `pithy token show` that puts a
+ * minted value on a terminal deliberately, is what this is for.
+ *
+ * The write goes through {@link writeMintedToken}, which reads its own base through
  * {@link mintedTokensBase} — so this answer is never anybody's merge base, and the type says so, since
  * a `MintedTokens` is not a {@link MergeBase} of one (#219).
  *

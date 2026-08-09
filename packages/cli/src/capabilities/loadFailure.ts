@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { isBuildFailureWrapper, prop, rootCause } from "@pithy-sh/core/src/error/cause";
+import {
+  causeMessage,
+  isBuildFailureWrapper,
+  prop,
+  rootCause,
+  safeReason,
+  unresolvedSpecifier,
+} from "@pithy-sh/core/src/error/cause";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
@@ -44,58 +51,17 @@ export interface CapabilityLoadFailure {
   detail: string;
 }
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping the control characters is the point.
-const ANSI = /\u001b\[[0-9;]*m/g;
-
-/** Anything that looks like the start of an absolute path — POSIX, `~`, or a Windows drive. */
-const ABSOLUTE_PATH = /(^|[\s'"(])(\/|~\/|[A-Za-z]:[\\/])/;
-
 /**
- * The thrown value's message, de-coloured — `undefined` when it has none.
+ * The message, de-coloured, for this classifier's own pattern tests — never for output.
  *
- * **Duck-typed, and that is not laxity.** Bun's `ResolveMessage` and `BuildMessage` — the two shapes the
- * shipping `bin` actually catches, since `bin` runs on Bun — are their own classes and are **not**
- * `instanceof Error`. #207 shipped an `instanceof Error` gate that passed its whole suite, because
- * vitest runs on Node and the Bun fixtures were built out of real `Error`s. Anything carrying a string
- * `message` is read here. What may be *said* is decided by {@link safeReason}, on content.
+ * What may be *said* is core's {@link safeReason}, and only core's. The filter that decides whether a
+ * runtime's string is fit to show lived here, in `project/config.ts` and in the vite plugin, in three
+ * near-verbatim copies; whether a string carries a path or a stack frame is a property of the string, and
+ * three surfaces cannot hold three answers to it without two of them being wrong (#228). What stays here
+ * is the policy: which causes this loader recognises, and what it tells an adopter about each.
  */
-function causeMessage(cause: unknown): string | undefined {
-  const message = prop(cause, "message");
-  return typeof message === "string" ? message.replace(ANSI, "") : undefined;
-}
-
-/** The message, de-coloured, for pattern tests only — never for output. */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
-}
-
-/**
- * The cause's own message, but **only when the whole of it is one safe sentence.**
- *
- * A parser's reason (`Expected identifier but found "{"`) is a sentence an adopter acts on; the
- * diagnostic a bundler wraps the same fault in is a multi-line ANSI box quoting an absolute path and a
- * source line, which is throw-site context wearing a message's clothes. They are told apart by content,
- * not provenance. Whatever is dropped here still reaches `detail`, which the CLI renderer never prints.
- */
-function safeReason(cause: unknown): string | undefined {
-  const text = rawMessage(cause).trim();
-  if (text.length === 0 || text.length > 160) return undefined;
-  if (text.includes("\n")) return undefined;
-  if (ABSOLUTE_PATH.test(text)) return undefined;
-  if (/\bat \S+:\d+:\d+/.test(text)) return undefined;
-  return text.replace(/\.$/, "");
-}
-
-/**
- * The specifier that did not resolve. Bun's `ResolveMessage` carries it as a field; Node states it in
- * prose. Taken as a *field* wherever possible — the prose around it names the referrer's absolute path,
- * and that must not travel. The specifier is an import; the referrer is our frame.
- */
-function unresolvedSpecifier(cause: unknown): string | undefined {
-  const field = prop(cause, "specifier");
-  if (typeof field === "string" && field.length > 0) return field;
-  const match = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(rawMessage(cause));
-  return match?.[1];
 }
 
 /** A resolution failure — the module graph, not the module's own code. */
@@ -200,9 +166,10 @@ export function classifyCapabilityLoadFailure(
   }
 
   if (isParseError(cause)) {
-    // Bun's build wrapper carries a count and an absolute path and nothing else. Suppressed on
-    // provenance rather than left to `safeReason`'s content tests — see core's `cause.ts` (#223).
-    const reason = isBuildFailureWrapper(cause) ? undefined : safeReason(cause);
+    // `safeReason` can answer nothing, and Bun's build wrapper — a count and an absolute path, and
+    // never anything else — is one of the reasons it does. That suppression is core's, written once
+    // rather than here and in two other classifiers that each had to be found and patched (#223, #228).
+    const reason = safeReason(cause);
     return failure(
       "broken",
       `The ${capability} capability is installed and will not load.`,

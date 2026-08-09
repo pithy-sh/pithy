@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import {
   type CheckProjectNameOptions,
   checkProjectName,
@@ -443,6 +444,49 @@ describe("checkProjectName", () => {
       probeAccount: async () => new Map([["myapp-prod-db", { exists: true, owner: "acme" }]]),
     });
     expect(check.state).toBe("ok");
+  });
+
+  /**
+   * **Which account gets asked, and that it is this project's (#234).**
+   *
+   * The probe's account was a defaulted parameter and this call site passed nothing, so every verdict was
+   * reached against `<config>/cloudflare.json` whatever the project named. The seam carries the account
+   * now, which is what makes the question askable at all: a stub that took only the candidates could not
+   * have told these two projects apart.
+   */
+  test("the account asked about is the one this project's config names", async () => {
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      'export default { name: "acme", cloudflare: { accountName: "beta", accountId: "beta-acct" } };\n',
+    );
+    await writeWorker("api", {
+      env: { prod: { d1_databases: [{ binding: "DB", database_name: "myapp-prod-db" }] } },
+    });
+
+    const asked: (CloudflareAccountSelection | null)[] = [];
+    await nameCheck({
+      probeAccount: async (_candidates, account) => {
+        asked.push(account);
+        return new Map();
+      },
+    });
+    expect(asked).toEqual([{ accountName: "beta", accountId: "beta-acct" }]);
+  });
+
+  test("a project that names no account passes null — a claim, not an omission", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    await writeWorker("api", {
+      env: { prod: { d1_databases: [{ binding: "DB", database_name: "myapp-prod-db" }] } },
+    });
+
+    const asked: (CloudflareAccountSelection | null)[] = [];
+    await nameCheck({
+      probeAccount: async (_candidates, account) => {
+        asked.push(account);
+        return new Map();
+      },
+    });
+    expect(asked).toEqual([null]);
   });
 });
 

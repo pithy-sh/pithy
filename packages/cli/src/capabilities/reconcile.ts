@@ -17,6 +17,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { z } from "zod";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
@@ -143,6 +144,12 @@ export interface MigrationScope {
   worker: string;
   /** The environment to run against. */
   env: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required (#234): `pithy upgrade --migrate --env staging` reaches a real
+   * D1 through this scope, and the account it reaches it in is the project's, never the default file's.
+   */
+  account: CloudflareAccountSelection | null;
   /** The Worker's composed capabilities — the migration registry. */
   capabilities: Capability[];
 }
@@ -167,8 +174,8 @@ export type RunMigrate = (options: MigrateScope) => Promise<DatabaseRun[]>;
 // The migration entry points fan out over `apps/` themselves; reconcile is already inside that fan-out, so it
 // hands them the single pre-resolved Worker it is reconciling. `projectDir` stays the project root — the local
 // Miniflare store lives at `<root>/.wrangler/state`, shared with `wrangler dev`, never per Worker.
-function scopeFor({ projectDir, workerDir, worker, env, capabilities }: MigrationScope) {
-  return { projectDir, env, workers: [{ name: worker, dir: workerDir, capabilities }] };
+function scopeFor({ projectDir, workerDir, worker, env, capabilities, account }: MigrationScope) {
+  return { projectDir, env, account, workers: [{ name: worker, dir: workerDir, capabilities }] };
 }
 
 const defaultCountPending: CountPending = (scope) => countPendingMigrations(scopeFor(scope));
@@ -196,6 +203,11 @@ export interface BuildReconcilePlanOptions {
    * another Worker contributes nothing. Loaded from this Worker's own `pithy.config.ts` when omitted.
    */
   capabilities?: Capability[];
+  /**
+   * The Cloudflare account this project belongs to, or `null` when it names none. Reaches the plan's one
+   * network-capable step, the pending-migration count, and nothing else (#234).
+   */
+  account: CloudflareAccountSelection | null;
   /** Test seam: count pending migrations without a real Miniflare/D1 run. */
   countPending?: CountPending;
 }
@@ -517,7 +529,14 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
-  const pendingMigrations = await countPending({ projectDir, workerDir, worker: deployedAs, env, capabilities });
+  const pendingMigrations = await countPending({
+    projectDir,
+    workerDir,
+    worker: deployedAs,
+    env,
+    capabilities,
+    account: options.account,
+  });
   // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
   // in its composed set, so the question is per Worker exactly as the rest of the plan is.
   const entitlementGap = await findEntitlementGap(workerDir, capabilities);
@@ -704,6 +723,12 @@ export interface ApplyReconcilePlanOptions {
   project?: string;
   /** The Worker's composed capabilities (libraries + app) — passed to the migration run. */
   capabilities: Capability[];
+  /**
+   * The Cloudflare account this project belongs to, or `null` when it names none. Required (#234) — this
+   * is the write side, and `migrate` on a non-`dev` env runs the project's migrations against a live
+   * schema in whichever account the credentials belong to.
+   */
+  account: CloudflareAccountSelection | null;
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
 }
@@ -722,6 +747,15 @@ export interface CapabilityApplied {
 export interface ReconcileApplied {
   /** The Worker this apply targeted, carried through from the plan so a fan-out report can label it. */
   worker: string;
+  /**
+   * The same Worker's deployed script name, carried through from the plan beside `worker`.
+   *
+   * **Both names, or the payload changes shape with a flag.** `pithy upgrade --json` reports
+   * `applied ?? plan` out of one `workers` array, so a key the plan carried and the apply dropped meant a
+   * consumer that read `deployedAs` worked under `--dry-run` and got `undefined` on the run that actually
+   * wrote something — the mode where being sure which script was reconciled matters most. #231.
+   */
+  deployedAs: string;
   /** Per capability that changed: the bindings and config keys added. */
   perCapability: CapabilityApplied[];
   /** Ejected capabilities, by name — reported, never touched. */
@@ -858,6 +892,7 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
       worker: plan.worker,
       env,
       capabilities,
+      account: options.account,
       project: migrateAs,
     });
     migrated = true;
@@ -865,6 +900,7 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
 
   return {
     worker: plan.worker,
+    deployedAs: plan.deployedAs,
     perCapability,
     ejectedSkipped: plan.ejectedSkipped,
     migrated,

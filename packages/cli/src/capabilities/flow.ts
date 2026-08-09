@@ -5,6 +5,7 @@ import { basename } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
@@ -130,6 +131,12 @@ export interface MigrateTarget {
   worker: string;
   /** The project name every database this run touches is claimed for — `add` writes, so it must name itself. */
   project: string;
+  /**
+   * The Cloudflare account this project belongs to, or `null` when it names none. `add`'s migrate is a
+   * `dev` run today, so `null` costs it nothing; it is threaded because the step it feeds
+   * (`migrateProject`) can reach a live schema and must never do so under an account nobody named (#234).
+   */
+  account: CloudflareAccountSelection | null;
 }
 
 /** Run the target Worker's dev migrations. Injectable for tests. */
@@ -146,12 +153,13 @@ const defaultInstall: InstallStep = (input) => installPackage(input);
  * the one `wrangler dev` uses. The config is re-read here, after wiring, so the migration that just
  * arrived is in the registry.
  */
-const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, project }) => {
+const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, project, account }) => {
   const config = await loadWorkerConfig(workerDir);
   const runs = await migrateProject({
     projectDir,
     env: "dev",
     project,
+    account,
     workers: [{ name: worker, dir: workerDir, capabilities: allCapabilities(config) }],
   });
   return runs[0]?.databases ?? [];
@@ -176,6 +184,13 @@ export interface RunAddOptions {
    * the OS tmpdir, so an import there fails with an error about the config rather than about the test.
    */
   project: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
+   * `null` when it names none. Required (#234): `pithy add secrets` records the account's one
+   * `SECRETS_STORE_ID`, and it recorded the *default* account's for as long as `bootstrapAdd`'s
+   * parameter was optional and this one did not exist.
+   */
+  account: CloudflareAccountSelection | null;
   /** The capability name, e.g. `auth`. */
   capability: string;
   /** Raw `--set key=value` overrides; coerced against the manifest's options. */
@@ -276,11 +291,17 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       });
     }
 
-    const databases = await migrate({ projectDir, workerDir, worker, project: options.project });
+    const databases = await migrate({
+      projectDir,
+      workerDir,
+      worker,
+      project: options.project,
+      account: options.account,
+    });
 
     // Last, after every step that can fail: a dev key is minted only into a project the add finished
     // on. It is absent-only anyway, so an earlier failure costs a re-run rather than a stranded value.
-    const notes = await bootstrapAdd({ projectDir, manifest });
+    const notes = await bootstrapAdd({ projectDir, manifest, account: options.account });
 
     await audit({
       action: "capability/added",

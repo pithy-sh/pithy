@@ -3,7 +3,15 @@
 
 import { access } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { isBuildFailureWrapper, prop, rootCause } from "@pithy-sh/core/src/error/cause";
+import {
+  causeMessage,
+  failurePosition,
+  isBuildFailureWrapper,
+  prop,
+  rootCause,
+  safeReason,
+  unresolvedSpecifier,
+} from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { runnerImport } from "vite";
 
@@ -29,10 +37,17 @@ export interface LoadedWorkerConfig {
  * restated here, with the same rule behind it: **a `catch` reachable by more than one underlying failure
  * may not name a single specific remedy.** Classify, or hedge. The convention is in `docs/CONVENTIONS.md`.
  *
- * What the two copies *cannot* be allowed to disagree about is what a runtime does to an error on its way
- * out — a fact neither copy can derive and both got wrong. That part is `@pithy-sh/core`'s `rootCause`,
- * imported by all three classifiers (#223), and core is the one package this plugin already depends on.
- * The rest stays restated, because the two refusals are not the same sentence and never were.
+ * What the copies *cannot* be allowed to disagree about is anything that is not a sentence. Two kinds of
+ * that were found, one issue apart, and both live in `@pithy-sh/core` — the one package this plugin
+ * already depends on. What a runtime does to an error on its way out is the first: `rootCause`, `prop`
+ * and `isBuildFailureWrapper`, facts no copy can derive and every copy got wrong (#223). Whether one of
+ * its strings is safe to show is the second: `safeReason`, `failurePosition`, `unresolvedSpecifier` and
+ * `causeMessage`, because a path or a stack frame is a property of the string and not of the surface
+ * quoting it — three near-verbatim copies of that filter meant the hole #223 found in it had to be closed
+ * three times (#228).
+ *
+ * What stays restated here is the policy: which causes this loader recognises, and what it says about
+ * each. Those are genuinely per-surface, and this plugin still cannot import the CLI's.
  */
 export type WorkerConfigFailureKind =
   /** An import in the config does not resolve. `bun install`, or a corrected specifier. */
@@ -52,69 +67,17 @@ export interface WorkerConfigFailure {
   action: string;
 }
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping the control characters is the point.
-const ANSI = /\[[0-9;]*m/g;
-
-/** Anything that looks like the start of an absolute path — POSIX, `~`, or a Windows drive. */
-const ABSOLUTE_PATH = /(^|[\s'"(])(\/|~\/|[A-Za-z]:[\\/])/;
-
 /**
- * The thrown value's message, de-coloured — `undefined` when it has none.
+ * The message, de-coloured, for this classifier's own pattern tests — never for output.
  *
- * **Duck-typed, and that is not laxity.** `pithy dev` runs this plugin under **Bun**, whose
- * `ResolveMessage` and `BuildMessage` are their own classes and are **not** `instanceof Error`. #207's
- * first draft gated on `instanceof Error`, passed its whole suite under vitest on Node, and dropped the
- * parser's own sentence on the runtime that ships. Anything carrying a string `message` is read here.
+ * What may be *said* is core's {@link safeReason}, and only core's. This plugin cannot import the CLI's
+ * refusals and never could, which is why the sentences below are restated here — but the *filter* those
+ * sentences pass a string through is not a sentence. Whether a string carries an absolute path or half a
+ * parser's ANSI box is a property of the string, so it is decided in `@pithy-sh/core`, the one package
+ * this plugin depends on, and the suppression #223 had to write three times is written once (#228).
  */
-function causeMessage(cause: unknown): string | undefined {
-  const message = prop(cause, "message");
-  return typeof message === "string" ? message.replace(ANSI, "") : undefined;
-}
-
-/** The message, de-coloured, for pattern tests only — never for output. */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
-}
-
-/**
- * The cause's own message, but **only when the whole of it is one safe sentence.**
- *
- * A parser's reason is a sentence the adopter acts on; the diagnostic vite wraps the same fault in is a
- * multi-line ANSI box quoting the file's absolute path and its source line, which is throw-site context
- * wearing a message's clothes. Told apart by content, not provenance. What is dropped still reaches
- * `detail`, which the CLI renderer never prints and the HTTP codec strips.
- */
-function safeReason(cause: unknown): string | undefined {
-  const text = rawMessage(cause).trim();
-  if (text.length === 0 || text.length > 160) return undefined;
-  if (text.includes("\n")) return undefined;
-  if (ABSOLUTE_PATH.test(text)) return undefined;
-  if (/\bat \S+:\d+:\d+/.test(text)) return undefined;
-  return text.replace(/\.$/, "");
-}
-
-/**
- * The specifier that did not resolve. Bun's `ResolveMessage` carries it as a field; Node states it in
- * prose. Taken as a field wherever possible — the prose around it names the referrer's absolute path,
- * and that is our frame, not the adopter's import.
- */
-function unresolvedSpecifier(cause: unknown): string | undefined {
-  const field = prop(cause, "specifier");
-  if (typeof field === "string" && field.length > 0) return field;
-  const match = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(rawMessage(cause));
-  return match?.[1];
-}
-
-/** `line`/`column`, from the structured position where a runtime gives one, else from `…:LINE:COL`. */
-function failurePosition(cause: unknown): { line: number; column: number } | undefined {
-  const position = prop(cause, "position");
-  const line = prop(position, "line");
-  const column = prop(position, "column");
-  if (typeof line === "number" && line > 0 && typeof column === "number") return { line, column };
-  // Only the two numbers are lifted out — never the path they are appended to.
-  const match = /:(\d+):(\d+)/.exec(rawMessage(cause));
-  if (!match?.[1] || !match[2]) return undefined;
-  return { line: Number(match[1]), column: Number(match[2]) };
 }
 
 function isUnresolvedImport(cause: unknown): boolean {
@@ -161,14 +124,10 @@ export function classifyWorkerConfigFailure(wrapped: unknown): WorkerConfigFailu
   }
 
   if (isParseError(cause)) {
-    // Bun's build wrapper says only `N errors building "<path>"` — a count that is not the adopter's
-    // problem and a path that must not travel. Suppressed on **provenance**: `safeReason` and
-    // `failurePosition` test content, which is right for a diagnostic that might be safe, and this one
-    // never is. A path quoted without a leading slash would pass the absolute-path test and drag a
-    // fabricated `Line 12, column 5` out of its own characters with it.
-    const opaque = isBuildFailureWrapper(cause);
-    const reason = opaque ? undefined : safeReason(cause);
-    const at = opaque ? undefined : failurePosition(cause);
+    // Both of these can answer "nothing", and Bun's build wrapper — a count and a path, and never a
+    // reason or a position — is one of the reasons they do. That suppression is core's, once (#223, #228).
+    const reason = safeReason(cause);
+    const at = failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
     return {
       kind: "parse-error",
