@@ -213,6 +213,7 @@ describe("a freshly scaffolded project", () => {
 describe("after pithy add secrets", () => {
   beforeAll(async () => {
     await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: join(dir, "apps", WORKER),
       worker: WORKER,

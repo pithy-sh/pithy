@@ -40,7 +40,7 @@ describe("openSeedDriver", () => {
         r2_buckets: [{ binding: "ASSETS", bucket_name: "assets-local" }],
       });
 
-      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "dev" });
       try {
         const row = await driver.d1("DB").prepare("SELECT 1 AS n").first<{ n: number }>();
         expect(row?.n).toBe(1);
@@ -76,7 +76,7 @@ describe("openSeedDriver", () => {
       await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
       await writeFile(join(collabDir, "wrangler.jsonc"), wrangler);
 
-      const first = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      const first = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "dev" });
       try {
         await first.d1("DB").prepare("CREATE TABLE shared (id integer primary key)").run();
         const kv = first.kv("CACHE");
@@ -85,7 +85,7 @@ describe("openSeedDriver", () => {
         await first.dispose();
       }
 
-      const second = await openSeedDriver({ workerDir: collabDir, persistRoot: dir, env: "dev" });
+      const second = await openSeedDriver({ account: null, workerDir: collabDir, persistRoot: dir, env: "dev" });
       try {
         const row = await second.d1("DB").prepare("SELECT count(*) AS n FROM shared").first<{ n: number }>();
         expect(row?.n).toBe(0); // the other worker's table is here — one store, not two
@@ -103,7 +103,7 @@ describe("openSeedDriver", () => {
       // `pithy dev` never opens, so the driver must land on the same file wrangler serves: `DB`.
       await writeWrangler({ d1_databases: [{ binding: "DB", database_name: "acme-dev-db" }] });
 
-      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "dev" });
       try {
         await driver.d1("DB").prepare("CREATE TABLE seeded (id integer primary key)").run();
       } finally {
@@ -129,7 +129,7 @@ describe("openSeedDriver", () => {
 
     test("an undeclared binding fails with an actionable error", async () => {
       await writeWrangler({ d1_databases: [] });
-      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "dev" });
       try {
         expect(() => driver.d1("DB")).toThrow(PithyError);
         expect(() => driver.d1("DB")).toThrow(/binding "DB"/);
@@ -142,7 +142,7 @@ describe("openSeedDriver", () => {
       vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
       await writeWrangler({});
-      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "dev" });
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "dev" });
       try {
         expect(() => driver.images()).toThrow(/credentials/i);
       } finally {
@@ -175,6 +175,7 @@ describe("openSeedDriver", () => {
       const r2Args: { binding: string; bucketName: string }[] = [];
 
       const driver = await openSeedDriver({
+        account: null,
         workerDir,
         persistRoot: dir,
         env: "staging",
@@ -212,6 +213,7 @@ describe("openSeedDriver", () => {
     test("a binding with no id for the env fails with an actionable error, without building a client", async () => {
       await writeWrangler({ env: { staging: { d1_databases: [{ binding: "DB" }] } } });
       const driver = await openSeedDriver({
+        account: null,
         workerDir,
         persistRoot: dir,
         env: "staging",
@@ -228,7 +230,7 @@ describe("openSeedDriver", () => {
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
       await writeWrangler({ env: { staging: { d1_databases: [{ binding: "DB", database_id: "db-staging" }] } } });
 
-      const driver = await openSeedDriver({ workerDir, persistRoot: dir, env: "staging" });
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "staging" });
       expect(() => driver.d1("DB")).toThrow(/credentials/i);
     });
   });

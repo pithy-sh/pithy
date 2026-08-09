@@ -5,11 +5,16 @@ import { describe, expect, test, vi } from "vitest";
 import { type MigrateProjectOptions, migrateProject, type WorkerMigrationRun } from "../migrations/run";
 import migrate, { formatMigrateReport } from "./migrate";
 
+/** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
+const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
+
 // The root config is the only thing stubbed: `requireProjectName` stays real, so the wiring test
 // proves the command normalizes the configured name the same way every other resource name is.
+// `projectCloudflareAccount` stands in for a config that names an account — the one source of a value.
 vi.mock("../project/config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/config")>()),
-  loadProject: async () => ({ name: "Acme Corp" }),
+  loadProject: async () => ({ name: "Acme Corp", cloudflare: ACCOUNT }),
+  projectCloudflareAccount: async () => ACCOUNT,
 }));
 
 vi.mock("../migrations/run", async (importOriginal) => ({
@@ -73,6 +78,26 @@ describe("migrate command", () => {
     expect((options as MigrateProjectOptions).project).toBe("acme-corp");
     // And the --json line names it, so an agent reads which project owns what it just migrated.
     expect(JSON.parse(String(written.at(-1)))).toMatchObject({ command: "migrate", project: "acme-corp" });
+  });
+
+  /**
+   * **The one that matters, and the run's own docstring says why (#226).**
+   *
+   * `MigrationFanOutOptions.account`: *"A remote migration alters a real schema, so the wrong account's
+   * credentials would run it against another company's database."* The parameter was added, documented
+   * with precisely that hazard, and this command did not supply it — so `pithy migrate --env staging`
+   * in a project naming a non-default account resolved `<config>/cloudflare.json` and migrated whatever
+   * those credentials reached.
+   */
+  test("hands the run the account the project names, so a remote migration cannot reach the default file", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await migrate.run?.({ args: { env: "staging", rollback: false, json: true } } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+    const [options] = vi.mocked(migrateProject).mock.calls.at(-1) ?? [];
+    expect((options as MigrateProjectOptions).account).toEqual(ACCOUNT);
   });
 
   describe("output", () => {

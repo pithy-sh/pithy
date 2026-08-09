@@ -22,8 +22,20 @@ describe("seedProject", () => {
     test("a plain re-seed does not refresh a changed fixture value", async () => {
       await h.writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await migrateProject({
+        account: null,
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+        project: "acme",
+      });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
 
       const edited = [
         dataCapability(
@@ -34,7 +46,13 @@ describe("seedProject", () => {
           ],
         ),
       ];
-      await seedProject({ project: "acme", workers: [h.api(edited)], projectDir: h.projectDir, env: "dev" });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(edited)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
 
       const store = await h.openLocal();
       try {
@@ -50,8 +68,20 @@ describe("seedProject", () => {
     test("refreshes a changed fixture value: the new value lands, with no duplicate row", async () => {
       await h.writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await migrateProject({
+        account: null,
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+        project: "acme",
+      });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
 
       const edited = [
         dataCapability(
@@ -63,6 +93,7 @@ describe("seedProject", () => {
         ),
       ];
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(edited)],
         projectDir: h.projectDir,
@@ -85,8 +116,20 @@ describe("seedProject", () => {
     test("drops and recreates the schema — a hand-inserted row is gone afterwards", async () => {
       await h.writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await migrateProject({
+        account: null,
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+        project: "acme",
+      });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
 
       let store = await h.openLocal();
       try {
@@ -96,6 +139,7 @@ describe("seedProject", () => {
       }
 
       await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -121,10 +165,23 @@ describe("seedProject", () => {
     test("--dry-run reports the reset and writes nothing", async () => {
       await h.writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
-      await seedProject({ project: "acme", workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev" });
+      await migrateProject({
+        account: null,
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+        project: "acme",
+      });
+      await seedProject({
+        account: null,
+        project: "acme",
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+      });
 
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
@@ -147,6 +204,7 @@ describe("seedProject", () => {
     test("on a non-dev env without --yes throws a PithyError — the gate is never weaker", async () => {
       await h.writeWrangler(localWrangler);
       const failure = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -160,6 +218,7 @@ describe("seedProject", () => {
     test("--yes alone cannot authorize a non-dev reset — that flag only ever authorizes an additive seed", async () => {
       await h.writeWrangler(localWrangler);
       const failure = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -178,6 +237,7 @@ describe("seedProject", () => {
       await h.writeWrangler(localWrangler);
       const attempt = (confirmReset: string) =>
         seedProject({
+          account: null,
           project: "acme",
           workers: [h.api([dataCapability()])],
           projectDir: h.projectDir,
@@ -196,6 +256,7 @@ describe("seedProject", () => {
     test("dev needs no reset phrase — a local store is what reset is for", async () => {
       await h.writeWrangler(localWrangler);
       const report = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -209,6 +270,7 @@ describe("seedProject", () => {
       await h.writeWrangler(localWrangler);
       const events: CliAuditEvent[] = [];
       await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([dataCapability()])],
         projectDir: h.projectDir,
@@ -253,6 +315,7 @@ describe("seedProject", () => {
 
       const events: CliAuditEvent[] = [];
       const failure = await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api([broken])],
         projectDir: h.projectDir,
@@ -274,10 +337,17 @@ describe("seedProject", () => {
     test("a plain seed audits nothing — only a reset is destructive enough to record", async () => {
       await h.writeWrangler(localWrangler);
       const capabilities = [dataCapability()];
-      await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+      await migrateProject({
+        account: null,
+        workers: [h.api(capabilities)],
+        projectDir: h.projectDir,
+        env: "dev",
+        project: "acme",
+      });
 
       const events: CliAuditEvent[] = [];
       await seedProject({
+        account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,

@@ -9,6 +9,7 @@ import {
   type CountPending,
   type ReconcilePlan,
 } from "../capabilities/reconcile";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -108,6 +109,12 @@ export interface ProjectHealthOptions {
   projectDir: string;
   /** The environment the migration check is computed for. */
   env: string;
+  /**
+   * The Cloudflare account this project belongs to, or `null` when it names none. `doctor` already
+   * resolves it for the `Cloudflare:` block; the pending-migration count inside each plan is the read
+   * that needs it, and it was reading whichever credentials file the machine defaulted to (#234).
+   */
+  account: CloudflareAccountSelection | null;
   /** The Workers to check, in report order. Doctor resolves them once and passes them in. */
   workers: HealthWorker[];
   /** Test seam: count pending migrations without a real Miniflare/D1 run. */
@@ -185,6 +192,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
       workerDir: worker.dir,
       worker: worker.name,
       env: options.env,
+      account: options.account,
       capabilities: worker.capabilities,
       countPending: options.countPending,
     });

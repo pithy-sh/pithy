@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { projectCloudflareAccount } from "../project/config";
 import { buildEnvInventory, type EnvInventory, type EnvResource } from "../project/envInventory";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim, link, supportsHyperlinks } from "../terminal/style";
@@ -85,8 +86,13 @@ export default defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      // The account first, from the project's own config: the inventory *prints* an account id and
+      // builds every dashboard link out of it, so resolving one this project did not claim labels its
+      // bindings with another company's account and links there (#206).
       const inventory = await buildEnvInventory({
-        projectDir: process.cwd(),
+        projectDir,
+        account: await projectCloudflareAccount(projectDir),
         ...(args.worker ? { worker: args.worker } : {}),
       });
       if (args.json) {

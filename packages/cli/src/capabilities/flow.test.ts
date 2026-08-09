@@ -135,6 +135,7 @@ describe("runAdd", () => {
     const migrate = vi.fn(async () => databases);
 
     const result = await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -159,6 +160,7 @@ describe("runAdd", () => {
       workerDir: worker,
       worker: DEFAULT_WORKER,
       project: "acme",
+      account: null,
     });
     expect(result).toEqual({
       capability: "auth",
@@ -182,6 +184,7 @@ describe("runAdd", () => {
     // has in hand on a project named `acme`. They must not collapse into one field: `worker` is what
     // `--worker` accepts and what a caller can act on, `deployedAs` is what Cloudflare shows.
     const result = await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       worker: "acme-api",
@@ -208,6 +211,7 @@ describe("runAdd", () => {
     });
 
     const result = await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -232,6 +236,7 @@ describe("runAdd", () => {
 
   test("threads the project name through, so add proposes <project>-<env>-<binding>", async () => {
     const result = await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -265,6 +270,7 @@ describe("runAdd", () => {
     const install = vi.fn(async () => ({ packageManager: "npm" }));
     await expect(
       runAdd({
+        account: null,
         projectDir: dir,
         workerDir: worker,
         project: "acme",
@@ -295,6 +301,7 @@ describe("runAdd", () => {
     // the assertion the outcome could not make: nothing spawned.
     const spawned: string[] = [];
     const result = await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -319,6 +326,7 @@ describe("runAdd", () => {
     const prompt = vi.fn(async (_manifest, provided) => ({ ...provided, basePath: "/from-prompt" }));
 
     await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -336,6 +344,7 @@ describe("runAdd", () => {
   test("is idempotent — a second run leaves config and wrangler unchanged", async () => {
     const install = vi.fn(installManifest(optionManifest));
     await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -347,6 +356,7 @@ describe("runAdd", () => {
     const wrangler = await readFile(join(worker, "wrangler.jsonc"), "utf8");
 
     await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -363,6 +373,7 @@ describe("runAdd", () => {
     const events: CliAuditEvent[] = [];
 
     await runAdd({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       project: "acme",
@@ -392,6 +403,7 @@ describe("runAdd", () => {
 
     await expect(
       runAdd({
+        account: null,
         projectDir: dir,
         workerDir: worker,
         project: "acme",

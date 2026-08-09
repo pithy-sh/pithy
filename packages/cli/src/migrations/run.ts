@@ -76,8 +76,15 @@ export interface MigrationFanOutOptions {
   /**
    * The Cloudflare account this project belongs to. A remote migration alters a real schema, so the
    * wrong account's credentials would run it against another company's database (#206).
+   *
+   * **Required (#234).** `null` is the answer for a project that names no account, and it has to be
+   * written down: `account?:` let seven callers — `capabilities/flow.ts`, `capabilities/reconcile.ts`,
+   * `capabilities/remove.ts`, `feature/provision.ts`, `feature/create.ts`, `commands/feature.ts` and
+   * `seed/run.ts` — reach a live D1 without ever saying whose it was, and none of those omissions was
+   * visible in a diff. A `dev` run never touches the network, so `null` there costs nothing; a
+   * `--env staging` run is the one this exists for.
    */
-  account?: CloudflareAccountSelection | null;
+  account: CloudflareAccountSelection | null;
   /** Target environment. `dev` runs locally via Miniflare; staging/prod run over the D1 REST API. */
   env: string;
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
@@ -670,7 +677,7 @@ async function contextFor(options: MigrationFanOutOptions & { project?: string }
     }),
     groupWorkers,
     persistRoot: options.projectDir,
-    account: options.account ?? null,
+    account: options.account,
     env: options.env,
     ...(options.project !== undefined ? { project: options.project } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
@@ -766,9 +773,11 @@ export interface DropCapabilityOptions {
   persistRoot: string;
   /**
    * The Cloudflare account this project belongs to. A remote drop reverses migrations against a real
-   * database, so it must be the account the project claims and no other (#206).
+   * database, so it must be the account the project claims and no other (#206). Required (#234): this
+   * is the most destructive thing `pithy remove` can do, and `defaultRemoveSteps` named no account for
+   * as long as the field was optional.
    */
-  account?: CloudflareAccountSelection | null;
+  account: CloudflareAccountSelection | null;
   /** Target environment. `dev` runs locally via Miniflare; staging/prod over the D1 REST API. */
   env: string;
   /**
@@ -803,7 +812,7 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     // other capability's tables and ledger rows, on this D1 or a Worker sharing it, stay untouched.
     groupWorkers: [worker],
     persistRoot: options.persistRoot,
-    account: options.account ?? null,
+    account: options.account,
     env: options.env,
     project: options.project,
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),

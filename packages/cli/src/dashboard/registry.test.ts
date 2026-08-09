@@ -197,6 +197,7 @@ describe("openConnectionRegistry", () => {
     } as unknown as SeedDriver;
 
     const registry = await openConnectionRegistry({
+      account: null,
       projectDir,
       env: "dev",
       openDriver: async (options) => {
@@ -216,7 +217,9 @@ describe("openConnectionRegistry", () => {
 
   test("no worker declares DB — an actionable error, not a crash", async () => {
     await writeFile(join(projectDir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "api" }));
-    const error = await openConnectionRegistry({ projectDir, env: "dev" }).catch((caught: unknown) => caught);
+    const error = await openConnectionRegistry({ account: null, projectDir, env: "dev" }).catch(
+      (caught: unknown) => caught,
+    );
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.action).toBeTruthy();
   });

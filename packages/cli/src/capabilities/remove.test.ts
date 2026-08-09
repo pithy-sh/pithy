@@ -555,6 +555,7 @@ describe("removeCapability", () => {
     await mkdir(source, { recursive: true });
     await writeFile(join(source, "index.ts"), "export default {};\n");
     const real = defaultRemoveSteps({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [],
@@ -686,6 +687,7 @@ describe("removeCapability", () => {
     const sibling = await fixture({ workerDir: join(dir, "apps", "web") });
     const uninstalled: string[] = [];
     const real = defaultRemoveSteps({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],
@@ -716,6 +718,7 @@ describe("removeCapability", () => {
     await fixture();
     const uninstalled: string[] = [];
     const real = defaultRemoveSteps({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],
@@ -744,6 +747,7 @@ describe("removeCapability", () => {
     await fixture();
     await fixture({ workerDir: join(dir, "apps", "web"), ejected: true });
     const real = defaultRemoveSteps({
+      account: null,
       projectDir: dir,
       workerDir: worker,
       loadCapabilities: async () => [cap("turnstile")],

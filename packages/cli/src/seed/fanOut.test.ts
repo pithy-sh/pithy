@@ -46,9 +46,15 @@ describe("seedProject", () => {
     test("runs each worker's own fixtures and reports per worker", async () => {
       await h.writeWrangler(localWrangler);
       const workers = [h.api([dataCapability()]), await h.worker("collab", [collabCapability()])];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+      await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      const report = await seedProject({ project: "acme", projectDir: h.projectDir, workers, env: "dev" });
+      const report = await seedProject({
+        account: null,
+        project: "acme",
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+      });
       expect(report.workers.map((entry) => entry.worker)).toEqual(["api", "collab"]);
       expect(report.workers[0]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
       expect(report.workers[1]?.sets).toEqual([
@@ -75,9 +81,15 @@ describe("seedProject", () => {
     test("a set two workers compose runs once, and the second worker says so", async () => {
       await h.writeWrangler(localWrangler);
       const workers = [h.api([dataCapability()]), await h.worker("collab", [dataCapability()])];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+      await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      const report = await seedProject({ project: "acme", projectDir: h.projectDir, workers, env: "dev" });
+      const report = await seedProject({
+        account: null,
+        project: "acme",
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+      });
       expect(report.workers[0]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
       expect(report.workers[1]?.sets).toEqual([]);
       expect(report.workers[1]?.shared).toEqual(["1000_app_demo"]);
@@ -101,9 +113,15 @@ describe("seedProject", () => {
         kv_namespaces: [{ binding: "CACHE", id: "cache-collab" }],
       });
       const workers = [h.api([dataCapability()]), collab];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+      await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      const report = await seedProject({ project: "acme", projectDir: h.projectDir, workers, env: "dev" });
+      const report = await seedProject({
+        account: null,
+        project: "acme",
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+      });
       expect(report.workers[1]?.shared).toEqual([]);
       expect(report.workers[1]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
 
@@ -127,9 +145,10 @@ describe("seedProject", () => {
     test("--worker narrows the fan-out to one worker", async () => {
       await h.writeWrangler(localWrangler);
       const workers = [h.api([dataCapability()]), await h.worker("collab", [collabCapability()])];
-      await migrateProject({ projectDir: h.projectDir, workers, env: "dev", project: "acme" });
+      await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
       const report = await seedProject({
+        account: null,
         project: "acme",
         projectDir: h.projectDir,
         workers,
@@ -153,6 +172,7 @@ describe("seedProject", () => {
       const workers = [h.api([dataCapability()]), await h.worker("collab", [collabCapability()])];
 
       const report = await seedProject({
+        account: null,
         project: "acme",
         projectDir: h.projectDir,
         workers,

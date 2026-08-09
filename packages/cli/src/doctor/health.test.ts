@@ -35,6 +35,7 @@ const collab = { name: "collab", dir: "/p/apps/collab", capabilities: [] };
 describe("buildProjectHealth", () => {
   test("all checks pass on a clean plan", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -63,6 +64,7 @@ describe("buildProjectHealth", () => {
       ],
     };
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -88,6 +90,7 @@ describe("buildProjectHealth", () => {
       ],
     };
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -101,6 +104,7 @@ describe("buildProjectHealth", () => {
 
   test("migrations check surfaces the pending count and env", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -112,6 +116,7 @@ describe("buildProjectHealth", () => {
 
   test("entitlements check surfaces the gating files of a Worker with no provider composed", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -125,6 +130,7 @@ describe("buildProjectHealth", () => {
 
   test("no entitlement gap is a passing check, not an absent one", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -142,6 +148,7 @@ describe("buildProjectHealth", () => {
     const build = planStub({ api: clean("api"), collab: clean("collab") });
     const countPending = vi.fn(async () => 0);
     await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "staging",
       workers: [api, collab],
@@ -153,6 +160,7 @@ describe("buildProjectHealth", () => {
       workerDir: "/p/apps/api",
       worker: "api",
       env: "staging",
+      account: null,
       capabilities: [],
       countPending,
     });
@@ -161,6 +169,7 @@ describe("buildProjectHealth", () => {
       workerDir: "/p/apps/collab",
       worker: "collab",
       env: "staging",
+      account: null,
       capabilities: [],
       countPending,
     });
@@ -170,6 +179,7 @@ describe("buildProjectHealth", () => {
 describe("buildProjectHealth — per Worker", () => {
   test("reports one entry per worker, in the order given", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api, collab],
@@ -187,6 +197,7 @@ describe("buildProjectHealth — per Worker", () => {
       ],
     };
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api, collab],
@@ -198,7 +209,13 @@ describe("buildProjectHealth — per Worker", () => {
   });
 
   test("a project with no workers is vacuously healthy — nothing was checked", async () => {
-    const health = await buildProjectHealth({ projectDir: "/p", env: "dev", workers: [], buildPlan: planStub({}) });
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [],
+      buildPlan: planStub({}),
+    });
     expect(health).toEqual({ ok: true, workers: [], manifests: { ok: true, faults: [] } });
   });
 });
@@ -213,6 +230,7 @@ describe("buildProjectHealth — per Worker", () => {
 describe("buildProjectHealth — manifests", () => {
   test("a healthy install reports no manifest faults and stays ok", async () => {
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api],
@@ -226,6 +244,7 @@ describe("buildProjectHealth — manifests", () => {
   test("a manifest that is present and invalid fails the project, naming the package and why", async () => {
     const fault = { package: "@pithy-sh/audit", reason: "configOptions[0].key — not a bare identifier" };
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api, collab],
@@ -242,6 +261,7 @@ describe("buildProjectHealth — manifests", () => {
     const fault = { package: "@pithy-sh/audit", reason: "why" };
     const scan = vi.fn(async () => ({ manifests: [], faults: [fault] }));
     const health = await buildProjectHealth({
+      account: null,
       projectDir: "/p",
       env: "dev",
       workers: [api, collab],

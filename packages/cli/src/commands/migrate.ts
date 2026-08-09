@@ -3,7 +3,7 @@
 
 import { defineCommand } from "citty";
 import { migrateProject, type WorkerMigrationRun } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -54,9 +54,15 @@ export default defineCommand({
       // checks against it, so a fallback that differs between checkouts would lock a project out of
       // its own database. `requireProjectName` refuses to guess (docs/CLI.md §3.3).
       const project = requireProjectName(await loadProject(projectDir));
+      // And the account this project belongs to, before anything resolves a credential. `migrateProject`
+      // states the hazard in its own words: a remote migration alters a real schema, so the wrong
+      // account's credentials would run it against another company's database (#206). This command is
+      // the one that has to supply the answer, and for a long while it did not.
+      const account = await projectCloudflareAccount(projectDir);
       const workers = await migrateProject({
         projectDir,
         project,
+        account,
         env,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
         rollback: args.rollback,

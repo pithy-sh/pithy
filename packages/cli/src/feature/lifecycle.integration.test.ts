@@ -224,7 +224,9 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
     // from the live account — and reports them as provisioned with the right dashboard links.
     if (!projectDir) throw new Error("unreachable: suite is credential-gated");
 
-    const inventory = await buildEnvInventory({ projectDir });
+    // `account: null` because this fixture names none: it is a scratch project on a machine with one
+    // account, which is the ordinary case and the state the unnamed credentials file exists for (#226).
+    const inventory = await buildEnvInventory({ projectDir, account: null });
 
     // The account it reports is the account this run actually provisioned in — the fixture's own
     // `.dev.vars`, not whatever the ambient environment says.

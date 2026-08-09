@@ -224,11 +224,17 @@ export default defineCommand({
         ...(args.worker === undefined ? {} : { worker: args.worker }),
       });
 
+      // Resolved once and used three times over: the store id `add secrets` records, the migrate it
+      // finishes with, and the audit trail. Every one of them belongs to the account this project names
+      // rather than to whichever `cloudflare.json` the machine happens to hold (#234).
+      const account = await projectCloudflareAccount(projectDir);
+
       const result = await runAdd({
         projectDir,
         workerDir: target.dir,
         worker: target.name,
         project: await proposalProject(projectDir),
+        account,
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
         prompt: interactive ? promptConfigValues : undefined,
@@ -236,7 +242,7 @@ export default defineCommand({
         force: args.force,
         audit: await buildAudit({
           projectDir,
-          account: await projectCloudflareAccount(projectDir),
+          account,
           worker: target.name,
           env: "dev",
           capabilities: target.capabilities,

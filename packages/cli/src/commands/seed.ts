@@ -9,7 +9,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
@@ -159,6 +159,10 @@ export default defineCommand({
       const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
       const config = await loadProject(projectDir);
+      // The account this project belongs to, resolved from the config just loaded. Used by the seed run
+      // itself and by the audit emitter — one answer, so the two can never disagree about whose D1 was
+      // written and whose trail records it (#234).
+      const account = loadProjectCloudflare(config) ?? null;
       const dryRun = args["dry-run"];
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 
@@ -192,6 +196,9 @@ export default defineCommand({
         // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
         // this name is the owner stamped into their metadata — the only handle a later sweep has on them.
         project: requireProjectName(config),
+        // The account this project names, or `null` when it names none. Not the default credentials file:
+        // a non-`dev` seed writes rows into a real D1 and objects into a real R2 (#234).
+        account,
         workers,
         env,
         includeExamples: config.seed?.includeExamples ?? false,
@@ -208,7 +215,7 @@ export default defineCommand({
           projectDir,
           env,
           workers.flatMap((worker) => worker.capabilities),
-          await projectCloudflareAccount(projectDir),
+          account,
         ),
       });
 

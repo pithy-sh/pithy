@@ -131,7 +131,7 @@ export const EnvInventory = z
       .string()
       .nullable()
       .describe(
-        "The Cloudflare account id (from .dev.vars or the environment), or null — dashboard links are omitted when absent.",
+        "The Cloudflare account id, from the credentials file this project's account selects — <config>/cloudflare.json, or cloudflare.<accountName>.json — with the environment overlaid per key. Null when neither supplies one; dashboard links are omitted then.",
       ),
     workers: z
       .array(WorkerEnvironments)
@@ -255,8 +255,13 @@ export interface EnvInventoryOptions {
    *
    * The inventory prints the account id every Worker's resources live under, so reading it from the
    * wrong account's file would label this project's bindings with another company's account (#206).
+   *
+   * **Required, and that is the fix rather than a detail of it (#226).** It was `account?:` for one
+   * release, and `pithy env` never passed it — an omission and a deliberate `null` are the same bytes
+   * at the call site, so the compiler had nothing to say and the reviewer had nothing to look at.
+   * `null` is the answer for a project that names no account, and it is now a word somebody wrote.
    */
-  account?: CloudflareAccountSelection | null;
+  account: CloudflareAccountSelection | null;
 }
 
 /**
@@ -286,7 +291,11 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
     });
   }
 
-  const accountId = cloudflareEnv({ ...options.paths, account: options.account ?? null }).CLOUDFLARE_ACCOUNT_ID ?? null;
+  // A pinned `cloudflare.accountId` that disagrees with what the credentials resolve to throws here,
+  // before a single line is printed. `pithy env` is otherwise contractually exit-0, and this is the one
+  // exception worth making: an inventory labelled with an account the project does not claim is not a
+  // degraded report, it is a wrong one.
+  const accountId = cloudflareEnv({ ...options.paths, account: options.account }).CLOUDFLARE_ACCOUNT_ID ?? null;
 
   const workers: WorkerEnvironments[] = [];
   for (const target of selected) {

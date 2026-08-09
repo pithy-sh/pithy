@@ -2,7 +2,33 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { EnvInventory, WorkerEnvironments } from "../project/envInventory";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
+import type { EnvInventory, EnvInventoryOptions, WorkerEnvironments } from "../project/envInventory";
+
+/**
+ * The options every `buildEnvInventory` call was handed. Held in a hoisted box rather than a `vi.fn`
+ * because `loadEnv` calls `vi.resetModules()`, which re-runs the factory and would hand each test a
+ * fresh spy the assertions could not see.
+ */
+const built = vi.hoisted(() => ({ calls: [] as unknown[] }));
+
+/** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
+const ACCOUNT: CloudflareAccountSelection = { accountName: "leed", accountId: "acct-leed" };
+
+vi.mock("../project/envInventory", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/envInventory")>()),
+  buildEnvInventory: async (options: unknown) => {
+    built.calls.push(options);
+    return { accountId: "acct-leed", workers: [] } satisfies EnvInventory;
+  },
+}));
+
+// Only the account resolution is stubbed; `projectCloudflareAccount` is the one source of a value, and
+// this stands in for a root `pithy.config.ts` that names one.
+vi.mock("../project/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/config")>()),
+  projectCloudflareAccount: async () => ACCOUNT,
+}));
 
 /**
  * `renderEnvInventory` reads the color/hyperlink seam, which latches its `enabled` flag once at
@@ -58,6 +84,28 @@ describe("env command", () => {
     expect(args.name).toMatchObject({ type: "positional", required: false });
     expect(args.worker).toMatchObject({ type: "string" });
     expect(args.json).toMatchObject({ type: "boolean", default: false });
+  });
+
+  /**
+   * **`pithy env` prints an account id, so it had better be this project's (#226).**
+   *
+   * The inventory labels every binding with the account its resources live under. Resolved without a
+   * selection it reads `<config>/cloudflare.json` — the default file — so a project whose root
+   * `pithy.config.ts` names `cloudflare.accountName` had its bindings reported under another company's
+   * account, with dashboard links pointing there. No name, no pin, no refusal: the exact state #206
+   * exists to prevent, reached because the parameter was optional and omitting it compiled.
+   */
+  test("hands the inventory the account the project names, rather than letting it reach the default file", async () => {
+    built.calls.length = 0;
+    const { default: env } = await loadEnv({ NO_COLOR: "1" });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await env.run?.({ args: { json: true }, rawArgs: [] } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+    expect(built.calls).toHaveLength(1);
+    expect((built.calls[0] as EnvInventoryOptions).account).toEqual(ACCOUNT);
   });
 });
 

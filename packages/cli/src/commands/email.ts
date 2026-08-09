@@ -175,6 +175,41 @@ function buildResolveEnv(
   };
 }
 
+/** The three routing flags, in the order the refusal names them. */
+const ROUTING_FLAGS = ["--routing-zone", "--inbound-address", "--app-worker"] as const;
+
+/**
+ * The three routing flags, **together or not at all**.
+ *
+ * Routing is opt-in: the inbound address, its zone, and the worker that answers are an operator choice
+ * (and must avoid the apex MX), so none of them is derived and passing none is an ordinary run.
+ *
+ * A *partial* set is a different thing, and it used to be treated as the same thing — two flags of
+ * three wired nothing, said nothing, and exited 0. The consequence is invisible until somebody replies
+ * to a message and the mail goes nowhere, by which time nobody is looking at this command. A
+ * provisioning command that half-configures a mail path and reports success is worse than one that
+ * refuses.
+ *
+ * `pithy support` makes this decision already (`commands/support.ts` `resolveRouting`); this is the
+ * sibling's rule, with the missing flags named — that is the only thing the operator has to type next.
+ */
+export function resolveRouting(
+  zoneId: string | undefined,
+  address: string | undefined,
+  appWorkerName: string | undefined,
+): { zoneId: string; address: string; appWorkerName: string } | undefined {
+  if (zoneId && address && appWorkerName) return { zoneId, address, appWorkerName };
+  if (!zoneId && !address && !appWorkerName) return undefined;
+  const missing = [zoneId, address, appWorkerName]
+    .map((value, index) => (value ? undefined : ROUTING_FLAGS[index]))
+    .filter((flag): flag is (typeof ROUTING_FLAGS)[number] => flag !== undefined);
+  throw new ValidationError({
+    message: "The inbound routing options are incomplete.",
+    action: `Also pass ${missing.join(" and ")}, or none of the three. Inbound mail is routed only when ${ROUTING_FLAGS.join(", ")} are given together.`,
+    detail: `routing flags given: ${ROUTING_FLAGS.filter((flag) => !missing.includes(flag)).join(", ")}`,
+  });
+}
+
 const provision = defineCommand({
   meta: { name: "provision", description: "Provision the shared suppression DB and per-environment email workers" },
   args: {
@@ -203,6 +238,9 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      // First, before the project name, the credentials, and every Cloudflare call: a mistyped or
+      // half-remembered flag set must cost nothing and must not provision anything.
+      const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
       // The leading segment of the suppression database, the email workers, and the bounce rule. The
       // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
       // adopts another project's opt-out list (docs/NAMING.md).
@@ -214,12 +252,6 @@ const provision = defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
       const cf = new CloudflareClients({ accountId, apiToken });
-      // Routing is wired only when all three pieces are given — the inbound address/zone/worker are an
-      // operator choice (and must avoid the apex MX), so it's opt-in, not derived.
-      const routing =
-        args["routing-zone"] && args["inbound-address"] && args["app-worker"]
-          ? { zoneId: args["routing-zone"], address: args["inbound-address"], appWorkerName: args["app-worker"] }
-          : undefined;
       const provisioner = new CloudflareEmailProvisioner({
         cf,
         project,

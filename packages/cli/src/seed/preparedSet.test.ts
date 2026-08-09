@@ -100,9 +100,16 @@ describe("a prepared seed set", () => {
     );
     const seen: SeedPrepareContext[] = [];
     const capabilities = [preparedCapability(seen)];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+    await migrateProject({
+      account: null,
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+      project: "acme",
+    });
 
     const report = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -130,9 +137,16 @@ describe("a prepared seed set", () => {
     await h.writeWrangler(localWrangler);
     const seen: string[] = [];
     const capabilities = [inventoryCapability(seen)];
-    await migrateProject({ workers: [h.api(capabilities)], projectDir: h.projectDir, env: "dev", project: "acme" });
+    await migrateProject({
+      account: null,
+      workers: [h.api(capabilities)],
+      projectDir: h.projectDir,
+      env: "dev",
+      project: "acme",
+    });
 
     await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -148,6 +162,7 @@ describe("a prepared seed set", () => {
     const capabilities = [preparedCapability(seen)];
 
     const report = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -167,6 +182,7 @@ describe("a prepared seed set", () => {
     const capabilities = [preparedCapability(seen)];
 
     const report = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,
@@ -185,6 +201,7 @@ describe("a prepared seed set", () => {
     const capabilities = [preparedCapability(seen)];
     // No migration ran, so `things` does not exist and the computed row cannot be written.
     const failure = await seedProject({
+      account: null,
       project: "acme",
       workers: [h.api(capabilities)],
       projectDir: h.projectDir,

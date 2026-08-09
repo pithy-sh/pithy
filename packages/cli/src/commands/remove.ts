@@ -76,6 +76,9 @@ export default defineCommand({
       // either refuse this project's own database or claim another's. Resolved here, at the command edge,
       // before anything is read or unwired — a nameless project is told to fix its config, not half-removed.
       const project = requireProjectName(await loadProject(projectDir));
+      // Resolved once, at the command edge, and used for both the drop and the audit. A `--drop --env
+      // staging` reverses migrations against a live database; the account is what says whose (#234).
+      const account = await projectCloudflareAccount(projectDir);
 
       const result = await removeCapability({
         workerDir: target.dir,
@@ -86,12 +89,13 @@ export default defineCommand({
           workerDir: target.dir,
           loadCapabilities: async () => capabilities,
           project,
+          account,
         }),
         // `--drop`'s env is the natural audit target when given; otherwise "dev", which is inert — a
         // plain unwiring has no live environment, and the audit database is resolved from the project
         // root, narrowed to the Worker being unwired.
         audit: await buildAudit({
-          account: await projectCloudflareAccount(projectDir),
+          account,
           projectDir,
           worker: target.name,
           env: args.drop ? env : "dev",
