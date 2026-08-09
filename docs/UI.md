@@ -101,6 +101,8 @@ Two consequences worth stating plainly.
 
 **Replacing a Pithy screen needs no fork.** Write `src/routes/app/sign-in.tsx` with `export const path = "/sign-in"` and yours wins. Pithy's file stays on disk, unmodified and inert — delete it whenever you like.
 
+**A test beside a screen is still just a test.** Co-locate `home.test.tsx` next to `home.tsx`, as the kit asks you to everywhere else. Both globs negate `*.test.tsx` and `*.spec.tsx` — the test runner's own names for its own files — so a co-located test is registered as nothing and reaches no bundle. That negation is the one filename rule the router has, and it earns its place: without it the file is a route, and everything in it — fixtures, stub tokens, the shape of an endpoint and how it fails — is served to anyone who asks. A companion file under another tool's convention, a `.stories.tsx` say, is not covered; give it its own negation, or keep it outside `src/routes/`.
+
 ## `virtual:pithy/<capability>`
 
 Your screens need to know things about the backend: which social providers are enabled, whether a Turnstile widget must render and with which public sitekey, what the auth base path is. That knowledge lives in `pithy.config.ts`, which is server-side. The bridge is a set of virtual modules served by the `pithy()` Vite plugin in `@pithy-sh/vite`.
@@ -194,6 +196,10 @@ An entitlement belongs to somebody, so declaring one implies the session guard: 
 The scaffolded client uses **cookie sessions**, and it can because the SPA and the API share an origin. The browser sends the session cookie on same-origin requests with no header work, no token juggling, and no refresh logic in your UI.
 
 Cookie mode means CSRF protection, always, and Pithy's is `requireSameOrigin()` from `@pithy-sh/core`: every mutating route checks the request's origin against the auth config's `baseURL` and `trustedOrigins`. Same-origin deployment is what makes that check both strict and invisible.
+
+**In `dev`, "same origin" is the address the run is actually serving on.** `baseURL` holds where you deploy, and where you deploy is HTTPS; local dev has no TLS and its port is assigned per Worker per run, so it is the one address no config file can hold. A `dev` composition therefore ignores `baseURL` and resolves `http://<the host the request arrived at>` — which is what the browser is at, so the check passes with nothing added to `trustedOrigins`, and follows the port when a second Worker shifts the allocation. It is not a wildcard: a request whose `Origin` is a neighbouring worker in the same `pithy dev` run is refused like any other. The gate is one condition on the environment alone, so staging and production resolve `baseURL` verbatim and the same-origin set they build is unchanged.
+
+The session cookie's name comes off the same resolution. Better Auth prefixes it `__Secure-` when the base URL is HTTPS, so a dev composition reads the unprefixed name — the name `pithy seed` writes. Both are computed from one place; they cannot disagree.
 
 **Your own routes wear the same gate, and it takes no arguments.** `@pithy-sh/auth` publishes the check already bound to the origins it resolved, so `requireSameOrigin()` on a route of yours is the policy auth is enforcing — not a second copy of it that can drift. There is no origin list to pass, which is why there is no wrong one.
 

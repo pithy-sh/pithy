@@ -60,7 +60,7 @@ Every file is written **only if it does not already exist**. `pithy ui add` neve
 Both are `composite`, because both are referenced from the project's root `tsconfig.json` (`docs/CLI.md` §1.3), and each names a `.tsbuildinfo` under the **project's** `dist/` — never this Worker's, which Vite empties on every build.
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
 | `src/client.tsx` | always | The SPA entry |
-| `src/router.tsx` | always | The two-glob router and its route guard |
+| `src/router.tsx` | always | The two-glob router and its route guard. Both globs negate `*.test.tsx` and `*.spec.tsx`, so a co-located route test ships to nobody (`docs/UI.md` §Routing) |
 | `src/styles.css` | always | The stub's styles |
 | `src/pithy-config.tsx` | `--auth` | The one module that imports `virtual:pithy/*`, narrowed once for every screen |
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |

@@ -14,10 +14,24 @@ import { type ComponentType, lazy, type ReactNode, Suspense, use, useEffect, use
  *   export default SignIn;
  *
  * `app/` wins on a conflict — override a Pithy screen by putting your own file at the same path.
+ *
+ * The negations are not a preference. Tests are co-located here as everywhere else, so `home.test.tsx`
+ * sits beside `home.tsx` — and without them that file is a route: bundled, served, and readable by
+ * anyone, fixtures and stub tokens included. `.test.` and `.spec.` are the test runner's own names for
+ * its own files, not a list this router invented. The runtime check on `path` below cannot stand in for
+ * them: by the time it runs, the glob has already pulled the module into the bundle.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-const pithyRoutes = import.meta.glob<RouteModule>("./routes/pithy/**/*.tsx");
-const appRoutes = import.meta.glob<RouteModule>("./routes/app/**/*.tsx");
+const pithyRoutes = import.meta.glob<RouteModule>([
+  "./routes/pithy/**/*.tsx",
+  "!./routes/pithy/**/*.test.tsx",
+  "!./routes/pithy/**/*.spec.tsx",
+]);
+const appRoutes = import.meta.glob<RouteModule>([
+  "./routes/app/**/*.tsx",
+  "!./routes/app/**/*.test.tsx",
+  "!./routes/app/**/*.spec.tsx",
+]);
 
 // The session module is optional: it exists only in the auth template. Globbing it (rather than
 // importing it) is what lets this file be byte-identical in every template. The payments module is
