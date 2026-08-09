@@ -13,6 +13,13 @@
  * project's root config names its account. See `@pithy-sh/cli`'s `cloudflare/config`, which owns the
  * file, which file, the `process.env` overlay, and the split diagnostic. The names stay here because
  * both ends need them and the Worker-side package is the one both can import.
+ *
+ * **The overlay has an off switch, and it is not `PITHY_CONFIG_DIR` (#218).** Relocating the config
+ * directory moves the *file*; these four names are still read out of the ambient environment, which is
+ * how a CLI run in an empty scratch directory reached a real account off a token a shell had exported
+ * hours earlier. `PITHY_OFFLINE` is the word that stops it, and it lives with the overlay it governs —
+ * `PITHY_OFFLINE_ENV` in `@pithy-sh/cli`'s `cloudflare/config`. Anything outside the CLI that grows a
+ * reason to read one of these names off `process.env` inherits that obligation with it.
  */
 export const CLOUDFLARE_ENV_KEYS = [
   "CLOUDFLARE_ACCOUNT_ID",

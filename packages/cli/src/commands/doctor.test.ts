@@ -760,6 +760,108 @@ describe("cloudflare credentials", () => {
   });
 });
 
+/**
+ * `PITHY_OFFLINE` (#218). `doctor` is the command people run when something is wrong, including on a
+ * machine that is not theirs — so it is the one that must be able to answer without reaching anything.
+ */
+describe("offline", () => {
+  /** A registry stub that fails the test rather than answering: nothing may query npm in this mode. */
+  function forbiddenFetch(): FetchLike {
+    return (async () => {
+      throw new Error("nothing may reach the network when the caller has said offline");
+    }) as unknown as FetchLike;
+  }
+
+  test("the variable puts the whole report offline, with no flag and no seam", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ env: { PITHY_OFFLINE: "1" }, fetch: forbiddenFetch(), checkCloudflare: undefined }),
+    );
+    expect(report.offline).toBe(true);
+    expect(report.cloudflare.state).toBe("not_checked");
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("the option forces it with no variable set, which is what --offline passes", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ offline: true, fetch: forbiddenFetch(), checkCloudflare: undefined }),
+    );
+    expect(report.offline).toBe(true);
+    expect(report.cloudflare.state).toBe("not_checked");
+  });
+
+  test("the registry is not queried either — a diagnostic that claims offline may not phone npm", async () => {
+    const fetch = vi.fn(async () => {
+      throw new Error("unreachable");
+    }) as unknown as FetchLike;
+    const report = await buildDoctorReport(healthyOptions({ offline: true, fetch, checkCloudflare: undefined }));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(report.cli.latest).toBeNull();
+    expect(report.cli.state).toBe("unknown");
+  });
+
+  test("the version lines say skipped, not unreachable — the registry was never asked", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ offline: true, fetch: forbiddenFetch(), checkCloudflare: undefined }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Version check skipped (offline).");
+    expect(text).toContain("Project capabilities: version check skipped (offline)");
+    expect(text).not.toContain("registry unreachable");
+  });
+
+  test("the Cloudflare line says what was not done, and never reads as a pass", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ offline: true, fetch: forbiddenFetch(), checkCloudflare: undefined }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Cloudflare: not checked — offline (PITHY_OFFLINE or --offline)",
+    );
+  });
+
+  test("--json carries the mode, so an agent can tell a skipped check from a passing one", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ offline: true, fetch: forbiddenFetch(), checkCloudflare: undefined }),
+    );
+    const json = renderDoctorJson(report) as { offline: boolean; cloudflare: { state: string } };
+    expect(json.offline).toBe(true);
+    expect(json.cloudflare.state).toBe("not_checked");
+  });
+
+  test("an ordinary run is untouched — `offline` is false and every check still runs", async () => {
+    const report = await buildDoctorReport(healthyOptions());
+    expect(report.offline).toBe(false);
+    expect(renderDoctorJson(report).offline).toBe(false);
+    expect(report.cli.latest).toBe("1.3.0");
+    expect(renderDoctorText(report, "/home/u")).not.toContain("PITHY_OFFLINE");
+  });
+
+  test("a not-checked Cloudflare state never fails the exit — nothing was established", () => {
+    const report = { cloudflare: { state: "not_checked" }, project: null } as unknown as DoctorReport;
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("--json names where the credentials came from, on every run", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkCloudflare: async () => ({
+          state: "ok",
+          missing: [],
+          tokenStatus: "active",
+          credentialSplit: null,
+          configPath: "/home/u/.config/pithy/cloudflare.json",
+          accountName: null,
+          accountMismatch: null,
+          credentialSource: "environment",
+        }),
+      }),
+    );
+    expect(renderDoctorJson(report).cloudflare).toMatchObject({ credentialSource: "environment" });
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "credentials from the environment, not ~/.config/pithy/cloudflare.json",
+    );
+  });
+});
+
 describe("project name", () => {
   /** A misnamed resource, as the probe reports one. `owner` is the only field that proves anything. */
   const misnamed = (name: string, provisioned: boolean | null, owner: string | null = null) => ({

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
+import { pithyOffline } from "../cloudflare/config";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
@@ -234,6 +235,17 @@ export interface DoctorReport {
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
   node: string;
+  /**
+   * Whether this run refused ambient credentials and every network call — `PITHY_OFFLINE`, or `--offline`
+   * (#218).
+   *
+   * Carried in the report rather than read again at each renderer, because the two things it changes are
+   * both *wordings*: a version state of `unknown` means "the registry did not answer" on an ordinary run
+   * and "nobody asked it" on this one, and a diagnostic that reports the first when the second happened is
+   * describing a network fault that does not exist. `--json` carries it for the same reason one level up —
+   * a script reading `state: "unknown"` cannot otherwise tell a skipped check from a failed one.
+   */
+  offline: boolean;
 }
 
 /**
@@ -289,6 +301,14 @@ export interface DoctorReportOptions {
   /** Runtime seam; defaults to {@link detectRuntime}. */
   runtime?: RuntimeInfo;
   node?: string;
+  /**
+   * Refuse ambient credentials and every network call. Defaults to {@link pithyOffline} over `env`.
+   *
+   * The flag's route in. Explicit `false` is a caller saying so and the variable does not override it —
+   * the same reading `CloudflareConfigOptions.offline` takes, because the two have to agree or a run is
+   * offline in one half of itself.
+   */
+  offline?: boolean;
   /** Shell detection seam; defaults to {@link detectShell}. */
   detectShell?: () => Promise<ShellInfo | null>;
   /** rc-file reader seam; defaults to {@link readRcFile}. */
@@ -375,9 +395,12 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // this project's own commands resolve. Outside a project there is none, and the unnamed file is the
   // right answer — a config that will not load is what the `Project:` line is for, not this one.
   const account = await projectCloudflareAccount(options.projectDir).catch(() => null);
+  // Resolved once, here, and handed down. Every consumer of it below is asking the same question, and a
+  // report that computed it twice could answer differently in its own two halves.
+  const offline = options.offline ?? pithyOffline(env);
   const probeCloudflare =
     options.checkCloudflare ??
-    (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account }));
+    (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account, offline }));
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeDevPreferences =
@@ -397,7 +420,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     ((dir: string) => checkDevSecretsLocation(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
 
   // Fresh CLI-version check, then persist it into the notifier state (installer detected once when unknown).
-  const cliLatest = await fetchLatestVersion("cli", { fetch: doFetch });
+  //
+  // **Not asked at all when offline.** This one is unauthenticated and reaches npm rather than Cloudflare,
+  // so it is not the credential leak #218 is about — but a mode that says no network and then blocks for a
+  // DNS timeout on a plane has told the adopter something untrue, and the state it would land in
+  // (`unknown`) is the same one a registry outage produces. Skipping it keeps `unknown` meaning one thing
+  // per run, which the two version lines then say in the run's own words.
+  const cliLatest = offline ? null : await fetchLatestVersion("cli", { fetch: doFetch });
   const state = await readState(file);
   // Discarded on failure, like every read in this command and for the same reason (#210). The notifier
   // cache is bookkeeping for the *next* run — a config directory that will not take a write is exactly
@@ -445,7 +474,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     const capabilities: CapabilityStatus[] = [];
     for (const cap of installedCaps) {
       const unscoped = cap.name.replace("@pithy-sh/", "");
-      const latest = await fetchLatestVersion(unscoped, { fetch: doFetch });
+      const latest = offline ? null : await fetchLatestVersion(unscoped, { fetch: doFetch });
       capabilities.push({
         name: cap.name,
         installed: cap.version,
@@ -528,6 +557,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     os: options.os ?? { name: osName(osPlatform()), version: osRelease() },
     runtime: options.runtime ?? detectRuntime(),
     node: options.node ?? process.versions.node,
+    offline,
   };
 }
 
@@ -536,7 +566,10 @@ export function doctorExitCode(report: DoctorReport): number {
   if (report.projectLoadError) return 1;
   // Configured-but-broken credentials are drift worth gating CI on. Absent ones are not: a project that has
   // not been provisioned yet is a legitimate state, and failing it would make `doctor` useless before setup.
-  if (report.cloudflare.state !== "ok" && report.cloudflare.state !== "unconfigured") return 1;
+  // `not_checked` is the same standard once more and the clearest case of it — the check did not run, so it
+  // established nothing, and a caller who asked for no network did not ask for a red exit (#218).
+  const cloudflare = report.cloudflare.state;
+  if (cloudflare !== "ok" && cloudflare !== "unconfigured" && cloudflare !== "not_checked") return 1;
   // Listed positively, never as "anything but ok": only a fault this project's own config or wiring
   // positively establishes may gate CI. `unconfigured` (no name yet) and `could-not-check` (the wiring
   // would not read) establish nothing, and failing on either would break every run in an unprovisioned
@@ -703,14 +736,22 @@ function workerNamesBlock(check: WorkerNameCheck): string {
   return lines.join("\n");
 }
 
-/** The `Project capabilities` lines — collapsed to one line when everything is current. */
-function capabilitiesBlock(capabilities: CapabilityStatus[]): string {
+/**
+ * The `Project capabilities` lines — collapsed to one line when everything is current.
+ *
+ * The unchecked line says *why* it is unchecked. `unknown` means the registry did not answer on an
+ * ordinary run and that nobody asked it on an offline one, and blaming a network that was never touched is
+ * the sort of wrong a diagnostic is judged on.
+ */
+function capabilitiesBlock(capabilities: CapabilityStatus[], offline: boolean): string {
   if (capabilities.length === 0 || capabilities.every((cap) => cap.state === "current")) {
     return "Project capabilities: all up to date";
   }
   // Nothing is behind, but nothing was confirmed either — say which, rather than implying currency.
   if (capabilities.every((cap) => cap.state !== "outdated")) {
-    return "Project capabilities: version check unavailable (registry unreachable)";
+    return offline
+      ? "Project capabilities: version check skipped (offline)"
+      : "Project capabilities: version check unavailable (registry unreachable)";
   }
   const width = Math.max(...capabilities.map((cap) => cap.name.length));
   const rows = capabilities.map((cap) => {
@@ -814,7 +855,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     cliLines.push(`Update available: ${report.cli.latest}`);
     cliLines.push(`Run: ${report.cli.upgradeCommand}`);
   } else if (report.cli.state === "unknown") {
-    cliLines.push("Version check unavailable (registry unreachable).");
+    // Same distinction the capabilities line draws, and it is drawn here first because this is the line
+    // everybody reads: skipped is a decision somebody made, unreachable is a network that failed.
+    cliLines.push(
+      report.offline ? "Version check skipped (offline)." : "Version check unavailable (registry unreachable).",
+    );
   } else {
     cliLines.push("Up to date.");
   }
@@ -863,7 +908,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   if (report.projectLoadError) {
     blocks.push(["Project: pithy.config.ts found", `  could not load — ${report.projectLoadError}`].join("\n"));
   } else if (report.project) {
-    blocks.push(["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities)].join("\n"));
+    blocks.push(
+      ["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities, report.offline)].join("\n"),
+    );
     if (!report.project.health.ok) blocks.push(healthBlock(report.project.health));
   } else {
     blocks.push("Project: no pithy.config.ts here — run `pithy init`, or change to a project directory");
@@ -927,6 +974,10 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     configDir: report.configDir,
     stateFile: report.stateFile,
     notifier: report.notifierEnabled ? "enabled" : "disabled",
+    // Whether this run refused ambient credentials and the network (#218). Unconditional like every key
+    // here, and a boolean rather than an absence, because the question a script asks of this payload is
+    // "was that check actually run" — and `false` is as much of an answer as `true`.
+    offline: report.offline,
     project: report.projectLoadError
       ? { present: true, loadError: report.projectLoadError }
       : report.project
@@ -946,6 +997,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       configPath: report.cloudflare.configPath ?? null,
       accountName: report.cloudflare.accountName ?? null,
       accountMismatch: report.cloudflare.accountMismatch ?? null,
+      // Beside `configPath` because the two are only useful together: the path is the file this run
+      // resolved, and this is whether the credentials actually came out of it (#218).
+      credentialSource: report.cloudflare.credentialSource ?? null,
       detail: describeCloudflareAccess(report.cloudflare),
     },
     // `null` alongside a `null` project: one fact, one shape, both keys agreeing that there is no project
@@ -1012,6 +1066,9 @@ export default defineCommand({
     worker: { type: "string", description: "Check only this worker (default: every worker under apps/)" },
     "disable-notifier": { type: "boolean", default: false, description: "Turn off the update notifier (persisted)" },
     "enable-notifier": { type: "boolean", default: false, description: "Turn the update notifier back on" },
+    // No `default: false`. An unpassed flag has to stay absent so `PITHY_OFFLINE` can answer, and citty's
+    // default would make every run an explicit "not offline" that overrode the variable.
+    offline: { type: "boolean", description: "Use no ambient credentials and make no network call" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -1030,6 +1087,7 @@ export default defineCommand({
         projectDir: process.cwd(),
         stateFile: file,
         ...(args.worker ? { worker: args.worker } : {}),
+        ...(args.offline === undefined ? {} : { offline: args.offline }),
       });
       const output = args.json ? formatJsonLine(renderDoctorJson(report)) : renderDoctorText(report);
       process.stdout.write(`${output}\n`);

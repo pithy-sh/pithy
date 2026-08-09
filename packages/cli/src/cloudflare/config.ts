@@ -40,11 +40,50 @@ import { readOptionalFile } from "../project/readOptionalFile";
  * cannot run offline, which costs more than the key was costing.
  *
  * **`process.env` still overlays, per key.** CI supplies these as real environment variables and has no
- * file at all — see {@link cloudflareEnv}.
+ * file at all — see {@link cloudflareEnv}. {@link PITHY_OFFLINE_ENV} is the one way to turn that off.
  */
 
 /** The file's name inside the Pithy config directory. Undotted: nothing here is hidden from anything. */
 export const CLOUDFLARE_CONFIG_FILE_NAME = "cloudflare.json";
+
+/**
+ * The variable that says **no ambient credentials, and nothing over the wire** (#218).
+ *
+ * `PITHY_CONFIG_DIR` relocates the *file*. It has never touched the `process.env` overlay, and that
+ * overlay is correct — CI supplies the pair as environment variables and has no file at all (#182). The
+ * consequence was that redirecting the config directory *looked* like isolation and was not: `pithy
+ * doctor` in an empty scratch directory reached the operator's real account, twice, off a token their
+ * shell had exported hours earlier, and reported `reachable (token active)` about an account nobody in
+ * that session had named.
+ *
+ * **Making `PITHY_CONFIG_DIR` imply this was considered and rejected.** It conflates two different
+ * sentences — "read config from here" and "do not use the environment" — and CI legitimately says the
+ * second while saying neither: no file, no override, credentials in the environment on purpose. An
+ * implication would have made the fix invisible in the diff and unavailable to anyone who wanted only one
+ * half of it. So it is its own word, and saying it is a decision somebody made.
+ *
+ * **It reads as a switch on the overlay, not on the file.** A credential in `<config>/cloudflare.json` was
+ * deliberately written there; a credential in the environment is the one nobody in the room put there.
+ * Offline plus a scratch config directory therefore resolves *nothing*, which is the guarantee people
+ * believed `PITHY_CONFIG_DIR` already gave them — and the guarantee is complete, because a command with no
+ * credentials cannot authenticate as anybody.
+ *
+ * **Where it bites is here rather than in each command**, and that is the whole design. Every
+ * out-of-Worker call in the CLI resolves through {@link cloudflareEnv} or {@link resolveCloudflare} —
+ * fifteen commands and `pithy doctor`'s two probes — so one gate covers all of them, including the ones
+ * written next year. A per-command `--offline` flag would have been the rule-at-the-call-site shape this
+ * file already refused once for the account argument, and an environment variable is additionally
+ * inherited by a spawned `pithy`, `wrangler`, or test runner, which a flag is not.
+ *
+ * Any non-blank value. Blank is no override, matching `stateDir`'s reading of `PITHY_CONFIG_DIR`: an
+ * unset variable and one a shell script exported empty are the same intention.
+ */
+export const PITHY_OFFLINE_ENV = "PITHY_OFFLINE";
+
+/** Whether this environment is refusing ambient credentials and network probes. See {@link PITHY_OFFLINE_ENV}. */
+export function pithyOffline(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env[PITHY_OFFLINE_ENV] ?? "").trim().length > 0;
+}
 
 /**
  * The shape a `cloudflare.accountName` may take: **a bare token** — lowercase letters, digits, and
@@ -145,6 +184,15 @@ export interface CloudflareAccountSelection {
 export interface CloudflareConfigOptions extends StatePathOptions {
   /** The project's account, from `projectCloudflareAccount`, or `null` when it names none. */
   account: CloudflareAccountSelection | null;
+  /**
+   * Refuse ambient credentials and network probes for this resolution, whatever the environment says.
+   *
+   * Omitted is "ask the environment" — {@link pithyOffline} — which is how every command inherits the
+   * mode without knowing it exists. Present is a caller who has decided, in either direction: `pithy
+   * doctor --offline` passes `true` with no variable set, and `false` is a deliberate opt out rather than
+   * an absence, so nothing silently re-enables the environment behind a caller that said no.
+   */
+  offline?: boolean;
 }
 
 /**
@@ -210,6 +258,16 @@ export interface CloudflareAccountMismatch {
   path: string;
 }
 
+/**
+ * Which of the two sources supplied the pair that would authenticate — `mixed` when each supplied one key.
+ *
+ * **Reported because the file this run *resolved* is not the file the credentials *came from*.** The
+ * `Cloudflare:` line has named the resolved path since #206, and in CI — and in the sandbox that prompted
+ * #218 — that is a path with nothing at it, while a token from the shell does the authenticating. Naming
+ * a file and using the environment is the shape of the whole incident, so the source is its own fact.
+ */
+export type CloudflareCredentialSource = CloudflareAccountSource | "mixed";
+
 /** One credential resolution, with everything a caller may need to refuse or to report it. */
 export interface CloudflareResolution {
   /** The file this resolution read, named whether or not it exists. */
@@ -222,6 +280,16 @@ export interface CloudflareResolution {
   pinnedAccountId: string | null;
   /** Set when the pin and the resolved account id disagree. */
   mismatch: CloudflareAccountMismatch | null;
+  /** Whether this resolution refused the environment overlay — see {@link PITHY_OFFLINE_ENV}. */
+  offline: boolean;
+  /**
+   * Where the {@link CLOUDFLARE_CREDENTIAL_KEYS} pair came from, or `null` when neither key resolved.
+   *
+   * The pair alone, for the reason `CLOUDFLARE_CREDENTIAL_KEYS` gives: a store id from the environment
+   * says nothing about which account a run authenticates as, and only the pair can quietly succeed
+   * somewhere unintended.
+   */
+  credentialSource: CloudflareCredentialSource | null;
 }
 
 /**
@@ -239,10 +307,17 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
   const fromFile = readCloudflareConfigSync(path);
   const vars = { ...fromFile };
   const env = options.env ?? process.env;
-  for (const key of CLOUDFLARE_ENV_KEYS) {
-    const overlay = env[key];
-    if (!vars[key] && overlay) vars[key] = overlay;
+  // The one gate, for every command that resolves credentials. The overlay is otherwise untouched — see
+  // {@link PITHY_OFFLINE_ENV} for why this is a word somebody says rather than something PITHY_CONFIG_DIR
+  // implies.
+  const offline = options.offline ?? pithyOffline(env);
+  if (!offline) {
+    for (const key of CLOUDFLARE_ENV_KEYS) {
+      const overlay = env[key];
+      if (!vars[key] && overlay) vars[key] = overlay;
+    }
   }
+  const credentialSource = sourceOf(fromFile, vars);
 
   const pinnedAccountId = selection?.accountId ?? null;
   const resolved = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
@@ -258,7 +333,23 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
         }
       : null;
 
-  return { path, accountName, vars, pinnedAccountId, mismatch };
+  return { path, accountName, vars, pinnedAccountId, mismatch, offline, credentialSource };
+}
+
+/**
+ * Which source decided the account pair, from the file's keys and the resolved set.
+ *
+ * Derived from one read rather than taken a second time, so what is reported is a fact about *this*
+ * resolution — the same rule `checkCloudflareAccess` follows for the split. A key present in the resolved
+ * set and absent from the file came from the overlay, which is the only other place it could have come from.
+ */
+function sourceOf(fromFile: Record<string, string>, vars: Record<string, string>): CloudflareCredentialSource | null {
+  const resolved = CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => Boolean(vars[key]));
+  if (resolved.length === 0) return null;
+  const file = resolved.filter((key) => Boolean(fromFile[key]));
+  if (file.length === resolved.length) return "file";
+  if (file.length === 0) return "environment";
+  return "mixed";
 }
 
 /**
@@ -324,6 +415,10 @@ export interface CloudflareCredentialSplit {
  * A complete file, a complete absence of one (CI passes the pair as environment variables), and a half
  * file with nothing to fill the other half are all silent. An empty value counts as unset, matching the
  * overlay exactly, so this reports the credentials that actually resolve.
+ *
+ * **Offline is silent too**, for that last reason rather than as an exception to it: with the overlay
+ * refused there is nothing to fill the file's other half, so half a file is unconfigured — exactly the
+ * state this already says nothing about.
  */
 export function cloudflareCredentialSplit(options: CloudflareConfigOptions): CloudflareCredentialSplit | null {
   const path = cloudflareConfigPath(options);
@@ -333,7 +428,7 @@ export function cloudflareCredentialSplit(options: CloudflareConfigOptions): Clo
   } catch {
     return null; // No file — the environment supplies the whole group, which is how CI runs.
   }
-  const env = options.env ?? process.env;
+  const env = (options.offline ?? pithyOffline(options.env ?? process.env)) ? {} : (options.env ?? process.env);
   const fromFile = CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => Boolean(file[key]));
   const fromEnvironment = CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => !file[key] && Boolean(env[key]));
   if (fromFile.length === 0 || fromEnvironment.length === 0) return null;

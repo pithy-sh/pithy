@@ -6,9 +6,11 @@ import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars
 import {
   type CloudflareAccountMismatch,
   type CloudflareConfigOptions,
+  type CloudflareCredentialSource,
   type CloudflareCredentialSplit,
   cloudflareCredentialSplit,
   describeCloudflareAccountMismatch,
+  PITHY_OFFLINE_ENV,
   resolveCloudflare,
 } from "../cloudflare/config";
 
@@ -41,7 +43,21 @@ export type CloudflareAccessState =
    * reporting the wrong account would be authenticating as it first. It fails the exit like every other
    * non-`ok` state, which is the whole guarantee the pin buys (#206).
    */
-  | "account_mismatch";
+  | "account_mismatch"
+  /**
+   * Nothing was asked of Cloudflare, because the caller said not to — `PITHY_OFFLINE`, or `--offline` (#218).
+   *
+   * **A fifth state rather than reusing `unconfigured`**, even though offline in a scratch config
+   * directory resolves exactly nothing. `unconfigured`'s sentence tells you to set the missing keys "in
+   * `<config>/cloudflare.json`, or the environment" — and the environment is the half this mode is
+   * refusing, so the advice would be for a thing that would not work. Silence is worse still: a
+   * diagnostic that skipped a check and printed nothing has reported a health it never established.
+   *
+   * It never fails the exit, for the reason `unconfigured` does not: nothing was established, and only a
+   * fault positively established may gate CI. An adopter on a plane, and a sandbox with no business
+   * touching an account, get the same green exit and the same honest line.
+   */
+  | "not_checked";
 
 /** What `doctor` learned about the configured Cloudflare credentials. */
 export interface CloudflareAccess {
@@ -72,6 +88,14 @@ export interface CloudflareAccess {
   accountName?: string | null;
   /** The pin disagreeing with the resolved credentials. Set exactly when the state is `account_mismatch`. */
   accountMismatch?: CloudflareAccountMismatch | null;
+  /**
+   * Which source supplied the pair — `file`, `environment`, `mixed`, or `null` when neither key resolved.
+   *
+   * The third acceptance criterion of #218, and the one that would have caught the incident on sight: the
+   * report named `~/.config/pithy/cloudflare.json` while the credentials came from a shell nobody in that
+   * session had looked at, and there was no line anywhere that distinguished the two.
+   */
+  credentialSource?: CloudflareCredentialSource | null;
 }
 
 /**
@@ -133,6 +157,7 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
     configPath: resolution.path,
     accountName: resolution.accountName,
     accountMismatch: resolution.mismatch,
+    credentialSource: resolution.credentialSource,
   };
 
   // Before the credentials are even counted, and long before any of them are used: credentials for an
@@ -141,6 +166,16 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
     return { state: "account_mismatch", missing: [], tokenStatus: null, credentialSplit, ...where };
 
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
+
+  // Offline, and this is the whole of doctor's honouring of it: no probe, and a state that says so.
+  //
+  // **After the mismatch and not before it.** That fault is decided from this machine's own files — a
+  // config's pin against a file's account id — so it costs no network and no ambient credential, and
+  // suppressing it would mean the mode hid a real fault as well as a real account. Everything below this
+  // line is the part that reaches Cloudflare, and none of it runs.
+  if (resolution.offline)
+    return { state: "not_checked", missing: [...missing], tokenStatus: null, credentialSplit, ...where };
+
   if (missing.length > 0)
     return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit, ...where };
 
@@ -187,7 +222,33 @@ function describeState(access: CloudflareAccess, home?: string): string {
       return access.accountMismatch
         ? `${describeCloudflareAccountMismatch(access.accountMismatch)} Nothing will run against it.`
         : "the credentials belong to an account this project does not claim";
+    case "not_checked":
+      // **Both levers, and neither claimed.** The first wording said "`PITHY_OFFLINE` is set", which is
+      // false on every `--offline` run — a line about not checking that is itself wrong is the exact
+      // failure this state exists to avoid. Naming both is not hedging: the reader of this line is as
+      // likely to be somebody who did not know the mode was on — a harness, a CI job, a shell profile —
+      // as the person who asked for it, and they need to know what to go and unset.
+      return `not checked — offline (${PITHY_OFFLINE_ENV} or --offline)`;
   }
+}
+
+/**
+ * The suffix naming where the credentials stand — the file, or the environment that supplied them.
+ *
+ * `; from <file>` was the whole of this and it was a claim about the *resolution*, not about the
+ * credentials: CI resolves a path with nothing at it and authenticates from the environment, and so did
+ * the sandbox run that reached a live account off a forgotten export (#218). So the environment case says
+ * the environment, and names the file it did **not** read, because that file is what the reader was about
+ * to go and check.
+ *
+ * `mixed` keeps the file wording: the split sentence in front of it has already named which key came from
+ * where, in more detail than this can, and repeating it would be the line saying one thing twice.
+ */
+function credentialOrigin(access: CloudflareAccess, home: string | undefined): string {
+  const path = configPath(access, home);
+  if (access.state === "not_checked") return `credentials would resolve from ${path}`;
+  if (access.credentialSource === "environment") return `credentials from the environment, not ${path}`;
+  return `from ${path}`;
 }
 
 /**
@@ -208,5 +269,5 @@ export function describeCloudflareAccess(access: CloudflareAccess, home?: string
   // both ids, an unconfigured one names where the missing keys go — are not made to say it twice.
   const named = access.state === "account_mismatch" || access.state === "unconfigured";
   if (!access.configPath || named) return withSplit;
-  return `${withSplit}; from ${configPath(access, home)}`;
+  return `${withSplit}; ${credentialOrigin(access, home)}`;
 }
