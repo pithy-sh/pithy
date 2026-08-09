@@ -30,7 +30,9 @@ import { join, sep } from "node:path";
  *    cannot be listed and a file that vanished between the listing and the read are both skipped
  *    rather than fatal. A file that is not there is not a file that breaks a rule.
  *    `packages/cli/templates/`, which appears and disappears around `bun pm pack`, is the one that
- *    cannot be dotted; see {@link VENDORED_TEMPLATES}.
+ *    cannot be dotted; see {@link VENDORED_TEMPLATES}. The dotted rule is the one thing a caller may
+ *    turn off — `dotted: true`, off by default, for the caller asking about *shipped files* rather than
+ *    about this tree's source; see {@link SourceWalk.dotted} (#215).
  * 2. **A symlink is not descended.** `withFileTypes` reports a link as a link rather than as the
  *    directory behind it, so a walk cannot loop on a link to an ancestor or read a package twice
  *    through the `node_modules` entry that points at it.
@@ -58,12 +60,26 @@ export interface SourceFile {
   readonly text: string;
 }
 
-/** How a walk narrows the tree. */
+/** How a walk narrows the tree — and, in one case, widens it. */
 export interface SourceWalk {
   /** Directory names never descended into, on top of the built-in set. */
   readonly skip?: readonly string[];
   /** Which files to keep, by base name. Defaults to {@link isShippedSource}. */
   readonly keep?: (name: string) => boolean;
+  /**
+   * Enter dotted directories as well. **Off unless a caller says otherwise**, because the rule it lifts
+   * is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every other caller (#185).
+   *
+   * For the caller whose question is about *shipped files* rather than about this repository's source: a
+   * licence audit asks that every file a template carries has the right header, and a template that grew
+   * a `.vscode/` or a `.husky/` would ship every file in it unchecked. A gate whose reach is narrower
+   * than the rule it enforces under-reports in silence (#215).
+   *
+   * It widens the dotted rule and nothing else. `node_modules`, `dist`, `coverage`, whatever the caller
+   * named in `skip`, the vendored template copy and a symlinked directory are all still refused, and
+   * `keep` still decides which files are taken.
+   */
+  readonly dotted?: boolean;
 }
 
 /**
@@ -103,12 +119,25 @@ export function isTestFile(name: string): boolean {
   return name.endsWith(".test.ts");
 }
 
+/** A walk with every default resolved, so {@link descend} decides nothing for itself. */
+interface Walk {
+  /** Directory names never descended into: the built-in set and the caller's own. */
+  readonly skip: ReadonlySet<string>;
+  /** Which files to keep, by base name. */
+  readonly keep: (name: string) => boolean;
+  /** Whether a dotted directory is entered. See {@link SourceWalk.dotted}. */
+  readonly dotted: boolean;
+}
+
 /** Every file under `root` that `keep` accepts, absolute and sorted. A root that is not there is empty. */
 export function sourcePaths(root: string, options: SourceWalk = {}): string[] {
-  const keep = options.keep ?? isShippedSource;
-  const skip = new Set([...NEVER, ...(options.skip ?? [])]);
+  const walk: Walk = {
+    skip: new Set([...NEVER, ...(options.skip ?? [])]),
+    keep: options.keep ?? isShippedSource,
+    dotted: options.dotted ?? false,
+  };
   const found: string[] = [];
-  descend(root, skip, keep, found);
+  descend(root, walk, found);
   return found.sort();
 }
 
@@ -132,7 +161,7 @@ export function sourceFiles(root: string, options?: SourceWalk): SourceFile[] {
 }
 
 /** One directory, and everything below it. A directory that cannot be listed contributes nothing. */
-function descend(directory: string, skip: ReadonlySet<string>, keep: (name: string) => boolean, into: string[]): void {
+function descend(directory: string, walk: Walk, into: string[]): void {
   let entries: Dirent[];
   try {
     entries = readdirSync(directory, { withFileTypes: true });
@@ -142,13 +171,13 @@ function descend(directory: string, skip: ReadonlySet<string>, keep: (name: stri
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (skip.has(entry.name)) continue;
-      if (entry.name.startsWith(".") && entry.name !== DOTTED_SOURCE) continue;
+      if (walk.skip.has(entry.name)) continue;
+      if (!walk.dotted && entry.name.startsWith(".") && entry.name !== DOTTED_SOURCE) continue;
       // Whatever root the walk began at, the path it built carries the ancestry that identifies the copy.
       if (path === VENDORED_TEMPLATES || path.endsWith(`${sep}${VENDORED_TEMPLATES}`)) continue;
-      descend(path, skip, keep, into);
+      descend(path, walk, into);
       continue;
     }
-    if (entry.isFile() && keep(entry.name)) into.push(path);
+    if (entry.isFile() && walk.keep(entry.name)) into.push(path);
   }
 }

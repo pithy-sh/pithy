@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -111,6 +113,63 @@ describe("sourcePaths — what the walk never descends into", () => {
     await file("real/a.ts");
     await symlink(join(root, "real"), join(root, "linked"));
     expect(named(sourcePaths(root))).toEqual(["real/a.ts"]);
+  });
+});
+
+/**
+ * The one way past the dotted rule, and it is shut unless a caller opens it (#215).
+ *
+ * The rule above is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every tripwire in this
+ * repository, so it stays the default and no caller loses it by someone else's change. But a caller can
+ * want the opposite: the licence audit checks that **every shipped file** carries its header, and a
+ * template that grew a `.vscode/`, a `.husky/` or a `.github/` would ship every file in it unchecked. A
+ * gate whose reach is narrower than the rule it enforces under-reports in silence, which is worse than
+ * one that fails loudly.
+ *
+ * `keep` narrows which files are taken and could never widen which directories are entered; that is what
+ * this option is for, and it is the only thing it does. Everything else the walk refuses — dependencies,
+ * build output, the caller's own `skip`, the vendored template copy, a symlink — is refused with the
+ * opt-in on, asserted below.
+ */
+describe("sourcePaths — the caller that has to enter a dotted directory", () => {
+  test("does not, unless it asks: the default is the rule every other caller relies on", async () => {
+    await file("a.ts");
+    await file(".vscode/settings.ts");
+    expect(named(sourcePaths(root))).toEqual(["a.ts"]);
+  });
+
+  test("and enters every one of them when it asks", async () => {
+    await file("a.ts");
+    await file(".vscode/settings.ts");
+    await file(".husky/hook.ts");
+    await file(".vscode/deep/nested/tool.ts");
+    expect(named(sourcePaths(root, { dotted: true }))).toEqual([
+      ".husky/hook.ts",
+      ".vscode/deep/nested/tool.ts",
+      ".vscode/settings.ts",
+      "a.ts",
+    ]);
+  });
+
+  test("the opt-in widens the dotted rule and nothing else", async () => {
+    // Every other exclusion is a separate decision and none of them is a dotted-directory rule in
+    // disguise. A caller that wants a `.vscode/` inside a template must not thereby acquire
+    // `node_modules`, a directory it named itself, or a second copy of the starter.
+    await file("a.ts");
+    await file(".vscode/settings.ts");
+    for (const directory of ["node_modules", "dist", "coverage"]) await file(`${directory}/b.ts`);
+    await file("test-utils/harness.ts");
+    await file("packages/cli/templates/starter/pithy.config.ts");
+    await symlink(join(root, ".vscode"), join(root, "linked"));
+
+    expect(named(sourcePaths(root, { dotted: true, skip: ["test-utils"] }))).toEqual([".vscode/settings.ts", "a.ts"]);
+  });
+
+  test("nor does it change what a file has to be to be kept", async () => {
+    await file(".vscode/settings.ts");
+    await file(".vscode/settings.test.ts");
+    await file(".vscode/settings.json");
+    expect(named(sourcePaths(root, { dotted: true }))).toEqual([".vscode/settings.ts"]);
   });
 });
 
@@ -298,8 +357,9 @@ describe("no module writes its own walk over a directory tree", () => {
     },
     "tooling/license-headers/src/audit.ts": {
       walk: "walk",
-      // The `templates` half of #202's reason was checked here and is wrong; the dotted half is the real one.
-      why: "Same package, same declined edge — and this one could not be routed even with it, though not for the reason #202 recorded. The `templates` exclusion is not the blocker: the primitive skips `packages/cli/templates` by path and nothing else, so the root `templates/starter` and `packages/ui-react/templates` are both kept (asserted above), and the vendored copy it does skip is a byte-for-byte duplicate of the root starter that exists only between `prepack` and `postpack` — a finding naming it names a file `postpack` deletes, which is a thing this audit should want skipped. The blocker is direction: `templateFiles` wants every file of every extension at every depth, and the primitive skips dotted directories with no option to stop, because that rule is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every other caller (#185). `keep` narrows which files are taken; nothing widens which directories are entered. A template shipping a `.vscode/` — none does today — would go unchecked in silence, and a licence gate that under-reports is worse than one that walks its own tree.",
+      // #202 gave two reasons for this one. Neither is a reason now: the first was never true, and #215
+      // removed the second. What is left is the declined edge above, and it is the whole of it.
+      why: "Same package, same declined edge, and now that is the only thing keeping it separate. #202 said the `templates` exclusion was the blocker and it never was: the primitive skips `packages/cli/templates` by path and nothing else, so the root `templates/starter` and `packages/ui-react/templates` are both kept (asserted above), and the copy it does skip is a byte-for-byte duplicate that exists only between `prepack` and `postpack` — a finding naming it names a file `postpack` deletes, which is a thing this audit should want skipped. The real blocker was the dotted-directory skip, since `templateFiles` needs every file of every extension at every depth and a template that grew a `.vscode/` would ship every file in it unchecked. That is closed: `dotted: true` is the opt-in, off by default so every caller that relies on the rule keeps it (#215, asserted above). So this walk stays for direction alone, and what the edge would have bought is asserted where it is needed rather than assumed — `audit.test.ts` and `workspace.test.ts` plant a dotted directory in a template tree and under a package's `src` and require the audit to report it.",
     },
   };
 
@@ -565,5 +625,225 @@ describe("no module writes its own walk over a directory tree", () => {
     expect(Object.keys(NOT_YET_ROUTED).length).toBe(0);
     // And nothing may sit in both lists — unreachable and unrouted are different claims about one walk.
     for (const path of Object.keys(NOT_YET_ROUTED)) expect(SEPARATE_ON_PURPOSE[path]).toBeUndefined();
+  });
+});
+
+/**
+ * **The rule: no file this repository commits contains a NUL byte.**
+ *
+ * A NUL is what makes git call a file binary, and a binary file has no line diff. `git diff` prints
+ * `Bin 10043 -> 10128 bytes`, `--numstat` prints `-`, and every review of every change to it since
+ * shows nothing. `.github/scripts/crossPackageReads.ts` carried one from the day it was written — a
+ * dedup separator spelled as the raw byte instead of the escape — and that file is the one that
+ * decides which suites CI plans, so the file whose job is to make gates run was the file whose
+ * changes could not be read. It is also the likeliest reason two comments in it asserted something
+ * false for three commits: the reviewer who would have caught them was never shown them (#216, #211).
+ *
+ * **The gate reads the bytes rather than asking git, and that is the whole design.** git decides
+ * binary from the first 8000 bytes only. The same byte in that file was at offset 7-something when
+ * three commits showed as `Bin`, and sits at 8251 today, so git now renders the file as text — the
+ * defect did not go away, the file grew past the window git looks through. A gate that asks git
+ * turns itself off as a file gets longer, and turns back on when someone deletes a paragraph.
+ *
+ * **The file set is git's index, not {@link sourcePaths}.** The property is about what git does with
+ * a committed file, so the set has to be the committed files: the walk skips dotted directories, and
+ * `.changeset/`, `.husky/` and `.vscode/` all hold committed text. It is also not a walk this
+ * repository wrote — `git ls-files` does the listing — so it takes nothing away from the rule above.
+ *
+ * The byte is built with {@link String.fromCharCode} everywhere below, deliberately. Writing a test
+ * *about* a NUL is the easiest way to put one in the test file, which would make this file the next
+ * instance of what it exists to catch.
+ */
+describe("no file this repository commits is binary to git", () => {
+  /** The repository. This file lives at `packages/cli/src/ci/`; the scope test below fails if it moves. */
+  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+  /** The byte, never a literal one. It is also what `git ls-files -z` separates paths with. */
+  const NUL = String.fromCharCode(0);
+
+  /**
+   * Files allowed to hold it: path → why.
+   *
+   * **Empty, and this repository has never committed a binary file** — no image, no font, no fixture.
+   * A line here is a claim that a path is not source, and adding one is the reviewable act: it costs
+   * the argument that a genuinely binary asset belongs in a tree that is otherwise all text.
+   */
+  const BINARY_ON_PURPOSE: Record<string, string> = {};
+
+  /** Every path in git's index. `-z` because a path may hold anything but this byte and a slash. */
+  function tracked(): string[] {
+    const listing = execFileSync("git", ["ls-files", "-z"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return listing.split(NUL).filter((path) => path !== "");
+  }
+
+  /** Where `path` first holds the byte, or `-1`. A file the index names but the tree lacks holds nothing. */
+  function nulOffset(path: string): number {
+    try {
+      return readFileSync(path).indexOf(0);
+    } catch {
+      return -1;
+    }
+  }
+
+  test("the scan reaches every file git tracks, not one directory and not one walk's idea of source", () => {
+    // A scan that silently finds nothing passes the rule below it, so the scope is asserted first —
+    // the failure mode that turned `atomic.test.ts`'s tripwire into decoration (#185).
+    const paths = tracked();
+    expect(paths).toContain(".github/scripts/crossPackageReads.ts");
+    expect(paths).toContain("packages/cli/src/ci/sourceFiles.ts");
+    expect(paths).toContain("templates/starter/package.json");
+    // A dotted directory the source walk skips by design, and real committed text all the same.
+    expect(paths).toContain(".changeset/config.json");
+    expect(paths.length).toBeGreaterThan(1500);
+  });
+
+  test("and it sees the byte wherever it sits, including past the point git stops looking", async () => {
+    const near = await file("near.ts", `const a = "x${NUL}y";\n`);
+    // Past 8000 bytes: invisible to git's own check, which is exactly how the one in `.github/`
+    // stopped rendering as `Bin` without anybody fixing it.
+    const far = await file("far.ts", `${"// padding\n".repeat(900)}const b = "x${NUL}y";\n`);
+    const clean = await file("clean.ts", 'const c = "xy";\n');
+    expect(nulOffset(near)).toBeGreaterThanOrEqual(0);
+    expect(nulOffset(far)).toBeGreaterThan(8000);
+    expect(nulOffset(clean)).toBe(-1);
+  });
+
+  test("no committed file holds it", () => {
+    const found: Record<string, string> = {};
+    for (const path of tracked()) {
+      if (path in BINARY_ON_PURPOSE) continue;
+      const offset = nulOffset(join(REPO_ROOT, path));
+      if (offset >= 0) found[path] = `NUL at byte ${offset}`;
+    }
+    expect(found, "write it as the two-character escape `\\0` — a raw one has no line diff").toEqual({});
+  });
+
+  test("and anything excused from that says why, in a sentence somebody has to disagree with", () => {
+    for (const [path, why] of Object.entries(BINARY_ON_PURPOSE)) {
+      expect(why.trim().length, path).toBeGreaterThan(40);
+    }
+  });
+});
+
+/**
+ * **The rule: nothing the `plan` job runs may import anything that has to be installed.**
+ *
+ * `ci.yml`'s `plan` job has no `bun install` step, deliberately — a `turbo --dry=json` run reads the
+ * workspace manifests and nothing else, and that job is pure latency in front of every test job. So
+ * the two scripts it runs, and everything they reach, may import `node:` builtins and relative paths
+ * and nothing else. One bare specifier makes the job throw before it plans anything, and a workflow
+ * that plans nothing is green.
+ *
+ * It was a property nobody could break by accident while both scripts imported two builtins each.
+ * #211 gave `planShards.ts` a cross-tree import, and #214 put both scripts in a tsconfig — which is
+ * the change that makes this worth asserting, because a type check resolves a bare specifier through
+ * `node_modules` perfectly happily and would license exactly the import that breaks the job.
+ *
+ * The graph is written down as well as checked. A module joining it is a module whose own imports
+ * now have to satisfy this rule too, and that is a thing to notice rather than to inherit.
+ */
+describe("the plan job runs before `bun install`, so its scripts import only builtins and relative paths", () => {
+  /** The repository. This file lives at `packages/cli/src/ci/`. */
+  const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+  /** What CI runs, and therefore what the closure starts from. */
+  const ENTRY_POINTS = [".github/scripts/crossPackageReads.ts", ".github/scripts/planShards.ts"];
+
+  /**
+   * Every module reachable from those two, path → the specifiers it imports.
+   *
+   * One entry beyond the entry points, and it is the reason the walk lives where it does: both halves
+   * of CI's planner needed it, so it was placed where a relative path could reach it from `.github/`
+   * without either script acquiring a dependency (#185, #211).
+   */
+  const GRAPH: Record<string, string[]> = {
+    ".github/scripts/crossPackageReads.ts": [
+      "../../packages/cli/src/ci/sourceFiles",
+      "node:fs",
+      "node:path",
+      "node:url",
+    ],
+    ".github/scripts/planShards.ts": ["../../packages/cli/src/ci/sourceFiles", "node:fs", "node:path"],
+    "packages/cli/src/ci/sourceFiles.ts": ["node:fs", "node:path"],
+  };
+
+  /** A module's key: its path under the repo root, in posix separators. */
+  const named = (path: string): string => relative(REPO_ROOT, path).split(sep).join("/");
+
+  /**
+   * Every specifier `source` imports, in each of the four spellings that reach a module.
+   *
+   * `from "x"` covers the static forms including `export … from` and `import type`, which
+   * `verbatimModuleSyntax` still has to resolve. `import("x")` and `require("x")` cover the rest.
+   */
+  function specifiers(source: string): string[] {
+    const found: string[] = [];
+    for (const match of source.matchAll(/\bfrom\s*["']([^"']+)["']/g)) found.push(match[1] as string);
+    for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']/g)) {
+      found.push(match[1] as string);
+    }
+    return [...new Set(found)].sort();
+  }
+
+  /** Where a relative specifier lands, extensionless imports included. `null` if it resolves to nothing. */
+  function resolveRelative(from: string, specifier: string): string | null {
+    const base = resolve(join(REPO_ROOT, from), "..", specifier);
+    for (const candidate of [`${base}.ts`, join(base, "index.ts"), base]) {
+      if (readSource(candidate) !== null) return candidate;
+    }
+    return null;
+  }
+
+  /** The closure over the entry points: path → its specifiers, following the relative ones. */
+  function graph(): Record<string, string[]> {
+    const found: Record<string, string[]> = {};
+    const queue = [...ENTRY_POINTS];
+    while (queue.length > 0) {
+      const path = queue.shift() as string;
+      if (path in found) continue;
+      const source = readSource(join(REPO_ROOT, path));
+      expect(source, `${path} is what CI runs and it is not there`).not.toBeNull();
+      const imports = specifiers(source as string);
+      found[path] = imports;
+      for (const specifier of imports) {
+        if (!specifier.startsWith(".")) continue;
+        const target = resolveRelative(path, specifier);
+        if (target !== null) queue.push(named(target));
+      }
+    }
+    return found;
+  }
+
+  test("no bare specifier anywhere in either script's graph", () => {
+    const bare: Record<string, string[]> = {};
+    for (const [path, imports] of Object.entries(graph())) {
+      const offenders = imports.filter((specifier) => !specifier.startsWith("node:") && !specifier.startsWith("."));
+      if (offenders.length > 0) bare[path] = offenders;
+    }
+    expect(bare, "the `plan` job has no `bun install`, so this import cannot resolve when CI runs it").toEqual({});
+  });
+
+  test("every relative import in it resolves to a file that is there", () => {
+    // An import that resolves to nothing is the same outage as a bare one, and a typecheck alone
+    // would not catch a path that only the running script uses.
+    const dangling: string[] = [];
+    for (const [path, imports] of Object.entries(graph())) {
+      for (const specifier of imports) {
+        if (specifier.startsWith(".") && resolveRelative(path, specifier) === null) {
+          dangling.push(`${path} → ${specifier}`);
+        }
+      }
+    }
+    expect(dangling).toEqual([]);
+  });
+
+  test("and the graph is exactly these modules", () => {
+    // Written down as well as derived: a module joining the closure inherits this rule, and that is
+    // a thing somebody should have to add a line for.
+    expect(graph()).toEqual(GRAPH);
   });
 });

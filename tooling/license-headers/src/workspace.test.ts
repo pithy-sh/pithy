@@ -112,6 +112,24 @@ describe("sourceFiles", () => {
     ]);
   });
 
+  /**
+   * The reach this walk must have and the shared walker deliberately must not (#215).
+   *
+   * `ci/sourceFiles.ts` skips a dotted directory unless a caller opts in, because that rule is what
+   * keeps the scaffolds other suites create and delete out of every tripwire. This walk is asking a
+   * different question — does every file we ship carry its header — and a `src/.generated/` shipping
+   * unstamped would be an escape that announces nothing. Planted, because no package holds one today.
+   */
+  test("enters a dotted directory under src, because a file in one ships like any other", () => {
+    put("packages/core/src/index.ts", "");
+    put("packages/core/src/.generated/client.ts", "");
+
+    expect(sourceFiles(join(root, "packages/core")).map((f) => f.replace(`${root}/`, ""))).toEqual([
+      "packages/core/src/.generated/client.ts",
+      "packages/core/src/index.ts",
+    ]);
+  });
+
   test("returns nothing for a package with no src directory", () => {
     put("packages/core/package.json", "{}");
 
