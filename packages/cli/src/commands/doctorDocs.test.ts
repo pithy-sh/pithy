@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
@@ -18,11 +18,11 @@ import {
 import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDoctorText } from "./doctor";
 
 /**
- * `docs/CLI.md` §5.6 pastes three `pithy doctor` transcripts, and CLAUDE.md makes that document binding
- * rather than advisory — an adopter reads those blocks to learn what each state looks like, and a reviewer
- * reads them to decide whether an output change is a regression. Nothing checked them, and they rotted:
- * they showed a `Node: 22.10.0` line the renderer stopped printing and omitted the `Cloudflare:` line it
- * had started printing, both for as long as it took someone to notice by eye.
+ * `docs/commands/doctor.md` pastes three `pithy doctor` transcripts, and CLAUDE.md makes the CLI reference
+ * binding rather than advisory — an adopter reads those blocks to learn what each state looks like, and a
+ * reviewer reads them to decide whether an output change is a regression. Nothing checked them, and they
+ * rotted: they showed a `Node: 22.10.0` line the renderer stopped printing and omitted the `Cloudflare:`
+ * line it had started printing, both for as long as it took someone to notice by eye.
  *
  * So the transcripts are tested like code, the way `project/namingDocs.test.ts` tests NAMING.md's numbers.
  * `renderDoctorText` is a pure function of a `DoctorReport`, which is the whole reason this is possible:
@@ -35,6 +35,10 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  * reason: the suite that says what the renderer prints and the pin that says the doc prints the same thing
  * must start from one report builder, or the pin drifts from the behaviour it is quoting.
  *
+ * The page was `docs/CLI.md` §5.6 until #223 split the reference one page per command. Nothing about the
+ * pins changed with it: they were always scoped to one section's fenced blocks, and a page is a section
+ * with a file around it.
+ *
  * ## Why pinning the transcripts is not enough on its own
  *
  * A transcript pin holds the examples that exist. It says nothing about a block, or a `--json` field, that
@@ -42,48 +46,53 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  * field both landed undocumented with every pin green, within a week of each other (#184, #186). The pins
  * were never wrong; they were answering a narrower question than the one anyone was asking of them.
  *
- * So three gates below ask the wider one, each derived from the code rather than from a list kept here:
+ * So the gates below ask the wider one, each derived from the code rather than from a list kept here:
  *
- * - **Every block label the renderer can print is named in §5.6.** Read out of `doctor.ts` itself, so a
- *   block added tomorrow is covered without this file being touched.
- * - **§5.6's `--json` sample carries exactly the keys `renderDoctorJson` emits.** Every key of that
+ * - **Every block label the renderer can print is named on `doctor.md`.** Read out of `doctor.ts` itself,
+ *   so a block added tomorrow is covered without this file being touched.
+ * - **`doctor.md`'s `--json` sample carries exactly the keys `renderDoctorJson` emits.** Every key of that
  *   payload is unconditional — absent findings are `null`, never missing — so one render enumerates the
  *   whole contract, and a new field fails the comparison.
- * - **A `--json` payload a specifying section claims to specify is specified completely.** Each section
- *   names its own commands; the source decides their keys. §5.7 and §5.8 are the two sections enrolled —
- *   §5.8 by #187, which documented `pithy adopt` and wrote its payload key by key at the call site so
- *   this scan could reach it.
+ * - **A command page that specifies `--json` specifies it completely.** One page per command, one command
+ *   module per page: the page's name picks the source, and the source decides the keys.
+ * - **Every command has a page.** The ratchet #186 could not express, closed by #223.
  *
- * **Enrolment is what triggers the last one, and that is deliberate.** §5.7 covers the two commands it
- * documents because it documents them — mention another in backticks with `--json` and the gate demands
- * every key of that command's payload in the same breath. So adding one sentence about a new command's
- * `--json` can fail the suite until several more name its fields, which reads as a strange punishment for
- * writing documentation until you see the alternative: a section that half-describes a payload is how an
- * adopter learns three fields of five and discovers the rest from a stack trace. Partial is the state
- * worth failing. Documenting nothing about a command stays free; the gate only ever holds the document to
- * what it already claims. (Most of the CLI is in that untouched state — roughly twenty commands' `--json`
- * fields are specified nowhere, and enrolling them is its own piece of work, not a side effect of this one.)
+ * **Enrolment is what triggers the third one, and that is deliberate.** #186 enrolled a section by having it
+ * mention a command; #223 enrols a command by giving it a page, which is the same property with a filename
+ * instead of a sentence. A page that half-describes a payload is how an adopter learns three fields of five
+ * and discovers the rest from a stack trace, so partial is the state worth failing — while a command with no
+ * page at all is not failed by this gate, and was not, right up until the last page landed. The backlog
+ * shrank as pages did.
  *
- * What none of them reach is a payload assembled by spreading a typed object — `formatJsonLine({ command,
- * ...result })` — where no key is visible at the call site. Half of this CLI's `--json` sites are that
- * shape, and enumerating them needs the type checker, not a scan. The gate skips them by construction and
- * says so rather than reporting a clean pass over what it could not read.
+ * ## What the scan cannot read, named rather than implied
+ *
+ * A payload assembled by spreading a typed object — `formatJsonLine({ command, ...result })` — carries no
+ * key at the call site. Thirty of this CLI's sixty-five `--json` sites are that shape, and enumerating them
+ * needs the type checker rather than a scan. The gate reads what is written literally and holds a page to
+ * that; it never claims to have read the rest. Which commands are in that state is not a sentence here that
+ * can rot — it is `SPREAD_BUILT`, `UNPARSED_SITES` and `NO_READABLE_PAYLOAD` below, each asserted against
+ * the scan, so a command that changes shape fails until the list agrees with it again.
  */
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-const CLI_MD = readFileSync(join(REPO_ROOT, "docs", "CLI.md"), "utf8");
-
-const HEADING = "### 5.6 The `pithy doctor` command";
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(HERE, "..", "..", "..", "..");
+const DOCS = join(REPO_ROOT, "docs");
+const CLI_MD = readFileSync(join(DOCS, "CLI.md"), "utf8");
+const PAGE = readFileSync(join(DOCS, "commands", "doctor.md"), "utf8");
 
 /**
- * §5.6 alone, up to the next heading. Scoped, because §5.2 pastes notification output and §5.7 follows
- * immediately — a whole-file scan would pin whichever block happened to come first.
+ * One section of a document, up to the next heading of the same depth or shallower.
+ *
+ * Scoped, because a page's `## What it does`, its `## --json` and its `## Examples` each paste blocks that
+ * are pinned differently, and a whole-file scan would pin whichever happened to come first. The depth rule
+ * is what lets a `##` section carry `###` subsections without being cut short at the first one.
  */
-function section(heading: string): string {
-  const start = CLI_MD.indexOf(heading);
-  if (start === -1) throw new Error(`docs/CLI.md no longer has a "${heading}" section. Repin or restore it.`);
-  const rest = CLI_MD.slice(start + heading.length);
-  const end = rest.search(/\n#{2,3} /);
+function section(markdown: string, heading: string, where: string): string {
+  const start = markdown.indexOf(heading);
+  if (start === -1) throw new Error(`${where} no longer has a "${heading}" section. Repin or restore it.`);
+  const depth = (/^#+/.exec(heading)?.[0] ?? "##").length;
+  const rest = markdown.slice(start + heading.length);
+  const end = rest.search(new RegExp(`\\n#{1,${depth}} `));
   return end === -1 ? rest : rest.slice(0, end);
 }
 
@@ -92,24 +101,27 @@ function fencedBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)].map((match) => (match[1] ?? "").replace(/\n$/, ""));
 }
 
-const SECTION = section(HEADING);
-const BLOCKS = fencedBlocks(SECTION);
+const WHERE = "docs/commands/doctor.md";
+const WHAT_IT_DOES = section(PAGE, "## What it does", WHERE);
+const JSON_SECTION = section(PAGE, "## `--json`", WHERE);
+const EXAMPLES = section(PAGE, "## Examples", WHERE);
 
 /**
- * §5.6's fenced blocks, split by what each one is, because each class is pinned differently.
+ * The page's fenced blocks, split by the section that holds them, because each class is pinned differently.
  *
- * A block opening with a `$ …` prompt is a **transcript** — the whole report, pinned byte for byte. One of
- * those passes `--json`, and is pinned on its keys instead, since its paths are absolute and machine-
- * specific. Anything else is a **fragment**: a few lines lifted out of one block to illustrate it, pinned
- * with `toContain` against a report built for the state it is showing.
+ * `What it does` opens with the whole report — pinned byte for byte — and follows it with three
+ * **fragments**: a few lines lifted out of one block to illustrate a state, pinned with `toContain` against
+ * a report built for that state. `Examples` holds the other two whole transcripts. The `--json` section
+ * holds one sample, pinned on its keys instead of its bytes, since its paths are absolute and machine-
+ * specific.
  *
- * Every count is asserted below. A block that lands in no class, a fourth transcript, or a second `--json`
- * sample is an example free to rot — the state this suite exists to end.
+ * Every count is asserted below, the page's included. A block that lands in no class, a fourth transcript,
+ * or a second `--json` sample is an example free to rot — the state this suite exists to end.
  */
-const JSON_PROMPT = "$ pithy doctor --json";
-const TRANSCRIPTS = BLOCKS.filter((block) => block.startsWith("$ ") && !block.startsWith(JSON_PROMPT));
-const JSON_SAMPLES = BLOCKS.filter((block) => block.startsWith(JSON_PROMPT));
-const FRAGMENTS = BLOCKS.filter((block) => !block.startsWith("$ "));
+const WHAT_BLOCKS = fencedBlocks(WHAT_IT_DOES);
+const JSON_SAMPLES = fencedBlocks(JSON_SECTION);
+const EXAMPLE_BLOCKS = fencedBlocks(EXAMPLES);
+const FRAGMENTS = WHAT_BLOCKS.slice(1);
 
 /**
  * One transcript's output, with the `$ …` prompt line the renderer does not emit stripped off.
@@ -118,14 +130,14 @@ const FRAGMENTS = BLOCKS.filter((block) => !block.startsWith("$ "));
  * quietly stops matching is worse than no pin at all: the block it guards can then be reworded into a
  * report the CLI never prints, and the suite stays green while the document lies.
  */
-function transcript(index: number, prompt: string): string {
-  const block = TRANSCRIPTS[index];
+function transcript(blocks: string[], where: string, index: number, prompt: string): string {
+  const block = blocks[index];
   if (block === undefined) {
-    throw new Error(`docs/CLI.md §5.6 no longer has ${index + 1} transcripts — found ${TRANSCRIPTS.length}.`);
+    throw new Error(`${WHERE} ${where} no longer has ${index + 1} fenced blocks — found ${blocks.length}.`);
   }
   const lines = block.split("\n");
   if (lines[0] !== prompt) {
-    throw new Error(`docs/CLI.md §5.6 transcript ${index + 1} opens with "${lines[0]}", expected "${prompt}".`);
+    throw new Error(`${WHERE} ${where} transcript ${index + 1} opens with "${lines[0]}", expected "${prompt}".`);
   }
   // The renderer's own leading blank line is the second line of the block, so slicing the prompt off
   // reproduces the string `renderDoctorText` returns, byte for byte.
@@ -173,13 +185,14 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
   };
 }
 
-describe("docs/CLI.md §5.6", () => {
+describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
-    // An unclassified block, a fourth transcript, or a second sample would be an unpinned example.
-    expect(TRANSCRIPTS).toHaveLength(3);
+    // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
+    // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
+    expect(WHAT_BLOCKS).toHaveLength(4);
+    expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
-    expect(FRAGMENTS).toHaveLength(3);
-    expect(BLOCKS).toHaveLength(TRANSCRIPTS.length + JSON_SAMPLES.length + FRAGMENTS.length);
+    expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
   });
 
   /**
@@ -219,13 +232,13 @@ describe("docs/CLI.md §5.6", () => {
         }),
       ),
     );
-    expect(transcript(0, "$ pithy doctor")).toBe(renderDoctorText(report, harness.dir));
+    expect(transcript(WHAT_BLOCKS, "What it does", 0, "$ pithy doctor")).toBe(renderDoctorText(report, harness.dir));
   });
 
   /** The terse report: nothing to say, so the config, health, Cloudflare, and name blocks are all absent. */
   test("the up-to-date report is what the renderer prints when everything passes", async () => {
     const report = await buildDoctorReport(docOptions(harness.healthyOptions()));
-    expect(transcript(1, "$ pithy doctor")).toBe(renderDoctorText(report, harness.dir));
+    expect(transcript(EXAMPLE_BLOCKS, "Examples", 0, "$ pithy doctor")).toBe(renderDoctorText(report, harness.dir));
   });
 
   /**
@@ -235,7 +248,9 @@ describe("docs/CLI.md §5.6", () => {
    */
   test("the outside-a-project report is what the renderer prints where there is no config", async () => {
     const report = await buildDoctorReport(docOptions(harness.healthyOptions({ loadProject: undefined })));
-    expect(transcript(2, "$ cd /tmp && pithy doctor")).toBe(renderDoctorText(report, harness.dir));
+    expect(transcript(EXAMPLE_BLOCKS, "Examples", 1, "$ cd /tmp && pithy doctor")).toBe(
+      renderDoctorText(report, harness.dir),
+    );
   });
 
   /**
@@ -262,7 +277,7 @@ describe("docs/CLI.md §5.6", () => {
       },
     };
     const fragment = FRAGMENTS[0];
-    if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the Project health fragment.");
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 
@@ -288,7 +303,7 @@ describe("docs/CLI.md §5.6", () => {
       ),
     );
     const fragment = FRAGMENTS[1];
-    if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the unknown-alias fragment.");
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 
@@ -314,7 +329,7 @@ describe("docs/CLI.md §5.6", () => {
       ),
     );
     const fragment = FRAGMENTS[2];
-    if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the offline fragment.");
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 });
@@ -348,33 +363,84 @@ function rendererBlockLabels(source: string): string[] {
 /**
  * The keys of every `--json` payload one command module writes that are visible where it is written.
  *
- * A payload built by spreading a typed object carries no key at the call site, so those sites contribute
- * nothing and are counted separately — a caller that treats an empty result as a clean pass would be
- * reporting on a file it could not read. Extracting them needs the type checker rather than a scan, and
- * that is the honest edge of this gate.
+ * Three things this cannot read, counted rather than glossed. A payload built by **spreading** a typed
+ * object carries no key at the call site. A site whose argument the object pattern cannot parse — a nested
+ * object, a template placeholder — contributes nothing either. And a site handed a bare identifier or a
+ * renderer's return value is opaque by construction. Extracting any of them needs the type checker rather
+ * than a scan, and that is the honest edge of this gate: `keys` is a floor, never a contract, and a caller
+ * that treated an empty one as a clean pass would be reporting on a file it could not read.
  */
-function payloadKeys(source: string): { keys: string[] } {
+function payloadKeys(source: string): { keys: string[]; spreadSites: number; unparsedSites: number } {
   const keys = new Set<string>();
-  for (const match of source.matchAll(/formatJsonLine\(\{([^{}]*)\}/g)) {
-    for (const part of (match[1] ?? "").split(",")) {
+  const sites = [...source.matchAll(/formatJsonLine\(\{([^{}]*)\}/g)];
+  for (const site of sites) {
+    for (const part of (site[1] ?? "").split(",")) {
       const name = /^([A-Za-z_$][\w$]*)\s*(?::|$)/.exec(part.trim());
       if (name?.[1]) keys.add(name[1]);
     }
   }
-  return { keys: [...keys].sort() };
+  return {
+    keys: [...keys].sort(),
+    spreadSites: sites.filter((site) => (site[1] ?? "").includes("...")).length,
+    unparsedSites: [...source.matchAll(/formatJsonLine\(/g)].length - sites.length,
+  };
 }
 
-describe("docs/CLI.md documents what the code emits", () => {
+/** Every command the CLI ships, read from the modules rather than from a list kept here. */
+const COMMANDS = readdirSync(HERE)
+  .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+  .map((file) => file.slice(0, -3))
+  .sort();
+
+const pageFor = (command: string): string => join(DOCS, "commands", `${command}.md`);
+const sourceFor = (command: string): string => readFileSync(join(HERE, `${command}.ts`), "utf8");
+
+/**
+ * Commands whose `--json` payload this scan reads nothing of.
+ *
+ * `alias` and `doctor` hand `formatJsonLine` a value rather than an object literal — a prepared payload, and
+ * a renderer's return. `remove` writes no payload at all: it is the one command that **rejects** `--json`,
+ * because a destructive interactive command has no headless path (`docs/CLI.md` §1.2). None of the three is
+ * gated below, and `doctor.md` is not left uncovered by that — the sample-versus-payload gate above is
+ * stricter than the key scan could ever be.
+ */
+const NO_READABLE_PAYLOAD = ["alias", "doctor", "remove"];
+
+/**
+ * Commands with at least one payload assembled by spreading a typed object. Thirty sites across these,
+ * which is where the number in this file's header comes from. Their pages are held to the keys written
+ * literally beside the spread — a floor — and nothing here claims the rest was checked.
+ */
+const SPREAD_BUILT = [
+  "add",
+  "dashboard",
+  "email",
+  "env",
+  "feature",
+  "media",
+  "migrate",
+  "seed",
+  "storage",
+  "support",
+  "token",
+  "turnstile",
+  "ui",
+  "vector",
+  "worker",
+];
+
+/** Commands with a site the object pattern cannot parse: a nested object, a template placeholder, a value. */
+const UNPARSED_SITES = ["alias", "doctor", "secrets", "testers"];
+
+describe("the docs say what the code emits", () => {
   /**
    * The gate #184's `manifests:` block walked straight past: three transcripts pinned, all three green,
    * and a whole block of the report named nowhere in the document that specifies the command.
    */
-  test("§5.6 names every block label the renderer can print", () => {
-    const labels = rendererBlockLabels(
-      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "doctor.ts"), "utf8"),
-    );
+  test("doctor.md names every block label the renderer can print", () => {
+    const labels = rendererBlockLabels(readFileSync(join(HERE, "doctor.ts"), "utf8"));
     expect(labels.length).toBeGreaterThan(10);
-    expect(labels.filter((label) => !SECTION.includes(label))).toEqual([]);
+    expect(labels.filter((label) => !PAGE.includes(label))).toEqual([]);
   });
 
   /**
@@ -383,38 +449,85 @@ describe("docs/CLI.md documents what the code emits", () => {
    * be compared against it as a set. Values are not compared: the payload's paths are absolute and
    * machine-specific, which is the one thing about it the document states in prose instead.
    */
-  test("§5.6's --json sample carries exactly the keys the payload does", async () => {
+  test("doctor.md's --json sample carries exactly the keys the payload does", async () => {
     const report = await buildDoctorReport(docOptions(harness.healthyOptions()));
     const block = JSON_SAMPLES[0];
-    if (block === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes a `pithy doctor --json` sample.");
+    if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     const sample: unknown = JSON.parse(block.split("\n").slice(1).join("\n"));
     expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(Object.keys(renderDoctorJson(report)).sort());
   });
 
   /**
-   * The gate #184's `manifestFaults` walked past, stated once for however many commands §5.7 speaks for.
+   * The ratchet #186 named and could not close: it enrolled a *section* by having it mention a command, so
+   * a command nobody had written about was free. One page per command makes the enrolment a filename, and a
+   * filename can be required. Every command module has a page, and this is what says so.
    *
-   * The section names its own commands — every `pithy <name> … --json` it puts in backticks — and the
-   * source decides their keys. So documenting another command's payload there enrols it, and adding a
-   * field to one already there fails until the prose names it. Nothing in this file lists a command.
+   * A new command therefore lands with its page or fails here, which is the point: the reference is
+   * published, and "we will document it later" is the state that produced #184 and #186 in one week.
    */
-  test.each([["### 5.7 Project capability updates"], ["### 5.8 The `pithy adopt` command"]])(
-    "%s names every --json field of every command it specifies",
-    (heading) => {
-      const body = section(heading);
-      const commands = new Set([...body.matchAll(/`pithy ([a-z]+)[^`]*--json`/g)].map((match) => match[1] ?? ""));
-      expect(commands.size).toBeGreaterThan(0);
-      for (const command of commands) {
-        const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), `${command}.ts`), "utf8");
-        // A payload nothing can read is not a payload that passed. `add` also writes one built by spreading
-        // a typed object, which contributes no key here and is not gated — the edge stated in the header.
-        const { keys } = payloadKeys(source);
-        expect(keys, `${command} writes no --json payload this scan can read`).not.toEqual([]);
-        expect({ command, undocumented: keys.filter((key) => !body.includes(`\`${key}\``)) }).toEqual({
-          command,
-          undocumented: [],
-        });
-      }
-    },
+  test("every command has a page", () => {
+    expect(COMMANDS.filter((command) => !existsSync(pageFor(command)))).toEqual([]);
+    expect(COMMANDS.length).toBeGreaterThan(20);
+  });
+
+  /**
+   * What the scan can and cannot read, asserted rather than described, so this file's honesty cannot rot
+   * into a stale sentence. A command that stops spreading its payload — or starts — fails here until the
+   * lists agree with it, and whoever updates one is standing in front of the paragraph that explains why.
+   */
+  test("the scan's blind spots are exactly the ones this file names", () => {
+    const scanned = COMMANDS.map((command) => [command, payloadKeys(sourceFor(command))] as const);
+    expect(scanned.filter(([, read]) => read.keys.length === 0).map(([command]) => command)).toEqual(
+      NO_READABLE_PAYLOAD,
+    );
+    expect(scanned.filter(([, read]) => read.spreadSites > 0).map(([command]) => command)).toEqual(SPREAD_BUILT);
+    expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(30);
+  });
+
+  /**
+   * The gate #184's `manifestFaults` walked past, now asked of every page at once.
+   *
+   * The page's name picks the command module; the module decides the keys. So a field added to a payload
+   * fails until its page names it, and a page that specifies a payload specifies all of it. Nothing in this
+   * file lists a key.
+   */
+  const GATED = COMMANDS.filter(
+    (command) => existsSync(pageFor(command)) && payloadKeys(sourceFor(command)).keys.length > 0,
   );
+
+  test("the pages under gate are the pages that exist", () => {
+    // A guard on the list above: an empty `test.each` runs nothing and reports nothing, which is the one
+    // way this whole describe block could go quiet without anybody deleting a line of it.
+    expect(GATED).toEqual(COMMANDS.filter((command) => !NO_READABLE_PAYLOAD.includes(command)));
+  });
+
+  test.each(GATED)("docs/commands/%s.md names every --json key written at its call sites", (command) => {
+    const { keys } = payloadKeys(sourceFor(command));
+    const body = readFileSync(pageFor(command), "utf8");
+    expect({ command, undocumented: keys.filter((key) => !body.includes(`\`${key}\``)) }).toEqual({
+      command,
+      undocumented: [],
+    });
+  });
+
+  /**
+   * §5.7 stays in `docs/CLI.md`: it specifies the *distinction* between a CLI update and a capability
+   * update, which is one command's business no more than the flag conventions are. It keeps #186's own
+   * enrolment rule — the section names its own commands, every `pithy <name> … --json` it puts in backticks
+   * — so a payload it half-describes fails here exactly as it did before the split.
+   */
+  test("docs/CLI.md §5.7 names every --json field of every command it specifies", () => {
+    const body = section(CLI_MD, "### 5.7 Project capability updates", "docs/CLI.md");
+    const commands = new Set([...body.matchAll(/`pithy ([a-z]+)[^`]*--json`/g)].map((match) => match[1] ?? ""));
+    expect(commands.size).toBeGreaterThan(0);
+    for (const command of commands) {
+      const { keys } = payloadKeys(sourceFor(command));
+      expect(keys, `${command} writes no --json payload this scan can read`).not.toEqual([]);
+      expect({ command, undocumented: keys.filter((key) => !body.includes(`\`${key}\``)) }).toEqual({
+        command,
+        undocumented: [],
+      });
+    }
+  });
 });

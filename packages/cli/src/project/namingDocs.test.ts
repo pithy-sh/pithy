@@ -54,7 +54,16 @@ const NAMING = readFileSync(join(REPO_ROOT, "docs", "NAMING.md"), "utf8");
 const RESTATEMENTS: Record<string, string> = {
   "README.md": readFileSync(join(REPO_ROOT, "README.md"), "utf8").replace(/\s+/g, " "),
   "docs/CLI.md": readFileSync(join(REPO_ROOT, "docs", "CLI.md"), "utf8").replace(/\s+/g, " "),
+  // The feature-name budget moved here with `pithy dev` when #223 split the reference one page per
+  // command. The numbers did not move, and neither did the reason they are pinned.
+  "docs/commands/dev.md": readFileSync(join(REPO_ROOT, "docs", "commands", "dev.md"), "utf8").replace(/\s+/g, " "),
 };
+
+/**
+ * The docs that quote the project-name cap, as a set rather than a loop over every restatement: two of
+ * these three state it, and a doc that starts quoting it has to join the check rather than slip past.
+ */
+const QUOTES_THE_CAP = ["README.md", "docs/CLI.md"];
 
 /**
  * The numbers one sentence of a doc states, or a failure naming the sentence that has gone missing.
@@ -318,7 +327,9 @@ describe("the feature budget table", () => {
 
 describe("the numbers the other docs restate", () => {
   it("states the real project-name cap wherever it is quoted", () => {
-    for (const doc of Object.keys(RESTATEMENTS)) {
+    const quoting = Object.keys(RESTATEMENTS).filter((doc) => /stops at \d+ characters/.test(RESTATEMENTS[doc] ?? ""));
+    expect(quoting).toEqual(QUOTES_THE_CAP);
+    for (const doc of QUOTES_THE_CAP) {
       const [cap] = stated(doc, /stops at (\d+) characters/, "the project-name cap");
       expect(cap, `${doc}: the project-name cap`).toBe(MAX_PROJECT_NAME);
     }
@@ -330,7 +341,7 @@ describe("the numbers the other docs restate", () => {
   });
 
   it("holds the feature shape to the same R2 cap the code does", () => {
-    const [cap] = stated("docs/CLI.md", /Held to R2's (\d+) characters/, "R2's cap");
+    const [cap] = stated("docs/commands/dev.md", /Held to R2's (\d+) characters/, "R2's cap");
     expect(cap).toBe(NAMESPACE_LIMITS.r2.maxLength);
   });
 
@@ -339,18 +350,20 @@ describe("the numbers the other docs restate", () => {
     // is not the issue reserve — the two were the same number while `MAX_ISSUE_DIGITS` was 7, which is how
     // the budget came to spend it twice.
     const fixed = 2 + 3 + MAX_FEATURE_KIND;
-    const [literals] = stated("docs/CLI.md", /with (\d+) taken by the fixed literals/, "the fixed literals");
+    const [literals] = stated("docs/commands/dev.md", /with (\d+) taken by the fixed literals/, "the fixed literals");
     expect(literals).toBe(fixed);
 
     const divided = NAMESPACE_LIMITS.r2.maxLength - fixed;
-    expect(stated("docs/CLI.md", /divide (\d+) between them/, "what the variable segments divide")).toEqual([divided]);
+    expect(stated("docs/commands/dev.md", /divide (\d+) between them/, "what the variable segments divide")).toEqual([
+      divided,
+    ]);
     expect(
-      stated("docs/CLI.md", /project \+ issue \+ slug \+ binding = (\d+)/, "the feature-budget arithmetic"),
+      stated("docs/commands/dev.md", /project \+ issue \+ slug \+ binding = (\d+)/, "the feature-budget arithmetic"),
     ).toEqual([divided]);
   });
 
   it("reserves the issue the same digits the composer does", () => {
-    const [digits] = stated("docs/CLI.md", /issue number is reserved (\d+) digits/, "the issue reserve");
+    const [digits] = stated("docs/commands/dev.md", /issue number is reserved (\d+) digits/, "the issue reserve");
     expect(digits).toBe(MAX_ISSUE_DIGITS);
   });
 
@@ -358,7 +371,7 @@ describe("the numbers the other docs restate", () => {
     // Every number in the sentence is read out of it and recomputed — the project length, both issue
     // lengths, and both budgets — so the doc may pick its own example and still cannot pick its own answer.
     const [projectLength, atReserve, reserveDigits, atReal, realDigits] = stated(
-      "docs/CLI.md",
+      "docs/commands/dev.md",
       /a (\d+)-character project with a `DB` binding leaves (\d+) characters of slug at a (\d+)-digit issue, and (\d+) at a real (\d+)-digit one/,
       "the worked slug budget",
     ) as [number, number, number, number, number];
