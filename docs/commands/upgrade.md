@@ -55,7 +55,7 @@ $ pithy upgrade --dry-run --json
 
 ```
 $ pithy upgrade --json
-{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"worker":"board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[]}
 ```
 
 ### The envelope
@@ -96,7 +96,8 @@ $ pithy upgrade --json
 
 | key | type | meaning |
 |---|---|---|
-| `worker` | string | The Worker this apply targeted, as its `apps/<name>` directory |
+| `worker` | string | The Worker this apply targeted, as its `apps/<name>` directory — what `--worker` accepts |
+| `deployedAs` | string | The same Worker's deployed script name, from `wrangler.jsonc` — what the Cloudflare dashboard shows |
 | `perCapability` | array | Per capability that **changed**. A capability with nothing added does not appear |
 | `perCapability[].name` | string | The capability's short name |
 | `perCapability[].addedBindings` | array | The bindings written into `wrangler.jsonc` for this capability, same shape as `missingBindings` above |
@@ -116,7 +117,7 @@ $ pithy upgrade --json
 | `migrations[].sharedWith` | string[] | The other Workers bound to this same physical D1. Present only when a database is shared |
 | `addedVersionMetadata` | boolean | Whether this run added the `version_metadata` binding the Worker was missing |
 
-The applied shape carries no `deployedAs`. A consumer that needs the deployed script name for an applied run has to take it from `--dry-run`, from `pithy worker list`, or from the Worker's `wrangler.jsonc`.
+**The two shapes differ in what a run produced, never in how it names the Worker.** `worker` and `deployedAs` are in both, carrying the same two strings, because `workers` is one array and `dryRun` is what says which shape fills it — a key present on one side and absent on the other would mean a consumer that worked under `--dry-run` read `undefined` on the run that actually wrote something. The applied entry used to drop `deployedAs`; it does not now.
 
 ## Errors
 

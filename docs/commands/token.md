@@ -82,7 +82,7 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | `profile` | string | The profile that was revoked. |
 | `env` | string | The environment it was revoked for. |
 | `name` | string | The composed Cloudflare token name the sweep matched. |
-| `revoked` | number | How many account tokens of that name were deleted. `0` is an ordinary answer. |
+| `revokedCount` | number | How many account tokens of that name were deleted. `0` is an ordinary answer. |
 
 ## Errors
 

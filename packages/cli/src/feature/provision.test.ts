@@ -116,8 +116,11 @@ describe("provisionFeature / deprovisionFeature", () => {
       ["kv", "CACHE", true],
       ["r2", "ASSETS", true],
     ]);
-    expect(report.migrated && report.seeded).toBe(true);
+    // Both backend steps ran, proven by the seams rather than by a field the payload asserts about itself
+    // (#231): each throws on failure, so a returned report already means they succeeded, and a hardcoded
+    // `migrated: true, seeded: true` beside it is a constant no consumer can usefully branch on.
     expect(r.calls).toEqual({ migrate: ["feature"], seed: ["feature"] });
+    expect(Object.keys(report).sort()).toEqual(["command", "env", "resources", "services", "workers"]);
 
     // The R2 resource's name is its id; D1/KV got synthetic ids.
     const r2Name = featureResourceName(identity, "ASSETS", "r2");

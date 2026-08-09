@@ -16,7 +16,7 @@ import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } fr
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
@@ -192,15 +192,37 @@ const sync = defineCommand({
         // Both steps name the project, resolved once. The migrate stamps each database as this
         // project's — the check that refuses another project's D1 — and the seed carries the same name
         // into the account-wide Images/Stream stores, which is all a later sweep has to go on.
-        const project = requireProjectName(await loadProject(projectDir));
-        await migrateProject({ env: "dev", projectDir, project });
-        await seedProject({ env: "dev", projectDir, project, json: true });
+        // One config load, two facts (#234). The account is this worktree's own, never the default
+        // credentials file: a `dev` fan-out is local, but a media fixture reaches Images and Stream,
+        // which have no local emulation and belong to exactly one account.
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        const account = loadProjectCloudflare(config) ?? null;
+        await migrateProject({ env: "dev", projectDir, project, account });
+        await seedProject({ env: "dev", projectDir, project, account, json: true });
         data = true;
       }
 
       if (args.json) {
+        // **One field, `data`, because there is one flag (#231).** It used to emit `migrated: data,
+        // seeded: data` — two keys off one boolean, so they can never disagree, so every consumer's
+        // `if (migrated && !seeded)` is a branch that can never fire and can never be tested. Should the
+        // steps ever be split, that dead branch silently becomes live with whatever meaning the split
+        // invents. `migrated` is also already taken: on `pithy upgrade` it means the narrower "the
+        // migration step ran", so `feature sync` spending it on "migrated *and* seeded" was itself a
+        // shared key with two meanings — the defect #231 is about. Two facts that can differ is not on
+        // offer either: both steps throw, so any run that reaches this line ran both or neither.
+        //
+        // **`added`/`removed` are published as `addedWorkers`/`removedWorkers` (#235).** `removed` is
+        // `boolean` on `pithy alias --remove` and on `pithy dashboard disconnect` — "was it removed?" —
+        // and a `string[]` here, so `if (result.removed)` is true for both and means opposite things.
+        // The collection is the outlier, and naming its contents is what tells the two apart; `added`
+        // comes with it because the pair is read together, and half a qualified pair invites exactly the
+        // misreading the qualification is for. The report keeps its own field names: `SyncReport` is the
+        // reconciler's domain type, and only what leaves through `--json` is a published name.
+        const { added: addedWorkers, removed: removedWorkers, ...rest } = report;
         process.stdout.write(
-          `${formatJsonLine({ command: "feature.sync", ...report, migrated: data, seeded: data })}\n`,
+          `${formatJsonLine({ command: "feature.sync", ...rest, addedWorkers, removedWorkers, data })}\n`,
         );
         return;
       }
@@ -314,7 +336,15 @@ const destroy = defineCommand({
       });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report })}\n`);
+        // **`deleted` is published as `deletedResources` (#235).** `pithy vector reset` emits a `deleted`
+        // too, and its is a `string[]` of index names where this one is `{kind,name,id}[]`. Two
+        // collections under one name is the harder half of the collision to notice — both are truthy,
+        // both have a `.length` — so the fix is to say what each holds. This is the record-shaped one,
+        // and `deletedResources` also puts it opposite `feature provision`'s `resources`, which is the
+        // list it undoes. `DestroyReport` keeps `deleted`: it is teardown's own vocabulary, and the
+        // published name is decided here, where the payload is.
+        const { command, deleted: deletedResources, ...rest } = report;
+        process.stdout.write(`${formatJsonLine({ command, deletedResources, ...rest })}\n`);
         return;
       }
       for (const resource of report.deleted) {

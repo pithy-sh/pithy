@@ -71,48 +71,51 @@ Neither hidden flag takes `--json`.
 
 ## `--json`
 
-One line, one object. The payload's shape follows the path taken, and there are four.
+One line, one object. The payload's shape follows the path taken, and there are four. `command` and `action` lead every one of them: `alias` has no subcommands, so `action` is what tells the paths apart.
 
 **Install** — `pithy alias --json`.
 
 ```
 $ pithy alias --json
-{"action":"install","installed":true,"alreadyInstalled":false,"shell":"bash","rcPath":"/home/you/.bashrc","alias":"alias p.='pithy'"}
+{"command":"alias","action":"install","installed":true,"alreadyInstalled":false,"shell":"bash","rcPath":"/home/you/.bashrc","alias":"alias p.='pithy'"}
 ```
 
 **Remove** — `pithy alias --remove --json`.
 
 ```
 $ pithy alias --remove --json
-{"action":"remove","removed":true,"rcPath":"/home/you/.bashrc"}
+{"command":"alias","action":"remove","removed":true,"rcPath":"/home/you/.bashrc"}
 ```
 
 **Status** — `pithy alias --status --json`.
 
 ```
 $ pithy alias --status --json
-{"action":"status","installed":true,"shell":"bash","rcPath":"/home/you/.bashrc"}
+{"command":"alias","action":"status","installed":true,"shell":"bash","rcPath":"/home/you/.bashrc"}
 ```
 
-**Unknown shell**, from an install or a remove. Note that this one carries **no `action` key** — read `manual` to detect it, not `action`.
+**Unknown shell**, from an install or a remove. `action` says which of the two was asked for, and `manual` says nothing was written.
 
 ```
 $ pithy alias --json
-{"shell":null,"manual":true,"alias":"alias p.='pithy'"}
+{"command":"alias","action":"install","shell":null,"manual":true,"alias":"alias p.='pithy'"}
 ```
 
-`--status` under an unknown shell keeps its `action` and reports nulls instead: `{"action":"status","installed":false,"shell":null,"rcPath":null}`.
+`--status` under an unknown shell reports nulls the same way: `{"command":"alias","action":"status","installed":false,"shell":null,"rcPath":null}`.
+
+This path used to carry no `action` at all — so the one case where the command exited 0 and changed nothing was the one case a consumer keying on `action` could not classify. It is the case that most needs detecting.
 
 | key | type | meaning |
 |---|---|---|
-| `action` | `"install" \| "remove" \| "status"` | Which path ran. Present on every payload **except** the unknown-shell one from an install or a remove |
+| `command` | `"alias"` | The command that produced the line. On every payload |
+| `action` | `"install" \| "remove" \| "status"` | Which path ran. On every payload, the unknown-shell one included |
 | `installed` | boolean | Install: always `true` — the alias is in place, whether this run put it there or found it. Status: whether the marker block is in the rc file |
 | `alreadyInstalled` | boolean | Install only. `true` when the block, or a hand-added `alias p.=`, was already there and nothing was written |
 | `removed` | boolean | Remove only. `false` when there was no block to remove — not an error, and the exit is 0 |
 | `shell` | string or `null` | The detected shell family: `bash`, `zsh`, `fish`, `nushell`, `powershell`. `null` when detection failed |
 | `rcPath` | string or `null` | Absolute path to the rc file the alias line belongs in. `null` on `status` with an undetected shell |
 | `alias` | string | The alias line itself. The shell-specific syntax on the install path; the plain POSIX form on the unknown-shell path |
-| `manual` | `true` | Present only on the unknown-shell path. Says the shell was not detected, nothing was written, and `alias` is for you to add by hand |
+| `manual` | `true` | Present only on the unknown-shell path, and only from an install or a remove. Says the shell was not detected, nothing was written, and `alias` is for you to add by hand |
 
 `installed` and `alreadyInstalled` answer different questions on the install path, and both are worth reading: `installed` is the state afterwards, `alreadyInstalled` is whether this run changed anything.
 

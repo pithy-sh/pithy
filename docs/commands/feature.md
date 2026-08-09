@@ -49,7 +49,7 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy feature create media-cli --issue 69 --json
-{"command":"feature.create","branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","created":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8797,"size":10},"workers":{"api":{"port":8797,"origin":"http://localhost:8797"}}},"migrated":true,"seeded":true}
+{"command":"feature.create","branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","worktreeCreated":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8797,"size":10},"workers":{"api":{"port":8797,"origin":"http://localhost:8797"}}}}
 ```
 
 | key | type | meaning |
@@ -57,7 +57,7 @@ $ pithy feature create media-cli --issue 69 --json
 | `command` | `"feature.create"` | The subcommand that produced the line |
 | `branch` | `string` | The feature branch created or attached |
 | `worktree` | `string` | The absolute worktree path |
-| `created` | `boolean` | Whether a new worktree was created. False on an idempotent re-run over an existing one |
+| `worktreeCreated` | `boolean` | Whether a new worktree was created. False on an idempotent re-run over an existing one |
 | `dev` | `object` | The feature's dev config — the document written to the worktree's `.dev.config.json` |
 | `dev.version` | `1` | Dev-config schema version |
 | `dev.branch` | `string` | The branch this config belongs to |
@@ -68,12 +68,10 @@ $ pithy feature create media-cli --issue 69 --json
 | `dev.workers` | `object` | Each Worker's fixed endpoint, keyed by Worker name |
 | `dev.workers.<name>.port` | `number` | The port that Worker binds locally, for the life of the feature |
 | `dev.workers.<name>.origin` | `string` | The origin sibling Workers reach it at |
-| `migrated` | `boolean` | Whether local migrations ran. Always `true` on a successful create — a failure throws |
-| `seeded` | `boolean` | Whether the local seed ran. Always `true` on a successful create |
 
 ```
 $ pithy feature sync --json
-{"command":"feature.sync","branch":"feature/69-media-cli","block":{"block":1,"base":8797,"size":10},"dev":{…},"added":["web"],"removed":[],"migrated":true,"seeded":true}
+{"command":"feature.sync","branch":"feature/69-media-cli","block":{"block":1,"base":8797,"size":10},"dev":{…},"addedWorkers":["web"],"removedWorkers":[],"data":true}
 ```
 
 | key | type | meaning |
@@ -85,16 +83,15 @@ $ pithy feature sync --json
 | `block.base` | `number` | The first port in the block |
 | `block.size` | `number` | How many ports the block spans |
 | `dev` | `object` | The reconciled dev config, in the shape `feature.create` reports above |
-| `added` | `string[]` | Workers that gained a port on this run |
-| `removed` | `string[]` | Workers that went away and released their port |
-| `migrated` | `boolean` | Whether the local migrate ran. `false` under `--skip-data` |
-| `seeded` | `boolean` | Whether the local seed ran. `false` under `--skip-data` |
+| `addedWorkers` | `string[]` | Workers that gained a port on this run |
+| `removedWorkers` | `string[]` | Workers that went away and released their port |
+| `data` | `boolean` | Whether the backend steps ran — migrate then seed, together. `false` under `--skip-data`, and never anything else: one flag governs both, so they cannot disagree |
 
 `block` and `dev.ports` describe the same reservation from two sides — `block` is the registry's record, `dev.ports` is the worktree's copy — and they spell the index differently (`block` versus `index`) because each keeps the name its own file uses.
 
 ```
 $ pithy feature provision --json
-{"command":"feature.provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"acme-f69-media-cli-db-d1","id":"…","created":true}],"workers":[{"worker":"acme-api","name":"acme-f69-media-cli-acme-api"}],"services":[{"binding":"API","service":"acme-f69-media-cli-acme-api"}],"migrated":true,"seeded":true}
+{"command":"feature.provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"acme-f69-media-cli-db-d1","id":"…","created":true}],"workers":[{"worker":"acme-api","name":"acme-f69-media-cli-acme-api"}],"services":[{"binding":"API","service":"acme-f69-media-cli-acme-api"}]}
 ```
 
 | key | type | meaning |
@@ -113,21 +110,19 @@ $ pithy feature provision --json
 | `services` | `object[]` | Each `service` binding and the feature-scoped Worker it now targets |
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The feature-scoped script the binding was retargeted at |
-| `migrated` | `boolean` | Whether remote migrations ran. Always `true` on a successful provision |
-| `seeded` | `boolean` | Whether the remote seed ran. Always `true` on a successful provision |
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","deleted":[{"kind":"d1","name":"acme-f69-media-cli-db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
+{"command":"feature.destroy","deletedResources":[{"kind":"d1","name":"acme-f69-media-cli-db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.destroy"` | The subcommand that produced the line |
-| `deleted` | `object[]` | Every Cloudflare resource deleted, from the manifest and from the name reconcile. Empty when nothing remained, or when the remote half was skipped |
-| `deleted[].kind` | `"d1" \| "kv" \| "r2"` | The resource kind |
-| `deleted[].name` | `string` | The resource name |
-| `deleted[].id` | `string` | The id that was deleted |
+| `deletedResources` | `object[]` | Every Cloudflare resource deleted, from the manifest and from the name reconcile. Empty when nothing remained, or when the remote half was skipped |
+| `deletedResources[].kind` | `"d1" \| "kv" \| "r2"` | The resource kind |
+| `deletedResources[].name` | `string` | The resource name |
+| `deletedResources[].id` | `string` | The id that was deleted |
 | `remote` | `boolean` | Whether the remote teardown ran. `false` under `--local-only` |
 | `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |

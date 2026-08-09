@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { migrateProject } from "../migrations/run";
-import { loadProject, requireProjectName } from "../project/config";
+import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { detectPackageManager, type InstallRunner } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
 import { seedProject } from "../seed/run";
@@ -28,19 +28,43 @@ export type LocalRunner = (args: { projectDir: string }) => Promise<void>;
 // shared with `wrangler dev`, and this is usually the run that first stamps it. An unstamped database is
 // one any project can later claim, so the first write is the only chance to record the owner.
 const localMigrate: LocalRunner = async ({ projectDir }) => {
-  const project = requireProjectName(await loadProject(projectDir));
-  await migrateProject({ env: "dev", projectDir, project });
+  // One config load, two facts: the name the database is stamped with, and the account it is reached in.
+  // Both are read from the **worktree's** own `pithy.config.ts`, because the branch being created is what
+  // decides them and it may already differ from the checkout this command was run in (#234).
+  const config = await loadProject(projectDir);
+  await migrateProject({
+    env: "dev",
+    projectDir,
+    project: requireProjectName(config),
+    account: loadProjectCloudflare(config) ?? null,
+  });
 };
 
 // Even a `dev` seed names its project: Cloudflare Images and Stream have no local emulation, so a media
 // fixture here writes into the same account-wide store production shares, and only the ownership metadata
 // says who put it there.
 const localSeed: LocalRunner = async ({ projectDir }) => {
-  const project = requireProjectName(await loadProject(projectDir));
-  await seedProject({ env: "dev", projectDir, project, json: true });
+  const config = await loadProject(projectDir);
+  await seedProject({
+    env: "dev",
+    projectDir,
+    project: requireProjectName(config),
+    account: loadProjectCloudflare(config) ?? null,
+    json: true,
+  });
 };
 
-/** The structured outcome of `pithy feature create` — the `--json` payload and the human summary source. */
+/**
+ * The structured outcome of `pithy feature create` — the `--json` payload and the human summary source.
+ *
+ * **It says nothing about migrate and seed, and that is the change (#231).** It used to carry
+ * `migrated: true, seeded: true`, both written as literals a few lines below the two `await`s. Neither
+ * step has a flag here and both throw on failure, so a report that exists at all is the proof they ran:
+ * the pair was a constant with the grammar of a fact, and the only branch a consumer could write on it
+ * — `if (migrated && !seeded)` — is one that can never fire and can never be tested. If create ever
+ * grows a `--skip-data` of its own, `feature sync`'s `data` is the field to copy, because a value that
+ * can be `false` is the only kind worth emitting.
+ */
 export interface CreateReport {
   /** The command that produced the report. */
   command: "feature.create";
@@ -48,14 +72,20 @@ export interface CreateReport {
   branch: string;
   /** The absolute worktree path. */
   worktree: string;
-  /** Whether a new worktree was created (false on an idempotent re-run over an existing one). */
-  created: boolean;
+  /**
+   * Whether a new worktree was created (false on an idempotent re-run over an existing one).
+   *
+   * **Named for what it created (#235).** It was `created`, and `pithy ui add` emits a `created` of its
+   * own that is a `string[]` of files — one name, two types, so `if (result.created)` is true for a
+   * non-empty file list and true for this boolean, and a consumer that guessed wrong got no error. The
+   * subject is the outlier here: `ui`'s says *what* was created, this one says *whether*, and the thing it
+   * says it about is already in the payload beside it. `feature.destroy` had settled the convention
+   * anyway — `portsFreed`, `worktreePruned`, `branchDeleted` — so a bare `created` was the odd one out
+   * inside its own command before it was one across the CLI.
+   */
+  worktreeCreated: boolean;
   /** The feature's dev config — its reserved port block and each worker's pinned endpoint. */
   dev: DevConfig;
-  /** Whether local migrations ran. */
-  migrated: boolean;
-  /** Whether the local seed ran. */
-  seeded: boolean;
 }
 
 /** Options for {@link createFeature}. */
@@ -115,6 +145,7 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
   // main checkout this command was run in.
   const migrate = options.migrate ?? localMigrate;
   const seed = options.seed ?? localSeed;
+  // Both throw on failure, so reaching the return is what says they ran. Nothing in the report repeats it.
   await migrate({ projectDir: worktree.wtPath });
   await seed({ projectDir: worktree.wtPath });
 
@@ -122,10 +153,8 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
     command: "feature.create",
     branch: worktree.branch,
     worktree: worktree.wtPath,
-    created: worktree.created,
+    worktreeCreated: worktree.created,
     dev,
-    migrated: true,
-    seeded: true,
   };
 }
 

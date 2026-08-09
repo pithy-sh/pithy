@@ -27,7 +27,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * ships no local emulation for Vectorize, so a dev search reaches a real remote index. That is also why the
  * capability's bindings are declared `remote`.
  *
- * `reset` carries the reset gate from `docs/CLI.md` §7.5 — the same gate `pithy seed --redo` uses, imported
+ * `reset` carries the reset gate from `docs/commands/seed.md` — the same gate `pithy seed --redo` uses, imported
  * rather than re-implemented. `--yes` does not unlock it: `--yes` means "yes, this is not dev", and it was
  * designed to authorize additive writes. A reset deletes every vector in an index.
  */
