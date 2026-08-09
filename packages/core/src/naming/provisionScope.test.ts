@@ -63,6 +63,17 @@ describe("environmentScope", () => {
     expect(environmentScope("replay", "staging").worker("replay-board")).toBe("replay-board-staging");
   });
 
+  /**
+   * A Secrets Store entry name is the only partition an account-flat store has, so it follows the
+   * same rule every other name does — except for a `global` secret, which is one value every
+   * environment binds and therefore carries the reserved `global` segment instead.
+   */
+  it("scopes an environment secret to the environment and a global one to `global`", () => {
+    const scope = environmentScope("replay", "staging");
+    expect(scope.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")).toBe("replay-staging-secrets-encryption-keys");
+    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-global-stripe-api-key");
+  });
+
   it("refuses an environment no name may carry", () => {
     expect(() => environmentScope("acme", "production")).toThrow(PithyError);
     expect(() => environmentScope("acme", "global")).toThrow(PithyError);
@@ -97,6 +108,31 @@ describe("featureScope", () => {
     const scope = featureScope(identity);
     expect(scope.resource("DB", "d1")).toBe("replay-f241-environments-db-d1");
     expect(scope.worker("replay-board")).toBe("replay-f241-environments-replay-board");
+  });
+
+  /**
+   * **A feature's own master key, under its own name.** `deprovisionSecrets` preserves a key unless
+   * explicitly asked, because losing it orphans every stored secret. For an ephemeral environment that
+   * reasoning inverts — nothing outlives it — so the key is the feature's and goes with it. Which
+   * means it must be named the feature's, or teardown would delete an environment's.
+   */
+  it("gives a feature its own environment-scoped secret entries, and shares the global ones", () => {
+    const scope = featureScope(identity);
+    expect(scope.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")).toBe(
+      "replay-f241-environments-secrets-encryption-keys",
+    );
+    // A `global` secret is one account-level value every environment binds. A feature binds the
+    // project's, so feature-scoping it would mint a second copy of a value that is meant to be one.
+    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-global-stripe-api-key");
+  });
+
+  it("cannot collide with a deployed environment's secret entries either", () => {
+    const feature = featureScope(identity);
+    for (const env of ENVIRONMENTS) {
+      expect(environmentScope("replay", env).secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")).not.toBe(
+        feature.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment"),
+      );
+    }
   });
 
   /**

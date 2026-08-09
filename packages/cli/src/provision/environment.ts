@@ -12,6 +12,7 @@ import { loadProject, loadProjectCloudflare, requireProjectName } from "../proje
 import { resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
+import type { SecretStoreBinding } from "./secretBindings";
 import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
 
 /**
@@ -105,6 +106,22 @@ export interface ProvisionReport {
   workers: { worker: string; name: string }[];
   /** Each service binding and the Worker it now targets in this environment. */
   services: ServiceEntry[];
+  /** Every `cf-secrets-store` secret this environment declares, and whether it was bound. */
+  secretBindings: ProvisionedSecret[];
+}
+
+/** One declared Secrets Store secret, and whether the environment now binds it. */
+export interface ProvisionedSecret {
+  /** The Worker binding name, which is the registry key. */
+  binding: string;
+  /** The store entry it resolves to in this environment. */
+  entry: string;
+  /**
+   * True when the entry exists and the binding was written. False when the secret is declared and its
+   * entry has never been created — bound anyway, wrangler would refuse the whole config, so one absent
+   * value would fail the Worker's deploy rather than one read.
+   */
+  bound: boolean;
 }
 
 /** One Worker as provisioning needs it: where it lives, and what *it* composes. */
@@ -155,6 +172,12 @@ export interface ProvisionEnvironmentOptions {
    * the bindings it declares.
    */
   resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
+  /**
+   * This Worker's `secrets_store_secrets` entries, named for the scope — the stanza `pithy add` could
+   * not write. Omitted when no account or store id is in hand, in which case no stanza is written and
+   * nothing already there is disturbed.
+   */
+  secretBindings?: (capabilities: Capability[]) => Promise<{ bound: SecretStoreBinding[]; missing: string[] }>;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
@@ -254,13 +277,21 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // binding name across the whole environment (that is how two Workers share a database — same binding
   // name, same resource), but the *wiring* is per Worker: handing a Worker ids for resources it never
   // declared would put bindings in its wrangler config that it has no business holding.
+  const secrets: ProvisionedSecret[] = [];
   for (const worker of workers) {
     const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
+    const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? { bound: [], missing: [] };
+    for (const entry of workerSecrets.bound)
+      secrets.push({ binding: entry.binding, entry: entry.secret_name, bound: true });
+    for (const binding of workerSecrets.missing) {
+      secrets.push({ binding, entry: scope.secretEntry(binding, "environment"), bound: false });
+    }
     await applyProvisionedEnv({
       workerDir: worker.dir,
       worker: worker.name,
       scope,
       resources: resources.filter((resource) => declared.has(resource.binding)),
+      secrets: workerSecrets.bound,
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,
@@ -281,5 +312,6 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     resources,
     workers: workers.map((worker) => ({ worker: worker.name, name: scope.worker(worker.name) })),
     services,
+    secretBindings: secrets,
   };
 }

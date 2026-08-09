@@ -21,6 +21,7 @@ import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requirePr
 import { requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
+import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -43,6 +44,23 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
   return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }));
+}
+
+/**
+ * The account's Secrets Store, or `null` when this project has not recorded one.
+ *
+ * **Absent is a degraded feature environment, never a failed command.** A project that composes no
+ * `secrets` capability has no store id and needs none; one that does gets its own master key and its
+ * `secrets_store_secrets` bindings. Either way the rest of the feature stands up, and the report says
+ * which happened.
+ */
+function buildStore(account: CloudflareAccountSelection | null): SecretsStore | null {
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
+  if (!accountId || !apiToken || !storeId) return null;
+  return cloudflareSecretsStore(new CloudflareClients({ accountId, apiToken }), storeId);
 }
 
 /**
@@ -259,9 +277,11 @@ const provision = defineCommand({
         });
       }
 
+      const store = buildStore(account);
       const report = await provisionFeature({
         projectDir,
         capabilities,
+        ...(store ? { store } : {}),
         identity,
         provisioners,
         audit: await buildAudit(projectDir, capabilities, account),
@@ -279,6 +299,13 @@ const provision = defineCommand({
       }
       for (const service of report.services) {
         process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
+      }
+      for (const secret of report.secretBindings) {
+        process.stdout.write(
+          secret.bound
+            ? `${secret.binding} reads ${secret.entry}.\n`
+            : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
+        );
       }
       process.stdout.write(`Provisioned ${report.env}. Migrated and seeded.\n`);
       process.stdout.write(`${formatDone()}\n`);
@@ -317,10 +344,12 @@ const destroy = defineCommand({
         });
       }
 
+      const store = buildStore(account);
       const report = await destroyFeature({
         projectDir,
         identity,
         capabilities,
+        ...(store && !args["local-only"] ? { store } : {}),
         env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
         ...(provisioners && !args["local-only"] ? { provisioners } : {}),
         audit: await buildAudit(projectDir, capabilities, account),

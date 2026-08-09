@@ -37,6 +37,10 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 **`provision`** stands up the feature's live Cloudflare environment. It resolves the feature identity from the branch and the project name from the root `pithy.config.ts`, creates one resource per binding name across the union of every Worker's capabilities, writes each Worker's feature-scoped script name and retargeted `service` bindings into its `wrangler.jsonc`, and then migrates and seeds that environment. Nothing is stored to make this work: every name is derived from the branch, and an already-provisioned resource is recovered by looking its name up in Cloudflare, which is exactly what makes the command idempotent and resumable. `docs/CLI.md` §6.3.1 has the naming rule and the character budget it implies.
 
+**It mints the feature's own master key, and binds it.** A feature environment used to get every resource except its secrets, so a Worker composing `secrets` deployed and failed on its first request with `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`. The key is the feature's own, under the feature's own entry name, and `destroy` deletes it — `pithy secrets deprovision` preserves a key unless asked, because losing it orphans every secret, and for an ephemeral environment that reasoning inverts. A `global` secret is not copied: it is one account-level value every environment binds, and a feature binds the project's.
+
+**A feature has no secrets manager, deliberately.** `ManagedEnvironment` is the set the project declared, and everything iterating it multiplies with it — most of all a manager Worker with its own D1 and rotation cron. One per open pull request is not a cost a branch should carry. So `pithy secrets create` targets a declared environment, never a feature: a secret a feature needs beyond its master key is one the report names as unbound, with the command that creates it.
+
 **`destroy`** deletes the feature's Cloudflare resources — first by the exact ids in the worktree's manifest, then by recomputing every name the enabled capabilities could have produced and deleting what still exists — then frees the port block, prunes the worktree, and deletes the branch if it has been merged. That second pass is what catches a partly-failed `provision`.
 
 Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
@@ -110,6 +114,10 @@ $ pithy feature provision --json
 | `services` | `object[]` | Each `service` binding and the feature-scoped Worker it now targets |
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The feature-scoped script the binding was retargeted at |
+| `secretBindings` | `object[]` | Every `cf-secrets-store` secret this environment declares |
+| `secretBindings[].binding` | `string` | The Worker binding name, which is the registry key |
+| `secretBindings[].entry` | `string` | The Secrets Store entry it resolves to in this environment |
+| `secretBindings[].bound` | `boolean` | True when the entry exists and the binding was written. False when the secret is declared and its entry has never been created — binding it anyway would make wrangler refuse the whole config |
 
 ```
 $ pithy feature destroy --json

@@ -13,6 +13,7 @@ import { applyProvisionedEnv } from "./wranglerEnv";
 interface Stanza {
   name?: string;
   services?: { binding: string; service: string }[];
+  secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[];
   d1_databases?: { binding: string; database_name?: string; database_id?: string }[];
   kv_namespaces?: { binding: string; id: string }[];
   r2_buckets?: { binding: string; bucket_name: string }[];
@@ -43,7 +44,15 @@ describe("applyProvisionedEnv", () => {
   ];
 
   const apply = (scope: typeof feature, extra: Partial<Parameters<typeof applyProvisionedEnv>[0]> = {}) =>
-    applyProvisionedEnv({ workerDir: dir, worker: "replay-board", scope, resources, services: [], ...extra });
+    applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope,
+      resources,
+      services: [],
+      secrets: [],
+      ...extra,
+    });
 
   test("writes each resource's id under env.<stanza>, preserving comments", async () => {
     await apply(feature);
@@ -109,6 +118,70 @@ describe("applyProvisionedEnv", () => {
 
     const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
     expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-replay-web-v2" }]);
+  });
+
+  /**
+   * The `secrets_store_secrets` stanza `pithy add` deliberately could not write, and nothing came back
+   * for (#238, #239). Complete by construction — wrangler refuses a config whose entry is missing a
+   * `store_id` or a `secret_name`, so a partial entry is not a degraded binding, it is a broken Worker.
+   */
+  test("writes the secrets_store_secrets stanza, upserting by binding", async () => {
+    await apply(feature, {
+      secrets: [
+        {
+          binding: "SECRETS_ENCRYPTION_KEYS",
+          store_id: "store-1",
+          secret_name: "replay-f69-demo-secrets-encryption-keys",
+        },
+      ],
+    });
+    await apply(feature, {
+      secrets: [
+        {
+          binding: "SECRETS_ENCRYPTION_KEYS",
+          store_id: "store-2",
+          secret_name: "replay-f69-demo-secrets-encryption-keys",
+        },
+      ],
+    });
+
+    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    expect(stanza?.secrets_store_secrets).toEqual([
+      {
+        binding: "SECRETS_ENCRYPTION_KEYS",
+        store_id: "store-2",
+        secret_name: "replay-f69-demo-secrets-encryption-keys",
+      },
+    ]);
+  });
+
+  /** Nothing rewrites a stanza beyond the entries it owns — an adopter's hand-added binding survives. */
+  test("leaves a secrets binding it does not own alone", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify(
+        {
+          name: "replay-board",
+          env: {
+            feature: {
+              secrets_store_secrets: [{ binding: "HAND_ADDED", store_id: "s", secret_name: "theirs" }],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    await apply(feature, {
+      secrets: [{ binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "mine" }],
+    });
+
+    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    expect(stanza?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual([
+      "HAND_ADDED",
+      "SECRETS_ENCRYPTION_KEYS",
+    ]);
   });
 
   test("preserves comments sitting inside an existing binding array on re-run", async () => {

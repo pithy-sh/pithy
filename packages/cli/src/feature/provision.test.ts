@@ -8,6 +8,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { type FeatureIdentity, featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
@@ -114,7 +115,14 @@ describe("provisionFeature / deprovisionFeature", () => {
     // (#231): each throws on failure, so a returned report already means they succeeded, and a hardcoded
     // `migrated: true, seeded: true` beside it is a constant no consumer can usefully branch on.
     expect(r.calls).toEqual({ migrate: ["feature"], seed: ["feature"] });
-    expect(Object.keys(report).sort()).toEqual(["command", "env", "resources", "services", "workers"]);
+    expect(Object.keys(report).sort()).toEqual([
+      "command",
+      "env",
+      "resources",
+      "secretBindings",
+      "services",
+      "workers",
+    ]);
 
     // The R2 resource's name is its id; D1/KV got synthetic ids.
     const r2Name = featureResourceName(identity, "ASSETS", "r2");
@@ -519,6 +527,122 @@ describe("provisionFeature / deprovisionFeature", () => {
       const manifest = await readManifest(manifestPath(dir));
       expect(manifest?.resources.some((resource) => resource.id === "prod-d1-uuid")).toBe(false);
       expect(manifest?.resources).toHaveLength(3); // exactly this feature's own DB/CACHE/ASSETS
+    });
+  });
+
+  /**
+   * #239: a feature environment got every resource except its secrets, so a Worker composing `secrets`
+   * deployed and failed on its first request with `Missing required bindings:
+   * secret:SECRETS_ENCRYPTION_KEYS`. Nothing told the adopter that secrets were the one thing they had
+   * to arrange by hand for an environment pithy created from a branch name.
+   */
+  describe("a feature's secrets", () => {
+    /** An in-memory Secrets Store, mirroring the real exists/put/remove semantics. */
+    function fakeStore() {
+      const entries = new Map<string, string>();
+      return {
+        entries,
+        store: {
+          storeId: "store-1",
+          exists: async (name: string) => entries.has(name),
+          put: async (name: string, value: string) => void entries.set(name, value),
+          remove: async (name: string) => entries.delete(name),
+        },
+      };
+    }
+
+    const withSecrets = [secrets({ registry: {} })];
+
+    test("mints the feature's own master key and binds it in every Worker that declares it", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+
+      const report = await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withSecrets }],
+        migrate: async () => {},
+        seed: async () => {},
+      });
+
+      const entry = "acme-f69-demo-secrets-encryption-keys";
+      // Its own key, under its own name — never staging's, which teardown would then delete.
+      expect([...entries.keys()]).toEqual([entry]);
+      expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
+      expect(report.secretBindings).toEqual([{ binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true }]);
+
+      const wrangler = parse(await readFile(join(dir, "apps", "app", "wrangler.jsonc"), "utf8")) as unknown as {
+        env: Record<string, { secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[] }>;
+      };
+      expect(wrangler.env.feature?.secrets_store_secrets).toEqual([
+        { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: entry },
+      ]);
+    });
+
+    test("re-running leaves the key alone — a fresh one would orphan every secret under it", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+      const options = {
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [],
+        migrate: async () => {},
+        seed: async () => {},
+      };
+
+      await provisionFeature(options);
+      const first = entries.get("acme-f69-demo-secrets-encryption-keys");
+      await provisionFeature(options);
+
+      expect(entries.get("acme-f69-demo-secrets-encryption-keys")).toBe(first);
+    });
+
+    test("destroy removes the feature's entries and leaves an environment's alone", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+      // Staging's key, in the same flat account-wide store. Teardown must not reach it.
+      entries.set("acme-staging-secrets-encryption-keys", "staging's");
+
+      await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [],
+        migrate: async () => {},
+        seed: async () => {},
+      });
+      expect(entries.has("acme-f69-demo-secrets-encryption-keys")).toBe(true);
+
+      await deprovisionFeature({
+        projectDir: dir,
+        identity,
+        capabilities: withSecrets,
+        env: "feature",
+        provisioners,
+        store,
+      });
+
+      expect([...entries.keys()]).toEqual(["acme-staging-secrets-encryption-keys"]);
+    });
+
+    test("without a store the feature provisions exactly as before, and the report says so", async () => {
+      const { provisioners } = fakeProvisioners();
+      const report = await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        ...noBackend,
+      });
+      expect(report.secretBindings).toEqual([]);
     });
   });
 

@@ -6,6 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { ResourceProvisioners } from "../provision/resources";
+import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, resolvePortsRegistryPath } from "./ports";
 import { type DeprovisionedResource, deprovisionFeature } from "./provision";
@@ -50,6 +51,12 @@ export interface DestroyFeatureOptions {
   env: string;
   /** The provisioners to delete through, or undefined to skip remote teardown (e.g. no CF credentials). */
   provisioners?: ResourceProvisioners;
+  /**
+   * The account's Secrets Store, when one is reachable. Teardown removes the entries this feature
+   * created; a store entry left behind is a live credential in a flat namespace with nothing pointing
+   * at it.
+   */
+  store?: SecretsStore;
   /** Audit emitter, so every deletion leaves a record. Defaults to recording nothing. */
   audit?: CliAuditEmit;
   /** git runner seam. */
@@ -76,6 +83,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
       capabilities: options.capabilities,
       env: options.env,
       provisioners: options.provisioners,
+      ...(options.store !== undefined ? { store: options.store } : {}),
       ...(options.audit !== undefined ? { audit: options.audit } : {}),
     });
     deleted = report.deleted;

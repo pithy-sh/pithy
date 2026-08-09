@@ -1,8 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { assertValidEnvironment } from "./environment";
-import { type FeatureIdentity, type FeatureResourceKind, featureResourceName, featureWorkerName } from "./feature";
+import { assertValidEnvironment, GLOBAL_SCOPE } from "./environment";
+import {
+  type FeatureIdentity,
+  type FeatureResourceKind,
+  featureResourceName,
+  featureSecretEntryName,
+  featureWorkerName,
+} from "./feature";
 import { resourceNames } from "./resourceNames";
 
 /**
@@ -39,6 +45,15 @@ import { resourceNames } from "./resourceNames";
  */
 export const FEATURE_ENVIRONMENT = "feature";
 
+/**
+ * Whether a secret's value differs per environment or is one value every environment binds.
+ *
+ * The same two words `@pithy-sh/secrets`' `SecretScope` uses, restated here as a literal union rather
+ * than imported: core carries the secret-registry *seam* and not the package, for the same reason
+ * `SecretRegistryEntrySeam` types `backend` as a `string`.
+ */
+export type SecretNameScope = "environment" | "global";
+
 /** Where a provisioning run's resources are named, and where their ids are written. */
 export interface ProvisionScope {
   /** The `env.<stanza>` key in each Worker's `wrangler.jsonc` that this scope's ids are written into. */
@@ -47,10 +62,30 @@ export interface ProvisionScope {
   resource(binding: string, kind: FeatureResourceKind): string;
   /** The script name a Worker deploys under in this scope. */
   worker(worker: string): string;
+  /**
+   * This scope's CF Secrets Store entry name for a declared secret.
+   *
+   * A `global` secret is the one name that does **not** take the scope's segment: it is a single
+   * account-level value every environment binds, so every scope resolves it to the project's
+   * `<project>-global-<secret>`. Scoping it would mint a second copy of a value defined as one.
+   */
+  secretEntry(secret: string, secretScope: SecretNameScope): string;
 }
 
 /** The wrangler binding array a resource kind's name is composed for. */
 const KIND_NAMER: Record<FeatureResourceKind, "d1" | "kv" | "r2"> = { d1: "d1", kv: "kv", r2: "r2" };
+
+/**
+ * The one branch every scope shares: a `global` secret resolves to the project's single
+ * `<project>-global-<secret>` entry, and everything else to the scope's own name for it.
+ *
+ * Written once here rather than in each scope, because "global is not scoped" is a property of the
+ * secret and not of the environment asking — and two copies of it is how one of them would drift.
+ */
+function secretEntryName(project: string, secret: string, secretScope: SecretNameScope, scoped: () => string): string {
+  if (secretScope === GLOBAL_SCOPE) return resourceNames(project).global.secretEntry(secret);
+  return scoped();
+}
 
 /**
  * A declared environment's scope — `staging`, `prod`, or whatever the root `pithy.config.ts` lists.
@@ -74,6 +109,8 @@ export function environmentScope(project: string, environment: string): Provisio
     stanza: environment,
     resource: (binding, kind) => names[KIND_NAMER[kind]](binding),
     worker: (worker) => `${worker}-${environment}`,
+    secretEntry: (secret, secretScope) =>
+      secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
   };
 }
 
@@ -89,5 +126,7 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     stanza: FEATURE_ENVIRONMENT,
     resource: (binding, kind) => featureResourceName(identity, binding, kind),
     worker: (worker) => featureWorkerName(identity, worker),
+    secretEntry: (secret, secretScope) =>
+      secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
   };
 }

@@ -6,6 +6,9 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import { FEATURE_ENVIRONMENT, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import {
   type BackendRunner,
@@ -14,6 +17,8 @@ import {
   provisionEnvironment,
 } from "../provision/environment";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "../provision/resources";
+import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import type { SecretsStore } from "../provision/store";
 import { provisionableBindings } from "./bindings";
 import {
   emptyManifest,
@@ -86,6 +91,12 @@ export interface ProvisionFeatureOptions {
   seed?: BackendRunner;
   /** Worker-resolution seam (default: the real `apps/` resolver), so tests fix the worker set. */
   resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
+  /**
+   * The account's Secrets Store, when one is reachable. Given it, the feature gets its **own** master
+   * key and its Workers get their `secrets_store_secrets` stanza; without it the feature is provisioned
+   * exactly as it was before, and the omission is visible in the report rather than silent.
+   */
+  store?: SecretsStore;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -109,6 +120,28 @@ export interface FeatureProvisionReport extends ProvisionReport {
 export async function provisionFeature(options: ProvisionFeatureOptions): Promise<FeatureProvisionReport> {
   const path = manifestPath(options.projectDir);
   const scope = featureScope(options.identity);
+
+  // The feature's own master key, before anything binds it (#239).
+  //
+  // **Its own, not the project's, and that is the decision this issue asked to be argued rather than
+  // typed.** `deprovisionSecrets` preserves a key unless explicitly asked, because losing it orphans
+  // every secret encrypted under it. For an ephemeral environment that reasoning inverts: nothing
+  // outlives the feature, so the key is the feature's and goes with it at teardown.
+  //
+  // **And `ManagedEnvironment` does not widen to include it.** Since #241 that type is *the set the
+  // project declared*, and everything iterating it multiplies with it — most of all a manager Worker
+  // with its own D1 and its own rotation cron, per environment. A branch does not want one, and
+  // `pithy secrets provision` must not deploy one per open pull request. So the feature takes the
+  // narrow route: a key of its own and the bindings that reach it, and none of the durable machinery.
+  // The consequence is stated where an operator meets it — a feature has no manager, so
+  // `pithy secrets create` targets a declared environment, never a branch.
+  const store = options.store;
+  if (store) {
+    const masterKey = scope.secretEntry(MASTER_KEY_BINDING, "environment");
+    if (!(await store.exists(masterKey))) {
+      await store.put(masterKey, JSON.stringify(await initialMasterKeyConfig()));
+    }
+  }
 
   const report = await provisionEnvironment({
     projectDir: options.projectDir,
@@ -137,6 +170,18 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
     ...(options.resolveWorkers !== undefined ? { resolveWorkers: options.resolveWorkers } : {}),
+    ...(store
+      ? {
+          secretBindings: async (capabilities) =>
+            secretsStoreBindings({
+              // A Worker composing no secrets capability declares no secrets, and gets no stanza.
+              registry: workerSecretRegistry(capabilities) ?? {},
+              scope,
+              storeId: store.storeId,
+              exists: (name) => store.exists(name),
+            }),
+        }
+      : {}),
     ...(options.audit !== undefined ? { audit: options.audit } : {}),
     // Which feature, on every creation event. `provisionEnvironment` knows the names it wrote; only
     // this caller knows the branch they came from, and that is what an operator reads the trail for.
@@ -177,6 +222,12 @@ export interface DeprovisionFeatureOptions {
   env: string;
   /** The provisioners to delete through. */
   provisioners: ResourceProvisioners;
+  /**
+   * The account's Secrets Store, when one is reachable. Teardown removes every entry this feature could
+   * have created — and only those. An entry left behind is a live credential in a flat, account-wide
+   * namespace with nothing pointing at it.
+   */
+  store?: SecretsStore;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -232,6 +283,22 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     const name = featureResourceName(options.identity, binding, kind);
     const found = await options.provisioners[kind].find(name);
     if (found) await remove(kind, name, found.id);
+  }
+
+  // The feature's own store entries, by recomputed name — the same rule the resources above follow, and
+  // the same reason: an exact name is the only thing that cannot reach a sibling's or an environment's.
+  // A `global` secret is never touched: it is one account-level value every environment binds, and this
+  // feature was binding the project's rather than a copy of it.
+  if (options.store) {
+    const scope = featureScope(options.identity);
+    const registry: SecretRegistry = Object.assign(
+      {},
+      ...options.capabilities.map((capability) => workerSecretRegistry([capability]) ?? {}),
+    );
+    for (const [binding, entry] of Object.entries(registry)) {
+      if (entry.backend !== "cf-secrets-store" || entry.scope !== "environment" || entry.keyed) continue;
+      await options.store.remove(scope.secretEntry(binding, "environment"));
+    }
   }
 
   await rm(path, { force: true });

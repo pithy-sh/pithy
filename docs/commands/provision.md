@@ -41,8 +41,9 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 2. **Provisions one resource per binding name**, across the union of every Worker's capabilities. Two Workers that both declare `DB` share one database; a Worker that wants its own declares a different binding.
 3. **Adopts rather than duplicates.** Every resource is matched by name before it is created, so a re-run is a no-op and a database an adopter made by hand under the right name is taken up rather than shadowed by a second one.
 4. **Writes the ids into each Worker's own `wrangler.jsonc`**, under `env.<name>` — and a Worker receives only the bindings its own config declares. The D1 entry gets its `database_name` alongside its `database_id`, because `pithy add` proposes the name offline and this is the step that makes the proposal true. The stanza is created when it is absent, so an environment declared after the project was scaffolded needs no hand-editing.
-5. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
-6. **Migrates.** Seeding is off unless `--seed` is passed: a declared environment already holds real rows, and seeding one is `pithy seed`'s job, with its own gate.
+5. **Writes the `secrets_store_secrets` stanza** for every `cf-secrets-store` secret the Worker's own registry declares, when a Secrets Store id is in hand. `pithy add` deliberately could not write it — the entry needs a `store_id` and a `secret_name` that do not exist until an account has been reached — and nothing came back for it, so a Worker deployed without `SECRETS_ENCRYPTION_KEYS` and failed at its first request. A declared secret whose entry has not been created is reported rather than bound: wrangler refuses a config naming an absent entry, so binding it would turn one missing value into a failed deploy of the whole Worker.
+6. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
+7. **Migrates.** Seeding is off unless `--seed` is passed: a declared environment already holds real rows, and seeding one is `pithy seed`'s job, with its own gate.
 
 **These ids are source, not a build artifact.** They are long-lived and they belong in a pull request where a human reads them — which is the difference between this command and `pithy feature provision`, whose per-branch config is written to a git-ignored file and never committed.
 
@@ -94,6 +95,10 @@ $ pithy provision --env staging --yes --json
 | `services` | `object[]` | Each `service` binding and the Worker it now targets in this environment |
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The script the binding was retargeted at |
+| `secretBindings` | `object[]` | Every `cf-secrets-store` secret this environment declares |
+| `secretBindings[].binding` | `string` | The Worker binding name, which is the registry key |
+| `secretBindings[].entry` | `string` | The Secrets Store entry it resolves to in this environment |
+| `secretBindings[].bound` | `boolean` | True when the entry exists and the binding was written. False when the secret is declared and its entry has never been created — binding it anyway would make wrangler refuse the whole config |
 
 ## Exit codes
 

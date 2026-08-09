@@ -4,9 +4,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
-import { parse, stringify } from "comment-json";
+import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
-import { writeFileAtomic } from "../project/atomic";
+import { writeJsonc } from "../project/jsonc";
+import type { SecretStoreBinding } from "./secretBindings";
 
 /**
  * After provisioning stands up an environment's D1/KV/R2 resources, their ids must land in each
@@ -42,6 +43,7 @@ interface EnvBindings {
   kv_namespaces?: BindingEntry[];
   r2_buckets?: BindingEntry[];
   services?: ServiceEntry[];
+  secrets_store_secrets?: SecretStoreBinding[];
 }
 
 /**
@@ -96,6 +98,14 @@ export async function applyProvisionedEnv(options: {
   resources: readonly FeatureResource[];
   /** Only the service bindings this Worker's own config declares, already resolved to this scope. */
   services: readonly ServiceEntry[];
+  /**
+   * The `secrets_store_secrets` entries this Worker's own registry declares, named for this scope.
+   *
+   * This is the stanza `pithy add` deliberately could not write and nothing came back for (#238, #239).
+   * It is complete by construction — every entry carries its `store_id` and `secret_name` — because a
+   * partial one does not degrade: wrangler refuses the whole config.
+   */
+  secrets: readonly SecretStoreBinding[];
 }): Promise<void> {
   const wranglerPath = join(options.workerDir, "wrangler.jsonc");
   const raw = await readFile(wranglerPath, "utf8");
@@ -113,6 +123,17 @@ export async function applyProvisionedEnv(options: {
     stanza[array] ??= [];
     upsertByBinding(stanza[array], resource.binding, fields(resource));
   }
+  if (options.secrets.length > 0) {
+    // Upsert by binding, and only the entries provisioning owns. An adopter who hand-added a binding
+    // this registry does not declare keeps it: the rule is that nothing rewrites a stanza beyond the
+    // entries it put there.
+    stanza.secrets_store_secrets ??= [];
+    for (const entry of options.secrets) {
+      const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+      if (existing) Object.assign(existing, entry);
+      else stanza.secrets_store_secrets.push({ ...entry });
+    }
+  }
   if (options.services.length > 0) {
     stanza.services ??= [];
     for (const entry of options.services) {
@@ -122,5 +143,10 @@ export async function applyProvisionedEnv(options: {
     }
   }
 
-  await writeFileAtomic(wranglerPath, `${stringify(config, null, 2)}\n`);
+  // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
+  // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
+  // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
+  // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
+  // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
+  await writeJsonc(wranglerPath, config);
 }
