@@ -49,6 +49,8 @@ async function filtersFor(changed: readonly string[]): Promise<string[]> {
 const RECORD: Record<string, string> = {
   ".": "The repo root. `project/atomic.test.ts`'s rename and recursive-delete tripwires walk every source file in the tree, and the docs tests hold `README.md` and `docs/` to the CLI's real output.",
   "docs/CLI.md": "`terminal/styleDocs.test.ts` holds the documented styles to the ones the terminal module exports.",
+  "packages/core/src/error/cause.ts":
+    "`project/config.test.ts` asserts core's record of how Bun reports a build failure — that it wraps two or more diagnostics in an `AggregateError`, and re-throws it emptied on every import after the first (#223). The assertion belongs beside the classifier that depends on it, and the fact belongs in core, so the read crosses.",
   packages:
     "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
   "templates/starter": "The tree `pithy init` copies (#148). `project/scaffold.test.ts` reads it whole.",
