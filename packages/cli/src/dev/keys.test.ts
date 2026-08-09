@@ -77,7 +77,7 @@ describe("a terminal", () => {
     const stdin = fakeStdin(true);
     readKeys({ stdin, bindings: [], onInterrupt: () => void interrupts.push(1) });
 
-    (stdin as unknown as { send: (c: string) => void }).send("");
+    (stdin as unknown as { send: (c: string) => void }).send("\x03");
 
     expect(interrupts).toEqual([1]);
   });

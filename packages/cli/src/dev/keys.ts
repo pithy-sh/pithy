@@ -7,7 +7,7 @@
  * A key has to be read in **raw mode**, because line mode does not deliver a character until Enter, and
  * the whole point of `l` is that it is one keystroke. Raw mode is also the reason this module is
  * careful: it takes the terminal's own handling away, so Ctrl-C stops generating `SIGINT` and becomes a
- * `` byte like any other. A key reader that forgot that would leave `pithy dev` unstoppable.
+ * `\x03` byte like any other. A key reader that forgot that would leave `pithy dev` unstoppable.
  *
  * **Non-TTY never enters raw mode, and never listens.** CI, a piped `pithy dev`, and `pithy dev --json`
  * consumed by a script all land there. `setRawMode` on a non-TTY throws, and a `data` listener on stdin
@@ -19,8 +19,8 @@
  * this issue.
  */
 
-/** The `` byte Ctrl-C becomes once raw mode has taken the terminal's own handling away. */
-const ETX = "";
+/** The `\x03` byte Ctrl-C becomes once raw mode has taken the terminal's own handling away. */
+const ETX = "\x03";
 
 /** The slice of `process.stdin` a key reader uses — an interface so a test can assert what it did *not* do. */
 export interface KeyStream {
