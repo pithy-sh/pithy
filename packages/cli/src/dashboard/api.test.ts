@@ -195,3 +195,125 @@ describe("httpDashboardClient — the network boundary", () => {
     expect((error as PithyError).payload.detail).toContain("500");
   });
 });
+
+/**
+ * Four failures, four answers (#217).
+ *
+ * `unusable` carried one action — *Check the dashboard origin with --origin* — for every way a call can
+ * fail. That is right for a mistyped origin and wrong for the rest: an operator whose network is down,
+ * whose token expired, or whose own management client 500s reads it, checks a correct origin, and
+ * learns nothing. Worse on the timeout path, where the origin was reachable all along.
+ */
+describe("httpDashboardClient — refusals name the failure they had", () => {
+  function failingFetch(error: unknown): DashboardFetch {
+    return async () => {
+      throw error;
+    };
+  }
+
+  test("a timeout is not an origin problem", async () => {
+    const abort = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const client = httpDashboardClient({ fetch: failingFetch(abort) });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/--origin/);
+      expect(error.payload.action).toMatch(/timed out|retry/i);
+      return true;
+    });
+  });
+
+  test("a DNS failure names the origin, because that one is the origin", async () => {
+    const dns = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("getaddrinfo ENOTFOUND nope.example"), { code: "ENOTFOUND" }),
+    });
+    const client = httpDashboardClient({ fetch: failingFetch(dns) });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/--origin/);
+      return true;
+    });
+  });
+
+  test("a refused connection is not a mistyped origin", async () => {
+    const refused = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:443"), { code: "ECONNREFUSED" }),
+    });
+    const client = httpDashboardClient({ fetch: failingFetch(refused) });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/listening|reachable/i);
+      return true;
+    });
+  });
+
+  test("an unrecognised transport failure gets no single remedy", async () => {
+    const client = httpDashboardClient({ fetch: failingFetch({ weird: true }) });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/^Check the dashboard origin with --origin/);
+      return true;
+    });
+  });
+
+  // **Found by running Bun's own fetch, not by a node fixture.** Bun does not wrap in a `TypeError` and
+  // does not use node's errnos: a dead host, a bogus TLD and a refused port all arrive as one
+  // `code: "ConnectionRefused"` on a plain `Error`. Bun cannot tell them apart, so neither may this —
+  // one sentence that covers both, which is the hedge the convention asks for. Verified on Bun 1.3.14.
+  test("Bun's ConnectionRefused covers DNS and a refused port, so the action covers both", () => {
+    const cause = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), {
+      code: "ConnectionRefused",
+    });
+    const client = httpDashboardClient({ origin: "https://nope.example", fetch: failingFetch(cause) });
+
+    return expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/listening/i);
+      expect(error.payload.action).toMatch(/--origin/);
+      // And never the bare errno-hedge, which would say nothing an operator can act on.
+      expect(error.payload.action).not.toMatch(/Check network access/);
+      return true;
+    });
+  });
+
+  test("Bun reports TLS with node's own codes, so the certificate sentence still fires", () => {
+    const cause = Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
+    const client = httpDashboardClient({ fetch: failingFetch(cause) });
+
+    return expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/certificate/i);
+      expect(error.payload.action).not.toMatch(/--origin/);
+      return true;
+    });
+  });
+
+  test("a 401 is about the credential, not the origin", async () => {
+    const { fetch } = stubFetch([{ status: 401, raw: "no" }]);
+    const client = httpDashboardClient({ fetch });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/--origin/);
+      expect(error.payload.action).toMatch(/sign in|token|credential/i);
+      return true;
+    });
+  });
+
+  test("a 500 from a reachable client is not an origin problem either", async () => {
+    const { fetch } = stubFetch([{ status: 500, raw: "boom" }]);
+    const client = httpDashboardClient({ fetch });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/--origin/);
+      expect(error.payload.action).toMatch(/retry/i);
+      return true;
+    });
+  });
+
+  test("a body that is not JSON does point at the origin — that answer is earned", async () => {
+    const { fetch } = stubFetch([{ status: 200, raw: "<html>hello</html>" }]);
+    const client = httpDashboardClient({ fetch });
+
+    await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/--origin/);
+      return true;
+    });
+  });
+});

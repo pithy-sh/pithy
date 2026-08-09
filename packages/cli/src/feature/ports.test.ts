@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   allocatePortBlock,
   BASE_PORT,
@@ -15,6 +15,7 @@ import {
   LOCK_STALE_MS,
   type PortsRegistry,
   reclaimPortBlocks,
+  resolvePortsRegistryPath,
 } from "./ports";
 
 describe("ports", () => {
@@ -198,6 +199,54 @@ describe("ports", () => {
 
     it("no reservations is a no-op", async () => {
       expect(await reclaimPortBlocks({ registryPath, reservations: [] })).toEqual([]);
+    });
+  });
+});
+
+/**
+ * The two refusals that named a remedy their `catch` could not know (#217).
+ *
+ * `readRegistry`'s `unreadable` is every errno but `ENOENT`; `resolvePortsRegistryPath`'s `catch` is
+ * reached by a `git` that is not installed as readily as by a directory that is not a repository.
+ */
+describe("refusals that must not assert a cause", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-ports-refusal-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("a registry that is a directory is not a permissions problem", async () => {
+    const registryPath = join(dir, ".dev-ports.json");
+    await mkdir(registryPath);
+
+    await expect(allocatePortBlock({ registryPath, branch: "feature/1-a" })).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/permission/i);
+      expect(error.payload.action).toMatch(/director/i);
+      return true;
+    });
+  });
+
+  it("git missing from PATH is not 'run pithy from inside a git repository'", async () => {
+    vi.stubEnv("PATH", join(dir, "no-such-bin"));
+    try {
+      await expect(resolvePortsRegistryPath(dir)).rejects.toSatisfy((error: PithyError) => {
+        expect(error.payload.action).not.toMatch(/inside a git repository/i);
+        expect(error.payload.action).toMatch(/git/i);
+        expect(error.payload.action).toMatch(/install|PATH/i);
+        return true;
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("a directory outside any repository still gets the repository sentence", async () => {
+    await expect(resolvePortsRegistryPath(dir)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/inside a git repository/i);
+      return true;
     });
   });
 });

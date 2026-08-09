@@ -12,8 +12,9 @@ import { isPermissionKey, type PermissionKey, resolvePermissionKeys } from "./pe
  * - `secrets-store` — the CF Secrets Store; a Worker reads it via its binding. The destination for a
  *   worker-consumer token; resolved from the token's declared secret (its registry backend) unless a
  *   profile or `--store` names it directly.
- * - `dev-vars` — `<config>/<project>/tokens.json`, keyed by environment and outside every checkout,
- *   readable back by a later CLI run. The store for the `ci-system` token: mint it here, read the value
+ * - `dev-vars` — `<config>/<project>/tokens.json`, keyed by environment and outside every checkout.
+ *   **Read by an operator, never by a command** — nothing resolves a credential from it. The store for
+ *   the `ci-system` token: mint it here, read the value
  *   out, and set it as CI's `CLOUDFLARE_API_TOKEN`. It wrote `.dev.vars.<env>` *inside* the project until
  *   #182; the name stays because it is a public `--store` flag value.
  * - `ephemeral` — nothing is written; the value is used in-process and discarded. The one-step CI

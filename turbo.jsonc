@@ -16,6 +16,16 @@
     // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
     // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
     "typecheck": {},
+    // `.github/scripts/` belongs to no workspace, so `turbo run typecheck` never reached either of the
+    // two scripts CI's `plan` job runs (#214). They are a fourth program in `packages/cli` now —
+    // `tsconfig.ciScripts.json` — because that is where `typescript` and `@types/node` are installed and
+    // where the module they import across the tree lives. That leaves one seam: a task's default inputs
+    // are the files in its own package, so editing `.github/scripts/planShards.ts` alone would hit a
+    // cached `typecheck` and report a pass on source it never compiled. Naming the files closes it.
+    // `$TURBO_DEFAULT$` keeps the package's own inputs; `$TURBO_ROOT$` reaches outside it.
+    "@pithy-sh/cli#typecheck": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.github/scripts/**/*.ts"]
+    },
     // `test` runs both vitest projects (node + workers) in one process — the convenient local
     // default, and the one to run before pushing. `test:node` and `test:workers` run one project
     // each, which is what lets CI schedule them separately: the Node-runtime job needs the node

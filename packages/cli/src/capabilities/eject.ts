@@ -5,6 +5,7 @@ import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } from "./configImports";
 
@@ -105,13 +106,25 @@ export interface EjectResult {
  * published package never carries them; an adopter's install resolves them to real ranges.
  */
 async function promotableDependencies(projectDir: string, pkg: string): Promise<string[]> {
+  // Absent and corrupt are both answered by reinstalling; a mode bit and a directory are not, and one
+  // `try` around the read and the parse said *reinstall* to all four (#217). `readOptionalFile` owns the
+  // errno that is not absence and hedges on it, which leaves each of the other three its own sentence.
+  const path = join(projectDir, "node_modules", pkg, "package.json");
+  const raw = await readOptionalFile(path);
+  if (raw === null) {
+    throw new InternalError({
+      message: `${pkg} is not installed, so its dependencies cannot be promoted.`,
+      action: `Reinstall ${pkg}, then eject again.`,
+      detail: `No package.json at ${path}.`,
+    });
+  }
+
   let dependencies: Record<string, string>;
   try {
-    const raw = await readFile(join(projectDir, "node_modules", pkg, "package.json"), "utf8");
     dependencies = (JSON.parse(raw) as { dependencies?: Record<string, string> }).dependencies ?? {};
   } catch (cause) {
     throw new InternalError({
-      message: `Couldn't read ${pkg}'s package.json to promote its dependencies.`,
+      message: `${pkg}'s package.json is not valid JSON, so its dependencies cannot be promoted.`,
       action: `Reinstall ${pkg}, then eject again.`,
       detail: cause instanceof Error ? cause.message : String(cause),
     });

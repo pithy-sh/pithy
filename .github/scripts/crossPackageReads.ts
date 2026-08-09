@@ -153,7 +153,12 @@ export function crossPackageReads(root: string = REPO_ROOT): CrossPackageRead[] 
           file: fromRoot(root, file),
           target: fromRoot(root, target),
         };
-        found.set(`${read.file} ${read.target}`, read);
+        // NUL separates the two halves because it is the one byte a path cannot hold, and it is
+        // written as the escape rather than typed. A raw one here is what made git call this file
+        // binary for its whole life: `Bin 10043 -> 10128 bytes` on every pull request, `-` in
+        // `--numstat`, and not one line of it ever reviewable — including the two comments that
+        // spent three commits asserting something false (#216, #211). Keep it two characters.
+        found.set(`${read.file}\0${read.target}`, read);
       }
     }
   }

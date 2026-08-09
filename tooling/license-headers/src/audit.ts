@@ -127,6 +127,16 @@ const SKIP_DIRS = new Set(["node_modules", "dist", ".turbo", ".git", ".worktrees
  * These are copied verbatim into the adopter's repo, so they are checked for the *absence* of a
  * header. Any depth, any extension: a stamped `.tsx` screen and a stamped `.ts` config are the
  * same mistake.
+ *
+ * **Any name, too — a dotted directory is entered.** That is the one way this walk has to differ from
+ * `packages/cli/src/ci/sourceFiles.ts`, which skips one unless a caller opts in (#215). The rule there
+ * keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every tripwire in that repository; the question
+ * here is not about that tree's source but about what a template *ships*, and a `.vscode/`, a `.husky/`
+ * or a `.github/` inside one is copied into the adopter's repo file for file like everything beside it.
+ * No template holds a dotted directory today, which is why `audit.test.ts` plants one: a gate whose
+ * reach is narrower than the rule it enforces reports clean and says nothing.
+ *
+ * `SKIP_DIRS` still names the four that never hold a template's own files, dotted or not.
  */
 function templateFiles(root: string): string[] {
   const roots = [join(root, "templates")];

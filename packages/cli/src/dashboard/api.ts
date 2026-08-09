@@ -73,16 +73,93 @@ interface Call {
   body?: unknown;
 }
 
-/** A dashboard call that could not produce a usable answer. Always a PithyError with an action line. */
-function unusable(message: string, detail: string, cause?: unknown): InternalError {
-  return new InternalError(
-    {
-      message,
-      action: "Check the dashboard origin with --origin, then run the command again.",
-      detail,
-    },
-    cause === undefined ? undefined : { cause },
-  );
+/**
+ * A dashboard call that could not produce a usable answer. Always a PithyError with an action line.
+ *
+ * **`action` is a parameter, and that is the whole of #217 here.** One sentence — *Check the dashboard
+ * origin with --origin* — used to answer all four call sites: a transport failure, a non-2xx, a body
+ * that was not JSON, and a body that failed Zod. It is right for exactly one of them. An operator whose
+ * network was down, whose token had expired, or whose own management client returned 500 was told to
+ * check an origin that was correct, and a wrong action is worse than no action because it is followed.
+ */
+function unusable(message: string, action: string, detail: string, cause?: unknown): InternalError {
+  return new InternalError({ message, action, detail }, cause === undefined ? undefined : { cause });
+}
+
+/** Read a property off an unknown throwable without widening anything to `any`. */
+function prop(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+/** The errno an undici `TypeError: fetch failed` hides one level down, in its `cause`. */
+function transportCode(error: unknown): string | undefined {
+  for (const candidate of [error, prop(error, "cause")]) {
+    const code = prop(candidate, "code");
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+/**
+ * What to tell an operator whose call did not complete, chosen from the failure (#217).
+ *
+ * `fetch` rejects for a mistyped host, a dead network, a refused port, an expired certificate and this
+ * client's own abort, and only the first is answered by re-checking `--origin`. Duck-typed throughout:
+ * the abort is identified by `name`, and undici buries the errno in `cause`, so nothing here may lean on
+ * `instanceof` — the CLI ships on Bun, whose transport errors are not node's classes.
+ *
+ * **The two runtimes do not classify the same failure the same way, and this was checked rather than
+ * assumed.** Node wraps in a `TypeError: fetch failed` and puts `ENOTFOUND` or `ECONNREFUSED` on the
+ * `cause`; Bun throws a plain `Error` and reports a dead host, a bogus TLD and a refused port all as one
+ * `code: "ConnectionRefused"`. Bun cannot tell those two apart — so on Bun this must not either, and its
+ * branch names both possibilities. Node keeps the sharper split it has earned. Both verified live
+ * against Bun 1.3.14 and Node 22; TLS is the one place the codes already agree.
+ */
+function transportAction(error: unknown, origin: string, timeoutMs: number): string {
+  if (prop(error, "name") === "AbortError" || prop(error, "name") === "TimeoutError") {
+    return `The call timed out after ${timeoutMs}ms. Retry; the origin answered nothing, not the wrong thing.`;
+  }
+  const code = transportCode(error);
+  switch (code) {
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return `That host does not resolve. Check the origin with --origin (currently ${origin}).`;
+    case "ECONNREFUSED":
+      return `Nothing is listening at ${origin}. Start it, or point --origin somewhere that is.`;
+    // Bun's own codes. One of them covers what node splits in two, so the sentence covers both.
+    case "ConnectionRefused":
+    case "FailedToOpenSocket":
+      return `Nothing at ${origin} answered. Check that it is listening, and that the origin is right (--origin).`;
+    case "ConnectionClosed":
+    case "ECONNRESET":
+    case "EPIPE":
+    case "ETIMEDOUT":
+      return `The connection to ${origin} dropped. Check that it is reachable, then run the command again.`;
+    case "CERT_HAS_EXPIRED":
+    case "DEPTH_ZERO_SELF_SIGNED_CERT":
+    case "UNABLE_TO_VERIFY_LEAF_SIGNATURE":
+    case "SELF_SIGNED_CERT_IN_CHAIN":
+      return `TLS to ${origin} could not be verified. Fix that certificate — the origin itself answered.`;
+    default:
+      return `The call to ${origin} did not complete${code ? ` (${code})` : ""}. Check network access to it, then run the command again.`;
+  }
+}
+
+/** What to tell an operator about a status the client itself returned — reachable, and refusing. */
+function statusAction(status: number): string {
+  if (status === 401 || status === 403) {
+    return "Sign in again with pithy login — that credential was refused, not the request.";
+  }
+  if (status === 404) return "That route is not on this management client. Check the origin with --origin.";
+  if (status === 429) return "Rate limited. Wait, then run the command again.";
+  if (status >= 500) return `The management client answered ${status}. Retry; if it persists, that is its fault.`;
+  return `The management client answered ${status}. The detail line says which call.`;
+}
+
+/** The one answer `--origin` genuinely earns: the thing at that origin is not a management client. */
+function notAManagementClient(origin: string): string {
+  return `Whatever is at ${origin} is not a Pithy management client. Check the origin with --origin.`;
 }
 
 /**
@@ -115,7 +192,12 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
       });
       return { status: response.status, raw: await response.text() };
     } catch (error) {
-      throw unusable("Couldn't reach the management client.", `${call.method} ${call.path} did not complete`, error);
+      throw unusable(
+        "Couldn't reach the management client.",
+        transportAction(error, origin, timeoutMs),
+        `${call.method} ${call.path} did not complete`,
+        error,
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -125,7 +207,11 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
   async function request<T>(call: Call, schema: z.ZodType<T>): Promise<T> {
     const { status, raw } = await send(call);
     if (status < 200 || status >= 300) {
-      throw unusable("The management client refused that request.", `${call.method} ${call.path} → ${status}`);
+      throw unusable(
+        "The management client refused that request.",
+        statusAction(status),
+        `${call.method} ${call.path} → ${status}`,
+      );
     }
     return decode(schema, raw, call);
   }
@@ -138,6 +224,7 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
     } catch (error) {
       throw unusable(
         "The management client returned something Pithy couldn't read.",
+        notAManagementClient(origin),
         `${call.method} ${call.path} body was not JSON`,
         error,
       );
@@ -148,6 +235,7 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
       // operator debugging their own management client needs the field path, and nobody else does.
       throw unusable(
         "The management client returned something Pithy couldn't read.",
+        notAManagementClient(origin),
         `${call.method} ${call.path} response failed validation: ${z.prettifyError(parsed.error)}`,
         parsed.error,
       );
@@ -171,7 +259,11 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
         });
       }
       if (status < 200 || status >= 300) {
-        throw unusable("The management client refused that request.", `${call.method} ${call.path} → ${status}`);
+        throw unusable(
+          "The management client refused that request.",
+          statusAction(status),
+          `${call.method} ${call.path} → ${status}`,
+        );
       }
       return decode(ConnectToken, raw, call);
     },
@@ -212,7 +304,11 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
       const { status } = await send(call);
       // 204 carries no body, so there is nothing to parse and nothing to validate.
       if (status < 200 || status >= 300) {
-        throw unusable("The management client refused that request.", `${call.method} ${call.path} → ${status}`);
+        throw unusable(
+          "The management client refused that request.",
+          statusAction(status),
+          `${call.method} ${call.path} → ${status}`,
+        );
       }
     },
   };

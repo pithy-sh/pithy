@@ -23,7 +23,7 @@
     "postpack": "bun scripts/vendorTemplate.ts --clean",
     "pack:verify": "bun scripts/verifyPack.ts",
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json && tsc -p scripts/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json && tsc -p scripts/tsconfig.json && tsc -p tsconfig.ciScripts.json",
     "test": "vitest run",
     "test:node": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",

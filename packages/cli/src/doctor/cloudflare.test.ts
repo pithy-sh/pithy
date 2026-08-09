@@ -53,6 +53,7 @@ describe("checkCloudflareAccess", () => {
       configPath: join(dir, "cloudflare.json"),
       accountName: null,
       accountMismatch: null,
+      credentialSource: null,
     });
   });
 
@@ -66,6 +67,7 @@ describe("checkCloudflareAccess", () => {
       configPath: join(dir, "cloudflare.json"),
       accountName: null,
       accountMismatch: null,
+      credentialSource: "file",
     });
   });
 
@@ -102,6 +104,74 @@ describe("checkCloudflareAccess", () => {
     const access = await checkCloudflareAccess(paths(env));
     expect(access.missing).toEqual([]);
     expect(access.credentialSplit).toBeNull();
+  });
+});
+
+/**
+ * The mode #218 exists for. The acceptance test is empirical — see the issue — but the unit is the same
+ * claim in one assertion: nothing was asked of Cloudflare, and the report says so rather than guessing.
+ */
+describe("checkCloudflareAccess, offline", () => {
+  test("reports not checked without touching the network, even with a pair exported", async () => {
+    const reached = vi.fn(async () => {
+      throw new Error("nothing may call Cloudflare when the caller has said not to");
+    });
+    vi.stubGlobal("fetch", reached);
+    const env = { CLOUDFLARE_ACCOUNT_ID: "ambient", CLOUDFLARE_API_TOKEN: "ambient-token", PITHY_OFFLINE: "1" };
+    const access = await checkCloudflareAccess(paths(env));
+    expect(access.state).toBe("not_checked");
+    expect(reached).not.toHaveBeenCalled();
+    // The ambient pair is not merely unused — it never resolved, so nothing downstream could use it either.
+    expect(access.missing).toEqual(["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"]);
+    expect(access.credentialSource).toBeNull();
+  });
+
+  test("a complete file is still not probed — offline is about the wire, not about the credentials", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" });
+    const reached = vi.fn(async () => {
+      throw new Error("offline means offline");
+    });
+    vi.stubGlobal("fetch", reached);
+    const access = await checkCloudflareAccess(paths({ PITHY_OFFLINE: "1" }));
+    expect(access.state).toBe("not_checked");
+    expect(access.credentialSource).toBe("file");
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  test("the option alone is enough, which is what --offline passes", async () => {
+    const reached = vi.fn(async () => {
+      throw new Error("offline means offline");
+    });
+    vi.stubGlobal("fetch", reached);
+    const access = await checkCloudflareAccess({
+      ...paths({ CLOUDFLARE_ACCOUNT_ID: "ambient", CLOUDFLARE_API_TOKEN: "ambient-token" }),
+      offline: true,
+    });
+    expect(access.state).toBe("not_checked");
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  test("a pin the file contradicts still wins, because that fault is established from files alone", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "someone-elses", CLOUDFLARE_API_TOKEN: "tok" });
+    const access = await checkCloudflareAccess({
+      ...paths({ PITHY_OFFLINE: "1" }),
+      account: { accountId: "leed-acct" },
+    });
+    expect(access.state).toBe("account_mismatch");
+  });
+});
+
+describe("checkCloudflareAccess, naming where the credentials came from", () => {
+  test("an exported pair with no file is `environment` — the shape of the incident", async () => {
+    offline();
+    const access = await checkCloudflareAccess(paths({ CLOUDFLARE_ACCOUNT_ID: "ci", CLOUDFLARE_API_TOKEN: "tok" }));
+    expect(access.credentialSource).toBe("environment");
+  });
+
+  test("a complete file is `file`", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" });
+    offline();
+    expect((await checkCloudflareAccess(paths())).credentialSource).toBe("file");
   });
 });
 
@@ -245,6 +315,66 @@ describe("describeCloudflareAccess, for a resolved file", () => {
   test("a stubbed probe that names no file prints exactly what it printed before", () => {
     expect(describeCloudflareAccess({ state: "ok", missing: [], tokenStatus: "active", credentialSplit: null })).toBe(
       "reachable (token active)",
+    );
+  });
+
+  /**
+   * The announcement half of #218. `; from <file>` was true of the resolution and false about the
+   * credentials: in CI, and in the sandbox, that file does not exist and a token from the shell did the
+   * authenticating. A diagnostic that names a file it did not read is the one thing it must not do.
+   */
+  test("an environment pair says so, and says which file it did not come from", () => {
+    const text = describeCloudflareAccess(
+      {
+        state: "ok",
+        missing: [],
+        tokenStatus: "active",
+        credentialSplit: null,
+        configPath: "/home/u/.config/pithy/cloudflare.json",
+        accountName: null,
+        accountMismatch: null,
+        credentialSource: "environment",
+      },
+      "/home/u",
+    );
+    expect(text).toBe(
+      "reachable (token active); credentials from the environment, not ~/.config/pithy/cloudflare.json",
+    );
+  });
+
+  test("a file pair keeps the sentence it has always had", () => {
+    const text = describeCloudflareAccess(
+      {
+        state: "ok",
+        missing: [],
+        tokenStatus: "active",
+        credentialSplit: null,
+        configPath: "/home/u/.config/pithy/cloudflare.json",
+        accountName: null,
+        accountMismatch: null,
+        credentialSource: "file",
+      },
+      "/home/u",
+    );
+    expect(text).toBe("reachable (token active); from ~/.config/pithy/cloudflare.json");
+  });
+
+  test("not checked names the mode, so nobody reads it as a pass or as a failure", () => {
+    const text = describeCloudflareAccess(
+      {
+        state: "not_checked",
+        missing: [],
+        tokenStatus: null,
+        credentialSplit: null,
+        configPath: "/home/u/.config/pithy/cloudflare.json",
+        accountName: null,
+        accountMismatch: null,
+        credentialSource: "file",
+      },
+      "/home/u",
+    );
+    expect(text).toBe(
+      "not checked — offline (PITHY_OFFLINE or --offline); credentials would resolve from ~/.config/pithy/cloudflare.json",
     );
   });
 });

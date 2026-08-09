@@ -178,7 +178,7 @@ describe("docs/CLI.md §5.6", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example.
     expect(TRANSCRIPTS).toHaveLength(3);
     expect(JSON_SAMPLES).toHaveLength(1);
-    expect(FRAGMENTS).toHaveLength(2);
+    expect(FRAGMENTS).toHaveLength(3);
     expect(BLOCKS).toHaveLength(TRANSCRIPTS.length + JSON_SAMPLES.length + FRAGMENTS.length);
   });
 
@@ -289,6 +289,32 @@ describe("docs/CLI.md §5.6", () => {
     );
     const fragment = FRAGMENTS[1];
     if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the unknown-alias fragment.");
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The offline fragment (#218), pinned against a report that refused the network.
+   *
+   * Three of this report's lines change wording in that mode and none of them is reachable by a fixture
+   * that merely fails a fetch — "skipped" and "unreachable" are different sentences about different
+   * events, and the whole point of the mode is that the document is where somebody learns which one they
+   * are looking at. The real probe runs here rather than the harness stub: what is being pinned is that
+   * `not checked` is what comes back, not that a stub can be made to say it.
+   */
+  test("the offline fragment is what the renderer prints when the caller refused the network", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.healthyOptions({
+          offline: true,
+          checkCloudflare: undefined,
+          fetch: (async () => {
+            throw new Error("nothing may reach the network in this mode");
+          }) as unknown as DoctorReportOptions["fetch"],
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[2];
+    if (fragment === undefined) throw new Error("docs/CLI.md §5.6 no longer pastes the offline fragment.");
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 });

@@ -1,0 +1,42 @@
+{
+  // A fourth program, for `.github/scripts/` — the two scripts CI's `plan` job runs. They were in no
+  // program at all: no `tsconfig` included them, so `turbo run typecheck` never checked either one, and
+  // the only things that read them were Biome's parse and the job itself (#214).
+  //
+  // That was thin cover while both scripts imported two `node:` builtins each. #211 gave `planShards.ts`
+  // an import **across the tree** into `packages/cli/src/ci/sourceFiles.ts` — a module three issues have
+  // now changed — so a rename there breaks the planner and nothing says so until the `plan` job fails.
+  // That is the job which decides which tests run, and a gate that cannot be planned is a gate that does
+  // not run (#148, #173).
+  //
+  // **Why it lives in this package rather than at the repo root.** `.github/` belongs to no workspace, and
+  // this repository installs isolated rather than hoisted: the root `node_modules` holds seven entries and
+  // neither `typescript` nor `@types/node` is among them. A `tsconfig` sitting in `.github/` would resolve
+  // its compiler and its `node` types from nowhere. `packages/cli` is where both already are, and it is
+  // also the package the scripts reach into, so the program that checks the import is the program that owns
+  // the module being imported. The precedent is next door: `scripts/tsconfig.json` and
+  // `tsconfig.contract.json` are the second and third programs here, each for a set of files this package's
+  // own `rootDir: "src"` cannot hold.
+  //
+  // Node only. Nothing here runs in a Worker — these are two scripts `bun` runs on a GitHub runner — and
+  // typing them against `@cloudflare/workers-types` is how `timer.unref?.()` got into the dashboard
+  // contract: where the two disagree, the wrong one wins silently.
+  //
+  // **It must not imply a dependency the `plan` job cannot have.** That job runs before `bun install`,
+  // deliberately, so the scripts may import builtins and relative paths and nothing else. `types` names
+  // only `node`, and no `paths` mapping is declared — a bare specifier therefore has no route through this
+  // program either. The property is asserted rather than left to the compiler, in
+  // `src/ci/sourceFiles.test.ts`: a typecheck resolves `zod` through `node_modules` perfectly happily, so
+  // it would license exactly the import that breaks CI.
+  //
+  // `rootDir` is the repository, because the program spans `.github/scripts` and one module under
+  // `packages/cli/src`. Emit is off — the base sets `noEmit` and nothing builds these — so the root only
+  // has to contain the files, and this widens no other program: `tsconfig.json` still roots at `src`.
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["../../.github/scripts/**/*.ts"]
+}

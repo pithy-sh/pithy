@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
+import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
 /**
@@ -63,14 +64,7 @@ export async function loadStorage(): Promise<StorageModule> {
     ]);
     return { ...provision, ...resolve, ...registry, ...capability, ...specs };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The storage capability is not installed.",
-        action: "Run `pithy add storage`, then re-run this command.",
-        detail: "@pithy-sh/storage could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("storage", "@pithy-sh/storage", error);
   }
 }
 
@@ -302,14 +296,7 @@ async function storageWorkerDir(): Promise<string> {
   try {
     return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/storage/src/workflows/worker")));
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The storage capability is not installed.",
-        action: "Run `pithy add storage`, then re-run this command.",
-        detail: "@pithy-sh/storage/src/workflows/worker could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error);
   }
 }
 

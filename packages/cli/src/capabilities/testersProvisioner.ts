@@ -11,6 +11,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
+import { capabilityLoadError } from "./loadFailure";
 
 /**
  * The live testers provisioner — the Cloudflare + wrangler implementation behind `@pithy-sh/testers`'s
@@ -53,14 +54,7 @@ export async function loadTestersProvisioning(): Promise<TestersProvisionSurface
     ]);
     return { ...provision, ...resolve, ...specs };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The testers capability is not installed.",
-        action: "Run `pithy add testers`, then re-run this command.",
-        detail: "@pithy-sh/testers could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("testers", "@pithy-sh/testers", error);
   }
 }
 
@@ -74,14 +68,7 @@ async function testersWorkerDir(): Promise<string> {
   try {
     return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/testers/src/workflows/worker")));
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The testers capability is not installed.",
-        action: "Run `pithy add testers`, then re-run this command.",
-        detail: "@pithy-sh/testers/src/workflows/worker could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error);
   }
 }
 

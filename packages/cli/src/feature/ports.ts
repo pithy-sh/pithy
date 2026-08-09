@@ -12,6 +12,54 @@ import { readOptionalFile } from "../project/readOptionalFile";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * The remedy for a file that is there and would not open, chosen from the errno (#217).
+ *
+ * `readOptionalFile`'s `unreadable` is **every errno but `ENOENT`**. *Check permissions on X* answers
+ * one of them, and a registry that is a directory, a symlink loop, or a failing disk got the same
+ * sentence. See `manifest.ts` for the same helper over the same decision, and for why two copies are
+ * under this repository's threshold for hoisting it.
+ */
+function unreadableAction(code: string | undefined, name: string): string {
+  switch (code) {
+    case "EACCES":
+    case "EPERM":
+      return `Check permissions on ${name}.`;
+    case "EISDIR":
+      return `${name} is a directory, not a file. Remove it, then re-run.`;
+    case "ELOOP":
+      return `${name} is a symlink loop. Replace it with a regular file, then re-run.`;
+    default:
+      return `${name} is there and would not open (${code ?? "unknown error"}). Check that file, then re-run.`;
+  }
+}
+
+/** Read a property off an unknown throwable without widening anything to `any`. */
+function prop(cause: unknown, key: string): unknown {
+  if (typeof cause !== "object" || cause === null) return undefined;
+  return (cause as Record<string, unknown>)[key];
+}
+
+/**
+ * The remedy for a failed `git rev-parse`, chosen from the failure (#217).
+ *
+ * *Run pithy from inside a git repository* is right for one of the three ways this can fail, and it is
+ * the one an adopter is least likely to be in — a machine without `git` on PATH fails to **spawn**, and
+ * the sentence tells them to go somewhere they already are. Duck-typed on purpose: `execFile`'s rejection
+ * is not required to be an `Error` subclass by anything the CLI controls, and its `code` is a string
+ * errno for a spawn failure and a number for a non-zero exit.
+ */
+function gitResolveAction(cause: unknown): string {
+  const code = prop(cause, "code");
+  if (code === "ENOENT") return "Install git, or put it on PATH, then re-run.";
+  const stderr = prop(cause, "stderr");
+  const text = typeof stderr === "string" ? stderr : "";
+  if (/not a git repository|this operation must be run in a work tree/i.test(text)) {
+    return "Run pithy from inside a git repository.";
+  }
+  return "git rev-parse --git-common-dir failed. Run it here to see why, then re-run.";
+}
+
 /** First port of block 0. */
 export const BASE_PORT = 8787;
 /** Ports per feature block. */
@@ -178,11 +226,11 @@ async function withLock<T>(registryPath: string, fn: () => Promise<T>, budget?: 
  */
 async function readRegistry(registryPath: string): Promise<PortsRegistry> {
   const raw = await readOptionalFile(registryPath, {
-    unreadable: ({ cause }) =>
+    unreadable: ({ code, cause }) =>
       new InternalError({
         message: "Could not read the port registry.",
-        action: "Check permissions on .dev-ports.json.",
-        detail: cause instanceof Error ? cause.message : String(cause),
+        action: unreadableAction(code, ".dev-ports.json"),
+        detail: `${code ?? "unknown error"}: ${cause instanceof Error ? cause.message : String(cause)}`,
       }),
   });
   if (raw === null) return {};
@@ -317,9 +365,13 @@ export async function resolvePortsRegistryPath(cwd: string): Promise<string> {
   try {
     ({ stdout } = await execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd }));
   } catch (err) {
+    // Three failures reach here and one sentence used to answer all of them (#217). `git` absent from
+    // PATH is a spawn `ENOENT` and no amount of standing in a repository fixes it; a non-repository is
+    // the exit-128 case the sentence was written for; anything else gets no remedy, only git's own words.
+    // Duck-typed: `code` is the string errno on a spawn failure and the numeric exit status otherwise.
     throw new InternalError({
       message: "Could not resolve the repo's git directory.",
-      action: "Run pithy from inside a git repository.",
+      action: gitResolveAction(err),
       detail: err instanceof Error ? err.message : String(err),
     });
   }

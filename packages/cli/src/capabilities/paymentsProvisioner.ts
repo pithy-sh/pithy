@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
+import { capabilityLoadError } from "./loadFailure";
 
 /**
  * The live payments provisioner — the Cloudflare + wrangler implementation behind `pithy payments provision`.
@@ -56,14 +57,7 @@ export async function loadPayments(): Promise<PaymentsModule> {
     ]);
     return { ...resolve, ...capability, ...specs };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The payments capability is not installed.",
-        action: "Run `pithy add payments`, then re-run this command.",
-        detail: "@pithy-sh/payments could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("payments", "@pithy-sh/payments", error);
   }
 }
 
@@ -72,14 +66,7 @@ async function paymentsWorkerDir(): Promise<string> {
   try {
     return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/payments/src/workflows/worker")));
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The payments capability is not installed.",
-        action: "Run `pithy add payments`, then re-run this command.",
-        detail: "@pithy-sh/payments/src/workflows/worker could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error);
   }
 }
 

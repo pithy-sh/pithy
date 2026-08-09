@@ -28,7 +28,19 @@ pithy token mint ci-system --env production
 
 **How you use it in CI.** CI has no Pithy config directory, and neither secret store is readable from outside a Worker — so the flow is: mint the token, read its value out, and set it as your CI system's `CLOUDFLARE_API_TOKEN` secret. This is exactly why the `dev-vars` and `ephemeral` stores exist.
 
-- **`--store dev-vars`** (the default) writes the value to `<config>/<project>/tokens.json`, under that environment, as `CF_TOKEN_CI_SYSTEM`. Read it, paste it into your CI provider's secret store as `CLOUDFLARE_API_TOKEN`, done. **Nothing is written into the checkout, for any environment** — it used to be `.dev.vars.<env>`, which put a live production credential in a directory `npm pack` can reach. Your CI's `pithy migrate` / `pithy deploy` then run under least privilege.
+- **`--store dev-vars`** (the default) writes the value to `<config>/<project>/tokens.json`, under that environment, as `CF_TOKEN_CI_SYSTEM`. **Nothing is written into the checkout, for any environment** — it used to be `.dev.vars.<env>`, which put a live production credential in a directory `npm pack` can reach. Your CI's `pithy migrate` / `pithy deploy` then run under least privilege.
+
+  The mint prints the path. What is waiting for you there:
+
+  ```jsonc
+  // ~/.config/pithy/acme/tokens.json — mode 0600
+  {
+    "production": { "CF_TOKEN_CI_SYSTEM": "<the value>" },
+    "staging":    { "CF_TOKEN_CI_SYSTEM": "<the value>" }
+  }
+  ```
+
+  Open it, copy the value for the environment you minted, and set it as `CLOUDFLARE_API_TOKEN` in your CI provider's secrets. That copy is the whole point of this store: **you are the reader.** No Pithy command consumes this file — it is a handoff to a person, because CI cannot read either secret store and a credential has to cross that gap somehow.
 - **`--store ephemeral`** writes nothing — for a single CI job that mints and uses the token in the same step.
 
 The value is never printed to stdout or `--json`; `dev-vars` is how you get it out to configure CI.
@@ -71,7 +83,7 @@ Its value is written to the **CF Secrets Store**, and the Worker reads it via it
 A minted value never prints. It is written to one of:
 
 - **`secrets-store`** — the CF Secrets Store; a Worker reads it via its binding. The destination for a worker-consumer token. If a profile doesn't name a store, the destination comes from the token's **declared secret** in your secret registry (`defineSecretRegistry`) — the registry, not a flag, decides where a store-backed token lives (CLAUDE.md §secrets). A token can't live in the encrypted D1 store (Worker-only); declare it `cf-secrets-store`.
-- **`dev-vars`** — `<config>/<project>/tokens.json`, keyed by environment, mode `0600` and outside every checkout. Readable back by a later CLI run. The `ci-system` default; the name is kept because it is a public flag value.
+- **`dev-vars`** — `<config>/<project>/tokens.json`, keyed by environment, mode `0600` and outside every checkout. **A handoff to you, not to a later command.** Nothing in the CLI resolves a credential from this file: you open it, copy the value, and paste it into CI. It is the `ci-system` default for exactly that reason, and a worker-consumer token does not belong here — that one goes to `secrets-store`, where the Worker reads it through its binding without a human in the loop. The flag name is kept because it is public.
 - **`ephemeral`** — nothing is written; the value is used in-process.
 
 Override any mint with `--store`. A flag wins over the profile default, which wins over the registry backend.

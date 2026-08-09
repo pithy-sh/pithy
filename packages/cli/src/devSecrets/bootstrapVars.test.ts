@@ -108,6 +108,71 @@ describe("bootstrapVars", () => {
     }
   });
 
+  /**
+   * The two #209 left open, and the reason it left them (#219).
+   *
+   * Both were pinned by {@link readBootstrapVars}'s assertions below, which are right about the reader
+   * and were being read as if they were about the file. They are not the same call: one hands a Worker
+   * its bindings and rewrites nothing, the other merges into a file with another tenant in it and
+   * renames the result. Absent is the only state that licenses starting from empty, **for a writer**.
+   */
+  test("a write refuses a file that will not parse, rather than replacing the tenant beside it", async () => {
+    // The likelier hand edit by far: a stray brace after someone opened the file to look at it.
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    const held = `{ not json\n${JSON.stringify({ devLogin: { email: "me@example.com" }, vars: { K: "v" } }, null, 2)}\n`;
+    await writeFile(path, held, { mode: 0o600 });
+
+    await expect(writeBootstrapVars(dir, { K: "w" }, paths())).rejects.toThrow(PithyError);
+    await expect(removeBootstrapVars(dir, ["K"], paths())).rejects.toThrow(PithyError);
+
+    // Byte for byte: the dev-login preference and every value this module had are still recoverable.
+    expect(await readFile(path, "utf8")).toBe(held);
+  });
+
+  test("nor does that refusal carry a line of the file — the parser's own message quotes it", async () => {
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(path, '{ "vars": { "SECRETS_ENCRYPTION_KEYS": "a-dev-master-key" }', { mode: 0o600 });
+
+    const error = await writeBootstrapVars(dir, { K: "w" }, paths()).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(path);
+    expect(whole).not.toContain("a-dev-master-key");
+  });
+
+  test("a write refuses a record that is not this document either, and keeps every key in it", async () => {
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    const held = `${JSON.stringify({ devLogin: { email: "me@example.com" }, vars: { K: 7 } }, null, 2)}\n`;
+    await writeFile(path, held, { mode: 0o600 });
+
+    await expect(writeBootstrapVars(dir, { K: "w" }, paths())).rejects.toThrow(PithyError);
+    await expect(removeBootstrapVars(dir, ["K"], paths())).rejects.toThrow(PithyError);
+
+    expect(await readFile(path, "utf8")).toBe(held);
+  });
+
+  test("and says where it broke, without saying what was there", async () => {
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(path, JSON.stringify({ vars: { SECRETS_ENCRYPTION_KEYS: 7, OTHER: "a-dev-master-key" } }), {
+      mode: 0o600,
+    });
+
+    const error = await writeBootstrapVars(dir, { K: "w" }, paths()).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(path);
+    expect(whole).toContain("vars.SECRETS_ENCRYPTION_KEYS");
+    expect(whole).not.toContain("a-dev-master-key");
+  });
+
   test("the refusal names the file and what it found, and never what was in it", async () => {
     const path = join(config, "replay", "dev.json");
     await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });

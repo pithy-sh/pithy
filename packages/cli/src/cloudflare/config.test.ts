@@ -15,6 +15,7 @@ import {
   cloudflareCredentialSplit,
   cloudflareEnv,
   parseCloudflareConfig,
+  pithyOffline,
   resolveCloudflare,
   writeCloudflareConfig,
 } from "./config";
@@ -251,6 +252,101 @@ describe("CI, which has no file and no account name", () => {
     expect(cloudflareEnv(paths(env))).toEqual(env);
     expect(cloudflareConfigPath(paths(env))).toBe(join(dir, "cloudflare.json"));
     expect(resolveCloudflare(paths(env)).mismatch).toBeNull();
+  });
+
+  test("the overlay is untouched when nothing asks for offline — the whole point of keeping it (#182)", () => {
+    const env = { CLOUDFLARE_ACCOUNT_ID: "ci-acct", CLOUDFLARE_API_TOKEN: "ci-token" };
+    const resolved = resolveCloudflare(paths(env));
+    expect(resolved.offline).toBe(false);
+    expect(resolved.vars).toEqual(env);
+    expect(resolved.credentialSource).toBe("environment");
+  });
+});
+
+/**
+ * `PITHY_OFFLINE` (#218). The overlay is correct and stays; this is the one way to say "not from the
+ * environment, and not over the wire" — the sentence `PITHY_CONFIG_DIR` was mistaken for.
+ */
+describe("PITHY_OFFLINE", () => {
+  test("suppresses the environment overlay, so an exported pair reaches nothing", () => {
+    const env = { CLOUDFLARE_ACCOUNT_ID: "ambient-acct", CLOUDFLARE_API_TOKEN: "ambient-token", PITHY_OFFLINE: "1" };
+    expect(cloudflareEnv(paths(env))).toEqual({});
+    expect(resolveCloudflare(paths(env)).offline).toBe(true);
+    expect(resolveCloudflare(paths(env)).credentialSource).toBeNull();
+  });
+
+  test("keeps the file, because a credential you wrote down is not one you forgot you exported", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" });
+    expect(cloudflareEnv(paths({ CLOUDFLARE_API_TOKEN: "ambient", PITHY_OFFLINE: "1" }))).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+      CLOUDFLARE_API_TOKEN: "tok",
+    });
+  });
+
+  test("a scratch config directory plus offline resolves nothing at all — the isolation people assumed", () => {
+    // The two together are the guarantee: no file to read, and the environment refused. Nothing in the
+    // CLI can authenticate as anybody, because there is no credential anywhere for it to use.
+    const env = { CLOUDFLARE_ACCOUNT_ID: "real-acct", CLOUDFLARE_API_TOKEN: "real-token", PITHY_OFFLINE: "1" };
+    expect(cloudflareEnv(paths(env))).toEqual({});
+  });
+
+  test("blank is no override, exactly as every other variable here treats blank", () => {
+    const env = { CLOUDFLARE_API_TOKEN: "ambient", PITHY_OFFLINE: "" };
+    expect(pithyOffline(env)).toBe(false);
+    expect(cloudflareEnv(paths(env)).CLOUDFLARE_API_TOKEN).toBe("ambient");
+    expect(pithyOffline({ PITHY_OFFLINE: "   " })).toBe(false);
+    expect(pithyOffline({ PITHY_OFFLINE: "1" })).toBe(true);
+    expect(pithyOffline({})).toBe(false);
+  });
+
+  test("the option forces it with no variable set, which is what a --offline flag passes", () => {
+    const env = { CLOUDFLARE_API_TOKEN: "ambient", CLOUDFLARE_ACCOUNT_ID: "ambient-acct" };
+    expect(cloudflareEnv({ ...paths(env), offline: true })).toEqual({});
+    expect(resolveCloudflare({ ...paths(env), offline: true }).offline).toBe(true);
+    // And `offline: false` is a caller saying so, not an absence — the variable does not override it.
+    expect(cloudflareEnv({ ...paths({ ...env, PITHY_OFFLINE: "1" }), offline: false })).toEqual(env);
+  });
+
+  test("reports no split, because nothing was overlaid to split against", async () => {
+    await config({ CLOUDFLARE_API_TOKEN: "from-file" });
+    expect(cloudflareCredentialSplit(paths({ CLOUDFLARE_ACCOUNT_ID: "from-env", PITHY_OFFLINE: "1" }))).toBeNull();
+  });
+
+  test("a pin the file itself contradicts is still caught — that fault needs no network and no environment", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "someone-elses", CLOUDFLARE_API_TOKEN: "tok" });
+    const resolved = resolveCloudflare({ ...paths({ PITHY_OFFLINE: "1" }), account: { accountId: "leed-acct" } });
+    expect(resolved.mismatch).toMatchObject({ pinned: "leed-acct", resolved: "someone-elses", source: "file" });
+  });
+});
+
+/**
+ * Where the pair that would authenticate actually came from (#218). The report has always named the *file
+ * it resolved*, which in CI — and in the sandbox that prompted this — is a file that does not exist.
+ */
+describe("credentialSource", () => {
+  test("a complete file is `file`", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" });
+    expect(resolveCloudflare(paths()).credentialSource).toBe("file");
+  });
+
+  test("no file and an exported pair is `environment` — CI, and the sandbox that started this", () => {
+    expect(
+      resolveCloudflare(paths({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" })).credentialSource,
+    ).toBe("environment");
+  });
+
+  test("half and half is `mixed`, which is the split the same run already warns about", async () => {
+    await config({ CLOUDFLARE_API_TOKEN: "tok" });
+    expect(resolveCloudflare(paths({ CLOUDFLARE_ACCOUNT_ID: "from-env" })).credentialSource).toBe("mixed");
+  });
+
+  test("nothing resolved is `null` — no source is an answer, not a default", () => {
+    expect(resolveCloudflare(paths()).credentialSource).toBeNull();
+  });
+
+  test("the group is the account pair alone, as everything else about these two keys is", () => {
+    // A store id from the environment says nothing about which account the run authenticates as.
+    expect(resolveCloudflare(paths({ SECRETS_STORE_ID: "store" })).credentialSource).toBeNull();
   });
 });
 

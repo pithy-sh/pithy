@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   emptyManifest,
@@ -119,5 +120,40 @@ describe("upsertResource", () => {
     upsertResource(manifest, DB_RESOURCE);
 
     expect(manifest).toEqual(original);
+  });
+});
+
+/**
+ * The refusal for a manifest that is there and will not open (#217).
+ *
+ * `readOptionalFile`'s `unreadable` is every errno but `ENOENT` — `EACCES`, but also `EISDIR`, `ELOOP`
+ * and `EIO`. *Check permissions on .pithy-feature.json* was the answer to all of them, and it is right
+ * for one. An adopter who ran `chmod` at a directory learned nothing and changed nothing.
+ */
+describe("readManifest — a manifest that will not open", () => {
+  test("a directory in the manifest's place is not a permissions problem", async () => {
+    const path = manifestPath(dir);
+    await mkdir(path);
+
+    await expect(readManifest(path)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/permission/i);
+      expect(error.payload.action).toMatch(/director/i);
+      return true;
+    });
+  });
+
+  // root ignores mode bits, so the read would succeed and the assertion would be about nothing.
+  test.skipIf(process.getuid?.() === 0)("a permissions error still gets the permissions sentence", async () => {
+    const path = manifestPath(dir);
+    await writeFile(path, "{}", "utf8");
+    await chmod(path, 0o000);
+    try {
+      await expect(readManifest(path)).rejects.toSatisfy((error: PithyError) => {
+        expect(error.payload.action).toMatch(/permission/i);
+        return true;
+      });
+    } finally {
+      await chmod(path, 0o600);
+    }
   });
 });

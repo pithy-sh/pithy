@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
-import { readFileOutcome, readOptionalFile, requireRecord } from "./readOptionalFile";
+import { type MergeBase, readFileOutcome, readMergeBase, readOptionalFile, requireRecord } from "./readOptionalFile";
 
 let dir: string;
 
@@ -187,6 +188,132 @@ describe("requireRecord", () => {
 });
 
 /**
+ * The whole sentence, for the read whose answer is about to be written back (#219).
+ *
+ * `readOptionalFile` closes "the file would not open" and `requireRecord` closes "it opened and is not a
+ * document". Two doors were left: a file that will not **parse**, and a record that fails its **schema**.
+ * Both answered `{}`, both were merged into and renamed over — and both were pinned by reader assertions
+ * that are correct about the reader and were being read as if they were about the file.
+ *
+ * So the split is a type. A reader may still answer `{}`; only this can answer a {@link MergeBase}, and
+ * every writer takes one.
+ */
+describe("readMergeBase", () => {
+  /** A document with one required tenant, so "fails its schema" is a thing this fixture can be. */
+  const Doc = z
+    .record(
+      z.string().describe("An environment name."),
+      z.record(z.string().describe("A variable name."), z.string().describe("Its value.")).describe("One environment."),
+    )
+    .describe("A document keyed by environment, standing in for `tokens.json` and `dev.json` alike.");
+
+  test("a file that is not there is the empty document, and the path travels with it", async () => {
+    const path = join(dir, "absent.json");
+    expect(await readMergeBase(path, Doc)).toEqual({ path, document: {} });
+  });
+
+  test("a file that is there is exactly what is in it", async () => {
+    const path = join(dir, "present.json");
+    await writeFile(path, JSON.stringify({ dev: { CF_TOKEN: "v" } }));
+    expect(await readMergeBase(path, Doc)).toEqual({ path, document: { dev: { CF_TOKEN: "v" } } });
+  });
+
+  test("a file that will not parse is a refusal — the likelier of the two hand edits", async () => {
+    // A stray brace after someone opened the file is ordinary; a file that parses to a bare array is not.
+    // #209 closed the exotic one and left this, where `{}` was merged into and renamed over everything.
+    const path = join(dir, "broken.json");
+    await writeFile(path, "{ not json");
+    await expect(readMergeBase(path, Doc)).rejects.toThrow(PithyError);
+  });
+
+  test("and that refusal carries no line of the file, because the parser's own message would", async () => {
+    // `JSON.parse` quotes what it choked on: `Unexpected token 'n', "{ not json" is not valid JSON`.
+    // Every file this was written for is credentials, so node's error is dropped rather than carried.
+    const path = join(dir, "secret.json");
+    await writeFile(path, '{ "dev": { "CF_TOKEN": "super-secret-value" }');
+
+    const thrown = (await readMergeBase(path, Doc).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(JSON.stringify(thrown.payload)).toContain(path);
+    expect(JSON.stringify(thrown.payload)).not.toContain("super-secret-value");
+  });
+
+  test("a record that fails its schema is a refusal too, named by key path and never by value", async () => {
+    const path = join(dir, "invalid.json");
+    await writeFile(path, JSON.stringify({ dev: { CF_TOKEN: 12345 }, staging: "super-secret-value" }));
+
+    const thrown = (await readMergeBase(path, Doc).catch((error: unknown) => error)) as PithyError;
+    expect(thrown).toBeInstanceOf(PithyError);
+    const whole = JSON.stringify(thrown.payload);
+    expect(whole).toContain("dev.CF_TOKEN");
+    expect(whole).not.toContain("super-secret-value");
+  });
+
+  test("so are the two the primitives beneath it already refused", async () => {
+    const notARecord = join(dir, "array.json");
+    await writeFile(notARecord, JSON.stringify([{ dev: {} }]));
+    await expect(readMergeBase(notARecord, Doc)).rejects.toThrow(PithyError);
+
+    const unreadable = join(dir, "unreadable.json");
+    await mkdir(unreadable);
+    await expect(readMergeBase(unreadable, Doc)).rejects.toThrow(PithyError);
+  });
+
+  test("each of the four is a call site's own sentence, in its own error class", async () => {
+    const words = (message: string) => () => new ConflictError({ message, action: "Fix it." });
+    const options = {
+      unreadable: words("unreadable"),
+      unparseable: words("unparseable"),
+      notARecord: words("not a record"),
+      invalid: words("invalid"),
+    };
+    const said = async (name: string, contents: string | null): Promise<string> => {
+      const path = join(dir, name);
+      if (contents === null) await mkdir(path);
+      else await writeFile(path, contents);
+      const thrown = (await readMergeBase(path, Doc, options).catch((error: unknown) => error)) as ConflictError;
+      expect(thrown).toBeInstanceOf(ConflictError);
+      return thrown.payload.message;
+    };
+
+    expect(await said("a.json", null)).toBe("unreadable");
+    expect(await said("b.json", "{ not json")).toBe("unparseable");
+    expect(await said("c.json", "[]")).toBe("not a record");
+    expect(await said("d.json", JSON.stringify({ dev: { K: 1 } }))).toBe("invalid");
+  });
+
+  test("a schema that cannot read `{}` as a document says so rather than inventing one", async () => {
+    // Absent licenses starting from empty, and what "empty" is belongs to the schema, not to this module.
+    const closed = z.object({ required: z.string().describe("A key with no default.") }).catchall(z.unknown());
+    await expect(readMergeBase(join(dir, "absent.json"), closed)).rejects.toThrow(PithyError);
+  });
+
+  /**
+   * **The constraint that matters, and the reason this is a type.**
+   *
+   * All five instances happened the same way: a call site picked the lenient read of two, and nothing
+   * said so until a file had been replaced. A rule in a docstring is what those five had.
+   */
+  test("a lenient read's document cannot reach a merge — the accident is a compile error", async () => {
+    const path = join(dir, "tokens.json");
+    await writeFile(path, JSON.stringify({ dev: { CF_TOKEN: "v" } }));
+    // What a writer does: it takes the base, never a bare document, and it writes back to `base.path`.
+    const merge = (base: MergeBase<Record<string, unknown>>): Record<string, unknown> => ({
+      ...base.document,
+      staging: {},
+    });
+
+    expect(merge(await readMergeBase(path, Doc))).toEqual({ dev: { CF_TOKEN: "v" }, staging: {} });
+
+    // And what a reader answers, which is `{}` for a file nothing can be made of — correct for a reader,
+    // and the empty base that cost four files when a writer got hold of it.
+    const reported: Record<string, unknown> = {};
+    // @ts-expect-error a document that did not come from readMergeBase is not a merge base
+    merge(reported);
+  });
+});
+
+/**
  * The gate — **two rules over one walk**, because the defect has two spellings.
  *
  * 1. **Only `readOptionalFile.ts` may name `ENOENT` where a file's contents were read.** No allowlist,
@@ -276,7 +403,7 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
   const DISCARDS_ON_PURPOSE: Record<string, { reads: string; why: string }> = {
     "cli/src/devSecrets/bootstrapVars.ts": {
       reads: "readFile",
-      why: "`readBootstrapVars` argues it at length: every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale, and `writeBootstrapVars` does its own read through `readOptionalFile` and refuses. A `dev.json` half-typed by hand must not stop `pithy dev`.",
+      why: "`readBootstrapVars` argues it at length, and the argument is about that call rather than about the file (#219): every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale — and a `dev.json` half-typed by hand must not stop `pithy dev`. The two writers beside it read their own base through `readMergeBase`, which refuses in every state but absence, and they take a `MergeBase` so this lenient answer cannot be handed to them by accident.",
     },
     "cli/src/cloudflare/config.ts": {
       reads: "readFileSync",

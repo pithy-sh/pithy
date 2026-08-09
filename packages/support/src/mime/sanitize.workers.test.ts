@@ -288,7 +288,7 @@ describe("isSafeHref", () => {
       "java\nscript:alert(1)",
       "java\tscript:alert(1)",
       "java\rscript:alert(1)",
-      "java script:alert(1)",
+      "java\0script:alert(1)",
       " javascript:alert(1)",
     ]) {
       expect(isSafeHref(href), JSON.stringify(href)).toBe(false);

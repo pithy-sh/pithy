@@ -11,6 +11,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { runWrangler } from "../project/wrangler";
+import { capabilityLoadError } from "./loadFailure";
 
 /**
  * The live vector provisioner — the Cloudflare + wrangler implementation behind `@pithy-sh/vector`'s
@@ -67,14 +68,7 @@ export async function loadVector(): Promise<VectorModule> {
     ]);
     return { ...provision, ...resolve, ...capability, ...drift, ...provisioned, ...specs };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The vector capability is not installed.",
-        action: "Run `pithy add vector`, then re-run this command.",
-        detail: "@pithy-sh/vector could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("vector", "@pithy-sh/vector", error);
   }
 }
 
@@ -83,14 +77,7 @@ async function vectorWorkerDir(): Promise<string> {
   try {
     return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/vector/src/workflows/worker")));
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The vector capability is not installed.",
-        action: "Run `pithy add vector`, then re-run this command.",
-        detail: "@pithy-sh/vector/src/workflows/worker could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error);
   }
 }
 

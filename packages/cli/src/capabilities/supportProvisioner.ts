@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { runWrangler } from "../project/wrangler";
+import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
 /**
@@ -60,14 +61,7 @@ export async function loadSupport(): Promise<SupportModule> {
     ]);
     return { ...provision, ...resolve, ...capability };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The support capability is not installed.",
-        action: "Run `pithy add support`, then re-run this command.",
-        detail: "@pithy-sh/support could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("support", "@pithy-sh/support", error);
   }
 }
 
@@ -91,14 +85,7 @@ async function loadSupportSearch(): Promise<
     ]);
     return { ...searchIndex, ...tables, ...search };
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The support capability is not installed.",
-        action: "Run `pithy add support`, then re-run this command.",
-        detail: "@pithy-sh/support could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("support", "@pithy-sh/support", error);
   }
 }
 
@@ -370,14 +357,7 @@ function supportWorkerDir(): string {
   try {
     return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/support/src/workflows/worker")));
   } catch (error) {
-    throw new ValidationError(
-      {
-        message: "The support capability is not installed.",
-        action: "Run `pithy add support`, then re-run this command.",
-        detail: "@pithy-sh/support/src/workflows/worker could not be resolved from the project's install.",
-      },
-      { cause: error },
-    );
+    throw capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error);
   }
 }
 

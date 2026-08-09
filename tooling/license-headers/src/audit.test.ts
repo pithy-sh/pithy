@@ -143,6 +143,42 @@ describe("audit", () => {
     expect(kinds(root)).toEqual(["unexpected-header"]);
   });
 
+  /**
+   * **The audit's reach, planted rather than assumed (#215).**
+   *
+   * Both walks in this package enter a dotted directory, and nothing said so until now. That is the
+   * opposite of the shared source walker, which skips one with no way in until a caller asks — the rule
+   * that keeps `.smoke-*` and `.worktrees/` out of every tripwire, and the rule this audit must not
+   * have. It is asking about *shipped files*, and a `.vscode/`, a `.husky/` or a `.github/` in a
+   * template ships file for file like everything beside it.
+   *
+   * No template holds a dotted directory today — two dotted files, which were never affected — so this
+   * is planted on purpose. A gate whose reach is narrower than the rule it enforces reports clean and
+   * says nothing, which is the one failure mode a licence gate cannot have.
+   */
+  test("sees a stamped file inside a dotted directory in a template — a `.vscode/` ships like any other", () => {
+    goodRoot();
+    goodPackage("ui-react");
+    put("packages/ui-react/templates/.vscode/tasks.ts", `${buildHeader("MIT")}\n\nexport const T = 1;\n`);
+    put("templates/starter/.husky/deep/hook.ts", `${buildHeader("MIT")}\n\nexport const H = 1;\n`);
+
+    expect(audit(root)).toEqual([
+      { kind: "unexpected-header", path: "packages/ui-react/templates/.vscode/tasks.ts" },
+      { kind: "unexpected-header", path: "templates/starter/.husky/deep/hook.ts" },
+    ]);
+  });
+
+  test("and an unheadered file inside a dotted directory under a package's src is still a finding", () => {
+    // The other direction of the same reach: source has to carry the header a template must not.
+    goodRoot();
+    goodPackage("core");
+    put("packages/core/src/.generated/client.ts", "export const g = 1;\n");
+
+    expect(audit(root)).toEqual([
+      { kind: "missing-header", path: "packages/core/src/.generated/client.ts", expected: "MIT", actual: null },
+    ]);
+  });
+
   test("does not care about the copyright line, only the identifier", () => {
     goodRoot();
     goodPackage("core");

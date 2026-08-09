@@ -177,6 +177,92 @@ describe("writeMintedToken", () => {
     expect(whole).not.toContain("fresh");
   });
 
+  /**
+   * The likelier hand edit of the two #209 left open, and the one it left wide (#219).
+   *
+   * A file that parses cleanly to a bare array is exotic. A stray brace after someone opened the file to
+   * look at what was in it is ordinary — and it read as `{}`, which the writer merged one token into and
+   * renamed over three environments' live credentials, reporting a clean write.
+   */
+  test("**refuses a file that will not parse, rather than replacing every environment in it**", async () => {
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    // Broken, and still holding all three credentials — which is the point: they are recoverable by hand
+    // right up until something rewrites the file from an empty base.
+    const held = `{ not json\n${JSON.stringify(
+      {
+        dev: { CF_TOKEN_CI_SYSTEM: "dev-value" },
+        staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+        production: { CF_TOKEN_CI_SYSTEM: "production-value" },
+      },
+      null,
+      2,
+    )}\n`;
+    await writeFile(file(), held, { mode: 0o600 });
+
+    await expect(writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths())).rejects.toThrow(PithyError);
+
+    // Byte for byte. Every environment in it is still there.
+    expect(await readFile(file(), "utf8")).toBe(held);
+  });
+
+  test("and the parse refusal names the file, never a line of it — the parser's own message quotes it", async () => {
+    // `JSON.parse` puts the offending text in its message: `Unexpected token 'n', "{ not json" is not
+    // valid JSON`. This file is credentials, so the parser's sentence is exactly the one that cannot be
+    // carried out to the operator.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(file(), '{ "dev": { "CF_TOKEN_CI_SYSTEM": "a-live-credential" }', { mode: 0o600 });
+
+    const error = await writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(file());
+    expect(whole).not.toContain("a-live-credential");
+    expect(whole).not.toContain("fresh");
+  });
+
+  test("**refuses a record that is a document of something else, rather than emptying it**", async () => {
+    // It parses, it is a record, and it is not this document: a hand edit that unquoted a token leaves
+    // every other environment in the file and every one of them used to go in the next write.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    const held = `${JSON.stringify(
+      {
+        dev: { CF_TOKEN_CI_SYSTEM: 12345 },
+        staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+        production: { CF_TOKEN_CI_SYSTEM: "production-value" },
+      },
+      null,
+      2,
+    )}\n`;
+    await writeFile(file(), held, { mode: 0o600 });
+
+    await expect(writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths())).rejects.toThrow(PithyError);
+
+    expect(await readFile(file(), "utf8")).toBe(held);
+  });
+
+  test("the invalid-document refusal names the file and where it broke, and never a token value", async () => {
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(file(), JSON.stringify({ dev: { CF_TOKEN_CI_SYSTEM: 12345 }, staging: "a-live-credential" }), {
+      mode: 0o600,
+    });
+
+    const error = await writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    const whole = `${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`;
+    expect(whole).toContain(file());
+    // The key path is what an operator needs to find the line. The value never is.
+    expect(whole).toContain("dev.CF_TOKEN_CI_SYSTEM");
+    expect(whole).not.toContain("a-live-credential");
+  });
+
   test("only ENOENT starts from an empty document — a directory at the path is not an absence", async () => {
     // The other half of the same rule, and the portable stand-in for "present and will not open as a
     // file" on a machine where the test runs as root and 0o000 means nothing.

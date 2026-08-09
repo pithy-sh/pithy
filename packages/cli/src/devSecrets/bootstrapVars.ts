@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { loadProject, requireProjectName } from "../project/config";
-import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
+import { type MergeBase, readMergeBase } from "../project/readOptionalFile";
 import { devPreferencesPath } from "../seed/prepare";
 import { ensureDevSecretsDir } from "./location";
 import { tightenMode } from "./mode";
@@ -68,6 +68,9 @@ const DevJson = z
   .catchall(z.unknown().describe("Another tenant's key, read and written back untouched."))
   .describe("This machine's per-project dev file, of which the bootstrap vars are one tenant.");
 
+/** The whole file, every tenant included. Same name as its schema, as every Zod object in this repo is. */
+type DevJson = z.output<typeof DevJson>;
+
 /** `<config>/<project>/dev.json` for a project root, or `null` when the project has no name to key on. */
 export async function bootstrapVarsPath(projectDir: string, options: StatePathOptions = {}): Promise<string | null> {
   try {
@@ -78,17 +81,24 @@ export async function bootstrapVarsPath(projectDir: string, options: StatePathOp
 }
 
 /**
- * This project's bootstrap set, or an empty one.
+ * This project's bootstrap set, or an empty one. **The reporting read of the two in this file.**
  *
  * **Every failure is an empty set, and that is deliberate here where it is a defect elsewhere.** The
  * sibling readers refuse an unreadable credential file because they are about to *rewrite* it, and
  * "absent" would license replacing what they could not read. Nothing is rewritten from this call — the
  * result is merged into a file that is regenerated wholesale — so a `dev.json` that will not parse costs
  * a set of bindings and says so through the Worker's own missing-binding error, rather than stopping
- * `pithy dev` over a hand-edited preferences file. {@link writeBootstrapVars} is the one that refuses.
+ * `pithy dev` over a hand-edited preferences file. This is the read `pithy dev` starts through.
  *
- * So this read deliberately does *not* go through {@link readOptionalFile}, and it is written down as
- * such in that module's gate (`../project/readOptionalFile.test.ts`) rather than left to be rediscovered.
+ * **What that argument is not about (#219).** It is an argument about *this call*, and it was read for a
+ * while as if it were about the file: the two writers below reached the same `{}` through
+ * {@link readDevJson} and renamed a document built from it over a file with another tenant in it. They
+ * refuse now, in every state but "there is no file", and this one still answers `{}` — the split is the
+ * fix, not a tightening. It is a type rather than a convention: they take a {@link MergeBase}, which only
+ * `readMergeBase` mints, so nothing that reads leniently can be handed to them by accident.
+ *
+ * So this read deliberately does *not* go through the primitive, and it is written down as such in that
+ * module's gate (`../project/readOptionalFile.test.ts`) rather than left to be rediscovered.
  */
 export async function readBootstrapVars(projectDir: string, options: StatePathOptions = {}): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
@@ -104,10 +114,10 @@ export async function readBootstrapVars(projectDir: string, options: StatePathOp
  * Merge `values` into this project's bootstrap set and write `dev.json` back. Returns the merged set,
  * so a caller regenerating from it never re-reads what it has just written.
  *
- * **Read-modify-write over a file with other tenants**, so an unreadable-but-present file refuses rather
- * than being replaced: writing this set over a `dev.json` that could not be read would silently delete a
- * developer's dev-login preference. So does one that parsed to something which is not a document (#209),
- * for the same reason and with the same cost. Only `ENOENT` licenses starting from `{}`.
+ * **Read-modify-write over a file with other tenants**, so every state but "there is no file" refuses:
+ * writing this set over a `dev.json` that could not be read, or is not JSON, or parsed to something that
+ * is not a document, or is a record of something else, would silently delete a developer's dev-login
+ * preference along with every value this module had. Only `ENOENT` licenses starting from `{}`.
  *
  * A value is never removed here. A name that leaves the registry leaves a line nothing reads; `pithy
  * doctor` is where a value nobody declares gets named, in this file exactly as in its neighbour.
@@ -119,17 +129,29 @@ export async function writeBootstrapVars(
 ): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
   if (path === null) return {};
-  const document = await readDevJson(path);
-  const merged: BootstrapVars = { ...((document[BOOTSTRAP_VARS_KEY] as BootstrapVars | undefined) ?? {}), ...values };
+  const base = await readDevJson(path);
+  const merged: BootstrapVars = { ...(base.document[BOOTSTRAP_VARS_KEY] ?? {}), ...values };
   if (Object.keys(values).length === 0) return merged;
-  await ensureDevSecretsDir(path);
-  await writeFileAtomic(path, `${JSON.stringify({ ...document, [BOOTSTRAP_VARS_KEY]: merged }, null, 2)}\n`, {
+  await ensureDevSecretsDir(base.path);
+  await writeFileAtomic(base.path, `${JSON.stringify(withBootstrapVars(base, merged), null, 2)}\n`, {
     mode: 0o600,
   });
   // Unconditionally and after the write, the same as the secrets file's: a `dev.json` an older pithy or an
   // editor created at the umask kept 0644 while holding the dev master key. Narrowing only.
-  await tightenMode(path);
+  await tightenMode(base.path);
   return merged;
+}
+
+/**
+ * The document to write: every tenant's key as it was read, with this module's set replaced.
+ *
+ * **It takes a {@link MergeBase} and that is the whole point (#219).** Only `readMergeBase` mints one, so
+ * {@link readBootstrapVars} — which answers `{}` for a file it cannot make sense of, correctly, because
+ * it rewrites nothing — cannot be handed to it. The accident that produced five instances of this defect
+ * is a type error here rather than another tenant's key gone at the next rename.
+ */
+function withBootstrapVars(base: MergeBase<DevJson>, vars: BootstrapVars): DevJson {
+  return { ...base.document, [BOOTSTRAP_VARS_KEY]: vars };
 }
 
 /**
@@ -147,36 +169,39 @@ export async function removeBootstrapVars(
 ): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
   if (path === null) return {};
-  const document = await readDevJson(path);
-  const current: BootstrapVars = (document[BOOTSTRAP_VARS_KEY] as BootstrapVars | undefined) ?? {};
+  const base = await readDevJson(path);
+  const current: BootstrapVars = base.document[BOOTSTRAP_VARS_KEY] ?? {};
   const remaining = Object.fromEntries(Object.entries(current).filter(([name]) => !names.includes(name)));
   if (Object.keys(remaining).length === Object.keys(current).length) return current;
-  await ensureDevSecretsDir(path);
-  await writeFileAtomic(path, `${JSON.stringify({ ...document, [BOOTSTRAP_VARS_KEY]: remaining }, null, 2)}\n`, {
+  await ensureDevSecretsDir(base.path);
+  await writeFileAtomic(base.path, `${JSON.stringify(withBootstrapVars(base, remaining), null, 2)}\n`, {
     mode: 0o600,
   });
-  await tightenMode(path);
+  await tightenMode(base.path);
   return remaining;
 }
 
 /**
- * The parsed `dev.json`, with every tenant's key intact. `{}` for an absent file and for one that will
- * not parse at all; a present file that will not read, **or that parsed to something which is not a
- * document**, is a refusal rather than a fresh start.
+ * The merge base for a write over `dev.json`: every tenant's key intact, known-good, or a refusal.
  *
- * It used to answer `{}` for a non-object too, and this docstring used to say so as if it were a
- * decision (#209). It was the same defect as the unreadable file one line up, one step further in: the
- * read succeeded, the value was not a document, and the two writers below merged into that `{}` and
- * renamed the result over a file with other tenants in it — the dev-login preference and this module's
- * own set, gone, with the run reporting a clean write. A file that will not *parse* stays `{}`: nothing
- * can be made of it either way. A value that *parsed* is a claim about what is in the file, and
- * {@link requireRecord} answers that for every reader in this family in one place.
+ * **The writers' read, and the strict half of this file's split.** `{}` for an absent file and for
+ * nothing else. Unopenable, not JSON, parsed to something that is not a document, or a document of
+ * something else: four refusals, because the two writers below merge into this answer and rename the
+ * result over a file with another tenant in it. Answering `{}` for any of the four is a dev-login
+ * preference and this module's own set deleted, with the run reporting a clean write.
  *
- * The `ENOENT`-only rule is {@link readOptionalFile}'s (`../project/`); the words below are this file's,
- * because "cannot update" is what a read-modify-write over somebody else's tenants has to say.
+ * It used to answer `{}` for a non-object (#209), and then for a file that would not parse and for one
+ * that failed its schema (#219) — each corrected once someone noticed that the argument for leniency was
+ * {@link readBootstrapVars}'s and had been read as if it belonged to the file. The two are different
+ * calls with different powers, and now different types: this one hands back a {@link MergeBase}, which
+ * nothing else in this repository can produce.
+ *
+ * The `ENOENT`-only rule and the other three are `readMergeBase`'s (`../project/readOptionalFile.ts`);
+ * the words below are this file's, because "cannot update" is what a read-modify-write over somebody
+ * else's tenants has to say.
  */
-async function readDevJson(path: string): Promise<Record<string, unknown>> {
-  const source = await readOptionalFile(path, {
+async function readDevJson(path: string): Promise<MergeBase<DevJson>> {
+  return readMergeBase(path, DevJson, {
     unreadable: ({ code, cause }) =>
       new ConflictError(
         {
@@ -186,20 +211,27 @@ async function readDevJson(path: string): Promise<Record<string, unknown>> {
         },
         { cause },
       ),
-  });
-  if (source === null) return {};
-  const value = safeJson(source);
-  if (value === undefined) return {};
-  const document = requireRecord(path, value, {
+    unparseable: () =>
+      new ConflictError({
+        message: `Cannot update ${path}: it is there and is not JSON.`,
+        action: "Fix the JSON, or move it aside, and run the command again.",
+        // Never the parser's own message: it quotes the line it choked on, and the dev master key is one.
+        detail: `dev.json at ${path} did not parse, and every tenant's keys would be replaced by a write from it`,
+      }),
     notARecord: ({ found }) =>
       new ConflictError({
         message: `Cannot update ${path}: it holds ${found}, not a document.`,
         action: "Restore it to a JSON object, or move it aside, and run the command again.",
         detail: `dev.json at ${path} parsed to ${found}, and other tenants' keys would be replaced by a write from it`,
       }),
+    invalid: ({ at }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it is not the document Pithy keeps there.`,
+        action: "Fix it, or move it aside, and run the command again.",
+        // The key path, so the line can be found. Never the value on it, which may be the dev master key.
+        detail: `dev.json at ${path} failed its schema at ${at}`,
+      }),
   });
-  const parsed = DevJson.safeParse(document);
-  return parsed.success ? parsed.data : {};
 }
 
 /** `JSON.parse` that answers `undefined` rather than throwing — this file is hand-edited. */

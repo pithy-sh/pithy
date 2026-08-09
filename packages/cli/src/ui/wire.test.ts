@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -343,5 +344,57 @@ describe("wire", () => {
     // that adopter a typecheck that cannot pass.
     expect(await wireSolution(dir, "api")).toEqual([]);
     await expect(readFile(join(dir, "tsconfig.json"), "utf8")).rejects.toThrow();
+  });
+});
+
+/**
+ * A `package.json` that is missing and one that is malformed are different faults (#217).
+ *
+ * One `try` wrapped the read and the parse, and answered both with *pithy worker add creates one*. For a
+ * worker whose `package.json` is there and holds a stray comma, that command will not run — it refuses
+ * on an existing worker — so the adopter is sent to a door that is already shut.
+ */
+describe("wirePackage refusals", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-wire-refusal-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a missing package.json is the one case `pithy worker add` answers", async () => {
+    await expect(wirePackage(dir, dir, reactStub)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/pithy worker add/);
+      return true;
+    });
+  });
+
+  test("a package.json that is not JSON is never answered with `pithy worker add`", async () => {
+    await writeFile(join(dir, "package.json"), '{ "name": "api",, }', "utf8");
+
+    await expect(wirePackage(dir, dir, reactStub)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/pithy worker add/);
+      expect(error.payload.action).toMatch(/JSON/i);
+      return true;
+    });
+  });
+
+  test("a package.json holding valid JSON that is not an object is not a missing file either", async () => {
+    await writeFile(join(dir, "package.json"), "[]", "utf8");
+
+    await expect(wirePackage(dir, dir, reactStub)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/pithy worker add/);
+      return true;
+    });
+  });
+
+  test("a package.json that is a directory is not a missing file", async () => {
+    await mkdir(join(dir, "package.json"));
+
+    await expect(wirePackage(dir, dir, reactStub)).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).not.toMatch(/pithy worker add/);
+      return true;
+    });
   });
 });
