@@ -79,6 +79,8 @@ Two structural rules the stub depends on, worth knowing before you move a file:
 
 Four files are edited.
 
+**An edit touches the lines it means to change, and no others.** Every one of these files is checked into your repository, so the writer prints what the Biome `pithy init` scaffolds would print — short arrays on one line, an object left in whatever shape it already had, comments where you put them. A `pithy ui sync` that adds one path is a one-line diff, and its output passes `biome check` with no formatting step of your own. It did neither before #249: the writer expanded every array in the file, so a two-line change arrived as 78 insertions and then failed the pre-commit hook the CLI itself installed.
+
 **`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
 
 - Every entry is emitted in **two forms**, the bare path and its `/*` glob, because `"/auth/*"` does not match a bare `"/auth"`.

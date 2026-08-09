@@ -4,9 +4,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { parse, stringify } from "comment-json";
+import { parse } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
 import type { WorkerConfig } from "../project/config";
+import { writeJsonc } from "../project/jsonc";
 import { alreadyProvided, execArgs, type PackageManager } from "../project/packageManager";
 import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
@@ -303,6 +304,6 @@ export async function wireSolution(projectDir: string, worker: string): Promise<
   // In place: the array object carries the adopter's comments, and comment-json hangs them off it.
   references.push(...added.map((reference) => ({ path: reference })));
   document.references = references;
-  await writeFileAtomic(path, `${stringify(document, null, 2)}\n`);
+  await writeJsonc(path, document);
   return added;
 }
