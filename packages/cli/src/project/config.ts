@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { isBuildFailureWrapper, prop, rootCause } from "@pithy-sh/core/src/error/cause";
 import { fromZodError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
@@ -224,12 +225,6 @@ function safeReason(cause: unknown): string | undefined {
   return text.replace(/\.$/, "");
 }
 
-/** Read a property off an unknown throwable without widening anything to `any`. */
-function prop(cause: unknown, key: string): unknown {
-  if (typeof cause !== "object" || cause === null) return undefined;
-  return (cause as Record<string, unknown>)[key];
-}
-
 /**
  * The thrown value's message, de-coloured — `undefined` when it has none.
  *
@@ -238,7 +233,8 @@ function prop(cause: unknown, key: string): unknown {
  * `instanceof Error`. An earlier draft here gated on `instanceof Error` and passed its whole suite,
  * because vitest runs on Node and the Bun fixtures were built out of real `Error`s; on Bun it silently
  * dropped the parser's own sentence, which is the one thing this change exists to deliver. Anything
- * carrying a string `message` is read. What may be *said* is decided by {@link safeReason}, on content.
+ * carrying a string `message` is read — see core's `prop`. What may be *said* is decided by
+ * {@link safeReason}, on content.
  */
 function causeMessage(cause: unknown): string | undefined {
   const message = prop(cause, "message");
@@ -294,6 +290,10 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
+  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
+  // sees, and the one `pithy doctor` renders. It proves a build produced diagnostics, so it is a parse
+  // error with no reason and no position rather than a config that threw. See core's `cause.ts`.
+  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
@@ -319,8 +319,15 @@ function isParseError(cause: unknown): boolean {
  *
  * Exported because the runtime that ships (`bin` runs on Bun, whose `ResolveMessage`/`BuildMessage` are
  * their own shapes) is not the runtime the suite runs on. Tested directly, it is tested for both.
+ *
+ * @param wrapped whatever the `try` caught, wrapper and all. {@link rootCause} opens it first — see #223:
+ *   Bun wraps two or more build diagnostics in an `AggregateError`, and a stray brace cascades, so the
+ *   wrapped shape is the *common* one. #207 fixed the bare case and this one classified worse than it.
  */
-export function classifyConfigLoadFailure(cause: unknown): ConfigLoadFailure {
+export function classifyConfigLoadFailure(wrapped: unknown): ConfigLoadFailure {
+  // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
+  const cause = rootCause(wrapped);
+
   if (isUnresolvedImport(cause)) {
     const specifier = unresolvedSpecifier(cause);
     return {
@@ -332,8 +339,14 @@ export function classifyConfigLoadFailure(cause: unknown): ConfigLoadFailure {
   }
 
   if (isParseError(cause)) {
-    const reason = safeReason(cause);
-    const at = failurePosition(cause);
+    // Bun's build wrapper says only `N errors building "<path>"` — a count that is not the adopter's
+    // problem and a path that must not travel. Suppressed on **provenance**: `safeReason` and
+    // `failurePosition` test content, which is right for a diagnostic that might be safe, and this one
+    // never is. A path quoted without a leading slash would pass the absolute-path test and drag a
+    // fabricated `Line 12, column 5` out of its own characters with it.
+    const opaque = isBuildFailureWrapper(cause);
+    const reason = opaque ? undefined : safeReason(cause);
+    const at = opaque ? undefined : failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
     return {
       kind: "parse-error",

@@ -3,6 +3,7 @@
 
 import { access } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { isBuildFailureWrapper, prop, rootCause } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { runnerImport } from "vite";
 
@@ -28,8 +29,10 @@ export interface LoadedWorkerConfig {
  * restated here, with the same rule behind it: **a `catch` reachable by more than one underlying failure
  * may not name a single specific remedy.** Classify, or hedge. The convention is in `docs/CONVENTIONS.md`.
  *
- * The shared home for both copies is `@pithy-sh/core`; moving `classifyConfigLoadFailure` there is a
- * follow-up, not this change, because the CLI's copy is load-bearing for #207's own tests.
+ * What the two copies *cannot* be allowed to disagree about is what a runtime does to an error on its way
+ * out — a fact neither copy can derive and both got wrong. That part is `@pithy-sh/core`'s `rootCause`,
+ * imported by all three classifiers (#223), and core is the one package this plugin already depends on.
+ * The rest stays restated, because the two refusals are not the same sentence and never were.
  */
 export type WorkerConfigFailureKind =
   /** An import in the config does not resolve. `bun install`, or a corrected specifier. */
@@ -54,12 +57,6 @@ const ANSI = /\[[0-9;]*m/g;
 
 /** Anything that looks like the start of an absolute path — POSIX, `~`, or a Windows drive. */
 const ABSOLUTE_PATH = /(^|[\s'"(])(\/|~\/|[A-Za-z]:[\\/])/;
-
-/** Read a property off an unknown throwable without widening anything to `any`. */
-function prop(cause: unknown, key: string): unknown {
-  if (typeof cause !== "object" || cause === null) return undefined;
-  return (cause as Record<string, unknown>)[key];
-}
 
 /**
  * The thrown value's message, de-coloured — `undefined` when it has none.
@@ -140,32 +137,13 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
+  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
+  // sees, since a failed module is cached and re-thrown emptied out. It proves a build produced
+  // diagnostics, so it is a parse error with no reason to quote. See core's `cause.ts` (#223).
+  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
-}
-
-/**
- * The diagnostic inside Bun's `AggregateError` wrapper.
- *
- * **Found by running this on Bun, not by a fixture — which is the whole lesson of #207 repeating.**
- * `import()` on Bun does not throw a `BuildMessage`; it throws an `AggregateError` whose `errors` array
- * holds them, whose own `message` is `2 errors building "<absolute path>"`, and whose `Object.keys` is
- * empty. Classified as-is that reads as "it threw", the parser's sentence and position are lost, and the
- * refusal hedges when it had the answer in hand. Node throws the diagnostic directly, so no Node-shaped
- * fixture can show this. Verified against Bun 1.3.14.
- *
- * One diagnostic arrives bare; two or more arrive wrapped — and a stray brace cascades, so wrapped is the
- * common case. The first diagnostic only: the rest are the cascade.
- */
-function rootCause(cause: unknown): unknown {
-  let current = cause;
-  for (let depth = 0; depth < 4; depth += 1) {
-    const errors = prop(current, "errors");
-    if (!Array.isArray(errors) || errors.length === 0 || errors[0] === undefined) return current;
-    current = errors[0];
-  }
-  return current;
 }
 
 /** Choose the refusal's `action` **from** the failure rather than asserting one over it (#217). */
@@ -183,8 +161,14 @@ export function classifyWorkerConfigFailure(wrapped: unknown): WorkerConfigFailu
   }
 
   if (isParseError(cause)) {
-    const reason = safeReason(cause);
-    const at = failurePosition(cause);
+    // Bun's build wrapper says only `N errors building "<path>"` — a count that is not the adopter's
+    // problem and a path that must not travel. Suppressed on **provenance**: `safeReason` and
+    // `failurePosition` test content, which is right for a diagnostic that might be safe, and this one
+    // never is. A path quoted without a leading slash would pass the absolute-path test and drag a
+    // fabricated `Line 12, column 5` out of its own characters with it.
+    const opaque = isBuildFailureWrapper(cause);
+    const reason = opaque ? undefined : safeReason(cause);
+    const at = opaque ? undefined : failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
     return {
       kind: "parse-error",

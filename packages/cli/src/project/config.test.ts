@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { promisify } from "node:util";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -210,6 +212,362 @@ describe("classifyConfigLoadFailure", () => {
     expect(action).not.toMatch(/\bbun install\b/i);
     expect(action).not.toMatch(/does not parse/i);
   });
+});
+
+/**
+ * **Two syntax errors used to classify worse than one (#223).**
+ *
+ * #207 fixed the rarer shape. Bun hands `import()` one build diagnostic bare and **two or more inside an
+ * `AggregateError`** — and a stray brace cascades, so two-or-more is what a broken config actually looks
+ * like. The wrapper's `Object.keys` is empty and its message is `N errors building "<absolute path>"`,
+ * which matches no classifier test, so a parse error fell through to "the config threw while loading" and
+ * the adopter was told to run the file rather than where the file is broken.
+ *
+ * The fixture below is **not** a synthetic one-liner. It is the shape Bun 1.3.14 really threw for a
+ * `pithy.config.ts` missing one closing brace — four diagnostics, positions and all — captured verbatim,
+ * because #207 survived its own Bun testing by repro'ing with a single deliberate typo.
+ */
+describe("Bun wraps two or more build diagnostics, and a cascade is the common case (#223)", () => {
+  /** The real path Bun quoted, kept absolute: it is exactly what must not reach `action`. */
+  const FILE = "/home/a/scratch/two/pithy.config.ts";
+
+  /**
+   * Verbatim from Bun 1.3.14 importing a config whose `const seed = {` is never closed. Plain objects,
+   * never `new Error(...)`: `BuildMessage` is its own class and is **not** `instanceof Error`, which is
+   * the trap #207 shipped. Four diagnostics, because one missing brace produces four.
+   */
+  const CASCADE = {
+    name: "AggregateError",
+    message: `4 errors building "${FILE}"`,
+    errors: [
+      {
+        name: "BuildMessage",
+        message: 'Expected identifier but found ";"',
+        position: { lineText: ";", file: FILE, namespace: "file", line: 4, column: 1, length: 1, offset: 94 },
+      },
+      {
+        name: "BuildMessage",
+        message: 'Expected "}" but found "default"',
+        position: {
+          lineText: "export default {",
+          file: FILE,
+          namespace: "file",
+          line: 6,
+          column: 8,
+          length: 7,
+          offset: 104,
+        },
+      },
+      {
+        name: "BuildMessage",
+        message: 'Expected ";" but found "{"',
+        position: {
+          lineText: "export default {",
+          file: FILE,
+          namespace: "file",
+          line: 6,
+          column: 16,
+          length: 1,
+          offset: 112,
+        },
+      },
+      {
+        name: "BuildMessage",
+        message: "Unexpected }",
+        position: { lineText: "};", file: FILE, namespace: "file", line: 9, column: 1, length: 1, offset: 138 },
+      },
+    ],
+  };
+
+  test("a cascading syntax error is a parse error, not a config that threw", () => {
+    const { kind, action } = classifyConfigLoadFailure(CASCADE);
+    expect(kind).toBe("parse-error");
+    // The bug, in one line: this said "The config threw while loading. Run the file directly…".
+    expect(action).not.toMatch(/threw while loading/);
+    expect(action).toMatch(/does not parse/i);
+  });
+
+  test("the first diagnostic's reason and position reach the adopter — the cascade behind it does not", () => {
+    const { action } = classifyConfigLoadFailure(CASCADE);
+    expect(action).toContain('Expected identifier but found ";"');
+    expect(action).toContain("Line 4, column 1");
+    // The rest are the cascade, not the fault. Naming four positions would bury the one that matters.
+    expect(action).not.toContain('Expected "}" but found "default"');
+    expect(action).not.toContain("Line 6");
+  });
+
+  test("the wrapper leaks nothing #207 kept out — no path, no source line, no count, no newline", () => {
+    const { action } = classifyConfigLoadFailure(CASCADE);
+    expect(action).not.toContain(FILE);
+    expect(action).not.toContain("/home/a");
+    expect(action).not.toContain("export default {"); // `lineText` is throw-site context
+    expect(action).not.toContain("4 errors building"); // the wrapper's own message
+    expect(action).not.toContain("\n");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape code is exactly what must not leak.
+    expect(action).not.toMatch(/\[/);
+    expect(action).not.toMatch(/\bat .*:\d+:\d+/);
+    expect(action.length).toBeLessThan(300);
+  });
+
+  test("one diagnostic and four produce the same sentence shape — the count is not the adopter's problem", () => {
+    const bare = CASCADE.errors[0];
+    expect(classifyConfigLoadFailure(bare).kind).toBe(classifyConfigLoadFailure(CASCADE).kind);
+    expect(classifyConfigLoadFailure(bare).action).toBe(classifyConfigLoadFailure(CASCADE).action);
+  });
+
+  test("a wrapped ResolveMessage is still a resolution failure, not a parse error", () => {
+    const { kind, action } = classifyConfigLoadFailure({
+      name: "AggregateError",
+      message: `2 errors building "${FILE}"`,
+      errors: [
+        { name: "ResolveMessage", message: "Cannot find package '@pithy-sh/auth'", specifier: "@pithy-sh/auth" },
+        { name: "ResolveMessage", message: "Cannot find package 'zod'", specifier: "zod" },
+      ],
+    });
+    expect(kind).toBe("unresolved-import");
+    expect(action).toContain("@pithy-sh/auth");
+  });
+
+  test("an AggregateError with nothing in it is still classified on its own terms, never dropped", () => {
+    const { kind } = classifyConfigLoadFailure({ name: "AggregateError", message: "boom", errors: [] });
+    expect(kind).toBe("threw-on-load");
+  });
+
+  /**
+   * **The second import of the same broken config is not the same error.**
+   *
+   * Found by running `pithy doctor` on the cascading fixture with the unwrap already in place, and
+   * watching it still say "the config threw". Bun caches a failed module, and the `AggregateError` it
+   * re-throws on every later `import()` of that specifier has **no `errors` at all** — just the count and
+   * the path. Unwrapping cannot help; there is nothing left to unwrap.
+   *
+   * This is not a corner. `pithy doctor` loads the root config twice by design — `projectCloudflareAccount`
+   * resolves the account before the report is built (#206) — so the *degraded* shape is what the adopter
+   * actually reads. Nothing else Bun throws behaves this way: a `ResolveMessage`, a bare `BuildMessage`
+   * and a config's own `Error` are all identical on every import.
+   *
+   * The wrapper's own message is enough to know it was a build, and a build that produced diagnostics did
+   * not resolve or throw — it failed to parse. So it is named for what it is, with no position, rather
+   * than mis-blamed on the config's runtime.
+   */
+  const STRIPPED = { name: "AggregateError", message: `4 errors building "${FILE}"` };
+
+  test("Bun's re-thrown wrapper has no diagnostics left, and is still a parse error", () => {
+    const { kind, action } = classifyConfigLoadFailure(STRIPPED);
+    expect(kind).toBe("parse-error");
+    expect(action).not.toMatch(/threw while loading/);
+    expect(action).toMatch(/installing dependencies will not help/);
+  });
+
+  test("with the diagnostics gone it says less — no invented reason, no invented position", () => {
+    const { action } = classifyConfigLoadFailure(STRIPPED);
+    expect(action).toBe("The config does not parse. Fix the file — installing dependencies will not help.");
+    expect(action).not.toMatch(/Line \d+/);
+  });
+
+  test("the stripped wrapper leaks neither the path it quotes nor the count", () => {
+    const { action } = classifyConfigLoadFailure(STRIPPED);
+    expect(action).not.toContain(FILE);
+    expect(action).not.toContain("/home/a");
+    expect(action).not.toContain("4 errors building");
+    expect(action).not.toContain("\n");
+  });
+
+  /**
+   * The wrapper's message is throw-site context in full — a count we do not report and a path that must
+   * not travel — so it is suppressed by *provenance*, not left to `safeReason`'s content tests. Those
+   * tests exist for a diagnostic that might be safe. This one never is, and a path Bun quotes without a
+   * leading slash would sail through the absolute-path check and take a fabricated position with it.
+   */
+  test("nothing of the wrapper's own message is quotable, whatever shape the path it quotes has", () => {
+    const { kind, action } = classifyConfigLoadFailure({ message: '2 errors building "app/config:12:5.ts"' });
+    expect(kind).toBe("parse-error");
+    expect(action).toBe("The config does not parse. Fix the file — installing dependencies will not help.");
+    expect(action).not.toContain("app/config");
+    expect(action).not.toContain("Line 12"); // never invented out of a path that happens to read like one
+  });
+
+  test("a plural-blind count is matched too, and prose that merely mentions building is not", () => {
+    expect(classifyConfigLoadFailure({ message: '1 error building "/a/x.ts"' }).kind).toBe("parse-error");
+    // Not a wrapper: a config that threw a sentence with the word "building" in it stays its own failure.
+    expect(classifyConfigLoadFailure({ message: "Stripe is still building the account" }).kind).toBe("threw-on-load");
+  });
+});
+
+/**
+ * **The wrapper shape, asserted against Bun itself.**
+ *
+ * Everything above is a fixture, and a fixture is a claim about a runtime that the fixture cannot check.
+ * That is precisely how #223 happened: #207's suite was green while the shipping runtime disagreed with
+ * it. So this spawns the runtime that ships — `bin` runs on Bun — imports a genuinely broken config, and
+ * asserts what actually comes back.
+ *
+ * It is written to fail **loudly** in both directions. If a future Bun stops wrapping, the cascade case
+ * fails here rather than silently reverting `classifyConfigLoadFailure` to today's bug; if Bun starts
+ * wrapping the single-diagnostic case too, that fails here as well. Either way the fact in core's
+ * `rootCause` is revisited by whoever changes Bun, not discovered by an adopter with a stray brace.
+ *
+ * vitest runs these on Node, so `bun` is spawned. Every job in CI installs it (`oven-sh/setup-bun`), and
+ * the repo mandates it for everything in dev, so a missing `bun` is a broken environment and this says so
+ * rather than skipping.
+ */
+describe("Bun's real wrapper shape, from Bun (#223)", () => {
+  /** One missing `}`. Nothing else is wrong with this file — and it produces four diagnostics. */
+  const CASCADING = [
+    "const seed = {",
+    "  includeExamples: false,",
+    '  productionEnvironments: ["production", "prod-eu"],',
+    ";",
+    "",
+    "export default {",
+    '  name: "acme",',
+    "  seed,",
+    "};",
+    "",
+  ].join("\n");
+
+  /** One diagnostic, and only one — the shape #207 repro'd with. */
+  const SINGLE = 'export default {{ name: "acme" };\n';
+
+  /** One thrown value, read through the same `prop`/`rootCause` the classifier uses. */
+  interface Thrown {
+    name: unknown;
+    message: unknown;
+    ownKeys: string[];
+    isError: boolean;
+    /** `null` when the value carries no `errors` array at all — which is a fact, not an absence. */
+    errorCount: number | null;
+  }
+
+  /** What Bun handed two successive `import()`s of the same broken file, plus the first one's diagnostic. */
+  interface BunShape {
+    first: Thrown;
+    second: Thrown;
+    root: { name: unknown; message: unknown; isError: boolean; line: unknown; column: unknown };
+  }
+
+  /**
+   * Import `source` as a `pithy.config.ts` under a real Bun process — **twice**, because the second
+   * import is a different shape and is the one `pithy doctor` renders.
+   */
+  async function shapeFromBun(source: string): Promise<BunShape> {
+    const caseDir = join(dir, `bun-${Math.random().toString(36).slice(2)}`);
+    await mkdir(caseDir, { recursive: true });
+    const config = join(caseDir, "pithy.config.ts");
+    await writeFile(config, source);
+
+    const cause = join(import.meta.dirname, "..", "..", "..", "core", "src", "error", "cause.ts");
+    const probe = join(caseDir, "probe.ts");
+    await writeFile(
+      probe,
+      [
+        `import { prop, rootCause } from ${JSON.stringify(cause)};`,
+        "const caught: unknown[] = [];",
+        "for (let i = 0; i < 2; i += 1) {",
+        `  try { await import(${JSON.stringify(config)}); } catch (thrown) { caught.push(thrown); }`,
+        "}",
+        "if (caught.length !== 2) process.exit(9);",
+        "const seen = (value: unknown) => {",
+        "  const errors = prop(value, 'errors');",
+        "  return {",
+        "    name: prop(value, 'name'), message: prop(value, 'message'),",
+        "    ownKeys: Object.keys(value as object), isError: value instanceof Error,",
+        "    errorCount: Array.isArray(errors) ? errors.length : null,",
+        "  };",
+        "};",
+        "const root = rootCause(caught[0]);",
+        "console.log(JSON.stringify({",
+        "  first: seen(caught[0]), second: seen(caught[1]),",
+        "  root: {",
+        "    name: prop(root, 'name'), message: prop(root, 'message'), isError: root instanceof Error,",
+        "    line: prop(prop(root, 'position'), 'line'), column: prop(prop(root, 'position'), 'column'),",
+        "  },",
+        "}));",
+      ].join("\n"),
+    );
+
+    // `PITHY_OFFLINE` is belt-and-braces: this child only imports a broken file, but no test in this repo
+    // gets to reach a real account by accident.
+    const { stdout } = await promisify(execFile)("bun", ["run", probe], {
+      env: { ...process.env, PITHY_OFFLINE: "1", NO_COLOR: "1" },
+      timeout: 30_000,
+    });
+    return JSON.parse(stdout) as BunShape;
+  }
+
+  test("two or more diagnostics arrive inside an AggregateError with no own keys and a count for a message", async () => {
+    const { first } = await shapeFromBun(CASCADING);
+    // If any of these four stop holding, Bun changed and `rootCause` needs re-reading. That is the point.
+    expect(first.name).toBe("AggregateError");
+    expect(first.ownKeys).toEqual([]);
+    expect(first.message).toMatch(/^\d+ errors building "/);
+    expect(first.errorCount).toBeGreaterThanOrEqual(2);
+  }, 30_000);
+
+  test("one missing brace really does cascade — the realistic shape is the wrapped one", async () => {
+    const { first } = await shapeFromBun(CASCADING);
+    expect(first.errorCount).toBeGreaterThan(1);
+  }, 30_000);
+
+  test("rootCause reaches a BuildMessage that is not an Error, and its position survives", async () => {
+    const { root } = await shapeFromBun(CASCADING);
+    expect(root.name).toBe("BuildMessage");
+    // The trap #207 shipped: an `instanceof Error` gate here drops the parser's sentence on Bun alone.
+    expect(root.isError).toBe(false);
+    expect(root.message).toBe('Expected identifier but found ";"');
+    expect(root.line).toBe(4);
+    expect(root.column).toBe(1);
+  }, 30_000);
+
+  test("a single diagnostic still arrives bare, so the bare path is not dead code", async () => {
+    const { first, second } = await shapeFromBun(SINGLE);
+    expect(first.name).toBe("BuildMessage");
+    expect(first.errorCount).toBeNull();
+    expect(first.isError).toBe(false);
+    // And it does not degrade either — only the wrapper does.
+    expect(second.message).toBe(first.message);
+  }, 30_000);
+
+  test("a second import of the same broken file loses the diagnostics — the doctor path's real shape", async () => {
+    const { first, second } = await shapeFromBun(CASCADING);
+    expect(first.errorCount).toBeGreaterThanOrEqual(2);
+    // If Bun ever keeps them, this fails and `isParseError`'s wrapper-message branch can be reconsidered.
+    expect(second.errorCount).toBeNull();
+    expect(second.name).toBe("AggregateError");
+    expect(second.message).toMatch(/^\d+ errors building "/);
+    // And the refusal must survive it: the count and the path are all that is left, and they are enough.
+    expect(classifyConfigLoadFailure({ name: second.name, message: second.message }).kind).toBe("parse-error");
+  }, 30_000);
+
+  test("nothing else Bun throws degrades on a second import", async () => {
+    const unresolved = await shapeFromBun('import "@pithy-sh/nope-not-a-real-package";\nexport default {};\n');
+    expect(unresolved.second.name).toBe("ResolveMessage");
+    expect(unresolved.second.message).toBe(unresolved.first.message);
+    const threw = await shapeFromBun('throw new Error("the config threw");\nexport default {};\n');
+    expect(threw.second.message).toBe("the config threw");
+  }, 60_000);
+
+  test("both shapes classify identically, and the cascade names its position", async () => {
+    const cascade = await shapeFromBun(CASCADING);
+    const single = await shapeFromBun(SINGLE);
+    // Reconstructed from what Bun really sent, not from a hand-written fixture.
+    const rebuilt = {
+      name: cascade.first.name,
+      message: cascade.first.message,
+      errors: [
+        {
+          name: cascade.root.name,
+          message: cascade.root.message,
+          position: { line: cascade.root.line, column: cascade.root.column },
+        },
+      ],
+    };
+    expect(classifyConfigLoadFailure(rebuilt).kind).toBe("parse-error");
+    expect(classifyConfigLoadFailure(rebuilt).action).toContain("Line 4, column 1");
+    expect(classifyConfigLoadFailure({ name: single.first.name, message: single.first.message }).kind).toBe(
+      "parse-error",
+    );
+  }, 60_000);
 });
 
 describe("loadWorkerConfig", () => {

@@ -167,6 +167,19 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).not.toContain("/home/a");
   });
 
+  // And the second import of the same broken config is a *third* shape: Bun caches the failure and
+  // re-throws the wrapper with its `errors` gone, leaving only the count and the path (#223). Unwrapping
+  // cannot help. The message still proves a build produced diagnostics, which is not a throw.
+  test("the re-thrown wrapper has no diagnostics left, and is still a parse error", () => {
+    const cause = { name: "AggregateError", message: '4 errors building "/home/a/apps/api/pithy.config.ts"' };
+    const { kind, action } = classifyWorkerConfigFailure(cause);
+    expect(kind).toBe("parse-error");
+    expect(action).not.toMatch(/threw while loading/);
+    expect(action).not.toMatch(/bun install/i);
+    expect(action).not.toContain("/home/a");
+    expect(action).not.toContain("4 errors building");
+  });
+
   test("a config that throws on load gets its own reason, and neither other remedy", () => {
     const { kind, action } = classifyWorkerConfigFailure(new Error("AUTH_SECRET is required"));
     expect(kind).toBe("threw-on-load");

@@ -142,6 +142,22 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).not.toContain("/p/node_modules");
   });
 
+  // Bun caches a failed module and re-throws the wrapper **emptied out** on every later import — so the
+  // second loader to touch a broken package gets the count and the path and nothing else (#223). There is
+  // nothing to unwrap; the wrapper's own message is what proves a build ran and produced diagnostics.
+  test("the re-thrown wrapper has no diagnostics left, and the package is still broken and unparseable", () => {
+    const cause = {
+      name: "AggregateError",
+      message: '2 errors building "/p/node_modules/@pithy-sh/storage/src/capability.ts"',
+    };
+    const { kind, action } = classifyCapabilityLoadFailure("storage", "@pithy-sh/storage", cause);
+    expect(kind).toBe("broken");
+    expect(action).toMatch(/does not parse/);
+    expect(action).not.toMatch(/threw while loading/);
+    expect(action).not.toContain("/p/node_modules");
+    expect(action).not.toContain("2 errors building");
+  });
+
   test("an AggregateError wrapping a ResolveMessage is still a resolution failure", () => {
     const cause = {
       name: "AggregateError",

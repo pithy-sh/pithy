@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { isBuildFailureWrapper, prop, rootCause } from "@pithy-sh/core/src/error/cause";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
@@ -48,12 +49,6 @@ const ANSI = /\u001b\[[0-9;]*m/g;
 
 /** Anything that looks like the start of an absolute path — POSIX, `~`, or a Windows drive. */
 const ABSOLUTE_PATH = /(^|[\s'"(])(\/|~\/|[A-Za-z]:[\\/])/;
-
-/** Read a property off an unknown throwable without widening anything to `any`. */
-function prop(cause: unknown, key: string): unknown {
-  if (typeof cause !== "object" || cause === null) return undefined;
-  return (cause as Record<string, unknown>)[key];
-}
 
 /**
  * The thrown value's message, de-coloured — `undefined` when it has none.
@@ -132,32 +127,13 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
+  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
+  // sees, since a failed module is cached and re-thrown emptied out. It proves a build produced
+  // diagnostics, so it is a parse error with no reason to quote. See core's `cause.ts` (#223).
+  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
-}
-
-/**
- * The diagnostic inside Bun's `AggregateError` wrapper.
- *
- * **Found by running this on Bun, not by a fixture — which is the whole lesson of #207 repeating.**
- * `import()` on Bun does not throw a `BuildMessage`; it throws an `AggregateError` whose `errors` array
- * holds them, whose own `message` is `2 errors building "<absolute path>"`, and whose `Object.keys` is
- * empty. Classified as-is that reads as "it threw", the parser's sentence and position are lost, and the
- * refusal hedges when it had the answer in hand. Node throws the diagnostic directly, so no Node-shaped
- * fixture can show this. Verified against Bun 1.3.14.
- *
- * One diagnostic arrives bare; two or more arrive wrapped — and a stray brace cascades, so wrapped is the
- * common case. The first diagnostic only: the rest are the cascade.
- */
-function rootCause(cause: unknown): unknown {
-  let current = cause;
-  for (let depth = 0; depth < 4; depth += 1) {
-    const errors = prop(current, "errors");
-    if (!Array.isArray(errors) || errors.length === 0 || errors[0] === undefined) return current;
-    current = errors[0];
-  }
-  return current;
 }
 
 /** `@pithy-sh/payments` from `@pithy-sh/payments/src/workflows/worker` — the package, not the subpath. */
@@ -224,7 +200,9 @@ export function classifyCapabilityLoadFailure(
   }
 
   if (isParseError(cause)) {
-    const reason = safeReason(cause);
+    // Bun's build wrapper carries a count and an absolute path and nothing else. Suppressed on
+    // provenance rather than left to `safeReason`'s content tests — see core's `cause.ts` (#223).
+    const reason = isBuildFailureWrapper(cause) ? undefined : safeReason(cause);
     return failure(
       "broken",
       `The ${capability} capability is installed and will not load.`,
