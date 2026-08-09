@@ -50,7 +50,8 @@ export interface SinkContext {
 /**
  * Write a minted token value to its store and report where it landed — never the value. `ephemeral`
  * persists nothing (the caller uses the value in-process); `dev-vars` records the token's **variable
- * key** under its environment in `<config>/<project>/tokens.json`, readable by a later CLI run;
+ * key** under its environment in `<config>/<project>/tokens.json`, for an operator to read out and paste
+ * into CI — **no command consumes that file**, and saying otherwise cost an issue (#224);
  * `secrets-store` writes it to the CF Secrets Store under the project-scoped **entry name**, for a Worker
  * to read via its binding.
  *
