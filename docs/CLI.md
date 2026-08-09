@@ -40,6 +40,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see [`commands/dev.md`](commands/dev.md)) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see [`commands/seed.md`](commands/seed.md) and `docs/SEED.md` |
+| `pithy provision --env <name>` | Create a declared environment's own Cloudflare resources — one per binding name across every Worker — write their ids into each Worker's `wrangler.jsonc`, and migrate. Idempotent and adopting: a resource of the right name is taken up rather than duplicated. `deploy` refuses and names this command when a binding has no id; production takes a type-to-confirm phrase that `--yes` never replaces (see [`commands/provision.md`](commands/provision.md)) |
 | `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
 | `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` resolves the Worker's address and the seam's base path from the project (it prints both and where they came from; `--worker-url` overrides, and `--worker <name>` is required when a project has several Workers), runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
@@ -600,7 +601,7 @@ The two transcripts below are captured from the real binary and pinned by `packa
 $ pithy --help
 A backend kit for Cloudflare Workers. (pithy v<version>)
 
-USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
+USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|provision|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
 
 COMMANDS
 
@@ -612,6 +613,7 @@ COMMANDS
         dev    Run every worker locally under one supervisor
     migrate    Run migrations for an environment
        seed    Seed an environment from your Zod-typed fixtures
+  provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
     feature    Set up and tear down an isolated, fully-provisioned feature environment
         env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
      deploy    Deploy to Cloudflare Workers

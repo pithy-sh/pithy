@@ -6,47 +6,44 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { destroyFeature } from "../feature/destroy";
 import { deriveIdentityFromBranch } from "../feature/identity";
-import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } from "../feature/provision";
+import { provisionFeature } from "../feature/provision";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
-/** The feature's own ephemeral CF environment — provision/destroy default here unless `--env` names another. */
-const DEFAULT_FEATURE_ENV = "feature";
+/**
+ * The feature's own ephemeral CF environment.
+ *
+ * **`provision` no longer takes an `--env`, and that is a fix rather than a removal.** The flag let
+ * `pithy feature provision --env staging` write feature-named resources — `<project>-f<issue>-<slug>-db`
+ * — into staging's stanza of a checked-in `wrangler.jsonc`, then migrate against them. Nothing refused
+ * it. A declared environment is `pithy provision --env`'s job, under its own naming; a feature has one
+ * environment and it is this one. `destroy` keeps the flag: it names the environment its audit trail
+ * records, and it deletes by recomputed feature name regardless.
+ */
+const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-function buildProvisioners(account: CloudflareAccountSelection | null): FeatureProvisioners | null {
+function buildProvisioners(account: CloudflareAccountSelection | null): ResourceProvisioners | null {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
   return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }));
 }
-
-/**
- * Where a feature's audit trail is written. **Not the feature's own environment.**
- *
- * The feature env's database does not exist yet when `provision` starts — its id is written into
- * `wrangler.jsonc` only once the resources are created — so keying the audit database on it would resolve
- * nothing and silently drop every creation event. And `destroy` deletes that database, so a record written
- * there dies with the thing it was recording. Both defeat the point of auditing a headless CI teardown.
- *
- * So the trail lands in the project's durable, top-level database: it outlives every feature, and it is
- * where an operator looks to answer "who tore this down?". The environment actually acted on is stated by
- * each event, and lands in the row's own `environment` column.
- */
-const AUDIT_DESTINATION_ENV = "dev";
 
 /**
  * The audit emitter for a feature command, or a no-op when auditing is unavailable. Feature provisioning
@@ -247,10 +244,6 @@ const provision = defineCommand({
     description: "Provision the feature's live Cloudflare environment, then migrate + seed it",
   },
   args: {
-    env: {
-      type: "string",
-      description: `Target environment (default: the feature's own "${DEFAULT_FEATURE_ENV}" env)`,
-    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -266,10 +259,8 @@ const provision = defineCommand({
         });
       }
 
-      const env = requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV);
       const report = await provisionFeature({
         projectDir,
-        env,
         capabilities,
         identity,
         provisioners,

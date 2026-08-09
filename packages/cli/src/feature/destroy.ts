@@ -5,9 +5,10 @@ import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import type { ResourceProvisioners } from "../provision/resources";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, resolvePortsRegistryPath } from "./ports";
-import { type DeprovisionedResource, deprovisionFeature, type FeatureProvisioners } from "./provision";
+import { type DeprovisionedResource, deprovisionFeature } from "./provision";
 import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
@@ -48,7 +49,7 @@ export interface DestroyFeatureOptions {
   /** The environment being torn down. Recorded on each audit event. */
   env: string;
   /** The provisioners to delete through, or undefined to skip remote teardown (e.g. no CF credentials). */
-  provisioners?: FeatureProvisioners;
+  provisioners?: ResourceProvisioners;
   /** Audit emitter, so every deletion leaves a record. Defaults to recording nothing. */
   audit?: CliAuditEmit;
   /** git runner seam. */

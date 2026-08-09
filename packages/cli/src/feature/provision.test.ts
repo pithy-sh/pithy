@@ -11,14 +11,9 @@ import { type FeatureIdentity, featureResourceName, featureWorkerName } from "@p
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
-import {
-  deprovisionFeature,
-  FeatureAuditActions,
-  type FeatureProvisioners,
-  provisionFeature,
-  type ResourceProvisioner,
-} from "./provision";
+import { deprovisionFeature, provisionFeature } from "./provision";
 
 /** An in-memory provisioner over a name→id map, mirroring the real find/create/delete semantics. */
 function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner & { creates: number } {
@@ -49,7 +44,7 @@ function fakeProvisioners() {
     kv: fakeKind("kv", stores.kv),
     r2: fakeKind("r2", stores.r2),
   };
-  return { stores, provisioners: provisioners as unknown as FeatureProvisioners, typed: provisioners };
+  return { stores, provisioners: provisioners as unknown as ResourceProvisioners, typed: provisioners };
 }
 
 /** A capability declaring one D1, one KV, and one R2 binding — the provisionable set under test. */
@@ -101,7 +96,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -144,7 +138,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("re-running is idempotent: every resource is reused, nothing new is created", async () => {
     const { provisioners, typed } = fakeProvisioners();
-    const opts = { projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend };
+    const opts = { projectDir: dir, capabilities, identity, provisioners, ...noBackend };
 
     await provisionFeature(opts);
     const before = typed.d1.creates + typed.kv.creates + typed.r2.creates;
@@ -163,7 +157,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -201,7 +194,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [shared, collabOnly],
       identity,
       provisioners,
@@ -247,7 +239,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [withService],
       identity,
       provisioners,
@@ -292,7 +283,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [withService],
       identity,
       provisioners,
@@ -328,7 +318,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const failure = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [ghost],
       identity,
       provisioners,
@@ -345,7 +334,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("destroy deletes every manifest resource and removes the manifest file", async () => {
     const { stores, provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
 
     const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
@@ -390,7 +379,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -401,8 +389,8 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     expect(events.map((e) => e.action)).toEqual([
-      FeatureAuditActions.resourceCreated,
-      FeatureAuditActions.resourceCreated,
+      ProvisionAuditActions.resourceCreated,
+      ProvisionAuditActions.resourceCreated,
     ]);
     expect(events.map((e) => e.resourceType)).toEqual(["cf_kv", "cf_r2"]);
     expect(events[0]).toMatchObject({ outcome: "success", metadata: { binding: "CACHE", issue: "69" } });
@@ -410,7 +398,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("audits every deletion as a warning — teardown destroys real infrastructure, often with no human watching", async () => {
     const { provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
 
     const events: CliAuditEvent[] = [];
     await deprovisionFeature({
@@ -423,7 +411,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     expect(events).toHaveLength(3);
-    expect(new Set(events.map((e) => e.action))).toEqual(new Set([FeatureAuditActions.resourceDeleted]));
+    expect(new Set(events.map((e) => e.action))).toEqual(new Set([ProvisionAuditActions.resourceDeleted]));
     expect(events.every((e) => e.severity === "warning")).toBe(true);
     expect(new Set(events.map((e) => e.resourceType))).toEqual(new Set(["cf_d1", "cf_kv", "cf_r2"]));
     // The deleted resource's id and name are both recorded — the "what exactly went" of the trail.
@@ -441,7 +429,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -519,7 +506,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
       await provisionFeature({
         projectDir: dir,
-        env: "feature",
         capabilities,
         identity,
         provisioners,

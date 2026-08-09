@@ -7,7 +7,7 @@ Stand up an isolated environment for one issue — worktree, ports, local backen
 ```
 pithy feature create <slug> --issue <n> [--skip-install] [--json]
 pithy feature sync [--skip-data] [--json]
-pithy feature provision [--env <environment>] [--json]
+pithy feature provision [--json]
 pithy feature destroy [--env <environment>] [--local-only] [--json]
 ```
 
@@ -23,7 +23,7 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 | `--issue <n>` | `create` | required | The issue number this feature tracks. Digits only, at most six of them |
 | `--skip-install` | `create` | `false` | Skip installing dependencies in the new worktree |
 | `--skip-data` | `sync` | `false` | Reconcile ports only, leaving the backend alone |
-| `--env <environment>` | `provision`, `destroy` | `feature` | The environment to provision or tear down. The default is the feature's own ephemeral one |
+| `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. `provision` takes no `--env`: a feature has one environment, and letting a flag name another wrote feature-named resources into a deployed environment's stanza. A declared environment is [`pithy provision`](provision.md)'s job |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
 | `--json` | all four | `false` | One line of machine-readable output |
 

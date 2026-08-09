@@ -9,12 +9,14 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
 import { cloudflareEnv } from "../cloudflare/config";
 import { buildEnvInventory } from "../project/envInventory";
+import { cloudflareProvisioners } from "../provision/resources";
 import { destroyFeature } from "./destroy";
-import { cloudflareProvisioners, provisionFeature } from "./provision";
+import { provisionFeature } from "./provision";
 
 /**
  * The feature lifecycle against **live Cloudflare** — the one path unit tests cannot cover, because
@@ -41,7 +43,7 @@ const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
 const hasCreds = Boolean(accountId && apiToken);
 
 /** The feature environment these resources are created under. */
-const ENV = "feature";
+const ENV = FEATURE_ENVIRONMENT;
 
 /**
  * A run-unique slug, so a leftover from an interrupted run can never collide with this one and two
@@ -174,7 +176,6 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
 
     const report = await provisionFeature({
       projectDir: built.dir,
-      env: ENV,
       capabilities,
       identity: IDENTITY,
       provisioners,
