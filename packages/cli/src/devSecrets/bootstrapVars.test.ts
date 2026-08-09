@@ -230,3 +230,67 @@ describe("bootstrapVars", () => {
     await expect(stat(join(config, "replay", "dev.json"))).rejects.toThrow();
   });
 });
+
+/**
+ * **A write of nothing has a reader's power, and reads like one (#222).**
+ *
+ * The split in this module is by *power*, not by file: the refusal exists because a merge into an
+ * invented `{}` gets renamed over a file with another tenant in it. A call that writes nothing performs
+ * no merge and no rename, so there is nothing for the refusal to protect — and it was still refusing,
+ * because the early return sat *after* the merge-base read.
+ *
+ * Where that is reached is the argument. `writeDevVars({ values: {} })` is the turnstile teardown's
+ * regeneration (`../capabilities/turnstileProvisioner.ts`), and refusing there turns a regeneration into
+ * a failure over a file the run was never going to touch — the same shape as a `doctor` that will not run
+ * in the environment it exists to diagnose. So the early return moves ahead of the read, and the set it
+ * answers is {@link readBootstrapVars}'s: the read this module already argues at length is the right one
+ * for a caller that rewrites nothing. Not a third policy — the reporting read, reached by the call that
+ * turns out to be a report.
+ *
+ * **`removeBootstrapVars` is the other half of the same rule, and it comes out differently.** The early
+ * return goes before the read exactly when the *caller's own arguments* settle it. `writeBootstrapVars`
+ * knows from `{}` that it will write nothing. A removal of names that are not there only learns that
+ * *from the file* — and a file nothing could read establishes nothing, least of all "that name is not in
+ * it". Its no-op is a claim about contents, so it keeps the strict read and keeps refusing; the one case
+ * it does know in advance, an empty list of names, returns before the read like its sibling.
+ */
+describe("a write that writes nothing (#222)", () => {
+  /** A `dev.json` no read can make sense of, with a second tenant's key still recoverable from it. */
+  async function broken(): Promise<string> {
+    const path = join(config, "replay", "dev.json");
+    await mkdir(join(config, "replay"), { recursive: true, mode: 0o700 });
+    const held = `{ not json\n${JSON.stringify({ devLogin: { email: "me@example.com" }, vars: { K: "v" } })}\n`;
+    await writeFile(path, held, { mode: 0o600 });
+    return held;
+  }
+
+  test("writing nothing does not read the file, so it cannot refuse over one it will not touch", async () => {
+    const held = await broken();
+    expect(await writeBootstrapVars(dir, {}, paths())).toEqual({});
+    expect(await readFile(join(config, "replay", "dev.json"), "utf8")).toBe(held);
+  });
+
+  test("and it still answers the set that is there, so a regeneration keeps its bindings", async () => {
+    await writeBootstrapVars(dir, { K: "v" }, paths());
+    expect(await writeBootstrapVars(dir, {}, paths())).toEqual({ K: "v" });
+  });
+
+  test("removing no names does not read it either", async () => {
+    const held = await broken();
+    expect(await removeBootstrapVars(dir, [], paths())).toEqual({});
+    expect(await readFile(join(config, "replay", "dev.json"), "utf8")).toBe(held);
+  });
+
+  test("but a removal that has to consult the file refuses, even for a name that is not in it", async () => {
+    // The no-op here is a claim about what the file holds, and a file nothing read supports no claim.
+    const held = await broken();
+    await expect(removeBootstrapVars(dir, ["NEVER_THERE"], paths())).rejects.toThrow(PithyError);
+    expect(await readFile(join(config, "replay", "dev.json"), "utf8")).toBe(held);
+  });
+
+  test("a write with values in it refuses exactly as it did — the power is the whole difference", async () => {
+    const held = await broken();
+    await expect(writeBootstrapVars(dir, { K: "w" }, paths())).rejects.toThrow(PithyError);
+    expect(await readFile(join(config, "replay", "dev.json"), "utf8")).toBe(held);
+  });
+});

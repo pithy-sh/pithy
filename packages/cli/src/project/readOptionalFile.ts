@@ -242,12 +242,25 @@ export interface InvalidDocument {
   readonly at: string;
 }
 
-/** How {@link readMergeBase} refuses, in four places rather than one. */
+/** How {@link readMergeBase} refuses, in four places rather than one — and how it reads. */
 export interface MergeBaseOptions extends ReadOptionalFileOptions, RequireRecordOptions {
   /** The refusal for a file that opened and is not JSON. */
   readonly unparseable?: (failure: UnparseableFile) => PithyError;
   /** The refusal for a document that parsed, is a record, and is not what this file holds. */
   readonly invalid?: (failure: InvalidDocument) => PithyError;
+  /**
+   * How the file's bytes become a value. **`JSON.parse` unless a caller says otherwise.**
+   *
+   * The one thing here that is a property of the file rather than a decision about what a failure means.
+   * `pithy.worker.jsonc` is JSONC and is read comment-preserving, because the document goes straight back
+   * out through `stringify` and an adopter's notes live on it as symbol-keyed properties — a parser that
+   * dropped them would take every comment in the file with it at the next write (`../ui/workerUi.ts`).
+   *
+   * It is the parser and nothing else. Whichever one is supplied, **its own error is dropped** for the
+   * reason {@link parseJson} gives: every parser in this family quotes the line it choked on, and the
+   * files this module was written for are credentials.
+   */
+  readonly parse?: (source: string) => unknown;
 }
 
 /**
@@ -272,16 +285,18 @@ export async function readMergeBase<Schema extends z.ZodType<Record<string, unkn
 }
 
 /**
- * `JSON.parse`, refusing rather than answering `undefined` — and **dropping node's own error**.
+ * The caller's parser or `JSON.parse`, refusing rather than answering `undefined` — and **dropping the
+ * parser's own error**.
  *
  * The one place in this module a cause is deliberately not carried. `JSON.parse` puts the offending text
- * in its message — `Unexpected token 'n', "{ not json" is not valid JSON` — and every file this was
- * written for is credentials. The path and "it is not JSON" is the whole of what an operator needs; the
- * quoted line is the leak the refusal existed to avoid.
+ * in its message — `Unexpected token 'n', "{ not json" is not valid JSON` — comment-json's does the same,
+ * and every file this was written for is credentials. The path and "it is not JSON" is the whole of what
+ * an operator needs; the quoted line is the leak the refusal existed to avoid. That holds for whichever
+ * parser {@link MergeBaseOptions.parse} supplies, which is why the drop lives here and not at a call site.
  */
 function parseJson(path: string, source: string, options: MergeBaseOptions): unknown {
   try {
-    return JSON.parse(source);
+    return options.parse === undefined ? JSON.parse(source) : options.parse(source);
   } catch {
     const failure = { path };
     throw options.unparseable?.(failure) ?? defaultParseRefusal(failure);

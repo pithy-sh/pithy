@@ -41,6 +41,8 @@ Six rules, and each one is the answer to a way this could go wrong.
 
 **A value it could not classify is refused, and never called safe to remove.** `adopt` decides where each value belongs by asking the registry what this project declares, and a `pithy.config.ts` that will not import used to answer "declares nothing" — indistinguishable from a project with no secrets. So a registry secret read as a key nothing composes, and the report said so. This command deletes nothing itself, which is exactly why that matters: its verdicts are what an adopter acts on, and the loss would arrive one step later, by hand, on this advice. It names the Worker, refuses that value, moves everything it still has positive evidence for — a Cloudflare credential needs no registry to place — and fails the exit.
 
+**A destination it could not read stops the run before the plan exists.** The plan says where every value goes and, after `--apply`, which source lines now have a copy elsewhere — and both answers are computed against what each destination already holds. So a `tokens.json` or a `dev.json` that is there and will not open, will not parse, or is not the document Pithy keeps there is refused *before* anything is printed and before a byte is written. Refusing at the write instead would show you a plan built on a file nothing read, copy some of it, and stop part-way — and that plan can call a value safe to delete when the destination does not hold what it claimed. Nothing is copied, nothing is named as safe to remove, and the refusal names the file without quoting a line of it.
+
 **It is idempotent.** A second run copies nothing and says so. A value already at its destination is `already there`, not re-copied — and that is the state the whole project reaches once, permanently.
 
 **Every destination is written atomically, `0600`, in the `0700` config directory**, through the same writers `pithy init`, `pithy add secrets` and `pithy token mint` use. There is no second write path here.
@@ -78,6 +80,14 @@ $ pithy adopt --json
 **The exit code is non-zero when anything was refused** — a conflicting value, or one with nowhere to go. A key nothing composes is not a refusal and does not gate: it is the ordinary residue of an old project, and deleting it is a judgement only its author can make.
 
 The three refusals are a conflicting value, a key with nowhere to go, and a value nothing could classify. Each is stated in full above, each names itself in the report, and each appears in `refused` under `--json`. No value reaches any of them.
+
+**A destination that could not be read is a different thing: it is an error, not an entry.** There is no plan to put it in, which is the point — the run stops before one is built, on a dry run exactly as with `--apply`.
+
+```
+$ pithy adopt
+Cannot plan against ~/.config/pithy/replay/tokens.json: it is there and is not JSON.
+Fix it, or move it aside, and run pithy adopt again.
+```
 
 ## Examples
 

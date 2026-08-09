@@ -78,6 +78,17 @@ export interface SourceWalk {
    * It widens the dotted rule and nothing else. `node_modules`, `dist`, `coverage`, whatever the caller
    * named in `skip`, the vendored template copy and a symlinked directory are all still refused, and
    * `keep` still decides which files are taken.
+   *
+   * **It has no caller in this repository, deliberately, and it stays (#222).** The caller it was built
+   * for is `tooling/license-headers`, which cannot import `@pithy-sh/cli` — #211 declined that edge on
+   * direction of narrowing, since the linter that stamps this package's own headers running in
+   * `lint-staged` must not become a dependent of the largest thing it lints. What the option buys is not
+   * a call site. It is that the exception recorded against that walk in `./sourceFiles.test.ts` states a
+   * true reason: #202's entry named the `templates` skip as the blocker and #211 found that false, and
+   * the real blocker it recorded in its place — this walker cannot enter a dotted directory, and the
+   * licence audit must — would be false in the other direction if this were removed. An exception list
+   * whose reasons have quietly stopped being true is the failure mode #211 corrected, and removing the
+   * option to re-add it with the edge would cost the same work twice. One branch, asserted where it is.
    */
   readonly dotted?: boolean;
 }

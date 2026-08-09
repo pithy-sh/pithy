@@ -60,8 +60,13 @@ export type BootstrapVars = z.output<typeof BootstrapVars>;
  *
  * `catchall` rather than a closed object, because a write here must not delete the dev-login preferences
  * sitting beside it. Two tenants in one file is the whole reason the key exists.
+ *
+ * **Exported for `pithy adopt`, which plans a write into this file (#222).** Its planning read goes
+ * through `readMergeBase` against this schema, so the plan it prints is computed against a `dev.json`
+ * that was actually read rather than against a `{}` a lenient read invented. One schema, because two
+ * would be two answers to "what is in that file" and the migration's report is what an adopter acts on.
  */
-const DevJson = z
+export const DevJson = z
   .object({
     [BOOTSTRAP_VARS_KEY]: BootstrapVars.optional().describe("The bootstrap `.dev.vars` set — this module's tenant."),
   })
@@ -69,7 +74,7 @@ const DevJson = z
   .describe("This machine's per-project dev file, of which the bootstrap vars are one tenant.");
 
 /** The whole file, every tenant included. Same name as its schema, as every Zod object in this repo is. */
-type DevJson = z.output<typeof DevJson>;
+export type DevJson = z.output<typeof DevJson>;
 
 /** `<config>/<project>/dev.json` for a project root, or `null` when the project has no name to key on. */
 export async function bootstrapVarsPath(projectDir: string, options: StatePathOptions = {}): Promise<string | null> {
@@ -121,6 +126,14 @@ export async function readBootstrapVars(projectDir: string, options: StatePathOp
  *
  * A value is never removed here. A name that leaves the registry leaves a line nothing reads; `pithy
  * doctor` is where a value nobody declares gets named, in this file exactly as in its neighbour.
+ *
+ * **An empty `values` returns before the read, and that is a decision (#222).** The refusal above exists
+ * because a merge into an invented `{}` gets renamed over another tenant's keys; a call that writes
+ * nothing performs no merge and no rename, so there is nothing for it to protect. It was reached —
+ * `writeDevVars({ values: {} })` is the turnstile teardown's regeneration — where refusing turns a
+ * regeneration into a failure over a file the run was never going to touch. The split in this module is
+ * by *power*, not by file, and a write of nothing has a reader's power: the set it answers is
+ * {@link readBootstrapVars}'s, which is the read whose whole argument is that it rewrites nothing.
  */
 export async function writeBootstrapVars(
   projectDir: string,
@@ -129,9 +142,9 @@ export async function writeBootstrapVars(
 ): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
   if (path === null) return {};
+  if (Object.keys(values).length === 0) return readBootstrapVars(projectDir, options);
   const base = await readDevJson(path);
   const merged: BootstrapVars = { ...(base.document[BOOTSTRAP_VARS_KEY] ?? {}), ...values };
-  if (Object.keys(values).length === 0) return merged;
   await ensureDevSecretsDir(base.path);
   await writeFileAtomic(base.path, `${JSON.stringify(withBootstrapVars(base, merged), null, 2)}\n`, {
     mode: 0o600,
@@ -161,6 +174,13 @@ function withBootstrapVars(base: MergeBase<DevJson>, vars: BootstrapVars): DevJs
  * A name that is not there is a no-op, and a project with no `dev.json` is not created one. Removing a
  * value here is what makes the next generation drop its line: the generated file is built from the
  * sources rather than edited, so there is no line to delete anywhere else.
+ *
+ * **That no-op still reads strictly, and its sibling does not — same rule, different answer (#222).** The
+ * early return belongs before the read exactly when the *caller's arguments* settle whether anything is
+ * written. {@link writeBootstrapVars} knows that from an empty `values`. This one only learns it from the
+ * file, and a file nothing could read supports no claim about what is in it — least of all "that name is
+ * not there". So the one case its arguments do settle, an empty `names`, returns before the read, and
+ * every other case earns its no-op by reading the document properly or refusing.
  */
 export async function removeBootstrapVars(
   projectDir: string,
@@ -169,6 +189,7 @@ export async function removeBootstrapVars(
 ): Promise<BootstrapVars> {
   const path = await bootstrapVarsPath(projectDir, options);
   if (path === null) return {};
+  if (names.length === 0) return readBootstrapVars(projectDir, options);
   const base = await readDevJson(path);
   const current: BootstrapVars = base.document[BOOTSTRAP_VARS_KEY] ?? {};
   const remaining = Object.fromEntries(Object.entries(current).filter(([name]) => !names.includes(name)));
