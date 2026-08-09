@@ -3,6 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { ConflictError, InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { z } from "zod";
 import { errnoOf } from "./atomic";
 
 /**
@@ -189,5 +190,138 @@ function defaultShapeRefusal({ path, found }: NotARecord): PithyError {
     message: `Cannot update ${path}: it holds ${found}, not a document.`,
     action: "Restore it to a JSON object, or move it aside, and run the command again.",
     detail: `${path} parsed to ${found}`,
+  });
+}
+
+/**
+ * The whole sentence, for the read whose answer is about to be written back over the file it came from.
+ *
+ * **Absent is the only state that licenses starting from empty.** Unopenable, unparseable,
+ * parsed-but-not-a-record and parsed-but-not-this-document are each a refusal here, whatever any of them
+ * may be for a reader that only reports. This family has five known instances — `readManifestDocument`
+ * (#204), `readMintedTokens` and `readDevJson` (#209), and the two #209 could not close without this
+ * split (#219) — and every one of them was a *writer* merging into a `{}` that a read had invented from
+ * something it could not make sense of. `tokens.json` is keyed by environment and `dev.json` has other
+ * tenants, so what the merge replaced was other people's live credentials and preferences, with the run
+ * reporting a clean write.
+ *
+ * **The reason the split is a type and not a rule.** `readMintedTokens` was both the reporting read and
+ * the writer's read, and the argument for its leniency — a reader has nothing to destroy, a half-typed
+ * preferences file must not stop `pithy dev` — is *sound for the reader*. Tightening it would have cost
+ * that, and leaving a lenient sibling beside a strict one is how all five happened: the call site picked
+ * the wrong one and nothing said so. So the strict read hands back a {@link MergeBase} rather than a
+ * document, every writer takes one, and the lenient `{}` is a compile error at the merge instead of a
+ * lost file at the rename. A reader may still answer `{}`; it simply cannot answer a merge base.
+ *
+ * It lives here rather than at the sixth call site for the same reason {@link requireRecord} does: no
+ * reader decides for itself what its own failure means. Each keeps its own sentence through the options.
+ */
+export interface MergeBase<Document> {
+  /**
+   * The file the document came from, and the file a writer may write back to.
+   *
+   * Carried rather than re-derived so the base and its destination cannot come apart — a document read
+   * from one path and renamed over another is the same loss by a different route.
+   */
+  readonly path: string;
+  /** What is in it: the empty document when there was no file, and otherwise exactly what passed. */
+  readonly document: Document;
+}
+
+/** What a call site is told about a file that opened and is not JSON. Never a byte of it — see below. */
+export interface UnparseableFile {
+  /** The file that would not parse, exactly as it was asked for. */
+  readonly path: string;
+}
+
+/** What a call site is told about a document that parsed and is not the one this file holds. */
+export interface InvalidDocument {
+  /** The file. */
+  readonly path: string;
+  /** Where it broke, as dotted key paths — `dev.CF_TOKEN`. The keys, never the values behind them. */
+  readonly at: string;
+}
+
+/** How {@link readMergeBase} refuses, in four places rather than one. */
+export interface MergeBaseOptions extends ReadOptionalFileOptions, RequireRecordOptions {
+  /** The refusal for a file that opened and is not JSON. */
+  readonly unparseable?: (failure: UnparseableFile) => PithyError;
+  /** The refusal for a document that parsed, is a record, and is not what this file holds. */
+  readonly invalid?: (failure: InvalidDocument) => PithyError;
+}
+
+/**
+ * The document at `path` and the file it came from, known-good — or a refusal, in every state but one.
+ *
+ * `{}` comes back for an absent file and for nothing else. The schema is what "known-good" means, so a
+ * `tokens.json` whose value is a number and a `dev.json` whose binding is a number are refusals rather
+ * than empty bases, and the caller that merges into the result never has to ask what it was handed.
+ */
+export async function readMergeBase<Schema extends z.ZodType<Record<string, unknown>>>(
+  path: string,
+  schema: Schema,
+  options: MergeBaseOptions = {},
+): Promise<MergeBase<z.output<Schema>>> {
+  const source = await readOptionalFile(path, options);
+  if (source === null) return { path, document: emptyDocument(path, schema) };
+  const document = requireRecord(path, parseJson(path, source, options), options);
+  const parsed = schema.safeParse(document);
+  if (parsed.success) return { path, document: parsed.data };
+  const failure = { path, at: whereItBroke(parsed.error) };
+  throw options.invalid?.(failure) ?? defaultInvalidRefusal(failure);
+}
+
+/**
+ * `JSON.parse`, refusing rather than answering `undefined` — and **dropping node's own error**.
+ *
+ * The one place in this module a cause is deliberately not carried. `JSON.parse` puts the offending text
+ * in its message — `Unexpected token 'n', "{ not json" is not valid JSON` — and every file this was
+ * written for is credentials. The path and "it is not JSON" is the whole of what an operator needs; the
+ * quoted line is the leak the refusal existed to avoid.
+ */
+function parseJson(path: string, source: string, options: MergeBaseOptions): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    const failure = { path };
+    throw options.unparseable?.(failure) ?? defaultParseRefusal(failure);
+  }
+}
+
+/** What an absent file starts from: the schema's own reading of `{}`, so the empty state is its too. */
+function emptyDocument<Schema extends z.ZodType<Record<string, unknown>>>(
+  path: string,
+  schema: Schema,
+): z.output<Schema> {
+  const empty = schema.safeParse({});
+  if (empty.success) return empty.data;
+  throw new InternalError({
+    message: `Cannot start ${path} from an empty document.`,
+    action: "This is a defect in Pithy. Report it with the command you ran.",
+    detail: `the schema for ${path} refuses {}, so an absent file has no base to merge into`,
+  });
+}
+
+/** Where a document broke, by key path and never by value: `dev.CF_TOKEN, staging`. */
+function whereItBroke(error: z.ZodError): string {
+  const paths = new Set(error.issues.map((issue) => issue.path.join(".") || "the top level"));
+  return [...paths].slice(0, 5).join(", ");
+}
+
+/** The refusal a caller that named no words of its own gets for a file that is not JSON. */
+function defaultParseRefusal({ path }: UnparseableFile): PithyError {
+  return new ConflictError({
+    message: `Cannot update ${path}: it is there and is not JSON.`,
+    action: "Fix the file, or move it aside, and run the command again.",
+    detail: `${path} did not parse, and Pithy will not rewrite a file it could not read back`,
+  });
+}
+
+/** The refusal a caller that named no words of its own gets for a document that failed its schema. */
+function defaultInvalidRefusal({ path, at }: InvalidDocument): PithyError {
+  return new ConflictError({
+    message: `Cannot update ${path}: it is not the document Pithy keeps there.`,
+    action: "Fix it, or move it aside, and run the command again.",
+    detail: `${path} failed its schema at ${at}`,
   });
 }

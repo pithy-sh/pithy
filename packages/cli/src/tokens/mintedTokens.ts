@@ -8,7 +8,7 @@ import { devSecretsDir } from "../devSecrets/location";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
-import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
+import { type MergeBase, readMergeBase, readOptionalFile, requireRecord } from "../project/readOptionalFile";
 
 /**
  * Where `pithy token mint --store dev-vars` puts a minted token: `<config>/<project>/tokens.json`,
@@ -74,12 +74,13 @@ export function mintedTokensPath(project: string, options: StatePathOptions = {}
 /**
  * Record one minted token under its environment, and answer the file it landed in.
  *
- * **Read-modify-write over a credential file, so an unreadable-but-present one refuses** rather than
- * being replaced — and so does one that parsed to something that is not a document (#209). Only `ENOENT`
- * licenses starting from `{}`. Writing this document over one that could not be read, or one whose shape
- * was never understood, would delete every other environment's token with no copy anywhere, which is the
- * exact shape of #142 and of the two `.dev.vars` losses before it. Both refusals are
- * {@link readMintedTokens}'s, because it is the one that can tell an absence from an answer.
+ * **Read-modify-write over a credential file, so every state but "there is no file" refuses.** Only
+ * `ENOENT` licenses starting from `{}`. A file that could not be read, one that is not JSON, one that
+ * parsed to something that is not a document, one that is a record of something else — writing this
+ * document over any of them deletes every other environment's live token with no copy anywhere, which is
+ * the exact shape of #142 and of the two `.dev.vars` losses before it. Each refusal is
+ * {@link mintedTokensBase}'s, because it is the one that can tell an absence from an answer, and the
+ * merge below takes a {@link MergeBase} so that no other read can be handed to it (#219).
  */
 export async function writeMintedToken(
   project: string,
@@ -88,34 +89,96 @@ export async function writeMintedToken(
   value: string,
   options: StatePathOptions = {},
 ): Promise<string> {
-  const path = mintedTokensPath(project, options);
-  const document = await readMintedTokens(path);
-  const merged: MintedTokens = { ...document, [env]: { ...(document[env] ?? {}), [name]: value } };
-  await ensureOwnerOnlyDirFor(path);
-  await writeFileAtomic(path, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  const base = await mintedTokensBase(mintedTokensPath(project, options));
+  const merged = withMintedToken(base, env, name, value);
+  await ensureOwnerOnlyDirFor(base.path);
+  // The path comes off the base rather than being re-derived, so what is written can only ever land back
+  // on the file the base was read from.
+  await writeFileAtomic(base.path, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
   // Unconditionally and after the write, the same rule every other credential file here follows: a file
   // an editor or a `cp` created at the umask holds a live API token at 0644 until something narrows it.
-  await tightenMode(path);
-  return path;
+  await tightenMode(base.path);
+  return base.path;
 }
 
 /**
- * The document at `path`, or `{}` — and `{}` only when there is no file, or when there is one nothing
- * can be made of at all.
+ * The document to write: the base, with one token recorded under its environment.
  *
- * **Three ways in, and two of them are refusals.** The file is not there: `{}`, and {@link
- * readOptionalFile} is what decides that. The file is there and will not open: refused, because writing
- * over what could not be read is #142 with a fifth file name. The file opened and **parsed to something
- * that is not a document**: refused too, and that one is not the writer's to catch. This docstring used
- * to say the writer above was the one that refused — true of an unreadable file, false of a
- * present-but-non-record one, which reached the writer as `{}` and was merged into and renamed over
- * (#209). `tokens.json` is keyed by environment, so what that replaced was every *other* environment's
- * live Cloudflare credential, with the run reporting a clean write.
+ * **It takes a {@link MergeBase} and that is the whole point.** Only {@link readMergeBase} mints one, so
+ * the lenient {@link readMintedTokens} below — which answers `{}` for a file it cannot make sense of,
+ * correctly, because it rewrites nothing — cannot reach this function. The accident that produced all
+ * five instances of this defect is a type error here rather than a replaced credential file on disk.
+ */
+function withMintedToken(base: MergeBase<MintedTokens>, env: string, name: string, value: string): MintedTokens {
+  const document = base.document;
+  return { ...document, [env]: { ...(document[env] ?? {}), [name]: value } };
+}
+
+/**
+ * The merge base for a write over `tokens.json`: the whole document, known-good, or a refusal.
  *
- * A file that will not **parse** is still `{}` here, and that asymmetry stays: nothing can be made of it
- * either way, and a reader has nothing to destroy. A value that *parsed* is a different claim — something
- * is in this file, this is not what it is — and {@link requireRecord} answers it in one place for every
- * reader in the family rather than at the third, fourth and fifth call site.
+ * The strict half of the reader/writer split (#219). Absent is `{}`; unopenable, not JSON, not a record
+ * and not a document of minted tokens are four refusals, each in this file's own words — "Pithy won't
+ * rewrite a credential file it could not read" is the sentence, and the four spellings of "could not
+ * read" are the four ways a hand edit gets there.
+ */
+async function mintedTokensBase(path: string): Promise<MergeBase<MintedTokens>> {
+  return readMergeBase(path, MintedTokens, {
+    unreadable: ({ code, cause }) =>
+      new ConflictError(
+        {
+          message: `Cannot update ${path}: Pithy could not read what is already in it.`,
+          action:
+            "Fix the file's permissions, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not read.",
+          detail: `${code ?? "unknown error"} while reading ${path}`,
+        },
+        { cause },
+      ),
+    unparseable: () =>
+      new ConflictError({
+        message: `Cannot update ${path}: it is there and is not JSON.`,
+        action:
+          "Fix the JSON, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not parse — every other environment's token is still in it.",
+        // Never the parser's own message: it quotes the line it choked on, and these lines are tokens.
+        detail: `${MINTED_TOKENS_FILE_NAME} at ${path} did not parse`,
+      }),
+    notARecord: ({ found }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it holds ${found}, not a document of minted tokens.`,
+        action:
+          "Restore it to a JSON object keyed by environment, or move it aside, and run the command again. Pithy won't rewrite a credential file it could not make sense of.",
+        detail: `${MINTED_TOKENS_FILE_NAME} at ${path} parsed to ${found}`,
+      }),
+    invalid: ({ at }) =>
+      new ConflictError({
+        message: `Cannot update ${path}: it is not a document of minted tokens.`,
+        action:
+          "Restore it to a JSON object of environment → variable name → token, or move it aside, and run the command again.",
+        // The key path, so the line can be found. Never the value on it, which is a credential.
+        detail: `${MINTED_TOKENS_FILE_NAME} at ${path} failed its schema at ${at}`,
+      }),
+  });
+}
+
+/**
+ * **The reporting read**, for a caller that wants to know what has been minted and will rewrite nothing.
+ *
+ * `pithy adopt` is the caller: it reads every destination to say what it would move where. The write
+ * that follows goes through {@link writeMintedToken}, which reads its own base through
+ * {@link mintedTokensBase} — so this answer is never anybody's merge base, and the type says so, since
+ * a `MintedTokens` is not a {@link MergeBase} of one (#219).
+ *
+ * **Which of the two this is, stated, because that was the ambiguity that cost four files.** This is the
+ * one that may answer `{}`, and it does so for a file that is not there and for one that nothing can be
+ * made of at all — it will not parse, or it parses and is not a document of minted tokens. A reader has
+ * nothing to destroy, and a caller reading a token back gets an honest "nothing here" rather than a
+ * command that will not run.
+ *
+ * **Two failures are refusals even here, and they are the file's rather than the caller's.** A file that
+ * is there and will not open, because "absent" is a claim about the filesystem that this read cannot
+ * make ({@link readOptionalFile}, #190). And a value that parsed to something that is not a record,
+ * because that is a claim about what is in the file — something is here, this is not what it is
+ * ({@link requireRecord}, #209).
  */
 export async function readMintedTokens(path: string): Promise<MintedTokens> {
   const source = await readOptionalFile(path, {
