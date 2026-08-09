@@ -14,6 +14,8 @@ import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
 import { provisionEnvironment } from "../provision/environment";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
+import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -44,6 +46,22 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
   return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }));
+}
+
+/**
+ * The account's Secrets Store, or `null` when this project has recorded no store id.
+ *
+ * Absent is a degraded environment, never a failed command: a project composing no `secrets` capability
+ * needs no store, and one that does gets its `secrets_store_secrets` stanza — the binding `pithy add`
+ * deliberately could not write, and nothing came back for (#238).
+ */
+function buildStore(account: CloudflareAccountSelection | null): SecretsStore | null {
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
+  if (!accountId || !apiToken || !storeId) return null;
+  return cloudflareSecretsStore(new CloudflareClients({ accountId, apiToken }), storeId);
 }
 
 /**
@@ -129,12 +147,26 @@ export default defineCommand({
       }
 
       const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
+      // The scope carries both the names and the stanza. There is no second argument to disagree with.
+      const scope = environmentScope(requireProjectName(config), env);
+      const store = buildStore(account);
       const report = await provisionEnvironment({
         projectDir,
-        // The scope carries both the names and the stanza. There is no second argument to disagree with.
-        scope: environmentScope(requireProjectName(config), env),
+        scope,
         capabilities,
         provisioners,
+        ...(store
+          ? {
+              secretBindings: async (workerCapabilities) =>
+                secretsStoreBindings({
+                  // A Worker composing no secrets capability declares no secrets, and gets no stanza.
+                  registry: workerSecretRegistry(workerCapabilities) ?? {},
+                  scope,
+                  storeId: store.storeId,
+                  exists: (name) => store.exists(name),
+                }),
+            }
+          : {}),
         // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
         // job, with its own gate, and it must not be something provisioning did on the way past.
         seedData: args.seed,
@@ -153,6 +185,13 @@ export default defineCommand({
       }
       for (const service of report.services) {
         process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
+      }
+      for (const secret of report.secretBindings) {
+        process.stdout.write(
+          secret.bound
+            ? `${secret.binding} reads ${secret.entry}.\n`
+            : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
+        );
       }
       process.stdout.write(`Provisioned ${report.env}. Migrated.\n`);
       process.stdout.write(`${formatDone()}\n`);

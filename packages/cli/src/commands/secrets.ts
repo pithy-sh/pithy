@@ -4,6 +4,7 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -23,6 +24,9 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import { cloudflareSecretsStore } from "../provision/store";
+import { applySecretBindings } from "../provision/wranglerEnv";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
 /**
@@ -296,14 +300,47 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, "dev"),
       });
 
-      const result = await provisionSecrets(provisioner, await projectEnvironments(projectDir));
+      const environments = await projectEnvironments(projectDir);
+      const result = await provisionSecrets(provisioner, environments);
+
+      // **The step the deferral was deferring to (#238).** `pithy add` cannot write a `secret` binding —
+      // the entry needs a `store_id` and a `secret_name` that do not exist until an account has been
+      // reached — and `ensureSecretsStoreId` records nothing in five cases besides. Provisioning is when
+      // the store certainly exists and every entry has certainly been written, so this is where the
+      // adopter's own Workers get the stanza. It corrects an existing entry rather than duplicating it,
+      // and leaves a binding this registry does not declare exactly where the adopter put it.
+      //
+      // `dev` is deliberately not among them: local dev materialises every `cf-secrets-store` secret into
+      // the generated `.dev.vars` (#179), so a stanza there would name entries a local run never reads.
+      const store = cloudflareSecretsStore(cf, storeId);
+      const wired: { worker: string; env: string; bindings: string[] }[] = [];
+      for (const worker of await resolveWorkers({ projectDir })) {
+        const registry = workerSecretRegistry(worker.capabilities);
+        if (!registry) continue;
+        for (const env of environments) {
+          const { bound } = await secretsStoreBindings({
+            registry,
+            scope: environmentScope(project, env),
+            storeId,
+            exists: (name) => store.exists(name),
+          });
+          if (bound.length === 0) continue;
+          await applySecretBindings(worker.dir, env, bound);
+          wired.push({ worker: worker.name, env, bindings: bound.map((entry) => entry.binding) });
+        }
+      }
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "secrets provision", environments: result.perEnv })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "secrets provision", environments: result.perEnv, wired })}\n`,
+        );
         return;
       }
       for (const env of result.perEnv) {
         process.stdout.write(`${env.env}: database, key, and manager ready.\n`);
+      }
+      for (const entry of wired) {
+        process.stdout.write(`${entry.worker} env.${entry.env} binds ${entry.bindings.join(", ")}.\n`);
       }
       process.stdout.write(`${formatDone()}\n`);
     }),

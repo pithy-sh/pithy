@@ -87,6 +87,53 @@ const KIND_TO_WRANGLER: Record<
  * creator of a stanza for an environment declared after the project was scaffolded. Idempotent, and every
  * comment in the file survives the round trip.
  */
+async function editStanza(workerDir: string, stanzaKey: string, mutate: (stanza: EnvBindings) => void): Promise<void> {
+  const wranglerPath = join(workerDir, "wrangler.jsonc");
+  const raw = await readFile(wranglerPath, "utf8");
+  const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
+
+  config.env ??= {};
+  const stanza: EnvBindings = config.env[stanzaKey] ?? {};
+  config.env[stanzaKey] = stanza;
+
+  mutate(stanza);
+
+  // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
+  // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
+  // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
+  // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
+  // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
+  await writeJsonc(wranglerPath, config);
+}
+
+/**
+ * Upsert the `secrets_store_secrets` entries provisioning owns into one Worker's `env.<stanza>`.
+ *
+ * Separate from {@link applyProvisionedEnv} because two commands reach it for different reasons.
+ * `pithy provision` and `pithy feature provision` write the whole stanza; `pithy secrets provision`
+ * writes only this, for a project whose resources are already in place and whose store entries have
+ * just been created — the five cases `ensureSecretsStoreId` cannot resolve at `add` time, and every
+ * project that predates the stanza existing at all.
+ *
+ * **Only the entries it owns.** An adopter's hand-added binding this registry does not declare is left
+ * exactly where it is.
+ */
+export async function applySecretBindings(
+  workerDir: string,
+  stanzaKey: string,
+  entries: readonly SecretStoreBinding[],
+): Promise<void> {
+  if (entries.length === 0) return;
+  await editStanza(workerDir, stanzaKey, (stanza) => {
+    stanza.secrets_store_secrets ??= [];
+    for (const entry of entries) {
+      const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+      if (existing) Object.assign(existing, entry);
+      else stanza.secrets_store_secrets.push({ ...entry });
+    }
+  });
+}
+
 export async function applyProvisionedEnv(options: {
   /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
   workerDir: string;
@@ -107,46 +154,24 @@ export async function applyProvisionedEnv(options: {
    */
   secrets: readonly SecretStoreBinding[];
 }): Promise<void> {
-  const wranglerPath = join(options.workerDir, "wrangler.jsonc");
-  const raw = await readFile(wranglerPath, "utf8");
-  const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
-
-  config.env ??= {};
-  const stanza: EnvBindings = config.env[options.scope.stanza] ?? {};
-  config.env[options.scope.stanza] = stanza;
-
-  stanza.name = options.scope.worker(options.worker);
-  for (const resource of options.resources) {
-    const { array, fields } = KIND_TO_WRANGLER[resource.kind];
-    // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then mutate
-    // in place — never replace it with a filtered plain array, which would strip comment-json's symbols.
-    stanza[array] ??= [];
-    upsertByBinding(stanza[array], resource.binding, fields(resource));
-  }
-  if (options.secrets.length > 0) {
-    // Upsert by binding, and only the entries provisioning owns. An adopter who hand-added a binding
-    // this registry does not declare keeps it: the rule is that nothing rewrites a stanza beyond the
-    // entries it put there.
-    stanza.secrets_store_secrets ??= [];
-    for (const entry of options.secrets) {
-      const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
-      if (existing) Object.assign(existing, entry);
-      else stanza.secrets_store_secrets.push({ ...entry });
+  await editStanza(options.workerDir, options.scope.stanza, (stanza) => {
+    stanza.name = options.scope.worker(options.worker);
+    for (const resource of options.resources) {
+      const { array, fields } = KIND_TO_WRANGLER[resource.kind];
+      // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
+      // mutate in place — never replace it with a filtered plain array, which would strip
+      // comment-json's symbols.
+      stanza[array] ??= [];
+      upsertByBinding(stanza[array], resource.binding, fields(resource));
     }
-  }
-  if (options.services.length > 0) {
-    stanza.services ??= [];
-    for (const entry of options.services) {
-      const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
-      if (existing) existing.service = entry.service;
-      else stanza.services.push({ ...entry });
+    if (options.services.length > 0) {
+      stanza.services ??= [];
+      for (const entry of options.services) {
+        const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
+        if (existing) existing.service = entry.service;
+        else stanza.services.push({ ...entry });
+      }
     }
-  }
-
-  // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
-  // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
-  // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
-  // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
-  // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
-  await writeJsonc(wranglerPath, config);
+  });
+  await applySecretBindings(options.workerDir, options.scope.stanza, options.secrets);
 }
