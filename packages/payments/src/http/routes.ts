@@ -11,7 +11,8 @@ import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, Hono } from "hono";
-import { PaymentsAuditActions } from "../audit/actions";
+import { listEntitlements, listPurchases, listSubscriptions, readEntitlements } from "../admin/read";
+import { type PaymentsAuditAction, PaymentsAuditActions } from "../audit/actions";
 import {
   type PaymentsCatalogEntry,
   type PaymentsConfig,
@@ -36,17 +37,30 @@ import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
-import { PAYMENTS_ENTITLEMENT_GRANT_SCOPE, PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, requireAuth } from "./guards";
+import {
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+  requireAuth,
+} from "./guards";
 import type {
+  PaymentsAdminEntitlementsResponse,
+  PaymentsAdminPurchasesResponse,
+  PaymentsAdminSubscriptionsResponse,
+  PaymentsAdminUserEntitlementsResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
-  PaymentsEntitlementView,
   PaymentsHostedSessionResponse,
   PaymentsPurchaseResponse,
-  PaymentsPurchaseView,
   PaymentsRestoreResponse,
 } from "./responses";
 import {
+  AdminEntitlementsQuery,
+  AdminPurchasesQuery,
+  AdminSubscriptionsQuery,
+  AdminUserParam,
   AppleWebhookNotification,
   CheckoutRequest,
   EntitlementGrantRequest,
@@ -56,6 +70,7 @@ import {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./schemas";
+import { adminEntitlementView, adminPurchaseView, entitlementView, purchaseView } from "./view";
 import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhookGuard";
 
 /**
@@ -71,6 +86,25 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   POST /payments/webhooks/stripe      → Stripe events                  (signed-webhook)    json: StripeWebhookNotification
  *   POST /payments/entitlements/grant   → comp or repair an entitlement  (control-plane)     json: EntitlementGrantRequest
  *   POST /payments/entitlements/revoke  → take one back                  (control-plane)     json: EntitlementRevokeRequest
+ *
+ *   GET  /payments/admin/purchases              → the purchase log, paged        (control-plane: payments:purchases:read)      query: AdminPurchasesQuery
+ *   GET  /payments/admin/subscriptions          → the purchases that renew       (control-plane: payments:subscriptions:read)  query: AdminSubscriptionsQuery
+ *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
+ *   GET  /payments/admin/entitlements/:userId   → one account's entitlements     (control-plane: payments:entitlements:read)   param: AdminUserParam
+ *
+ * **The reads exist because the writes did.** Payments shipped `entitlements/grant` and
+ * `entitlements/revoke` with no read beside them, so a management client could comp an entitlement and take
+ * one back and could never list one — and a dashboard's Purchases, Entitlements and Subscriptions panes
+ * computed *absent* against a live manifest and dropped out of the rail entirely. Not blocked, not refused:
+ * absent, which no grant and no seed can repair, because there was no route to grant a scope to (#247).
+ *
+ * **They sit under `admin/` because the player surface owns the bare paths.** `GET ${base}/entitlements` is
+ * already a bearer route reading the caller's own; a control-plane read at the same address would sit behind
+ * whichever Hono matched first, with a route's gate decided by registration order. The extra segment makes
+ * the two sets disjoint by construction.
+ *
+ * **Read-only, with no `POST` among them, and that is not an oversight.** The two writes this capability
+ * offers are the ones support needs and each is separately scoped; nothing here widens them.
  *
  * **The two control-plane routes are the only way an entitlement appears without money moving**, and that is
  * the whole reason they are gated the way they are. Each wears core's `requireControlPlane()` and nothing
@@ -205,32 +239,35 @@ function product(config: PaymentsConfig, id: string): PaymentsCatalogEntry {
 }
 
 /**
- * A purchase as a client may see it. Deliberately not the row: the stored `payload` is the whole provider
- * response, and a client has no use for its own receipt read back to it. The return type is `z.output` of
- * the exported schema, so what this sends and what a client validates against are one declaration.
+ * Record a management read.
+ *
+ * **Every read, not only the writes.** A credential quietly paging every account's purchases leaves no
+ * other trace anywhere, and the customer's ability to reconstruct what a dashboard did with the access
+ * they granted is the whole promise of the control plane. Counts, filters and identifiers only: no row, no
+ * amount, no provider identifier. Copying the purchase log into the audit trail would make a second
+ * purchase log with weaker access rules than the first.
  */
-function purchaseView(projection: PurchaseProjection): PaymentsPurchaseView {
-  const { purchase } = projection;
-  return {
-    id: purchase.id,
-    rail: purchase.rail,
-    productId: purchase.productId,
-    type: purchase.type,
-    status: purchase.status,
-    environment: purchase.environment,
-    purchasedAt: purchase.purchasedAt.toISOString(),
-    expiresAt: purchase.expiresAt?.toISOString() ?? null,
-    outcome: projection.outcome,
-  };
-}
-
-/** Entitlements as a client reads them: the key, whether it grants right now, and when it lapses. */
-function entitlementView(entitlement: {
-  key: string;
-  active: boolean;
-  expiresAt: Date | null;
-}): PaymentsEntitlementView {
-  return { key: entitlement.key, granted: entitlement.active, expiresAt: entitlement.expiresAt?.toISOString() ?? null };
+async function recordRead(
+  c: Context<PithyHonoEnv>,
+  action: PaymentsAuditAction,
+  resourceId: string | null,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const who = controlPlaneCaller(c);
+  await c.var.emit({
+    action,
+    outcome: "success",
+    // A management client, not a user of this app — and the actor is the token's `sub`, so the trail names
+    // which person at the dashboard looked, not merely "the dashboard".
+    actorType: "control-plane",
+    actorId: who.subject,
+    resourceType: "payments_read",
+    resourceId,
+    requestId: c.req.header("cf-ray"),
+    ip: c.req.header("cf-connecting-ip"),
+    userAgent: c.req.header("user-agent"),
+    metadata: { connectionId: who.connectionId, ...metadata },
+  });
 }
 
 export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
@@ -349,6 +386,132 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   }
 
   return (app) => {
+    // The management surface: control-plane, read-only, under `admin/`. Its paths are disjoint from the
+    // player surface by construction, so registering it first is presentation rather than semantics.
+
+    /**
+     * CONTROL PLANE. The purchase log, paged, newest first.
+     *
+     * The filters narrow and never widen: there is no shape of this request that reaches a column the
+     * projection does not return, and no filter that turns the response into something a wider scope
+     * would have been needed for. `environment` is unfiltered by default on purpose — hiding sandbox
+     * transactions would hide the single thing an operator most needs to notice on a production board.
+     */
+    app.get(
+      `${base}/admin/purchases`,
+      requireControlPlane(PAYMENTS_PURCHASES_READ_SCOPE),
+      zValidator("query", AdminPurchasesQuery, validationHook),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listPurchases(database(c), query);
+        await recordRead(c, PaymentsAuditActions.purchasesRead, query.userId ?? null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: {
+            userId: query.userId ?? null,
+            rail: query.rail ?? null,
+            status: query.status ?? null,
+            environment: query.environment ?? null,
+          },
+        });
+        return c.json(
+          {
+            purchases: page.items.map(adminPurchaseView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminPurchasesResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. The purchases that renew, paged, newest first.
+     *
+     * Its own scope, granted separately from the purchase log's. A renewal or churn tool needs to know who
+     * is still paying and when their period ends; it has no business reading what everybody ever bought,
+     * and an adopter who wants to hand out only the narrower half must have a way to say so. The narrowing
+     * is applied by `listSubscriptions` rather than by a `type` filter the request could name, so the
+     * wider read is not reachable through this scope by construction.
+     */
+    app.get(
+      `${base}/admin/subscriptions`,
+      requireControlPlane(PAYMENTS_SUBSCRIPTIONS_READ_SCOPE),
+      zValidator("query", AdminSubscriptionsQuery, validationHook),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listSubscriptions(database(c), query);
+        await recordRead(c, PaymentsAuditActions.subscriptionsRead, query.userId ?? null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: { userId: query.userId ?? null, status: query.status ?? null },
+        });
+        return c.json(
+          {
+            subscriptions: page.items.map(adminPurchaseView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminSubscriptionsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. The entitlement model, paged — what accounts hold, and why.
+     *
+     * `granted` is resolved here against `expiresAt`, exactly as the gate the adopter's own app calls
+     * resolves it. A dashboard that recomputed it from the stored flag would eventually disagree with that
+     * gate, and the customer would believe the dashboard.
+     */
+    app.get(
+      `${base}/admin/entitlements`,
+      requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
+      zValidator("query", AdminEntitlementsQuery, validationHook),
+      async (c) => {
+        const query = c.req.valid("query");
+        const now = clock();
+        const page = await listEntitlements(database(c), query);
+        await recordRead(c, PaymentsAuditActions.entitlementsRead, query.userId ?? null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: { userId: query.userId ?? null, entitlement: query.entitlement ?? null },
+        });
+        return c.json(
+          {
+            entitlements: page.items.map((row) => adminEntitlementView(row, now)),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminEntitlementsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Everything one account is entitled to, resolved now.
+     *
+     * Unpaginated, because the table is keyed `UNIQUE (userId, entitlement)` and this is at most one row
+     * per key. An account holding nothing is an empty list rather than a 404: an entitlement row appears
+     * with the first purchase that grants one, so its absence is not a missing person — and a 404 would
+     * make this surface an existence oracle for user ids.
+     */
+    app.get(
+      `${base}/admin/entitlements/:userId`,
+      requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
+      zValidator("param", AdminUserParam, validationHook),
+      async (c) => {
+        const { userId } = c.req.valid("param");
+        const now = clock();
+        const rows = await readEntitlements(database(c), userId);
+        await recordRead(c, PaymentsAuditActions.entitlementsRead, userId, { userId, returned: rows.length });
+        return c.json(
+          {
+            userId,
+            entitlements: rows.map((row) => adminEntitlementView(row, now)),
+          } satisfies PaymentsAdminUserEntitlementsResponse,
+          200,
+        );
+      },
+    );
+
     /**
      * AUTHED WRITE. The purchaser's own app submitting what the store SDK gave it, so the buyer sees their
      * entitlement immediately rather than waiting for the webhook. A replay by its own owner is a 200 with the

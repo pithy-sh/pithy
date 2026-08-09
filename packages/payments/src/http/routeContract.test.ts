@@ -12,6 +12,9 @@ import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./guards";
 import { registerPaymentsRoutes } from "./routes";
 
@@ -24,10 +27,11 @@ import { registerPaymentsRoutes } from "./routes";
  * migrations are needed. That is also why this is a node test, and why nothing in `routes.ts` may reach
  * `cloudflare:workers`.
  *
- * Every payments path is literal, on purpose: the three webhook rails are three routes rather than one `:rail`
- * because each proves authenticity by a different mechanism, and the rail a caller *claims* is not something to
- * route on. So the expected param set is empty, and the count assertion below is what keeps this gate from
- * passing vacuously — the moment a `:segment` appears, the test above starts doing work.
+ * Every payments path was literal until the management reads landed, and most still are on purpose: the three
+ * webhook rails are three routes rather than one `:rail` because each proves authenticity by a different
+ * mechanism, and the rail a caller *claims* is not something to route on. The one `:segment` is
+ * `admin/entitlements/:userId`, which is what makes the gate above do real work rather than pass vacuously —
+ * and the path list below is what keeps a second one from appearing unnoticed.
  */
 function makeApp() {
   const app = new Hono<PithyHonoEnv>();
@@ -74,9 +78,14 @@ describe("payments route contract", () => {
   test("the gate is inspecting the real payments routes, not an empty app", () => {
     const app = makeApp();
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this build serves — the full ten from issue #79. The list is what makes adding an eleventh
-    // a deliberate edit rather than a surprise, and it is the only place a route can be counted.
+    // Every route this build serves — the ten from issue #79 plus the four management reads from #247.
+    // The list is what makes adding a fifteenth a deliberate edit rather than a surprise, and it is the
+    // only place a route can be counted.
     expect(paths).toEqual([
+      "/payments/admin/entitlements",
+      "/payments/admin/entitlements/:userId",
+      "/payments/admin/purchases",
+      "/payments/admin/subscriptions",
       "/payments/checkout",
       "/payments/entitlements",
       "/payments/entitlements/grant",
@@ -88,7 +97,8 @@ describe("payments route contract", () => {
       "/payments/webhooks/google",
       "/payments/webhooks/stripe",
     ]);
-    expect(paramPaths(app)).toEqual([]);
+    // One `:segment`, which is what makes the param gate above do work rather than pass vacuously.
+    expect(paramPaths(app)).toEqual(["/payments/admin/entitlements/:userId"]);
   });
 
   test("mounts under the configured basePath, webhooks included", () => {
@@ -140,11 +150,11 @@ describe("the admin surface payments advertises", () => {
   }
 
   test("every advertised admin route is one payments actually mounts", () => {
-    // `GET /control-plane/manifest` tells a management client these two routes exist and which scope
+    // `GET /control-plane/manifest` tells a management client these six routes exist and which scope
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(2);
+    expect(capability.adminRoutes).toHaveLength(6);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
@@ -153,6 +163,10 @@ describe("the admin surface payments advertises", () => {
     // would 404 every management call from a client that assumed the `/payments` default.
     const { capability, app } = composed("/billing");
     expect(capability.adminRoutes?.map((route) => route.path)).toEqual([
+      "/billing/admin/purchases",
+      "/billing/admin/subscriptions",
+      "/billing/admin/entitlements",
+      "/billing/admin/entitlements/:userId",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
     ]);
@@ -164,6 +178,10 @@ describe("the admin surface payments advertises", () => {
     // manifest naming a different string would tell a client to ask for a grant nothing checks.
     const { capability } = composed();
     expect(capability.adminRoutes?.map((route) => route.scope)).toEqual([
+      PAYMENTS_PURCHASES_READ_SCOPE,
+      PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
     ]);
@@ -172,10 +190,26 @@ describe("the admin surface payments advertises", () => {
     );
   });
 
-  test("only the control-plane routes are advertised — the purchase routes are not a management surface", () => {
-    // Declaring is opt-in and one-directional. Payments serves plenty of bearer routes; none of them
-    // belong in a manifest a management client dispatches from.
+  test("only the control-plane routes are advertised — the player routes are not a management surface", () => {
+    // Declaring is opt-in and one-directional. Payments serves plenty of bearer routes on paths that look
+    // like these — `GET /payments/entitlements` is the caller's own — and none of them belong in a
+    // manifest a management client dispatches from. The `admin/` segment and the two write verbs are what
+    // separate the two sets, so both shapes are named.
     const { capability } = composed();
-    expect(capability.adminRoutes?.every((route) => route.path.includes("/entitlements/"))).toBe(true);
+    expect(
+      capability.adminRoutes?.every(
+        (route) => route.path.startsWith("/payments/admin/") || route.path.includes("/entitlements/"),
+      ),
+    ).toBe(true);
+    expect(capability.adminRoutes?.map((route) => route.path)).not.toContain("/payments/entitlements");
+  });
+
+  test("the reads are reads — every advertised GET is under admin/, and no read declares a body", () => {
+    // A management read that could be reached by a POST would be a write nobody reviewed. Method and path
+    // are asserted together because either alone permits the mistake.
+    const { capability } = composed();
+    const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
+    expect(reads).toHaveLength(4);
+    expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });

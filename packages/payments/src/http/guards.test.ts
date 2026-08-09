@@ -21,6 +21,9 @@ import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   requireAuth,
 } from "./guards";
 
@@ -115,13 +118,32 @@ describe("the payments control-plane scopes", () => {
     for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) expect(ControlPlaneScope.parse(scope)).toBe(scope);
   });
 
-  test("the aggregate is exactly the two operations, in a stable order", () => {
+  test("the aggregate is exactly the five operations, reads first, in a stable order", () => {
     // What `pithy dashboard connect` offers for payments. A scope that exists and is offered nowhere is a
     // scope an adopter cannot grant, so the list and the route lines are asserted against each other.
+    // Reads lead because they are the grant most connections want and the smallest one that makes a
+    // dashboard useful — and because for a while there were none (#247).
     expect(PAYMENTS_CONTROL_PLANE_SCOPES).toEqual([
+      PAYMENTS_PURCHASES_READ_SCOPE,
+      PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
     ]);
+  });
+
+  test("a read scope confers no write, and the purchase log is not reachable through the subscription read", () => {
+    // The reads are separate grants for the same reason grant and revoke are: `scopeCovers` matches
+    // exactly, with no prefix or wildcard rule. A renewal monitor holding `payments:subscriptions:read`
+    // must not be able to page the whole purchase log, and no read may comp anything.
+    const renewalMonitor = [PAYMENTS_SUBSCRIPTIONS_READ_SCOPE];
+    expect(scopeCovers(PAYMENTS_SUBSCRIPTIONS_READ_SCOPE, PAYMENTS_SUBSCRIPTIONS_READ_SCOPE, renewalMonitor)).toBe(
+      true,
+    );
+    expect(scopeCovers(PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_PURCHASES_READ_SCOPE, renewalMonitor)).toBe(false);
+    const reader = [PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_SUBSCRIPTIONS_READ_SCOPE, PAYMENTS_ENTITLEMENTS_READ_SCOPE];
+    expect(scopeCovers(PAYMENTS_ENTITLEMENT_GRANT_SCOPE, PAYMENTS_ENTITLEMENT_GRANT_SCOPE, reader)).toBe(false);
+    expect(scopeCovers(PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, reader)).toBe(false);
   });
 
   test("grant and revoke are separate grants — neither confers the other", () => {

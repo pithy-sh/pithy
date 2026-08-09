@@ -101,3 +101,164 @@ export const PaymentsEntitlementResponse = z
   .object({ entitlement: PaymentsEntitlementView.describe("The entitlement as the write left it.") })
   .describe("The single entitlement a management client granted or revoked, as it now stands.");
 export type PaymentsEntitlementResponse = z.output<typeof PaymentsEntitlementResponse>;
+
+/**
+ * ## The management read surface
+ *
+ * Everything below answers a **control-plane** route, so it is read by a dashboard across a trust
+ * boundary rather than by the adopter's own app. The `Admin` prefix is what keeps the two apart: a
+ * client's view of its own purchase and a management client's view of everybody's are different
+ * projections with different rules, and one schema doing both would be one edit away from serving the
+ * wider shape to the narrower caller.
+ *
+ * **The provider payload appears nowhere in this file and is not even selected by the queries behind
+ * it** — see `admin/read.ts`. That is where an email address would otherwise reach a purchases list,
+ * since payments stores no address of its own.
+ */
+
+/** Where a page resumes, or the end of the list. */
+const NextCursor = z
+  .string()
+  .nullable()
+  .describe("Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.");
+
+/**
+ * One purchase, as a management client sees it.
+ *
+ * Wider than {@link PaymentsPurchaseView} in the two ways an operator needs and a buyer does not: it
+ * names the **owner**, and it names the **money**. Narrower in one: there is no `outcome`, because
+ * `outcome` says what a *write* did — projected, replayed, ignored — and a read of the log has no write
+ * to report.
+ *
+ * The provider identifiers are kept and the provider *payload* is not, and the line between them is
+ * whether the value is a bearer artifact. A transaction id is the join key an operator pastes into App
+ * Store Connect or the Stripe dashboard to settle a dispute; a receipt is the thing that could be
+ * replayed. The first is the whole point of the pane and the second never leaves the Worker.
+ */
+export const PaymentsAdminPurchaseView = z
+  .object({
+    id: z.string().describe("The purchase's UUID — its stable identifier on this Worker."),
+    userId: z
+      .string()
+      .describe(
+        "The account that bought it — the opaque id the adopter's auth capability issued. The only identity field payments stores, and the join key to `auth:users:read`, which is granted separately.",
+      ),
+    rail: PaymentsRail.describe("Which store this transaction came from."),
+    providerTransactionId: z
+      .string()
+      .describe(
+        "The store's own transaction id — what an operator pastes into App Store Connect, Play Console or the Stripe dashboard. An identifier, never a credential: the receipt that would be one is not projected.",
+      ),
+    originalTransactionId: z
+      .string()
+      .nullable()
+      .describe(
+        "The transaction that started this subscription, chaining renewals back to it. Null for a one-time purchase.",
+      ),
+    productId: z
+      .string()
+      .describe(
+        "The catalog product the verified SKU resolved to, copied at projection time so a later config edit cannot rewrite history.",
+      ),
+    type: PaymentsProductType.describe("What kind of product it is."),
+    status: PurchaseStatus.describe("The normalized status. Nothing here is ever a rail-specific state."),
+    environment: PurchaseEnvironment.describe(
+      "The store environment it happened in. Rendered rather than filtered on by default: a sandbox transaction read as a production one is the oldest defect in in-app purchasing.",
+    ),
+    amountMinor: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "What was charged, in the currency's minor unit — an integer, never a float. Null where the rail reported no amount, which is common on a renewal.",
+      ),
+    currency: z.string().nullable().describe("The ISO currency the amount is in, or null when none was reported."),
+    purchasedAt: z.iso.datetime().describe("When the store recorded the purchase, ISO-8601."),
+    expiresAt: z.iso.datetime().nullable().describe("When access lapses, ISO-8601; null for one that never does."),
+    revokedAt: z.iso.datetime().nullable().describe("When it was refunded or revoked, ISO-8601; null when it was not."),
+    updatedAt: z.iso
+      .datetime()
+      .describe("When this row was last projected, ISO-8601 — how an operator tells a live row from a stale one."),
+  })
+  .describe("One purchase as a management client sees it. Never the stored provider payload.");
+export type PaymentsAdminPurchaseView = z.output<typeof PaymentsAdminPurchaseView>;
+
+/**
+ * One entitlement, as a management client sees it.
+ *
+ * Wider than {@link PaymentsEntitlementView} by the two facts a buyer has no use for and an operator
+ * cannot work without: **whose** it is, and **why** they have it. `manual` is the difference between an
+ * entitlement somebody paid for and one somebody decided; `source` is the purchase currently granting
+ * it, which answers "why is this account entitled" without a scan.
+ */
+export const PaymentsAdminEntitlementView = z
+  .object({
+    userId: z.string().describe("The account holding it — the opaque id the adopter's auth capability issued."),
+    key: z.string().describe("The entitlement key the adopter's gating code names — `pro`, `beta`."),
+    granted: z
+      .boolean()
+      .describe(
+        "Whether it grants access right now, resolved against `expiresAt` on this read exactly as the hot path resolves it. The stored flag is an optimization; this is the answer.",
+      ),
+    expiresAt: z.iso.datetime().nullable().describe("When it lapses, ISO-8601; null for one that does not."),
+    manual: z
+      .boolean()
+      .describe(
+        "Whether a human wrote this row through the control plane rather than a purchase producing it. A manual grant is held against the projection, so it survives the account's next renewal.",
+      ),
+    source: z
+      .string()
+      .nullable()
+      .describe(
+        "The purchase currently granting this entitlement, or null when nothing does — a comp, or a grant whose purchase has lapsed.",
+      ),
+  })
+  .describe("One entitlement as a management client sees it: whose it is, whether it grants, and why.");
+export type PaymentsAdminEntitlementView = z.output<typeof PaymentsAdminEntitlementView>;
+
+/** `GET {base}/admin/purchases`. */
+export const PaymentsAdminPurchasesResponse = z
+  .object({
+    purchases: z.array(PaymentsAdminPurchaseView).describe("The page, most recently purchased first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the purchase log.");
+export type PaymentsAdminPurchasesResponse = z.output<typeof PaymentsAdminPurchasesResponse>;
+
+/** `GET {base}/admin/subscriptions` — the same rows, narrowed to the ones that renew. */
+export const PaymentsAdminSubscriptionsResponse = z
+  .object({
+    subscriptions: z
+      .array(PaymentsAdminPurchaseView)
+      .describe("The page, most recently purchased first. Every row has `type: subscription`."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the purchases that renew.");
+export type PaymentsAdminSubscriptionsResponse = z.output<typeof PaymentsAdminSubscriptionsResponse>;
+
+/** `GET {base}/admin/entitlements`. */
+export const PaymentsAdminEntitlementsResponse = z
+  .object({
+    entitlements: z.array(PaymentsAdminEntitlementView).describe("The page, most recently first granted first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the entitlement model, across every account.");
+export type PaymentsAdminEntitlementsResponse = z.output<typeof PaymentsAdminEntitlementsResponse>;
+
+/**
+ * `GET {base}/admin/entitlements/:userId`.
+ *
+ * No cursor, because there is no page: the table is keyed `UNIQUE (userId, entitlement)`, so this is at
+ * most one row per key. An account holding nothing answers an empty list rather than a 404 — an
+ * entitlement row appears with the first purchase that grants one, so its absence is not a missing
+ * person, and a 404 would make this an existence oracle for user ids.
+ */
+export const PaymentsAdminUserEntitlementsResponse = z
+  .object({
+    userId: z.string().describe("The account asked after, echoed so a response stands on its own."),
+    entitlements: z
+      .array(PaymentsAdminEntitlementView)
+      .describe("Every entitlement this account holds, by key. Empty when it holds none."),
+  })
+  .describe("One account's entitlements, resolved now.");
+export type PaymentsAdminUserEntitlementsResponse = z.output<typeof PaymentsAdminUserEntitlementsResponse>;
