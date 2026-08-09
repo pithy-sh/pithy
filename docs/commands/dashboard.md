@@ -26,7 +26,7 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--worker <name>` | all five | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
 | `--origin <url>` | all five | `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
-| `--scope <scope>` | `connect` | the seam's own | Grant one scope. Repeatable — the raw argv is read, so several survive |
+| `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive |
 | `--update` | `connect` | `false` | Re-point an existing connection's URL and scopes instead of creating one |
 | `--public-key <file>` | `connect` | — | Register a JWK you generated yourself. No dashboard is contacted |
 | `--issuer <url>` | `connect` | — | With `--public-key`: the `iss` your own client presents. Required on that path, and rejected off it |
@@ -44,7 +44,17 @@ Every subcommand writes its machine output to stdout and its diagnostics — the
 
 **`connect`** registers a management client against one environment. It resolves the address from your project rather than demanding it: the Worker's `domains` declaration for that environment, else its first `routes` pattern, else a hand-set `vars.BASE_URL`. It prints what it found and where it came from before registering. It also sends the seam's **base path** — the mount point, `/control-plane` by default — because that is the one address a client cannot discover, and a wrong one registers cleanly, passes the ping, and then 404s every call.
 
-At a terminal it asks which operations to grant, defaulting to the seam's own set. `--scope` answers that non-interactively, and an explicitly empty selection is passed through as empty rather than collapsed into the default — an operator who deselected everything must not be handed `keys:rotate` anyway. On an update, no `--scope` means "leave the grant alone".
+### What a connect grants
+
+**The default is every read your Worker declares, plus the seam's own two.** Connecting produces a management client that can actually read, without a second command — which used to be the whole problem: a connection holding `manifest:read` and `keys:rotate` opens a dashboard where every pane says the credential does not cover this call, and looks like a broken product rather than a grant nobody made.
+
+It is derived, never listed. Each capability declares its admin routes with the scope each one needs, and `connect` reads that off the Worker it is registering — the same declaration `GET /control-plane/manifest` reports. So a capability you add is offered on your next `connect` with no coordination and nothing to keep in step, and a capability you do not compose is never mentioned.
+
+**A read is a route, not a name.** A scope joins the default only when *every* declared route requiring it is a `GET`. `scopeCovers` matches exactly — no prefixes, no wildcards — so holding a scope confers every route that requires it, and one mutating route anywhere makes the whole scope a write however it is spelled. That is why `keys:rotate` is not derived: it gates a key listing and two key writes. It stays in the default because it always has, and because dropping it would break `pithy dashboard rotate` on every new connection — but nothing the derivation adds can write.
+
+At a terminal `connect` lists every operation your Worker exposes, described in each capability's own words, preselected to that default — because narrowing is the point of showing the list. `--scope` answers the same question non-interactively and narrows to exactly what you pass. An explicitly empty selection is passed through as empty rather than collapsed into the default: an operator who deselected everything must not be handed `keys:rotate` anyway. On an update, no `--scope` means "leave the grant alone".
+
+Whatever you end up with is printed on the `Scopes` line and stored on your row, and your Worker enforces that row and nothing else. A narrowed grant refuses every call it left out with `controlplane/insufficient_scope`, and the manifest tells a client which routes those are before it tries.
 
 Then the device-code flow: a short user code, your browser, your approval. The management client generates the Ed25519 keypair, keeps the private half, and returns the public one; the CLI writes it into your D1. **Nothing reports connected until a signed `ping` round-trips** against your Worker. A registration that was written but cannot be reached is a dead link, and reporting it as connected is how an operator finds out weeks later — so that case is `needs_reconnect`, and the command deliberately does not print `Done.`
 
@@ -221,10 +231,12 @@ Connected prod.
 Connection  b6a1f0c2-…
 Issuer      https://app.pithy.sh
 Worker      https://api.example.com
-Scopes      manifest:read, keys:rotate
+Scopes      manifest:read, keys:rotate, auth:users:read, audit:events:read, audit:events:read_detail, email:jobs:read, email:suppressions:read
 Key         cpk_2026_07
 Done.
 ```
+
+The reads come from what that Worker composes. `email:jobs:retry` and `auth:sessions:revoke` are declared on the same capabilities and are not there — they are writes.
 
 Re-point a connection after a custom domain moved.
 

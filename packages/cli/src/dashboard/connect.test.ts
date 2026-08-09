@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -447,6 +450,98 @@ describe("connectDashboard — the grant is the operator's, not the client's", (
     // The operator's list still governs. A client that chooses not to exercise a scope has not removed
     // it, and the adopter revokes by re-running connect, never by the client's say-so.
     expect(registry.current()?.scopes).toEqual(["manifest:read", "keys:rotate"]);
+  });
+});
+
+describe("connectDashboard — connecting produces a working read surface", () => {
+  // A connect that reports success and leaves every pane refusing is a broken product, however correct
+  // each refusal is. So the default grant is read off what this Worker actually composes.
+
+  /** A capability that declares nothing but an admin surface — enough for the derivation to read. */
+  const capabilityWith = (name: string, adminRoutes: AdminRoute[]): Capability => ({
+    name,
+    requiredBindings: [],
+    adminRoutes,
+  });
+
+  const reading = [
+    capabilityWith("audit", [
+      { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
+      { method: "GET", path: "/audit/events/:id", scope: "audit:events:read_detail", summary: "One event in full." },
+    ]),
+    capabilityWith("email", [
+      { method: "GET", path: "/email/jobs", scope: "email:jobs:read", summary: "The send log." },
+      { method: "POST", path: "/email/jobs/:id/retry", scope: "email:jobs:retry", summary: "Send it again." },
+    ]),
+  ];
+
+  test("grants every read the composed worker declares, so no second command is needed", async () => {
+    const registry = fakeRegistry();
+
+    const report = await connectDashboard({ ...base, registry, capabilities: reading, client: fakeClient() });
+
+    expect(report.scopes).toEqual([...SEAM_SCOPES, "audit:events:read", "audit:events:read_detail", "email:jobs:read"]);
+    expect(registry.current()?.scopes).toEqual(report.scopes);
+  });
+
+  test("grants no write it was not already granting — email:jobs:retry stays unheld", async () => {
+    const registry = fakeRegistry();
+
+    await connectDashboard({ ...base, registry, capabilities: reading, client: fakeClient() });
+
+    expect(registry.current()?.scopes).not.toContain("email:jobs:retry");
+  });
+
+  test("--scope still narrows, and the composed surface does not widen it back", async () => {
+    const registry = fakeRegistry();
+
+    await connectDashboard({
+      ...base,
+      registry,
+      capabilities: reading,
+      scopes: ["manifest:read"],
+      client: fakeClient({
+        createConnection: async () => ({
+          connectionId: CONNECTION_ID,
+          keyId: "key_1",
+          publicKeyJwk: JWK,
+          issuer: "https://app.pithy.sh",
+          scopes: ["manifest:read"],
+        }),
+      }),
+    });
+
+    expect(registry.current()?.scopes).toEqual(["manifest:read"]);
+  });
+
+  test("an explicitly empty grant stays empty — deselecting everything means everything", async () => {
+    const registry = fakeRegistry();
+
+    await connectDashboard({
+      ...base,
+      registry,
+      capabilities: reading,
+      scopes: [],
+      client: fakeClient({
+        createConnection: async () => ({
+          connectionId: CONNECTION_ID,
+          keyId: "key_1",
+          publicKeyJwk: JWK,
+          issuer: "https://app.pithy.sh",
+          scopes: [],
+        }),
+      }),
+    });
+
+    expect(registry.current()?.scopes).toEqual([]);
+  });
+
+  test("with no composed set to read, the grant is the seam's own and nothing is invented", async () => {
+    const registry = fakeRegistry();
+
+    await connectDashboard({ ...base, registry, client: fakeClient() });
+
+    expect(registry.current()?.scopes).toEqual([...SEAM_SCOPES]);
   });
 });
 

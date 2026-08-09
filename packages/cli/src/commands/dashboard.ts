@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
-import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -22,6 +22,7 @@ import {
   type StatusReport,
 } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
+import { defaultGrant, type GrantableScope, grantableScopes } from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -262,20 +263,33 @@ const commonArgs = {
 } as const;
 
 /**
- * Offer the seam's grantable scopes at a terminal. Every one is off nothing by default and on
- * everything by default here, because a connect run the operator narrows is the point: `keys:rotate`
- * is exactly the grant somebody may not want to give, and a flag they never see is a flag they never
- * consider. `ping` is absent — it is not grantable (docs/CONTROL-PLANE.md §8).
+ * Offer this Worker's grantable scopes at a terminal, preselected to the default grant.
+ *
+ * **The options are read off what the Worker composes, not typed here.** A hardcoded pair offered
+ * `manifest:read` and `keys:rotate` and nothing else — so the operator was shown a choice between two
+ * things neither of which reads any of their data, on a Worker composing capabilities with a dozen
+ * scopes between them. Reading the composed surface means an adopter sees every operation their own
+ * Worker actually exposes, described in the capability's own words.
+ *
+ * Preselected to {@link defaultGrant} — every read, plus the seam's own pair — because narrowing is the
+ * point of showing the list at all: `keys:rotate` and `audit:events:read_detail` are exactly the grants
+ * somebody may not want to make, and a grant nobody is shown is a grant nobody considers. `ping` is
+ * absent throughout; it is not grantable (docs/CONTROL-PLANE.md §8).
  */
-async function promptScopes(): Promise<ControlPlaneScope[]> {
+async function promptScopes(
+  grantable: readonly GrantableScope[],
+  preselected: ControlPlaneScope[],
+): Promise<ControlPlaneScope[]> {
   const { isCancel, multiselect } = await import("@clack/prompts");
   const answer = await multiselect({
     message: "What may this management client do?",
-    options: [
-      { value: "manifest:read", label: "manifest:read", hint: "Read which capabilities this worker composes" },
-      { value: "keys:rotate", label: "keys:rotate", hint: "Register and expire its own signing keys" },
-    ],
-    initialValues: [...SEAM_SCOPES],
+    options: grantable.map((entry) => ({
+      value: entry.scope,
+      label: entry.scope,
+      // The capability's own summary. A client renders these beside a pane; so does this.
+      hint: `${entry.capability} — ${entry.summary}`,
+    })),
+    initialValues: preselected,
     required: false,
   });
   if (isCancel(answer)) {
@@ -415,6 +429,10 @@ const connect = defineCommand({
           });
       if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
       const workerUrl = target?.workerUrl ?? args["worker-url"];
+      // What this Worker composes, which is what the grant is derived from. Empty on a key-only update,
+      // where no address was resolved and no grant is being decided.
+      const composed = target?.worker.capabilities ?? [];
+
       // Only on a create. On an update, no `--scope` means "leave the grant alone", and a prompt that
       // defaulted to everything would quietly widen it.
       //
@@ -423,7 +441,11 @@ const connect = defineCommand({
       // at the prompt would have been handed the full default set, `keys:rotate` included — the exact
       // opposite of what they just said. So an explicit empty selection is passed through as empty.
       const granted: ControlPlaneScope[] | undefined =
-        scopes.length > 0 ? scopes : interactive && !args.update ? await promptScopes() : undefined;
+        scopes.length > 0
+          ? scopes
+          : interactive && !args.update
+            ? await promptScopes(grantableScopes(composed), defaultGrant(composed))
+            : undefined;
 
       // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
       // environment holds live data is the project's policy either way, and it is exactly the list that
@@ -443,6 +465,9 @@ const connect = defineCommand({
           ...(workerUrl === undefined ? {} : { workerUrl }),
           ...(target === null ? {} : { basePath: target.basePath }),
           ...(granted === undefined ? {} : { scopes: granted }),
+          // The default grant is derived from these when no `--scope` narrowed it (#248). Sent even
+          // when `granted` is set, so nothing depends on which branch above ran.
+          capabilities: composed,
           update: args.update,
           ...(publicKey === undefined
             ? {
