@@ -69,7 +69,7 @@ One `bun run test` used to leave 36 directories in a maintainer's `~/.config/pit
 Three things now stand in the way, and you get all three by writing a config the way the others are written:
 
 1. **[`vitest.setup.ts`](vitest.setup.ts) at the repo root** gives every test file its own throwaway `PITHY_CONFIG_DIR`. Every project loads it, unit and integration alike.
-2. **[`vitest.shared.ts`](vitest.shared.ts) exports `NO_ACCOUNT`**, every `CLOUDFLARE_ENV_KEYS` name blanked. Every unit project states it; an integration project must not, because reaching a real account is what it is for.
+2. **[`vitest.shared.ts`](vitest.shared.ts) exports `NO_ACCOUNT`**, every `CLOUDFLARE_ENV_KEYS` name blanked, and `PITHY_OFFLINE` pinned blank beside them. Every unit project states it; an integration project must not, because reaching a real account is what it is for.
 3. **`stateDir` refuses.** Under vitest it resolves `PITHY_CONFIG_DIR`, or seams you passed — never `process.env` and never `os.homedir()`. A test that forgets its seam fails loudly at the moment of the mistake instead of quietly writing to your home directory.
 
 A new package's config:
@@ -111,6 +111,21 @@ rm -rf ~/.config/pithy/flow-test ~/.config/pithy/gates ~/.config/pithy/acme
 ```
 
 Then open `~/.config/pithy/cloudflare.json`. If it holds a `SECRETS_STORE_ID` you did not put there, a test wrote it — remove that key. Leave anything you recognise as a real project of yours.
+
+## Running the CLI without reaching an account
+
+`PITHY_CONFIG_DIR` moves the credentials *file*. It never touched the `process.env` overlay, so `pithy doctor` in an empty scratch directory still reached a real account off a token your shell exported hours ago. `PITHY_OFFLINE=1` is the word that stops it (#218): no ambient credentials, no network call, in that process and in anything it spawns.
+
+```bash
+export PITHY_CONFIG_DIR="$(mktemp -d)"
+export PITHY_OFFLINE=1
+```
+
+Set both, leave them set, and work in a sandbox without thinking about it.
+
+**It cannot change a test result.** The unit configs pin `PITHY_OFFLINE` blank exactly as they blank the credential keys, so a unit run answers about the code and not about your shell. That is new: it did not, and five green tests went red for the first person who took this advice, which read as breakage in the code and was not (#227). A suite that wants the offline path sets it itself, in the test, where you can see it.
+
+A live `test:integration` run is the one thing offline does stop. Reaching a real account is what those are for.
 
 ## Live integration tests
 

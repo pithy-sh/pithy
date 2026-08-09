@@ -58,7 +58,14 @@ describe("splitting a supplied body into paragraphs", () => {
   test("control characters are stripped, bidi overrides included", () => {
     // They cannot become markup, but a right-to-left override renders the text after it reversed,
     // which is how an approved-looking sentence displays as something else.
-    const dirty = "Please\0 confirm‮ your place.";
+    //
+    // **Constructed, never typed.** Both used to sit in this line as themselves: the override reordered
+    // the line in every reviewer's editor, and the BEL was invisible in the diff — which is #221, and
+    // `cli/src/ci/sourceFiles.test.ts` now fails the build on either. The input is byte-identical; only
+    // the spelling changed. `\0` is #216's escape, left where it is for the same argument.
+    const override = String.fromCharCode(0x202e);
+    const bell = String.fromCharCode(0x07);
+    const dirty = `Please\0 confirm${override} your place${bell}.`;
     expect(toParagraphs(dirty)).toEqual(["Please confirm your place."]);
   });
 
