@@ -13,6 +13,7 @@ import {
 } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { Session } from "../data/betterAuth";
+import { DEV_PROTOCOL, sessionCookieName } from "../http/baseUrl";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 
 /**
@@ -54,13 +55,19 @@ const USERS_DATABASE = "app";
 const USERS_TABLE = "pithyAuthUsers";
 
 /**
- * The cookie Better Auth reads the session from. Better Auth builds it as `<cookiePrefix>.session_token`
- * (prefix `better-auth` unless `advanced.cookiePrefix` overrides it, which Pithy does not), plus a
- * `__Secure-` prefix when the base URL is HTTPS — which a `dev` base URL is not. Locked to the running
- * version by a test that reads the name off a live instance, so a Better Auth upgrade that renamed it
- * fails here rather than in a browser.
+ * The cookie Better Auth reads the session from, in the one environment this set runs in.
+ *
+ * It used to be a literal beside a comment asserting that a `dev` base URL is not HTTPS. Nothing made
+ * that true: `baseURL` was one string for every environment, so an adopter whose production origin was
+ * HTTPS — every adopter — seeded this name while the running instance looked for `__Secure-` (#244).
+ * The session was there, the cookie was there, and `get-session` returned `null` with nothing logged.
+ *
+ * Now it is computed from the same two facts the composition computes its own name from: a `dev`
+ * composition serves over {@link DEV_PROTOCOL}, and {@link sessionCookieName} is the prefix rule. The
+ * host and port never enter it, which is what lets a seed name a cookie for a port not yet assigned.
+ * Still locked to the running Better Auth version by a test that reads the name off a live instance.
  */
-export const DEV_SESSION_COOKIE_NAME = "better-auth.session_token";
+export const DEV_SESSION_COOKIE_NAME = sessionCookieName(DEV_PROTOCOL);
 
 /**
  * The prefix every seeded dev session's id and token carry.

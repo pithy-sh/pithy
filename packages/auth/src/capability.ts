@@ -44,7 +44,7 @@ export const AuthConfig = z
     baseURL: z
       .string()
       .describe(
-        "The public origin of this environment's auth worker (no trailing slash). OAuth callbacks and JWKS URLs are built from it.",
+        "The public origin of this worker where it is deployed (no trailing slash). OAuth callbacks, JWKS and magic-link URLs are built from it. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` instead — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down.",
       ),
     trustedOrigins: z
       .array(z.string())

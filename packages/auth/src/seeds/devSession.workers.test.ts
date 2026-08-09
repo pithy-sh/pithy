@@ -13,6 +13,7 @@ import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { beforeEach, expect, test } from "vitest";
 import { Session, User } from "../data/betterAuth";
 import { authDatabase, authTables } from "../data/tables";
+import { baseURLResolver } from "../http/baseUrl";
 import { type AuthEmailMessage, makeAuth } from "../instance/auth";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
@@ -20,6 +21,9 @@ import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME } from "./devSession";
 import { authExampleSeed } from "./example";
 
 const SECRET = "dev-secret-please-rotate-000000000000";
+
+/** An adopter's real production origin — HTTPS, and the only base URL their config has ever held. */
+const PRODUCTION_BASE_URL = "https://app.pithy.sh";
 
 async function migrate(): Promise<void> {
   const provider = createMigrationRegistry([
@@ -35,12 +39,12 @@ async function write(group: D1SeedGroup, schema: typeof User | typeof Session): 
 }
 
 /** Build an auth instance on the seeded database, with the same secret the seed signed with. */
-function instance(secret = SECRET) {
+function instance(secret = SECRET, baseURL = "http://localhost:8787") {
   const mailbox: AuthEmailMessage[] = [];
   return makeAuth({
     db: authDatabase(env.DB),
     secret,
-    baseURL: "http://localhost:8787",
+    baseURL,
     basePath: "/api/auth",
     trustedOrigins: ["http://localhost:8787"],
     sendEmail: async (message) => void mailbox.push(message),
@@ -135,6 +139,31 @@ test("Better Auth accepts the seeded cookie for a user no example set creates", 
 test("the cookie name matches the one this Better Auth version reads", async () => {
   const context = await instance().$context;
   expect(context.authCookies.sessionToken.name).toBe(DEV_SESSION_COOKIE_NAME);
+});
+
+/**
+ * The invariant, at the seam where it used to be a comment: the name this seed writes is the name the
+ * running composition reads, computed from one source rather than agreed by hand.
+ *
+ * The subject is the case that broke — a project whose config holds its real HTTPS production origin,
+ * seeded and served in `dev`. Both sides are derived: the base URL from `baseURLResolver`, the seed's
+ * name from `DEV_PROTOCOL`, and the arbiter is a live Better Auth instance's own cookie table.
+ */
+test("the seed and a dev composition on an HTTPS config name the same cookie", async () => {
+  const resolved = baseURLResolver(PRODUCTION_BASE_URL, { ENVIRONMENT: "dev" })(
+    new Request("http://localhost:41011/auth/get-session"),
+  );
+  const context = await instance(SECRET, resolved).$context;
+  expect(context.authCookies.sessionToken.name).toBe(DEV_SESSION_COOKIE_NAME);
+});
+
+/** The other direction, so the mirror of Better Auth's prefix rule is pinned by more than its absence. */
+test("the same config deployed reads the __Secure- cookie, and the seed's name is not it", async () => {
+  const resolved = baseURLResolver(PRODUCTION_BASE_URL, { ENVIRONMENT: "prod" })(
+    new Request("https://app.pithy.sh/auth/get-session"),
+  );
+  const context = await instance(SECRET, resolved).$context;
+  expect(context.authCookies.sessionToken.name).toBe(`__Secure-${DEV_SESSION_COOKIE_NAME}`);
 });
 
 test("a cookie signed with the previous secret is rejected after a rotation", async () => {
