@@ -18,7 +18,7 @@ import {
 } from "../capabilities/paymentsProvisioner";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -163,12 +163,16 @@ function buildResolveEnv(
 async function buildProvisioner(projectDir: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
-  const project = requireProjectName(await loadProject(projectDir));
+  const config = await loadProject(projectDir);
+  const project = requireProjectName(config);
+  // The project's own environment set, read once here and carried, so provisioning and `--env` agree.
+  const environments = loadProjectEnvironments(config);
   const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const paymentsConfig = await loadPaymentsConfig(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   return {
     project,
+    environments,
     paymentsConfig,
     provisioner: new CloudflarePaymentsProvisioner({
       cf,
@@ -192,14 +196,14 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project } = await buildProvisioner(projectDir);
+      const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
       const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments();
 
       // The account check first, before a single deploy. Failing here means failing before one environment is
       // half provisioned rather than part way through the fan-out.
       await provisioner.preflight();
 
-      const environments: ManagedEnvironment[] = [...managedEnvironments()];
+      const environments: ManagedEnvironment[] = managedEnvironments(declared);
       for (const env of environments) {
         await provisioner.deployWorker(env);
         // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
@@ -238,9 +242,15 @@ const reconcile = defineCommand({
     withErrorReporting(args.json, async () => {
       // Checked, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
       // one-line answer into a lookup for `<project>-dev-payments-reconcile` and a raw Cloudflare request
-      // error from a worker that was never deployed. Checked first, before any Cloudflare client is built.
-      const env = requireManagedEnvironment(args.env);
+      // error from a worker that was never deployed. Still checked first, before any Cloudflare client is
+      // built: the declaration it is checked against is a config read, so the refusal costs nothing.
       const projectDir = process.cwd();
+      const config = await loadProject(projectDir);
+      // The name before the flag, because both payments names lead with it and a guessed one dispatches
+      // to a script that does not exist — the refusal that helps most goes first. Both are reads of this
+      // project's own config, so the whole check still happens before any Cloudflare client is built.
+      requireProjectName(config);
+      const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
       const { provisioner } = await buildProvisioner(projectDir);
       const { PaymentsReconcileParams } = await loadPayments();
 

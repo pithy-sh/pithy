@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
 import {
@@ -43,7 +44,7 @@ function fakeProvisioner(): { provisioner: EmailProvisioner; calls: string[] } {
 describe("provisionEmail", () => {
   test("creates + migrates the suppression DB once, then deploys every environment in order", async () => {
     const { provisioner, calls } = fakeProvisioner();
-    const result = await provisionEmail(provisioner);
+    const result = await provisionEmail(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(calls).toEqual([
       "preflight",
@@ -119,13 +120,13 @@ describe("deprovisionEmail", () => {
 
   test("deletes every worker and keeps the suppression DB by default", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionEmail(deprovisioner);
+    await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
   });
 
   test("deletes the suppression DB only when explicitly asked", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionEmail(deprovisioner, { deleteSuppression: true });
+    await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteSuppression: true });
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteSuppressionDatabase"]);
   });
 });

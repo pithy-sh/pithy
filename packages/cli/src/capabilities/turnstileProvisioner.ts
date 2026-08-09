@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -82,6 +83,8 @@ export interface CloudflareTurnstileProvisionerOptions {
    * Never a value. See `renderDevVarsNotes`.
    */
   notes?: (line: string) => void;
+  /** Every environment this project declares, from the root `pithy.config.ts` — the fan-out set for a `global` secret. */
+  environments: DeclaredEnvironments | readonly string[];
 }
 
 /**
@@ -96,6 +99,11 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #projectDir: string;
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
+  /**
+   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * rather than assumed, so a shared secret reaches every environment the project deploys to.
+   */
+  readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #audit: CliAuditEmit;
   readonly #notes: (line: string) => void;
 
@@ -105,6 +113,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     this.#projectDir = options.projectDir;
     this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
+    this.#environments = options.environments;
     this.#audit = options.audit ?? (async () => {});
     this.#notes = options.notes ?? ((line: string) => void process.stderr.write(`${line}\n`));
   }
@@ -157,10 +166,10 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     // BOTH causes (create as `cause`) so the true failure isn't masked by the fallback's error.
     const write = { name: TURNSTILE_SECRET_NAME, ...SECRET_FACTS, value: secret, requested: env as ManagedEnvironment };
     try {
-      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write });
+      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write }, this.#environments);
     } catch (createError) {
       try {
-        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write });
+        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write }, this.#environments);
       } catch (updateError) {
         throw new InternalError(
           {
@@ -208,6 +217,11 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   readonly #projectDir: string;
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
+  /**
+   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * rather than assumed, so a shared secret reaches every environment the project deploys to.
+   */
+  readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
@@ -216,6 +230,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     this.#projectDir = options.projectDir;
     this.#workerDir = options.workerDir;
     this.#dispatcher = options.dispatcher;
+    this.#environments = options.environments;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -235,14 +250,20 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   }
 
   async deleteManagedSecret(): Promise<void> {
-    for (const env of ["staging", "prod"] as const) {
+    // The project's declaration, not a hardcoded pair: a project that deploys to `live` had its secret
+    // written there and would have kept it forever, because teardown only ever looked at two names.
+    for (const env of this.#environments) {
       // Delete is idempotent in the manager (a missing name is a no-op), so this is safe to re-run.
-      await dispatchSecretWrite(this.#dispatcher, {
-        mode: "delete",
-        name: TURNSTILE_SECRET_NAME,
-        ...SECRET_FACTS,
-        requested: env,
-      });
+      await dispatchSecretWrite(
+        this.#dispatcher,
+        {
+          mode: "delete",
+          name: TURNSTILE_SECRET_NAME,
+          ...SECRET_FACTS,
+          requested: env,
+        },
+        this.#environments,
+      );
     }
   }
 

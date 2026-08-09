@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "../error/pithyError";
+import { z } from "zod";
+import { PithyError, ValidationError } from "../error/pithyError";
 import { NAME_SEGMENT } from "./segment";
 
 /**
@@ -99,3 +100,93 @@ export function assertValidEnvironment(name: string): void {
     detail: `An environment is used verbatim in Cloudflare resource names, so it must match ${NAME_SEGMENT.source}.`,
   });
 }
+
+/**
+ * The environments a project has when it declares nothing: `staging` for test users, `prod` for paid ones.
+ *
+ * The same two {@link ENVIRONMENTS} names minus `dev`, and the same two the starter scaffolded from a
+ * hardcoded template before anything could say otherwise — so a project that never opens this setting
+ * gets exactly what it got before.
+ */
+export const DEFAULT_ENVIRONMENTS = ["staging", "prod"] as const;
+
+/** The local environment. Never declared: it is the top-level wrangler stanza, and it always exists. */
+const LOCAL_ENVIRONMENT = "dev";
+
+/**
+ * **The set of deployed environments a project has**, declared once in the root `pithy.config.ts`.
+ *
+ * Until this existed a project never said. The set lived only as `env.<name>` stanzas in each Worker's
+ * `wrangler.jsonc` — per Worker, so two Workers in one project could disagree and nothing reconciled them
+ * — while `ManagedEnvironment` held a closed enum of two and `seed.productionEnvironments` invited a
+ * project to name a third. An adopter adding `env.live` got `pithy migrate --env live` working and
+ * `pithy secrets provision` skipping it in silence, because the three answers were never the same answer.
+ *
+ * **Ordered, and the order is meaningful.** It is the order provisioning walks — least-production first,
+ * so a mistake is made in staging before it is made in prod — and the last entry is the one a
+ * `global` account-level secret is written through (see `@pithy-sh/secrets`'s `resolveWriteTargets`).
+ * `["staging", "prod"]` therefore behaves exactly as the hardcoded pair did.
+ *
+ * **`dev` is not declarable.** It is local, it is the top-level wrangler stanza rather than an `env.dev`,
+ * and it resolves from Miniflare rather than an account — so a project always has it and provisioning
+ * never has it. Declaring it would ask a deploy to happen for an environment that never deploys.
+ *
+ * **Nothing is renamed by editing this.** `<project>-<env>-<thing>` is computed from the declaration and
+ * never stored, so changing a name here orphans everything already provisioned under the old one, exactly
+ * as renaming `name` does. `pithy doctor` reports the change rather than applying it.
+ */
+export const DeclaredEnvironments = z
+  .array(
+    z
+      .string()
+      .describe(
+        "One deployed environment's name, used verbatim in the middle of every Cloudflare name the project composes and in each Worker's `env.<name>` wrangler stanza.",
+      ),
+  )
+  .check((ctx) => {
+    if (ctx.value.length === 0) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        message: `Declare at least one environment. A project with none can never deploy — ${DEFAULT_ENVIRONMENTS.join(" and ")} is the default.`,
+      });
+    }
+    const seen = new Set<string>();
+    for (const name of ctx.value) {
+      if (name === LOCAL_ENVIRONMENT) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          message: `"${LOCAL_ENVIRONMENT}" is local and always present, so it is never declared. List only the environments this project deploys.`,
+        });
+        continue;
+      }
+      if (seen.has(name)) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          message: `"${name}" is declared twice. One environment is one set of Cloudflare names.`,
+        });
+        continue;
+      }
+      seen.add(name);
+      // The naming rule is `assertValidEnvironment`'s, not a second copy of it — a declaration that
+      // core's namer would refuse must be refused in the declaration's own sentence, or a project could
+      // write down an environment nothing could ever provision a resource for.
+      try {
+        assertValidEnvironment(name);
+      } catch (error) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          message: error instanceof PithyError ? error.payload.message : `"${name}" can't be an environment name.`,
+        });
+      }
+    }
+  })
+  .describe(
+    "Every deployed environment this project has, in the order provisioning walks them — least-production first. Declared once in the root pithy.config.ts, because the set cannot be per-Worker. `dev` is never listed: it is local and always present.",
+  );
+
+/** Every deployed environment a project has. Same name as its schema, as every Zod object here is. */
+export type DeclaredEnvironments = z.output<typeof DeclaredEnvironments>;

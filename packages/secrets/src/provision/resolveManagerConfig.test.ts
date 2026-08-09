@@ -3,6 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
 import type { ManagedEnvironment } from "../scope";
 import { managerCfApiTokenSecretName, masterKeySecretName } from "./provisionSecrets";
@@ -218,6 +219,7 @@ describe("resolveAllManagerConfigs", () => {
         staging: { databaseId: "db-s", storeId: "store-s" },
         prod: { databaseId: "db-p", storeId: "store-p" },
       },
+      DEFAULT_ENVIRONMENTS,
     );
     expect(all.map((c) => c.env)).toEqual(["staging", "prod"]);
     expect(all[0]?.config.name).toBe("acme-staging-secrets");

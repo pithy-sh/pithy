@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { STORAGE_CAPABILITY } from "../workflows/specs";
@@ -107,24 +108,31 @@ export interface StorageProvisionResult {
  * must not boot before the secret it reads. Fanning each phase across all environments — rather than
  * completing one environment end to end before starting the next — means a failure creating prod's
  * bucket stops the run before staging's worker is deployed against a half-provisioned account.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
-export async function provisionStorage(provisioner: StorageProvisioner): Promise<StorageProvisionResult> {
+export async function provisionStorage(
+  provisioner: StorageProvisioner,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<StorageProvisionResult> {
   await provisioner.preflight();
 
   const resources = new Map<ManagedEnvironment, StorageResources>();
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     const { bucketName } = await provisioner.ensureBucket(env);
     resources.set(env, { bucketName });
   }
 
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.writeCredentials(env, resourcesFor(resources, env));
   }
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.deployWorker(env, resourcesFor(resources, env));
   }
 
-  return { environments: managedEnvironments().map((env) => ({ env, ...resourcesFor(resources, env) })) };
+  return { environments: managedEnvironments(environments).map((env) => ({ env, ...resourcesFor(resources, env) })) };
 }
 
 /** Read back an environment's resources. Absent is impossible by construction, so the throw is a bug check. */
@@ -163,16 +171,21 @@ export interface StorageDeprovisionOptions {
  * Tear down the storage infrastructure, reversing {@link provisionStorage}: delete every environment's
  * sweep worker first (they bind the bucket), then — only when `deleteStorage` is set — the buckets and
  * everything in them. Idempotent end to end.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
 export async function deprovisionStorage(
   deprovisioner: StorageDeprovisioner,
+  environments: DeclaredEnvironments | readonly string[],
   options: StorageDeprovisionOptions = {},
 ): Promise<void> {
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteWorker(env);
   }
   if (options.deleteStorage) {
-    for (const env of managedEnvironments()) {
+    for (const env of managedEnvironments(environments)) {
       await deprovisioner.deleteBucket(env);
     }
   }

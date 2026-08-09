@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
@@ -87,8 +88,8 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
         storeId,
         deploy: buildManagerDeploy({ accountId, apiToken, project }),
       });
-      const result = await provisionSecrets(provisioner);
-      expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments());
+      const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
+      expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments(DEFAULT_ENVIRONMENTS));
       const databaseId = result.perEnv.find((e) => e.env === env)?.databaseId ?? "";
       expect(databaseId).not.toBe("");
 
@@ -123,11 +124,11 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       expect(await storedKeyVersion(databaseId)).toBeUndefined();
     } finally {
       // 5. Full teardown, including the throwaway master keys — this is a round-trip test.
-      await deprovisionSecrets(deprovisioner, { deleteKeys: true });
+      await deprovisionSecrets(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteKeys: true });
     }
 
     // Teardown removed every manager Worker and database.
-    for (const e of managedEnvironments()) {
+    for (const e of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
       const name = managerWorkerName(project, e);
       expect(await cf.workers().getWorker(name)).toBeNull();
       expect(await cf.d1Provisioner().findDatabaseByName(name)).toBeNull();

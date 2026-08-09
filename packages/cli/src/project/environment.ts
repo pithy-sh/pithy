@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { assertValidEnvironment, ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { assertValidEnvironment, type DeclaredEnvironments, ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 
 /**
@@ -22,15 +22,20 @@ import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/s
 
 /**
  * The shared citty definition for `--env`. Every command that takes one spreads this, so the help text
- * names the same three environments everywhere and a new command cannot invent its own wording.
+ * says the same thing everywhere and a new command cannot invent its own wording.
  *
  * `dev` is the default because every command is safe there: it is local, it is the top-level wrangler
  * stanza, and a missing flag should never reach a deployed environment by accident.
+ *
+ * **The text names the default set, not the project's.** citty resolves an arg's description when the
+ * command tree is built — before any `pithy.config.ts` has been read, and in `pithy --help` outside a
+ * project entirely — so a declaration cannot reach it. The refusal is where the project's own set is
+ * named: {@link requireManagedEnvironment} lists exactly what this project declared.
  */
 export const ENV_ARG = {
   type: "string",
   default: "dev",
-  description: `Target environment: ${ENVIRONMENTS.join(", ")}`,
+  description: `Target environment: ${ENVIRONMENTS.join(", ")}, or one declared in pithy.config.ts`,
 } as const;
 
 /**
@@ -69,23 +74,33 @@ export function requireEnvironment(value: string): string {
 }
 
 /**
- * The same check, narrowed to an environment Pithy **deploys** to — the set a provisioning command can
- * act on. `dev` is a legal environment and not a legal target: it resolves from `.dev.vars` and a local
- * Miniflare, so provisioning it would look up a Worker that was never deployed.
+ * The same check, narrowed to an environment Pithy **deploys** to — and, since #241, to one **this
+ * project declared**. `dev` is a legal environment and not a legal target: it resolves from `.dev.vars`
+ * and a local Miniflare, so provisioning it would look up a Worker that was never deployed.
  *
  * One helper rather than a bare `ManagedEnvironment.parse` at each call site, because a Zod failure is
  * not a `PithyError`: it escapes `withErrorReporting` and prints a stack trace where the operator should
  * see one sentence. And `dev` gets its own answer, since typing it is a reasonable mistake with an
  * unreasonable error.
+ *
+ * **`declared` is the project's own set, from the root `pithy.config.ts`** ({@link loadProjectEnvironments}).
+ * Passing it is what makes `--env live` a refusal that names the declared environments instead of a value
+ * that half the CLI accepted and the other half skipped — and it is what lets a project that *does*
+ * declare `live` use it everywhere. A caller with no project loaded has nothing to check against and no
+ * business calling this.
  */
-export function requireManagedEnvironment(value: string): ManagedEnvironment {
+export function requireManagedEnvironment(
+  value: string,
+  declared: DeclaredEnvironments | readonly string[],
+): ManagedEnvironment {
   const parsed = ManagedEnvironment.safeParse(requireEnvironment(value));
-  if (parsed.success) return parsed.data;
+  const environments = managedEnvironments(declared);
+  if (parsed.success && environments.includes(parsed.data)) return parsed.data;
   throw new ValidationError({
-    message: `--env must be one of ${managedEnvironments().join(", ")}. Got ${JSON.stringify(value)}.`,
+    message: `--env must be one of ${environments.join(", ")}. Got ${JSON.stringify(value)}.`,
     action:
       value === "dev"
         ? "This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead."
-        : `Pass a managed environment: --env ${managedEnvironments()[0]}`,
+        : `Declare it in \`environments\` in the root pithy.config.ts, or pass one this project has: --env ${environments[0]}`,
   });
 }

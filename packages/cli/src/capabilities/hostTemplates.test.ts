@@ -4,6 +4,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { EmailWorkerWranglerTemplate } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import { resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
@@ -352,7 +353,7 @@ describe("the committed worker templates", () => {
   });
 
   describe.each(COVERAGE)("$capability resolves", ({ entry, resolve: resolveFor }) => {
-    test.each(managedEnvironments())("clean in %s, in every mode", async (env) => {
+    test.each(managedEnvironments(DEFAULT_ENVIRONMENTS))("clean in %s, in every mode", async (env) => {
       const modes = await resolveFor(env, entry);
       expect(Object.keys(modes).length).toBeGreaterThan(0);
       for (const [mode, config] of Object.entries(modes)) {
@@ -369,17 +370,20 @@ describe("the committed worker templates", () => {
      * proved it, and the account's Secrets Store is one flat namespace where the name is the whole
      * partition. An unscoped entry name is one project's manager reading another's master key.
      */
-    test.each(managedEnvironments())("every Secrets Store entry, project-scoped, in %s", async (env) => {
-      for (const [mode, config] of Object.entries(await resolveFor(env, entry))) {
-        for (const secret of config.secrets_store_secrets ?? []) {
-          const where = `${mode}: ${secret.binding}`;
-          expect(secret.store_id, where).toBe(STORE_ID);
-          expect(secret.secret_name.startsWith(`${PROJECT}-`), `${where} = ${secret.secret_name}`).toBe(true);
-          // Scoped to an environment or explicitly `global` — never a bare name, and never the binding.
-          expect(secret.secret_name, where).toMatch(new RegExp(`^${PROJECT}-(${env}|global)-`));
+    test.each(managedEnvironments(DEFAULT_ENVIRONMENTS))(
+      "every Secrets Store entry, project-scoped, in %s",
+      async (env) => {
+        for (const [mode, config] of Object.entries(await resolveFor(env, entry))) {
+          for (const secret of config.secrets_store_secrets ?? []) {
+            const where = `${mode}: ${secret.binding}`;
+            expect(secret.store_id, where).toBe(STORE_ID);
+            expect(secret.secret_name.startsWith(`${PROJECT}-`), `${where} = ${secret.secret_name}`).toBe(true);
+            // Scoped to an environment or explicitly `global` — never a bare name, and never the binding.
+            expect(secret.secret_name, where).toMatch(new RegExp(`^${PROJECT}-(${env}|global)-`));
+          }
         }
-      }
-    });
+      },
+    );
   });
 
   /**
@@ -405,7 +409,7 @@ describe("the committed worker templates", () => {
   test.each(COVERAGE)(
     "$capability binds the master key it should, under this environment's name",
     async ({ capability, entry, resolve: resolveFor }) => {
-      for (const env of managedEnvironments()) {
+      for (const env of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
         for (const [mode, config] of Object.entries(await resolveFor(env, entry))) {
           const master = config.secrets_store_secrets?.find((s) => s.binding === "SECRETS_ENCRYPTION_KEYS");
           // Presence is asserted, not assumed. A template that lost its `secrets_store_secrets` block, or

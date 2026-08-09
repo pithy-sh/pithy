@@ -3,10 +3,11 @@
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
@@ -19,7 +20,7 @@ import {
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -134,17 +135,23 @@ async function readValue(name: string): Promise<string> {
 }
 
 /** Resolve the target env for a write: required for an environment-scoped secret, ignored for a global one. */
-function resolveEnv(registry: SecretRegistry, name: string, requested: string | undefined): ManagedEnvironment {
-  if (requested) return requireManagedEnvironment(requested);
+function resolveEnv(
+  registry: SecretRegistry,
+  name: string,
+  requested: string | undefined,
+  declared: DeclaredEnvironments,
+): ManagedEnvironment {
+  if (requested) return requireManagedEnvironment(requested, declared);
   const entry = registry[name];
   if (entry && entry.scope === "environment") {
     throw new ValidationError({
       message: `Secret '${name}' is environment-scoped — choose an environment.`,
-      action: "Pass --env staging or --env prod.",
+      action: `Pass one of ${declared.map((env) => `--env ${env}`).join(" or ")}.`,
     });
   }
-  // A global write reaches both environments regardless; the requested env is unused.
-  return "prod";
+  // A global write reaches every declared environment regardless; the requested env is unused. The
+  // canonical one is named here rather than the literal `prod`, which a project without one does not have.
+  return canonicalGlobalEnvironment(declared) ?? declared[0] ?? "prod";
 }
 
 /** Shared body for create/update/rm: discover the registry, dispatch, and report the envs written. */
@@ -154,12 +161,18 @@ async function write(
 ): Promise<void> {
   const projectDir = process.cwd();
   const registry = await projectSecretRegistry(projectDir);
-  const env = resolveEnv(registry, args.name, args.env);
+  const environments = await projectEnvironments(projectDir);
+  const env = resolveEnv(registry, args.name, args.env, environments);
   const value = mode === "delete" ? undefined : await readValue(args.name);
   const dispatcher = await buildDispatcher(projectDir);
   const audit = await buildAudit(projectDir, env);
 
-  const targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env }, audit);
+  const targets = await runSecretWrite(
+    registry,
+    dispatcher,
+    { mode, name: args.name, value, env, environments },
+    audit,
+  );
 
   if (args.json) {
     process.stdout.write(`${formatJsonLine({ command: `secrets ${mode}`, name: args.name, environments: targets })}\n`);
@@ -175,7 +188,9 @@ const nameArg = {
 const sharedArgs = {
   env: {
     type: "string",
-    description: `Target environment for an environment-scoped secret: ${managedEnvironments().join(" | ")}`,
+    // Resolved when the command tree is built, before any project is read, so this names the default set
+    // and the refusal names the project's own — see `requireManagedEnvironment`.
+    description: `Target environment for an environment-scoped secret: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts`,
   },
   json: { type: "boolean", default: false, description: "Machine-readable output" },
 } as const;
@@ -281,7 +296,7 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, "dev"),
       });
 
-      const result = await provisionSecrets(provisioner);
+      const result = await provisionSecrets(provisioner, await projectEnvironments(projectDir));
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "secrets provision", environments: result.perEnv })}\n`);
@@ -314,7 +329,7 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, "dev"),
       });
 
-      await deprovisionSecrets(deprovisioner, { deleteKeys: args.keys });
+      await deprovisionSecrets(deprovisioner, await projectEnvironments(projectDir), { deleteKeys: args.keys });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "secrets deprovision", keysDeleted: args.keys })}\n`);

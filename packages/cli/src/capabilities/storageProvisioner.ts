@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -131,6 +132,8 @@ export interface CloudflareStorageProvisionerOptions {
   resolveEnv: ResolveStorageEnv;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /** Every environment this project declares, from the root `pithy.config.ts` — the fan-out set for a `global` secret. */
+  environments: DeclaredEnvironments | readonly string[];
 }
 
 /** The live {@link StorageProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
@@ -144,6 +147,11 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #r2Credentials: { accessKeyId: string; secretAccessKey: string };
   readonly #storageConfig: StorageConfig;
   readonly #dispatcher: SecretDispatcher;
+  /**
+   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * rather than assumed, so a shared secret reaches every environment the project deploys to.
+   */
+  readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #resolveEnv: ResolveStorageEnv;
   readonly #audit: CliAuditEmit;
 
@@ -157,6 +165,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     this.#r2Credentials = options.r2Credentials;
     this.#storageConfig = options.storageConfig;
     this.#dispatcher = options.dispatcher;
+    this.#environments = options.environments;
     this.#resolveEnv = options.resolveEnv;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -220,10 +229,10 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
       requested: env,
     };
     try {
-      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write });
+      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write }, this.#environments);
     } catch (createError) {
       try {
-        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write });
+        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write }, this.#environments);
       } catch (updateError) {
         throw new InternalError(
           {

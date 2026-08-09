@@ -7,7 +7,13 @@ import { join } from "node:path";
 import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type CloudflareConfigOptions, cloudflareEnv } from "../cloudflare/config";
-import { askCloudflareAccount, type InitPrompt, renderCloudflareBlock, writeCloudflareBlock } from "./init";
+import {
+  askCloudflareAccount,
+  askEnvironments,
+  type InitPrompt,
+  renderCloudflareBlock,
+  writeCloudflareBlock,
+} from "./init";
 
 /**
  * `pithy init` is the one moment the adopter is holding the token, so it is the one moment the account
@@ -331,5 +337,71 @@ describe("writeCloudflareBlock", () => {
 
   test("the rendered block is what an adopter would paste by hand", () => {
     expect(renderCloudflareBlock({ accountName: "leed", accountId: "a1" })).toContain('accountName: "leed"');
+  });
+});
+
+/**
+ * The environment question (#241). `name` has been asked at `init` and capped since the beginning,
+ * because it leads every Cloudflare name a project composes; the environment sits in the middle of the
+ * same name, is measured against the same 33-character ceiling, and was asked about nowhere.
+ */
+describe("askEnvironments", () => {
+  test("one keypress takes the default — staging and prod, nothing written", async () => {
+    const answer = await askEnvironments({
+      interactive: true,
+      prompt: prompts({ text: async ({ defaultValue }) => defaultValue ?? "" }),
+    });
+    expect(answer.environments).toEqual(["staging", "prod"]);
+    expect(answer.declared).toBe(false);
+  });
+
+  test("offers the default as the placeholder, so the common answer is visible", async () => {
+    let offered: string | undefined;
+    await askEnvironments({
+      interactive: true,
+      prompt: prompts({
+        text: async ({ defaultValue, placeholder }) => {
+          offered = placeholder;
+          return defaultValue ?? "";
+        },
+      }),
+    });
+    expect(offered).toBe("staging, prod");
+  });
+
+  test("takes a custom set, comma-separated, and reports that it was declared", async () => {
+    const answer = await askEnvironments({
+      interactive: true,
+      prompt: prompts({ text: async () => "staging, live" }),
+    });
+    expect(answer.environments).toEqual(["staging", "live"]);
+    expect(answer.declared).toBe(true);
+  });
+
+  test("re-asks an illegal set rather than scaffolding a project that cannot deploy", async () => {
+    const said: string[] = [];
+    const answers = ["dev, prod", "staging, live"];
+    const answer = await askEnvironments({
+      interactive: true,
+      prompt: prompts({ text: async () => answers.shift() ?? "" }),
+      note: (line) => said.push(line),
+    });
+    expect(answer.environments).toEqual(["staging", "live"]);
+    expect(said.join(" ")).toContain("dev");
+  });
+
+  test("asks nothing without a human, and takes the default — a CI scaffold is unchanged", async () => {
+    const answer = await askEnvironments({ interactive: false });
+    expect(answer.environments).toEqual(["staging", "prod"]);
+    expect(answer.prompted).toBe(false);
+    expect(answer.declared).toBe(false);
+  });
+
+  test("a cancelled prompt keeps the default rather than proceeding on half an answer", async () => {
+    const answer = await askEnvironments({
+      interactive: true,
+      prompt: prompts({ text: async () => Symbol("cancel") }),
+    });
+    expect(answer.environments).toEqual(["staging", "prod"]);
   });
 });

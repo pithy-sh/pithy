@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
@@ -46,8 +47,8 @@ describe("paymentsSecretsRegistry", () => {
     // `environment` scope means one target either way. It would only fan out if the scope changed too.
     const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
     if (!entry) throw new Error("the registry entry must exist");
-    expect(resolveWriteTargets(entry.backend, entry.scope, "staging")).toEqual(["staging"]);
-    expect(resolveWriteTargets(entry.backend, entry.scope, "prod")).toEqual(["prod"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "staging", DEFAULT_ENVIRONMENTS)).toEqual(["staging"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
   });
 });
 

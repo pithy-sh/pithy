@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { MAX_ENVIRONMENT_NAME } from "@pithy-sh/core/src/naming/environment";
+import { DEFAULT_ENVIRONMENTS, MAX_ENVIRONMENT_NAME } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "./environment";
 
@@ -43,14 +43,33 @@ describe("requireEnvironment", () => {
 });
 
 describe("requireManagedEnvironment", () => {
-  test("accepts the deployed environments", () => {
-    expect(requireManagedEnvironment("staging")).toBe("staging");
-    expect(requireManagedEnvironment("prod")).toBe("prod");
+  test("accepts the environments the project declared", () => {
+    expect(requireManagedEnvironment("staging", DEFAULT_ENVIRONMENTS)).toBe("staging");
+    expect(requireManagedEnvironment("prod", DEFAULT_ENVIRONMENTS)).toBe("prod");
+  });
+
+  test("accepts an environment core never heard of, once the project declares it", () => {
+    expect(requireManagedEnvironment("live", ["staging", "live"])).toBe("live");
+  });
+
+  test("refuses an undeclared environment by name, listing the ones that are", () => {
+    // The other half of #241: `--env live` used to be accepted by the naming rule and then skipped by
+    // everything that iterated the closed enum. Undeclared is now a refusal, not a silence.
+    try {
+      requireManagedEnvironment("live", DEFAULT_ENVIRONMENTS);
+      expect.unreachable("live is not declared");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      const payload = (error as PithyError).payload;
+      expect(payload.message).toContain("live");
+      expect(payload.message).toContain("staging, prod");
+      expect(payload.action).toContain("pithy.config.ts");
+    }
   });
 
   test("refuses dev with the local answer, not a Zod stack trace", () => {
     try {
-      requireManagedEnvironment("dev");
+      requireManagedEnvironment("dev", DEFAULT_ENVIRONMENTS);
       expect.unreachable("dev is local-only");
     } catch (error) {
       expect(error).toBeInstanceOf(PithyError);
@@ -58,8 +77,8 @@ describe("requireManagedEnvironment", () => {
     }
   });
 
-  test("still refuses `production` at the naming rule, before the managed set is consulted", () => {
-    expect(() => requireManagedEnvironment("production")).toThrow(/not an environment name/);
+  test("still refuses `production` at the naming rule, before the declaration is consulted", () => {
+    expect(() => requireManagedEnvironment("production", DEFAULT_ENVIRONMENTS)).toThrow(/not an environment name/);
   });
 });
 

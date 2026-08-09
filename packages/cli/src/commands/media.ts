@@ -19,7 +19,7 @@ import {
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -185,7 +185,11 @@ const provision = defineCommand({
       // The leading segment of every name this run creates — the bucket, the KV namespace, the worker.
       // `requireProjectName` refuses to guess, because `deprovision` recomputes these same names to
       // find what to delete (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { provisionMedia } = await loadMedia();
       const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const mediaConfig = await loadMediaConfig(projectDir);
@@ -194,6 +198,7 @@ const provision = defineCommand({
       const provisioner = new CloudflareMediaProvisioner({
         cf,
         project,
+        environments,
         accountId,
         apiToken,
         storeId,
@@ -206,7 +211,7 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      const result = await provisionMedia(provisioner);
+      const result = await provisionMedia(provisioner, environments);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "media provision", ...result })}\n`);
@@ -245,7 +250,11 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { deprovisionMedia } = await loadMedia();
       const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -262,7 +271,7 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionMedia(deprovisioner, { deleteStorage: args.storage });
+      await deprovisionMedia(deprovisioner, environments, { deleteStorage: args.storage });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "media deprovision", storageDeleted: args.storage })}\n`);

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { StorageConfig } from "@pithy-sh/storage/src/config/config";
 import { storageBucketName, storageWorkerName } from "@pithy-sh/storage/src/provision/provisionStorage";
@@ -68,6 +69,7 @@ function provisioner(
     r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
     storageConfig: StorageConfig.parse({}),
     dispatcher: { dispatch: dispatch as never },
+    environments: DEFAULT_ENVIRONMENTS,
     resolveEnv: async () => {
       throw new Error("not used by these tests");
     },

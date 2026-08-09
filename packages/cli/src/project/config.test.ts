@@ -14,8 +14,10 @@ import {
   classifyConfigLoadFailure,
   loadProject,
   loadProjectCloudflare,
+  loadProjectEnvironments,
   loadWorkerConfig,
   projectCloudflareAccount,
+  projectEnvironments,
   requireProjectName,
   resolveProjectName,
 } from "./config";
@@ -708,6 +710,46 @@ describe("the project's cloudflare block", () => {
     const dirA = await project('export default { name: "acme", cloudflare: { accountId: "a1" } };\n');
     expect(loadProjectCloudflare(await loadProject(dirA))).toEqual({ accountId: "a1" });
     expect(await projectCloudflareAccount(dirA)).toEqual({ accountId: "a1" });
+  });
+});
+
+/**
+ * The project's environment declaration (#241) — the setting that ends three parts of the CLI holding
+ * three different opinions about which environments a project has.
+ */
+describe("the project's environments declaration", () => {
+  async function project(source: string): Promise<string> {
+    const projectDir = join(dir, `e${Math.random().toString(36).slice(2)}`);
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "pithy.config.ts"), source);
+    return projectDir;
+  }
+
+  test("a project that declares nothing has staging and prod — exactly what the scaffold always wrote", async () => {
+    const dirA = await project('export default { name: "acme" };\n');
+    expect(loadProjectEnvironments(await loadProject(dirA))).toEqual(["staging", "prod"]);
+    expect(await projectEnvironments(dirA)).toEqual(["staging", "prod"]);
+  });
+
+  test("a declared set is read in its own order — the order provisioning walks", async () => {
+    const dirA = await project('export default { name: "acme", environments: ["staging", "live"] };\n');
+    expect(loadProjectEnvironments(await loadProject(dirA))).toEqual(["staging", "live"]);
+  });
+
+  test("an illegal declaration is refused on load, naming the field and the value", async () => {
+    const dirA = await project('export default { name: "acme", environments: ["staging", "production"] };\n');
+    const error = await loadProject(dirA).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).toContain("environments");
+    expect(payload.message).toContain("production");
+  });
+
+  test("refuses dev, an empty set, and a duplicate — each on load, not at the first provision", async () => {
+    for (const declaration of ['["dev", "prod"]', "[]", '["prod", "prod"]', '"prod"']) {
+      const dirA = await project(`export default { name: "acme", environments: ${declaration} };\n`);
+      await expect(loadProject(dirA)).rejects.toBeInstanceOf(PithyError);
+    }
   });
 });
 

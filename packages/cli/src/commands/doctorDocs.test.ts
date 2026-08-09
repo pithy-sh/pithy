@@ -725,7 +725,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   domains: ["init", "worker"],
   dryRun: ["seed", "upgrade"],
   env: ["deploy", "feature", "migrate", "payments", "seed", "token", "upgrade", "vector"],
-  environments: ["email", "media", "payments", "secrets", "storage", "support"],
+  environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
   from: ["email", "worker"],
   manifestFaults: ["add", "upgrade"],
   name: ["secrets", "token"],
@@ -798,17 +798,18 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  * - **`workers`** — an `object[]` in seven commands, and an `object` keyed by worker name in `pithy dev`.
  *   The one where the shapes are closest and the misread is worst: both are truthy, both enumerate
  *   workers, and only one answers to `.length`.
- * - **`environments`** — a `string[]` of environment names in `email`, `payments`, `support` and
- *   `secrets`' write payloads, an `object[]` of per-environment records in `secrets status`, and `array`
- *   on `media` and `storage`, which is why those two do not decide it either way.
+ * - **`environments`** — a `string[]` of environment names in `email`, `payments`, `support`, `secrets`'
+ *   write payloads and `init`, an `object[]` of per-environment records in `secrets status`, an `object`
+ *   block in `doctor` (#241), and `array` on `media` and `storage`, which is why those two do not decide
+ *   it either way.
  *
- * The first three share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks
+ * The first four share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks
  * take the bare noun a result elsewhere spends on a scalar.** That is the fix to make, and it is one
  * decision about two commands rather than four scattered renames.
  */
 const SHARED_JSON_KEY_TYPES_DISAGREE: Record<string, string[]> = {
   alias: ["object", "string"],
-  environments: ["object[]", "string[]"],
+  environments: ["object", "object[]", "string[]"],
   project: ["object", "string"],
   workers: ["object", "object[]"],
 };

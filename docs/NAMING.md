@@ -75,6 +75,12 @@ An environment is lowercase, digits, and single inner hyphens, starting with a l
 
 A custom environment is allowed, and held to the same two rules. `live` is fine. `eu-prod` is fine. `preprod-eu` is 10 characters and is refused. `global` is refused for a different reason: it occupies the same slot for a different purpose, and a project cannot have one set of names covering two scopes.
 
+**A project declares which of them it has.** `environments` in the root `pithy.config.ts`, defaulting to `["staging", "prod"]`, asked at `pithy init` with that default. It is the one answer to "what environments does this project have", and everything that iterates environments reads it: each Worker's `env.<name>` stanzas are generated from it, `pithy secrets provision` gives every declared environment a master key and a manager, and `--env` refuses one the project does not declare, naming the ones it does. `dev` is never listed — it is local, it is the top-level wrangler stanza rather than an `env.dev`, and it always exists.
+
+The list is **ordered, least-production first**. That is the order provisioning walks, so a mistake is made in staging before it is made in prod, and the last entry is the one a `global` account-level secret is written through.
+
+**And it is as permanent as the project name, for the same reason.** `<project>-<env>-<thing>` is recomputed on every command and stored nowhere, so changing an environment name does not rename a database — it orphans it. `pithy doctor` reports a declaration that changed after resources were provisioned under the old names, and stops there: only the adopter can say whether to restore the name or delete what it created.
+
 ## `global` in the environment slot
 
 Some things are shared across all of a project's environments on purpose. They put the literal `global` in the environment slot rather than omitting it, so the scheme has no exception to remember.

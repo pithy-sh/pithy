@@ -222,6 +222,36 @@ describe("scaffoldProject", () => {
     expect(wrangler).toContain('"prod"');
   });
 
+  test("the stanzas are the project's declared environments, not a hardcoded pair", async () => {
+    // #241: `init` asks, and what it is told reaches the file every capability's bindings land in. A
+    // project that runs `live` used to get `env.prod` it did not want and no `env.live` at all.
+    await scaffoldProject({ targetDir: dir, appName: "envs", environments: ["staging", "live"] });
+    const wrangler = parse(await readFile(join(dir, "apps", "api", "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { vars: Record<string, string> }>;
+    };
+    expect(Object.keys(wrangler.env)).toEqual(["staging", "live"]);
+    expect(wrangler.env.live?.vars).toEqual({ ENVIRONMENT: "live", PROJECT: "envs", WORKER: "api" });
+  });
+
+  test("writes the declaration into the root config, so the file says what the scaffold did", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "envs", environments: ["staging", "live"] });
+    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    expect(config).toContain('environments: ["staging", "live"]');
+  });
+
+  test("a project on the default set gets no `environments` line — the default is the silence", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "envs" });
+    const config = await readFile(join(dir, "pithy.config.ts"), "utf8");
+    expect(config).not.toContain("\n  environments:");
+  });
+
+  test("refuses a declaration the naming rule refuses, before anything is written", async () => {
+    await expect(
+      scaffoldProject({ targetDir: join(dir, "nope"), appName: "envs", environments: ["dev", "prod"] }),
+    ).rejects.toThrow(PithyError);
+    await expect(readFile(join(dir, "nope", "pithy.config.ts"), "utf8")).rejects.toThrow();
+  });
+
   test("stamps PROJECT in every vars stanza, so the first worker can mint attributable assets", async () => {
     // Media mints Cloudflare Images/Stream uploads from this Worker, and those stores are account-flat —
     // an asset carries no name we chose, only the owner in its metadata. `assetOwner` refuses to mint

@@ -23,7 +23,7 @@ pithy secrets deprovision [--keys] [--json]
 | `deprovision` | `--keys` | Also delete each environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
-`--env` here is the **managed** set — `staging` and `prod` — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`. A global secret ignores `--env`: the write reaches both environments regardless.
+`--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are. A global secret ignores `--env`: a `d1`-backed one reaches every declared environment regardless, and a `cf-secrets-store` one is written once through the last declared environment, since it is a single account-level secret every environment binds.
 
 There is no `--worker`. Every subcommand reads the **project's** registry: each Worker's, merged by secret name.
 

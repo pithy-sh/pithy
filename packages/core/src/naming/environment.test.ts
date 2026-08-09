@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { type PithyError, ValidationError } from "../error/pithyError";
 import {
   assertValidEnvironment,
+  DEFAULT_ENVIRONMENTS,
+  DeclaredEnvironments,
   ENVIRONMENTS,
   GLOBAL_SCOPE,
   isValidEnvironment,
@@ -91,5 +93,48 @@ describe("assertValidEnvironment", () => {
   it("names the length limit when the name is merely too long", () => {
     const error = thrown(() => assertValidEnvironment("integration"));
     expect((error as PithyError).payload.message).toContain(String(MAX_ENVIRONMENT_NAME));
+  });
+});
+
+describe("DeclaredEnvironments", () => {
+  it("defaults to staging and prod — the set a project has until it says otherwise", () => {
+    expect([...DEFAULT_ENVIRONMENTS]).toEqual(["staging", "prod"]);
+    expect(DeclaredEnvironments.parse([...DEFAULT_ENVIRONMENTS])).toEqual(["staging", "prod"]);
+  });
+
+  it("keeps the declared order — it is the order provisioning walks", () => {
+    expect(DeclaredEnvironments.parse(["prod", "staging"])).toEqual(["prod", "staging"]);
+  });
+
+  it("takes an environment core never heard of, so long as the naming rule accepts it", () => {
+    expect(DeclaredEnvironments.parse(["staging", "live"])).toEqual(["staging", "live"]);
+  });
+
+  it("refuses an empty declaration — a project with no environments cannot deploy at all", () => {
+    const parsed = DeclaredEnvironments.safeParse([]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toContain("at least one");
+  });
+
+  it("refuses `dev` — it is local, always present, and never declared", () => {
+    const parsed = DeclaredEnvironments.safeParse(["dev", "prod"]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toContain("dev");
+  });
+
+  it("refuses `global` — the scope beside the environments, by the same rule as everywhere else", () => {
+    expect(DeclaredEnvironments.safeParse([GLOBAL_SCOPE]).success).toBe(false);
+  });
+
+  it("refuses a duplicate — two of one environment is two of one set of resource names", () => {
+    const parsed = DeclaredEnvironments.safeParse(["prod", "prod"]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toContain("twice");
+  });
+
+  it("refuses a name the naming rule refuses, with that rule's own sentence", () => {
+    for (const bad of ["production", "Prod", "integration", "2prod", ""]) {
+      expect(DeclaredEnvironments.safeParse(["staging", bad]).success).toBe(false);
+    }
   });
 });

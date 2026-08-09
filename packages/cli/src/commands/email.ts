@@ -23,6 +23,7 @@ import {
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
+  loadProjectEnvironments,
   loadWorkerConfig,
   loadWorkerDomains,
   projectCloudflareAccount,
@@ -244,7 +245,11 @@ const provision = defineCommand({
       // The leading segment of the suppression database, the email workers, and the bounce rule. The
       // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
       // adopts another project's opt-out list (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const { theme } = await loadEmailConfig(projectDir);
       const appWorker = await resolveSingleWorker({
@@ -264,7 +269,7 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      const result = await provisionEmail(provisioner);
+      const result = await provisionEmail(provisioner, environments);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "email provision", ...result })}\n`);
@@ -290,7 +295,11 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
@@ -299,7 +308,7 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionEmail(deprovisioner, { deleteSuppression: args.suppression });
+      await deprovisionEmail(deprovisioner, environments, { deleteSuppression: args.suppression });
 
       if (args.json) {
         process.stdout.write(

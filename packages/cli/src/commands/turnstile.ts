@@ -18,6 +18,7 @@ import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
+  loadProjectEnvironments,
   loadWorkerConfig,
   loadWorkerDomains,
   projectCloudflareAccount,
@@ -171,7 +172,11 @@ const provision = defineCommand({
       // The project name scopes both the widget names (`<project>-prod-turnstile-<mode>`) and the
       // dispatcher's `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a
       // guessed one reuses another project's widget and dispatches into its manager (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const projectConfig = await loadProject(projectDir);
+      const project = requireProjectName(projectConfig);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(projectConfig);
       const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const provisioner = new CloudflareTurnstileProvisioner({
@@ -180,6 +185,7 @@ const provision = defineCommand({
         projectDir,
         workerDir: worker.dir,
         dispatcher,
+        environments,
         audit,
       });
 
@@ -228,7 +234,11 @@ const deprovision = defineCommand({
       // The project name scopes both the widget names teardown recomputes and the dispatcher's
       // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one
       // would delete a neighbouring project's widget (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const projectConfig = await loadProject(projectDir);
+      const project = requireProjectName(projectConfig);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(projectConfig);
       const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const deprovisioner = new CloudflareTurnstileDeprovisioner({
@@ -237,6 +247,7 @@ const deprovision = defineCommand({
         projectDir,
         workerDir: worker.dir,
         dispatcher,
+        environments,
         audit,
       });
 

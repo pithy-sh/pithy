@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -38,6 +39,7 @@ describe("runSecretWrite", () => {
       name: "auth-signing-key",
       value: "k",
       env: "staging",
+      environments: DEFAULT_ENVIRONMENTS,
     });
     expect(envs).toEqual(["staging"]);
     expect(dispatcher.calls[0]).toMatchObject({ env: "staging", mode: "create", name: "auth-signing-key", value: "k" });
@@ -50,19 +52,31 @@ describe("runSecretWrite", () => {
       name: "npm-token",
       value: "t",
       env: "staging",
+      environments: DEFAULT_ENVIRONMENTS,
     });
     expect(envs).toEqual(["prod"]);
   });
 
   test("rejects an undeclared secret", async () => {
     await expect(
-      runSecretWrite(registry, new StubDispatcher(), { mode: "create", name: "nope", value: "v", env: "staging" }),
+      runSecretWrite(registry, new StubDispatcher(), {
+        mode: "create",
+        name: "nope",
+        value: "v",
+        env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
+      }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   test("requires a value for create", async () => {
     await expect(
-      runSecretWrite(registry, new StubDispatcher(), { mode: "create", name: "auth-signing-key", env: "staging" }),
+      runSecretWrite(registry, new StubDispatcher(), {
+        mode: "create",
+        name: "auth-signing-key",
+        env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
+      }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -74,6 +88,7 @@ describe("runSecretWrite", () => {
         name: "emailer",
         value: JSON.stringify({ apiKey: "no" }),
         env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
       }),
     ).rejects.toThrow();
     expect(dispatcher.calls).toHaveLength(0);
@@ -81,7 +96,12 @@ describe("runSecretWrite", () => {
 
   test("delete dispatches with no value", async () => {
     const dispatcher = new StubDispatcher();
-    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "auth-signing-key", env: "prod" });
+    await runSecretWrite(registry, dispatcher, {
+      mode: "delete",
+      name: "auth-signing-key",
+      env: "prod",
+      environments: DEFAULT_ENVIRONMENTS,
+    });
     expect(dispatcher.calls[0]).toMatchObject({ env: "prod", mode: "delete", name: "auth-signing-key" });
     expect(dispatcher.calls[0]?.value).toBeUndefined();
   });
@@ -93,7 +113,13 @@ describe("runSecretWrite", () => {
     await runSecretWrite(
       registry,
       dispatcher,
-      { mode: "create", name: "auth-signing-key", value: "top-secret-value", env: "staging" },
+      {
+        mode: "create",
+        name: "auth-signing-key",
+        value: "top-secret-value",
+        env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
+      },
       async (event) => void events.push(event),
     );
 
@@ -117,10 +143,15 @@ describe("runSecretWrite", () => {
     await runSecretWrite(
       registry,
       dispatcher,
-      { mode: "update", name: "npm-token", value: "v", env: "staging" },
+      { mode: "update", name: "npm-token", value: "v", env: "staging", environments: DEFAULT_ENVIRONMENTS },
       audit,
     );
-    await runSecretWrite(registry, dispatcher, { mode: "delete", name: "npm-token", env: "prod" }, audit);
+    await runSecretWrite(
+      registry,
+      dispatcher,
+      { mode: "delete", name: "npm-token", env: "prod", environments: DEFAULT_ENVIRONMENTS },
+      audit,
+    );
 
     expect(events.map((e) => e.action)).toEqual(["secrets/rotated", "secrets/removed"]);
     expect(events.every((e) => e.outcome === "success")).toBe(true);
@@ -138,7 +169,7 @@ describe("runSecretWrite", () => {
       runSecretWrite(
         registry,
         failing,
-        { mode: "create", name: "auth-signing-key", value: "v", env: "staging" },
+        { mode: "create", name: "auth-signing-key", value: "v", env: "staging", environments: DEFAULT_ENVIRONMENTS },
         async (event) => void events.push(event),
       ),
     ).rejects.toThrow("workflow unreachable");
@@ -154,7 +185,7 @@ describe("runSecretWrite", () => {
       runSecretWrite(
         registry,
         new StubDispatcher(),
-        { mode: "create", name: "nope", value: "v", env: "staging" },
+        { mode: "create", name: "nope", value: "v", env: "staging", environments: DEFAULT_ENVIRONMENTS },
         async (event) => void events.push(event),
       ),
     ).rejects.toBeInstanceOf(NotFoundError);
@@ -201,6 +232,7 @@ describe("keyspaces", () => {
         name: "CONNECTION_SIGNING_KEY",
         value: "k",
         env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
       }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(dispatcher.calls).toEqual([]);

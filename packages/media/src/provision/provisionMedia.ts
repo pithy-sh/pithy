@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames, type ScopedNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { MEDIA_CAPABILITY } from "../workflows/specs";
@@ -129,8 +130,15 @@ export interface MediaProvisionResult {
  * namespace once, write every environment's credentials, then deploy every environment's worker. The
  * order is the contract — the resources exist before a secret names them, and the secrets exist before a
  * worker that reads them boots. Idempotent end to end (each step is).
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
-export async function provisionMedia(provisioner: MediaProvisioner): Promise<MediaProvisionResult> {
+export async function provisionMedia(
+  provisioner: MediaProvisioner,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<MediaProvisionResult> {
   await provisioner.preflight();
 
   // Resources first for every environment, then credentials, then workers — the ordering is the
@@ -139,21 +147,21 @@ export async function provisionMedia(provisioner: MediaProvisioner): Promise<Med
   // environment at a time) means a failure in prod's bucket stops the run before staging's
   // worker is deployed against a half-provisioned account.
   const resources = new Map<ManagedEnvironment, MediaResources>();
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     const { bucketName } = await provisioner.ensureBucket(env);
     const namespace = await provisioner.ensureKvNamespace(env);
     resources.set(env, { bucketName, kvNamespaceId: namespace?.namespaceId ?? null });
   }
 
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.writeCredentials(env, resourcesFor(resources, env));
   }
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.deployWorker(env, resourcesFor(resources, env));
   }
 
   return {
-    environments: managedEnvironments().map((env) => ({ env, ...resourcesFor(resources, env) })),
+    environments: managedEnvironments(environments).map((env) => ({ env, ...resourcesFor(resources, env) })),
   };
 }
 
@@ -196,16 +204,21 @@ export interface MediaDeprovisionOptions {
  * Tear down the media infrastructure, reversing {@link provisionMedia}: delete every environment's worker
  * first (they bind the bucket and namespace), then — only when `deleteStorage` is set — the storage
  * itself, objects and all. Stored media is preserved unless explicitly requested. Idempotent end to end.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
 export async function deprovisionMedia(
   deprovisioner: MediaDeprovisioner,
+  environments: DeclaredEnvironments | readonly string[],
   options: MediaDeprovisionOptions = {},
 ): Promise<void> {
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteWorker(env);
   }
   if (options.deleteStorage) {
-    for (const env of managedEnvironments()) {
+    for (const env of managedEnvironments(environments)) {
       await deprovisioner.deleteBucket(env);
       await deprovisioner.deleteKvNamespace(env);
     }

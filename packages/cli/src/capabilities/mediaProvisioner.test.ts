@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { MediaConfig } from "@pithy-sh/media/src/config/config";
 import { mediaBucketName, mediaKvTitle, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
@@ -71,6 +72,7 @@ function provisioner(cf: CloudflareClients, config: MediaConfig, events: CliAudi
     r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
     mediaConfig: config,
     dispatcher: { dispatch: async () => {} },
+    environments: DEFAULT_ENVIRONMENTS,
     resolveEnv: async () => {
       throw new Error("not used by these tests");
     },
@@ -166,6 +168,7 @@ describe("CloudflareMediaProvisioner", () => {
         throw new Error("not used by these tests");
       },
       audit: async (event) => void events.push(event),
+      environments: DEFAULT_ENVIRONMENTS,
     });
 
     await media.writeCredentials("staging", { bucketName: STAGING_BUCKET, kvNamespaceId: null });
@@ -199,6 +202,7 @@ describe("CloudflareMediaProvisioner", () => {
       resolveEnv: async () => {
         throw new Error("not used by these tests");
       },
+      environments: DEFAULT_ENVIRONMENTS,
     });
 
     await expect(media.writeCredentials("prod", { bucketName: STAGING_BUCKET, kvNamespaceId: null })).rejects.toThrow(

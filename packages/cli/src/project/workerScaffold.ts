@@ -4,6 +4,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { ensureEmptyTarget, kitRange, WORKER_NAME, workerNamespace } from "./scaffold";
 
@@ -29,7 +30,22 @@ export const WRANGLER_RANGE = "^4.115.0";
  * ran `pithy worker add admin` deployed to one script called `admin`, and the second `wrangler deploy`
  * silently replaced the first's live Worker.
  */
-function workerFiles(name: string, project: string): Record<string, string> {
+function workerFiles(name: string, project: string, environments: readonly string[]): Record<string, string> {
+  // Built before the template rather than inside it: one stanza per declared environment, in declaration
+  // order. `env.<name>.vars` REPLACES the top-level block, so every stanza repeats all three vars.
+  const envStanzas = environments
+    .map((environment) =>
+      [
+        `    "${environment}": {`,
+        `      "vars": {`,
+        `        "ENVIRONMENT": "${environment}",`,
+        `        "PROJECT": "${project}",`,
+        `        "WORKER": "${name}"`,
+        `      }`,
+        `    }`,
+      ].join("\n"),
+    )
+    .join(",\n");
   const wrangler = `{
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "${project}-${name}",
@@ -48,7 +64,7 @@ function workerFiles(name: string, project: string): Record<string, string> {
   // \`pithy deploy\` reads back to prove this Worker is the one answering at your domain.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
 
-  // The top level is the dev environment. Staging serves test users; production serves paid users.
+  // The top level is the dev environment; each \`env.<name>\` is one this project declares.
   // All three vars repeat per environment: \`env.<name>.vars\` REPLACES this block rather than merging it.
   // \`PROJECT\` is the root pithy.config.ts name — the owner stamped into every Cloudflare Images and
   // Stream asset this Worker mints, since those stores are account-flat and key assets by their own id.
@@ -60,20 +76,7 @@ function workerFiles(name: string, project: string): Record<string, string> {
     "WORKER": "${name}"
   },
   "env": {
-    "staging": {
-      "vars": {
-        "ENVIRONMENT": "staging",
-        "PROJECT": "${project}",
-        "WORKER": "${name}"
-      }
-    },
-    "prod": {
-      "vars": {
-        "ENVIRONMENT": "prod",
-        "PROJECT": "${project}",
-        "WORKER": "${name}"
-      }
-    }
+${envStanzas}
   }
 }
 `;
@@ -224,7 +227,14 @@ export async function scaffoldWorker(options: {
   projectDir: string;
   name: string;
   project: string;
+  /**
+   * The project's declared environments (#241). Defaults to {@link DEFAULT_ENVIRONMENTS} for a caller
+   * with no config in hand; `addWorker` passes what the root `pithy.config.ts` says, so a second Worker
+   * declares the same environments as the first rather than the pair this file used to hardcode.
+   */
+  environments?: readonly string[];
 }): Promise<{ dir: string }> {
+  const environments = options.environments ?? DEFAULT_ENVIRONMENTS;
   if (!WORKER_NAME.test(options.name)) {
     throw new ValidationError({
       message: `Worker name must be kebab-case (got "${options.name}").`,
@@ -246,7 +256,7 @@ export async function scaffoldWorker(options: {
   await ensureEmptyTarget(options.projectDir, dir);
   await mkdir(dir, { recursive: true });
 
-  const files = workerFiles(options.name, options.project);
+  const files = workerFiles(options.name, options.project, environments);
   for (const [rel, content] of Object.entries(files)) {
     const path = join(dir, rel);
     await mkdir(join(path, ".."), { recursive: true });

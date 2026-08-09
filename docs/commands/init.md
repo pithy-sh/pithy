@@ -21,7 +21,9 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 **Check the target first.** Before a single question is asked, so a doomed run fails fast instead of after you have answered. The check is collision, not emptiness: a directory holding only `.git`, a README, a licence, or an editor config is not a project, and refusing it would mean `pithy init` could not scaffold into a repo you just cloned — which is how projects normally start. It refuses only if something `init` would write is already there. The two paths the scaffold *moves* rather than copies — `apps/api` and `apps/<worker>`, when `--worker` is not the default — are held to emptiness instead, because a rename is not a merge.
 
-**Ask the two names**, when a human is attached and a flag did not supply them. The project name comes with the reasoning printed above it, because both halves of it are hard to undo: the name leads every Cloudflare resource this project provisions, teardown recomputes those names rather than storing them, and the scope decision behind it — one project or two? — cannot be fixed by editing a string later. One project per set of apps that share users or data. Another app is another Worker, not another project. The first Worker is named too, because every Worker lives in `apps/<name>` and `api` is only a default.
+**Ask the names**, when a human is attached and a flag did not supply them. The project name comes with the reasoning printed above it, because both halves of it are hard to undo: the name leads every Cloudflare resource this project provisions, teardown recomputes those names rather than storing them, and the scope decision behind it — one project or two? — cannot be fixed by editing a string later. One project per set of apps that share users or data. Another app is another Worker, not another project. The first Worker is named too, because every Worker lives in `apps/<name>` and `api` is only a default.
+
+**Ask which environments this project deploys to.** `["staging", "prod"]` is offered as the default, so one keypress is the whole answer. It is asked here for the same reason the project name is: `<project>-<env>-<thing>` has a 33-character ceiling, `name` is capped at 26 against it, and the environment is the *other* segment of that budget — it sits in the middle of every Cloudflare name this project will compose. Like `name`, it is effectively permanent: renaming an environment does not rename anything provisioned under the old name, it orphans it. What you answer is written into each Worker's `env.<name>` stanzas, and — only when it differs from the default — into the root `pithy.config.ts` as `environments`. An answer the naming rule refuses is re-asked rather than accepted; `dev` is refused outright, because it is local, always present, and never deployed.
 
 **Write the scaffold.** The root `pithy.config.ts`, the root `package.json`, `biome.jsonc`, `.gitignore`, the `.dev.vars.example` and `.dev.secrets.example.jsonc` templates, the two Grit plugins, and the configs CI gates on — `tsconfig.json` (a solution file), `tsconfig.tools.json`, `vitest.config.ts`, and `vitest.workers.config.ts`. Then `apps/<worker>/` with its own `pithy.config.ts`, `wrangler.jsonc`, `pithy.worker.jsonc`, `tsconfig.json`, `package.json`, `src/index.ts`, `src/cloudflare-test.d.ts`, and a `src/bindings.workers.test.ts` that runs against real D1 and KV through Miniflare.
 
@@ -33,7 +35,7 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, or without a TTY.** Not the names, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, or without a TTY.** Not the names, not the environments, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 
@@ -43,7 +45,7 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","domains":null}
+{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null}
 ```
 
 | key | type | meaning |
@@ -52,6 +54,7 @@ $ pithy init --name replay --worker board --json
 | `targetDir` | string | The absolute directory the project was scaffolded into — `--dir` resolved against the working directory |
 | `appName` | string | The project name written into the root `pithy.config.ts` as `name`. From `--name`, or the target directory's basename |
 | `worker` | string | The first Worker's `apps/` directory. What `--worker` accepts, and what `--worker` on later commands names |
+| `environments` | string[] | Every environment this project deploys to, in declaration order — the second segment of every Cloudflare name it composes, and the set each Worker's `env.<name>` stanzas were generated from. **Always `["staging","prod"]` under `--json`**, because declaring anything else is a prompt and `--json` never prompts |
 | `domains` | object or `null` | Where that Worker answers, per environment, or `null` when none was declared. **Always `null` under `--json`**, because declaring a domain is a prompt and `--json` never prompts |
 | `domains.staging` | object | Where the Worker answers in `staging`, if it has a domain yet |
 | `domains.staging.pattern` | string | The hostname, e.g. `api.example.com`. A bare hostname, not a URL — that is what wrangler's route matcher takes |
@@ -121,7 +124,7 @@ Scaffold headlessly. Both names given, so nothing is asked.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","domains":null}
+{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null}
 ```
 
 Scaffold into a directory that does not exist yet. It is created.

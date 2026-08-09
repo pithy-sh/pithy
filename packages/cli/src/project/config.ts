@@ -17,6 +17,7 @@ import {
 } from "@pithy-sh/core/src/error/cause";
 import { fromZodError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
@@ -52,6 +53,8 @@ export interface SeedProjectConfig {
  *
  * - `name` is the first segment of every feature resource name and the only key teardown has to find them by,
  *   so it must be one stable value for the whole project.
+ * - `environments` is the set of environments the project has — the second segment of the same names, and
+ *   the set every command that iterates environments has to agree on.
  * - `tokens` configures account-level Cloudflare API token profiles.
  * - `seed.productionEnvironments` is a safety policy; a Worker must not be able to quietly omit it.
  */
@@ -63,6 +66,18 @@ export interface ProjectConfig {
    * absent it falls back to the app Worker's `wrangler.jsonc` name, then the project directory name.
    */
   name?: string;
+  /**
+   * Every deployed environment this project has, e.g. `["staging", "prod"]` — the **second** segment of
+   * every Cloudflare name it composes, and the other half of the budget `name` is already governed by.
+   * Optional; absent means {@link DEFAULT_ENVIRONMENTS}, which is what the scaffold hardcoded before this
+   * setting existed.
+   *
+   * Typed `unknown` for the same reason {@link ProjectConfig.cloudflare} is: this file is the adopter's own
+   * TypeScript, `loadProject` imports it live, and duck-typing is the only other gate on it — so an
+   * unvalidated entry would reach a resource name as whatever they typed. {@link loadProjectEnvironments}
+   * is the gate.
+   */
+  environments?: unknown;
   /** Overrides for the predefined CF token profiles (`pithy token`). Optional. */
   tokens?: TokenConfig;
   /** `pithy seed` settings. Optional; defaults to no example seeds. */
@@ -133,6 +148,46 @@ export function loadProjectCloudflare(config: ProjectConfig): ProjectCloudflare 
     });
   }
   return parsed.data;
+}
+
+/**
+ * Read and validate the root config's `environments` declaration — **the project's environment set, in
+ * one place, for every command that iterates environments** (#241).
+ *
+ * Before this, nothing said. The set existed only as `env.<name>` stanzas in each Worker's
+ * `wrangler.jsonc` — per Worker, so two Workers could disagree with nobody reconciling them — while
+ * `ManagedEnvironment` held a closed enum of two and `seed.productionEnvironments` invited a project to
+ * name a third. An adopter adding `env.live` got a working `pithy migrate --env live` and a
+ * `pithy secrets provision` that skipped it in silence.
+ *
+ * Absent is not an error: it is the ordinary state of a project that runs staging and prod, and it answers
+ * {@link DEFAULT_ENVIRONMENTS} — the pair the scaffold hardcoded — so nothing about an existing project
+ * changes until it says otherwise.
+ *
+ * **Validated on every load, not at the first provision.** An environment name reaches Cloudflare resource
+ * names verbatim and a provisioned project cannot be renamed, so the one place that can still say no is
+ * before any command has acted on it.
+ */
+export function loadProjectEnvironments(config: ProjectConfig): DeclaredEnvironments {
+  if (config.environments === undefined || config.environments === null) return [...DEFAULT_ENVIRONMENTS];
+  const parsed = DeclaredEnvironments.safeParse(config.environments);
+  if (!parsed.success) {
+    // The schema's own sentences are promoted into `message`, as the `cloudflare` block's are, because the
+    // CLI's error renderer prints `message` and `action` and nothing else.
+    throw fromZodError(parsed.error, {
+      message: `The \`environments\` declaration in pithy.config.ts is not valid. ${parsed.error.issues.map((issue) => issue.message).join(" ")}`,
+      action: `Fix \`environments\` in the root pithy.config.ts. It is a list of deployed environment names, least-production first — e.g. ${JSON.stringify([...DEFAULT_ENVIRONMENTS])}. Changing it does not rename anything already provisioned.`,
+    });
+  }
+  return parsed.data;
+}
+
+/**
+ * The environments a project has, loaded from its root config — the counterpart to
+ * {@link projectCloudflareAccount}, for a command that has a directory rather than a loaded config.
+ */
+export async function projectEnvironments(projectDir: string): Promise<DeclaredEnvironments> {
+  return loadProjectEnvironments(await loadProject(projectDir));
 }
 
 /**
@@ -383,6 +438,10 @@ export async function loadProject(projectDir: string): Promise<ProjectConfig> {
   // The value is *returned*, never published: an ambient account is what made six call sites resolve
   // credentials before anything had established which account they were for.
   loadProjectCloudflare(value);
+  // Same rule, same reason: an environment name reaches Cloudflare resource names verbatim, and a
+  // provisioned project cannot be renamed — so a declaration that would not survive the naming rule
+  // refuses the command that read the config, rather than the later call that composed a name from it.
+  loadProjectEnvironments(value);
   return value;
 }
 

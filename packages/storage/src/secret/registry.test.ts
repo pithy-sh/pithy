@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { defineSecretRegistry, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { SecretsAccessor } from "@pithy-sh/secrets/src/secretsStore";
@@ -103,8 +104,8 @@ describe("the R2 credential entry's declared storage", () => {
   test("a write still targets exactly the requested environment", () => {
     const entry = storageSecretsRegistry[STORAGE_R2_SECRET];
     if (!entry) throw new Error("the registry entry must exist");
-    expect(resolveWriteTargets(entry.backend, entry.scope, "staging")).toEqual(["staging"]);
-    expect(resolveWriteTargets(entry.backend, entry.scope, "prod")).toEqual(["prod"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "staging", DEFAULT_ENVIRONMENTS)).toEqual(["staging"]);
+    expect(resolveWriteTargets(entry.backend, entry.scope, "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
   });
 });
 

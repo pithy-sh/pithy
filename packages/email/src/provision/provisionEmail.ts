@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -119,17 +120,24 @@ export interface EmailProvisionResult {
  * Provision the email infrastructure: create + migrate the shared suppression DB once, then deploy the
  * email worker for every managed environment. The order matters — the suppression DB exists and is
  * migrated before any worker that binds it is deployed. Idempotent end to end (each step is).
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
-export async function provisionEmail(provisioner: EmailProvisioner): Promise<EmailProvisionResult> {
+export async function provisionEmail(
+  provisioner: EmailProvisioner,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<EmailProvisionResult> {
   await provisioner.preflight();
   const { databaseId } = await provisioner.ensureSuppressionDatabase();
   await provisioner.migrateSuppression(databaseId);
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.deployWorker(env, databaseId);
   }
   // One inbound routing rule per domain (production app worker), after the workers are up.
   const routing = await provisioner.ensureRoutingRule();
-  return { suppressionDatabaseId: databaseId, environments: managedEnvironments(), routing };
+  return { suppressionDatabaseId: databaseId, environments: managedEnvironments(environments), routing };
 }
 
 /** The teardown seam — the inverse of {@link EmailProvisioner}. Every step idempotent (a missing resource is a no-op). */
@@ -154,12 +162,17 @@ export interface EmailDeprovisionOptions {
  * Tear down the email infrastructure, reversing {@link provisionEmail}: delete every environment's worker
  * first (they bind the suppression DB), then — only when `deleteSuppression` is set — the shared
  * suppression DB. The suppression list is preserved unless explicitly requested. Idempotent end to end.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
 export async function deprovisionEmail(
   deprovisioner: EmailDeprovisioner,
+  environments: DeclaredEnvironments | readonly string[],
   options: EmailDeprovisionOptions = {},
 ): Promise<void> {
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteWorker(env);
   }
   if (options.deleteSuppression) await deprovisioner.deleteSuppressionDatabase();
