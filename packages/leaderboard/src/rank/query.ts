@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { boundParameterBudget, MAX_BOUND_PARAMETERS } from "@pithy-sh/core/src/data/boundParameters";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type Expression, type SqlBool, sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LeaderboardEntry } from "../data/entry";
@@ -25,15 +27,43 @@ import { classifyTier } from "./tiers";
  */
 
 /**
+ * What a segment query binds besides the members: 4 filters (boardId, windowKey, visible, hidden) plus
+ * the 6 of `betterThan` (score twice, achieved_at twice, score and userId again). `rankOf` within a
+ * segment is the tightest path, so its overhead is the one that sets the cap.
+ */
+export const SEGMENT_FIXED_PARAMETERS = 10;
+
+/**
  * Cap on a segment's member count.
  *
- * D1 allows 100 bound parameters per query, and the tightest path is `rankOf` within a segment: the
- * `rankCountQuery` binds the segment members PLUS 4 filter params (boardId, windowKey, visible, hidden)
- * PLUS 6 for the `betterThan` predicate (score twice, achieved_at twice, score+userId) — 10 of overhead.
- * A member count of 90 would land at exactly 100, with zero margin; capping at 80 keeps every segment
- * query (including the point where a future filter is added) safely under the limit.
+ * `boundParameterBudget(SEGMENT_FIXED_PARAMETERS)` is 90 — the most D1 would take. 80 is deliberately
+ * inside it, so that adding one more filter to a segment query is a change to this file rather than a
+ * change to what every caller may pass. `segmentMembers` asserts the relationship rather than trusting
+ * it, and `boundParameters.test.ts` in core owns the arithmetic itself.
  */
 export const MAX_SEGMENT_SIZE = 80;
+
+/**
+ * The members a segment query may bind, or a refusal naming the cap.
+ *
+ * The HTTP boundary refuses an oversized segment already, which is why this was never a live defect —
+ * and is exactly why it is worth fixing anyway. `topEntries` and `rankOf` are exported: an adopter
+ * calling them directly got no such refusal, and a 120-friend segment reached D1 with 124 parameters.
+ * A rule enforced at one of several entrances is not enforced (#250).
+ *
+ * A refusal rather than a silent truncation: a segment is a *set of people*, and quietly ranking 80 of
+ * somebody's 120 friends would be a wrong answer presented as a right one.
+ */
+function segmentMembers(segment: readonly string[]): string[] {
+  if (segment.length > Math.min(MAX_SEGMENT_SIZE, boundParameterBudget(SEGMENT_FIXED_PARAMETERS))) {
+    throw new ValidationError({
+      message: `A segment is capped at ${MAX_SEGMENT_SIZE} players.`,
+      action: `Rank at most ${MAX_SEGMENT_SIZE} players at a time.`,
+      detail: `A segment of ${segment.length} exceeds the cap of ${MAX_SEGMENT_SIZE}; D1 accepts ${MAX_BOUND_PARAMETERS} bound parameters and a segment query spends ${SEGMENT_FIXED_PARAMETERS} of them before a single member.`,
+    });
+  }
+  return [...segment];
+}
 
 export interface RankedEntry {
   userId: string;
@@ -96,7 +126,7 @@ export async function topEntries(
     .where("hidden", "=", 0);
   if (options.segment) {
     if (options.segment.length === 0) return [];
-    query = query.where("userId", "in", [...options.segment]);
+    query = query.where("userId", "in", segmentMembers(options.segment));
   }
   const rows = await query
     .orderBy("score", board.direction === "desc" ? "desc" : "asc")
@@ -166,7 +196,7 @@ export function rankCountQuery(
     .where("visible", "=", 1)
     .where("hidden", "=", 0);
   if (options.segment && options.segment.length > 0) {
-    query = query.where("userId", "in", [...options.segment]);
+    query = query.where("userId", "in", segmentMembers(options.segment));
   }
   return query.where(betterThan(board, entry.score, entry.achievedAt.getTime(), entry.userId));
 }

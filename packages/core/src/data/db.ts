@@ -5,6 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { CamelCasePlugin, type Generated, Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 import type { z } from "zod";
+import { guardBoundParameters } from "./boundParameters";
 
 /**
  * The Kysely D1 database builder.
@@ -35,11 +36,18 @@ export type DatabaseSchema<M extends SchemaMap> = {
  * Build a typed Kysely instance over D1 for `map`. The `map` argument carries
  * the table types — it drives inference of the database interface; Kysely needs
  * no values from it at runtime. `CamelCasePlugin` is always installed.
+ *
+ * So is `guardBoundParameters`. This is the one seam every Kysely instance in
+ * the repository comes from, so it is the one place the bound-parameter ceiling
+ * can be stated for all of them — including for query sites that have never
+ * heard of it. Five capabilities bound past the cap while the arithmetic to
+ * avoid it sat unimported in `boundParameters.ts` (#246, #250); a rule that
+ * every call site has to remember is a rule in the wrong place.
  */
 export function createDatabase<M extends SchemaMap>(d1: D1Database, map: M): Kysely<DatabaseSchema<M>> {
   void map; // type-only carrier; see doc comment
   return new Kysely<DatabaseSchema<M>>({
-    dialect: new D1Dialect({ database: d1 }),
+    dialect: new D1Dialect({ database: guardBoundParameters(d1) }),
     plugins: [new CamelCasePlugin()],
   });
 }

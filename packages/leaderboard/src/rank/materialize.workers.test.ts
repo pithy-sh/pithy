@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import {
+  boundParameterBudget,
+  MAX_BOUND_PARAMETERS,
+  recordBoundParameters,
+} from "@pithy-sh/core/src/data/boundParameters";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -12,7 +18,7 @@ import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
-import { type Keyset, MAX_BOUND_PARAMETERS, RANK_CHUNK_SIZE, refreshWindowRanks } from "./materialize";
+import { type Keyset, RANK_CHUNK_SIZE, RANK_PARAMETERS_PER_ROW, refreshWindowRanks } from "./materialize";
 import { rankOf, topEntries } from "./query";
 
 const WINDOW = "all";
@@ -64,9 +70,54 @@ beforeEach(async () => {
   await runMigrations(env.DB, provider());
 });
 
-describe("chunk sizing", () => {
-  test("stays under D1's bound-parameter cap: three per row plus the board and window", () => {
-    expect(RANK_CHUNK_SIZE * 3 + 2).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
+/**
+ * The rank update, at the chunk size a caller can actually pass.
+ *
+ * `RefreshOptions.chunkSize` is unvalidated. The default is derived and safe; `chunkSize: 40` binds 120
+ * and breaks the pass, and `chunkSize: 0` used to report a board complete having ranked nobody. Neither
+ * is reachable from a default-path test, which is why a green suite never mentioned them (#250).
+ *
+ * The chunk size is a *pacing* knob now — how much of the board one keyset step walks — and no longer
+ * the width of a statement. The update sizes itself.
+ */
+describe("refreshWindowRanks and D1's bound-parameter ceiling", () => {
+  test("the default chunk size comes from core's budget, not from a number written out here", () => {
+    expect(RANK_CHUNK_SIZE).toBe(Math.floor(boundParameterBudget(0) / RANK_PARAMETERS_PER_ROW));
+  });
+
+  test("no statement binds more than D1 accepts, at any chunk size", { timeout: 30_000 }, async () => {
+    // Sizes spanning the divisor: under it, on it, one past it, and far past.
+    const entries = 70;
+    await seed(entries);
+    for (const chunkSize of [5, 33, 34, 40, 70]) {
+      await env.DB.prepare("update pithy_leaderboard_entries set rank = null").run();
+      const { counts, error } = await recordBoundParameters(env.DB, async (d1) => {
+        await refreshWindowRanks(leaderboardDatabase(d1), board(), WINDOW, { chunkSize });
+      });
+
+      const worst = Math.max(...counts, 0);
+      expect(worst, `chunkSize ${chunkSize}: nothing was bound`).toBeGreaterThan(0);
+      expect(
+        worst,
+        `chunkSize ${chunkSize}: one statement bound ${worst} parameters, over D1's cap of ${MAX_BOUND_PARAMETERS}`,
+      ).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
+      if (error) throw error;
+
+      // Sizing the statement must not lose a rank: every entry still numbered, exactly once, in order.
+      expect((await storedRanks()).map(([, rank]) => rank)).toEqual(Array.from({ length: entries }, (_, i) => i + 1));
+    }
+  });
+
+  test("a chunk size that is not a positive whole number is refused, naming the option", async () => {
+    await seed(5);
+    for (const chunkSize of [0, -1, 2.5, Number.NaN]) {
+      const failure = await refreshWindowRanks(db(), board(), WINDOW, { chunkSize }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure, `chunkSize ${chunkSize} was accepted`).toBeInstanceOf(PithyError);
+      expect((failure as PithyError).payload.detail).toContain("chunkSize");
+    }
   });
 });
 
