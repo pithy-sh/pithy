@@ -107,7 +107,12 @@ describe("verifyDeployedVersion", () => {
     expect(isDeployFailure(result.status)).toBe(false);
   });
 
-  it("is inconclusive when nothing answers at all", async () => {
+  /**
+   * #264. Nothing answering is not "cannot tell" — it is the deploy failing, and the address that did not
+   * answer is the fact worth printing. The old sentence blamed `CF_VERSION_METADATA`, which sent an
+   * adopter whose Worker was routed nowhere off to check a binding that was already there.
+   */
+  it("fails when nothing answers at all, naming the address rather than a binding", async () => {
     const { fetchImpl } = health([null]);
     const result = await verifyDeployedVersion({
       url: "https://api.example.com",
@@ -116,10 +121,14 @@ describe("verifyDeployedVersion", () => {
       fetchImpl,
       ...NOW,
     });
-    expect(result.status).toBe("inconclusive");
+    expect(result.status).toBe("unreachable");
+    expect(result.detail).toContain("https://api.example.com");
+    expect(result.detail).not.toContain("CF_VERSION_METADATA");
+    expect(isDeployFailure(result.status)).toBe(true);
   });
 
-  it("ignores a non-200 rather than reading a body from it", async () => {
+  /** Answered with something this cannot read is a different fact from nothing answering. */
+  it("ignores a non-200 body, and a Worker that answered is reachable", async () => {
     const { fetchImpl } = health(["notfound"]);
     const result = await verifyDeployedVersion({
       url: "https://api.example.com",
@@ -130,6 +139,7 @@ describe("verifyDeployedVersion", () => {
     });
     expect(result.status).toBe("inconclusive");
     expect(result.observed).toEqual([]);
+    expect(isDeployFailure(result.status)).toBe(false);
   });
 
   it("does not double the slash on a url with a trailing one", async () => {
@@ -145,12 +155,13 @@ describe("verifyDeployedVersion", () => {
 });
 
 describe("isDeployFailure", () => {
-  it("fails only on a consistent mismatch", () => {
+  it("fails on a consistent mismatch and on nothing answering", () => {
     expect(isDeployFailure("mismatch")).toBe(true);
+    // A Worker reachable at no address is a failed deploy, not a check that could not decide (#264).
+    expect(isDeployFailure("unreachable")).toBe(true);
     expect(isDeployFailure("verified")).toBe(false);
-    // Both of these are ordinary states. Failing a deploy for either would train everyone to ignore the
-    // check, which costs more than the check is worth.
+    // Still ordinary: a gradual rollout, and a Worker that answered but cannot report its version.
+    // Failing a deploy for either would train everyone to ignore the check.
     expect(isDeployFailure("inconclusive")).toBe(false);
-    expect(isDeployFailure("unreachable")).toBe(false);
   });
 });

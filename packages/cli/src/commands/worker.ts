@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { defineCommand } from "citty";
+import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadWorkerDomains, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { unpublishedKitNotice } from "../project/scaffold";
@@ -166,18 +168,42 @@ const rename = defineCommand({
 });
 
 /**
- * `pithy worker sync` — write the app capability's declared Workflows and cron schedule into the Worker's
- * `wrangler.jsonc`, for every environment it declares.
+ * The declaration narrowed to what `--env` asked for.
  *
+ * `applyDomains` writes every environment the declaration names, which is right for a bare run and wrong
+ * for a flag that names one: `--env staging` on a project mid-cutover must not also rewrite prod's route.
+ * An environment `domains` cannot carry — `dev`, a feature environment, a custom one — narrows to nothing,
+ * which is the honest answer rather than an error, because the Workflow half of this command still has
+ * work to do for it.
+ */
+function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDomains {
+  if (env === undefined) return domains;
+  return {
+    ...(env === "staging" && domains.staging ? { staging: domains.staging } : {}),
+    ...(env === "prod" && domains.prod ? { prod: domains.prod } : {}),
+  };
+}
+
+/**
+ * `pithy worker sync` — write what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`: the
+ * route and `vars.BASE_URL` its `domains` block implies, and the app capability's Workflows and cron
+ * schedule, for every environment it declares.
+ *
+ * **One command for one job: the declaration is the truth, this is what makes wrangler agree with it.**
  * A library capability's Workflows arrive with `pithy <capability> provision`. The adopter's own had no
  * command at all, so the binding table was hand-written per environment against a naming rule that only
- * fails at deploy. This is that command. It writes config and nothing else — no Cloudflare call, no
- * deploy — so it is safe to run on any branch, at any time, as often as you like.
+ * fails at deploy. `domains` had the same hole and a worse ending: `applyDomains` writes the route, and the
+ * only way to reach it was an interactive prompt during `pithy init` or `pithy worker add`, so a
+ * declaration added by hand routed nowhere and `doctor` and `deploy` both called it healthy (#264). This is
+ * the command `pithy doctor` names when it reports that fault.
+ *
+ * It writes config and nothing else — no Cloudflare call, no deploy — so it is safe to run on any branch,
+ * at any time, as often as you like. A second run reports "already in sync" and touches no file.
  */
 const sync = defineCommand({
   meta: {
     name: "sync",
-    description: "Write the app capability's declared Workflows and cron triggers into the worker's wrangler.jsonc",
+    description: "Write what pithy.config.ts declares — domains routes, Workflows, cron — into wrangler.jsonc",
   },
   args: {
     worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
@@ -196,36 +222,51 @@ const sync = defineCommand({
         ...(args.worker === undefined ? {} : { worker: args.worker }),
       });
 
+      // The address first, and separately from the app capability: `domains` says where this Worker
+      // answers, and a Worker with no `app` block still answers somewhere. Validated on the way through —
+      // a malformed declaration must name the field here, not produce a route Cloudflare rejects at deploy.
+      const domains = loadWorkerDomains(target.config);
+      const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
+
       const app = target.config.app;
-      if (!app) {
+      if (!app && domains === undefined) {
         throw new NotFoundError({
-          message: `${target.name} has no app capability.`,
-          action: "Declare `app` in the worker's pithy.config.ts. Its `workflows` map is what this reconciles.",
+          message: `${target.name} declares neither domains nor an app capability.`,
+          action:
+            "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
         });
       }
 
-      const runs = await reconcileAppWorkflows({
-        workerDir: target.dir,
-        // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable
-        // forever once deployed, so a guessed project would name a Workflow another project owns.
-        project: await loadProject(projectDir).then(requireProjectName),
-        app,
-        ...(env === undefined ? {} : { env }),
-      });
+      const runs = app
+        ? await reconcileAppWorkflows({
+            workerDir: target.dir,
+            // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and
+            // stable forever once deployed, so a guessed project would name a Workflow another owns.
+            project: await loadProject(projectDir).then(requireProjectName),
+            app,
+            ...(env === undefined ? {} : { env }),
+          })
+        : [];
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), runs })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs })}\n`,
+        );
         return;
       }
-      if (runs.length === 0) {
-        process.stdout.write(`${target.name}'s app capability declares no workflows.\n`);
+      // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
+      // command is run on a hunch, often, and it has to be obvious when it did nothing.
+      if (routes.every((route) => !route.changed) && runs.every((run) => !run.changed)) {
+        const nothing = routes.length === 0 && runs.length === 0;
+        process.stdout.write(
+          nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
+        );
         process.stdout.write(`${formatDone()}\n`);
         return;
       }
-      if (runs.every((run) => !run.changed)) {
-        process.stdout.write(`${target.name} is already in sync.\n`);
-        process.stdout.write(`${formatDone()}\n`);
-        return;
+      for (const route of routes) {
+        if (!route.changed) continue;
+        process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
       }
       for (const run of runs) {
         const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
@@ -234,7 +275,9 @@ const sync = defineCommand({
       }
       // Cloudflare resolves class_name in the script the binding names, and that script is this one.
       const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
-      process.stdout.write(dim(`Export a WorkflowEntrypoint subclass from main for each: ${classes.join(", ")}.\n`));
+      if (classes.length > 0) {
+        process.stdout.write(dim(`Export a WorkflowEntrypoint subclass from main for each: ${classes.join(", ")}.\n`));
+      }
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

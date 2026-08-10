@@ -654,14 +654,17 @@ export function doctorExitCode(report: DoctorReport): number {
   // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
   // establishes nothing, so only `drifted` gates.
   if (report.environments?.state === "drifted") return 1;
-  // The same standard, and only one of the two origin faults meets it. `workers-dev-open` is a Worker
-  // serving a live origin its own config does not name, established from that config alone — and it is
-  // the security half: on that origin the CSRF gate refuses the requests that establish who you are, and
-  // nothing bound to the hostname applies. `no-origin` is the state every freshly scaffolded project is
-  // in before it has a domain, which is legitimate and universal; failing it would turn `pithy doctor`
-  // red on day one for everyone and teach them to stop reading it. It is reported, loudly, and
-  // `pithy deploy` is what refuses it — the moment it stops being hypothetical.
-  if (report.origins?.drift.some((drift) => drift.fault === "workers-dev-open")) return 1;
+  // The same standard, and two of the three origin faults meet it. `workers-dev-open` is a Worker serving
+  // a live origin its own config does not name, established from that config alone — and it is the
+  // security half: on that origin the CSRF gate refuses the requests that establish who you are, and
+  // nothing bound to the hostname applies. `unserved-origin` is the mirror image and the harder failure:
+  // the config names an origin and nothing in it serves that host, so the Worker answers nowhere — which
+  // is the state this command's own `workers_dev` remedy used to produce, then report as healthy (#264).
+  // Both are established from the project's own files. `no-origin` is the state every freshly scaffolded
+  // project is in before it has a domain, which is legitimate and universal; failing it would turn
+  // `pithy doctor` red on day one for everyone and teach them to stop reading it. It is reported, loudly,
+  // and `pithy deploy` is what refuses it — the moment it stops being hypothetical.
+  if (report.origins?.drift.some((drift) => drift.fault !== "no-origin")) return 1;
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
   // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
   // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
@@ -816,10 +819,11 @@ function environmentsBlock(check: EnvironmentsCheck): string {
  * The `Origins` lines — shown only when an environment serves an origin its config does not name, grouped
  * one block per Worker, on the health block's shape (#253).
  *
- * No command is offered, on the same rule the environments block above states: neither remedy is
- * something `pithy` can pick. Which hostname an environment answers on is the adopter's to declare, and
- * whether the `workers.dev` subdomain should stay open is a decision rather than a default — so each
- * drift's own sentence names the edit and the file it goes in.
+ * The block offers no command of its own, on the same rule the environments block above states: which
+ * hostname an environment answers on is the adopter's to declare, and whether the `workers.dev` subdomain
+ * should stay open is a decision rather than a default. Each drift's own sentence names the edit and the
+ * file it goes in — and exactly one of the three names a command, because exactly one has one: a route
+ * missing from a `domains` declaration is derived, so `pithy worker sync` writes it (#264).
  */
 function originsBlock(check: OriginsCheck): string {
   const lines = ["Origins:"];

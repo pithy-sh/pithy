@@ -907,7 +907,7 @@ Moved to [`docs/commands/dev.md`](commands/dev.md).
 
 §6.5 and §6.6 stay. They specify `pithy worker`, not `pithy dev`, and [`docs/commands/worker.md`](commands/worker.md) cites them.
 
-### 6.5 App-declared Workflows (`pithy worker sync`)
+### 6.5 Reconciling a Worker's declaration (`pithy worker sync`)
 
 ```
 pithy worker sync [--worker <name>] [--env <environment>] [--json]
@@ -916,6 +916,8 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 A library capability's Workflows are provisioned: `pithy <capability> provision` deploys the host Worker and writes the cross-script binding into the app's `wrangler.jsonc`. A Workflow the **adopter's own app capability** declares had no such path, so its `workflows` array, its `triggers.crons`, and the repetition of both across every environment were written by hand — against `<project>-<env>-<capability>-<job>` and Cloudflare's segment rule, neither of which fails until deploy.
 
 `pithy worker sync` writes them. It reads the Worker's `app` capability, derives each job's name through the same helper the kit uses for a library capability's, and reconciles the result into `wrangler.jsonc`: the top-level stanza and every `env.<name>` the Worker already declares, or just the one `--env` names. It touches no Cloudflare account and runs no deploy.
+
+**It writes the Worker's address the same way**, from the same file. A `domains` block names where the Worker answers per environment, and the `custom_domain` route and `vars.BASE_URL` it implies are generated from it — by `pithy init`, by `pithy worker add`, and by this command. That last one is the one that was missing: the first two only ever write the route from an interactive prompt, so a `domains` block added by hand declared an address nothing served, and `pithy doctor` and `pithy deploy` both reported it healthy while the Worker answered on nothing. Doctor names this command when it reports that fault.
 
 Three rules govern what it writes:
 

@@ -37,6 +37,14 @@ export interface AppliedDomain {
   pattern: string;
   /** The base URL written to `vars.BASE_URL`. */
   baseUrl: string;
+  /**
+   * Whether this environment's stanza actually changed.
+   *
+   * Carried so a command can say "already in sync" and mean it. The write was always idempotent in bytes;
+   * this makes the *report* idempotent too, which is the difference between a reconcile command an
+   * adopter runs freely and one that appears to do something every time they run it.
+   */
+  changed: boolean;
 }
 
 /** The wrangler shape this writes. Only the keys it owns. */
@@ -108,10 +116,17 @@ function closeWorkersDev(stanza: DomainStanza): void {
 /**
  * Write the declaration into a Worker's `wrangler.jsonc`. Returns what it wrote, per environment.
  *
- * Idempotent: running it twice writes the same bytes, and running it after an adopter moved their domain
- * updates the one route entry rather than appending another. An environment with no declared domain is
- * left completely alone — never cleared, because an adopter may have written a route by hand and this must
- * not delete it just because they have not adopted the declaration for that environment.
+ * Idempotent: a second run changes nothing and writes nothing, and running it after an adopter moved their
+ * domain updates the one route entry rather than appending another. An environment with no declared domain
+ * is left completely alone — never cleared, because an adopter may have written a route by hand and this
+ * must not delete it just because they have not adopted the declaration for that environment.
+ *
+ * **This is the only thing that writes a route, and until #264 the only way to reach it was a prompt.**
+ * Its one caller was `writeDomains`, called only from an interactive `pithy init` or `pithy worker add` —
+ * and `askDomains` returns nothing at all when a session is not interactive. So a `--json` scaffold, a CI
+ * run, and every adopter who added `domains` to a `pithy.config.ts` by hand got a declaration with no route
+ * behind it, and nothing downstream ever noticed. `pithy worker sync` is the second caller, and the
+ * non-interactive one: the declaration goes in the config, the command writes what it implies.
  */
 export async function applyDomains(workerDir: string, domains: WorkerDomains): Promise<AppliedDomain[]> {
   const config = (await readWranglerConfig(workerDir)) as DomainWrangler;
@@ -124,6 +139,10 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
     // `dev` is never in `DOMAIN_ENVIRONMENTS`, so this only ever reaches an `env.<name>` stanza — which is
     // also the only place the values would be read from, since env stanzas replace the top level.
     config.env ??= {};
+    // Structural, before anything is touched. `JSON.stringify` sees none of comment-json's symbol-keyed
+    // comment properties, which is exactly right here: a run that changes no value changed nothing, and
+    // an adopter's comments are not a diff.
+    const before = JSON.stringify(config.env[env] ?? null);
     config.env[env] ??= {};
     const stanza = config.env[env];
 
@@ -136,9 +155,12 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
     stanza.vars.BASE_URL = baseUrl;
     closeWorkersDev(stanza);
 
-    applied.push({ env, pattern: domain.pattern, baseUrl });
+    applied.push({ env, pattern: domain.pattern, baseUrl, changed: before !== JSON.stringify(stanza) });
   }
 
-  if (applied.length > 0) await writeWranglerConfig(workerDir, config);
+  // Nothing changed, nothing written. The bytes were already identical, so the only thing skipping the
+  // write removes is an mtime bump on a file the adopter has open — and the one thing a reconcile command
+  // must never do is look like it edited something it did not.
+  if (applied.some((entry) => entry.changed)) await writeWranglerConfig(workerDir, config);
   return applied;
 }

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
-import { deployProject, deploySeverity, pendingWarning, summarizeDeploy } from "./deploy";
+import { deployProject, deploySeverity, deployVerificationFailed, pendingWarning, summarizeDeploy } from "./deploy";
 
 /** Representative `wrangler deploy` output — the lines deploy scrapes for the version id and url. */
 function wranglerOutput(name: string, version: string): string {
@@ -373,6 +373,23 @@ describe("summarizeDeploy", () => {
 
   test("a failure line names the worker and the reason", () => {
     expect(summarizeDeploy({ name: "pithy-api", ok: false, error: "exit 1" })).toBe("pithy-api: failed. exit 1");
+  });
+
+  /**
+   * The colour and the exit code read the same rule, so the line an adopter sees cannot say "routine" over
+   * a verification that fails the command (#264).
+   */
+  test("a verification that fails the command is reported as a failure line", () => {
+    const unreachable = summarizeDeploy({
+      name: "pithy-api",
+      ok: true,
+      versionId: "v9",
+      verification: "unreachable",
+      verificationDetail: "Nothing answered at https://api.example.com in 5 attempts.",
+    });
+    expect(unreachable).toContain("Nothing answered at https://api.example.com");
+    expect(deployVerificationFailed([{ name: "pithy-api", ok: true, verification: "unreachable" }])).toBe(true);
+    expect(deployVerificationFailed([{ name: "pithy-api", ok: true, verification: "inconclusive" }])).toBe(false);
   });
 });
 
