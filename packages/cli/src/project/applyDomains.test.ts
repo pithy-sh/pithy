@@ -104,6 +104,28 @@ describe("applyDomains", () => {
     expect(await readFile(path.join(dir, "wrangler.jsonc"), "utf8")).toBe(before);
   });
 
+  it("closes workers.dev for every environment it gives a domain", async () => {
+    // The declared domain is the origin. `workers_dev` defaults to true and routes do not change it, so
+    // without this the Worker also answers on its workers.dev subdomain — with `BASE_URL` naming the
+    // other host, and `preview_urls` following `workers_dev` for every deployed version.
+    const dir = await worker();
+    await applyDomains(dir, DOMAINS);
+    const config = (await read(dir)) as { env: Record<string, { workers_dev?: boolean }> };
+    expect(config.env.prod?.workers_dev).toBe(false);
+    expect(config.env.staging?.workers_dev).toBe(false);
+  });
+
+  it("leaves an adopter's own workers_dev decision exactly as they wrote it", async () => {
+    // Unlike the route and BASE_URL beside it, this is not derived from the declaration — an explicit
+    // `true` is a team saying they want the workers.dev URL for staging until DNS is cut over, and that
+    // is a named origin rather than an unnamed one.
+    const dir = await worker('{\n  "env": { "staging": { "workers_dev": true } }\n}\n');
+    await applyDomains(dir, DOMAINS);
+    const config = (await read(dir)) as { env: Record<string, { workers_dev?: boolean }> };
+    expect(config.env.staging?.workers_dev).toBe(true);
+    expect(config.env.prod?.workers_dev).toBe(false);
+  });
+
   it("preserves the adopter's comments", async () => {
     const dir = await worker('{\n  // keep me\n  "name": "acme-api"\n}\n');
     await applyDomains(dir, DOMAINS);
