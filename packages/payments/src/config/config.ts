@@ -109,7 +109,7 @@ export const PaymentsStripeSettings = z
     portalReturnUrl: ReturnUrl.describe("Where the Billing Portal returns a subscriber who is done managing."),
   })
   .describe(
-    "Where Stripe's hosted pages send a browser back to. Config, not request input: a client that could name a return URL could send a paying customer to a page it controls.",
+    "Where Stripe's hosted pages send a browser back to. Config, not request input: a client that could name a return URL could send a paying customer to a page it controls. Build all three on `PUBLIC_ORIGIN` — the constant the scaffolded pithy.config.ts derives from `domains` — and never on a literal: an origin written down is production's origin written into staging, which lands a staging payer in production on an account that has bought nothing (#256).",
   );
 export type PaymentsStripeSettings = z.infer<typeof PaymentsStripeSettings>;
 

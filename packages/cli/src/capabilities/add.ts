@@ -20,6 +20,7 @@ import {
   type WranglerStanza,
 } from "../project/bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { optionValue } from "./configConstants";
 import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
 import { ejectImportPath } from "./eject";
 
@@ -105,11 +106,14 @@ function renderRegistration(
   manifest: CapabilityManifest,
   configValues: Record<string, ConfigValue>,
   indent: string,
+  source: string,
 ): string {
   const inner = `${indent}  `;
   const optionLines: string[] = [];
   for (const option of manifest.configOptions) {
-    const value = configValues[option.key] ?? option.default;
+    // The scaffold's `PUBLIC_ORIGIN` where the option names it and this config declares it, the
+    // manifest's literal otherwise, and the adopter's own value over both. See `configConstants.ts`.
+    const value = optionValue(option, source, configValues[option.key]);
     // The same two lines `pithy upgrade` writes, from the same two functions. Two renderers of one line
     // is how `add` and `upgrade` came to disagree about a nested default in the first place (#171), and
     // the comment was still built here and there separately until the manifest text going into it got a
@@ -169,7 +173,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   const registered = new RegExp(`^${escapeRegExp(manifest.name)}\\(`);
   if (!lines.some((line) => registered.test(line.trim()))) {
     const indent = markerLine.slice(0, markerLine.length - markerLine.trimStart().length);
-    const registration = renderRegistration(manifest, configValues ?? {}, indent);
+    const registration = renderRegistration(manifest, configValues ?? {}, indent, source);
     // A replacement function keeps `$` in the registration literal.
     source = source.replace(markerLine, () => `${registration}\n${markerLine}`);
   }

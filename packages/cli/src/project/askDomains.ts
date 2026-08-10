@@ -16,6 +16,7 @@ import {
   describeZone,
   domainQuestions,
   renderDomainsBlock,
+  renderDomainsConst,
   zoneForHostname,
 } from "./domainPrompt";
 
@@ -154,16 +155,38 @@ export async function writeDomains(workerDir: string, domains: WorkerDomains): P
   return { declared };
 }
 
+/** The hoisted declaration a scaffolded config carries: `const DOMAINS = {` through its closing `};`. */
+const DOMAINS_CONST = /^const DOMAINS = \{\n(?:.*\n)*?\};$/m;
+
 /**
- * Insert the `domains` block into a scaffolded Worker's `pithy.config.ts`.
+ * Write the domains a scaffolded Worker's `pithy.config.ts` declares.
  *
- * Anchored on `const config = {`, which both scaffolds emit — `pithy init`'s template and the inline one
- * in `workerScaffold.ts`. Inserting after that line puts `domains` at the top of the object, above
- * `capabilities`, where an adopter reads it first.
+ * **Two shapes, in this order, and the first one is what the scaffold now emits.** A config scaffolded
+ * today hoists the declaration above the object —
  *
- * A config that has been rewritten past recognition is left alone rather than edited blind: returning
- * false lets the caller say the declaration could not be written and print it for the adopter to paste,
- * which is a better outcome than a corrupted config file.
+ * ```ts
+ * const DOMAINS = { … };
+ * export const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
+ * const config = { domains: DOMAINS, … };
+ * ```
+ *
+ * — because the origin has to be derivable *before* the capabilities that need it are constructed, and a
+ * value nested inside the object literal cannot be read by the same literal (#256). So the writer fills
+ * the const, and the `domains: DOMAINS` key beside it is left exactly as it is.
+ *
+ * Filling the const is not optional politeness. The previous shape inserted a `domains: { … }` key after
+ * `const config = {`, guarded only by "does this file already mention a `domains:` key" — and a hoisted
+ * config mentions one, `domains: DOMAINS`. So against the scaffold this feature exists to produce, that
+ * writer either declined to write at all or, without the guard, wrote a **second** `domains` key into the
+ * same object literal, where the last one silently wins.
+ *
+ * The second shape is the older one: no const, no `domains:` key, so the block goes in after
+ * `const config = {`, at the top of the object where an adopter reads it first. That keeps a project
+ * scaffolded before this working.
+ *
+ * A config matching neither is left alone rather than edited blind: returning false lets the caller say
+ * the declaration could not be written and print it for the adopter to paste, which is a better outcome
+ * than a corrupted config file.
  */
 async function writeDomainsDeclaration(workerDir: string, domains: WorkerDomains): Promise<boolean> {
   const path = join(workerDir, "pithy.config.ts");
@@ -172,6 +195,15 @@ async function writeDomainsDeclaration(workerDir: string, domains: WorkerDomains
     source = await readFile(path, "utf8");
   } catch {
     return false;
+  }
+
+  // The hoisted const wins, and is checked first: a scaffolded config has *both* the const and a
+  // `domains:` key, so testing for the key first would send every current project down the older path.
+  if (DOMAINS_CONST.test(source)) {
+    // A replacement function, so a `$` in a hostname is not read as a capture reference.
+    const filled = source.replace(DOMAINS_CONST, () => renderDomainsConst(domains));
+    await writeFileAtomic(path, filled);
+    return true;
   }
 
   // Line-anchored, not `includes`. A bare substring match also fires on a comment mentioning `domains:`,

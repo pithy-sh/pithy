@@ -93,8 +93,14 @@ export const WorkerDomains = z
   );
 export type WorkerDomains = z.infer<typeof WorkerDomains>;
 
-/** The declared domain for one environment, or null where none is declared (including every `dev`). */
-export function domainFor(domains: WorkerDomains | undefined, environment: string): WorkerDomain | null {
+/**
+ * The declared domain for one environment, or null where none is declared (including every `dev`).
+ *
+ * `environment` may be `undefined`, which is what `compositionEnvironment()` answers when nothing stamped
+ * one. That is not a `dev` default — it is "this composition names no environment", and an environment
+ * nobody named has declared no domain, so the answer is the same `null` an undeclared one gets.
+ */
+export function domainFor(domains: WorkerDomains | undefined, environment: string | undefined): WorkerDomain | null {
   if (!domains) return null;
   if (environment === "staging") return domains.staging ?? null;
   if (environment === "prod") return domains.prod ?? null;
@@ -159,7 +165,7 @@ export interface ResolvedOrigin {
  * unverifiable in production. That may be the better isolation, but it is a decision about trust rather
  * than about reachability, and a helper whose job is "where am I reachable" must not sweep it up.
  */
-export function resolveOrigin(environment: string, domains: WorkerDomains | undefined): ResolvedOrigin {
+export function resolveOrigin(environment: string | undefined, domains: WorkerDomains | undefined): ResolvedOrigin {
   const domain = domainFor(domains, environment);
   if (domain) return { origin: baseUrlFor(domain), hostname: domain.pattern, declared: true };
   return { origin: LOCAL_ORIGIN, hostname: "localhost", declared: false };
@@ -170,14 +176,19 @@ export function resolveOrigin(environment: string, domains: WorkerDomains | unde
  *
  * ```ts
  * const DOMAINS = { staging: { … }, prod: { … } };
- * const PUBLIC_ORIGIN = originFor(ENVIRONMENT, DOMAINS);
+ * const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
  * ```
+ *
+ * That is the line `pithy init` scaffolds, so an adopter who never thinks about it gets it right and one
+ * who wants a literal can still write one. `compositionEnvironment()` is `string | undefined`, and it is
+ * taken as such rather than defaulted to `dev` at the call site: an unstamped composition has declared no
+ * domain either way, and a `?? "dev"` in every adopter's config would be a default nobody chose.
  *
  * Named for what it is rather than for who asked. The first adopter's own version was called
  * `AUTH_BASE_URL`, which is part of why `email` and `payments` were missed for days: the constant read
  * as auth's private business when it is the Worker's address, and every capability that needs an origin
  * needs this one.
  */
-export function originFor(environment: string, domains: WorkerDomains | undefined): string {
+export function originFor(environment: string | undefined, domains: WorkerDomains | undefined): string {
   return resolveOrigin(environment, domains).origin;
 }

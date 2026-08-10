@@ -167,6 +167,26 @@ ${envStanzas}
 // one D1. A Worker that wants its own declares a different binding (e.g. ${name.toUpperCase().replace(/-/g, "_")}_DB).
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
+import { originFor } from "@pithy-sh/core/src/naming/domains";
+
+// Where this Worker answers, per environment. Declare it once here and the \`routes\` entry and
+// \`vars.BASE_URL\` in wrangler.jsonc are generated from it — \`pithy worker add\` fills this in when you
+// name a domain. \`dev\` is absent on purpose: local runs on the port your feature pinned.
+const DOMAINS = {
+  // staging: { pattern: "staging.${name}.example.com", zone: "example.com" },
+  // prod: { pattern: "${name}.example.com", zone: "example.com" },
+};
+
+// This Worker's public origin, for the environment it is composing in. Hand it to every capability that
+// needs one — auth's callbacks, email's links, a payment's return URL — so no origin is ever written down.
+//
+// An origin written down is production's origin written into staging, and that is not a typo you notice:
+// it is staging mailing your testers magic links into production. An environment DOMAINS does not name
+// resolves to the local origin, so a link built in the wrong place goes nowhere rather than somewhere real.
+//
+// Exported so your own code can build a link against the same origin.
+export const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
 
 const app = defineCapability({
   // The app's capability name. Also its migration namespace once it has tables, which is why it carries no
@@ -181,6 +201,7 @@ const app = defineCapability({
 });
 
 const config = {
+  domains: DOMAINS,
   // Library capabilities this Worker composes, in order.
   // \`pithy add <capability> --worker ${name}\` registers them here.
   capabilities: [

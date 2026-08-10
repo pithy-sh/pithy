@@ -587,12 +587,22 @@ Default values shown in brackets. `Y/n` means default yes; `y/N` means default n
 
 **And the declaration is the only place an origin is written down.** Every capability that needs a public origin asks the same question: `auth.baseURL` builds OAuth callbacks, magic-link URLs and the CSRF allowed-origin; `email.baseUrl` builds tracking and unsubscribe links; `payments`' Stripe return URLs decide where Checkout sends the browser back. Write a URL into any of them and you have written *one* environment's origin into all of them — which is how a staging deploy mails real users links into production, an unsubscribe from a staging test unsubscribes that person in production, and a staging payer lands in production on an account that bought nothing. Three capabilities, one mistake, three separate discoveries.
 
-So derive it. `originFor(environment, domains)` from `@pithy-sh/core/src/naming/domains` is the one answer to "where is this Worker reachable", and it is the same call `pithy` itself makes to generate `vars.BASE_URL` — so the Worker's runtime origin and the origins its capabilities were configured with cannot disagree:
+So it is derived, and **`pithy init` scaffolds the derivation** — an adopter who never thinks about it gets it right, and one who wants a literal can still write one:
 
 ```ts
-const domains = { staging: { … }, prod: { … } };
-const PUBLIC_ORIGIN = originFor(compositionEnvironment() ?? "dev", domains);
+const DOMAINS = {
+  // staging: { pattern: "staging.api.example.com", zone: "example.com" },
+  // prod: { pattern: "api.example.com", zone: "example.com" },
+};
+
+export const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
+
+const config = { domains: DOMAINS, capabilities: [ … ], app };
 ```
+
+`originFor(environment, domains)` from `@pithy-sh/core/src/naming/domains` is the one answer to "where is this Worker reachable", and it is the same call `pithy` itself makes to generate `vars.BASE_URL` — so the Worker's runtime origin and the origins its capabilities were configured with cannot disagree. The declaration is **hoisted** because the origin has to exist before the capabilities that take it are constructed, and `domains: DOMAINS` beside them is the same object: one declaration, two readers. The prompt fills the const; it never writes a second `domains` key.
+
+**`pithy add` writes `PUBLIC_ORIGIN` for you**, unquoted, for every option whose manifest says its value is an origin — `auth.baseURL` and `email.baseUrl` today. A `--set` override still wins, because a Worker fronted by something Pithy does not know about has an origin no derivation can produce. And a project scaffolded before the constant existed keeps the manifest's literal rather than being handed an identifier nothing defines; `pithy upgrade` starts writing the constant the day the declaration lands.
 
 Name it for the Worker, not for the capability that asked first. The first project to write this called it `AUTH_BASE_URL`, and that is part of why `email` and `payments` kept their hardcoded URLs for days — the constant read as auth's private business when it is the Worker's address.
 

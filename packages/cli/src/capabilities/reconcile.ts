@@ -29,6 +29,7 @@ import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { declaresConstant } from "./configConstants";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
 import { availableManifests } from "./manifests";
@@ -84,6 +85,9 @@ export const MissingConfigKey = z
     ),
     describe: ConfigOption.shape.describe.describe(
       "The option's rationale, rendered as the comment above it in pithy.config.ts.",
+    ),
+    constant: ConfigOption.shape.constant.describe(
+      "Present when this option is written as one of the scaffolded config's constants — `publicOrigin` renders as `PUBLIC_ORIGIN` — instead of as `default`. Only when this Worker's pithy.config.ts declares it; an older project keeps the literal rather than being handed an identifier nothing defines.",
     ),
   })
   .describe("A manifest config option not yet present in the capability's pithy.config.ts registration.");
@@ -404,7 +408,15 @@ function computeMissingConfigKeys(manifest: CapabilityManifest, configSource: st
   if (!location) return [];
   return manifest.configOptions
     .filter((option) => !location.presentKeys.includes(option.key))
-    .map((option) => ({ key: option.key, default: option.default, describe: option.describe }));
+    .map((option) => ({
+      key: option.key,
+      default: option.default,
+      describe: option.describe,
+      // Decided against this Worker's own source, by the same function `pithy add` calls — so the two
+      // commands write the same line for the same option, which is the whole reason the renderers are
+      // shared (#171). An `upgrade` on a project that predates the scaffolded constant keeps the literal.
+      ...(option.constant && declaresConstant(configSource, option.constant) ? { constant: option.constant } : {}),
+    }));
 }
 
 /** Read a Worker's pithy.config.ts source as text (never executed here); an unreadable file yields no config drift. */
@@ -533,7 +545,7 @@ function renderKeyLines(keys: MissingConfigKey[], indent: string): string {
   const lines: string[] = [];
   for (const key of keys) {
     lines.push(renderConfigOptionComment(key.describe, indent));
-    lines.push(renderConfigOptionLine(key.key, key.default, indent));
+    lines.push(renderConfigOptionLine(key.key, key.constant ? { constant: key.constant } : key.default, indent));
   }
   return lines.join("\n");
 }
@@ -586,7 +598,9 @@ function insertIntoBlock(source: string, closeIndex: number, keys: MissingConfig
   // One space stands in for the indent: an inline block has no line of its own to sit on. The value is
   // rendered by the same function as every other writer's, so a hand-written block gets Biome's shape
   // too — the whole point of there being one renderer (#171).
-  const inline = keys.map((key) => renderConfigOptionLine(key.key, key.default, " ")).join("");
+  const inline = keys
+    .map((key) => renderConfigOptionLine(key.key, key.constant ? { constant: key.constant } : key.default, " "))
+    .join("");
   return `${withComma.slice(0, close)}${inline}${withComma.slice(close)}`;
 }
 
