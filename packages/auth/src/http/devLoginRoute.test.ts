@@ -80,6 +80,13 @@ describe("the composed capability", () => {
   test("auth() mounts the route in a dev composition and omits it everywhere else", () => {
     // The gate is at registration, so what a composition *mounts* is the whole assertion — a route that
     // existed and refused inside its handler would still pass a test written against a response.
+    //
+    // Both inputs are stubbed, including the one this run already has. The gate reads `ENVIRONMENT` and
+    // `CI`, and a test that sets only the first inherits the second from whatever is running it: green on
+    // a laptop, red on the CI that sets `CI=true`, and the failure reads as the feature being broken
+    // rather than the test being underspecified. A blank value is no override, which is the rule the
+    // cases below already rely on.
+    vi.stubEnv("CI", "");
     vi.stubEnv("ENVIRONMENT", "dev");
     expect(composedPaths()).toContain(DEV_LOGIN_ROUTE);
 
