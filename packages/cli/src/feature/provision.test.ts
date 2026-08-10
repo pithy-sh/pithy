@@ -3,7 +3,7 @@
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -12,6 +12,8 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { sourceFiles } from "../ci/sourceFiles";
+import { featureConfigPath } from "../provision/featureConfig";
 import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
 import { deprovisionFeature, provisionFeature } from "./provision";
@@ -56,6 +58,26 @@ function appCapability() {
     { type: "r2", name: "ASSETS" },
   ];
   return defineCapability({ name: "app", requiredBindings });
+}
+
+/**
+ * Every file under `root`, by absolute path, with its bytes. The oracle for "what did this run write?".
+ *
+ * Through {@link sourceFiles}, never a walk of its own — `ci/sourceFiles.test.ts` refuses the seventh
+ * hand-rolled recursion in this repository, and a fixture is not an exemption. `dotted` is on and `keep`
+ * takes everything, because the whole question here is what landed under `.wrangler/`.
+ */
+function snapshot(root: string): Map<string, string> {
+  return new Map(sourceFiles(root, { dotted: true, keep: () => true }).map((file) => [file.path, file.text]));
+}
+
+/**
+ * Is this path one the scaffolded `.gitignore` already covers? `.wrangler/` at any depth, and the
+ * feature manifest. Written as the two rules rather than as a regex over the whole ignore file, because
+ * these two are the only ones provisioning is allowed to rely on.
+ */
+function ignored(path: string): boolean {
+  return path.split(sep).includes(".wrangler") || path.endsWith(".pithy-feature.json");
 }
 
 /** Migrate/seed are exercised by their own suites; provisioning tests stub them out. */
@@ -131,7 +153,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const manifest = await readManifest(manifestPath(dir));
     expect(manifest?.resources).toHaveLength(3);
 
-    const wrangler = parse(await readFile(join(dir, "apps", "app", "wrangler.jsonc"), "utf8")) as unknown as {
+    const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
       env: Record<
         string,
         Record<string, { binding: string; database_id?: string; id?: string; bucket_name?: string }[]>
@@ -214,7 +236,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const stanza = async (workerDir: string) => {
-      const config = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      const config = parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
         env: Record<string, { d1_databases?: { binding: string }[]; kv_namespaces?: { binding: string }[] }>;
       };
       return config.env.feature;
@@ -266,7 +288,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(report.services).toEqual([{ binding: "API", service: apiName }]);
 
     // The web worker's wrangler.jsonc now deploys under its feature name and calls the feature's api.
-    const web = parse(await readFile(join(webDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
       env: Record<string, { name?: string; services?: { binding: string; service: string }[] }>;
     };
     expect(web.env.feature?.name).toBe(featureWorkerName(identity, "web"));
@@ -308,7 +330,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const deployed = featureWorkerName(identity, "acme-api");
     expect(report.services).toEqual([{ binding: "API", service: deployed }]);
 
-    const web = parse(await readFile(join(webDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
       env: Record<string, { services?: { binding: string; service: string }[] }>;
     };
     expect(web.env.feature?.services).toEqual([{ binding: "API", service: deployed }]);
@@ -445,12 +467,61 @@ describe("provisionFeature / deprovisionFeature", () => {
       seed: async () => {},
     });
 
-    const api = parse(await readFile(join(apiDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const api = parse(await readFile(featureConfigPath(apiDir), "utf8")) as unknown as {
       env: Record<string, { name?: string; d1_databases?: { binding: string; database_id?: string }[] }>;
     };
     expect(api.env.feature?.name).toBe(featureWorkerName(identity, "api"));
     expect(api.env.feature?.d1_databases?.[0]).toMatchObject({ binding: "DB" });
     expect(api.env.feature?.d1_databases?.[0]?.database_id).toBeTruthy();
+  });
+
+  /**
+   * **The gate for #242, and it is one sentence: provisioning a feature writes nothing a checkout
+   * tracks.**
+   *
+   * Stated as a property of every byte on disk rather than as a list of files, because the list was
+   * the problem. `wrangler.jsonc` is tracked and cannot be gitignored — it is the project's real
+   * config — so a feature's ids sitting in it were a modified tracked file the adopter never edited,
+   * with nothing saying it must not be committed. In CI that was fine by accident; locally `git add -A`
+   * put ids for since-deleted resources onto `main`, and `feature destroy` reversed everything except
+   * that edit.
+   *
+   * Two rules cover every path this can legitimately touch, and both are already in the scaffolded
+   * `.gitignore` of every project ever created by `pithy init`: anything under a `.wrangler/`
+   * directory, and `.pithy-feature.json`. A third would mean a new ignore rule, which existing
+   * projects do not have — which is why the rule is the assertion rather than the file list.
+   */
+  test("writes nothing a checkout tracks", async () => {
+    const { provisioners } = fakeProvisioners();
+    const workerDir = join(dir, "apps", "app");
+    const before = snapshot(dir);
+
+    await provisionFeature({
+      projectDir: dir,
+      capabilities,
+      identity,
+      provisioners,
+      resolveWorkers: async () => [{ name: "acme-api", dir: workerDir, capabilities }],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+    const after = snapshot(dir);
+    const touched = [...after]
+      .filter(([path, bytes]) => before.get(path) !== bytes)
+      .map(([path]) => path)
+      .sort();
+
+    // Every path is one an existing project's `.gitignore` already covers. Nothing else moved — and in
+    // particular the Worker's own `wrangler.jsonc` is byte-identical.
+    expect(touched.filter((path) => !ignored(path))).toEqual([]);
+    expect(touched.length).toBeGreaterThan(0); // non-vacuity: the run did write something.
+    expect(after.get(join(workerDir, "wrangler.jsonc"))).toBe(before.get(join(workerDir, "wrangler.jsonc")));
+    // And the ids really are somewhere — this is not "wrote nothing" passing as "wrote nothing tracked".
+    const generated = parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+      env: Record<string, { d1_databases?: { binding: string; database_id?: string }[] }>;
+    };
+    expect(generated.env.feature?.d1_databases?.[0]?.database_id).toBeTruthy();
   });
 
   describe("a manifest is repository content, not a trusted record", () => {
@@ -574,7 +645,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
       expect(report.secretBindings).toEqual([{ binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true }]);
 
-      const wrangler = parse(await readFile(join(dir, "apps", "app", "wrangler.jsonc"), "utf8")) as unknown as {
+      const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
         env: Record<string, { secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[] }>;
       };
       expect(wrangler.env.feature?.secrets_store_secrets).toEqual([

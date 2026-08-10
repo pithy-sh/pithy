@@ -8,6 +8,7 @@ import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provis
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { FeatureResource } from "../feature/manifest";
+import { featureConfigPath } from "./featureConfig";
 import { applyProvisionedEnv } from "./wranglerEnv";
 
 interface Stanza {
@@ -43,6 +44,14 @@ describe("applyProvisionedEnv", () => {
     { kind: "r2", binding: "ASSETS", name: "replay-f69-demo-assets-r2", id: "bucket-1" },
   ];
 
+  /**
+   * Where this scope's ids actually land. A feature's are a build artifact and go to the generated
+   * config under the already-ignored `.wrangler/`; a declared environment's are source (#242).
+   */
+  const written = (scope: typeof feature): string => (scope.source ? wranglerPath : featureConfigPath(dir));
+
+  const read = async (scope: typeof feature): Promise<string> => readFile(written(scope), "utf8");
+
   const apply = (scope: typeof feature, extra: Partial<Parameters<typeof applyProvisionedEnv>[0]> = {}) =>
     applyProvisionedEnv({
       workerDir: dir,
@@ -57,7 +66,7 @@ describe("applyProvisionedEnv", () => {
   test("writes each resource's id under env.<stanza>, preserving comments", async () => {
     await apply(feature);
 
-    const raw = await readFile(wranglerPath, "utf8");
+    const raw = await read(feature);
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
 
     expect(stanza?.d1_databases).toContainEqual({
@@ -80,14 +89,17 @@ describe("applyProvisionedEnv", () => {
       resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "uuid-2" }],
     });
 
-    const parsed = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
-    expect(parsed.env.feature?.d1_databases?.[0]?.database_id).toBe("uuid-1");
-    expect(parsed.env.staging?.d1_databases?.[0]).toEqual({
+    const generated = parse(await read(feature)) as unknown as Parsed;
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
+    expect(generated.env.feature?.d1_databases?.[0]?.database_id).toBe("uuid-1");
+    // The tracked file never learned about the feature at all — that is the whole of #242.
+    expect(tracked.env.feature).toBeUndefined();
+    expect(tracked.env.staging?.d1_databases?.[0]).toEqual({
       binding: "DB",
       database_name: "replay-staging-db",
       database_id: "uuid-2",
     });
-    expect(parsed.env.staging?.name).toBe("replay-board-staging");
+    expect(tracked.env.staging?.name).toBe("replay-board-staging");
   });
 
   test("is idempotent: re-running with a different id replaces rather than duplicates", async () => {
@@ -96,7 +108,7 @@ describe("applyProvisionedEnv", () => {
       resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo-db-d1", id: "uuid-2" }],
     });
 
-    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
     expect(stanza?.d1_databases).toHaveLength(1);
     expect(stanza?.d1_databases?.[0]?.database_id).toBe("uuid-2");
   });
@@ -104,7 +116,7 @@ describe("applyProvisionedEnv", () => {
   test("names the Worker for the scope and points services at that scope's deployments", async () => {
     await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web" }] });
 
-    const raw = await readFile(wranglerPath, "utf8");
+    const raw = await read(feature);
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
 
     expect(stanza?.name).toBe("replay-f69-demo-replay-board");
@@ -116,7 +128,7 @@ describe("applyProvisionedEnv", () => {
     await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web" }] });
     await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web-v2" }] });
 
-    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
     expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-replay-web-v2" }]);
   });
 
@@ -145,7 +157,7 @@ describe("applyProvisionedEnv", () => {
       ],
     });
 
-    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
     expect(stanza?.secrets_store_secrets).toEqual([
       {
         binding: "SECRETS_ENCRYPTION_KEYS",
@@ -177,7 +189,7 @@ describe("applyProvisionedEnv", () => {
       secrets: [{ binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "mine" }],
     });
 
-    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.feature;
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
     expect(stanza?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual([
       "HAND_ADDED",
       "SECRETS_ENCRYPTION_KEYS",
@@ -207,7 +219,7 @@ describe("applyProvisionedEnv", () => {
       resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo-db-d1", id: "new" }],
     });
 
-    const raw = await readFile(wranglerPath, "utf8");
+    const raw = await read(feature);
     expect(raw).toContain("// primary feature db"); // the in-array comment survived the write.
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
     expect(stanza?.d1_databases).toEqual([

@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
+import { absolutizePaths, featureConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
 
 /**
@@ -87,9 +88,21 @@ const KIND_TO_WRANGLER: Record<
  * creator of a stanza for an environment declared after the project was scaffolded. Idempotent, and every
  * comment in the file survives the round trip.
  */
-async function editStanza(workerDir: string, stanzaKey: string, mutate: (stanza: EnvBindings) => void): Promise<void> {
-  const wranglerPath = join(workerDir, "wrangler.jsonc");
-  const raw = await readFile(wranglerPath, "utf8");
+async function editStanza(
+  workerDir: string,
+  stanzaKey: string,
+  /**
+   * **`source` decides the file, not the caller.** A declared environment's ids are read in a pull
+   * request, so they go into the tracked `wrangler.jsonc`. A feature's are one job's output, so they go
+   * into the generated config under the already-ignored `.wrangler/` — regenerated from the tracked
+   * file every run, so it can never drift from it, and never making it dirty. That is what makes "a CI
+   * run never commits back" a property of the code rather than a note in a runbook.
+   */
+  source: boolean,
+  mutate: (stanza: EnvBindings) => void,
+): Promise<void> {
+  const trackedPath = join(workerDir, "wrangler.jsonc");
+  const raw = await readFile(trackedPath, "utf8");
   const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
 
   config.env ??= {};
@@ -98,12 +111,22 @@ async function editStanza(workerDir: string, stanzaKey: string, mutate: (stanza:
 
   mutate(stanza);
 
+  if (!source) {
+    // Generated, so every path in it is rewritten against the directory it came from — wrangler
+    // resolves a config's paths relative to the config, and this one lives two levels deeper.
+    absolutizePaths(config as Record<string, unknown>, workerDir);
+    const generated = featureConfigPath(workerDir);
+    await mkdir(dirname(generated), { recursive: true });
+    await writeJsonc(generated, config);
+    return;
+  }
+
   // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
   // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
   // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
   // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
   // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
-  await writeJsonc(wranglerPath, config);
+  await writeJsonc(trackedPath, config);
 }
 
 /**
@@ -124,7 +147,9 @@ export async function applySecretBindings(
   entries: readonly SecretStoreBinding[],
 ): Promise<void> {
   if (entries.length === 0) return;
-  await editStanza(workerDir, stanzaKey, (stanza) => {
+  // Always the tracked file: only `pithy secrets provision` calls this directly, and it acts on the
+  // environments a project deploys to. A feature's stanza is written by the scope-driven writer below.
+  await editStanza(workerDir, stanzaKey, true, (stanza) => {
     stanza.secrets_store_secrets ??= [];
     for (const entry of entries) {
       const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
@@ -154,7 +179,7 @@ export async function applyProvisionedEnv(options: {
    */
   secrets: readonly SecretStoreBinding[];
 }): Promise<void> {
-  await editStanza(options.workerDir, options.scope.stanza, (stanza) => {
+  await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
     stanza.name = options.scope.worker(options.worker);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
@@ -173,5 +198,14 @@ export async function applyProvisionedEnv(options: {
       }
     }
   });
-  await applySecretBindings(options.workerDir, options.scope.stanza, options.secrets);
+  if (options.secrets.length > 0) {
+    await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+      stanza.secrets_store_secrets ??= [];
+      for (const entry of options.secrets) {
+        const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+        if (existing) Object.assign(existing, entry);
+        else stanza.secrets_store_secrets.push({ ...entry });
+      }
+    });
+  }
 }

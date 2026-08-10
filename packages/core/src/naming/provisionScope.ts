@@ -56,8 +56,24 @@ export type SecretNameScope = "environment" | "global";
 
 /** Where a provisioning run's resources are named, and where their ids are written. */
 export interface ProvisionScope {
-  /** The `env.<stanza>` key in each Worker's `wrangler.jsonc` that this scope's ids are written into. */
+  /** The `env.<stanza>` key in each Worker's config that this scope's ids are written into. */
   readonly stanza: string;
+  /**
+   * **Are this scope's ids source, or a build artifact?**
+   *
+   * The same provisioning step produces both, and the difference is not cosmetic. A declared
+   * environment's ids are long-lived facts about the repository: they belong in the tracked
+   * `wrangler.jsonc`, under review, in a pull request a human reads. A feature's are facts about one
+   * job — the branch is deleted, the resources are destroyed, and the ids name nothing afterwards.
+   *
+   * Writing a feature's into the tracked file was correct as designed *in CI*, where the checkout is
+   * throwaway, and an expectation everywhere else: a developer's worktree carried a modified tracked
+   * file they never edited, with no note saying it must not be committed, and `git add -A` put ids for
+   * deleted resources onto `main`. So a build artifact goes somewhere untracked instead, and the
+   * question "which is this?" is answered here, once, by the same object that answers "what is it
+   * called?" and "which stanza does it go in?" — because those three answers have to agree.
+   */
+  readonly source: boolean;
   /** This scope's Cloudflare name for a provisionable binding. */
   resource(binding: string, kind: FeatureResourceKind): string;
   /** The script name a Worker deploys under in this scope. */
@@ -107,6 +123,8 @@ export function environmentScope(project: string, environment: string): Provisio
   const names = resourceNames(project).env(environment);
   return {
     stanza: environment,
+    // Long-lived ids for an environment the project ships to: reviewed, committed, kept.
+    source: true,
     resource: (binding, kind) => names[KIND_NAMER[kind]](binding),
     worker: (worker) => `${worker}-${environment}`,
     secretEntry: (secret, secretScope) =>
@@ -124,6 +142,8 @@ export function environmentScope(project: string, environment: string): Provisio
 export function featureScope(identity: FeatureIdentity): ProvisionScope {
   return {
     stanza: FEATURE_ENVIRONMENT,
+    // One job's ids, for resources `destroy` deletes. Never a tracked file.
+    source: false,
     resource: (binding, kind) => featureResourceName(identity, binding, kind),
     worker: (worker) => featureWorkerName(identity, worker),
     secretEntry: (secret, secretScope) =>

@@ -14,6 +14,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { wranglerConfigPath } from "../provision/featureConfig";
 
 /**
  * The seed driver resolves each backend a seed set touches to a live handle — the only thing that
@@ -148,10 +149,17 @@ interface WranglerSeedConfig extends WranglerBindings {
   env?: Record<string, WranglerBindings | undefined>;
 }
 
-/** Read and parse a Worker's wrangler.jsonc (comments allowed). A missing file yields an empty config. */
-async function readWranglerConfig(workerDir: string): Promise<WranglerSeedConfig> {
+/**
+ * Read and parse the config that describes this Worker in this environment. A missing file yields an
+ * empty config.
+ *
+ * Through {@link wranglerConfigPath}: a feature environment's ids live in the generated config under
+ * `.wrangler/`, never in the tracked `wrangler.jsonc` (#242), so the path is a function of the
+ * environment rather than a constant.
+ */
+async function readWranglerConfig(workerDir: string, env: string): Promise<WranglerSeedConfig> {
   try {
-    const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+    const raw = await readFile(wranglerConfigPath(workerDir, env), "utf8");
     return parse(raw) as unknown as WranglerSeedConfig;
   } catch {
     return {};
@@ -183,7 +191,7 @@ export interface ResolvedStoreIds {
 
 /** Read one Worker's `wrangler.jsonc` and resolve every D1/KV/R2 binding's store identity for `env`. */
 export async function resolveStoreIds(options: { workerDir: string; env: string }): Promise<ResolvedStoreIds> {
-  const config = await readWranglerConfig(options.workerDir);
+  const config = await readWranglerConfig(options.workerDir, options.env);
   const bindings: WranglerBindings = options.env === "dev" ? config : (config.env?.[options.env] ?? {});
 
   const ids: ResolvedStoreIds = { d1: new Map(), kv: new Map(), r2: new Map() };
@@ -219,7 +227,7 @@ function resolveLocal<T>(cache: Map<string, T>, binding: string, kind: string): 
  * (Miniflare's `get*` are async). Images/Stream are still remote — resolved lazily by `assets`.
  */
 async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets): Promise<SeedDriver> {
-  const config = await readWranglerConfig(options.workerDir);
+  const config = await readWranglerConfig(options.workerDir, options.env);
   const d1Ids: Record<string, string> = {};
   // `database_id` else the binding — wrangler's own local chain; see {@link resolveStoreIds} for why
   // `database_name` must never join it.
@@ -414,7 +422,7 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  * from credentials so a local run with no media never needs them.
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
-  const config = await readWranglerConfig(options.workerDir);
+  const config = await readWranglerConfig(options.workerDir, options.env);
   const clients = lazyClients(config, options.account);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
