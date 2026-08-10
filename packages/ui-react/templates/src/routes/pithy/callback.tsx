@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { navigate } from "../../router";
 import { getSession } from "../../session";
+import "../../pithy-screens.css";
 
 export const path = "/callback";
 

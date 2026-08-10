@@ -206,6 +206,39 @@ describe("pithy ui", () => {
     expect(second.skipped).toEqual(first.created);
   });
 
+  test("a backfill onto a hand-written stylesheet produces screens that render styled", async () => {
+    // The reported failure, exactly. A project scaffolded `--no-auth` before Pithy's screens carried
+    // their own stylesheet — so `src/pithy-screens.css` is absent — whose `src/styles.css` the adopter
+    // has since replaced with their own design. Then it gains the sign-in screens.
+    await runUiAdd({ ...options(WITH_AUTH), auth: false });
+    await rm(join(workerDir, "src", "pithy-screens.css"));
+    const mine = "/* Replay's own design. */\nbody { background: #0e0e10; }\n";
+    await writeFile(join(workerDir, "src", "styles.css"), mine);
+
+    const backfill = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+
+    expect(backfill.created).toContain("src/routes/pithy/sign-in.tsx");
+    // Theirs, untouched — skipping it is right, and is what left the screens unstyled before.
+    expect(backfill.skipped).toContain("src/styles.css");
+    expect(await readFile(join(workerDir, "src", "styles.css"), "utf8")).toBe(mine);
+    // And the screens are styled anyway, because the run that writes them writes their rules.
+    expect(backfill.created).toContain("src/pithy-screens.css");
+    expect(backfill.unstyled).toEqual([]);
+  });
+
+  test("a run whose screens would render unstyled says exactly which classes are missing", async () => {
+    // The planted violation, end to end: `pithy-screens.css` is on disk but the adopter has emptied
+    // it, so it is skipped as theirs and defines nothing. The command has to name what is missing
+    // rather than report the screens as created and stop there.
+    await runUiAdd({ ...options(WITH_AUTH), auth: false });
+    await writeFile(join(workerDir, "src", "pithy-screens.css"), "/* mine now */\n");
+    await writeFile(join(workerDir, "src", "styles.css"), "body { margin: 0; }\n");
+
+    const backfill = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    expect(backfill.created).toContain("src/routes/pithy/sign-in.tsx");
+    expect(backfill.unstyled).toEqual(["divider", "muted", "otp", "screen", "secondary", "stack"]);
+  });
+
   test("--auth on a worker with no auth capability is actionable, never a broken scaffold", async () => {
     try {
       await runUiAdd({ ...options(WITHOUT_AUTH), auth: true });

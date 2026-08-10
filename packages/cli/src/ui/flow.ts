@@ -5,9 +5,11 @@ import { basename, join } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { pathExists } from "../project/scaffold";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
+import { PITHY_SCREEN_DIR, unstyledScreenClasses } from "./screenStyles";
 import { resolveStub, UI_STUBS, type UiStub } from "./stubs";
 import { loadStubFiles } from "./templates";
 import { readAssets, wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
@@ -105,6 +107,20 @@ export interface UiAddReport {
   created: string[];
   /** Worker-relative paths that already existed and were left byte-identical, sorted. */
   skipped: string[];
+  /**
+   * Class names Pithy's screens render that nothing in this Worker's stylesheets defines — empty on
+   * every ordinary run, and the exact list to fix when it is not.
+   *
+   * Separate from {@link created} because "wrote the screens" and "the screens are styled" are two
+   * claims and only one of them was ever reported. A backfill writes `routes/pithy/sign-in.tsx` and
+   * correctly skips the adopter's `src/styles.css`; if the rules those screens need are not on disk,
+   * the run said `created` and the adopter met an unstyled login page with nothing pointing at why.
+   *
+   * Measured against the files as they stand **after** the write, not against the template, because
+   * the template is not what renders: a stylesheet the adopter has since edited, or deleted, is the
+   * case this exists for.
+   */
+  unstyled: string[];
   /** The derived `assets.run_worker_first` allowlist now in `wrangler.jsonc`. */
   runWorkerFirst: string[];
   /** The project's package manager. */
@@ -200,6 +216,25 @@ async function planFiles(
 }
 
 /**
+ * Whether the screens this run just wrote will render styled, read off the worker as it now stands.
+ *
+ * The template's own files are not the answer. On a backfill the plan still carries Pithy's
+ * `src/styles.css`, while the file on disk is the adopter's — so checking the plan would report a
+ * screen as styled by rules that exist in this process and nowhere else. Only the disk renders.
+ */
+async function unstyledOnDisk(workerDir: string, planned: Record<string, string>): Promise<string[]> {
+  const onDisk: Record<string, string> = {};
+  for (const path of Object.keys(planned)) {
+    const stylesheet = path.endsWith(".css");
+    const screen = path.startsWith(PITHY_SCREEN_DIR) && path.endsWith(".tsx");
+    if (!stylesheet && !screen) continue;
+    const contents = await readOptionalFile(join(workerDir, path));
+    if (contents !== null) onDisk[path] = contents;
+  }
+  return unstyledScreenClasses(onDisk);
+}
+
+/**
  * Scaffold a front end into one worker and wire it end to end: the client files, the `assets` stanza
  * that serves them, the dev command `pithy dev` runs, the build command `pithy deploy` runs, and the
  * packages the build needs. The SPA and the API stay one deploy on one origin.
@@ -232,6 +267,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     payments,
     created: written.written,
     skipped: written.skipped,
+    unstyled: await unstyledOnDisk(options.workerDir, plan.files),
     runWorkerFirst: assets.after,
     packageManager,
     dependencies: pkg.dependencies,

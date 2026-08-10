@@ -53,6 +53,16 @@ export const TEMPLATE_GROUPS = {
     "src/pithy-config.tsx",
     "src/router.tsx",
     "src/styles.css",
+    // **`src/pithy-screens.css` is base, and it is base for the same reason `pithy-config.tsx` is.**
+    // It carries every class name a Pithy screen renders, and it is written whenever it is absent —
+    // which is what makes a *backfill* (`--auth` on a project scaffolded `--no-auth`) produce screens
+    // that render styled. Putting it in the `auth` group instead would leave a payments-only scaffold
+    // unstyled, and duplicating it across both groups would name one file twice.
+    //
+    // The adopter's `src/styles.css` is correctly skipped on that backfill — it is theirs. Before this
+    // file existed, the classes lived in it, so the run wrote a sign-in screen whose `stack`, `divider`
+    // and `secondary` nothing defined and reported it as created.
+    "src/pithy-screens.css",
   ],
   auth: [
     "src/session.tsx",

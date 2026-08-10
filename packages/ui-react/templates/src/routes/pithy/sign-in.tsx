@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { navigate } from "../../router";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
+import "../../pithy-screens.css";
 
 export const path = "/sign-in";
 

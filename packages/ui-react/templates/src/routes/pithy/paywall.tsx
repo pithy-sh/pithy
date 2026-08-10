@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link } from "../../router";
+import "../../pithy-screens.css";
 
 export const path = "/paywall";
 

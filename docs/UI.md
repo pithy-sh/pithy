@@ -40,7 +40,8 @@ apps/api/
     index.ts                       the Worker entry — untouched
     client.tsx               new   SPA entry: mounts the router
     router.tsx               new   the two-glob router and its route guard
-    styles.css               new
+    styles.css               new   yours: the palette tokens, the reset, body
+    pithy-screens.css        new   Pithy's: every class Pithy's own screens render
     pithy-config.tsx         new   the one module that imports virtual:pithy/*
     session.tsx              new   --auth  session hook, signOut, signed-in guard
     turnstile.tsx            new   --auth  the widget and its token placement
@@ -73,6 +74,19 @@ Pithy writes a file **once**, and from that moment the file is yours.
 - `src/routes/app/` is written exactly once, at the initial scaffold, and never written again. It is your application. Pithy has no business in it.
 
 The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and write your own. Rewrite `styles.css` from scratch. Nothing upstream will argue with you, and nothing will silently revert.
+
+### Two stylesheets, and why
+
+`src/styles.css` is yours: the palette tokens, the reset, `body`. `src/pithy-screens.css` is Pithy's, and it defines **every class name a Pithy screen renders** — `screen`, `muted`, `stack`, `secondary`, `otp`, `divider`. Pithy's screens import it themselves.
+
+They are two files because ownership says they must be. Adding the sign-in screens to a project that already has a stylesheet — `pithy add auth`, then `pithy ui add react --auth` — writes the screens and correctly skips `styles.css`, because that file is yours. When one file held both, that run produced a sign-in screen whose classes nothing defined and reported it as created. A screen and the rules it needs are one artifact; splitting them by ownership is what lets each be written on its own schedule.
+
+Two properties make Pithy's file safe to keep:
+
+- **Everything in it sits in a `@layer pithy` cascade layer.** Unlayered CSS beats layered CSS regardless of order or specificity, so any rule you write wins over one of Pithy's with no `!important` and no regard for import order. Give `.screen` a different `max-width` in your own stylesheet and it takes.
+- **Its palette is six tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
+
+`pithy ui add` checks the result rather than assuming it. After writing, it reads the stylesheets actually on disk and names any class the screens render that none of them defines — under `--json` as `unstyled`. Empty is the ordinary answer; anything else is the exact list to fix.
 
 ### Where the templates live
 
