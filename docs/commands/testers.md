@@ -543,7 +543,7 @@ $ pithy testers run --cohort closed-test --skip-nudges --json
 {"command":"testers run","results":[{"cohortId":"7c2f…","snapshotOn":"2026-08-08","nudged":{"confirm":0,"store":0,"inactive":0,"closing":0},"estimatedOptedInCount":11,"estimatedHeldDays":6,"trendDirection":"steady","pruned":0}]}
 ```
 
-Deploy the daily pass to both environments:
+Deploy the daily pass to every declared environment:
 
 ```
 $ pithy testers provision --json

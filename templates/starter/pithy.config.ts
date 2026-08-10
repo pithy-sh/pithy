@@ -20,6 +20,20 @@ const config = {
   // `pithy doctor` checks that it still matches what your workers declare.
   name: "pithy-app",
 
+  // Every environment this project deploys to, in the order provisioning walks
+  // them — least-production first. It is the SECOND segment of every Cloudflare
+  // name the project composes (<project>-<env>-<thing>), the set `pithy secrets
+  // provision` gives a master key and a manager to, and the set each Worker's
+  // `env.<name>` wrangler stanzas are generated from. `dev` is never listed: it
+  // is local, it is the top-level wrangler stanza, and it always exists.
+  //
+  // Absent means ["staging", "prod"], which is what `pithy init` scaffolds
+  // unless you told it otherwise. Like `name`, this is effectively permanent:
+  // renaming an environment does not rename anything already provisioned under
+  // the old name — it orphans it. `pithy doctor` reports a change rather than
+  // applying one.
+  // environments: ["staging", "prod"],
+
   // Which Cloudflare account this project belongs to. `pithy init` writes this
   // block when it can discover the account from your token.
   //

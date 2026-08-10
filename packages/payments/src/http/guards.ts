@@ -77,11 +77,45 @@ export const PAYMENTS_ENTITLEMENT_GRANT_SCOPE: ControlPlaneScope = "payments:ent
 export const PAYMENTS_ENTITLEMENT_REVOKE_SCOPE: ControlPlaneScope = "payments:entitlements:revoke";
 
 /**
+ * Read the purchase log — every verified provider transaction, across every account.
+ *
+ * Strictly more disclosure than {@link PAYMENTS_SUBSCRIPTIONS_READ_SCOPE}, which is why the two are
+ * separate: a renewal monitor needs to know who is still paying and when their period ends, and has no
+ * business reading what everybody ever bought. Neither read reaches a stored provider payload.
+ */
+export const PAYMENTS_PURCHASES_READ_SCOPE: ControlPlaneScope = "payments:purchases:read";
+
+/**
+ * Read the purchases that renew — the same rows as the purchase log, narrowed to `type: subscription`.
+ *
+ * The narrower of the two grants, and the one a renewal or churn tool should hold on its own. Holding it
+ * confers nothing about the rest of the log: `scopeCovers` matches exactly, with no prefix rule.
+ */
+export const PAYMENTS_SUBSCRIPTIONS_READ_SCOPE: ControlPlaneScope = "payments:subscriptions:read";
+
+/**
+ * Read the entitlement model — what accounts hold, whether it grants right now, and where it came from.
+ *
+ * **The read that had to exist for grant and revoke to be honest.** Payments shipped both writes with no
+ * read beside them, so a management client could comp an entitlement and take one back while never being
+ * able to list one; a console that cannot see what it changed is asking an operator to act blind. It is
+ * still granted separately, because seeing what every account is entitled to and deciding what they are
+ * entitled to are different operations with different blast radii.
+ */
+export const PAYMENTS_ENTITLEMENTS_READ_SCOPE: ControlPlaneScope = "payments:entitlements:read";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
+ *
+ * Reads first, writes after, because that is the order an adopter should read them in: the reads are the
+ * grant most connections want and the smallest one that makes a dashboard useful.
  */
 export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
 ];
@@ -97,9 +131,42 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  *
  * The summaries say what the operation *is for*, not what it does mechanically. A client renders these
  * next to a button somebody is about to press on a paying customer's account.
+ *
+ * **Everything sits under an `admin/` segment.** The player surface already owns `${basePath}/purchases`
+ * and `${basePath}/entitlements`, and the second of those is a `GET` — so a management read mounted at
+ * the bare path would either collide outright or sit behind whichever of the two Hono matched first, with
+ * a route's gate decided by registration order. The extra segment makes the two sets disjoint by
+ * construction rather than by luck. It also keeps the reads at the shape a management client looks for: a
+ * `GET`, with a declared scope, no `:` segment, ending in the resource's own noun.
  */
 export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
   return [
+    {
+      method: "GET",
+      path: `${basePath}/admin/purchases`,
+      scope: PAYMENTS_PURCHASES_READ_SCOPE,
+      summary:
+        "Page the purchase log — every verified transaction, newest first, filtered by account, store, status or store environment.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/subscriptions`,
+      scope: PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+      summary: "Page the purchases that renew — who is still paying, and when the period they paid for ends.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/entitlements`,
+      scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      summary: "Page what accounts hold — whether each entitlement grants right now, and which purchase is the reason.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/entitlements/:userId`,
+      scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      summary:
+        "Everything one account is entitled to, resolved now. The answer to “why can this person not use what they paid for”.",
+    },
     {
       method: "POST",
       path: `${basePath}/entitlements/grant`,

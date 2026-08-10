@@ -87,7 +87,7 @@ export async function readManifest(path: string): Promise<FeatureManifest | null
   } catch (err) {
     throw new InternalError({
       message: "The feature manifest is corrupt.",
-      action: "Delete .pithy-feature.json and re-run pithy feature provision.",
+      action: "Delete .pithy-feature.json and re-run pithy provision --feature.",
       detail: err instanceof Error ? err.message : String(err),
     });
   }
@@ -96,7 +96,7 @@ export async function readManifest(path: string): Promise<FeatureManifest | null
   if (!result.success) {
     throw fromZodError(result.error, {
       message: "The feature manifest is corrupt.",
-      action: "Delete .pithy-feature.json and re-run pithy feature provision.",
+      action: "Delete .pithy-feature.json and re-run pithy provision --feature.",
     });
   }
   return result.data;

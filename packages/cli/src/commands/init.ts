@@ -3,6 +3,7 @@
 
 import { basename, join, resolve } from "node:path";
 import { type CfAccount, listCloudflareAccounts } from "@pithy-sh/cloudflare/src/client/accounts";
+import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { defineCommand } from "citty";
@@ -82,6 +83,91 @@ async function clackPrompt(): Promise<InitPrompt> {
     confirm: (options) => clack.confirm(options),
     isCancel: (value) => clack.isCancel(value as never),
   };
+}
+
+/** What {@link askEnvironments} decided. */
+export interface EnvironmentsAnswer {
+  /** The environments the project has. Always valid, always at least one. */
+  environments: DeclaredEnvironments;
+  /** Whether anything was actually asked. */
+  prompted: boolean;
+  /** Whether the answer differs from the default — the only case that writes a line into the config. */
+  declared: boolean;
+}
+
+/** What {@link askEnvironments} needs. Both seams default to the real prompts and stderr. */
+export interface AskEnvironmentsOptions {
+  /** Whether a human is attached. False asks nothing and takes the default. */
+  interactive: boolean;
+  /** Seam: the prompts. Defaults to `@clack/prompts`. */
+  prompt?: InitPrompt;
+  /** Seam: where a re-ask explains itself. Defaults to stdout. */
+  note?: (line: string) => void;
+}
+
+/** How a typed answer is split: commas, whitespace, or both. `staging,prod` and `staging, prod` are one answer. */
+function parseEnvironments(answer: string): string[] {
+  return answer
+    .split(/[,\s]+/)
+    .map((environment) => environment.trim())
+    .filter((environment) => environment.length > 0);
+}
+
+/**
+ * Ask which environments this project has (#241).
+ *
+ * **Asked here for the same reason `name` is.** `<project>-<env>-<thing>` has a 33-character ceiling;
+ * `name` is capped at 26 and asked at `init` because a provisioned project cannot be renamed. The
+ * environment sits in the middle of that same name, is measured against the same ceiling, and was asked
+ * about nowhere — it was scaffolded from a template and then contradicted by a closed enum in one place
+ * and an open policy field in another. One of the two segments was a decision; the other was an accident.
+ *
+ * **One keypress for the common case.** The default is offered as the placeholder, so an adopter who has
+ * never thought about this presses enter and gets exactly what the scaffold always wrote — and no
+ * `environments` line in their config, because a declaration that repeats the default teaches nothing.
+ *
+ * **An illegal answer is re-asked, not accepted.** `dev` is the one people try, and it is the one that
+ * has to be refused: it is local, always present, and never deployed. Three attempts, then the default —
+ * a scaffold that cannot be completed is worse than one on the default set.
+ *
+ * **Skipped when nobody is at a terminal**, exactly as the account and domain questions are. CI scaffolds
+ * projects, there is nobody to ask, and the default is what the template already held.
+ */
+export async function askEnvironments(options: AskEnvironmentsOptions): Promise<EnvironmentsAnswer> {
+  const fallback: EnvironmentsAnswer = {
+    environments: [...DEFAULT_ENVIRONMENTS],
+    prompted: false,
+    declared: false,
+  };
+  if (!options.interactive) return fallback;
+
+  const prompt = options.prompt ?? (await clackPrompt());
+  const note = options.note ?? ((line: string) => void process.stdout.write(`${line}\n`));
+  const offered = DEFAULT_ENVIRONMENTS.join(", ");
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const answer = asString(
+      await prompt.text({
+        message: "Environments this project deploys to:",
+        defaultValue: offered,
+        placeholder: offered,
+      }),
+      prompt,
+    );
+    // Cancelled. The default is the honest fallback: it is what the template holds, and it is what a
+    // non-interactive run gets, so nothing is scaffolded that an unanswered question decided.
+    if (answer === null) return { ...fallback, prompted: true };
+
+    const parsed = DeclaredEnvironments.safeParse(parseEnvironments(answer));
+    if (parsed.success) {
+      const declared = parsed.data.join(", ") !== offered;
+      return { environments: parsed.data, prompted: true, declared };
+    }
+    // The schema's own sentences — `dev` gets the reason it is not declarable, an over-long name gets the
+    // number. Re-asked rather than refused, because this is a prompt and the adopter is still here.
+    for (const issue of parsed.error.issues) note(issue.message);
+  }
+  return { ...fallback, prompted: true };
 }
 
 /** The `cloudflare` block `init` writes into the root config, or `null` when it discovered nothing. */
@@ -360,8 +446,14 @@ export default defineCommand({
         ? { value: args.worker, prompted: false }
         : await ask("First worker (apps/<name>):", DEFAULT_WORKER, args.json);
 
+      // Asked with the two names, before anything is written, because it is the same kind of answer:
+      // the environment is the second segment of every Cloudflare name this project will compose, and
+      // renaming one after provisioning orphans what was created under the old one. The scaffold writes
+      // each Worker's `env.<name>` stanzas from it.
+      const environments = await askEnvironments({ interactive: interactive(args.json) });
+
       const appName = name.value;
-      await scaffoldProject({ targetDir, appName, worker: worker.value });
+      await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
 
       // Asked before the zones are, because listing them needs the token — and the same token answers
       // which account this project is for, so the two questions collapse into one.
@@ -386,11 +478,11 @@ export default defineCommand({
       // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
       // source of truth, and an adopter who answered the prompt needs to know it did not land.
       const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
-      const prompted = name.prompted || worker.prompted || asked.prompted || account.prompted;
+      const prompted = name.prompted || worker.prompted || environments.prompted || asked.prompted || account.prompted;
 
       if (args.json) {
         process.stdout.write(
-          `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, domains: asked.domains ?? null })}\n`,
+          `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null })}\n`,
         );
         return;
       }

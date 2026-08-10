@@ -60,7 +60,7 @@ Every file is written **only if it does not already exist**. `pithy ui add` neve
 Both are `composite`, because both are referenced from the project's root `tsconfig.json` (`docs/CLI.md` §1.3), and each names a `.tsbuildinfo` under the **project's** `dist/` — never this Worker's, which Vite empties on every build.
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
 | `src/client.tsx` | always | The SPA entry |
-| `src/router.tsx` | always | The two-glob router and its route guard |
+| `src/router.tsx` | always | The two-glob router and its route guard. Both globs negate `*.test.tsx` and `*.spec.tsx`, so a co-located route test ships to nobody (`docs/UI.md` §Routing) |
 | `src/styles.css` | always | The stub's styles |
 | `src/pithy-config.tsx` | `--auth` | The one module that imports `virtual:pithy/*`, narrowed once for every screen |
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
@@ -78,6 +78,8 @@ Two structural rules the stub depends on, worth knowing before you move a file:
 ### What it wires
 
 Four files are edited.
+
+**An edit touches the lines it means to change, and no others.** Every one of these files is checked into your repository, so the writer prints what the Biome `pithy init` scaffolds would print — short arrays on one line, an object left in whatever shape it already had, comments where you put them. A `pithy ui sync` that adds one path is a one-line diff, and its output passes `biome check` with no formatting step of your own. It did neither before #249: the writer expanded every array in the file, so a two-line change arrived as 78 insertions and then failed the pre-commit hook the CLI itself installed.
 
 **`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
 

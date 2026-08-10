@@ -22,6 +22,7 @@ import type { Migration, MigrationProvider, MigrationResult } from "kysely/migra
 import { Miniflare } from "miniflare";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
+import { wranglerConfigPath } from "../provision/featureConfig";
 import { collectMigrationSets } from "./registry";
 
 /**
@@ -204,10 +205,17 @@ interface WranglerD1Config {
   env?: Record<string, { d1_databases?: D1Binding[] } | undefined>;
 }
 
-/** Read and parse a Worker's wrangler.jsonc (comments allowed). A missing file yields an empty config. */
-async function readWranglerConfig(workerDir: string): Promise<WranglerD1Config> {
+/**
+ * Read and parse the config that describes this Worker in this environment. A missing file yields an
+ * empty config.
+ *
+ * Through {@link wranglerConfigPath}, which is what makes a feature environment read the generated
+ * config under `.wrangler/` rather than the tracked one (#242) — provisioning writes a feature's ids
+ * there, so reading `wrangler.jsonc` here would find no `env.feature` stanza and refuse the migrate.
+ */
+async function readWranglerConfig(workerDir: string, env: string): Promise<WranglerD1Config> {
   try {
-    const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+    const raw = await readFile(wranglerConfigPath(workerDir, env), "utf8");
     return parse(raw) as unknown as WranglerD1Config;
   } catch {
     return {};
@@ -364,7 +372,7 @@ async function buildGroups(workers: WorkerScope[], env: string, scope: Set<strin
   for (const worker of workers) {
     const plan = buildPlan(worker);
     if (plan.length === 0) continue;
-    const config = await readWranglerConfig(worker.dir);
+    const config = await readWranglerConfig(worker.dir, env);
     if (env !== "dev" && !config.env?.[env]) {
       if (!scope.has(worker.name)) continue;
       throw new ValidationError({

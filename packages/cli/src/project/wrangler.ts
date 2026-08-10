@@ -4,8 +4,8 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { parse, stringify } from "comment-json";
-import { writeFileAtomic } from "./atomic";
+import { parse } from "comment-json";
+import { writeJsonc } from "./jsonc";
 import { readOptionalFile } from "./readOptionalFile";
 
 /** The slice of `wrangler.jsonc` the per-environment var helpers read and write. */
@@ -57,9 +57,14 @@ export async function readWranglerConfig(projectDir: string): Promise<unknown> {
   return config;
 }
 
-/** Write `wrangler.jsonc` back comment-preserving, with the repo's 2-space + trailing-newline formatting. */
+/**
+ * Write `wrangler.jsonc` back comment-preserving, printed the way the Biome `pithy init` scaffolds would
+ * print it and shaped like the bytes already there — see {@link writeJsonc}. This wrote `stringify`'s
+ * fully expanded output until #249, so every command that edits a Worker's config left a file the
+ * adopter's own commit hook rejected, and buried a two-line change in a whole-file reformat.
+ */
 export async function writeWranglerConfig(projectDir: string, config: unknown): Promise<void> {
-  await writeFileAtomic(join(projectDir, "wrangler.jsonc"), `${stringify(config, null, 2)}\n`);
+  await writeJsonc(join(projectDir, "wrangler.jsonc"), config);
 }
 
 export interface WranglerOptions {

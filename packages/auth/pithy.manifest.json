@@ -10,7 +10,7 @@
   "scaffold": [
     "Create the session signing secret: `pithy secrets create auth-session-secret`.",
     "Add the `AUTH_RATE_LIMITER` Workers Rate Limiting binding to each wrangler.jsonc env — the coarse per-IP edge guard on the auth routes. For example: `\"ratelimits\": [{ \"name\": \"AUTH_RATE_LIMITER\", \"namespace_id\": \"1001\", \"simple\": { \"limit\": 60, \"period\": 60 } }]`. This is tier 1; Better Auth's per-action limiter (tier 2) is built in.",
-    "Set `baseURL` to this environment's public auth-worker origin, and list every web origin and mobile deep-link scheme in `trustedOrigins`.",
+    "Set `baseURL` to the origin this Worker is deployed at, and list every web origin and mobile deep-link scheme in `trustedOrigins`. Dev needs neither: it resolves its own base URL and trusts its own origin.",
     "Turnstile (optional): add the `turnstile` capability and the magic-link and OTP send routes are bot-gated automatically — no wiring.",
     "Google (optional): set `google: { enabled: true }`, then `pithy secrets create auth-google-credentials` with the typed JSON `{ clientId, clientSecret }`. See the package's docs/google-oauth.md for the Console steps and redirect URIs.",
     "Apple (optional): set `apple: { enabled: true }`, then `pithy secrets create auth-apple-credentials` with the typed JSON `{ clientId, clientSecret, appBundleIdentifier? }`. See the package's docs/apple-signin.md.",
@@ -27,7 +27,7 @@
     {
       "key": "baseURL",
       "default": "https://api.example.com",
-      "describe": "The public origin of this environment's auth worker, no trailing slash. OAuth callbacks and JWKS URLs are built from it, so it must be reachable. Set `trustedOrigins` and the social providers (`google`, `apple`, `facebook`, `github`) by hand — see the scaffold steps below."
+      "describe": "The public origin of this Worker where it is deployed, no trailing slash. OAuth callbacks, JWKS and magic-link URLs are built from it, so it must be reachable. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down. Set `trustedOrigins` and the social providers (`google`, `apple`, `facebook`, `github`) by hand — see the scaffold steps below."
     },
     {
       "key": "disableSignUp",

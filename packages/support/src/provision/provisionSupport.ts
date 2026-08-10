@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -112,19 +113,26 @@ export interface SupportProvisionResult {
  * write to it, and **the routing rule is last** — creating it first would start delivering mail to a
  * Worker whose classification host is not deployed yet, which is a window where real customer
  * messages arrive and stay `uncategorized` with nothing to say why.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
-export async function provisionSupport(provisioner: SupportProvisioner): Promise<SupportProvisionResult> {
+export async function provisionSupport(
+  provisioner: SupportProvisioner,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<SupportProvisionResult> {
   await provisioner.preflight();
   const bucket = await provisioner.ensureBucket();
   const search: SupportProvisionResult["search"] = [];
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await provisioner.deployWorker(env);
     // Per environment, because each has its own app database — and after the worker, so a database
     // that gains the index always has something able to write to it.
     search.push({ env, ...(await provisioner.ensureSearchIndex(env)) });
   }
   const routing = await provisioner.ensureRoutingRule();
-  return { bucket, environments: managedEnvironments(), routing, search };
+  return { bucket, environments: managedEnvironments(environments), routing, search };
 }
 
 /** The teardown seam — the inverse of {@link SupportProvisioner}. Every step idempotent. */
@@ -153,13 +161,18 @@ export interface SupportDeprovisionOptions {
  * removing the workers that would have handled it, or messages land in a Worker with no classification
  * host during the teardown. Stored correspondence is preserved unless explicitly requested — losing an
  * adopter's support history to a teardown flag would be unrecoverable.
+ *
+ * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
+ * environment is provisioned; an environment this skipped would be one the project deploys to with no
+ * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
  */
 export async function deprovisionSupport(
   deprovisioner: SupportDeprovisioner,
+  environments: DeclaredEnvironments | readonly string[],
   options: SupportDeprovisionOptions = {},
 ): Promise<void> {
   await deprovisioner.removeRoutingRule();
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteWorker(env);
   }
   if (options.deleteStorage) await deprovisioner.deleteBucket();

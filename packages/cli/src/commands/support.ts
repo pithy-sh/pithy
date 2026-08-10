@@ -17,7 +17,7 @@ import {
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -191,7 +191,11 @@ const provision = defineCommand({
       // The leading segment of the bucket, the classification workers, and the routing rule. The bucket
       // is found by name and reused, so `requireProjectName` refuses to guess — a guessed name adopts
       // another project's inbox (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { provisionSupport } = await loadSupport();
       const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const supportConfig = await loadSupportConfig(projectDir);
@@ -211,7 +215,7 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
       });
 
-      const result = await provisionSupport(provisioner);
+      const result = await provisionSupport(provisioner, environments);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "support provision", ...result })}\n`);
@@ -280,7 +284,11 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { deprovisionSupport } = await loadSupport();
       const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -297,7 +305,7 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
       });
 
-      await deprovisionSupport(deprovisioner, { deleteStorage: args.storage });
+      await deprovisionSupport(deprovisioner, environments, { deleteStorage: args.storage });
 
       if (args.json) {
         process.stdout.write(

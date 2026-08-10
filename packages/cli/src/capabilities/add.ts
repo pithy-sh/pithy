@@ -81,7 +81,7 @@ const MARKER = "// pithy:capabilities";
 /**
  * One binding entry, as wrangler writes it. `remote` rides along when the spec sets it; the
  * resource's identity (`database_id`, `id`, `bucket_name`) is provision-time and is filled later by
- * `pithy feature provision` or the capability's own provisioner.
+ * `pithy provision` or the capability's own provisioner.
  *
  * `database_name` is the exception, and it is a *proposal*, not an identity: wrangler accepts a D1
  * entry naming a database that does not exist yet, and an adopter who leaves the field alone gets a
@@ -291,7 +291,7 @@ function envStanzas(config: WranglerBindings): { env: string; stanza: WranglerBi
  *
  * The writer emits a binding's **shape** — its name, and whatever the spec can state (`class_name`,
  * `remote`). Resource identity is provision-time and stays absent here: `database_id`, `id`, and
- * `bucket_name` are written later by `pithy feature provision` or the capability's own provisioner.
+ * `bucket_name` are written later by `pithy provision` or the capability's own provisioner.
  * That is the contract `d1` and `kv` have had since the first release.
  *
  * **`vectorize` and `workflows` are deliberately not emitted at all**, and that is the difference

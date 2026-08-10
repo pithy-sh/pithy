@@ -4,29 +4,35 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { destroyFeature } from "../feature/destroy";
-import { deriveIdentityFromBranch } from "../feature/identity";
-import { cloudflareProvisioners, type FeatureProvisioners, provisionFeature } from "../feature/provision";
+import { branchIdentity, deriveIdentityFromBranch } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
+import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
-/** The feature's own ephemeral CF environment — provision/destroy default here unless `--env` names another. */
-const DEFAULT_FEATURE_ENV = "feature";
+/**
+ * The feature's own ephemeral CF environment.
+ *
+ * `destroy` takes an `--env` because it names the environment its audit trail records; it deletes by
+ * recomputed feature name regardless, so the flag never changes what goes. Standing the environment up is
+ * `pithy provision --feature`'s job — one job with two spellings, and this is not one of them.
+ */
+const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-function buildProvisioners(account: CloudflareAccountSelection | null): FeatureProvisioners | null {
+function buildProvisioners(account: CloudflareAccountSelection | null): ResourceProvisioners | null {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -35,18 +41,21 @@ function buildProvisioners(account: CloudflareAccountSelection | null): FeatureP
 }
 
 /**
- * Where a feature's audit trail is written. **Not the feature's own environment.**
+ * The account's Secrets Store, or `null` when this project has not recorded one.
  *
- * The feature env's database does not exist yet when `provision` starts — its id is written into
- * `wrangler.jsonc` only once the resources are created — so keying the audit database on it would resolve
- * nothing and silently drop every creation event. And `destroy` deletes that database, so a record written
- * there dies with the thing it was recording. Both defeat the point of auditing a headless CI teardown.
- *
- * So the trail lands in the project's durable, top-level database: it outlives every feature, and it is
- * where an operator looks to answer "who tore this down?". The environment actually acted on is stated by
- * each event, and lands in the row's own `environment` column.
+ * **Absent is a degraded feature environment, never a failed command.** A project that composes no
+ * `secrets` capability has no store id and needs none; one that does gets its own master key and its
+ * `secrets_store_secrets` bindings. Either way the rest of the feature stands up, and the report says
+ * which happened.
  */
-const AUDIT_DESTINATION_ENV = "dev";
+function buildStore(account: CloudflareAccountSelection | null): SecretsStore | null {
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
+  if (!accountId || !apiToken || !storeId) return null;
+  return cloudflareSecretsStore(new CloudflareClients({ accountId, apiToken }), storeId);
+}
 
 /**
  * The audit emitter for a feature command, or a no-op when auditing is unavailable. Feature provisioning
@@ -73,27 +82,6 @@ async function buildAudit(
     clients: new CloudflareClients({ accountId, apiToken }),
     apiToken,
   });
-}
-
-/**
- * Resolve the feature identity (project + issue + slug) from the current branch and the root config, plus
- * the capabilities the feature spans.
- *
- * The two come from different places, deliberately. **Identity** is project-wide policy and lives in the
- * root `pithy.config.ts`. **Capabilities** are per Worker (`apps/<name>/pithy.config.ts`), so they are
- * unioned: a feature provisions one resource per binding name for the whole feature — two Workers that both
- * declare `DB` deliberately share one database — and the migrate/seed it runs must cover every table any
- * Worker owns.
- */
-async function branchIdentity(projectDir: string): Promise<{ identity: FeatureIdentity; capabilities: Capability[] }> {
-  const { issue, slug } = await deriveIdentityFromBranch(projectDir);
-  const config = await loadProject(projectDir);
-  // Never guessed: this name is the first segment of every resource name, and the only key teardown has
-  // to find them again. A fallback that differs between a worktree and a clone would make destroy
-  // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
-  const project = requireProjectName(config);
-  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
-  return { identity: { project, issue, slug }, capabilities };
 }
 
 /** `pithy feature create <slug> --issue <n>` — local, automatic. Run from the main checkout. */
@@ -240,60 +228,6 @@ const sync = defineCommand({
     }),
 });
 
-/** `pithy feature provision [--env <name>]` — remote, explicit. Run from within the worktree. */
-const provision = defineCommand({
-  meta: {
-    name: "provision",
-    description: "Provision the feature's live Cloudflare environment, then migrate + seed it",
-  },
-  args: {
-    env: {
-      type: "string",
-      description: `Target environment (default: the feature's own "${DEFAULT_FEATURE_ENV}" env)`,
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const { identity, capabilities } = await branchIdentity(projectDir);
-      const account = await projectCloudflareAccount(projectDir);
-      const provisioners = buildProvisioners(account);
-      if (!provisioners) {
-        throw new ValidationError({
-          message: "Cloudflare credentials are missing.",
-          action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision a feature environment.",
-        });
-      }
-
-      const env = requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV);
-      const report = await provisionFeature({
-        projectDir,
-        env,
-        capabilities,
-        identity,
-        provisioners,
-        audit: await buildAudit(projectDir, capabilities, account),
-      });
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report })}\n`);
-        return;
-      }
-      for (const resource of report.resources) {
-        process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
-      }
-      for (const worker of report.workers) {
-        process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
-      }
-      for (const service of report.services) {
-        process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
-      }
-      process.stdout.write(`Provisioned ${report.env}. Migrated and seeded.\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
 /** `pithy feature destroy` — teardown. Run from within the worktree. */
 const destroy = defineCommand({
   meta: { name: "destroy", description: "Tear down the feature: delete CF resources, free ports, prune the worktree" },
@@ -326,10 +260,12 @@ const destroy = defineCommand({
         });
       }
 
+      const store = buildStore(account);
       const report = await destroyFeature({
         projectDir,
         identity,
         capabilities,
+        ...(store && !args["local-only"] ? { store } : {}),
         env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
         ...(provisioners && !args["local-only"] ? { provisioners } : {}),
         audit: await buildAudit(projectDir, capabilities, account),
@@ -340,7 +276,7 @@ const destroy = defineCommand({
         // too, and its is a `string[]` of index names where this one is `{kind,name,id}[]`. Two
         // collections under one name is the harder half of the collision to notice — both are truthy,
         // both have a `.length` — so the fix is to say what each holds. This is the record-shaped one,
-        // and `deletedResources` also puts it opposite `feature provision`'s `resources`, which is the
+        // and `deletedResources` also puts it opposite provisioning's `resources`, which is the
         // list it undoes. `DestroyReport` keeps `deleted`: it is teardown's own vocabulary, and the
         // published name is decided here, where the payload is.
         const { command, deleted: deletedResources, ...rest } = report;
@@ -358,5 +294,5 @@ const destroy = defineCommand({
 
 export default defineCommand({
   meta: { name: "feature", description: "Set up and tear down an isolated, fully-provisioned feature environment" },
-  subCommands: { create, sync, provision, destroy },
+  subCommands: { create, sync, destroy },
 });

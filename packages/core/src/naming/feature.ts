@@ -121,6 +121,31 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
 }
 
 /**
+ * The CF Secrets Store entry name holding one of a feature's **environment-scoped** secrets —
+ * `<project>-f<issue>-<slug>-<secret>`.
+ *
+ * A Cloudflare account has one Secrets Store, flat and unpartitionable, so the entry name is the only
+ * partition there is. A feature therefore needs its own names for the same reason it needs its own
+ * database: without them a branch would adopt staging's master key, and its teardown would delete it.
+ *
+ * Held to the **Secrets Store** limit rather than R2's 63, like every other entry name — an entry has
+ * no documented Cloudflare cap, and holding it to the strictest kind's would hash
+ * `secrets-encryption-keys` down to nothing for no reason.
+ *
+ * A `global` secret is not named here at all: it is one account-level value every environment binds,
+ * so a feature binds the project's `<project>-global-<secret>` rather than minting a second copy.
+ */
+export function featureSecretEntryName(identity: FeatureIdentity, secret: string): string {
+  return composeFeatureName(
+    head(identity),
+    kebab(identity.slug),
+    kebab(secret),
+    "",
+    NAMESPACE_LIMITS.secretEntry.maxLength,
+  );
+}
+
+/**
  * The Worker **script name** for one of a feature's workers — `<project>-f<issue>-<slug>-<worker>`.
  *
  * This is the name the feature's Workers deploy under, and therefore the name a sibling's `service`

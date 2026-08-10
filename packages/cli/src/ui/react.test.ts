@@ -179,8 +179,15 @@ describe("the React 19 stub", () => {
 
   test("the router globs both route directories, lazily, with app winning on a conflict", () => {
     const router = AUTH["src/router.tsx"] ?? "";
-    expect(router).toContain('import.meta.glob<RouteModule>("./routes/pithy/**/*.tsx")');
-    expect(router).toContain('import.meta.glob<RouteModule>("./routes/app/**/*.tsx")');
+    expect(router).toContain('"./routes/pithy/**/*.tsx"');
+    expect(router).toContain('"./routes/app/**/*.tsx"');
+    // #245: a co-located `home.test.tsx` was a route, and shipped the test runner to the browser. The
+    // build gate is `@pithy-sh/ui-react`'s `routeGlob.test.ts`; this holds the negation in the file the
+    // CLI copies, because the CLI is what puts it in front of an adopter.
+    for (const directory of ["pithy", "app"]) {
+      expect(router).toContain(`"!./routes/${directory}/**/*.test.tsx"`);
+      expect(router).toContain(`"!./routes/${directory}/**/*.spec.tsx"`);
+    }
     // Pithy first, app second, into a Map — the later set() wins.
     expect(router.indexOf("pithyRoutes, appRoutes")).toBeGreaterThan(-1);
     expect(router).toContain("Do not edit them.");

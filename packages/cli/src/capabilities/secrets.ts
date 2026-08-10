@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { type AuditResult, auditSecrets, passesPromoteGate } from "@pithy-sh/secrets/src/cli/audit";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -50,6 +51,15 @@ export interface SecretWriteCommand {
   value?: string;
   /** The operator-requested environment (used for an `environment`-scoped secret). */
   env: ManagedEnvironment;
+  /**
+   * Every environment the project declares, from the root `pithy.config.ts` (#241) — the set a `global`
+   * secret fans out across, and the one the canonical CF-Secrets-Store write is chosen from.
+   *
+   * Beside `env` rather than defaulted, because a default would be the silence this replaced: a project
+   * declaring `live` would have its shared secrets written to staging and prod and not to `live`, and
+   * nothing would say so.
+   */
+  environments: DeclaredEnvironments | readonly string[];
 }
 
 /**
@@ -95,16 +105,20 @@ export async function runSecretWrite(
 
   const action = SECRET_WRITE_ACTION[command.mode];
   try {
-    const targets = await dispatchSecretWrite(dispatcher, {
-      mode: command.mode,
-      name: command.name,
-      backend: entry.backend,
-      scope: entry.scope,
-      rotatable: entry.rotatable,
-      valueType: entry.valueType,
-      value,
-      requested: command.env,
-    });
+    const targets = await dispatchSecretWrite(
+      dispatcher,
+      {
+        mode: command.mode,
+        name: command.name,
+        backend: entry.backend,
+        scope: entry.scope,
+        rotatable: entry.rotatable,
+        valueType: entry.valueType,
+        value,
+        requested: command.env,
+      },
+      command.environments,
+    );
     await audit({
       action,
       outcome: "success",

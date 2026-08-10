@@ -67,7 +67,7 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  * ## What the scan cannot read, named rather than implied
  *
  * A payload assembled by spreading a typed object — `formatJsonLine({ command, ...result })` — carries no
- * key at the call site. Thirty-one of this CLI's sixty-five `--json` sites are that shape, and enumerating them
+ * key at the call site. Thirty-two of this CLI's sixty-six `--json` sites are that shape, and enumerating them
  * needs the type checker rather than a scan. The gate reads what is written literally and holds a page to
  * that; it never claims to have read the rest. Which commands are in that state is not a sentence here that
  * can rot — it is `SPREAD_BUILT`, `UNPARSED_SITES` and `NO_READABLE_PAYLOAD` below, each asserted against
@@ -410,7 +410,7 @@ const sourceFor = (command: string): string => readFileSync(join(HERE, `${comman
 const NO_READABLE_PAYLOAD = ["doctor", "remove"];
 
 /**
- * Commands with at least one payload assembled by spreading a typed object. Thirty-one sites across these,
+ * Commands with at least one payload assembled by spreading a typed object. Thirty-two sites across these,
  * which is where the number in this file's header comes from. Their pages are held to the keys written
  * literally beside the spread — a floor — and nothing here claims the rest was checked.
  */
@@ -423,6 +423,7 @@ const SPREAD_BUILT = [
   "feature",
   "media",
   "migrate",
+  "provision",
   "seed",
   "storage",
   "support",
@@ -486,6 +487,8 @@ describe("the docs say what the code emits", () => {
     );
     expect(scanned.filter(([, read]) => read.spreadSites > 0).map(([command]) => command)).toEqual(SPREAD_BUILT);
     expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
+    // 31 since #251: provisioning is one command with two modes, so the two payload spreads that built
+    // one report each are now the one spread `pithy provision` builds for both.
     expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(31);
   });
 
@@ -708,6 +711,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "media",
     "migrate",
     "payments",
+    "provision",
     "secrets",
     "seed",
     "storage",
@@ -724,8 +728,8 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
   dryRun: ["seed", "upgrade"],
-  env: ["deploy", "feature", "migrate", "payments", "seed", "token", "upgrade", "vector"],
-  environments: ["email", "media", "payments", "secrets", "storage", "support"],
+  env: ["deploy", "migrate", "payments", "provision", "seed", "token", "upgrade", "vector"],
+  environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
   from: ["email", "worker"],
   manifestFaults: ["add", "upgrade"],
   name: ["secrets", "token"],
@@ -739,7 +743,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
-  workers: ["deploy", "dev", "env", "feature", "migrate", "seed", "upgrade", "worker"],
+  workers: ["deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
 };
 
 /**
@@ -798,17 +802,18 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  * - **`workers`** — an `object[]` in seven commands, and an `object` keyed by worker name in `pithy dev`.
  *   The one where the shapes are closest and the misread is worst: both are truthy, both enumerate
  *   workers, and only one answers to `.length`.
- * - **`environments`** — a `string[]` of environment names in `email`, `payments`, `support` and
- *   `secrets`' write payloads, an `object[]` of per-environment records in `secrets status`, and `array`
- *   on `media` and `storage`, which is why those two do not decide it either way.
+ * - **`environments`** — a `string[]` of environment names in `email`, `payments`, `support`, `secrets`'
+ *   write payloads and `init`, an `object[]` of per-environment records in `secrets status`, an `object`
+ *   block in `doctor` (#241), and `array` on `media` and `storage`, which is why those two do not decide
+ *   it either way.
  *
- * The first three share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks
+ * The first four share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks
  * take the bare noun a result elsewhere spends on a scalar.** That is the fix to make, and it is one
  * decision about two commands rather than four scattered renames.
  */
 const SHARED_JSON_KEY_TYPES_DISAGREE: Record<string, string[]> = {
   alias: ["object", "string"],
-  environments: ["object[]", "string[]"],
+  environments: ["object", "object[]", "string[]"],
   project: ["object", "string"],
   workers: ["object", "object[]"],
 };

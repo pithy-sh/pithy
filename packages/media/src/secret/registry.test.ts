@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "./registry";
@@ -25,8 +26,8 @@ describe("mediaSecretsRegistry", () => {
     // Iterate the values rather than index by name: the registry is a `const` object with no index
     // signature, so a `string` key would not narrow — and every entry is covered either way.
     for (const entry of Object.values(mediaSecretsRegistry)) {
-      expect(resolveWriteTargets(entry.backend, entry.scope, "staging")).toEqual(["staging"]);
-      expect(resolveWriteTargets(entry.backend, entry.scope, "prod")).toEqual(["prod"]);
+      expect(resolveWriteTargets(entry.backend, entry.scope, "staging", DEFAULT_ENVIRONMENTS)).toEqual(["staging"]);
+      expect(resolveWriteTargets(entry.backend, entry.scope, "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
     }
   });
 });

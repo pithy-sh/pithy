@@ -12,7 +12,7 @@ import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "./config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
 import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
@@ -187,8 +187,12 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   // command composes resource names from, or the Worker's Images/Stream assets land under an owner
   // nothing sweeps. A project with no `name` is refused here rather than scaffolding a Worker that
   // cannot mint an attributable upload.
-  const project = requireProjectName(await loadProject(options.projectDir));
-  const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project });
+  const config = await loadProject(options.projectDir);
+  const project = requireProjectName(config);
+  // The environments the project declares, so the second Worker's stanzas are the first Worker's set —
+  // two Workers in one project disagreeing about which environments exist is the fault #241 named.
+  const environments = loadProjectEnvironments(config);
+  const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project, environments });
 
   try {
     return await wireAddedWorker(options, dir);

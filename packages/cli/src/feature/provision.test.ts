@@ -3,22 +3,20 @@
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { type FeatureIdentity, featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { sourceFiles } from "../ci/sourceFiles";
+import { featureConfigPath } from "../provision/featureConfig";
+import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
-import {
-  deprovisionFeature,
-  FeatureAuditActions,
-  type FeatureProvisioners,
-  provisionFeature,
-  type ResourceProvisioner,
-} from "./provision";
+import { deprovisionFeature, provisionFeature } from "./provision";
 
 /** An in-memory provisioner over a name→id map, mirroring the real find/create/delete semantics. */
 function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner & { creates: number } {
@@ -49,7 +47,7 @@ function fakeProvisioners() {
     kv: fakeKind("kv", stores.kv),
     r2: fakeKind("r2", stores.r2),
   };
-  return { stores, provisioners: provisioners as unknown as FeatureProvisioners, typed: provisioners };
+  return { stores, provisioners: provisioners as unknown as ResourceProvisioners, typed: provisioners };
 }
 
 /** A capability declaring one D1, one KV, and one R2 binding — the provisionable set under test. */
@@ -60,6 +58,26 @@ function appCapability() {
     { type: "r2", name: "ASSETS" },
   ];
   return defineCapability({ name: "app", requiredBindings });
+}
+
+/**
+ * Every file under `root`, by absolute path, with its bytes. The oracle for "what did this run write?".
+ *
+ * Through {@link sourceFiles}, never a walk of its own — `ci/sourceFiles.test.ts` refuses the seventh
+ * hand-rolled recursion in this repository, and a fixture is not an exemption. `dotted` is on and `keep`
+ * takes everything, because the whole question here is what landed under `.wrangler/`.
+ */
+function snapshot(root: string): Map<string, string> {
+  return new Map(sourceFiles(root, { dotted: true, keep: () => true }).map((file) => [file.path, file.text]));
+}
+
+/**
+ * Is this path one the scaffolded `.gitignore` already covers? `.wrangler/` at any depth, and the
+ * feature manifest. Written as the two rules rather than as a regex over the whole ignore file, because
+ * these two are the only ones provisioning is allowed to rely on.
+ */
+function ignored(path: string): boolean {
+  return path.split(sep).includes(".wrangler") || path.endsWith(".pithy-feature.json");
 }
 
 /** Migrate/seed are exercised by their own suites; provisioning tests stub them out. */
@@ -101,7 +119,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -120,7 +137,18 @@ describe("provisionFeature / deprovisionFeature", () => {
     // (#231): each throws on failure, so a returned report already means they succeeded, and a hardcoded
     // `migrated: true, seeded: true` beside it is a constant no consumer can usefully branch on.
     expect(r.calls).toEqual({ migrate: ["feature"], seed: ["feature"] });
-    expect(Object.keys(report).sort()).toEqual(["command", "env", "resources", "services", "workers"]);
+    // No `command`: the name of a command belongs to the command, and one command produces this report
+    // under two spellings (#251). `configs` and `committed` are the run saying which file it wrote and
+    // what happens to it — asserted as a property in `provision/destination.test.ts`.
+    expect(Object.keys(report).sort()).toEqual([
+      "committed",
+      "configs",
+      "env",
+      "resources",
+      "secretBindings",
+      "services",
+      "workers",
+    ]);
 
     // The R2 resource's name is its id; D1/KV got synthetic ids.
     const r2Name = featureResourceName(identity, "ASSETS", "r2");
@@ -129,7 +157,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const manifest = await readManifest(manifestPath(dir));
     expect(manifest?.resources).toHaveLength(3);
 
-    const wrangler = parse(await readFile(join(dir, "apps", "app", "wrangler.jsonc"), "utf8")) as unknown as {
+    const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
       env: Record<
         string,
         Record<string, { binding: string; database_id?: string; id?: string; bucket_name?: string }[]>
@@ -144,7 +172,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("re-running is idempotent: every resource is reused, nothing new is created", async () => {
     const { provisioners, typed } = fakeProvisioners();
-    const opts = { projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend };
+    const opts = { projectDir: dir, capabilities, identity, provisioners, ...noBackend };
 
     await provisionFeature(opts);
     const before = typed.d1.creates + typed.kv.creates + typed.r2.creates;
@@ -163,7 +191,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -201,7 +228,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [shared, collabOnly],
       identity,
       provisioners,
@@ -214,7 +240,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const stanza = async (workerDir: string) => {
-      const config = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      const config = parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
         env: Record<string, { d1_databases?: { binding: string }[]; kv_namespaces?: { binding: string }[] }>;
       };
       return config.env.feature;
@@ -247,7 +273,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [withService],
       identity,
       provisioners,
@@ -267,7 +292,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(report.services).toEqual([{ binding: "API", service: apiName }]);
 
     // The web worker's wrangler.jsonc now deploys under its feature name and calls the feature's api.
-    const web = parse(await readFile(join(webDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
       env: Record<string, { name?: string; services?: { binding: string; service: string }[] }>;
     };
     expect(web.env.feature?.name).toBe(featureWorkerName(identity, "web"));
@@ -292,7 +317,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const report = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [withService],
       identity,
       provisioners,
@@ -310,7 +334,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const deployed = featureWorkerName(identity, "acme-api");
     expect(report.services).toEqual([{ binding: "API", service: deployed }]);
 
-    const web = parse(await readFile(join(webDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
       env: Record<string, { services?: { binding: string; service: string }[] }>;
     };
     expect(web.env.feature?.services).toEqual([{ binding: "API", service: deployed }]);
@@ -328,7 +352,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const failure = await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities: [ghost],
       identity,
       provisioners,
@@ -345,7 +368,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("destroy deletes every manifest resource and removes the manifest file", async () => {
     const { stores, provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
 
     const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
 
@@ -390,7 +413,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -401,8 +423,8 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     expect(events.map((e) => e.action)).toEqual([
-      FeatureAuditActions.resourceCreated,
-      FeatureAuditActions.resourceCreated,
+      ProvisionAuditActions.resourceCreated,
+      ProvisionAuditActions.resourceCreated,
     ]);
     expect(events.map((e) => e.resourceType)).toEqual(["cf_kv", "cf_r2"]);
     expect(events[0]).toMatchObject({ outcome: "success", metadata: { binding: "CACHE", issue: "69" } });
@@ -410,7 +432,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("audits every deletion as a warning — teardown destroys real infrastructure, often with no human watching", async () => {
     const { provisioners } = fakeProvisioners();
-    await provisionFeature({ projectDir: dir, env: "feature", capabilities, identity, provisioners, ...noBackend });
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
 
     const events: CliAuditEvent[] = [];
     await deprovisionFeature({
@@ -423,7 +445,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     expect(events).toHaveLength(3);
-    expect(new Set(events.map((e) => e.action))).toEqual(new Set([FeatureAuditActions.resourceDeleted]));
+    expect(new Set(events.map((e) => e.action))).toEqual(new Set([ProvisionAuditActions.resourceDeleted]));
     expect(events.every((e) => e.severity === "warning")).toBe(true);
     expect(new Set(events.map((e) => e.resourceType))).toEqual(new Set(["cf_d1", "cf_kv", "cf_r2"]));
     // The deleted resource's id and name are both recorded — the "what exactly went" of the trail.
@@ -441,7 +463,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     await provisionFeature({
       projectDir: dir,
-      env: "feature",
       capabilities,
       identity,
       provisioners,
@@ -450,12 +471,65 @@ describe("provisionFeature / deprovisionFeature", () => {
       seed: async () => {},
     });
 
-    const api = parse(await readFile(join(apiDir, "wrangler.jsonc"), "utf8")) as unknown as {
+    const api = parse(await readFile(featureConfigPath(apiDir), "utf8")) as unknown as {
       env: Record<string, { name?: string; d1_databases?: { binding: string; database_id?: string }[] }>;
     };
     expect(api.env.feature?.name).toBe(featureWorkerName(identity, "api"));
     expect(api.env.feature?.d1_databases?.[0]).toMatchObject({ binding: "DB" });
     expect(api.env.feature?.d1_databases?.[0]?.database_id).toBeTruthy();
+  });
+
+  /**
+   * **The gate for #242, and it is one sentence: provisioning a feature writes nothing a checkout
+   * tracks.**
+   *
+   * Stated as a property of every byte on disk rather than as a list of files, because the list was
+   * the problem. `wrangler.jsonc` is tracked and cannot be gitignored — it is the project's real
+   * config — so a feature's ids sitting in it were a modified tracked file the adopter never edited,
+   * with nothing saying it must not be committed. In CI that was fine by accident; locally `git add -A`
+   * put ids for since-deleted resources onto `main`, and `feature destroy` reversed everything except
+   * that edit.
+   *
+   * Two rules cover every path this can legitimately touch, and both are already in the scaffolded
+   * `.gitignore` of every project ever created by `pithy init`: anything under a `.wrangler/`
+   * directory, and `.pithy-feature.json`. A third would mean a new ignore rule, which existing
+   * projects do not have — which is why the rule is the assertion rather than the file list.
+   *
+   * **This is the work `pithy provision --feature` does** (#251): the command surface changed spelling,
+   * and the function it calls is this one — so the gate holds through the new spelling unchanged, which
+   * is exactly what a command-surface change is allowed to leave alone.
+   */
+  test("writes nothing a checkout tracks", async () => {
+    const { provisioners } = fakeProvisioners();
+    const workerDir = join(dir, "apps", "app");
+    const before = snapshot(dir);
+
+    await provisionFeature({
+      projectDir: dir,
+      capabilities,
+      identity,
+      provisioners,
+      resolveWorkers: async () => [{ name: "acme-api", dir: workerDir, capabilities }],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+    const after = snapshot(dir);
+    const touched = [...after]
+      .filter(([path, bytes]) => before.get(path) !== bytes)
+      .map(([path]) => path)
+      .sort();
+
+    // Every path is one an existing project's `.gitignore` already covers. Nothing else moved — and in
+    // particular the Worker's own `wrangler.jsonc` is byte-identical.
+    expect(touched.filter((path) => !ignored(path))).toEqual([]);
+    expect(touched.length).toBeGreaterThan(0); // non-vacuity: the run did write something.
+    expect(after.get(join(workerDir, "wrangler.jsonc"))).toBe(before.get(join(workerDir, "wrangler.jsonc")));
+    // And the ids really are somewhere — this is not "wrote nothing" passing as "wrote nothing tracked".
+    const generated = parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+      env: Record<string, { d1_databases?: { binding: string; database_id?: string }[] }>;
+    };
+    expect(generated.env.feature?.d1_databases?.[0]?.database_id).toBeTruthy();
   });
 
   describe("a manifest is repository content, not a trusted record", () => {
@@ -519,7 +593,6 @@ describe("provisionFeature / deprovisionFeature", () => {
 
       await provisionFeature({
         projectDir: dir,
-        env: "feature",
         capabilities,
         identity,
         provisioners,
@@ -533,6 +606,122 @@ describe("provisionFeature / deprovisionFeature", () => {
       const manifest = await readManifest(manifestPath(dir));
       expect(manifest?.resources.some((resource) => resource.id === "prod-d1-uuid")).toBe(false);
       expect(manifest?.resources).toHaveLength(3); // exactly this feature's own DB/CACHE/ASSETS
+    });
+  });
+
+  /**
+   * #239: a feature environment got every resource except its secrets, so a Worker composing `secrets`
+   * deployed and failed on its first request with `Missing required bindings:
+   * secret:SECRETS_ENCRYPTION_KEYS`. Nothing told the adopter that secrets were the one thing they had
+   * to arrange by hand for an environment pithy created from a branch name.
+   */
+  describe("a feature's secrets", () => {
+    /** An in-memory Secrets Store, mirroring the real exists/put/remove semantics. */
+    function fakeStore() {
+      const entries = new Map<string, string>();
+      return {
+        entries,
+        store: {
+          storeId: "store-1",
+          exists: async (name: string) => entries.has(name),
+          put: async (name: string, value: string) => void entries.set(name, value),
+          remove: async (name: string) => entries.delete(name),
+        },
+      };
+    }
+
+    const withSecrets = [secrets({ registry: {} })];
+
+    test("mints the feature's own master key and binds it in every Worker that declares it", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+
+      const report = await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withSecrets }],
+        migrate: async () => {},
+        seed: async () => {},
+      });
+
+      const entry = "acme-f69-demo-secrets-encryption-keys";
+      // Its own key, under its own name — never staging's, which teardown would then delete.
+      expect([...entries.keys()]).toEqual([entry]);
+      expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
+      expect(report.secretBindings).toEqual([{ binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true }]);
+
+      const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
+        env: Record<string, { secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[] }>;
+      };
+      expect(wrangler.env.feature?.secrets_store_secrets).toEqual([
+        { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: entry },
+      ]);
+    });
+
+    test("re-running leaves the key alone — a fresh one would orphan every secret under it", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+      const options = {
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [],
+        migrate: async () => {},
+        seed: async () => {},
+      };
+
+      await provisionFeature(options);
+      const first = entries.get("acme-f69-demo-secrets-encryption-keys");
+      await provisionFeature(options);
+
+      expect(entries.get("acme-f69-demo-secrets-encryption-keys")).toBe(first);
+    });
+
+    test("destroy removes the feature's entries and leaves an environment's alone", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+      // Staging's key, in the same flat account-wide store. Teardown must not reach it.
+      entries.set("acme-staging-secrets-encryption-keys", "staging's");
+
+      await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [],
+        migrate: async () => {},
+        seed: async () => {},
+      });
+      expect(entries.has("acme-f69-demo-secrets-encryption-keys")).toBe(true);
+
+      await deprovisionFeature({
+        projectDir: dir,
+        identity,
+        capabilities: withSecrets,
+        env: "feature",
+        provisioners,
+        store,
+      });
+
+      expect([...entries.keys()]).toEqual(["acme-staging-secrets-encryption-keys"]);
+    });
+
+    test("without a store the feature provisions exactly as before, and the report says so", async () => {
+      const { provisioners } = fakeProvisioners();
+      const report = await provisionFeature({
+        projectDir: dir,
+        capabilities: withSecrets,
+        identity,
+        provisioners,
+        ...noBackend,
+      });
+      expect(report.secretBindings).toEqual([]);
     });
   });
 

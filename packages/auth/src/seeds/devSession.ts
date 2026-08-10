@@ -13,6 +13,7 @@ import {
 } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { Session } from "../data/betterAuth";
+import { DEV_PROTOCOL, sessionCookieName } from "../http/baseUrl";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 
 /**
@@ -54,13 +55,29 @@ const USERS_DATABASE = "app";
 const USERS_TABLE = "pithyAuthUsers";
 
 /**
- * The cookie Better Auth reads the session from. Better Auth builds it as `<cookiePrefix>.session_token`
- * (prefix `better-auth` unless `advanced.cookiePrefix` overrides it, which Pithy does not), plus a
- * `__Secure-` prefix when the base URL is HTTPS — which a `dev` base URL is not. Locked to the running
- * version by a test that reads the name off a live instance, so a Better Auth upgrade that renamed it
- * fails here rather than in a browser.
+ * The cookie Better Auth reads the session from, in the one environment this set runs in.
+ *
+ * It used to be a literal beside a comment asserting that a `dev` base URL is not HTTPS. Nothing made
+ * that true: `baseURL` was one string for every environment, so an adopter whose production origin was
+ * HTTPS — every adopter — seeded this name while the running instance looked for `__Secure-` (#244).
+ * The session was there, the cookie was there, and `get-session` returned `null` with nothing logged.
+ *
+ * Now it is computed from the same two facts the composition computes its own name from: a `dev`
+ * composition serves over {@link DEV_PROTOCOL}, and {@link sessionCookieName} is the prefix rule. The
+ * host and port never enter it, which is what lets a seed name a cookie for a port not yet assigned.
+ * Still locked to the running Better Auth version by a test that reads the name off a live instance.
  */
-export const DEV_SESSION_COOKIE_NAME = "better-auth.session_token";
+export const DEV_SESSION_COOKIE_NAME = sessionCookieName(DEV_PROTOCOL);
+
+/**
+ * The prefix every seeded dev session's id and token carry.
+ *
+ * It is what makes a dev session **findable without being told**, which is what the dev-login route
+ * needs: the route reads the session out of D1 and has no artifact to consult (a Worker has no
+ * filesystem). And it is what makes one identifiable at all — a `pithy_auth_sessions` row minted by a
+ * seed is otherwise indistinguishable from one a real sign-in created.
+ */
+export const DEV_SESSION_TOKEN_PREFIX = "dev-session-";
 
 /** How long a seeded session lives. Long, because reseeding to restore a dev login is the friction this removes. */
 const DEV_SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
@@ -114,7 +131,7 @@ export interface MintedDevSession {
  * better-call 1.3.6 — the version Better Auth 1.6.19 resolves — and pinned by a round-trip test that makes
  * a real instance accept the result, which is the only check that actually matters.
  */
-async function signCookieValue(value: string, secret: string): Promise<string> {
+export async function signCookieValue(value: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -135,7 +152,7 @@ async function signCookieValue(value: string, secret: string): Promise<string> {
  * changes the token *and* invalidates every cookie signed with the old one, for free. A truncated digest,
  * never the secret: the token is written to a file and read back by tooling.
  */
-async function secretFingerprint(secret: string): Promise<string> {
+export async function secretFingerprint(secret: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return Array.from(new Uint8Array(digest).slice(0, FINGERPRINT_BYTES))
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -162,7 +179,7 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + DEV_SESSION_LIFETIME_MS);
   const fingerprint = await secretFingerprint(input.secret);
-  const token = `dev-session-${input.user.id}-${fingerprint}`;
+  const token = `${DEV_SESSION_TOKEN_PREFIX}${input.user.id}-${fingerprint}`;
 
   const session: Session = {
     id: token,

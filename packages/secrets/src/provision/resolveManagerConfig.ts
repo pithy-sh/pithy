@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { SECRETS_CAPABILITY, secretsRotateWorkflowName, secretsWriteWorkflowName } from "../manager/dispatcher";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
@@ -151,14 +152,24 @@ function managerStoreEntryName(binding: string, project: string, env: ManagedEnv
   }
 }
 
-/** Resolve the manager config for every managed environment, given each env's provisioned ids. */
+/**
+ * Resolve the manager config for every declared environment, given each env's provisioned ids.
+ *
+ * An environment with no entry in `perEnv` is skipped rather than resolved against `undefined` ids: the
+ * ids are what provisioning produced, so a gap means that environment was not provisioned, and writing a
+ * manager config with an empty `database_id` would deploy a manager bound to nothing.
+ */
 export function resolveAllManagerConfigs(
   template: ManagerWranglerTemplate,
   account: { accountId: string; project: string },
   perEnv: Record<ManagedEnvironment, { databaseId: string; storeId: string }>,
+  environments: DeclaredEnvironments | readonly string[],
 ): Array<{ env: ManagedEnvironment; config: ManagerWranglerTemplate }> {
-  return managedEnvironments().map((env) => ({
-    env,
-    config: resolveManagerConfig(template, { env, ...account, ...perEnv[env] }),
-  }));
+  const resolved: Array<{ env: ManagedEnvironment; config: ManagerWranglerTemplate }> = [];
+  for (const env of managedEnvironments(environments)) {
+    const ids = perEnv[env];
+    if (!ids) continue;
+    resolved.push({ env, config: resolveManagerConfig(template, { env, ...account, ...ids }) });
+  }
+  return resolved;
 }

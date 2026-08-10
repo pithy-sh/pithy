@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
 import { type ManagedEnvironment, resolveWriteTargets } from "../scope";
 
@@ -44,14 +45,19 @@ export interface SecretWrite {
 
 /**
  * Route a write by backend × scope (`resolveWriteTargets`) and dispatch it to each target
- * environment's manager, in order. A `global` write reaches both environments; an
+ * environment's manager, in order. A `global` write reaches every declared environment; an
  * `environment` write reaches exactly one. Returns the environments written, for the CLI to report.
+ *
+ * `declared` is the project's environment set, from the root `pithy.config.ts`. It is what a `global`
+ * write fans out across, so passing the wrong one writes a shared secret into some environments and not
+ * others — which is why it is an argument here rather than a default anything can forget.
  */
 export async function dispatchSecretWrite(
   dispatcher: SecretDispatcher,
   write: SecretWrite,
+  declared: DeclaredEnvironments | readonly string[],
 ): Promise<ManagedEnvironment[]> {
-  const targets = resolveWriteTargets(write.backend, write.scope, write.requested);
+  const targets = resolveWriteTargets(write.backend, write.scope, write.requested, declared);
   for (const env of targets) {
     await dispatcher.dispatch({
       env,

@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
-import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ConflictError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./contract";
+import { defaultGrant } from "./grant";
 import type { ConnectionRegistry } from "./registry";
 
 /**
@@ -152,8 +154,25 @@ export interface ConnectDashboardOptions {
    * path fails identically to an unreachable Worker.
    */
   basePath?: string;
-  /** The scopes to grant. Defaults to the seam's own on a create; left alone on an update. */
+  /**
+   * The scopes to grant. Left alone on an update; on a create, absent means {@link defaultGrant} over
+   * {@link ConnectDashboardOptions.capabilities}.
+   *
+   * **Absent and empty are different, deliberately.** Absent is "I did not decide, use the default";
+   * empty is "I decided, and the answer is nothing". Collapsing them would hand the full default set to
+   * the one operator who just deselected every scope at the prompt.
+   */
   scopes?: readonly ControlPlaneScope[];
+  /**
+   * The Worker's composed capabilities — what the default grant is derived from.
+   *
+   * The connection is being made so that a management client can read this Worker, and this Worker is
+   * the only thing that knows what there is to read. Passing the composed set means the default is the
+   * reads it actually declares, rather than a list kept in the CLI that goes stale the day a capability
+   * lands. Absent falls back to the seam's own scopes, which is a connection that works and reads
+   * nothing — honest for a caller that could not resolve a Worker, and never the CLI's own path.
+   */
+  capabilities?: readonly Capability[];
   /** Re-point an existing connection's URL and scopes instead of creating one. */
   update?: boolean;
   /** Register a key the operator generated. When set, no dashboard is contacted at all. */
@@ -261,7 +280,10 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   // The seam's resolved mount point, sent so a client never has to assume `/control-plane`. It is the
   // one address the manifest cannot describe, because it *is* the manifest's address.
   const basePath = options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH;
-  const scopes = options.scopes ? [...options.scopes] : [...SEAM_SCOPES];
+  // The grant, and the one place a create decides it. `defaultGrant` reads the composed Worker's own
+  // declared admin surface and adds every scope whose entire surface is a read — so connecting produces
+  // panes that read, without a second command, and without this file holding a list of scope names.
+  const scopes = options.scopes ? [...options.scopes] : defaultGrant(options.capabilities ?? []);
   const issued = await client.createConnection(token, {
     project: options.project,
     environment: options.environment,
@@ -316,7 +338,10 @@ async function connectOffline(
       issuer: offline.issuer,
       workerUrl: requireWorkerUrl(options.workerUrl),
       basePath: options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH,
-      scopes: options.scopes ? [...options.scopes] : [...SEAM_SCOPES],
+      // The same default as the dashboard path. An operator registering their own key against their own
+      // Worker is building their own client against their own data; there is no reason their first run
+      // should read less than ours does.
+      scopes: options.scopes ? [...options.scopes] : defaultGrant(options.capabilities ?? []),
       keys: [{ keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null }],
       createdAt: now,
       updatedAt: now,

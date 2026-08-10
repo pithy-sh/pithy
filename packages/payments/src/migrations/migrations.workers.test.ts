@@ -6,6 +6,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { payments_0001_purchases } from "./0001_purchases";
+import { payments_0002_control_plane_reads } from "./0002_control_plane_reads";
 
 /** `createDatabase(env.DB, {})` — the empty map is the idiom for handing a migration an untyped Kysely. */
 const db = () => createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
@@ -125,5 +126,58 @@ describe("payments_0001_purchases", () => {
     expect(await catalog()).toEqual([]);
     await payments_0001_purchases.up(db());
     expect(await catalog()).toHaveLength(7);
+  });
+});
+
+describe("payments_0002_control_plane_reads", () => {
+  beforeEach(async () => {
+    await payments_0002_control_plane_reads.up(db());
+  });
+
+  test("up adds the three indexes the management reads were written for", async () => {
+    // Named exactly, because an index a query was planned around is part of the read's contract: rename
+    // one and the pane still returns the right rows, having sorted a customer's whole order history to do
+    // it. That failure is invisible in a test that only checks the answer.
+    expect(await catalog()).toEqual([
+      "pithy_payments_entitlements",
+      "pithy_payments_entitlements_created_idx",
+      "pithy_payments_provider_accounts",
+      "pithy_payments_purchases",
+      "pithy_payments_purchases_expiry_idx",
+      "pithy_payments_purchases_owner_idx",
+      "pithy_payments_purchases_purchased_idx",
+      "pithy_payments_purchases_type_purchased_idx",
+      "pithy_payments_webhook_events",
+      "pithy_payments_webhook_events_pending_idx",
+    ]);
+  });
+
+  test("the purchase listing plans on the new index rather than sorting the table", async () => {
+    // SQLite's own answer, not ours. `USE TEMP B-TREE FOR ORDER BY` in this plan is the defect the
+    // migration exists to prevent, and it is the one thing a correctness test of the read can never catch.
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_purchases ORDER BY purchased_at DESC, id DESC LIMIT 26",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("pithy_payments_purchases_purchased_idx");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("the subscription listing plans on its own index", async () => {
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_purchases WHERE type = 'subscription' ORDER BY purchased_at DESC, id DESC LIMIT 26",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("pithy_payments_purchases_type_purchased_idx");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("down drops all three and up is re-runnable after it", async () => {
+    // Lossless both ways: an index carries no rows, so a rollback costs the reads their plan and nothing
+    // else. The tables must survive it, which is the half a `dropTable` in the wrong migration would break.
+    await payments_0002_control_plane_reads.down?.(db());
+    expect(await catalog()).toHaveLength(7);
+    await payments_0002_control_plane_reads.up(db());
+    expect(await catalog()).toHaveLength(10);
   });
 });

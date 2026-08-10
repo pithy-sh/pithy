@@ -7,6 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -17,7 +18,7 @@ import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
@@ -293,7 +294,10 @@ async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>,
 async function buildProvisioner(projectDir: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
-  const project = requireProjectName(await loadProject(projectDir));
+  const config = await loadProject(projectDir);
+  const project = requireProjectName(config);
+  // The project's own environment set (#241), carried rather than assumed.
+  const environments = loadProjectEnvironments(config);
   const vars = cloudflareEnv({ account: await projectCloudflareAccount(projectDir) });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -334,6 +338,7 @@ async function buildProvisioner(projectDir: string) {
   return {
     email,
     project,
+    environments,
     provisioner: new CloudflareTestersProvisioner({
       cf,
       project,
@@ -411,20 +416,20 @@ const provision = defineCommand({
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     env: {
       type: "string",
-      description: `Provision one environment only: ${managedEnvironments().join(", ")}. Omit for every one.`,
+      description: `Provision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
     },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project, email } = await buildProvisioner(projectDir);
+      const { provisioner, project, email, environments: declared } = await buildProvisioner(projectDir);
       const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } = await loadTestersProvisioning();
 
       // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
       // one-line answer into a raw Cloudflare error from a worker that was never deployed.
       const environments: ManagedEnvironment[] = args.env
-        ? [requireManagedEnvironment(args.env)]
-        : [...managedEnvironments()];
+        ? [requireManagedEnvironment(args.env, declared)]
+        : managedEnvironments(declared);
 
       const results = await provisionTesters(provisioner, project, environments);
 
@@ -464,18 +469,18 @@ const deprovision = defineCommand({
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     env: {
       type: "string",
-      description: `Deprovision one environment only: ${managedEnvironments().join(", ")}. Omit for every one.`,
+      description: `Deprovision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
     },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project } = await buildProvisioner(projectDir);
+      const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
       const { deprovisionTesters } = await loadTestersProvisioning();
 
       const environments: ManagedEnvironment[] = args.env
-        ? [requireManagedEnvironment(args.env)]
-        : [...managedEnvironments()];
+        ? [requireManagedEnvironment(args.env, declared)]
+        : managedEnvironments(declared);
       const results = await deprovisionTesters(provisioner, project, environments);
 
       if (args.json) {

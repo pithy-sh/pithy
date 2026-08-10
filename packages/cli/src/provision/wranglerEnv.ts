@@ -1,0 +1,220 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { parse } from "comment-json";
+import type { FeatureResource } from "../feature/manifest";
+import { writeJsonc } from "../project/jsonc";
+import { absolutizePaths, provisionConfigPath } from "./featureConfig";
+import type { SecretStoreBinding } from "./secretBindings";
+
+/**
+ * After provisioning stands up an environment's D1/KV/R2 resources, their ids must land in each
+ * Worker's `wrangler.jsonc` under `env.<name>` — that is exactly where the shared `migrate`/`seed`
+ * remote drivers, and `wrangler deploy --env <name>`, read each binding's id from. This writes them
+ * there, upserting by binding name and preserving every comment in the JSONC (a `pithy.config` output,
+ * per CLAUDE.md).
+ *
+ * **One writer, taking the scope.** The stanza key is `scope.stanza` and every name is the same
+ * scope's, so the file this writes into and the names it writes cannot come from two different
+ * decisions — which is how a feature-named resource could once be written into a declared environment's
+ * stanza.
+ */
+
+/** One binding-id entry keyed by binding, plus the id field that resource kind uses in wrangler.jsonc. */
+interface BindingEntry {
+  binding: string;
+  [field: string]: string;
+}
+
+/** One `services` entry: the binding name and the Worker script it resolves to in this environment. */
+export interface ServiceEntry {
+  /** The binding name in the Worker env (e.g. `BOARD`). */
+  binding: string;
+  /** The script name that binding reaches in this scope. */
+  service: string;
+}
+
+/** The env stanza slice provisioning writes: the Worker's own name, its binding arrays, and its services. */
+interface EnvBindings {
+  name?: string;
+  d1_databases?: BindingEntry[];
+  kv_namespaces?: BindingEntry[];
+  r2_buckets?: BindingEntry[];
+  services?: ServiceEntry[];
+  secrets_store_secrets?: SecretStoreBinding[];
+}
+
+/**
+ * Upsert a binding's fields into a binding array **in place**, so comment-json's array-internal
+ * comments (stored as symbol-keyed properties on the array object) survive — a `filter()` would return
+ * a plain array and silently drop them. A matching binding's fields are updated on the existing entry;
+ * otherwise the entry is pushed.
+ */
+function upsertByBinding(entries: BindingEntry[], binding: string, fields: Record<string, string>): void {
+  const existing = entries.find((entry) => entry.binding === binding);
+  if (existing) Object.assign(existing, fields);
+  else entries.push({ binding, ...fields });
+}
+
+/** The `EnvBindings` keys holding a binding array — the only ones an id is upserted into. */
+type BindingArrayKey = "d1_databases" | "kv_namespaces" | "r2_buckets";
+
+/**
+ * The wrangler key and the fields provisioning owns for each resource kind.
+ *
+ * **D1 carries its name as well as its id**, and that is not decoration: `pithy add` proposes a
+ * `database_name` offline, before any account has been reached, and provisioning is the step that makes
+ * the proposal true. Writing only the id would leave a stanza asserting one name while addressing a
+ * database that may carry another — the two must be written by the same step or they drift.
+ */
+const KIND_TO_WRANGLER: Record<
+  FeatureResource["kind"],
+  { array: BindingArrayKey; fields: (r: FeatureResource) => Record<string, string> }
+> = {
+  d1: { array: "d1_databases", fields: (r) => ({ database_name: r.name, database_id: r.id }) },
+  kv: { array: "kv_namespaces", fields: (r) => ({ id: r.id }) },
+  r2: { array: "r2_buckets", fields: (r) => ({ bucket_name: r.id }) },
+};
+
+/**
+ * Write one Worker's whole `env.<scope.stanza>` stanza: the resource ids it declares, the script name it
+ * deploys under in this scope, and each of its `service` bindings retargeted at this scope's copy of the
+ * callee.
+ *
+ * The stanza is created when absent and reused when present, so this is also what makes provisioning the
+ * creator of a stanza for an environment declared after the project was scaffolded. Idempotent, and every
+ * comment in the file survives the round trip.
+ */
+async function editStanza(
+  workerDir: string,
+  stanzaKey: string,
+  /**
+   * **`source` decides the file, not the caller.** A declared environment's ids are read in a pull
+   * request, so they go into the tracked `wrangler.jsonc`. A feature's are one job's output, so they go
+   * into the generated config under the already-ignored `.wrangler/` — regenerated from the tracked
+   * file every run, so it can never drift from it, and never making it dirty. That is what makes "a CI
+   * run never commits back" a property of the code rather than a note in a runbook.
+   */
+  source: boolean,
+  mutate: (stanza: EnvBindings) => void,
+): Promise<string> {
+  const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+  const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
+
+  config.env ??= {};
+  const stanza: EnvBindings = config.env[stanzaKey] ?? {};
+  config.env[stanzaKey] = stanza;
+
+  mutate(stanza);
+
+  // One resolver for "which file?", shared with what the command reports (#251). A run states where it
+  // wrote and whether that file is committed; a report computing the path a second time is a sentence
+  // that can disagree with the write it describes.
+  const destination = provisionConfigPath(workerDir, source);
+  if (!source) {
+    // Generated, so every path in it is rewritten against the directory it came from — wrangler
+    // resolves a config's paths relative to the config, and this one lives two levels deeper.
+    absolutizePaths(config as Record<string, unknown>, workerDir);
+    await mkdir(dirname(destination), { recursive: true });
+    await writeJsonc(destination, config);
+    return destination;
+  }
+
+  // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
+  // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
+  // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
+  // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
+  // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
+  await writeJsonc(destination, config);
+  return destination;
+}
+
+/**
+ * Upsert the `secrets_store_secrets` entries provisioning owns into one Worker's `env.<stanza>`.
+ *
+ * Separate from {@link applyProvisionedEnv} because two commands reach it for different reasons.
+ * `pithy provision` writes the whole stanza in either mode; `pithy secrets provision`
+ * writes only this, for a project whose resources are already in place and whose store entries have
+ * just been created — the five cases `ensureSecretsStoreId` cannot resolve at `add` time, and every
+ * project that predates the stanza existing at all.
+ *
+ * **Only the entries it owns.** An adopter's hand-added binding this registry does not declare is left
+ * exactly where it is.
+ */
+export async function applySecretBindings(
+  workerDir: string,
+  stanzaKey: string,
+  entries: readonly SecretStoreBinding[],
+): Promise<void> {
+  if (entries.length === 0) return;
+  // Always the tracked file: only `pithy secrets provision` calls this directly, and it acts on the
+  // environments a project deploys to. A feature's stanza is written by the scope-driven writer below.
+  await editStanza(workerDir, stanzaKey, true, (stanza) => {
+    stanza.secrets_store_secrets ??= [];
+    for (const entry of entries) {
+      const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+      if (existing) Object.assign(existing, entry);
+      else stanza.secrets_store_secrets.push({ ...entry });
+    }
+  });
+}
+
+/**
+ * Write one Worker's stanza, and hand back **the path that was written** — the tracked `wrangler.jsonc`
+ * or the generated artifact, as the scope decided. The caller reports it, so what a run says it wrote is
+ * what the writer wrote rather than a second computation of the same rule (#251).
+ */
+export async function applyProvisionedEnv(options: {
+  /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
+  workerDir: string;
+  /** The Worker's deploy name, from its own `wrangler.jsonc`. `scope.worker` turns it into this scope's. */
+  worker: string;
+  /** The scope: both the stanza written into and the names written in. */
+  scope: ProvisionScope;
+  /** Only the resources this Worker's own config declares. */
+  resources: readonly FeatureResource[];
+  /** Only the service bindings this Worker's own config declares, already resolved to this scope. */
+  services: readonly ServiceEntry[];
+  /**
+   * The `secrets_store_secrets` entries this Worker's own registry declares, named for this scope.
+   *
+   * This is the stanza `pithy add` deliberately could not write and nothing came back for (#238, #239).
+   * It is complete by construction — every entry carries its `store_id` and `secret_name` — because a
+   * partial one does not degrade: wrangler refuses the whole config.
+   */
+  secrets: readonly SecretStoreBinding[];
+}): Promise<string> {
+  const destination = await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+    stanza.name = options.scope.worker(options.worker);
+    for (const resource of options.resources) {
+      const { array, fields } = KIND_TO_WRANGLER[resource.kind];
+      // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
+      // mutate in place — never replace it with a filtered plain array, which would strip
+      // comment-json's symbols.
+      stanza[array] ??= [];
+      upsertByBinding(stanza[array], resource.binding, fields(resource));
+    }
+    if (options.services.length > 0) {
+      stanza.services ??= [];
+      for (const entry of options.services) {
+        const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
+        if (existing) existing.service = entry.service;
+        else stanza.services.push({ ...entry });
+      }
+    }
+  });
+  if (options.secrets.length > 0) {
+    await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+      stanza.secrets_store_secrets ??= [];
+      for (const entry of options.secrets) {
+        const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+        if (existing) Object.assign(existing, entry);
+        else stanza.secrets_store_secrets.push({ ...entry });
+      }
+    });
+  }
+  return destination;
+}

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
+import { type AmbientEnv, ambientEnv } from "@pithy-sh/core/src/env/ambient";
 import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
 import type { SameOriginGate } from "@pithy-sh/core/src/http/sameOrigin";
 import type { AuthWiring } from "../capability";
+import { baseURLResolver, type ResolveBaseURL } from "./baseUrl";
 
 /**
  * CSRF origin guard for every state-changing route in the Worker — Pithy's own (token rotation, device
@@ -44,7 +46,7 @@ function allowedOrigins(baseURL: string, trustedOrigins: readonly string[]): str
 }
 
 /** The decision itself, closed over the one resolved origin set. Never exported: see the module doc. */
-function sameOriginGate(allowedOrigins: readonly string[]): SameOriginGate {
+function sameOriginGate(allowedOrigins: readonly string[], resolveBaseURL: ResolveBaseURL): SameOriginGate {
   const allowed = new Set(allowedOrigins);
   return async (c, next) => {
     // A bearer request has no ambient credential to forge — CSRF-exempt.
@@ -53,7 +55,12 @@ function sameOriginGate(allowedOrigins: readonly string[]): SameOriginGate {
       return;
     }
     const origin = c.req.raw.headers.get("origin") ?? originOf(c.req.raw.headers.get("referer"));
-    if (!origin || !allowed.has(origin)) {
+    // The origin this composition is serving on, for this request. Outside `dev` it is the configured
+    // base URL's, which `allowedOrigins` already put in the set — so this adds nothing and production
+    // is byte-for-byte what it was. In `dev` it is the live local origin, which is the only correct
+    // answer when the port is assigned per Worker per run.
+    const own = originOf(resolveBaseURL(c.req.raw));
+    if (!origin || (origin !== own && !allowed.has(origin))) {
       throw new ForbiddenError({
         message: "Cross-origin request rejected.",
         action: "Send the request from an allowed origin, or use a bearer token.",
@@ -67,13 +74,21 @@ function sameOriginGate(allowedOrigins: readonly string[]): SameOriginGate {
 /**
  * Publish the bound gate on every request, as capability middleware.
  *
- * Built once at composition, not per request: the origin set is resolved config, and re-deriving it on
+ * The configured origin set is built once at composition: it is resolved config, and re-deriving it on
  * the hot path is work that can only ever produce the same answer — or a different one, which is the
- * bug. Registered on `*` rather than under `basePath`, because the routes that most need it are the
+ * bug. The composition's *own* origin is the one part that is not config, and only in `dev`: it is the
+ * address this run was assigned, which no config file can hold. So the resolver is built here, at
+ * composition, with the environment gate inside it ({@link baseURLResolver}), and the gate it hands
+ * back is a constant everywhere but `dev`.
+ *
+ * Registered on `*` rather than under `basePath`, because the routes that most need it are the
  * adopter's, and those are anywhere.
  */
-export function publishSameOrigin(wiring: AuthWiring): PithyMiddleware {
-  const gate = sameOriginGate(allowedOrigins(wiring.config.baseURL, wiring.config.trustedOrigins));
+export function publishSameOrigin(wiring: AuthWiring, env: AmbientEnv = ambientEnv()): PithyMiddleware {
+  const gate = sameOriginGate(
+    allowedOrigins(wiring.config.baseURL, wiring.config.trustedOrigins),
+    baseURLResolver(wiring.config.baseURL, env),
+  );
   return (app) => {
     app.use("*", async (c, next) => {
       c.set("sameOrigin", gate);

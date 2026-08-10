@@ -17,6 +17,7 @@ import {
   resolveGoogleCredentials,
   resolveSessionSecret,
 } from "../instance/secrets";
+import { baseURLResolver } from "./baseUrl";
 
 /**
  * Build the Better-Auth instance for one request, memoized on the request context so the
@@ -74,7 +75,12 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   return makeAuth({
     db: authDatabase(resolveDb(c.env, cfg.database)),
     secret,
-    baseURL: cfg.baseURL,
+    // Never `cfg.baseURL` directly. The instance derives the session cookie's name, the OAuth callback
+    // URLs, and the magic-link URL from whatever base URL it is handed, so in a `dev` composition every
+    // one of those has to name the address this run is actually serving on — not the production origin
+    // the config records. The gate lives in `baseURLResolver` and nowhere else; outside `dev` this is
+    // `cfg.baseURL`, unchanged. Resolved here because the instance is itself built per request.
+    baseURL: baseURLResolver(cfg.baseURL)(c.req.raw),
     basePath: cfg.basePath,
     trustedOrigins: cfg.trustedOrigins,
     google,

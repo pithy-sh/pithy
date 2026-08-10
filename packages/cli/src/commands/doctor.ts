@@ -22,6 +22,7 @@ import {
 } from "../doctor/devSecrets";
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
+import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
@@ -179,6 +180,13 @@ export interface DoctorReport {
    */
   workerNames: WorkerNameCheck | null;
   /**
+   * Whether every Worker's `env.<name>` stanzas are the environments the root config declares (#241), and
+   * whether a declaration changed after resources were provisioned under the old names. `null` outside a
+   * readable project, on the same `loadProject` outcome as the two above: with no declaration there is
+   * nothing to compare a stanza to.
+   */
+  environments: EnvironmentsCheck | null;
+  /**
    * This project's dev-login preference file: where it goes, whether it is there, and whether it says
    * anything a seed can use. `null` outside a readable project, on the same footing as the two above.
    *
@@ -333,6 +341,8 @@ export interface DoctorReportOptions {
   checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
   /** Worker-name agreement seam; defaults to {@link checkWorkerNames}. Reads files only — no account call. */
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
+  /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
+  checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
    * Dev-login preference seam; defaults to {@link checkDevPreferences} resolved against the same `homedir`
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
@@ -403,6 +413,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account, offline }));
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
+  const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -525,6 +536,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // project's name still names its resources; this asks whether each Worker's own three names still name
   // one Worker. Files only, so it costs nothing and answers offline.
   const workerNames = inProject ? await probeWorkerNames(options.projectDir) : null;
+  // And once more, one level out: the declaration is project-wide, so with no readable config there is
+  // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
+  const environments = inProject ? await probeEnvironments(options.projectDir) : null;
   // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
   // there is no path to resolve and no file to look for. Files only, no account, no seed run.
   const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
@@ -553,6 +567,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     cloudflare,
     projectName,
     workerNames,
+    environments,
     devPreferences,
     devSecrets,
     devSecretsFile,
@@ -595,6 +610,11 @@ export function doctorExitCode(report: DoctorReport): number {
   // wrangler.jsonc contradict each other about which Worker this is. Nothing is inferred about the
   // account, and `could-not-check` establishes nothing, so only `drifted` gates.
   if (report.workerNames?.state === "drifted") return 1;
+  // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc
+  // contradict each other about which environments this project has. Nothing about the account is
+  // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
+  // establishes nothing, so only `drifted` gates.
+  if (report.environments?.state === "drifted") return 1;
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
   // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
   // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
@@ -723,6 +743,28 @@ function healthBlock(health: ProjectHealth): string {
  * Worker, on the health block's shape. A Worker whose names agree says nothing at all: there is no
  * "names fine ✓" line, because unlike a health check this has no per-Worker section to sit in.
  */
+/**
+ * The `Environments` lines — shown only when a Worker's stanzas and the declaration disagree, grouped one
+ * block per Worker, on the health block's shape. A project whose Workers all agree says nothing at all.
+ *
+ * The declared set leads, because the whole finding is a comparison and a report that names only one side
+ * of it makes the reader open the config to learn what it compared against.
+ */
+function environmentsBlock(check: EnvironmentsCheck): string {
+  const lines = [`Environments: ${check.declared.join(", ")}`];
+  for (const worker of [...new Set(check.drift.map((drift) => drift.worker))]) {
+    lines.push(`  ${worker}:`);
+    for (const drift of check.drift.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(`env.${drift.env}`, describeEnvironmentDrift(drift, check.declared)));
+      if (drift.resources.length > 0) lines.push(`${HEALTH_CONT}${drift.resources.join(", ")}`);
+    }
+  }
+  // No command is offered, and that is the point: `pithy` cannot rename a Cloudflare resource, so applying
+  // a changed declaration is exactly the thing that must never happen quietly. The two edits are named.
+  lines.push(`${HEALTH_INDENT}Make environments in pithy.config.ts and each Worker's env.<name> stanzas agree.`);
+  return lines.join("\n");
+}
+
 function workerNamesBlock(check: WorkerNameCheck): string {
   const lines = ["Worker names:"];
   const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
@@ -783,6 +825,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // `could-not-check` keeps its silence here rather than forcing verbose: unlike an unreadable name, an
   // unreadable `wrangler.jsonc` is already the health block's line to say, and it says it louder.
   const workerNamesOk = !report.workerNames || report.workerNames.mismatches.length === 0;
+  // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
+  // line, and a second block repeating it is how a report starts contradicting itself.
+  const environmentsOk = !report.environments || report.environments.drift.length === 0;
   // A dev login is optional, so having none is a pass — the terse report is for the developer who has
   // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
   const devPreferencesState = report.devPreferences?.state;
@@ -808,6 +853,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     cloudflareOk &&
     projectNameOk &&
     workerNamesOk &&
+    environmentsOk &&
     devPreferencesOk &&
     devSecretsOk &&
     devVarsOk &&
@@ -936,6 +982,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(workerNamesBlock(report.workerNames));
   }
 
+  // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
+  if (report.environments && report.environments.drift.length > 0) {
+    blocks.push(environmentsBlock(report.environments));
+  }
+
   // Dev secrets, and only when something is wrong with them. The block is the finding: a project whose
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
@@ -1024,6 +1075,18 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           mismatches: report.workerNames.mismatches.map((mismatch) => ({
             ...mismatch,
             detail: describeWorkerName(mismatch),
+          })),
+        }
+      : null,
+    // Same `null` discipline once more, and each drift carries its own sentence — the remedy for an
+    // orphan is not the remedy for a disagreement, and a consumer must not have to work out which.
+    environments: report.environments
+      ? {
+          state: report.environments.state,
+          declared: report.environments.declared,
+          drift: report.environments.drift.map((drift) => ({
+            ...drift,
+            detail: describeEnvironmentDrift(drift, report.environments?.declared ?? []),
           })),
         }
       : null,

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { bounceRoutingRuleName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { managedEnvironments } from "@pithy-sh/secrets/src/scope";
@@ -54,14 +55,16 @@ function recorder(overrides: Partial<SupportProvisioner> = {}) {
 describe("provisionSupport", () => {
   test("preflights before creating anything", async () => {
     const { provisioner, calls } = recorder();
-    await provisionSupport(provisioner);
+    await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
     expect(calls[0]).toBe("preflight");
   });
 
   test("creates the bucket before any worker that could write to it", async () => {
     const { provisioner, calls } = recorder();
-    await provisionSupport(provisioner);
-    expect(calls.indexOf("bucket")).toBeLessThan(calls.indexOf(`worker:${managedEnvironments()[0]}`));
+    await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
+    expect(calls.indexOf("bucket")).toBeLessThan(
+      calls.indexOf(`worker:${managedEnvironments(DEFAULT_ENVIRONMENTS)[0]}`),
+    );
   });
 
   test("creates the routing rule last, so mail never arrives before a classifier exists", async () => {
@@ -69,7 +72,7 @@ describe("provisionSupport", () => {
     // Worker whose classification host is not deployed yet — a window where messages land and stay
     // `uncategorized` with nothing to say why.
     const { provisioner, calls } = recorder();
-    await provisionSupport(provisioner);
+    await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
     expect(calls.at(-1)).toBe("routing");
   });
 
@@ -77,13 +80,15 @@ describe("provisionSupport", () => {
     // Per environment because each has its own app database — an index in staging says nothing about
     // prod. After the worker so a database that gains an index always has something to write it.
     const { provisioner, calls } = recorder();
-    await provisionSupport(provisioner);
+    await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
 
-    for (const env of managedEnvironments()) {
+    for (const env of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
       expect(calls).toContain(`search:${env}`);
       expect(calls.indexOf(`worker:${env}`)).toBeLessThan(calls.indexOf(`search:${env}`));
     }
-    expect(calls.filter((call) => call.startsWith("search:"))).toHaveLength(managedEnvironments().length);
+    expect(calls.filter((call) => call.startsWith("search:"))).toHaveLength(
+      managedEnvironments(DEFAULT_ENVIRONMENTS).length,
+    );
   });
 
   test("reports what the index actually did, per environment", async () => {
@@ -92,7 +97,7 @@ describe("provisionSupport", () => {
     const { provisioner } = recorder({
       ensureSearchIndex: async (env) => ({ created: env === "prod", dropped: env === "staging" }),
     });
-    const result = await provisionSupport(provisioner);
+    const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(result.search.filter((entry) => entry.created).map((entry) => entry.env)).toEqual(["prod"]);
     expect(result.search.filter((entry) => entry.dropped).map((entry) => entry.env)).toEqual(["staging"]);
@@ -100,7 +105,7 @@ describe("provisionSupport", () => {
 
   test("an unchanged index reports neither created nor dropped", async () => {
     const { provisioner } = recorder({ ensureSearchIndex: async () => ({ created: false, dropped: false }) });
-    const result = await provisionSupport(provisioner);
+    const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
     expect(result.search.every((entry) => !entry.created && !entry.dropped)).toBe(true);
   });
 
@@ -108,12 +113,15 @@ describe("provisionSupport", () => {
     const { provisioner } = recorder({
       ensureBucket: async () => ({ bucket: "acme-global-support", created: false, skipped: true }),
     });
-    expect((await provisionSupport(provisioner)).bucket.skipped).toBe(true);
+    expect((await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS)).bucket.skipped).toBe(true);
   });
 
   test("a skipped routing rule is reported, because everything else can be right and no mail arrive", async () => {
     const { provisioner } = recorder({ ensureRoutingRule: async () => ({ created: false, skipped: true }) });
-    expect((await provisionSupport(provisioner)).routing).toEqual({ created: false, skipped: true });
+    expect((await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS)).routing).toEqual({
+      created: false,
+      skipped: true,
+    });
   });
 
   test("a failing step stops the run rather than continuing past it", async () => {
@@ -122,7 +130,7 @@ describe("provisionSupport", () => {
         throw new Error("R2 unavailable");
       },
     });
-    await expect(provisionSupport(provisioner)).rejects.toThrow("R2 unavailable");
+    await expect(provisionSupport(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow("R2 unavailable");
     // No worker deployed against a bucket that does not exist.
     expect(calls.some((call) => call.startsWith("worker:"))).toBe(false);
   });
@@ -152,19 +160,19 @@ describe("deprovisionSupport", () => {
     // The inverse of provisioning's ordering, for the inverse reason: workers torn down while mail is
     // still arriving means messages land in a Worker with no classification host.
     const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner);
+    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls[0]).toBe("routing");
   });
 
   test("keeps the bucket by default — it holds correspondence, not cache", async () => {
     const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner);
+    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).not.toContain("bucket");
   });
 
   test("deletes the bucket only when explicitly asked", async () => {
     const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner, { deleteStorage: true });
+    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
     expect(calls.at(-1)).toBe("bucket");
   });
 });

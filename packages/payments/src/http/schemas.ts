@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
+import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
+import { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
+import { PurchaseStatus } from "../data/status";
 
 /**
  * Everything a caller may send to a payments route, declared here and parsed on the route line. Reading a
@@ -47,6 +50,9 @@ const MAX_PRODUCT_ID_LENGTH = 200;
 
 /** The longest a user id may be. A UUID is 36; the bound is generous against an adopter's own id scheme. */
 const MAX_USER_ID_LENGTH = 200;
+
+/** The longest a page cursor may be. Ours are a base64url'd pair; the bound refuses anything that is not. */
+const MAX_CURSOR_LENGTH = 512;
 
 export const PurchaseSubmission = z
   .object({
@@ -228,3 +234,86 @@ export const EntitlementRevokeRequest = z
   })
   .describe("A control-plane request to revoke one entitlement from one account, effective immediately.");
 export type EntitlementRevokeRequest = z.output<typeof EntitlementRevokeRequest>;
+
+/**
+ * ## The management read queries
+ *
+ * The `Admin*` shapes below belong to the **control-plane reads**, which take no bodies at all: there is
+ * nothing for a client to send but filters and a place to resume.
+ *
+ * **Every filter is a closed enum of payments' own values, not a lookup against the adopter's config**,
+ * and that is the deliberate difference from `@pithy-sh/ledger`'s currency filter. A rail, a status and a
+ * store environment are the kit's own vocabulary — an unknown one is a *malformed request*, so the
+ * validator refuses it with a 400 naming the accepted set. A currency, a product id or an entitlement key
+ * is the adopter's, so a value that parses but is not configured is a missing resource and stays the
+ * handler's 404. A schema constrains a string; it never replaces a lookup, and it is never built from a
+ * configured key set.
+ */
+
+/** Where a keyset page resumes. Opaque; a malformed one is a first page rather than an error. */
+const Cursor = z
+  .string()
+  .max(MAX_CURSOR_LENGTH)
+  .optional()
+  .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.");
+
+/** How many rows one page returns. Bounded, because a verified client can still have a bug. */
+const Limit = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_PAGE_SIZE)
+  .optional()
+  .describe(`How many rows to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to a page a dashboard can render.`);
+
+/** An account id as a filter or a path segment — opaque to payments, which never issues one. */
+const UserId = z.string().min(1).max(MAX_USER_ID_LENGTH);
+
+export const AdminPurchasesQuery = z
+  .object({
+    userId: UserId.optional().describe("Restrict the listing to one account's purchases."),
+    rail: PaymentsRail.optional().describe("Restrict the listing to one store."),
+    status: PurchaseStatus.optional().describe("Restrict the listing to one normalized status."),
+    environment: PurchaseEnvironment.optional().describe(
+      "Restrict the listing to one store environment. Unfiltered by default: hiding sandbox transactions by default would hide the thing an operator most needs to notice.",
+    ),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .describe("The purchase-log query: what to narrow it to, and where to resume.");
+export type AdminPurchasesQuery = z.output<typeof AdminPurchasesQuery>;
+
+export const AdminSubscriptionsQuery = z
+  .object({
+    userId: UserId.optional().describe("Restrict the listing to one account's subscriptions."),
+    status: PurchaseStatus.optional().describe(
+      "Restrict the listing to one normalized status — `active` for who is paying now, `in_grace` for whose renewal is failing.",
+    ),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .describe(
+    "The subscription query: what to narrow it to, and where to resume. No rail — a subscription is read forwards, not by store.",
+  );
+export type AdminSubscriptionsQuery = z.output<typeof AdminSubscriptionsQuery>;
+
+export const AdminEntitlementsQuery = z
+  .object({
+    userId: UserId.optional().describe("Restrict the listing to one account."),
+    entitlement: EntitlementKey.optional().describe(
+      "Restrict the listing to one entitlement key — the `who holds pro` question. A shape check only: the key set is the adopter's, and one nothing grants is an empty page rather than a refusal.",
+    ),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .describe("The entitlement query: what to narrow it to, and where to resume.");
+export type AdminEntitlementsQuery = z.output<typeof AdminEntitlementsQuery>;
+
+export const AdminUserParam = z
+  .object({
+    userId: UserId.describe(
+      "The account whose entitlements to resolve — the `:userId` path segment. Opaque to payments: it is whatever id the adopter's auth capability issued.",
+    ),
+  })
+  .describe("The `:userId` path segment on the per-account management read.");
+export type AdminUserParam = z.output<typeof AdminUserParam>;

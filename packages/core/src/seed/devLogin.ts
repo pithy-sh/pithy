@@ -28,6 +28,24 @@ export const DEV_LOGIN_FILE = "dev-login.json";
 export const DEV_LOGIN_PATH = `${SEED_ARTIFACT_DIR}/${DEV_LOGIN_FILE}`;
 
 /**
+ * The dev-login **route**: where a `dev` composition serves the seeded session as a `Set-Cookie` and a
+ * redirect, so signing in is a URL rather than a value pasted into a browser console.
+ *
+ * It is stated here, beside the file, because the two ends are the same two packages the file already
+ * had to reconcile — the auth capability registers it, and `pithy dev` opens it — and neither may
+ * import the other. A second spelling in one of them is a `l` that opens a 404.
+ *
+ * **`__pithy/` is the namespace, and the reservation is the point.** An adopter's own routes are theirs;
+ * anything the kit serves that is not part of a capability's public surface lives under this prefix, so
+ * a route added here can never collide with an application path someone already shipped.
+ *
+ * Registered **only** in a `dev` composition, and never under CI. It mints an authenticated session with
+ * no credential presented, which is the whole risk of the feature and the reason its gates live at
+ * registration rather than inside the handler.
+ */
+export const DEV_LOGIN_ROUTE = "/__pithy/dev-login";
+
+/**
  * A seeded dev login — everything a browser needs to be signed in as a seeded user, and nothing else.
  * `z.input` is the JSON on disk (dates as ISO-8601 strings); `z.output` is the app shape.
  */

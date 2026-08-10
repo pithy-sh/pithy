@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { describe, expect, test, vi } from "vitest";
 import { EncryptionConfig } from "../crypto/envelope";
@@ -46,7 +47,7 @@ describe("provisionSecrets", () => {
   test("mints the manager token first, then provisions both environments in order: db → key → migrate → deploy", async () => {
     const provisioner = new StubProvisioner();
 
-    const result = await provisionSecrets(provisioner);
+    const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(provisioner.calls).toEqual([
       "preflight",
@@ -66,6 +67,18 @@ describe("provisionSecrets", () => {
     ]);
   });
 
+  test("gives every declared environment a master key, including one core never heard of", async () => {
+    // #241's whole cost: `pithy migrate --env live` ran, `<project>-live-db` would have been created,
+    // and this loop — over a closed enum — skipped `live`, so it got no master key and no manager.
+    const provisioner = new StubProvisioner();
+
+    const result = await provisionSecrets(provisioner, ["staging", "live"]);
+
+    expect(provisioner.calls).toContain("key:live");
+    expect(provisioner.calls).toContain("deploy:live:d1-live:store-live");
+    expect(result.perEnv.map((entry) => entry.env)).toEqual(["staging", "live"]);
+  });
+
   test("a failing preflight aborts before any resource is created", async () => {
     const provisioner = new StubProvisioner();
     provisioner.preflight = async () => {
@@ -73,7 +86,7 @@ describe("provisionSecrets", () => {
       throw new Error("no workers.dev subdomain");
     };
 
-    await expect(provisionSecrets(provisioner)).rejects.toThrow("no workers.dev subdomain");
+    await expect(provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow("no workers.dev subdomain");
     expect(provisioner.calls).toEqual(["preflight"]);
   });
 
@@ -84,7 +97,7 @@ describe("provisionSecrets", () => {
       throw new Error("cannot mint account tokens");
     };
 
-    await expect(provisionSecrets(provisioner)).rejects.toThrow("cannot mint account tokens");
+    await expect(provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow("cannot mint account tokens");
     expect(provisioner.calls).toEqual(["preflight", "token"]);
   });
 });
@@ -171,14 +184,14 @@ describe("deprovisionSecrets", () => {
 
   test("keeps master keys by default — manager then database per env, then the shared token", async () => {
     const calls: string[] = [];
-    await deprovisionSecrets(recordingDeprovisioner(calls));
+    await deprovisionSecrets(recordingDeprovisioner(calls), DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(["manager:staging", "db:staging", "manager:prod", "db:prod", "token"]);
   });
 
   test("deletes master keys only when asked", async () => {
     const calls: string[] = [];
     const options: DeprovisionOptions = { deleteKeys: true };
-    await deprovisionSecrets(recordingDeprovisioner(calls), options);
+    await deprovisionSecrets(recordingDeprovisioner(calls), DEFAULT_ENVIRONMENTS, options);
     expect(calls).toEqual([
       "manager:staging",
       "key:staging",

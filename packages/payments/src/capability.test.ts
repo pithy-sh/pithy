@@ -117,6 +117,12 @@ describe("payments()", () => {
     payments({ ...CATALOG, basePath: "/billing" }).routes?.(app);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
     expect(paths).toEqual([
+      // The management surface (#247), under `admin/` because the player surface already owns
+      // `/billing/entitlements` and `/billing/purchases`.
+      "/billing/admin/entitlements",
+      "/billing/admin/entitlements/:userId",
+      "/billing/admin/purchases",
+      "/billing/admin/subscriptions",
       "/billing/checkout",
       "/billing/entitlements",
       "/billing/entitlements/grant",
@@ -143,14 +149,14 @@ describe("payments()", () => {
     for (const table of tables) expect(table.startsWith("pithyPayments")).toBe(true);
   });
 
-  test("ships its migration under a stable local key, at its allocated order", () => {
+  test("ships its migrations under stable local keys, at its allocated order", () => {
     const spec = payments(CATALOG).databases?.app;
-    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases"]);
+    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases", "0002_control_plane_reads"]);
     expect(spec?.migrationOrder).toBe(PAYMENTS_MIGRATION_ORDER);
     expect(PAYMENTS_MIGRATION_ORDER).toBe(1000);
   });
 
-  test("composes to 1000_payments_0001_purchases — the applied-migration name, stable forever", async () => {
+  test("composes to 1000_payments_<key> — the applied-migration names, stable forever", async () => {
     const capability = payments(CATALOG);
     const spec = capability.databases?.app;
     const registry = createMigrationRegistry([
@@ -163,6 +169,7 @@ describe("payments()", () => {
     ]);
     expect(Object.keys(await (registry.app?.getMigrations() ?? Promise.resolve({})))).toEqual([
       "1000_payments_0001_purchases",
+      "1000_payments_0002_control_plane_reads",
     ]);
   });
 

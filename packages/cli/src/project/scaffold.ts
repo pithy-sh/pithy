@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import {
   assertValidProjectName,
   isReservedProjectName,
@@ -15,7 +16,9 @@ import {
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { errnoOf } from "./atomic";
+import { loadProjectEnvironments } from "./config";
 import { committedFiles } from "./templateFiles";
+import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
 export interface ScaffoldOptions {
   /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
@@ -24,6 +27,11 @@ export interface ScaffoldOptions {
   appName: string;
   /** The first worker's name — it lives at `apps/<worker>/`. Defaults to {@link DEFAULT_WORKER}. */
   worker?: string;
+  /**
+   * The environments this project has (#241). Defaults to {@link DEFAULT_ENVIRONMENTS}, which is what the
+   * template ships — so a run that does not pass this writes exactly the bytes it always wrote.
+   */
+  environments?: readonly string[];
 }
 
 /**
@@ -844,6 +852,79 @@ async function stampWorkerManifest(path: string, name: string): Promise<void> {
 }
 
 /**
+ * The commented line the starter's root config ships, and the one this replaces when a project declares
+ * something other than the default. Matched literally: a scaffold that guesses at the shape of a file is
+ * how a scaffold eats an edit, and a miss here leaves the template's own comment rather than a wrong line.
+ */
+const ENVIRONMENTS_PLACEHOLDER = `  // environments: ${renderEnvironments(DEFAULT_ENVIRONMENTS)},`;
+
+/** `["staging", "prod"]` — the form an adopter would type, not `JSON.stringify`'s comma-tight one. */
+function renderEnvironments(environments: readonly string[]): string {
+  return `[${environments.map((environment) => JSON.stringify(environment)).join(", ")}]`;
+}
+
+/**
+ * The `environments` line for the scaffolded root config — **uncommented only when it says something**.
+ *
+ * A project on the default pair gets the template's commented example, because a declaration that repeats
+ * the default is a line an adopter has to read and learn nothing from. A project that answered the prompt
+ * differently gets a real declaration, because from that moment the file is the only place the answer
+ * lives and every command reads it back.
+ */
+function renderEnvironmentsBlock(environments: readonly string[]): string {
+  const isDefault =
+    environments.length === DEFAULT_ENVIRONMENTS.length &&
+    environments.every((environment, index) => environment === DEFAULT_ENVIRONMENTS[index]);
+  return isDefault ? ENVIRONMENTS_PLACEHOLDER : `  environments: ${renderEnvironments(environments)},`;
+}
+
+/**
+ * Rewrite the first Worker's `env.<name>` stanzas to be the project's declared environments (#241).
+ *
+ * ## Why `init` still writes stanzas at all
+ *
+ * #241 proposes the invariant *a stanza exists if and only if that environment is provisioned*, with
+ * provisioning as the only writer. That is the right end state and it is #240's to build. It is not
+ * something this can do half of, because **`pithy add <capability>` writes a capability's bindings into
+ * the stanzas that already exist and creates none** (`capabilities/add.ts`). Ship a fresh project with no
+ * `env.*` and the very next `pithy add auth` binds `dev` and silently leaves staging and prod unbound —
+ * a worse silence than the one this issue set out to close, and one nothing would report.
+ *
+ * So the stanzas stay, and what changes is where their *names* come from: the declaration, rather than
+ * whichever two the template happened to ship. The bindings inside them stay empty, which is the honest
+ * part — an empty `d1_databases` claims nothing, where a `database_name` with no `database_id` asserts a
+ * database that has never existed.
+ *
+ * Nothing here deletes a stanza on an existing project: this runs once, on a directory `init` just
+ * created, and #142's rule — an adopter's stanza is theirs — is untouched.
+ */
+async function stampEnvironmentStanzas(
+  workerDir: string,
+  identity: { project: string; worker: string; environments: readonly string[] },
+): Promise<void> {
+  const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
+  const declared = [...identity.environments];
+  // The template already ships the default pair, comments and all. Rewriting it to produce the same
+  // names would only cost the prose that explains them.
+  if (JSON.stringify(Object.keys(config.env ?? {})) === JSON.stringify(declared)) return;
+  // The template's note above `env` names staging and production. For any other set it would be a false
+  // sentence in a checked-in file, which is the failure mode this whole issue is about.
+  delete (config as Record<symbol, unknown>)[Symbol.for("before:env")];
+  config.env = Object.fromEntries(
+    declared.map((environment) => [
+      environment,
+      {
+        // All three repeat per stanza: `env.<name>.vars` REPLACES the top-level block, never merges it.
+        vars: { ENVIRONMENT: environment, PROJECT: identity.project, WORKER: identity.worker },
+        d1_databases: [],
+        kv_namespaces: [],
+      },
+    ]),
+  );
+  await writeWranglerConfig(workerDir, config);
+}
+
+/**
  * Copy the starter template into `targetDir` and stamp the app name — the pure logic behind `pithy init`.
  *
  * The scaffold is the `apps/` layout: the root carries project identity and policy (`pithy.config.ts`,
@@ -867,6 +948,12 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   // the only fix — orphans everything already created. The one moment it costs nothing is this one.
   assertValidProjectName(options.appName);
   assertNotReserved(options.appName);
+
+  // The declaration is checked with the names, before the directory exists: an environment name reaches
+  // Cloudflare resource names verbatim, and `init` is the one moment a project can still be told no.
+  // Through the config loader, so a name refused here is refused with the same sentence `loadProject`
+  // would give it the next time anyone opened the file.
+  const environments = loadProjectEnvironments({ environments: options.environments });
 
   /**
    * The one form of the name that gets written anywhere.
@@ -913,7 +1000,9 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   // the guard, not the call site, is what makes that true.
   await writeFile(
     configPath,
-    config.replace('name: "pithy-app"', () => `name: "${project}"`),
+    config
+      .replace('name: "pithy-app"', () => `name: "${project}"`)
+      .replace(ENVIRONMENTS_PLACEHOLDER, () => renderEnvironmentsBlock(environments)),
   );
 
   // Three stamps into the worker's wrangler.jsonc. `name` is the deploy name (project + worker);
@@ -937,6 +1026,8 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
       .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
       .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`),
   );
+
+  await stampEnvironmentStanzas(workerDir, { project, worker, environments });
 
   // The worker's own `pithy.config.ts` was copied verbatim, so on any project not scaffolded with the
   // default worker it named a worker that does not exist — three times. The header pointed at

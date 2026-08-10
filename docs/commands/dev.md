@@ -25,6 +25,18 @@ pithy dev [--json]
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
 - **Generates every worker's `.dev.vars`.** wrangler loads a `.dev.vars` from the directory it runs in and merges nothing, so each `apps/<worker>/` needs its own file — and each one is written here, from sources that never leave your machine: every `cf-secrets-store` secret your registry declares, read straight from `<config>/<project>/secrets.jsonc`, plus whatever in `<config>/<project>/dev.json` no registry declares, overridden by the repo's root `.dev.vars.local`, overridden in turn by that worker's own. **The dev secrets file is the source, not a file something copies out of**: edit a value there and the next `pithy dev` hands the Worker the new one, with no `pithy seed` in between; delete one and it is gone from every generated file, with no stale copy anywhere to fall back to. There is nothing to inherit and nothing to wire. `pithy init` writes no `.dev.vars` at all, a clone has none, and `pithy dev` is the command that runs every time — unlike a `postinstall`, which runs before the values exist. Each generated file opens with a marker, and **a `.dev.vars` pithy did not write is never overwritten and never merged**: it is named, with `.dev.vars.local` offered as the place for local values, and that worker starts without one rather than with somebody else's file replaced underneath it. Idempotent by comparing content, never mtime — a second run writes no bytes, so wrangler's watcher has nothing to react to. The ordinary run says nothing; a refusal gets a sentence, and so does a worker whose `.dev.vars` was still a symlink from the design this replaced. Non-fatal in every direction: a worker that could not be written is named, and every other worker still starts.
 
+### Signing in: press `l`
+
+`pithy seed` can mint a real, signed-in session for a seeded user (`docs/commands/seed.md`). `pithy dev` is where you use it.
+
+- **The ready banner names the user, and nothing else.** `Dev login: ada@example.com — press l to open a signed-in browser.` **No session cookie is ever printed**, to the terminal or to `logs/dev.log`. It used to be — a `document.cookie = "…"` line to paste into a browser console — and a working session token rendered as text is a working session token at rest in a scrollback, a log, and a screenshot. The value now travels from the Worker to the browser over HTTP and lands nowhere else.
+- **`l` opens the browser you already use.** It opens `http://localhost:<port>/__pithy/dev-login` with the platform's own opener (`xdg-open`, `open`, `start`) — no browser automation, so it works in whatever browser is default, from a second profile, and from an incognito window. That route sets the cookie and redirects to `/`. Reload nothing; you are signed in.
+- **The route exists only in a `dev` composition, and never under CI.** `@pithy-sh/auth` registers `GET /__pithy/dev-login` behind two independent gates, both at registration rather than inside the handler: the composition's `ENVIRONMENT` must be `dev`, **and** `CI` must be unset or blank. A `staging` or `prod` Worker does not carry the route at all, and neither does a `dev` Worker started by a CI job. It mints an authenticated session with no credential presented, so neither gate is allowed to imply the other. (`pithy dev` forwards `CI` into each Worker as a var, because the host environment does not otherwise cross into workerd.)
+- **Which Worker.** The candidates are the started Workers that compose auth — a cookie is scoped to the origin that set it, so no other origin can be signed in by opening it. With one candidate, `l` opens it. With several, the one carrying a front end (`ui` in its `pithy.worker.jsonc`) wins; if that does not decide, `pithy dev` prints the choices rather than guessing.
+- **No seeded session.** `l` says so and names `pithy seed`. It never opens a URL that 404s. An expired session is treated the same way, with the same command.
+- **No terminal, no keypress.** A piped `pithy dev`, and any run in CI, never enters raw mode and never waits for input — the banner prints the URL instead. `--json` starts no key handling at all. Ctrl-C stops the session exactly as it always did.
+- Bound today: `l`. Nothing else.
+
 ### Session state and cleanup
 
 - Writes a git-ignored `.dev-state.json` (pid, resolved ports, child pids).
@@ -86,7 +98,7 @@ The same branch-first identity that names a feature's D1/KV/R2 resources also na
 <project>-f<issue>-<slug>-<binding>-<kind>   acme-f69-media-cli-db-d1    (D1)
 ```
 
-`pithy feature provision` writes into each Worker's `wrangler.jsonc env.<env>`:
+`pithy provision --feature` writes into each Worker's config, under `env.<env>`:
 
 - **`name`** — the script name that Worker deploys under for the feature, so a preview deploy never overwrites production's.
 - **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli-api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.
@@ -118,6 +130,8 @@ One line, one object, written as soon as every worker is up. The session keeps r
 | `workers.<name>.port` | number | The port that worker was assigned in `.dev.config.json`, verified free before it started. |
 | `workers.<name>.origin` | string | The localhost address its siblings were told to call it on. |
 
+Those four keys are the whole payload; `--json` emits nothing else. In particular it carries **no dev-login field**: the ready banner is suppressed under `--json`, no key handling starts, and a session cookie has no business in a machine-readable line any more than in a human-readable one. A script that wants the dev login builds the URL from an origin above and `/__pithy/dev-login`.
+
 ## Errors
 
 `pithy dev` supervises, so most of what can go wrong is reported and survived rather than thrown.
@@ -126,6 +140,7 @@ One line, one object, written as soon as every worker is up. The session keeps r
 - **A `.dev.vars` pithy did not write.** Never overwritten and never merged. The file is named, `.dev.vars.local` is offered as the place for local values, and that worker starts without one.
 - **A worker whose `.dev.vars` could not be written.** Named, and every other worker still starts.
 - **A worker exits.** The rest come down with it. `SIGINT` or `SIGTERM` tears the whole session down the same way — graceful `SIGTERM`, then `SIGKILL` after a short grace window.
+- **`l` with no browser to open.** A machine with no `xdg-open` gets one line naming the URL to open by hand. The session keeps running: no browser is not a reason to stop supervising workers.
 
 ## Examples
 

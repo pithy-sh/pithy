@@ -10,6 +10,7 @@ import { projectCloudflareAccount } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -83,6 +84,12 @@ export default defineCommand({
       // The account first, before anything resolves a credential. It is read from the project's own
       // config and passed to every step below, rather than left to whatever a later load happens to
       // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
+      // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
+      // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
+      // and with no hint that provisioning was a step they had missed (#240). Only for a named `--env`:
+      // a bare deploy ships the top-level stanza, whose ids `pithy dev` resolves from Miniflare.
+      if (env) await assertEnvironmentProvisioned(projectDir, env);
+
       const account = await projectCloudflareAccount(projectDir);
       const pending = env ? await pendingFor(projectDir, env, account) : undefined;
       const audit = await buildAudit(projectDir, env ?? "dev", account);

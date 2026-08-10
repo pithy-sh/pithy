@@ -142,7 +142,7 @@ function mergeBindings(kept: Capability, later: Capability): Capability {
  * namespace and one set of tables — running it twice would double-apply the same registry. But two Workers
  * may compose the same capability with **different config**, and config changes what it binds
  * (`media({ recordStore: "kv" })` adds a KV namespace; `audit({ database })` renames the D1 binding).
- * Keeping only the first instance would drop the second's bindings from the union `feature provision`
+ * Keeping only the first instance would drop the second's bindings from the union `pithy provision`
  * creates resources from, leaving that Worker deployed with a binding nothing backs. So the first instance
  * wins and every later instance's *additional* bindings are folded into it: one namespace, no lost binding.
  */

@@ -20,6 +20,7 @@ export const main = defineCommand({
     dev: () => import("./commands/dev").then((m) => m.default),
     migrate: () => import("./commands/migrate").then((m) => m.default),
     seed: () => import("./commands/seed").then((m) => m.default),
+    provision: () => import("./commands/provision").then((m) => m.default),
     feature: () => import("./commands/feature").then((m) => m.default),
     env: () => import("./commands/env").then((m) => m.default),
     deploy: () => import("./commands/deploy").then((m) => m.default),

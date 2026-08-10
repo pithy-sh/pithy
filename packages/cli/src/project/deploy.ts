@@ -7,6 +7,7 @@ import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/c
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
@@ -255,6 +256,11 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
   const run = options.runDeploy ?? defaultRunDeploy(options.account);
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
+  // `--config` for a feature environment, and only there. Provisioning writes a feature's ids into a
+  // generated config under `.wrangler/` rather than into the tracked `wrangler.jsonc` (#242), so wrangler
+  // has to be told where they are. A declared environment's ids are in the file wrangler already reads.
+  const configFor = (worker: WorkerTarget): string[] =>
+    options.env && !isSourceEnvironment(options.env) ? ["--config", wranglerConfigPath(worker.dir, options.env)] : [];
   const args = options.env ? ["deploy", "--env", options.env] : ["deploy"];
   const audit = options.audit ?? (async () => {});
   const probe = options.verifyDeploy ?? ((probeOptions) => verifyDeployedVersion(probeOptions));
@@ -272,7 +278,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         await build(worker, ui.command, ui.args, options.env);
         built = true;
       }
-      const stdout = await run(worker, args);
+      const stdout = await run(worker, [...args, ...configFor(worker)]);
       const deploy: WorkerDeploy = {
         name: worker.name,
         ok: true,

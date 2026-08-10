@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -131,6 +132,8 @@ export interface CloudflareMediaProvisionerOptions {
   resolveEnv: ResolveMediaEnv;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /** Every environment this project declares, from the root `pithy.config.ts` — the fan-out set for a `global` secret. */
+  environments: DeclaredEnvironments | readonly string[];
 }
 
 /** The live {@link MediaProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
@@ -145,6 +148,11 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #r2ApiToken: string;
   readonly #mediaConfig: MediaConfig;
   readonly #dispatcher: SecretDispatcher;
+  /**
+   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * rather than assumed, so a shared secret reaches every environment the project deploys to.
+   */
+  readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #resolveEnv: ResolveMediaEnv;
   readonly #audit: CliAuditEmit;
 
@@ -159,6 +167,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     this.#r2ApiToken = options.r2ApiToken ?? options.apiToken;
     this.#mediaConfig = options.mediaConfig;
     this.#dispatcher = options.dispatcher;
+    this.#environments = options.environments;
     this.#resolveEnv = options.resolveEnv;
     this.#audit = options.audit ?? (async () => {});
   }
@@ -267,10 +276,10 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   async #upsertSecret(env: ManagedEnvironment, name: string, value: unknown): Promise<void> {
     const write = { name, ...SECRET_FACTS, value: JSON.stringify(value), requested: env };
     try {
-      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write });
+      await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write }, this.#environments);
     } catch (createError) {
       try {
-        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write });
+        await dispatchSecretWrite(this.#dispatcher, { mode: "update", ...write }, this.#environments);
       } catch (updateError) {
         throw new InternalError(
           {

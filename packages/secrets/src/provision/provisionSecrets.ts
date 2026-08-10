@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
@@ -129,12 +130,19 @@ export interface ProvisionResult {
  * minted first (one global credential, and a bootstrap token that cannot mint fails fast before
  * anything is created), the database and key exist before migrations run, and the manager is deployed
  * last, once its resources are in place. Idempotent end to end (each step is).
+ *
+ * `environments` is the project's declaration, and **the loop is over all of it**: an environment the
+ * project deploys to and this skips is one whose secrets have no master key — the exact silence #241
+ * found. One manager per declared environment is the price of declaring it (see `scope.ts`).
  */
-export async function provisionSecrets(provisioner: SecretsProvisioner): Promise<ProvisionResult> {
+export async function provisionSecrets(
+  provisioner: SecretsProvisioner,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<ProvisionResult> {
   await provisioner.preflight();
   await provisioner.ensureManagerToken();
   const perEnv: ProvisionResult["perEnv"] = [];
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     const { databaseId } = await provisioner.ensureDatabase(env);
     const { storeId } = await provisioner.ensureMasterKey(env);
     await provisioner.migrate(env, databaseId);
@@ -186,9 +194,10 @@ export interface DeprovisionOptions {
  */
 export async function deprovisionSecrets(
   deprovisioner: SecretsDeprovisioner,
+  environments: DeclaredEnvironments | readonly string[],
   options: DeprovisionOptions = {},
 ): Promise<void> {
-  for (const env of managedEnvironments()) {
+  for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteManager(env);
     if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
     await deprovisioner.deleteDatabase(env);

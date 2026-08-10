@@ -37,12 +37,12 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineWidth": 120,
-    "lineEnding": "lf",
-    // The two files Pithy rewrites are linted but not formatted. `pithy add`, `pithy ui add` and
-    // `pithy ui sync` edit them in place through a comment-preserving writer that puts every array
-    // element on its own line; Biome would collapse the short ones. Neither is wrong, and formatting a
-    // file a tool owns just means `bun run lint` fails after every command that touches it.
-    "includes": ["**", "!**/wrangler.jsonc", "!**/pithy.worker.jsonc"]
+    "lineEnding": "lf"
+    // Nothing is exempt. `wrangler.jsonc` and `pithy.worker.jsonc` were, because the writer behind
+    // `pithy add` and `pithy ui sync` put every array element on its own line and Biome collapses the
+    // short ones — so the CLI's own output failed the commit hook the CLI scaffolds (#249). Exempting
+    // the two files Pithy touches most from the formatter is not a fix; the writer prints what Biome
+    // would print now, and these are ordinary files again.
   },
   "assist": {
     "actions": {

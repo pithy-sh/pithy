@@ -20,7 +20,7 @@ import {
 } from "../capabilities/storageProvisioner";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -180,7 +180,11 @@ const provision = defineCommand({
       // The leading segment of every name this run creates — the bucket, the sweep worker, the
       // Workflow. `requireProjectName` refuses to guess, because `deprovision` recomputes these same
       // names to find what to delete (docs/NAMING.md).
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { provisionStorage } = await loadStorage();
       const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const storageConfig = await loadStorageConfig(projectDir);
@@ -189,6 +193,7 @@ const provision = defineCommand({
       const provisioner = new CloudflareStorageProvisioner({
         cf,
         project,
+        environments,
         accountId,
         apiToken,
         storeId,
@@ -200,7 +205,7 @@ const provision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      const result = await provisionStorage(provisioner);
+      const result = await provisionStorage(provisioner, environments);
 
       // Only now can the sweep's Workflow binding be written. `pithy add storage` cannot: wrangler
       // requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name
@@ -253,7 +258,11 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
+      // The project's own environment set (#241): what this command fans out across, rather than a
+      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+      const environments = loadProjectEnvironments(config);
       const { deprovisionStorage } = await loadStorage();
       const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -270,7 +279,7 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionStorage(deprovisioner, { deleteStorage: args.storage });
+      await deprovisionStorage(deprovisioner, environments, { deleteStorage: args.storage });
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "storage deprovision", storageDeleted: args.storage })}\n`);

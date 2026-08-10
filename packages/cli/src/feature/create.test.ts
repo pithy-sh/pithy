@@ -7,15 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { ResourceProvisioners } from "../provision/resources";
 import { createFeature } from "./create";
 import { destroyFeature } from "./destroy";
 import { devConfigPath, readDevConfig } from "./devConfig";
 import { BASE_PORT } from "./ports";
-import type { FeatureProvisioners } from "./provision";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** Provisioners that own nothing — the local-only round-trip needs no real Cloudflare. */
-const emptyProvisioners: FeatureProvisioners = {
+const emptyProvisioners: ResourceProvisioners = {
   d1: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
   kv: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
   r2: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },

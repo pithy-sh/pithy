@@ -76,6 +76,29 @@ export const PaymentsAuditActions = {
   entitlementGranted: "payments/entitlement_granted",
   /** An entitlement was revoked by hand through the control plane. The other of the two, for the same reason. */
   entitlementRevoked: "payments/entitlement_revoked",
+  /**
+   * A management client read the purchase log.
+   *
+   * **Reads are audited here, and only on this surface.** The rule at the top of this file still holds for
+   * the adopter's own users: a buyer reading their own purchases is not a security-relevant event, and
+   * auditing it would drown the trail. A *management* read is the opposite case — a credential paging every
+   * account's commerce leaves no other trace anywhere, and the whole point of the control plane is that a
+   * customer can reconstruct what a dashboard did with the access they granted it.
+   *
+   * Counts and filters only. Never a row, never an amount, never a provider identifier: copying the
+   * purchase log into the audit trail would make a second purchase log with weaker access rules than the
+   * first.
+   */
+  purchasesRead: "payments/purchases_read",
+  /** A management client read the subscriptions. The narrower half of the purchase log, recorded separately. */
+  subscriptionsRead: "payments/subscriptions_read",
+  /**
+   * A management client read the entitlement model — the page, or one account's.
+   *
+   * The read that pairs with `entitlement_granted` and `entitlement_revoked`, so a trail shows what a
+   * console looked at as well as what it changed.
+   */
+  entitlementsRead: "payments/entitlements_read",
 } as const;
 
 /** One of the payments audit action codes. */

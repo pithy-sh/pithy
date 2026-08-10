@@ -40,7 +40,8 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see [`commands/dev.md`](commands/dev.md)) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see [`commands/seed.md`](commands/seed.md) and `docs/SEED.md` |
-| `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `provision` (its ephemeral CF resources), `destroy` (tear it all down) |
+| `pithy provision <--env <name> \| --feature>` | Create an environment's own Cloudflare resources — one per binding name across every Worker — write their ids into each Worker's config, and migrate. **One job, two spellings, exactly one of them required:** `--env` for an environment the project declares, `--feature` for the one this branch gets. Idempotent and adopting: a resource of the right name is taken up rather than duplicated. Every run states the file it wrote and whether that file is committed — `--env`'s ids are source in the tracked `wrangler.jsonc`, `--feature`'s are a build artifact under the already-ignored `.wrangler/`. `deploy` refuses and names this command when a binding has no id; production takes a type-to-confirm phrase that `--yes` never replaces (see [`commands/provision.md`](commands/provision.md)) |
+| `pithy feature` | Feature environment lifecycle: `create` (local worktree, ports, migrate + seed), `sync` (make an existing worktree ready), `destroy` (tear it all down). All three derive the feature from the checked-out branch. Its live Cloudflare environment is `pithy provision --feature`'s |
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
 | `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` resolves the Worker's address and the seam's base path from the project (it prints both and where they came from; `--worker-url` overrides, and `--worker <name>` is required when a project has several Workers), runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see [`commands/ui.md`](commands/ui.md)) |
@@ -83,7 +84,9 @@ Two consequences worth stating outright:
 - Values pass with `=` or space: `--env=prod` or `--env prod`
 - `--help` / `-h` and `--version` / `-v` work on any command. citty answers its version builtin only when it is the *sole* argument, so `bin.ts` answers it first and `pithy add --version` prints the version instead of running `add`. It fires on a bare `--version` or `-v` anywhere before a `--` separator; a value that is literally the string passes as `--flag=--version` or after `--`
 
-**`--env` takes `dev`, `staging`, or `prod`, and it is validated at the flag.** It defaults to `dev`, because every command is safe there. It is **not** `production`: the environment sits verbatim in the middle of every Cloudflare name the project composes, so each of its characters costs one character of project name, one for one — and `--env production` is answered with an error naming `prod`. A custom environment is allowed (`live`, `eu-prod`), held to the same charset and to a hard maximum of 7 characters, the length of `staging`. Every project-name budget is derived against that 7, and a provisioned project cannot be renamed, so a longer environment is refused rather than quietly shrinking a cap projects were already accepted under. See `docs/NAMING.md`.
+**`--env` takes `dev`, `staging`, or `prod`, and it is validated at the flag.** It defaults to `dev`, because every command is safe there. It is **not** `production`: the environment sits verbatim in the middle of every Cloudflare name the project composes, so each of its characters costs one character of project name, one for one — and `--env production` is answered with an error naming `prod`. A custom environment is allowed (`live`, `eu-prod`), held to the same charset and to a hard maximum of 7 characters, the length of `staging`. Every project-name budget is derived against that 7, and a provisioned project cannot be renamed, so a longer environment is refused rather than quietly shrinking a cap projects were already accepted under.
+
+**Which of them this project has is declared**, once, as `environments` in the root `pithy.config.ts` — `["staging", "prod"]` unless it says otherwise, asked at `pithy init` with that default. A command that deploys or provisions refuses an `--env` the project does not declare, naming the ones it does; `dev` is never declared, because it is local and always there. See `docs/NAMING.md`.
 
 Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
 
@@ -103,7 +106,7 @@ Every command is agent-drivable and supports `--json`, with **one deliberate exc
 
 **The Vitest config comes split by runtime.** `*.workers.test.ts` runs inside workerd against a real D1 database and a real KV namespace through Miniflare; every other `*.test.ts` runs in Node. That split is the kit's whole testing argument — a test that mocks D1 proves the mock works — and the Workers half is the fiddly one to wire, which is why it is scaffolded rather than described. Its bindings are declared in `vitest.workers.config.ts`, with a matching `Cloudflare.Env` in `apps/<worker>/src/cloudflare-test.d.ts`; a capability that needs a new one needs it in both.
 
-**Biome formats everything except the two files Pithy rewrites.** `wrangler.jsonc` and `pithy.worker.jsonc` are edited in place by `pithy add`, `pithy ui add`, and `pithy ui sync`, through a comment-preserving writer that puts every array element on its own line. They are still linted; they are not formatted, because formatting a file a tool owns means `bun run lint` fails after every command that touches it.
+**Biome formats everything, including the two files Pithy rewrites.** `wrangler.jsonc` and `pithy.worker.jsonc` are edited in place by `pithy add`, `pithy provision` (both modes — `--feature`'s write lands in the generated copy under `.wrangler/`), `pithy ui add`, and `pithy ui sync` — through one comment-preserving printer that emits what Biome would, so a command's output needs no formatting step and passes the pre-commit hook the CLI itself installs. They were exempted from the scaffolded formatter once, which was the same defect in another form: it left the two files Pithy touches most as the two files nothing formats.
 
 One gap, stated rather than hidden: `pithy worker add` writes the new Worker's `tsconfig.json` with the same settings `init` gives `apps/api`, but does **not** add it to the solution file. Add the reference yourself, or that Worker's source is typechecked by nothing.
 
@@ -598,7 +601,7 @@ The two transcripts below are captured from the real binary and pinned by `packa
 $ pithy --help
 A backend kit for Cloudflare Workers. (pithy v<version>)
 
-USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
+USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|provision|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
 
 COMMANDS
 
@@ -610,6 +613,7 @@ COMMANDS
         dev    Run every worker locally under one supervisor
     migrate    Run migrations for an environment
        seed    Seed an environment from your Zod-typed fixtures
+  provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
     feature    Set up and tear down an isolated, fully-provisioned feature environment
         env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
      deploy    Deploy to Cloudflare Workers

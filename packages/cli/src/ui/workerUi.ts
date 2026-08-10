@@ -3,9 +3,9 @@
 
 import { join } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
-import { parse, stringify } from "comment-json";
+import { parse } from "comment-json";
 import { z } from "zod";
-import { writeFileAtomic } from "../project/atomic";
+import { writeJsonc } from "../project/jsonc";
 import { readMergeBase } from "../project/readOptionalFile";
 import { WORKER_MANIFEST_FILE, type WorkerUi } from "../project/workerManifest";
 
@@ -111,7 +111,7 @@ const ManifestDocument = z
 export async function readManifestDocument(workerDir: string): Promise<ManifestDocument> {
   const path = join(workerDir, WORKER_MANIFEST_FILE);
   const base = await readMergeBase(path, ManifestDocument, {
-    // Comment-preserving, because {@link writeManifestDocument} hands this straight back to `stringify`.
+    // Comment-preserving, because {@link writeManifestDocument} hands this straight back to the printer.
     parse: (source) => parse(source),
     unreadable: ({ code, cause }) =>
       new ConflictError(
@@ -148,9 +148,9 @@ export async function readManifestDocument(workerDir: string): Promise<ManifestD
   return base.document;
 }
 
-/** Write the document back, 2-space with a trailing newline — the repo's JSONC formatting. */
+/** Write the document back, printed the way the Biome `pithy init` scaffolds would print it (#249). */
 export async function writeManifestDocument(workerDir: string, document: ManifestDocument): Promise<void> {
-  await writeFileAtomic(join(workerDir, WORKER_MANIFEST_FILE), `${stringify(document, null, 2)}\n`);
+  await writeJsonc(join(workerDir, WORKER_MANIFEST_FILE), document);
 }
 
 /** The `ui` block on a parsed document, or `null` when the worker has no front end. */

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -51,7 +52,7 @@ function fakeProvisioner(kvNamespaceId: string | null = null): { provisioner: Me
 describe("provisionMedia", () => {
   test("creates the resources once, then writes credentials and deploys for every environment", async () => {
     const { provisioner, calls } = fakeProvisioner();
-    const result = await provisionMedia(provisioner);
+    const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(calls).toEqual([
       "preflight",
@@ -74,7 +75,7 @@ describe("provisionMedia", () => {
 
   test("each environment gets its own bucket and namespace, so staging cannot write into prod", async () => {
     const { provisioner } = fakeProvisioner("kv-1");
-    const result = await provisionMedia(provisioner);
+    const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
     const buckets = result.environments.map((entry) => entry.bucketName);
     expect(new Set(buckets).size).toBe(buckets.length);
     expect(buckets).toEqual(["acme-staging-media", "acme-prod-media"]);
@@ -82,7 +83,7 @@ describe("provisionMedia", () => {
 
   test("every environment's credentials land before any worker that reads them boots", async () => {
     const { provisioner, calls } = fakeProvisioner();
-    await provisionMedia(provisioner);
+    await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
     const credentialIndexes = calls.flatMap((call, index) => (call.startsWith("credentials:") ? [index] : []));
     const firstDeploy = calls.findIndex((call) => call.startsWith("deploy:"));
     expect(Math.max(...credentialIndexes)).toBeLessThan(firstDeploy);
@@ -90,7 +91,7 @@ describe("provisionMedia", () => {
 
   test("threads the KV namespace id through to the secret and the deploy in KV mode", async () => {
     const { provisioner, calls } = fakeProvisioner("kv-1");
-    const result = await provisionMedia(provisioner);
+    const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toContain("credentials:staging:acme-staging-media:kv-1");
     expect(calls).toContain("deploy:prod:acme-prod-media:kv-1");
     expect(result.environments.every((entry) => entry.kvNamespaceId === "kv-1")).toBe(true);
@@ -176,13 +177,13 @@ describe("deprovisionMedia", () => {
 
   test("deletes every worker and keeps the stored media by default", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionMedia(deprovisioner);
+    await deprovisionMedia(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
   });
 
   test("deletes the bucket and namespace only when explicitly asked, after the workers", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionMedia(deprovisioner, { deleteStorage: true });
+    await deprovisionMedia(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
     expect(calls).toEqual([
       "deleteWorker:staging",
       "deleteWorker:prod",

@@ -11,6 +11,7 @@ import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
 import { authTables } from "./data/tables";
 import { publishSameOrigin } from "./http/csrf";
+import { registerDevLoginRoute } from "./http/devLoginRoute";
 import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
@@ -43,7 +44,7 @@ export const AuthConfig = z
     baseURL: z
       .string()
       .describe(
-        "The public origin of this environment's auth worker (no trailing slash). OAuth callbacks and JWKS URLs are built from it.",
+        "The public origin of this worker where it is deployed (no trailing slash). OAuth callbacks, JWKS and magic-link URLs are built from it. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` instead — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down.",
       ),
     trustedOrigins: z
       .array(z.string())
@@ -198,7 +199,15 @@ export function auth(config: AuthConfigInput): AuthCapability {
     // route can gate on it; then the tier-1 edge rate limiter (before session resolution touches D1);
     // then the session-resolution middleware fills the AuthContext.
     middleware: [publishSameOrigin(wiring), rateLimitMiddleware, createSessionMiddleware(wiring)],
-    routes: createAuthRoutes(wiring),
+    // The dev-login redirect goes on **first**, and the reason is `basePath`: it defaults to `/auth`,
+    // but an adopter may mount auth at the root, and Better Auth's catch-all (`${basePath}/*`) returns
+    // a Response, which ends the chain. Registered after it, `/__pithy/dev-login` would be a route the
+    // table shows and nothing ever reaches. It registers itself only in a `dev` composition that is not
+    // CI — see `http/devLoginRoute.ts` for the two gates and why they are two.
+    routes: (app) => {
+      registerDevLoginRoute(wiring)(app);
+      createAuthRoutes(wiring)(app);
+    },
     // Built from the RESOLVED basePath, never the default: an adopter who mounts auth at `/identity`
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
     // from the manifest 404s against exactly the adopters who customised anything.

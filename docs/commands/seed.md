@@ -32,6 +32,14 @@ Every `pithy seed` run is safe to repeat. D1 rows insert with `INSERT OR IGNORE`
 
 This is also why editing a fixture's values and re-running `pithy seed` does nothing: the row already exists, so it is ignored, unchanged. See Resetting data, below.
 
+### Fixture size
+
+Make a fixture as big as the thing it has to prove. A paged list needs more rows than a page, and `DEFAULT_PAGE_SIZE` is 25.
+
+D1 accepts 100 bound parameters in one statement, and an insert binds one per column per row — so a seven-column table fits about fifteen rows per statement. `pithy seed` writes each group in chunks sized from that table's own column count, so the limit is never a fixture's problem and never a number to look up. A 500-row group lands the way a 3-row one does.
+
+A group is not atomic across its chunks. `INSERT OR IGNORE` is what makes that safe: a run that dies partway is re-run, the landed rows are ignored, and the rest go in.
+
 ### The production exception
 
 Every other flag in Pithy follows the same rule everywhere: `--json` means non-interactive, full stop. `pithy seed --env prod` is the one place a flag additionally gates *content*, not just interactivity — because seeding production is rare and should stay rare.

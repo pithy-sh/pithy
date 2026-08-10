@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
@@ -76,7 +77,7 @@ describe("names", () => {
 describe("provisionStorage", () => {
   test("checks the account, creates every bucket, then writes credentials, then deploys", async () => {
     const { provisioner, calls } = fakeProvisioner();
-    const result = await provisionStorage(provisioner);
+    const result = await provisionStorage(provisioner, DEFAULT_ENVIRONMENTS);
 
     // The phase order is the contract: no secret may name a bucket that does not exist, and no worker
     // may boot before the secret it reads.
@@ -107,17 +108,17 @@ describe("provisionStorage", () => {
       },
     };
 
-    await expect(provisionStorage(failing)).rejects.toThrow("bucket quota exceeded");
+    await expect(provisionStorage(failing, DEFAULT_ENVIRONMENTS)).rejects.toThrow("bucket quota exceeded");
     expect(calls.some((call) => call.startsWith("deploy:"))).toBe(false);
     expect(calls.some((call) => call.startsWith("credentials:"))).toBe(false);
   });
 
   test("re-running is a no-op on an already-provisioned account, because every step is idempotent", async () => {
     const { provisioner, calls } = fakeProvisioner();
-    await provisionStorage(provisioner);
+    await provisionStorage(provisioner, DEFAULT_ENVIRONMENTS);
     const first = [...calls];
     calls.length = 0;
-    await provisionStorage(provisioner);
+    await provisionStorage(provisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(first);
   });
 });
@@ -141,13 +142,13 @@ function fakeDeprovisioner(): { deprovisioner: StorageDeprovisioner; calls: stri
 describe("deprovisionStorage", () => {
   test("removes the workers and keeps the files — stored data is never collateral", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionStorage(deprovisioner);
+    await deprovisionStorage(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
   });
 
   test("deletes the buckets only when asked, and only after the workers that bind them are gone", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionStorage(deprovisioner, { deleteStorage: true });
+    await deprovisionStorage(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteBucket:staging", "deleteBucket:prod"]);
   });
 });
