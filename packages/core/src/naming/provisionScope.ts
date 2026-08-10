@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { assertValidEnvironment, GLOBAL_SCOPE } from "./environment";
+import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE } from "./environment";
 import {
   type FeatureIdentity,
   type FeatureResourceKind,
@@ -35,15 +35,6 @@ import { resourceNames } from "./resourceNames";
  *   environment, and the `f<issue>` marker is what teardown recomputes and what keeps a feature's
  *   database from ever being mistaken for a deployed one's.
  */
-
-/**
- * The wrangler stanza a feature environment lives in.
- *
- * One name, not a flag: a feature has exactly one environment, so a second value here would be the
- * decoupling this module exists to remove. Seven characters, which is `MAX_ENVIRONMENT_NAME` — it has
- * to be a legal environment because it is a real `env.<name>` key.
- */
-export const FEATURE_ENVIRONMENT = "feature";
 
 /**
  * Whether a secret's value differs per environment or is one value every environment binds.

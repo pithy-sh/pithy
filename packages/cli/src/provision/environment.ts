@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { relative } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -108,6 +109,32 @@ export interface ProvisionReport {
   services: ServiceEntry[];
   /** Every `cf-secrets-store` secret this environment declares, and whether it was bound. */
   secretBindings: ProvisionedSecret[];
+  /** Where each Worker's ids were written, project-relative — one entry per Worker, in write order. */
+  configs: ProvisionedConfig[];
+  /**
+   * **Are the files above committed, or ignored?** `true` for a declared environment, whose ids are
+   * long-lived source a human reviews in a pull request; `false` for a feature, whose ids are one job's
+   * output under the already-ignored `.wrangler/`.
+   *
+   * One flag now decides which of those a run produces, and a flag that flips whether output is committed
+   * will eventually surprise someone. So the run says which it did, here and in the human summary — and
+   * a pipeline can read the answer rather than infer it, which is what keeps *a CI build never commits
+   * back to the repository* a property a script can assert.
+   *
+   * One boolean for the whole run rather than one per config: a scope is chosen once, so a per-file copy
+   * would be N copies of one fact, and every consumer branch on a disagreement they cannot have.
+   */
+  committed: boolean;
+}
+
+/** One file a provisioning run wrote a Worker's ids into. */
+export interface ProvisionedConfig {
+  /** The Worker's own deploy name — its `wrangler.jsonc` `name`. */
+  worker: string;
+  /** The file written, relative to the project root. */
+  path: string;
+  /** How many binding ids landed in it. Zero for a Worker that declares no provisionable binding. */
+  ids: number;
 }
 
 /** One declared Secrets Store secret, and whether the environment now binds it. */
@@ -278,6 +305,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // name, same resource), but the *wiring* is per Worker: handing a Worker ids for resources it never
   // declared would put bindings in its wrangler config that it has no business holding.
   const secrets: ProvisionedSecret[] = [];
+  const configs: ProvisionedConfig[] = [];
   for (const worker of workers) {
     const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
     const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? { bound: [], missing: [] };
@@ -286,11 +314,12 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     for (const binding of workerSecrets.missing) {
       secrets.push({ binding, entry: scope.secretEntry(binding, "environment"), bound: false });
     }
-    await applyProvisionedEnv({
+    const written = resources.filter((resource) => declared.has(resource.binding));
+    const destination = await applyProvisionedEnv({
       workerDir: worker.dir,
       worker: worker.name,
       scope,
-      resources: resources.filter((resource) => declared.has(resource.binding)),
+      resources: written,
       secrets: workerSecrets.bound,
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
@@ -298,6 +327,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
         service: scope.worker(resolveServiceTarget(workers, service.target)),
       })),
     });
+    // The path the writer wrote, taken from the writer — never recomputed here. A report that names one
+    // file while another was edited is the failure the report exists to prevent (#251).
+    configs.push({ worker: worker.name, path: relative(options.projectDir, destination), ids: written.length });
   }
 
   const migrate = options.migrate ?? defaultMigrate;
@@ -313,5 +345,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     workers: workers.map((worker) => ({ worker: worker.name, name: scope.worker(worker.name) })),
     services,
     secretBindings: secrets,
+    configs,
+    committed: scope.source,
   };
 }

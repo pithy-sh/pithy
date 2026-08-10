@@ -98,7 +98,7 @@ The same branch-first identity that names a feature's D1/KV/R2 resources also na
 <project>-f<issue>-<slug>-<binding>-<kind>   acme-f69-media-cli-db-d1    (D1)
 ```
 
-`pithy feature provision` writes into each Worker's `wrangler.jsonc env.<env>`:
+`pithy provision --feature` writes into each Worker's config, under `env.<env>`:
 
 - **`name`** — the script name that Worker deploys under for the feature, so a preview deploy never overwrites production's.
 - **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli-api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.

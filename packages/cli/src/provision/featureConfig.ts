@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isAbsolute, join } from "node:path";
-import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/provisionScope";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 
 /**
  * **A feature's config is a build artifact, so it is not written where source lives.**
@@ -32,6 +32,20 @@ export function featureConfigPath(workerDir: string): string {
 }
 
 /**
+ * The file a provisioning run writes one Worker's ids into: the tracked `wrangler.jsonc` when they are
+ * source, the generated config when they are a build artifact.
+ *
+ * **One function, because the writer and the report have to agree.** `pithy provision` states the file it
+ * wrote and whether it is committed, and a report naming one path while the writer edits another is worse
+ * than no report at all — it is a note in a runbook contradicting the code. Both go through here, so
+ * "which file?" is answered once, by `ProvisionScope.source`, which is also what answered "what is it
+ * called?" and "which stanza?".
+ */
+export function provisionConfigPath(workerDir: string, source: boolean): string {
+  return source ? join(workerDir, "wrangler.jsonc") : featureConfigPath(workerDir);
+}
+
+/**
  * The config file a command should read (or hand to wrangler) for one Worker and one environment.
  *
  * A feature environment resolves to the generated file; everything else to the Worker's own tracked
@@ -39,7 +53,7 @@ export function featureConfigPath(workerDir: string): string {
  * describe the environment they are acting on.
  */
 export function wranglerConfigPath(workerDir: string, env: string): string {
-  return env === FEATURE_ENVIRONMENT ? featureConfigPath(workerDir) : join(workerDir, "wrangler.jsonc");
+  return provisionConfigPath(workerDir, isSourceEnvironment(env));
 }
 
 /**
@@ -48,6 +62,9 @@ export function wranglerConfigPath(workerDir: string, env: string): string {
  * The same question `ProvisionScope.source` answers for a provisioning run, asked by a caller that has
  * only an environment name. One predicate rather than two comparisons against a literal, so a command
  * that starts handling feature environments cannot answer it differently from the writer.
+ *
+ * A project cannot declare `feature` as one of its environments, so the two answers can never both be
+ * true of one name — `DeclaredEnvironments` refuses it for exactly this reason.
  */
 export function isSourceEnvironment(env: string): boolean {
   return env !== FEATURE_ENVIRONMENT;

@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { assertValidEnvironment, type DeclaredEnvironments, ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import {
+  assertValidEnvironment,
+  type DeclaredEnvironments,
+  ENVIRONMENTS,
+  FEATURE_ENVIRONMENT,
+} from "@pithy-sh/core/src/naming/environment";
 import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 
 /**
@@ -98,9 +103,23 @@ export function requireManagedEnvironment(
   if (parsed.success && environments.includes(parsed.data)) return parsed.data;
   throw new ValidationError({
     message: `--env must be one of ${environments.join(", ")}. Got ${JSON.stringify(value)}.`,
-    action:
-      value === "dev"
-        ? "This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead."
-        : `Declare it in \`environments\` in the root pithy.config.ts, or pass one this project has: --env ${environments[0]}`,
+    action: refusalAction(value, environments),
   });
+}
+
+/**
+ * What to do about an `--env` this project does not have. Three answers, because three different
+ * mistakes are behind them and "declare it" is the right advice for only one.
+ *
+ * `dev` is local. `feature` is a branch's, it has its own flag, and telling someone to declare it would
+ * send them to a declaration `DeclaredEnvironments` refuses — a feature's config is generated rather than
+ * committed, so one stanza would have two owners. Anything else really is a project that has not
+ * declared the environment yet.
+ */
+function refusalAction(value: string, environments: readonly string[]): string {
+  if (value === "dev") return "This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead.";
+  if (value === FEATURE_ENVIRONMENT) {
+    return "A branch's environment is never declared. Run `pithy provision --feature` from inside its worktree.";
+  }
+  return `Declare it in \`environments\` in the root pithy.config.ts, or pass one this project has: --env ${environments[0]}`;
 }

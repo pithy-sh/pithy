@@ -3,8 +3,9 @@
 
 import { describe, expect, it } from "vitest";
 import { PithyError } from "../error/pithyError";
+import { FEATURE_ENVIRONMENT } from "./environment";
 import { FEATURE_RESOURCE_KINDS } from "./feature";
-import { environmentScope, FEATURE_ENVIRONMENT, featureScope } from "./provisionScope";
+import { environmentScope, featureScope } from "./provisionScope";
 
 const PROJECTS = ["acme", "replay", "a", "twenty-six-characters-long"];
 const ENVIRONMENTS = ["staging", "prod", "live", "qa"];

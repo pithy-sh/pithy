@@ -4,8 +4,9 @@
 import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
-import { FEATURE_ENVIRONMENT, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -30,7 +31,7 @@ import {
 } from "./manifest";
 
 /**
- * `pithy feature provision` — one branch's ephemeral Cloudflare environment.
+ * `pithy provision --feature` — one branch's ephemeral Cloudflare environment.
  *
  * The work is `provisionEnvironment`'s, unchanged for every environment a project has. What is a
  * feature's own, and lives here, is the two things a *deployed* environment has no equivalent of: the
@@ -101,12 +102,6 @@ export interface ProvisionFeatureOptions {
   audit?: CliAuditEmit;
 }
 
-/** The `--json` payload of `pithy feature provision`. */
-export interface FeatureProvisionReport extends ProvisionReport {
-  /** The command that produced the report. */
-  command: "feature.provision";
-}
-
 /**
  * Provision (or resume provisioning) a feature's Cloudflare environment, recording every resource in the
  * per-feature manifest **after each step** so an interrupted run resumes cleanly and `destroy` knows
@@ -116,8 +111,14 @@ export interface FeatureProvisionReport extends ProvisionReport {
  * `pithy feature provision --env staging` created `<project>-f<issue>-<slug>-db` and wrote it into the
  * staging stanza of a checked-in `wrangler.jsonc`, then migrated against it. The scope now carries both
  * halves, so the combination cannot be expressed. A declared environment is `pithy provision --env`'s job.
+ *
+ * **The report carries no `command` of its own** (#251). It used to say `feature.provision`, which was a
+ * second command name for one command's work: `pithy provision --feature` is the spelling, and the
+ * deprecated alias runs exactly this, so both emit `"provision"`. The name of the command belongs to the
+ * command, and stamping it here is what let a caller's own `command` field be silently overwritten by a
+ * spread.
  */
-export async function provisionFeature(options: ProvisionFeatureOptions): Promise<FeatureProvisionReport> {
+export async function provisionFeature(options: ProvisionFeatureOptions): Promise<ProvisionReport> {
   const path = manifestPath(options.projectDir);
   const scope = featureScope(options.identity);
 
@@ -188,7 +189,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     auditMetadata: { feature: options.identity.slug, issue: options.identity.issue },
   });
 
-  return { command: "feature.provision", ...report };
+  return report;
 }
 
 /** One deleted resource in the teardown report. */

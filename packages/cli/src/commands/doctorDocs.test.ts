@@ -487,7 +487,9 @@ describe("the docs say what the code emits", () => {
     );
     expect(scanned.filter(([, read]) => read.spreadSites > 0).map(([command]) => command)).toEqual(SPREAD_BUILT);
     expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(32);
+    // 31 since #251: `pithy feature provision` stopped building a payload of its own and became a
+    // redirect to `pithy provision --feature`, which is where that one spread now lives.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(31);
   });
 
   /**
@@ -726,7 +728,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
   dryRun: ["seed", "upgrade"],
-  env: ["deploy", "feature", "migrate", "payments", "provision", "seed", "token", "upgrade", "vector"],
+  env: ["deploy", "migrate", "payments", "provision", "seed", "token", "upgrade", "vector"],
   environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
   from: ["email", "worker"],
   manifestFaults: ["add", "upgrade"],
@@ -735,16 +737,13 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   pendingMigrations: ["deploy", "upgrade"],
   project: ["adopt", "doctor", "migrate"],
   removed: ["alias", "dashboard"],
-  resources: ["feature", "provision"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
-  secretBindings: ["feature", "provision"],
-  services: ["feature", "provision"],
   shell: ["alias", "doctor"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
-  workers: ["deploy", "dev", "env", "feature", "migrate", "provision", "seed", "upgrade", "worker"],
+  workers: ["deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
 };
 
 /**
@@ -781,11 +780,8 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   packageManager: "string",
   pendingMigrations: "number",
   removed: "boolean",
-  resources: "object[]",
   routing: "object",
   runs: "object[]",
-  secretBindings: "object[]",
-  services: "object[]",
   shell: "string",
   storageDeleted: "boolean",
   to: "string",

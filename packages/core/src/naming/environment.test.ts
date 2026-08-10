@@ -8,6 +8,7 @@ import {
   DEFAULT_ENVIRONMENTS,
   DeclaredEnvironments,
   ENVIRONMENTS,
+  FEATURE_ENVIRONMENT,
   GLOBAL_SCOPE,
   isValidEnvironment,
   MAX_ENVIRONMENT_NAME,
@@ -124,6 +125,26 @@ describe("DeclaredEnvironments", () => {
 
   it("refuses `global` — the scope beside the environments, by the same rule as everywhere else", () => {
     expect(DeclaredEnvironments.safeParse([GLOBAL_SCOPE]).success).toBe(false);
+  });
+
+  /**
+   * **`feature` is a legal environment name and an illegal declaration, and the two are not in tension.**
+   *
+   * It has to be legal: it is a real `env.feature` wrangler key, so every rule that governs a stanza key
+   * governs it. It cannot be declared, because a declared environment's ids are source — written into the
+   * tracked `wrangler.jsonc` — while a feature's are a build artifact under `.wrangler/`. A project
+   * declaring it would own two files claiming one stanza, and `wranglerConfigPath` resolves that name to
+   * the generated one, so a migrate would read bytes the provision never wrote.
+   *
+   * This is what makes "`pithy provision --env` cannot reach a feature's environment" true by
+   * construction rather than by a check: `--env` admits only what the project declared.
+   */
+  it("refuses `feature` — a branch's environment is a stanza no project declares", () => {
+    const parsed = DeclaredEnvironments.safeParse([FEATURE_ENVIRONMENT, "prod"]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toContain(FEATURE_ENVIRONMENT);
+    // And still a legal name, because it is a stanza key wrangler reads.
+    expect(isValidEnvironment(FEATURE_ENVIRONMENT)).toBe(true);
   });
 
   it("refuses a duplicate — two of one environment is two of one set of resource names", () => {

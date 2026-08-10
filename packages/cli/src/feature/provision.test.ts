@@ -137,8 +137,12 @@ describe("provisionFeature / deprovisionFeature", () => {
     // (#231): each throws on failure, so a returned report already means they succeeded, and a hardcoded
     // `migrated: true, seeded: true` beside it is a constant no consumer can usefully branch on.
     expect(r.calls).toEqual({ migrate: ["feature"], seed: ["feature"] });
+    // No `command`: the name of a command belongs to the command, and one command produces this report
+    // under two spellings (#251). `configs` and `committed` are the run saying which file it wrote and
+    // what happens to it — asserted as a property in `provision/destination.test.ts`.
     expect(Object.keys(report).sort()).toEqual([
-      "command",
+      "committed",
+      "configs",
       "env",
       "resources",
       "secretBindings",
@@ -490,6 +494,10 @@ describe("provisionFeature / deprovisionFeature", () => {
    * `.gitignore` of every project ever created by `pithy init`: anything under a `.wrangler/`
    * directory, and `.pithy-feature.json`. A third would mean a new ignore rule, which existing
    * projects do not have — which is why the rule is the assertion rather than the file list.
+   *
+   * **This is the work `pithy provision --feature` does** (#251): the command surface changed spelling,
+   * and the function it calls is this one — so the gate holds through the new spelling unchanged, which
+   * is exactly what a command-surface change is allowed to leave alone.
    */
   test("writes nothing a checkout tracks", async () => {
     const { provisioners } = fakeProvisioners();

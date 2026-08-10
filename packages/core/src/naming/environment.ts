@@ -36,6 +36,23 @@ export type Environment = (typeof ENVIRONMENTS)[number];
 export const GLOBAL_SCOPE = "global";
 
 /**
+ * The environment one branch gets — the `env.feature` stanza a feature's provisioning run writes into.
+ *
+ * **A legal environment name, and never a declared one.** Legal because it is a real wrangler stanza
+ * key, so every rule that governs a key governs it: seven characters, which is
+ * {@link MAX_ENVIRONMENT_NAME} exactly. Never declared because the two kinds of environment write to
+ * different files — a declared environment's ids are source, in the tracked `wrangler.jsonc`; a
+ * feature's are a build artifact under `.wrangler/`. A project that declared this name would own two
+ * files claiming one stanza, and the resolver that picks between them answers "generated" for this
+ * name — so a migrate would read bytes no provisioning run wrote.
+ *
+ * It lives here rather than beside the scope that uses it because it is first an environment name, and
+ * because {@link DeclaredEnvironments} has to refuse it: a constant defined downstream of the schema
+ * that rejects it would be a cycle.
+ */
+export const FEATURE_ENVIRONMENT = "feature";
+
+/**
  * The longest an environment name may be — **the longest canonical one, `staging`**.
  *
  * This is a derivation input, not a preference: `WORKFLOW_DERIVED_PROJECT_NAME` and
@@ -158,6 +175,14 @@ export const DeclaredEnvironments = z
           code: "custom",
           input: ctx.value,
           message: `"${LOCAL_ENVIRONMENT}" is local and always present, so it is never declared. List only the environments this project deploys.`,
+        });
+        continue;
+      }
+      if (name === FEATURE_ENVIRONMENT) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          message: `"${FEATURE_ENVIRONMENT}" is the environment a branch gets, and its config is generated rather than committed. Declaring it would give one stanza two owners.`,
         });
         continue;
       }

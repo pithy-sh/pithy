@@ -8,35 +8,54 @@ import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { loadProject, loadProjectCloudflare, loadProjectEnvironments, requireProjectName } from "../project/config";
+import { branchIdentity } from "../feature/identity";
+import { provisionFeature } from "../feature/provision";
+import {
+  loadProject,
+  loadProjectCloudflare,
+  loadProjectEnvironments,
+  projectCloudflareAccount,
+  requireProjectName,
+} from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
-import { provisionEnvironment } from "../provision/environment";
+import { type ProvisionReport, provisionEnvironment } from "../provision/environment";
+import { requireProvisionMode } from "../provision/mode";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
- * `pithy provision --env <name>` — **the lifecycle step that was specified for feature environments and
- * never written for the ones a project ships to.**
+ * `pithy provision --env <name>` and `pithy provision --feature` — **one command, because provisioning is
+ * one job.**
  *
- * Before this, a project scaffolded, wired and migrated by pithy could not be deployed: `add` runs the
- * Worker's *dev* migrations, `migrate --env prod` assumes the database exists, and `deploy` provisions
- * nothing. The only remote creators were capability-owned or `pithy feature provision`, which does
- * exactly the right thing for the wrong environment set. So the deliverable was the step, not a patch —
- * `pithy provision` is `pithy feature provision`'s work under the naming a declared environment wants.
+ * Both create an environment's Cloudflare resources, write their ids into each Worker's config, and
+ * migrate. They differ only in how the target environment is *named*: declared in the root
+ * `pithy.config.ts`, or derived from the checked-out branch. That was two commands for as long as the
+ * naming and the destination stanza were independent arguments — `pithy feature provision --env staging`
+ * wrote feature-named resources into staging's stanza of a checked-in config and migrated against them.
+ * `ProvisionScope` fused the two into one value (#240), so the combination is unexpressible rather than
+ * merely refused, and the command surface became free to be whatever reads best. Two verbs for one job
+ * does not.
  *
- * **It is its own command, and `deploy` refuses rather than calling it.** A deploy that silently creates
- * account resources is hard to review, and these are the long-lived ones — the ids land in a checked-in
- * `wrangler.jsonc` and belong under a human's eye in a pull request. `pithy deploy --env staging` names
- * this command instead of failing inside wrangler.
+ * **The one real difference is persistence, and the command says so on every run.** `--env` writes
+ * `env.<name>` into the tracked `wrangler.jsonc`: long-lived ids a human reviews in a pull request.
+ * `--feature` writes a generated config under the already-ignored `.wrangler/`: one job's output,
+ * rebuilt every run and never committed. A single flag that flips whether output is committed will
+ * eventually surprise someone, so each run names the file it wrote and whether that file is committed,
+ * in the human summary and as `--json`'s `committed`. It is also what keeps the standing rule checkable
+ * rather than remembered — **a CI build process never commits back to the repository**: a pipeline runs
+ * `--feature` and has nothing to commit.
  *
- * **There is no `pithy deprovision`.** `feature destroy` reverses a branch's environment because a
- * branch's environment is disposable. Staging and production are not, and the one-word difference
- * between the two is not a difference a flag should carry. Deleting them is deliberate, by hand, in
- * Cloudflare.
+ * **It is still its own command, and `deploy` refuses rather than calling it.** A deploy that silently
+ * creates account resources is hard to review. `pithy deploy --env staging` names this command instead of
+ * failing inside wrangler.
+ *
+ * **There is no `pithy deprovision`.** `pithy feature destroy` reverses a branch's environment because a
+ * branch's environment is disposable. Staging and production are not, and the one-word difference between
+ * the two is not a difference a flag should carry.
  */
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
@@ -102,98 +121,197 @@ function confirmPrompt(env: string): () => Promise<string> {
   };
 }
 
+/** Refuse a run with no credentials, naming the environment it was for. */
+function requireProvisioners(account: CloudflareAccountSelection | null, target: string): ResourceProvisioners {
+  const provisioners = buildProvisioners(account);
+  if (provisioners) return provisioners;
+  throw new ValidationError({
+    message: "Cloudflare credentials are missing.",
+    action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision ${target}.`,
+  });
+}
+
+/** Everything `pithy provision` reads off the command line. */
+export interface ProvisionRunOptions {
+  /**
+   * The project root. Defaults to the working directory.
+   *
+   * A seam, and one the refusal gate needs: `commands/provision.test.ts` proves the mode is refused
+   * before anything is read by pointing this at a directory that is not a project at all, which a test
+   * that had to `chdir` could not do without racing every other suite in the pool.
+   */
+  projectDir?: string;
+  /** `--env <name>`: a declared environment. */
+  env?: string | undefined;
+  /** `--feature`: this branch's own environment. */
+  feature: boolean;
+  /** `--yes`. Required for a declared environment; never sufficient for production. */
+  yes: boolean;
+  /** `--confirm <phrase>`: the production phrase, for a headless run. */
+  confirm?: string | undefined;
+  /** `--seed`: also load fixtures. A feature environment is always seeded, so this adds nothing to it. */
+  seed: boolean;
+  /** `--json`. */
+  json: boolean;
+}
+
+/** One line per file written: what landed there, and what happens to it next. */
+function describeConfigs(report: ProvisionReport): string[] {
+  return report.configs.map((config) => {
+    const what = config.ids === 0 ? config.path : `${config.ids} id${config.ids === 1 ? "" : "s"} into ${config.path}`;
+    // The whole point of the line: one flag decides whether these bytes are reviewed and kept, or thrown
+    // away and rebuilt. Saying which costs a sentence and saves someone committing a build artifact — or
+    // wondering why an id they were told to commit is not in `git status`.
+    const fate = report.committed
+      ? `Commit ${config.ids > 1 ? "them" : "it"}.`
+      : "Ignored, and rebuilt on the next run.";
+    return `Wrote ${what}. ${fate}`;
+  });
+}
+
+/** Write the report: one JSON line, or the human summary. */
+function writeReport(report: ProvisionReport, options: { json: boolean; seeded: boolean }): void {
+  if (options.json) {
+    process.stdout.write(`${formatJsonLine({ command: "provision", ...report })}\n`);
+    return;
+  }
+  for (const resource of report.resources) {
+    process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
+  }
+  for (const worker of report.workers) {
+    process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
+  }
+  for (const service of report.services) {
+    process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
+  }
+  for (const secret of report.secretBindings) {
+    process.stdout.write(
+      secret.bound
+        ? `${secret.binding} reads ${secret.entry}.\n`
+        : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
+    );
+  }
+  for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
+  process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
+  process.stdout.write(`${formatDone()}\n`);
+}
+
+/** `--env <name>`: an environment the project declares, whose ids are source. */
+async function provisionDeclared(projectDir: string, env: string, options: ProvisionRunOptions): Promise<void> {
+  const config = await loadProject(projectDir);
+  // The declaration decides what may be provisioned. `--env live` on a project that never declared
+  // `live` is refused here, naming the set it does have — rather than creating `<project>-live-db`
+  // that nothing else in the CLI would ever look for again. It is also what closes `--env feature`:
+  // that name is a legal stanza key and an illegal declaration, so no project can admit it.
+  const environment = requireManagedEnvironment(env, loadProjectEnvironments(config));
+  const interactive = !options.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  await assertProvisionConfirmed({
+    env: environment,
+    yes: options.yes,
+    json: options.json,
+    ...(options.confirm !== undefined ? { confirmPhrase: options.confirm } : {}),
+    ...(interactive ? { prompt: confirmPrompt(environment) } : {}),
+    ...(config.seed?.productionEnvironments !== undefined
+      ? { productionEnvironments: config.seed.productionEnvironments }
+      : {}),
+  });
+
+  const account = loadProjectCloudflare(config) ?? null;
+  const provisioners = requireProvisioners(account, environment);
+  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
+  // The scope carries both the names and the stanza. There is no second argument to disagree with.
+  const scope = environmentScope(requireProjectName(config), environment);
+  const store = buildStore(account);
+  const report = await provisionEnvironment({
+    projectDir,
+    scope,
+    capabilities,
+    provisioners,
+    ...(store
+      ? {
+          secretBindings: async (workerCapabilities) =>
+            secretsStoreBindings({
+              // A Worker composing no secrets capability declares no secrets, and gets no stanza.
+              registry: workerSecretRegistry(workerCapabilities) ?? {},
+              scope,
+              storeId: store.storeId,
+              exists: (name) => store.exists(name),
+            }),
+        }
+      : {}),
+    // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
+    // job, with its own gate, and it must not be something provisioning did on the way past.
+    seedData: options.seed,
+    audit: await buildAudit(projectDir, capabilities, account),
+  });
+  writeReport(report, { json: options.json, seeded: options.seed });
+}
+
+/**
+ * `--feature`: this branch's own environment, whose ids are a build artifact.
+ *
+ * **No confirmation gate, and that is not an omission.** A feature environment is created per pull
+ * request and destroyed on merge; requiring the phrase that protects production would put it in every
+ * pipeline, which is exactly how a gate stops meaning anything. It also always seeds — a feature
+ * environment is created empty and useless without fixtures — so `--seed` has nothing to add to it.
+ */
+async function provisionBranch(projectDir: string, options: ProvisionRunOptions): Promise<void> {
+  const { identity, capabilities } = await branchIdentity(projectDir);
+  const account = await projectCloudflareAccount(projectDir);
+  const provisioners = requireProvisioners(account, "a feature environment");
+  const store = buildStore(account);
+  const report = await provisionFeature({
+    projectDir,
+    capabilities,
+    ...(store ? { store } : {}),
+    identity,
+    provisioners,
+    audit: await buildAudit(projectDir, capabilities, account),
+  });
+  writeReport(report, { json: options.json, seeded: true });
+}
+
+/**
+ * The command body, exported so `pithy feature provision` can redirect to it rather than reimplement it —
+ * and so the mode gate can be tested against a directory that is not a project.
+ *
+ * Throws `PithyError`; the citty wrapper below is what reports and exits.
+ */
+export async function runProvision(options: ProvisionRunOptions): Promise<void> {
+  // First, before the working directory is read, before a config is loaded, and before any Cloudflare
+  // client exists. A run that named no environment or two is a mistake in the command line, and it gets
+  // an answer about the command line.
+  const mode = requireProvisionMode(options);
+  const projectDir = options.projectDir ?? process.cwd();
+  if (mode.kind === "feature") return provisionBranch(projectDir, options);
+  return provisionDeclared(projectDir, mode.env, options);
+}
+
 export default defineCommand({
   meta: {
     name: "provision",
     description: "Create an environment's own Cloudflare resources, wire them into each Worker, then migrate",
   },
   args: {
-    env: { type: "string", required: true, description: "The declared environment to provision" },
+    env: { type: "string", description: "The declared environment to provision" },
+    feature: { type: "boolean", default: false, description: "Provision this branch's own environment instead" },
     yes: { type: "boolean", default: false, description: "Confirm that this creates real Cloudflare resources" },
     confirm: {
       type: "string",
       description: 'Unlock a production environment non-interactively: "yes, i really want to provision <env>"',
     },
-    seed: { type: "boolean", default: false, description: "Also load seed fixtures once the schema is up" },
+    seed: { type: "boolean", default: false, description: "With --env: also load seed fixtures once the schema is up" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const config = await loadProject(projectDir);
-      // The declaration decides what may be provisioned. `--env live` on a project that never declared
-      // `live` is refused here, naming the set it does have — rather than creating `<project>-live-db`
-      // that nothing else in the CLI would ever look for again.
-      const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-      await assertProvisionConfirmed({
-        env,
+    withErrorReporting(args.json, () =>
+      runProvision({
+        env: args.env,
+        feature: args.feature,
         yes: args.yes,
+        confirm: args.confirm,
+        seed: args.seed,
         json: args.json,
-        ...(args.confirm !== undefined ? { confirmPhrase: args.confirm } : {}),
-        ...(interactive ? { prompt: confirmPrompt(env) } : {}),
-        ...(config.seed?.productionEnvironments !== undefined
-          ? { productionEnvironments: config.seed.productionEnvironments }
-          : {}),
-      });
-
-      const account = loadProjectCloudflare(config) ?? null;
-      const provisioners = buildProvisioners(account);
-      if (!provisioners) {
-        throw new ValidationError({
-          message: "Cloudflare credentials are missing.",
-          action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision ${env}.`,
-        });
-      }
-
-      const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
-      // The scope carries both the names and the stanza. There is no second argument to disagree with.
-      const scope = environmentScope(requireProjectName(config), env);
-      const store = buildStore(account);
-      const report = await provisionEnvironment({
-        projectDir,
-        scope,
-        capabilities,
-        provisioners,
-        ...(store
-          ? {
-              secretBindings: async (workerCapabilities) =>
-                secretsStoreBindings({
-                  // A Worker composing no secrets capability declares no secrets, and gets no stanza.
-                  registry: workerSecretRegistry(workerCapabilities) ?? {},
-                  scope,
-                  storeId: store.storeId,
-                  exists: (name) => store.exists(name),
-                }),
-            }
-          : {}),
-        // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
-        // job, with its own gate, and it must not be something provisioning did on the way past.
-        seedData: args.seed,
-        audit: await buildAudit(projectDir, capabilities, account),
-      });
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "provision", ...report })}\n`);
-        return;
-      }
-      for (const resource of report.resources) {
-        process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
-      }
-      for (const worker of report.workers) {
-        process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
-      }
-      for (const service of report.services) {
-        process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
-      }
-      for (const secret of report.secretBindings) {
-        process.stdout.write(
-          secret.bound
-            ? `${secret.binding} reads ${secret.entry}.\n`
-            : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
-        );
-      }
-      process.stdout.write(`Provisioned ${report.env}. Migrated.\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
+      }),
+    ),
 });

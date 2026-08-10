@@ -7,7 +7,7 @@ import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
-import { absolutizePaths, featureConfigPath } from "./featureConfig";
+import { absolutizePaths, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
 
 /**
@@ -100,9 +100,8 @@ async function editStanza(
    */
   source: boolean,
   mutate: (stanza: EnvBindings) => void,
-): Promise<void> {
-  const trackedPath = join(workerDir, "wrangler.jsonc");
-  const raw = await readFile(trackedPath, "utf8");
+): Promise<string> {
+  const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
   const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
 
   config.env ??= {};
@@ -111,14 +110,17 @@ async function editStanza(
 
   mutate(stanza);
 
+  // One resolver for "which file?", shared with what the command reports (#251). A run states where it
+  // wrote and whether that file is committed; a report computing the path a second time is a sentence
+  // that can disagree with the write it describes.
+  const destination = provisionConfigPath(workerDir, source);
   if (!source) {
     // Generated, so every path in it is rewritten against the directory it came from — wrangler
     // resolves a config's paths relative to the config, and this one lives two levels deeper.
     absolutizePaths(config as Record<string, unknown>, workerDir);
-    const generated = featureConfigPath(workerDir);
-    await mkdir(dirname(generated), { recursive: true });
-    await writeJsonc(generated, config);
-    return;
+    await mkdir(dirname(destination), { recursive: true });
+    await writeJsonc(destination, config);
+    return destination;
   }
 
   // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
@@ -126,7 +128,8 @@ async function editStanza(
   // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
   // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
   // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
-  await writeJsonc(trackedPath, config);
+  await writeJsonc(destination, config);
+  return destination;
 }
 
 /**
@@ -159,6 +162,11 @@ export async function applySecretBindings(
   });
 }
 
+/**
+ * Write one Worker's stanza, and hand back **the path that was written** — the tracked `wrangler.jsonc`
+ * or the generated artifact, as the scope decided. The caller reports it, so what a run says it wrote is
+ * what the writer wrote rather than a second computation of the same rule (#251).
+ */
 export async function applyProvisionedEnv(options: {
   /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
   workerDir: string;
@@ -178,8 +186,8 @@ export async function applyProvisionedEnv(options: {
    * partial one does not degrade: wrangler refuses the whole config.
    */
   secrets: readonly SecretStoreBinding[];
-}): Promise<void> {
-  await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+}): Promise<string> {
+  const destination = await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
     stanza.name = options.scope.worker(options.worker);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
@@ -208,4 +216,5 @@ export async function applyProvisionedEnv(options: {
       }
     });
   }
+  return destination;
 }

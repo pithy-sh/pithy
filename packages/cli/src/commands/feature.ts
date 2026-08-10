@@ -4,26 +4,24 @@
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
-import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { destroyFeature } from "../feature/destroy";
-import { deriveIdentityFromBranch } from "../feature/identity";
-import { provisionFeature } from "../feature/provision";
+import { branchIdentity, deriveIdentityFromBranch } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+import { runProvision } from "./provision";
 
 /**
  * The feature's own ephemeral CF environment.
@@ -88,27 +86,6 @@ async function buildAudit(
     clients: new CloudflareClients({ accountId, apiToken }),
     apiToken,
   });
-}
-
-/**
- * Resolve the feature identity (project + issue + slug) from the current branch and the root config, plus
- * the capabilities the feature spans.
- *
- * The two come from different places, deliberately. **Identity** is project-wide policy and lives in the
- * root `pithy.config.ts`. **Capabilities** are per Worker (`apps/<name>/pithy.config.ts`), so they are
- * unioned: a feature provisions one resource per binding name for the whole feature — two Workers that both
- * declare `DB` deliberately share one database — and the migrate/seed it runs must cover every table any
- * Worker owns.
- */
-async function branchIdentity(projectDir: string): Promise<{ identity: FeatureIdentity; capabilities: Capability[] }> {
-  const { issue, slug } = await deriveIdentityFromBranch(projectDir);
-  const config = await loadProject(projectDir);
-  // Never guessed: this name is the first segment of every resource name, and the only key teardown has
-  // to find them again. A fallback that differs between a worktree and a clone would make destroy
-  // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
-  const project = requireProjectName(config);
-  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
-  return { identity: { project, issue, slug }, capabilities };
 }
 
 /** `pithy feature create <slug> --issue <n>` — local, automatic. Run from the main checkout. */
@@ -255,60 +232,30 @@ const sync = defineCommand({
     }),
 });
 
-/** `pithy feature provision [--env <name>]` — remote, explicit. Run from within the worktree. */
+/**
+ * `pithy feature provision` — **deprecated, and it redirects rather than refuses.**
+ *
+ * Provisioning is one command with two modes since #251, and this spelling is in the docs, in pipelines,
+ * and in muscle memory. A subcommand that errors is a worse first impression than one that says the new
+ * name and then does the work, so it prints the new spelling and calls it. The notice goes to **stderr**,
+ * always: under `--json` stdout carries exactly one machine-readable line, and a deprecation warning is
+ * not part of the payload.
+ *
+ * The work is `pithy provision --feature`'s, called rather than copied — a redirect that drifted from
+ * what it redirects to would be worse than the two commands it replaced.
+ */
 const provision = defineCommand({
   meta: {
     name: "provision",
-    description: "Provision the feature's live Cloudflare environment, then migrate + seed it",
+    description: "Deprecated. Now `pithy provision --feature`, which this runs",
   },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const { identity, capabilities } = await branchIdentity(projectDir);
-      const account = await projectCloudflareAccount(projectDir);
-      const provisioners = buildProvisioners(account);
-      if (!provisioners) {
-        throw new ValidationError({
-          message: "Cloudflare credentials are missing.",
-          action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision a feature environment.",
-        });
-      }
-
-      const store = buildStore(account);
-      const report = await provisionFeature({
-        projectDir,
-        capabilities,
-        ...(store ? { store } : {}),
-        identity,
-        provisioners,
-        audit: await buildAudit(projectDir, capabilities, account),
-      });
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report })}\n`);
-        return;
-      }
-      for (const resource of report.resources) {
-        process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
-      }
-      for (const worker of report.workers) {
-        process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
-      }
-      for (const service of report.services) {
-        process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
-      }
-      for (const secret of report.secretBindings) {
-        process.stdout.write(
-          secret.bound
-            ? `${secret.binding} reads ${secret.entry}.\n`
-            : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
-        );
-      }
-      process.stdout.write(`Provisioned ${report.env}. Migrated and seeded.\n`);
-      process.stdout.write(`${formatDone()}\n`);
+      process.stderr.write("pithy feature provision is now pithy provision --feature. Running it.\n");
+      await runProvision({ feature: true, yes: false, seed: false, json: args.json });
     }),
 });
 
