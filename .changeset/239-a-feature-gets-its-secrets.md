@@ -5,7 +5,7 @@
 
 A feature environment gets its secrets.
 
-`pithy feature provision` created a real, deployable environment — D1, KV, R2, environment-scoped script names, service bindings — and touched secrets not at all. So a feature Worker composing `secrets` deployed and failed on its first request:
+`pithy provision --feature` created a real, deployable environment — D1, KV, R2, environment-scoped script names, service bindings — and touched secrets not at all. So a feature Worker composing `secrets` deployed and failed on its first request:
 
 ```
 {"error":{"message":"Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS"}}
