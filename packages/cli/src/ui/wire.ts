@@ -79,9 +79,17 @@ export async function readAssets(workerDir: string): Promise<{ runWorkerFirst: s
  *
  * Idempotent: re-running rewrites the same derived list. That is exactly what `pithy ui sync` is,
  * which is why the derivation and the write live together.
+ *
+ * `environments` is the project's own declaration, and it is a parameter rather than a lookup so this
+ * stays the file writer it is. The derivation needs it because a Worker's route table is a function of
+ * the environment it composes in — see {@link deriveWorkerFirst}.
  */
-export async function wireAssets(workerDir: string, config: WorkerConfig): Promise<AssetsChange> {
-  const patterns = deriveWorkerFirst(config);
+export async function wireAssets(
+  workerDir: string,
+  config: WorkerConfig,
+  environments: readonly string[],
+): Promise<AssetsChange> {
+  const patterns = deriveWorkerFirst(config, environments);
   const document = (await readWranglerConfig(workerDir)) as { assets?: AssetsStanza };
 
   const existing = document.assets;

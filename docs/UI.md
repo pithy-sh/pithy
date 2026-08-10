@@ -242,10 +242,21 @@ Cloudflare's asset router runs **before** your Worker. With `not_found_handling:
 
 So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/ledger`, `/media`, `/matchmaking`, `/payments`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
 
-Two rules the derivation follows:
+Three rules the derivation follows:
 
 - **Both forms, every time.** `"/auth/*"` does not match a bare `"/auth"`, so each base path is emitted as the pair `"/auth"` and `"/auth/*"`.
 - **Never a bare-prefix glob.** `"/media*"` would also capture `/mediafoo`. The pair `"/media"` + `"/media/*"` captures the route table and nothing beyond it.
+- **Every environment, not just this one.** A Worker has one route table *per environment*, so the list is the union across every environment the project declares plus `dev`.
+
+### Why every environment
+
+A capability may decide at registration whether to mount a route at all. `@pithy-sh/auth` does: `/__pithy/dev-login` exists only in a `dev` composition, because it mints a session with no credential presented and has no business in a route table that ships.
+
+Compose the Worker once — under whatever environment the command happens to be run in — and you get the route table of *that* environment while calling it the Worker's. That is how `/__pithy/dev-login` was left off every generated allowlist: `pithy ui sync` was not a `dev` composition, so the route did not exist to be found, and `--check` reported `every route reaches the worker` while `pithy dev`'s sign-in URL landed on the SPA's 404.
+
+So the derivation assembles the Worker once per environment and takes the union. Anything conditionally mounted — on the environment, on a flag, on a capability being composed — is covered without you naming a path. `CI` is deliberately ignored while deriving: `--check` runs in CI and `sync` runs on a laptop, and a list that differed between them could never be checked. An entry nothing serves costs a 404 from the Worker; a missing one costs a 200 with the wrong body.
+
+`dev` is never declared in `environments` — it is local and always present — so the derivation adds it itself.
 
 ### It is derived once, and every route you mount afterwards is yours to re-derive
 

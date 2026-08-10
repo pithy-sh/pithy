@@ -129,6 +129,7 @@ const sync = defineCommand({
       });
 
       const report = await runUiSync({
+        projectDir,
         workerDir: target.dir,
         config: target.config,
         check: args.check,

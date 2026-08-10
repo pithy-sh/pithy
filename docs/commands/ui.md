@@ -85,6 +85,7 @@ Four files are edited.
 
 - Every entry is emitted in **two forms**, the bare path and its `/*` glob, because `"/auth/*"` does not match a bare `"/auth"`.
 - Never a bare-prefix glob. `"/media*"` also captures `/mediafoo`; the pair `"/media"` + `"/media/*"` captures the route table exactly.
+- The route table is taken **once per environment**, and the allowlist is the union. A Worker composes differently per environment — `@pithy-sh/auth` mounts `/__pithy/dev-login` only in `dev` — so a single composition produces one environment's table and calls it the Worker's. The set is the project's `environments` from the root `pithy.config.ts`, plus `dev`, which is never declared because it is always there. `CI` is ignored while deriving, so `--check` in CI and `sync` on a laptop derive the same list from the same repository.
 
 `assets.directory` is **not** written. Under the Vite plugin the directory is the plugin's to set — it overwrites the key silently rather than erroring, so a value there would be a lie in the adopter's own config.
 

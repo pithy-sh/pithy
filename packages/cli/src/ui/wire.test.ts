@@ -64,6 +64,9 @@ const CONFIG: WorkerConfig = {
   ],
 };
 
+/** The environments a project declares when it says nothing — what `pithy init` writes. */
+const DECLARED = ["staging", "prod"];
+
 describe("wire", () => {
   let dir: string;
   beforeEach(async () => {
@@ -90,7 +93,7 @@ describe("wire", () => {
   }
 
   test("wireAssets writes the SPA stanza with the derived allowlist and NO directory", async () => {
-    const change = await wireAssets(dir, CONFIG);
+    const change = await wireAssets(dir, CONFIG, DECLARED);
     expect(change.before).toBeNull();
 
     const raw = await readFile(join(dir, "wrangler.jsonc"), "utf8");
@@ -108,24 +111,28 @@ describe("wire", () => {
   });
 
   test("wireAssets is idempotent and re-derives on a changed route table", async () => {
-    await wireAssets(dir, CONFIG);
+    await wireAssets(dir, CONFIG, DECLARED);
     const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
-    const again = await wireAssets(dir, CONFIG);
+    const again = await wireAssets(dir, CONFIG, DECLARED);
     expect(again.before).toEqual(again.after);
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(once);
 
-    const grown = await wireAssets(dir, {
-      capabilities: [
-        ...CONFIG.capabilities,
-        defineCapability({
-          name: "ledger",
-          requiredBindings: [],
-          routes: (app) => {
-            app.get("/ledger/balance", (c) => c.json({}));
-          },
-        }),
-      ],
-    });
+    const grown = await wireAssets(
+      dir,
+      {
+        capabilities: [
+          ...CONFIG.capabilities,
+          defineCapability({
+            name: "ledger",
+            requiredBindings: [],
+            routes: (app) => {
+              app.get("/ledger/balance", (c) => c.json({}));
+            },
+          }),
+        ],
+      },
+      DECLARED,
+    );
     expect(grown.before).toEqual(["/auth", "/auth/*", "/health", "/health/*"]);
     expect(grown.after).toContain("/ledger");
     expect(grown.after).toContain("/ledger/*");

@@ -3,7 +3,7 @@
 
 import { basename, join } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { allCapabilities, type WorkerConfig } from "../project/config";
+import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { pathExists } from "../project/scaffold";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
@@ -218,7 +218,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments });
   const written = await scaffoldFiles({ workerDir: options.workerDir, files: plan.files, strict: plan.strict });
 
-  const assets = await wireAssets(options.workerDir, options.config);
+  const assets = await wireAssets(options.workerDir, options.config, await projectEnvironments(options.projectDir));
   await wireManifest(options.workerDir, stub, packageManager);
   const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
   // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
@@ -277,6 +277,8 @@ export interface UiSyncReport {
  * Creates no files either way, and re-running changes nothing.
  */
 export async function runUiSync(options: {
+  /** The project root — where the `environments` declaration the derivation needs lives. */
+  projectDir: string;
   /** The target worker's directory, `apps/<name>` — which is also where its name comes from. */
   workerDir: string;
   /** The target worker's loaded `pithy.config.ts`. */
@@ -293,7 +295,8 @@ export async function runUiSync(options: {
     });
   }
 
-  const after = deriveWorkerFirst(options.config);
+  const environments = await projectEnvironments(options.projectDir);
+  const after = deriveWorkerFirst(options.config, environments);
   if (options.check) {
     const assets = await readAssets(options.workerDir);
     return {
@@ -301,12 +304,12 @@ export async function runUiSync(options: {
       before: assets.runWorkerFirst,
       after,
       changed: assets.runWorkerFirst.join("\n") !== after.join("\n") || assets.notFoundHandling === undefined,
-      uncovered: uncoveredRoutes(options.config, assets.runWorkerFirst),
+      uncovered: uncoveredRoutes(options.config, assets.runWorkerFirst, environments),
       notFoundHandling: assets.notFoundHandling,
     };
   }
 
-  const change = await wireAssets(options.workerDir, options.config);
+  const change = await wireAssets(options.workerDir, options.config, environments);
   const before = change.before ?? [];
   return {
     worker,
