@@ -26,5 +26,11 @@
   },
   // `vite.config.ts` is deliberately absent: it imports @cloudflare/vite-plugin and @pithy-sh/vite,
   // which belong to the adopter's install, not this package's. The screens are what needed checking.
-  "include": ["templates/**/*.tsx", "templates/client-env.d.ts"]
+  //
+  // `src/**/*.tsx` joins them rather than the node program beside it, because a test that renders a
+  // screen is a client program: it needs the DOM lib, `jsx: react-jsx`, and the same ambient
+  // `virtual:pithy/*` declarations the screen reads through. In `tsconfig.json` — `types: ["node"]`,
+  // no JSX — it would simply not be checked, which is how a `.tsx` test goes green while failing to
+  // compile.
+  "include": ["templates/**/*.tsx", "templates/client-env.d.ts", "src/**/*.tsx"]
 }

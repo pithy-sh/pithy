@@ -77,14 +77,14 @@ The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and w
 
 ### Two stylesheets, and why
 
-`src/styles.css` is yours: the palette tokens, the reset, `body`. `src/pithy-screens.css` is Pithy's, and it defines **every class name a Pithy screen renders** — `screen`, `muted`, `stack`, `secondary`, `otp`, `divider`. Pithy's screens import it themselves.
+`src/styles.css` is yours: the palette tokens, the reset, `body`. `src/pithy-screens.css` is Pithy's, and it defines **every class name a Pithy screen renders** — `screen`, `muted`, `stack`, `secondary`, `otp`, `divider`, and the `auth*` rules that lay out the sign-in page. Pithy's screens import it themselves.
 
 They are two files because ownership says they must be. Adding the sign-in screens to a project that already has a stylesheet — `pithy add auth`, then `pithy ui add react --auth` — writes the screens and correctly skips `styles.css`, because that file is yours. When one file held both, that run produced a sign-in screen whose classes nothing defined and reported it as created. A screen and the rules it needs are one artifact; splitting them by ownership is what lets each be written on its own schedule.
 
 Two properties make Pithy's file safe to keep:
 
 - **Everything in it sits in a `@layer pithy` cascade layer.** Unlayered CSS beats layered CSS regardless of order or specificity, so any rule you write wins over one of Pithy's with no `!important` and no regard for import order. Give `.screen` a different `max-width` in your own stylesheet and it takes.
-- **Its palette is six tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
+- **Its palette is seven tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`, `--danger`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
 
 `pithy ui add` checks the result rather than assuming it. After writing, it reads the stylesheets actually on disk and names any class the screens render that none of them defines — under `--json` as `unstyled`. Empty is the ordinary answer; anything else is the exact list to fix.
 
@@ -145,6 +145,47 @@ Four things make this work the way it does.
 
 **The types are ambient.** `client-env.d.ts` declares the `virtual:pithy/*` modules for the client tsconfig, which is why the import above type-checks with no path mapping.
 
+## The sign-in screen
+
+It is the first screen anyone sees, so it is scaffolded finished rather than bare.
+
+**Two columns, and one of them is yours.** `src/routes/pithy/sign-in.tsx` opens with two constants:
+
+```tsx
+const BRAND: ReactNode = null;   // the panel beside the form
+const MARK: ReactNode = null;    // the compact mark, for the widths the panel is not on
+```
+
+`BRAND` is the panel — your mark, your sentence, your claims. It ships empty, and the layout is correct empty: with nothing there the page is one centred column rather than a blank half. Fill it and the page becomes the two-column split. `MARK` appears in the form column at the widths where the panel is not rendered, so exactly one of the two is ever on screen.
+
+**The panel is not stacked below the form at a narrow width — it is not rendered.** Copy under a sign-in form is copy nobody reads with a keyboard open, and it pushes the thing you came to do off the screen.
+
+**One way in: the magic link.** Two passwordless paths on one screen is two things to explain, two surfaces to rate-limit, and two inboxes' worth of mail for one intent. `routes/pithy/otp.tsx` is still written, and nothing routes to it — send a code from your own screen if you would rather have that flow.
+
+**A provider that cannot complete does not pretend it can.** The client projection carries booleans, never credentials, so a browser cannot tell an enabled provider from a configured one. The screen refuses the *response* instead: an authorization URL with no `client_id` is a provider switched on with a blank credential behind it, and it produces a sentence on the screen rather than a bounce to Google's own error page. A non-http(s) URL is refused on the same path, because `window.location.href = url` with a `javascript:` URL runs that script in your page.
+
+**"No account yet? Signing in creates one." is a statement, not a link.** Passwordless has no sign-up screen to point at, so an anchor there would be a 404 dressed as an affordance. Do not style it as one.
+
+### The provider marks, and the terms they ship under
+
+Every provider the screen can render arrives with its logo: Google, GitHub, Apple, Facebook. **They are trademarks, not icons, and none of them is covered by Pithy's MIT licence.** Each mark is a component of its own with its owner's rules in the doc comment above it, and that is deliberate — the rules are opposite from one provider to the next, so one parameterised `<Mark provider="…" />` would have to encode "unless it is Google" somewhere and the first tidy-up would lose it.
+
+The short version, with the long version beside the asset:
+
+| Mark | Colour | Why |
+| --- | --- | --- |
+| GitHub | `currentColor` | The monochrome Invertocat is the form GitHub publishes; it follows your theme for free. |
+| Google | four fixed hex fills | Google's terms forbid recolouring the mark. It answers no theme and no token. |
+| Apple | `currentColor` | Apple permits black or white only — which is what `--pithy-fg` resolves to. Change `--fg` to anything else and you must override it. |
+| Facebook | fixed `#1877F2` on a white disc | Meta fixes the colour, and the published path cuts the "f" out, so the disc is what keeps the counter white in both themes. |
+
+Two rules if you add a provider:
+
+- **Never hand-draw a mark.** A wrong-shaped official logo on a credentials page is what a phishing page looks like. If you cannot source accurate path data, ship that button with no mark — label-only buttons render correctly.
+- **Font Awesome's `brands/google` is a monochrome single-path G.** It is the obvious thing to reach for, it is in the package most projects already have, and it is the wrong asset for a sign-in button: Google's guidelines require the four-colour mark there. The same goes for any other icon set's "google" glyph.
+
+Apple and Google additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy either. Read their guidelines before you enable those providers in production.
+
 ## Social providers
 
 Enabling Google is a one-line edit in `apps/api/pithy.config.ts`:
@@ -165,6 +206,8 @@ Two boundaries the stub respects:
 
 - The widget renders on the **magic-link and OTP form only** — the surfaces the middleware actually gates.
 - **Social sign-in is never gated.** The provider runs its own bot defense, and the OAuth redirect flow carries no token to check.
+
+**And it is sized in two places, not one.** Turnstile draws itself in a cross-origin iframe with an intrinsic size, so `width: 100%` on the host does nothing by itself: `turnstile.tsx` asks the widget for its `flexible` size, and `pithy-screens.css` keeps the column it lands in above the 300px that size stops shrinking at. Both halves are required — either alone leaves a widget that does not line up with the field above it. The stylesheet names Cloudflare's floor once, as `--pithy-check-min`, and derives the form's measure and gutter from it; `@pithy-sh/ui-react`'s `humanityCheckFit.test.ts` fails if either derivation is replaced by a number.
 
 The public sitekey reaches the screen through `virtual:pithy/turnstile`, per environment. Sitekeys are public by design; the widget secret is never in config and never in the client — it lives in `@pithy-sh/secrets`.
 

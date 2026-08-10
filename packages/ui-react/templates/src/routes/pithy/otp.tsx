@@ -7,6 +7,12 @@ import "../../pithy-screens.css";
 export const path = "/otp";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
+//
+// **Nothing sends anyone here by default.** The sign-in screen offers one way in — the magic link —
+// because two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
+// and two inboxes' worth of mail for one intent. This screen stays because the server route behind it
+// does: if you would rather have a code, send one from your own screen and route here with
+// `navigate(`/otp?email=${encodeURIComponent(email)}`)`.
 
 export default function Otp() {
   const email = new URLSearchParams(window.location.search).get("email") ?? "";

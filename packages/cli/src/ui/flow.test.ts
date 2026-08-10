@@ -236,7 +236,25 @@ describe("pithy ui", () => {
 
     const backfill = await runUiAdd({ ...options(WITH_AUTH), auth: true });
     expect(backfill.created).toContain("src/routes/pithy/sign-in.tsx");
-    expect(backfill.unstyled).toEqual(["divider", "muted", "otp", "screen", "secondary", "stack"]);
+    expect(backfill.unstyled).toEqual([
+      "auth",
+      "auth__brand",
+      "auth__check",
+      "auth__credentials",
+      "auth__failed",
+      "auth__form",
+      "auth__form-mark",
+      "auth__mark",
+      "auth__provider",
+      "auth__providers",
+      "auth__signup",
+      "divider",
+      "muted",
+      "otp",
+      "screen",
+      "secondary",
+      "stack",
+    ]);
   });
 
   test("--auth on a worker with no auth capability is actionable, never a broken scaffold", async () => {

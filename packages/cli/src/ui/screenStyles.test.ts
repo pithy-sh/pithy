@@ -84,8 +84,20 @@ describe("every class a Pithy screen renders is defined by a stylesheet the same
 
   test("and it bites the other way: the stylesheet the screens depend on goes missing", async () => {
     const { "src/pithy-screens.css": _dropped, ...withoutStylesheet } = await everyScreen();
-    // Exactly the reported failure — the classes the adopter saw unstyled, named.
+    // Exactly the reported failure — the classes the adopter saw unstyled, named. The sign-in page's
+    // own layout is most of this list, which is the point: it is the screen with the most to lose.
     expect(unstyledScreenClasses(withoutStylesheet)).toEqual([
+      "auth",
+      "auth__brand",
+      "auth__check",
+      "auth__credentials",
+      "auth__failed",
+      "auth__form",
+      "auth__form-mark",
+      "auth__mark",
+      "auth__provider",
+      "auth__providers",
+      "auth__signup",
       "divider",
       "muted",
       "otp",
