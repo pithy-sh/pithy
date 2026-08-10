@@ -137,19 +137,20 @@ describe("workerBuildChanged", () => {
   });
 
   test("sees a different build", () => {
-    // Either direction. Which way the time moved is not interpreted here — see the module docstring:
-    // whether that value names the moment a version was uploaded or the moment it was deployed is not
-    // settled, so "later" and "earlier" have no agreed meaning yet. "Changed" does.
+    // Either direction, and which way the time moved is not interpreted. A version older than the last
+    // one seen is an ordinary sight while a deploy propagates — twenty seconds after wrangler reported
+    // a rollback at 100%, the URL was still answering from the older version. "Changed" is the fact.
     expect(workerBuildChanged(build(BUILD_A, EARLIER), build(BUILD_B, LATER))).toBe(true);
     expect(workerBuildChanged(build(BUILD_B, LATER), build(BUILD_A, EARLIER))).toBe(true);
   });
 
-  test("sees the same build deployed again", () => {
-    // **The state #260 was filed for, and the one a rule keyed on the id alone cannot reach.** Same id,
-    // a time that moved: whatever moment that value names, it moved, and a Worker that reports a
-    // different one has been through something. Safe under both readings of the field — if it names the
-    // upload moment this never occurs and the branch is dead; if it names the deploy moment this is
-    // exactly the redeploy the first adopter's cache is blind to.
+  test("sees a moved timestamp under an unmoved id", () => {
+    // **The branch that keeps the comparison total.** Not reachable on today's platform: a version's
+    // timestamp is fixed at upload, and a rollback makes a new *deployment* pointing at an existing
+    // version, so neither field moves. It is here because a rule that enumerates which fields are
+    // allowed to move is wrong the day the platform moves a different one — and wrong silently, as
+    // "nothing changed". One branch is a cheap price for that. It is not rollback detection; nothing
+    // inside a Worker can see a deployment.
     expect(workerBuildChanged(build(BUILD_A, EARLIER), build(BUILD_A, LATER))).toBe(true);
     expect(workerBuildChanged(build(BUILD_A, LATER), build(BUILD_A, EARLIER))).toBe(true);
   });

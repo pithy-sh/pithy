@@ -98,20 +98,29 @@ export interface WorkerVersionMetadata {
    */
   tag: string | null;
   /**
-   * The timestamp the platform reports for this build, ISO-8601, verbatim as it was issued — or `null`.
+   * When this **version was uploaded**, ISO-8601, verbatim as the platform issued it — or `null`.
    *
-   * **Which moment it names is not settled, and this reader does not decide.** The binding spells it
-   * `timestamp`, which names a moment without saying which one. Cloudflare documents it as when the
-   * version was *created*; the first adopter's maintainer reports seeing it move on a *rollback*, which
-   * would make it the moment of deployment. Neither has been measured: telling them apart needs a real
-   * deploy and a real rollback against a real account, and a local `wrangler dev` cannot stand in
-   * because it mints a fresh version on every restart — its `timestamp` is the dev server's start time,
-   * which is consistent with both readings and therefore evidence for neither.
+   * **Cloudflare has two objects here, and this binding describes one of them.** A *version* is an
+   * immutable upload of code and config: an id, a created timestamp and a tag, fixed at upload and never
+   * again. A *deployment* points at one or more versions with traffic percentages, and is its own object
+   * with its own id and its own time. `CF_VERSION_METADATA` reports the **version**, faithfully — and
+   * the runtime hands a script **no binding for the deployment at all**.
    *
-   * So the value is relayed for comparison and never interpreted. A consumer's rule is
+   * Everything else follows from that. A rollback creates a *new deployment* aimed at an *existing
+   * version*, so nothing in this binding moves: not staleness, not ambiguity, a different object. The
+   * same answer covers the next question and the one after — a traffic split, a gradual rollout, which
+   * deployment is serving: a Worker cannot see any of it. An ordinary redeploy is not affected, because
+   * every `wrangler deploy` uploads and so mints a new version, id and all, even for a one-character
+   * change.
+   *
+   * Measured, 2026-08-10, which is what turned that from a reading of the docs into a fact: a probe
+   * Worker on a real account, version `A` uploaded, `B` four seconds later, then a real `wrangler
+   * rollback` to `A`. Two minutes on, the Worker reported `A`'s id **and `A`'s original timestamp**,
+   * unmoved — while wrangler's own rollback output named the new deployment's version list.
+   *
+   * The value is relayed for comparison and never interpreted. A consumer's rule is
    * `workerBuildChanged` in `controlPlane/wire.ts`: anything that moved is a change, and a direction is
-   * not a meaning. The name is `createdAt` because the platform's own documentation says created; read
-   * it as "the moment this build is stamped with", and settle it by observing a rollback.
+   * not a meaning — propagation lag alone can make an older version answer for a while after a deploy.
    *
    * `null` for anything that is not a parseable instant. That is the one place this reader refuses
    * rather than relays, and the consumer is the reason: a client does `Date.parse` on it and compares,
@@ -168,22 +177,21 @@ export function workerIdentity(env: unknown): WorkerIdentity {
  * ## What a client can conclude
  *
  * Holding the last `(id, createdAt)` it saw, and comparing field by field only where both sides carried
- * a value: anything that differs is a change. A different `id` is a different build; the **same `id`
- * with a `createdAt` that moved is the same build deployed again**, which is the state the id alone
- * could not reach and the one #260 was filed for. Absence on either side is silence, never change.
+ * a value: anything that differs is a change. Absence on either side is silence, never change.
  * `workerBuildChanged` in `controlPlane/wire.ts` is that rule, written once so no client hand-rolls it.
  *
- * **What this cannot answer is what the fields mean, and that is deliberate.** Whether `createdAt`
- * moves when an already-uploaded build is deployed again turns on which moment the platform stamps, and
- * nobody here has run the deploy-and-rollback that would settle it. The rule above holds either way:
- * under one reading the same-id case never occurs, under the other it is the whole point.
+ * ## What it cannot see, and why that is a boundary rather than a gap
  *
- * If it turns out the platform stamps only the upload, then a redeploy of a build a client already
- * holds moves nothing and is invisible from inside the Worker. Nothing in the runtime would close that
- * gap either: the only in-Worker proxy is isolate boot time, which changes on every cold start and
- * would report a redeploy dozens of times a day, and a false change is worse than a missed one for a
- * client that invalidates a rendered pane on it. So nothing is stamped, and a client that must have
- * that answer today reads Cloudflare's deployments API.
+ * **This binding describes a version. Nothing inside a Worker can observe a deployment** — see
+ * {@link WorkerVersionMetadata.createdAt} for the two objects and the measurement. So a rollback, a
+ * traffic split, a gradual rollout: all invisible here, and no field the seam could add would change
+ * that, because the runtime hands a script no binding for the object that carries them. A client that
+ * needs a deployment reads Cloudflare's deployments API, in the customer's own account.
+ *
+ * The temptation is to synthesise one. Isolate boot time is the only in-Worker candidate and it is
+ * worse than nothing: it changes on every cold start, so it would report a redeploy dozens of times a
+ * day, and a false change costs more than a missed one for a client that invalidates a rendered pane on
+ * it. Nothing is stamped.
  *
  * Same never-throws, never-guesses contract as {@link workerIdentity}.
  */

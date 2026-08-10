@@ -310,9 +310,23 @@ Beside it, **`pithy-worker-version-created`**: the timestamp the platform report
 
 **Either header absent, on either side of the comparison, is never a change.** A Worker that does not declare `version_metadata` sends neither; a call that failed before its headers were read has none; a client that has not looked yet holds nothing. All mean "cannot say", and a client that treats a missing value as a new one invalidates on a deploy nobody made.
 
-**Which moment `created` names is not settled, and the rule above does not depend on it.** Cloudflare documents the binding's `timestamp` as when the version was *created*, which would mean it never moves for a build that is merely deployed again; the first adopter's maintainer reports seeing it move on a *rollback*, which would make it the moment of deployment. Neither has been measured — telling them apart needs a real deploy and a real rollback against a real account, and a local `wrangler dev` cannot stand in because it mints a fresh version on every restart. So compare the value, never interpret it: "it moved" is a fact, "it moved backwards, therefore a rollback" is a reading of an open field. Under the first reading the third row never fires and costs nothing; under the second it is exactly the case this header was added for.
+### Versions and deployments are two objects
 
-If the first reading turns out to be the true one, a redeploy of a build a client already holds is invisible from inside the Worker, and no header closes it: the only in-Worker signal would be isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day, and a false change is worse than a missed one for a client that invalidates on it. A client needing that answer today reads Cloudflare's deployments API — which is the customer's account, not this seam.
+`created` is the moment the running **version was uploaded**, and it never moves again. That follows from how Cloudflare models a Worker, and the model is worth stating because it answers more than one question:
+
+- A **version** is an immutable upload of code and config. It has an id, a created timestamp and a tag, fixed at upload.
+- A **deployment** points at one or more versions with traffic percentages. It is its own object, with its own id and its own time.
+
+**`CF_VERSION_METADATA` reports the version, and the runtime hands a Worker no binding for the deployment.** So a rollback — which creates a *new deployment* aimed at an *existing version* — moves neither header. The binding is not stale and not ambiguous; the object that changed is one a Worker cannot see. The same answer covers a traffic split, a gradual rollout, and "which deployment is serving": none of it is observable from inside.
+
+Measured on a real account, 2026-08-10, which is what turned that from a reading of the docs into a fact. Version `A` uploaded at `22:28:56.762349Z`, `B` four seconds later, `wrangler rollback` to `A` at ~`22:29:20`; a reading at `22:31:37` returned `A`'s id and `A`'s original timestamp, unmoved, while wrangler's own output named the new deployment's version list. Two details from the same run that a client will meet:
+
+- **Every `wrangler deploy` mints a new version**, even for a one-character change. An ordinary redeploy therefore always moves the id and is never invisible.
+- **Propagation lags.** Twenty seconds after wrangler reported the rollback at 100%, the URL still answered from the older version. A client watching closely sees the pair flip and settle — the platform converging, not two deploys.
+
+**So the third row above is not reachable on today's platform, and it stays anyway.** A total comparison is the correct shape: a rule that enumerates which fields are allowed to move is wrong the day the platform moves a different one, and it is wrong silently, as "nothing changed". It costs one branch. Do not read it as rollback detection.
+
+**Nothing inside a Worker can observe a deployment.** That is a boundary of what the runtime exposes, not a gap in this seam, and no header could close it — the only in-Worker signal anyone could synthesise is isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day. A client that needs to know a deployment changed reads Cloudflare's deployments API, in the customer's own account.
 
 The `tag` the binding also carries stays off the wire. It is adopter-authored free text, this header crosses a trust boundary, and neither question a client asks is answered by it.
 
