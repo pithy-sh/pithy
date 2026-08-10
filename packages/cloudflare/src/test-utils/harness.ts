@@ -105,7 +105,7 @@ export function loadIntegrationCreds(): IntegrationCreds {
 /**
  * The project name a live test provisions under, so that names composed by the *product's* provisioners —
  * `<project>-<env>-<thing>`, where the project segment is verbatim and first — land inside the reservation
- * too. A live test of `pithy feature provision` cannot route through {@link uniqueName}: the names are the
+ * too. A live test of `pithy provision --feature` cannot route through {@link uniqueName}: the names are the
  * thing under test. Giving it a reserved project puts them in the namespace anyway.
  *
  * The reservation itself is {@link RESERVED_TEST_PREFIX}, in `@pithy-sh/core`. It lives beside the name

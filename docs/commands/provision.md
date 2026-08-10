@@ -17,7 +17,7 @@ One job, two spellings. `--env` provisions an environment the root `pithy.config
 
 Both modes create one Cloudflare resource per binding name across every Worker, write the ids into each Worker's config, and migrate. They differ only in **how the target environment is named** — declared in `pithy.config.ts`, or derived from the branch. That is a flag, not a different verb.
 
-They were two commands because the naming and the destination stanza used to be independent arguments, and the combination was a real hazard: `pithy feature provision --env staging` composed `<project>-f<issue>-<slug>-db` and wrote it into staging's stanza of a checked-in config, then migrated against it. `ProvisionScope` fused the two into one value — a scope carries both the names and the stanza — so that combination is now unexpressible rather than merely refused. The safety no longer depends on which command was typed, and two verbs for one job is not what reads best.
+The safety is in the scope, not in the spelling. A `ProvisionScope` carries the resource naming **and** the `env.<name>` stanza the ids are written into, as one value — so a feature-named resource landing in a declared environment's stanza of a checked-in config is unexpressible rather than merely refused. Nothing about that depends on which words were typed, which is what leaves the command surface free to be whatever reads best.
 
 ## The one real difference: what happens to the ids
 
@@ -104,17 +104,6 @@ A deploy that silently created account resources would be hard to review, and th
 
 For a declared environment there is none, deliberately. Staging and production are not disposable, and the one-word difference between the two is not a difference a flag should carry. Delete them in Cloudflare, by hand, on purpose.
 
-## `pithy feature provision` (deprecated)
-
-The old spelling still works. It prints the new one and runs it:
-
-```
-$ pithy feature provision
-pithy feature provision is now pithy provision --feature. Running it.
-```
-
-The notice goes to stderr, so `--json` still writes exactly one line to stdout — and that line carries `"command":"provision"`, because that is the command it ran.
-
 ## `--json`
 
 ```
@@ -129,7 +118,7 @@ $ pithy provision --feature --json
 
 | key | type | meaning |
 |---|---|---|
-| `command` | `"provision"` | The command that produced the line. The same for both modes, and for the deprecated alias |
+| `command` | `"provision"` | The command that produced the line. The same for both modes |
 | `env` | `string` | The environment provisioned — a declared name, or `feature` |
 | `resources` | `object[]` | Every resource, in provision order |
 | `resources[].kind` | `"d1" \| "kv" \| "r2"` | The Cloudflare resource type |

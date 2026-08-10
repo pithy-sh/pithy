@@ -27,7 +27,7 @@ describe("environmentScope", () => {
   /**
    * **The gate.** Every name a scope produces carries that scope's own environment segment.
    *
-   * This is the invariant `pithy feature provision --env staging` broke: it composed
+   * This is the invariant an environment passed beside a feature's namer broke: it composed
    * `<project>-f<issue>-<slug>-db` and wrote it into the `staging` stanza, so `staging`'s `DB` was a
    * feature's database under a name naming no environment at all. The stanza and the namer were two
    * arguments, and nothing held them together.
@@ -105,7 +105,7 @@ describe("featureScope", () => {
     }
   });
 
-  it("composes the names feature provision already provisioned under", () => {
+  it("composes the names a feature's resources are provisioned under", () => {
     const scope = featureScope(identity);
     expect(scope.resource("DB", "d1")).toBe("replay-f241-environments-db-d1");
     expect(scope.worker("replay-board")).toBe("replay-f241-environments-replay-board");

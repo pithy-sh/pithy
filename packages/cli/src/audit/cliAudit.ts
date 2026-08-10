@@ -125,7 +125,7 @@ export function isRemoteEnv(env: string): boolean {
  * — the **data-plane** commands (`seed`, `migrate`, a `--drop`), which run against local Miniflare for `dev`
  * and against real Cloudflare otherwise. A local run gets an inert emitter.
  *
- * Control-plane commands (`deploy`, provisioning, `feature provision`/`destroy`) are remote *whatever* env
+ * Control-plane commands (`deploy`, `provision`, `feature destroy`) are remote *whatever* env
  * is named — the env only picks which database the record lands in — so they call {@link createCliAudit}
  * directly and are always audited.
  */

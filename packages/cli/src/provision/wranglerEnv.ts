@@ -19,8 +19,8 @@ import type { SecretStoreBinding } from "./secretBindings";
  *
  * **One writer, taking the scope.** The stanza key is `scope.stanza` and every name is the same
  * scope's, so the file this writes into and the names it writes cannot come from two different
- * decisions — which is precisely how `pithy feature provision --env staging` used to put
- * feature-named resources in the staging stanza.
+ * decisions — which is how a feature-named resource could once be written into a declared environment's
+ * stanza.
  */
 
 /** One binding-id entry keyed by binding, plus the id field that resource kind uses in wrangler.jsonc. */
@@ -136,7 +136,7 @@ async function editStanza(
  * Upsert the `secrets_store_secrets` entries provisioning owns into one Worker's `env.<stanza>`.
  *
  * Separate from {@link applyProvisionedEnv} because two commands reach it for different reasons.
- * `pithy provision` and `pithy feature provision` write the whole stanza; `pithy secrets provision`
+ * `pithy provision` writes the whole stanza in either mode; `pithy secrets provision`
  * writes only this, for a project whose resources are already in place and whose store entries have
  * just been created — the five cases `ensureSecretsStoreId` cannot resolve at `add` time, and every
  * project that predates the stanza existing at all.

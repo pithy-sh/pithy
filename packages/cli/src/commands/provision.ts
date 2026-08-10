@@ -33,12 +33,13 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  *
  * Both create an environment's Cloudflare resources, write their ids into each Worker's config, and
  * migrate. They differ only in how the target environment is *named*: declared in the root
- * `pithy.config.ts`, or derived from the checked-out branch. That was two commands for as long as the
- * naming and the destination stanza were independent arguments — `pithy feature provision --env staging`
- * wrote feature-named resources into staging's stanza of a checked-in config and migrated against them.
- * `ProvisionScope` fused the two into one value (#240), so the combination is unexpressible rather than
- * merely refused, and the command surface became free to be whatever reads best. Two verbs for one job
- * does not.
+ * `pithy.config.ts`, or derived from the checked-out branch. That is a flag, not a different verb.
+ *
+ * **The safety is in the scope, not in the spelling.** A `ProvisionScope` carries the resource naming and
+ * the `env.<name>` stanza the ids are written into, as one value (#240) — so a feature-named resource
+ * landing in a declared environment's stanza of a checked-in config is unexpressible rather than merely
+ * refused. Nothing about that depends on which words were typed, which is what leaves one command free to
+ * carry both modes.
  *
  * **The one real difference is persistence, and the command says so on every run.** `--env` writes
  * `env.<name>` into the tracked `wrangler.jsonc`: long-lived ids a human reviews in a pull request.
@@ -272,8 +273,7 @@ async function provisionBranch(projectDir: string, options: ProvisionRunOptions)
 }
 
 /**
- * The command body, exported so `pithy feature provision` can redirect to it rather than reimplement it —
- * and so the mode gate can be tested against a directory that is not a project.
+ * The command body, exported so the mode gate can be tested against a directory that is not a project.
  *
  * Throws `PithyError`; the citty wrapper below is what reports and exits.
  */

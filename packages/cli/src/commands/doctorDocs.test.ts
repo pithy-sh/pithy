@@ -487,8 +487,8 @@ describe("the docs say what the code emits", () => {
     );
     expect(scanned.filter(([, read]) => read.spreadSites > 0).map(([command]) => command)).toEqual(SPREAD_BUILT);
     expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
-    // 31 since #251: `pithy feature provision` stopped building a payload of its own and became a
-    // redirect to `pithy provision --feature`, which is where that one spread now lives.
+    // 31 since #251: provisioning is one command with two modes, so the two payload spreads that built
+    // one report each are now the one spread `pithy provision` builds for both.
     expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(31);
   });
 

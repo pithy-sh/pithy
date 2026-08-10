@@ -17,7 +17,7 @@ import { resourceNames } from "./resourceNames";
  *
  * Provisioning was specified for ephemeral feature environments and parameterised by `--env` before it
  * was generalised to named ones. That left the namer and the target stanza as independent inputs, and
- * `pithy feature provision --env staging` was the reachable consequence: it composed
+ * A feature's namer with a declared environment beside it was the reachable consequence: it composed
  * `<project>-f<issue>-<slug>-db` and wrote it in as `staging`'s `DB`. Nothing refused it, the ids went
  * into a checked-in `wrangler.jsonc`, and a remote migrate ran against them.
  *
@@ -127,8 +127,8 @@ export function environmentScope(project: string, environment: string): Provisio
  * One feature's scope — the ephemeral environment a branch gets, named from the branch rather than from
  * an environment.
  *
- * Its stanza is {@link FEATURE_ENVIRONMENT} and nothing else, which is what makes
- * `pithy feature provision --env staging` unexpressible rather than merely discouraged.
+ * Its stanza is {@link FEATURE_ENVIRONMENT} and nothing else, which is what makes a feature's resources
+ * in a declared environment's stanza unexpressible rather than merely discouraged.
  */
 export function featureScope(identity: FeatureIdentity): ProvisionScope {
   return {

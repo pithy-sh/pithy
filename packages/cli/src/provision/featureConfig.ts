@@ -7,7 +7,7 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 /**
  * **A feature's config is a build artifact, so it is not written where source lives.**
  *
- * `pithy feature provision` used to write feature-scoped ids into `apps/<worker>/wrangler.jsonc` — a
+ * A feature's ids could once land in `apps/<worker>/wrangler.jsonc` — a
  * tracked, committed file, and one that cannot be gitignored because it is the project's real config.
  * In CI that is correct as designed: the checkout is throwaway, wrangler reads the stanza, the job
  * ends, nothing is committed. Everywhere else it was an expectation rather than a guarantee. A

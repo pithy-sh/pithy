@@ -21,17 +21,13 @@ import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioner
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
-import { runProvision } from "./provision";
 
 /**
  * The feature's own ephemeral CF environment.
  *
- * **`provision` no longer takes an `--env`, and that is a fix rather than a removal.** The flag let
- * `pithy feature provision --env staging` write feature-named resources — `<project>-f<issue>-<slug>-db`
- * — into staging's stanza of a checked-in `wrangler.jsonc`, then migrate against them. Nothing refused
- * it. A declared environment is `pithy provision --env`'s job, under its own naming; a feature has one
- * environment and it is this one. `destroy` keeps the flag: it names the environment its audit trail
- * records, and it deletes by recomputed feature name regardless.
+ * `destroy` takes an `--env` because it names the environment its audit trail records; it deletes by
+ * recomputed feature name regardless, so the flag never changes what goes. Standing the environment up is
+ * `pithy provision --feature`'s job — one job with two spellings, and this is not one of them.
  */
 const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
 
@@ -232,33 +228,6 @@ const sync = defineCommand({
     }),
 });
 
-/**
- * `pithy feature provision` — **deprecated, and it redirects rather than refuses.**
- *
- * Provisioning is one command with two modes since #251, and this spelling is in the docs, in pipelines,
- * and in muscle memory. A subcommand that errors is a worse first impression than one that says the new
- * name and then does the work, so it prints the new spelling and calls it. The notice goes to **stderr**,
- * always: under `--json` stdout carries exactly one machine-readable line, and a deprecation warning is
- * not part of the payload.
- *
- * The work is `pithy provision --feature`'s, called rather than copied — a redirect that drifted from
- * what it redirects to would be worse than the two commands it replaced.
- */
-const provision = defineCommand({
-  meta: {
-    name: "provision",
-    description: "Deprecated. Now `pithy provision --feature`, which this runs",
-  },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      process.stderr.write("pithy feature provision is now pithy provision --feature. Running it.\n");
-      await runProvision({ feature: true, yes: false, seed: false, json: args.json });
-    }),
-});
-
 /** `pithy feature destroy` — teardown. Run from within the worktree. */
 const destroy = defineCommand({
   meta: { name: "destroy", description: "Tear down the feature: delete CF resources, free ports, prune the worktree" },
@@ -307,7 +276,7 @@ const destroy = defineCommand({
         // too, and its is a `string[]` of index names where this one is `{kind,name,id}[]`. Two
         // collections under one name is the harder half of the collision to notice — both are truthy,
         // both have a `.length` — so the fix is to say what each holds. This is the record-shaped one,
-        // and `deletedResources` also puts it opposite `feature provision`'s `resources`, which is the
+        // and `deletedResources` also puts it opposite provisioning's `resources`, which is the
         // list it undoes. `DestroyReport` keeps `deleted`: it is teardown's own vocabulary, and the
         // published name is decided here, where the payload is.
         const { command, deleted: deletedResources, ...rest } = report;
@@ -325,5 +294,5 @@ const destroy = defineCommand({
 
 export default defineCommand({
   meta: { name: "feature", description: "Set up and tear down an isolated, fully-provisioned feature environment" },
-  subCommands: { create, sync, provision, destroy },
+  subCommands: { create, sync, destroy },
 });

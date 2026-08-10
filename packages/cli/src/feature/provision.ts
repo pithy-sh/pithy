@@ -107,16 +107,14 @@ export interface ProvisionFeatureOptions {
  * per-feature manifest **after each step** so an interrupted run resumes cleanly and `destroy` knows
  * exactly what to remove. Idempotent; safe to re-run.
  *
- * **There is no `env` argument, and that is the fix rather than an omission.** It used to take one, so
- * `pithy feature provision --env staging` created `<project>-f<issue>-<slug>-db` and wrote it into the
- * staging stanza of a checked-in `wrangler.jsonc`, then migrated against it. The scope now carries both
- * halves, so the combination cannot be expressed. A declared environment is `pithy provision --env`'s job.
+ * **There is no `env` argument, and that is the fix rather than an omission.** With the environment as a
+ * separate parameter, `<project>-f<issue>-<slug>-db` could be composed and written into the `staging`
+ * stanza of a checked-in `wrangler.jsonc`, then migrated against. The scope carries both halves, so the
+ * combination cannot be expressed. A declared environment is `pithy provision --env`'s job.
  *
- * **The report carries no `command` of its own** (#251). It used to say `feature.provision`, which was a
- * second command name for one command's work: `pithy provision --feature` is the spelling, and the
- * deprecated alias runs exactly this, so both emit `"provision"`. The name of the command belongs to the
- * command, and stamping it here is what let a caller's own `command` field be silently overwritten by a
- * spread.
+ * **The report carries no `command` of its own** (#251). The command's name belongs to the command:
+ * `pithy provision` stamps `"provision"` on what it prints, and a second name stamped here would be a
+ * caller's own field silently overwritten by a spread.
  */
 export async function provisionFeature(options: ProvisionFeatureOptions): Promise<ProvisionReport> {
   const path = manifestPath(options.projectDir);

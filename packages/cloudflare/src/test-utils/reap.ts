@@ -42,7 +42,7 @@ import {
  *
  * ## What is deliberately still not reaped
  *
- * Resources composed under {@link RESERVED_TEST_PROJECT} — `pithy feature provision`'s ephemeral D1 and
+ * Resources composed under {@link RESERVED_TEST_PROJECT} — `pithy provision --feature`'s ephemeral D1 and
  * KV, which a live test provisions through the *product's* namer because the names are the thing under
  * test. `testResourceAge` cannot read an age out of `pithy-int-test-dev-73-slug-db`, and returns null
  * rather than guessing. That conservatism is correct and stays: failing to clean up costs pennies, and

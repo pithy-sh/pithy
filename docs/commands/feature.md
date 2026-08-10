@@ -12,7 +12,7 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 `create` runs from the main checkout. `sync` and `destroy` run from inside the worktree, and take no name: the branch says which feature it is.
 
-**Provisioning is [`pithy provision --feature`](provision.md).** It used to be `pithy feature provision`, and that spelling still works — it prints the new one and runs it — but provisioning is one job with two spellings, and it lives on one page. What stays here is the rest of the lifecycle, which is a branch's alone.
+**The feature's live Cloudflare environment is [`pithy provision --feature`](provision.md).** Provisioning is one job whichever environment it is for, so it is one command and one page. What lives here is the rest of a branch's lifecycle, which is a branch's alone.
 
 **`destroy` needs a Cloudflare account.** It acts on real D1, KV, and R2. `create` and `sync` are entirely local — a git worktree, a port reservation, and a Miniflare-backed `dev` backend. `destroy --local-only` is the deliberate way to tear down the local half without credentials.
 
@@ -96,7 +96,7 @@ $ pithy feature sync --json
 
 `block` and `dev.ports` describe the same reservation from two sides — `block` is the registry's record, `dev.ports` is the worktree's copy — and they spell the index differently (`block` versus `index`) because each keeps the name its own file uses.
 
-`pithy provision --feature --json` has its own payload, on [`provision.md`](provision.md). The deprecated `pithy feature provision --json` emits exactly that line — `"command":"provision"` included, because that is the command it runs — with the deprecation notice on stderr, where it cannot reach a parser.
+The payload for a feature's Cloudflare environment is [`provision.md`](provision.md)'s.
 
 ```
 $ pithy feature destroy --json

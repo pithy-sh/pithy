@@ -6,7 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 
 /**
- * A single Cloudflare resource `pithy feature provision` stands up: the Worker binding it backs and the
+ * A single Cloudflare resource `pithy provision --feature` stands up: the Worker binding it backs and the
  * kind of resource that binding needs. Derived purely from the composed capabilities' `requiredBindings`
  * — no hand-maintained list — so enabling a capability automatically brings its resources into the set.
  */
