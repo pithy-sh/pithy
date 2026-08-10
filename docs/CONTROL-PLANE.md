@@ -297,19 +297,22 @@ What the manifest *does* carry is **identity**, which is a different thing, and 
 
 The same build id is also on **every control-plane response**, as a `pithy-worker-version` header — allowed and denied alike, and on every capability's admin routes rather than only the seam's. A client that captured the version at connect holds a stale value the moment the adopter deploys, which is precisely when it matters; per response, each recorded action pins the build it actually hit, and a client can notice the version changing mid-session — the moment a rendered pane has quietly gone out of date.
 
-Beside it, **`pithy-worker-version-created`**: when that build was created, ISO-8601, exactly as Cloudflare issued it. Two headers rather than one richer value, because a client compares them separately and because a client already deployed compares the whole of the first — fold a second field into it and a kit upgrade reads as a version change that never happened.
+Beside it, **`pithy-worker-version-created`**: the timestamp the platform reports for that build, ISO-8601, exactly as Cloudflare issued it. Two headers rather than one richer value, because a client compares them separately and because a client already deployed compares the whole of the first — fold a second field into it and a kit upgrade reads as a version change that never happened.
 
-Holding the last pair it saw, a client tells three states apart:
+**Read the pair with `workerBuildChanged`, from `@pithy-sh/core/src/controlPlane/wire`.** Compare field by field, only where both sides carried a value; anything that differs is a change. Four states, and the third is the one a rule keyed on the id alone cannot reach:
 
 | What it sees | What it means |
 | --- | --- |
-| Both unchanged | The same build is still answering. Say nothing. |
-| `version` changed, `created` **later** | A newer build is live. What is rendered came from one that no longer serves. |
-| `version` changed, `created` **earlier** | An **older build was deployed again** — a rollback, and now nameable as one. |
+| Nothing differs | The same build is still answering. Say nothing. |
+| `version` differs | A different build is live. What is rendered came from one that no longer serves. |
+| `version` same, `created` differs | **The same build was deployed again.** Same consequence. |
+| Either side silent on a field | That field says nothing. |
 
-**Either header absent, on either side of the comparison, is never a change.** A Worker that does not declare `version_metadata` sends neither; a call that failed before its headers were read has none. Both mean "cannot say", and a client that treats a missing value as a new one invalidates on a deploy nobody made.
+**Either header absent, on either side of the comparison, is never a change.** A Worker that does not declare `version_metadata` sends neither; a call that failed before its headers were read has none; a client that has not looked yet holds nothing. All mean "cannot say", and a client that treats a missing value as a new one invalidates on a deploy nobody made.
 
-**One case no header can reach: a deployment that creates no version.** `wrangler deploy` always uploads, so it always mints a new id — but `wrangler rollback` and `wrangler versions deploy` point a new *deployment* at an existing *version*, and this binding describes the version. Roll away from a build and back to it between two of a client's calls and both headers are byte-identical while the Worker has restarted. Nothing the runtime hands a script closes that; the only in-Worker proxy would be isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day, and a false change is worse than a missed one for a client that invalidates on it. A client that must know that case reads Cloudflare's deployments API — which is the customer's account, not this seam.
+**Which moment `created` names is not settled, and the rule above does not depend on it.** Cloudflare documents the binding's `timestamp` as when the version was *created*, which would mean it never moves for a build that is merely deployed again; the first adopter's maintainer reports seeing it move on a *rollback*, which would make it the moment of deployment. Neither has been measured — telling them apart needs a real deploy and a real rollback against a real account, and a local `wrangler dev` cannot stand in because it mints a fresh version on every restart. So compare the value, never interpret it: "it moved" is a fact, "it moved backwards, therefore a rollback" is a reading of an open field. Under the first reading the third row never fires and costs nothing; under the second it is exactly the case this header was added for.
+
+If the first reading turns out to be the true one, a redeploy of a build a client already holds is invisible from inside the Worker, and no header closes it: the only in-Worker signal would be isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day, and a false change is worse than a missed one for a client that invalidates on it. A client needing that answer today reads Cloudflare's deployments API — which is the customer's account, not this seam.
 
 The `tag` the binding also carries stays off the wire. It is adopter-authored free text, this header crosses a trust boundary, and neither question a client asks is answered by it.
 

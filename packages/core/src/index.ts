@@ -62,4 +62,6 @@ export {
   CONTROL_PLANE_HEADER,
   CONTROL_PLANE_VERSION_CREATED_HEADER,
   CONTROL_PLANE_VERSION_HEADER,
+  type WorkerBuild,
+  workerBuildChanged,
 } from "./controlPlane/wire";

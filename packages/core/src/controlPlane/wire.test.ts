@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./wire";
+import {
+  CONTROL_PLANE_HEADER,
+  CONTROL_PLANE_VERSION_CREATED_HEADER,
+  CONTROL_PLANE_VERSION_HEADER,
+  type WorkerBuild,
+  workerBuildChanged,
+} from "./wire";
 
 // `import.meta.glob` is a vite/vitest feature; declared so plain `tsc` typecheck accepts it, exactly as
 // `worker-safety.test.ts` does. Reading the sources this way rather than through `node:fs` is what keeps
@@ -112,5 +118,67 @@ describe("control-plane wire constants", () => {
   test("the verifier they used to live beside does reach WebCrypto", () => {
     const graph = moduleGraph("src/controlPlane/http/verify.ts");
     expect(graph.source).toContain("crypto.subtle");
+  });
+});
+
+const BUILD_A = "6bbf9e9b-90c6-46c5-829d-83241554ac2c";
+const BUILD_B = "954d8c61-daa2-4ebf-9b3c-459b4abe7fcd";
+const EARLIER = "2026-08-07T10:00:00.000Z";
+const LATER = "2026-08-10T21:39:55.716Z";
+
+/** The pair as a client reads it: two `headers.get()` calls, each `string | null`. */
+function build(version: string | null, createdAt: string | null): WorkerBuild {
+  return { version, createdAt };
+}
+
+describe("workerBuildChanged", () => {
+  test("says nothing changed while the same build keeps answering", () => {
+    expect(workerBuildChanged(build(BUILD_A, LATER), build(BUILD_A, LATER))).toBe(false);
+  });
+
+  test("sees a different build", () => {
+    // Either direction. Which way the time moved is not interpreted here — see the module docstring:
+    // whether that value names the moment a version was uploaded or the moment it was deployed is not
+    // settled, so "later" and "earlier" have no agreed meaning yet. "Changed" does.
+    expect(workerBuildChanged(build(BUILD_A, EARLIER), build(BUILD_B, LATER))).toBe(true);
+    expect(workerBuildChanged(build(BUILD_B, LATER), build(BUILD_A, EARLIER))).toBe(true);
+  });
+
+  test("sees the same build deployed again", () => {
+    // **The state #260 was filed for, and the one a rule keyed on the id alone cannot reach.** Same id,
+    // a time that moved: whatever moment that value names, it moved, and a Worker that reports a
+    // different one has been through something. Safe under both readings of the field — if it names the
+    // upload moment this never occurs and the branch is dead; if it names the deploy moment this is
+    // exactly the redeploy the first adopter's cache is blind to.
+    expect(workerBuildChanged(build(BUILD_A, EARLIER), build(BUILD_A, LATER))).toBe(true);
+    expect(workerBuildChanged(build(BUILD_A, LATER), build(BUILD_A, EARLIER))).toBe(true);
+  });
+
+  test("treats absence as silence, never as change", () => {
+    // **Rule one.** A Worker that declares no `version_metadata` sends neither header; a call that
+    // failed before its headers were read has none. Both mean "cannot say", and a client that reads a
+    // missing value as a new one invalidates a rendered pane on a deploy nobody made. Every direction of
+    // absence: never seen, stopped being sent, only just started being sent, and one field of a pair.
+    expect(workerBuildChanged(build(null, null), build(null, null))).toBe(false);
+    expect(workerBuildChanged(build(BUILD_A, LATER), build(null, null))).toBe(false);
+    expect(workerBuildChanged(build(null, null), build(BUILD_A, LATER))).toBe(false);
+    expect(workerBuildChanged(build(BUILD_A, null), build(BUILD_A, LATER))).toBe(false);
+    expect(workerBuildChanged(build(BUILD_A, LATER), build(BUILD_A, null))).toBe(false);
+    expect(workerBuildChanged(build(null, LATER), build(BUILD_A, LATER))).toBe(false);
+  });
+
+  test("compares each field on its own, so one silent field cannot mute the other", () => {
+    // A partial pair still answers what it can. Dropping the whole comparison because one header was
+    // missing would turn a platform hiccup into "nothing changed" — the failure direction that matters.
+    expect(workerBuildChanged(build(BUILD_A, null), build(BUILD_B, null))).toBe(true);
+    expect(workerBuildChanged(build(null, EARLIER), build(null, LATER))).toBe(true);
+  });
+
+  test("reads a blank header as absent, not as a value to compare", () => {
+    // The seam never sends one — `workerVersionHeaders` gates that — but a proxy between the two ends
+    // can blank a header it does not understand, and an empty string differs from every real id.
+    expect(workerBuildChanged(build(BUILD_A, LATER), build("", ""))).toBe(false);
+    expect(workerBuildChanged(build("", ""), build(BUILD_A, LATER))).toBe(false);
+    expect(workerBuildChanged(build(BUILD_A, LATER), build("   ", LATER))).toBe(false);
   });
 });

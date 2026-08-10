@@ -312,9 +312,9 @@ describe("GET /control-plane/manifest", () => {
     );
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
-    // And when that build was made, so a client can tell a deploy from a rollback rather than only
-    // "changed". Two headers: the id keeps carrying the id alone, so a client written against it reads
-    // exactly what it always did.
+    // And the timestamp the platform reports for it, so a client comparing the pair can see the same
+    // build deployed again — which an id compared against an id never shows. Two headers: the id keeps
+    // carrying the id alone, so a client written against it reads exactly what it always did.
     expect(allowed.headers.get(CONTROL_PLANE_VERSION_CREATED_HEADER)).toBe("2026-08-10T21:39:55.716Z");
 
     // A denial pins the build too. An operator reading a run of refusals needs to know which deploy was

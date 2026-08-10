@@ -113,10 +113,10 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
     // response, each recorded action pins the build it actually hit, and a client can notice the version
     // changing mid-session, which is the moment a rendered pane has quietly gone out of date.
     //
-    // **Two headers, because a client has two questions.** The id answers "a different build?"; the
-    // creation time answers "which direction?" — an id that changed to an *earlier* build is a rollback,
-    // which the id alone can only report as an opaque change. `workerVersionHeaders` owns what may be
-    // said and what absence means.
+    // **Two headers, because one value cannot answer both questions.** The id says which build; the
+    // timestamp beside it says whether the same build has been deployed again, which an id compared
+    // against an id can never report. `workerVersionHeaders` owns what may be said and what absence
+    // means; `workerBuildChanged` in `../wire` owns how the pair is read.
     for (const [name, value] of Object.entries(workerVersionHeaders(c.env))) c.header(name, value);
 
     const verify = c.var.controlPlaneVerifier;

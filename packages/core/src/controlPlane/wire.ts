@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The control-plane wire contract: the names both ends of the seam must spell identically.
+ * The control-plane wire contract: the names both ends of the seam must spell identically, and the one
+ * rule for reading what they carry.
  *
  * **This module imports nothing, and that is its whole job.** Per `docs/CONTROL-PLANE.md` §4 a browser
  * calls the adopter's Worker *directly* — the management client's server mints the token, the browser
@@ -17,6 +18,11 @@
  * a comment and an assertion holding the copy honest, and two copies of a wire constant is exactly the
  * drift a constant exists to prevent. `wire.test.ts` asserts the module graph here stays empty, because
  * the property is only true until someone adds the first convenient import.
+ *
+ * {@link workerBuildChanged} is here for the same reason one level up. The dashboard did not only copy
+ * the header name — it wrote its own rule for reading the value, "invalidate when the id differs", and
+ * that rule was wrong in a way a copied constant could never have caught. A rule both ends must agree on
+ * belongs beside the names both ends must spell.
  */
 
 /**
@@ -45,21 +51,64 @@ export const CONTROL_PLANE_HEADER = "pithy-control-plane";
 export const CONTROL_PLANE_VERSION_HEADER = "pithy-worker-version";
 
 /**
- * The response header carrying **when that build was created** — ISO-8601, as the platform issued it.
+ * The response header carrying the **timestamp the platform reports for the running build** — ISO-8601,
+ * verbatim, off the same `CF_VERSION_METADATA` binding as the id.
  *
- * Read beside {@link CONTROL_PLANE_VERSION_HEADER}, never folded into it, so a client can answer two
- * questions separately. Holding the last pair it saw:
+ * Read beside {@link CONTROL_PLANE_VERSION_HEADER}, never folded into it, so a client can compare two
+ * values separately. {@link workerBuildChanged} is the rule; do not hand-write one.
  *
- * - both unchanged — the same version is still answering. Say nothing.
- * - id changed, this later — a newer build is live.
- * - id changed, this earlier — an older build was deployed again. A rollback, and now nameable as one;
- *   the id alone could only say "changed".
- * - either absent, on either side of the comparison — this Worker cannot say. **Never a change.**
- *
- * It is the version's **upload** time, not its deploy time, because that is what the platform gives a
- * running Worker. So the one case it cannot see is a deployment that creates no version: roll away from
- * a build and back to it between two calls and both headers are byte-identical while the Worker has
- * restarted. Nothing in the runtime closes that — see `worker/identity.ts` for why isolate boot time is
- * not the answer — and a client that must know it asks Cloudflare's deployments API.
+ * **Which moment this names is not settled, and nothing here depends on knowing.** Cloudflare documents
+ * the binding's `timestamp` as when the version was *created*; the first adopter's maintainer reports
+ * seeing it move on a *rollback*, which would make it the moment of deployment. Nobody has measured it:
+ * telling the two apart needs a real deploy and a real rollback against a real account, and a local
+ * `wrangler dev` cannot stand in because it mints a fresh version on every restart. So this value is
+ * relayed and compared, never interpreted — "it moved" is a fact, "it moved backwards, therefore a
+ * rollback" is a reading of a field whose meaning is open. Settle it by observing one, then say so here.
  */
 export const CONTROL_PLANE_VERSION_CREATED_HEADER = "pithy-worker-version-created";
+
+/**
+ * The pair a client reads off one control-plane response: two `headers.get()` calls, each `string | null`.
+ */
+export interface WorkerBuild {
+  /** {@link CONTROL_PLANE_VERSION_HEADER}, or `null` where the response carried none. */
+  version: string | null;
+  /** {@link CONTROL_PLANE_VERSION_CREATED_HEADER}, or `null` where the response carried none. */
+  createdAt: string | null;
+}
+
+/**
+ * Did the Worker answering now differ from the Worker that answered before?
+ *
+ * **The rule, total over the pair.** A client compares field by field and only where both sides carried
+ * a value; anything that differs is a change. That yields four states, and the fourth is the one this
+ * function exists for:
+ *
+ * - nothing differs — the same build, still answering. Say nothing.
+ * - `version` differs — a different build is live, and what is rendered came from one that no longer
+ *   serves.
+ * - `version` the same, `createdAt` differs — **the same build was deployed again.** Same consequence.
+ * - either side silent on a field — that field says nothing.
+ *
+ * The third state is why a rule keyed on the id alone was wrong, and it is safe whichever moment
+ * `createdAt` names: if it is the version's creation time the state never occurs and the branch is
+ * dead; if it is the deployment's, it is precisely the redeploy #260 was filed for. Direction is *not*
+ * interpreted — "earlier" and "later" have no agreed meaning until somebody measures the field.
+ *
+ * **Absence is never change**, in every direction: a Worker that declares no `version_metadata` sends
+ * neither header, a call that failed before its headers were read has none, and a client that has not
+ * looked yet holds nulls. A blank value counts as absent too — the seam never sends one, but a proxy in
+ * between can blank a header it does not understand, and an empty string differs from every real id. The
+ * failure this shape refuses is the one that costs an adopter trust: invalidating a rendered pane on a
+ * deploy that never happened.
+ */
+export function workerBuildChanged(before: WorkerBuild, after: WorkerBuild): boolean {
+  return differs(before.version, after.version) || differs(before.createdAt, after.createdAt);
+}
+
+/** One field of the pair: a difference only where both sides actually said something. */
+function differs(before: string | null, after: string | null): boolean {
+  if (typeof before !== "string" || before.trim() === "") return false;
+  if (typeof after !== "string" || after.trim() === "") return false;
+  return before !== after;
+}
