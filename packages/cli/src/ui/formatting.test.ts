@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { resolveTemplateSource } from "../project/scaffold";
 import { reactStub } from "./react";
+import { deriveWorkerFirst } from "./routeAllowlist";
 import { wireAssets, wireManifest } from "./wire";
 import { readManifestDocument } from "./workerUi";
 
@@ -105,7 +106,7 @@ describe("what pithy ui writes, the scaffolded Biome would print", () => {
   });
 
   test("wireAssets leaves a file Biome would print unchanged", async () => {
-    await wireAssets(worker, CONFIG, DECLARED);
+    await wireAssets(worker, deriveWorkerFirst(CONFIG, DECLARED));
     const { code, output } = await biomeFormat(project, ["apps/board/wrangler.jsonc"]);
     expect(output).not.toContain("Formatter would have printed");
     expect(code).toBe(0);
@@ -120,7 +121,7 @@ describe("what pithy ui writes, the scaffolded Biome would print", () => {
 
   test("adding an assets stanza changes the lines it means to change, and no others", async () => {
     const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
-    await wireAssets(worker, CONFIG, DECLARED);
+    await wireAssets(worker, deriveWorkerFirst(CONFIG, DECLARED));
     const after = await readFile(join(worker, "wrangler.jsonc"), "utf8");
 
     // The stanza itself is four lines. Anything past that is the file being reformatted around the edit,
@@ -135,25 +136,27 @@ describe("what pithy ui writes, the scaffolded Biome would print", () => {
   test("the correction pithy ui sync exists to make still happens, and is still reported", async () => {
     // The half of the dashboard's run that worked. It has to keep working, and a formatting fix is
     // exactly the kind of change that would quietly cost it.
-    const first = await wireAssets(worker, CONFIG, DECLARED);
+    const first = await wireAssets(worker, deriveWorkerFirst(CONFIG, DECLARED));
     expect(first.before).toBeNull();
     expect(first.after).toContain("/auth");
 
     const grown = await wireAssets(
       worker,
-      {
-        capabilities: [
-          ...CONFIG.capabilities,
-          defineCapability({
-            name: "control-plane",
-            requiredBindings: [],
-            routes: (app) => {
-              app.get("/control-plane/manifest", (c) => c.json({}));
-            },
-          }),
-        ],
-      },
-      DECLARED,
+      deriveWorkerFirst(
+        {
+          capabilities: [
+            ...CONFIG.capabilities,
+            defineCapability({
+              name: "control-plane",
+              requiredBindings: [],
+              routes: (app) => {
+                app.get("/control-plane/manifest", (c) => c.json({}));
+              },
+            }),
+          ],
+        },
+        DECLARED,
+      ),
     );
     expect(grown.before).toEqual(["/auth", "/auth/*", "/health", "/health/*"]);
     expect(grown.after).toContain("/control-plane");
@@ -164,12 +167,12 @@ describe("what pithy ui writes, the scaffolded Biome would print", () => {
   });
 
   test("a second run with nothing to change writes nothing at all", async () => {
-    await wireAssets(worker, CONFIG, DECLARED);
+    await wireAssets(worker, deriveWorkerFirst(CONFIG, DECLARED));
     await wireManifest(worker, reactStub, "bun");
     const wrangler = await readFile(join(worker, "wrangler.jsonc"), "utf8");
     const manifest = await readFile(join(worker, "pithy.worker.jsonc"), "utf8");
 
-    await wireAssets(worker, CONFIG, DECLARED);
+    await wireAssets(worker, deriveWorkerFirst(CONFIG, DECLARED));
     await wireManifest(worker, reactStub, "bun");
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(wrangler);
     expect(await readFile(join(worker, "pithy.worker.jsonc"), "utf8")).toBe(manifest);

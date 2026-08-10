@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
+import { deriveWorkerFirst } from "./routeAllowlist";
 import type { UiStub } from "./stubs";
 import { wireAssets, wireManifest, wirePackage, wireSolution } from "./wire";
 
@@ -93,7 +94,7 @@ describe("wire", () => {
   }
 
   test("wireAssets writes the SPA stanza with the derived allowlist and NO directory", async () => {
-    const change = await wireAssets(dir, CONFIG, DECLARED);
+    const change = await wireAssets(dir, deriveWorkerFirst(CONFIG, DECLARED));
     expect(change.before).toBeNull();
 
     const raw = await readFile(join(dir, "wrangler.jsonc"), "utf8");
@@ -110,28 +111,43 @@ describe("wire", () => {
     expect(raw).toContain("The adopter's note.");
   });
 
+  test("wireAssets writes the list it is handed and composes nothing itself", async () => {
+    // The seam that lets `pithy ui add` compose before it writes. While this function derived the
+    // allowlist itself, the step most likely to throw — assembling every capability's routes, in every
+    // environment — sat *inside* the writer, and therefore after the whole template had landed (#259).
+    // A list no derivation would ever produce is what proves nothing here derives.
+    const change = await wireAssets(dir, ["/handed", "/handed/*"]);
+    expect(change.after).toEqual(["/handed", "/handed/*"]);
+    const config = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as {
+      assets: { run_worker_first: string[] };
+    };
+    expect(config.assets.run_worker_first).toEqual(["/handed", "/handed/*"]);
+  });
+
   test("wireAssets is idempotent and re-derives on a changed route table", async () => {
-    await wireAssets(dir, CONFIG, DECLARED);
+    await wireAssets(dir, deriveWorkerFirst(CONFIG, DECLARED));
     const once = await readFile(join(dir, "wrangler.jsonc"), "utf8");
-    const again = await wireAssets(dir, CONFIG, DECLARED);
+    const again = await wireAssets(dir, deriveWorkerFirst(CONFIG, DECLARED));
     expect(again.before).toEqual(again.after);
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(once);
 
     const grown = await wireAssets(
       dir,
-      {
-        capabilities: [
-          ...CONFIG.capabilities,
-          defineCapability({
-            name: "ledger",
-            requiredBindings: [],
-            routes: (app) => {
-              app.get("/ledger/balance", (c) => c.json({}));
-            },
-          }),
-        ],
-      },
-      DECLARED,
+      deriveWorkerFirst(
+        {
+          capabilities: [
+            ...CONFIG.capabilities,
+            defineCapability({
+              name: "ledger",
+              requiredBindings: [],
+              routes: (app) => {
+                app.get("/ledger/balance", (c) => c.json({}));
+              },
+            }),
+          ],
+        },
+        DECLARED,
+      ),
     );
     expect(grown.before).toEqual(["/auth", "/auth/*", "/health", "/health/*"]);
     expect(grown.after).toContain("/ledger");

@@ -6,6 +6,7 @@ import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/sr
 import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { withRollback } from "../project/rollback";
 import { pathExists } from "../project/scaffold";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
@@ -235,9 +236,37 @@ async function unstyledOnDisk(workerDir: string, planned: Record<string, string>
 }
 
 /**
+ * Every file this run may create or edit, absolute — what a failure has to put back.
+ *
+ * The template's own paths, plus the four documents `ui/wire.ts` edits rather than creates. Stated here
+ * rather than discovered afterwards, because a rollback that guesses is one that misses a file.
+ */
+function touchedPaths(options: UiAddOptions, planned: Record<string, string>): string[] {
+  return [
+    ...Object.keys(planned).map((rel) => join(options.workerDir, rel)),
+    join(options.workerDir, "wrangler.jsonc"),
+    join(options.workerDir, "pithy.worker.jsonc"),
+    join(options.workerDir, "package.json"),
+    join(options.projectDir, "tsconfig.json"),
+  ];
+}
+
+/**
  * Scaffold a front end into one worker and wire it end to end: the client files, the `assets` stanza
  * that serves them, the dev command `pithy dev` runs, the build command `pithy deploy` runs, and the
  * packages the build needs. The SPA and the API stay one deploy on one origin.
+ *
+ * **A run that fails leaves the project as it found it**, and that is two things rather than one.
+ *
+ * The allowlist is derived *before* anything is written: composing the app is the step most likely to
+ * throw — a capability misconfigured, a required binding missing (#258), a syntax error in a file the
+ * adopter has edited — and it used to run after the whole template had landed. So a failure left the
+ * files written, the wiring absent, and the retry refused by this command's own "already has a front
+ * end" guard, which cannot tell a finished front end from one abandoned a minute ago (#259).
+ *
+ * And every write after that runs under {@link withRollback}, because ordering alone only removes the
+ * failure anyone has already seen: the next step added goes back on the end of the list, and the
+ * property quietly stops being true. Stated over the outcome, it survives the next step.
  */
 export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   const stub = resolveStub(options.framework);
@@ -251,28 +280,38 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   );
 
   const plan = await planFiles({ ...options, packageManager }, stub, { auth, payments });
-  const written = await scaffoldFiles({ workerDir: options.workerDir, files: plan.files, strict: plan.strict });
+  // Compose first. `deriveWorkerFirst` assembles every capability's routes, once per environment, and
+  // reads nothing this run is about to write — which is what makes moving it ahead of the write legal.
+  const patterns = deriveWorkerFirst(options.config, await projectEnvironments(options.projectDir));
 
-  const assets = await wireAssets(options.workerDir, options.config, await projectEnvironments(options.projectDir));
-  await wireManifest(options.workerDir, stub, packageManager);
-  const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
-  // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
-  // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
-  await wireSolution(options.projectDir, workerName(options.workerDir));
+  const scope = { root: options.projectDir, paths: touchedPaths(options, plan.files) };
+  const result = await withRollback(scope, async () => {
+    const written = await scaffoldFiles({ workerDir: options.workerDir, files: plan.files, strict: plan.strict });
+    const assets = await wireAssets(options.workerDir, patterns);
+    await wireManifest(options.workerDir, stub, packageManager);
+    const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
+    // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
+    // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
+    await wireSolution(options.projectDir, workerName(options.workerDir));
+    // Read inside the scope, because it reads the files this block just wrote — outside, a rollback
+    // would already have taken them away.
+    const unstyled = await unstyledOnDisk(options.workerDir, plan.files);
+    return { written, assets, pkg, unstyled };
+  });
 
   return {
     worker: workerName(options.workerDir),
     framework: stub.id,
     auth,
     payments,
-    created: written.written,
-    skipped: written.skipped,
-    unstyled: await unstyledOnDisk(options.workerDir, plan.files),
-    runWorkerFirst: assets.after,
+    created: result.written.written,
+    skipped: result.written.skipped,
+    unstyled: result.unstyled,
+    runWorkerFirst: result.assets.after,
     packageManager,
-    dependencies: pkg.dependencies,
-    devDependencies: pkg.devDependencies,
-    scripts: pkg.scripts,
+    dependencies: result.pkg.dependencies,
+    devDependencies: result.pkg.devDependencies,
+    scripts: result.pkg.scripts,
   };
 }
 
@@ -345,7 +384,9 @@ export async function runUiSync(options: {
     };
   }
 
-  const change = await wireAssets(options.workerDir, options.config, environments);
+  // `after` above is the same derivation the write needs, so it is computed once and handed over —
+  // and, incidentally, before anything is written here too.
+  const change = await wireAssets(options.workerDir, after);
   const before = change.before ?? [];
   return {
     worker,
