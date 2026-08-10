@@ -61,7 +61,8 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `client-env.d.ts` | always | Ambient declarations for the `virtual:pithy/*` modules |
 | `src/client.tsx` | always | The SPA entry |
 | `src/router.tsx` | always | The two-glob router and its route guard. Both globs negate `*.test.tsx` and `*.spec.tsx`, so a co-located route test ships to nobody (`docs/UI.md` §Routing) |
-| `src/styles.css` | always | The stub's styles |
+| `src/styles.css` | always | Yours: the palette tokens, the reset, `body` |
+| `src/pithy-screens.css` | always | Pithy's: every class name a Pithy screen renders, in a `@layer pithy` cascade layer. Written whenever absent, which is what makes a later `--auth` backfill produce screens that render styled — the adopter's `styles.css` is correctly skipped, so the rules cannot live in it |
 | `src/pithy-config.tsx` | `--auth` | The one module that imports `virtual:pithy/*`, narrowed once for every screen |
 | `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
 | `src/turnstile.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads |
@@ -81,10 +82,11 @@ Four files are edited.
 
 **An edit touches the lines it means to change, and no others.** Every one of these files is checked into your repository, so the writer prints what the Biome `pithy init` scaffolds would print — short arrays on one line, an object left in whatever shape it already had, comments where you put them. A `pithy ui sync` that adds one path is a one-line diff, and its output passes `biome check` with no formatting step of your own. It did neither before #249: the writer expanded every array in the file, so a two-line change arrived as 78 insertions and then failed the pre-commit hook the CLI itself installed.
 
-**`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Two derivation rules:
+**`wrangler.jsonc` — the `assets` stanza.** `not_found_handling` is `"single-page-application"`, and `run_worker_first` is an **explicit allowlist derived from that Worker's composed route table** — never `true`, never a guessed prefix like `/api/*`. Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/payments`, `/storage`, `/media`, …) plus `/health`; nothing lives under `/api`, and an allowlist that assumes otherwise hands `GET /health` the SPA shell. Three derivation rules:
 
 - Every entry is emitted in **two forms**, the bare path and its `/*` glob, because `"/auth/*"` does not match a bare `"/auth"`.
 - Never a bare-prefix glob. `"/media*"` also captures `/mediafoo`; the pair `"/media"` + `"/media/*"` captures the route table exactly.
+- The route table is taken **once per environment**, and the allowlist is the union. A Worker composes differently per environment — `@pithy-sh/auth` mounts `/__pithy/dev-login` only in `dev` — so a single composition produces one environment's table and calls it the Worker's. The set is the project's `environments` from the root `pithy.config.ts`, plus `dev`, which is never declared because it is always there. `CI` is ignored while deriving, so `--check` in CI and `sync` on a laptop derive the same list from the same repository.
 
 `assets.directory` is **not** written. Under the Vite plugin the directory is the plugin's to set — it overwrites the key silently rather than erroring, so a value there would be a lie in the adopter's own config.
 
@@ -129,10 +131,10 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy ui add react --worker api --json
-{"command":"ui.add","worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
+{"command":"ui.add","worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/pithy-screens.css","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"unstyled":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
 ```
 
-`worker` is the `apps/` directory the front end was written into; `deployedAs` is the Worker's deployed script name. **That split holds across every command**, and it is the one thing to know about reading this output: `worker` is what `--worker` accepts and what every path in the same payload is relative to, while `deployedAs` is what the Cloudflare dashboard shows. A run reporting the deployed name (`<project>-<worker>`) beside directory-relative paths described a directory that does not exist, which is what the two fields exist to prevent. `created` and `skipped` are worker-relative and sorted; together they are every file the template declares, so a backfilling run reports the untouched ones rather than staying silent about them. `dependencies`, `devDependencies` and `scripts` name only what this run added.
+`worker` is the `apps/` directory the front end was written into; `deployedAs` is the Worker's deployed script name. **That split holds across every command**, and it is the one thing to know about reading this output: `worker` is what `--worker` accepts and what every path in the same payload is relative to, while `deployedAs` is what the Cloudflare dashboard shows. A run reporting the deployed name (`<project>-<worker>`) beside directory-relative paths described a directory that does not exist, which is what the two fields exist to prevent. `created` and `skipped` are worker-relative and sorted; together they are every file the template declares, so a backfilling run reports the untouched ones rather than staying silent about them. `unstyled` is the second claim: **wrote the screens** and **the screens are styled** are two things, and only the first was ever reported. It is read off the stylesheets as they stand on disk after the write, not off the template, because a stylesheet the adopter has since edited is the case it exists for. `dependencies`, `devDependencies` and `scripts` name only what this run added.
 
 ```
 $ pithy ui sync --worker api --json
@@ -155,6 +157,7 @@ $ pithy ui list --json
 | `auth` | boolean | `add`. Whether Pithy's sign-in screens were scaffolded. |
 | `created` | string[] | `add`. The files this run wrote, worker-relative and sorted. |
 | `skipped` | string[] | `add`. The template's files already on disk, left byte-for-byte alone. |
+| `unstyled` | string[] | `add`. Class names Pithy's screens render that no stylesheet in the Worker defines. Empty on an ordinary run; anything else is the exact list to fix. |
 | `runWorkerFirst` | string[] | `add`. The asset-routing allowlist derived from that Worker's composed route table. |
 | `packageManager` | string | `add`. The package manager the scripts were written for. |
 | `dependencies` | string[] | `add`. Only what this run added. |

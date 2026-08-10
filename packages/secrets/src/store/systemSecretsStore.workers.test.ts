@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { MAX_BOUND_PARAMETERS, recordBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { EncryptionConfig } from "../crypto/envelope";
-import { appendVersion, currentValue, initialVersionedValue } from "../crypto/versionedValue";
+import { appendVersion, currentValue, initialVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { SystemSecretsStore } from "./systemSecretsStore";
@@ -109,5 +110,55 @@ describe("SystemSecretsStore", () => {
       currentVersion: "1",
       versions: { "1": "written-under-v1" },
     });
+  });
+});
+
+/**
+ * The boot read, at the size a registry can actually reach.
+ *
+ * `getValues` is handed **every D1-backed secret the registry declares**, so its parameter count is the
+ * size of the application, not of a query. Unchunked, an app with 101 such secrets could read none of
+ * them — and since every capability's secrets resolve through this one call, that is the whole Worker
+ * failing to boot over a limit nothing in the registry mentions (#250).
+ */
+describe("SystemSecretsStore and D1's bound-parameter ceiling", () => {
+  test("a registry of 200 D1-backed secrets reads at boot", { timeout: 30_000 }, async () => {
+    const store = newStore();
+    const names = Array.from({ length: 200 }, (_, index) => `secret-${String(index).padStart(3, "0")}`);
+    for (const name of names) await store.put(name, initialVersionedValue(`value-of-${name}`));
+
+    const values = await store.getValues(names);
+
+    expect(Object.keys(values)).toHaveLength(200);
+    expect(currentValue(values["secret-137"] as VersionedValue)).toBe("value-of-secret-137");
+  });
+
+  test("no statement binds more than D1 accepts, at any registry size", async () => {
+    // Sizes spanning the cap: under it, exactly on it, one past it, and well past.
+    for (const size of [1, 99, 100, 101, 250]) {
+      const names = Array.from({ length: size }, (_, index) => `s${index}`);
+      const { counts, error } = await recordBoundParameters(env.SECRETS, async (d1) => {
+        await new SystemSecretsStore(createDatabase(d1, secretsTables), config).getValues(names);
+      });
+
+      const worst = Math.max(...counts, 0);
+      expect(worst, `${size} secrets: nothing was bound`).toBeGreaterThan(0);
+      expect(
+        worst,
+        `${size} secrets: one statement bound ${worst} parameters, over D1's cap of ${MAX_BOUND_PARAMETERS}`,
+      ).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
+      if (error) throw error;
+    }
+  });
+
+  test("an absent name in a big batch is still simply absent, not an error", { timeout: 30_000 }, async () => {
+    const store = newStore();
+    const stored = Array.from({ length: 150 }, (_, index) => `have-${index}`);
+    for (const name of stored) await store.put(name, initialVersionedValue("v"));
+
+    const values = await store.getValues([...stored, "missing-one", "missing-two"]);
+
+    expect(Object.keys(values)).toHaveLength(150);
+    expect(values["missing-one"]).toBeUndefined();
   });
 });

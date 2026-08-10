@@ -89,7 +89,10 @@ describe("the React 19 stub", () => {
       "client-env.d.ts",
       "index.html",
       "src/client.tsx",
+      // Base for the same reason `pithy-config.tsx` is: it is written whenever it is absent, which is
+      // what makes a later `--auth` backfill produce screens whose classes something defines.
       "src/pithy-config.tsx",
+      "src/pithy-screens.css",
       "src/router.tsx",
       "src/routes/app/home.tsx",
       "src/styles.css",

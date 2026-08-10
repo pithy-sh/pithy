@@ -7,10 +7,11 @@ import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError"
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
+import type { ProposedName } from "../project/bindingEntries";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
 import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
-import { addCapability, type ConfigValue, type ProposedName } from "./add";
+import { addCapability, type ConfigValue } from "./add";
 import { bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";

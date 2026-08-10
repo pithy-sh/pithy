@@ -8,6 +8,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { countPendingMigrations } from "../migrations/run";
 import { projectCloudflareAccount } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
+import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
@@ -89,6 +90,13 @@ export default defineCommand({
       // and with no hint that provisioning was a step they had missed (#240). Only for a named `--env`:
       // a bare deploy ships the top-level stanza, whose ids `pithy dev` resolves from Miniflare.
       if (env) await assertEnvironmentProvisioned(projectDir, env);
+      // And the other half of "is this environment ready to be real": does its config name every origin
+      // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
+      // the environment and the config, and this is the last moment before a staging Worker starts
+      // emailing real users magic links into production. Beside it rather than inside it because the two
+      // are different questions with different fixes; `assertOriginsDeclared` exempts a feature
+      // environment itself, which has no declared domain by design.
+      if (env) await assertOriginsDeclared(projectDir, env);
 
       const account = await projectCloudflareAccount(projectDir);
       const pending = env ? await pendingFor(projectDir, env, account) : undefined;

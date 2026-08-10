@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { MAX_BOUND_PARAMETERS, recordBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
@@ -55,6 +57,45 @@ function deps(dispatch: (ids: string[]) => Promise<void>, overrides: Partial<Sch
     dispatch,
     ...overrides,
   };
+}
+
+/** Insert `count` due jobs in one D1 batch — a per-row round trip is too slow at these sizes. */
+async function insertJobs(count: number): Promise<string[]> {
+  const ids = Array.from({ length: count }, () => `job-${++seq}`);
+  await env.DB.batch(
+    ids.map((id) =>
+      env.DB.prepare(
+        "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      ).bind(
+        id,
+        "u@example.com",
+        "noreply@pithy.sh",
+        "Acme",
+        "S",
+        "welcome",
+        "transactional",
+        "{}",
+        "scheduled",
+        "immediate",
+        0,
+        NOW_MS - MINUTE,
+        0,
+        0,
+        NOW_MS - MINUTE,
+        NOW_MS - MINUTE,
+      ),
+    ),
+  );
+  return ids;
+}
+
+/** How many jobs sit in each status — one query instead of one point read per job. */
+async function statusCounts(): Promise<Record<string, number>> {
+  const { results } = await env.DB.prepare("select status, count(*) as n from pithy_email_jobs group by status").all<{
+    status: string;
+    n: number;
+  }>();
+  return Object.fromEntries(results.map((row) => [row.status, row.n]));
 }
 
 async function statusOf(id: string): Promise<string> {
@@ -135,5 +176,66 @@ describe("runScheduler", () => {
 
     expect(result).toEqual({ due: 0, batches: 0 });
     expect(called).toBe(false);
+  });
+});
+
+/**
+ * The claim statement, at the batch size an operator can actually set.
+ *
+ * `SCHEDULER_BATCH_SIZE` is a deployment variable with no ceiling. The default of 50 binds 52 and is
+ * safe; 100 binds 102, and **every cron tick fails** — silently, for as long as it takes somebody to
+ * read a Workflow's logs. Nothing that runs at the default can reach it, which is why a green suite
+ * never mentioned it (#250).
+ */
+describe("runScheduler and D1's bound-parameter ceiling", () => {
+  test("a batch size of 100 claims and dispatches its jobs", async () => {
+    const ids = await insertJobs(100);
+    const dispatched: string[][] = [];
+
+    const result = await runScheduler(deps(async (batch) => void dispatched.push(batch), { batchSize: 100 }));
+
+    expect(result).toEqual({ due: 100, batches: 1 });
+    expect(dispatched.flat().sort()).toEqual([...ids].sort());
+    expect(await statusCounts()).toEqual({ sending: 100 });
+  });
+
+  test("no statement binds more than D1 accepts, at any batch size", { timeout: 30_000 }, async () => {
+    const ids = await insertJobs(250);
+
+    // Sizes spanning the budget the claim's two fixed parameters leave: under it, on it, past it.
+    for (const batchSize of [1, 50, 98, 99, 250]) {
+      await env.DB.prepare("update pithy_email_jobs set status = 'scheduled'").run();
+      const dispatched: string[][] = [];
+      const { counts, error } = await recordBoundParameters(env.DB, async (d1) => {
+        await runScheduler(
+          deps(async (batch) => void dispatched.push(batch), { batchSize, db: emailDatabase(d1), maxJobs: 500 }),
+        );
+      });
+
+      const worst = Math.max(...counts, 0);
+      expect(worst, `batchSize ${batchSize}: nothing was bound`).toBeGreaterThan(0);
+      expect(
+        worst,
+        `batchSize ${batchSize}: one statement bound ${worst} parameters, over D1's cap of ${MAX_BOUND_PARAMETERS}`,
+      ).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
+      if (error) throw error;
+
+      // Chunking the claim must not lose a job, and must not change the fan-out the operator asked for.
+      expect(dispatched.flat().sort()).toEqual([...ids].sort());
+      expect(dispatched.every((batch) => batch.length <= batchSize)).toBe(true);
+      expect(await statusCounts()).toEqual({ sending: 250 });
+    }
+  });
+
+  test("a batch size that is not a positive whole number is refused, naming the variable", async () => {
+    // No job inserted: a misconfigured worker should complain on an idle tick too.
+    for (const batchSize of [Number.NaN, 0, -1, 2.5]) {
+      const failure = await runScheduler(deps(async () => {}, { batchSize })).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure, `batchSize ${batchSize} was accepted`).toBeInstanceOf(PithyError);
+      expect((failure as PithyError).payload.detail).toContain("SCHEDULER_BATCH_SIZE");
+    }
   });
 });

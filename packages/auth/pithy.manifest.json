@@ -27,6 +27,7 @@
     {
       "key": "baseURL",
       "default": "https://api.example.com",
+      "constant": "publicOrigin",
       "describe": "The public origin of this Worker where it is deployed, no trailing slash. OAuth callbacks, JWKS and magic-link URLs are built from it, so it must be reachable. A `dev` composition ignores it and serves on `http://<the host the request arrived at>` — local dev has no TLS and its port is assigned per run, so it is the one address nobody can write down. Set `trustedOrigins` and the social providers (`google`, `apple`, `facebook`, `github`) by hand — see the scaffold steps below."
     },
     {

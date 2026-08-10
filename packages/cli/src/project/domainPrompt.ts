@@ -145,16 +145,47 @@ function inferZone(hostname: string): string {
   return labels.length <= 2 ? hostname : labels.slice(-2).join(".");
 }
 
-/** The `domains` block as it is written into a scaffolded `pithy.config.ts`, comment-documented. */
+/**
+ * One `<env>: { pattern, zone },` line, at the given indent. Both renderers below emit the same entries;
+ * only where they sit differs.
+ */
+function domainEntries(domains: WorkerDomains, indent: string): string[] {
+  const lines: string[] = [];
+  for (const env of DOMAIN_ENVIRONMENTS) {
+    const domain = domains[env as keyof WorkerDomains];
+    if (!domain) continue;
+    lines.push(
+      `${indent}${env}: { pattern: ${JSON.stringify(domain.pattern)}, zone: ${JSON.stringify(domain.zone)} },`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * The hoisted `const DOMAINS = { … };` a scaffolded `pithy.config.ts` carries, filled in.
+ *
+ * Hoisted rather than nested because the Worker's public origin is derived from it on the very next line
+ * — `originFor(compositionEnvironment(), DOMAINS)` — and a value inside the config object literal cannot
+ * be read by that same literal. That derivation is the whole point: it is what lets every capability take
+ * `PUBLIC_ORIGIN` instead of asking the adopter for a URL (#256).
+ *
+ * The comment above the const belongs to the scaffold and is not restated here — this replaces the
+ * declaration alone, so an adopter who has rewritten that comment keeps it.
+ */
+export function renderDomainsConst(domains: WorkerDomains): string {
+  return ["const DOMAINS = {", ...domainEntries(domains, "  "), "};"].join("\n");
+}
+
+/**
+ * The `domains` block as it is written into a `pithy.config.ts` scaffolded **before** the hoisted const —
+ * a key inside the config object. Kept for those projects; a config carrying the const takes
+ * {@link renderDomainsConst} instead.
+ */
 export function renderDomainsBlock(domains: WorkerDomains): string {
   const lines = ["  // Where this Worker answers, per environment."];
   lines.push("  // `routes` and `vars.BASE_URL` in wrangler.jsonc are generated from this — declare it once here.");
   lines.push("  domains: {");
-  for (const env of DOMAIN_ENVIRONMENTS) {
-    const domain = domains[env as keyof WorkerDomains];
-    if (!domain) continue;
-    lines.push(`    ${env}: { pattern: ${JSON.stringify(domain.pattern)}, zone: ${JSON.stringify(domain.zone)} },`);
-  }
+  lines.push(...domainEntries(domains, "    "));
   lines.push("  },");
   return lines.join("\n");
 }

@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import {
+  boundParameterBudget,
+  MAX_BOUND_PARAMETERS,
+  recordBoundParameters,
+} from "@pithy-sh/core/src/data/boundParameters";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -11,7 +17,7 @@ import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
-import { entriesAround, rankOf, topEntries } from "./query";
+import { entriesAround, MAX_SEGMENT_SIZE, rankOf, SEGMENT_FIXED_PARAMETERS, topEntries } from "./query";
 
 const WINDOW = "all";
 const T0 = new Date(1_700_000_000_000);
@@ -269,5 +275,57 @@ describe("entriesAround", () => {
     await seed();
     await store().setVisibility("b1", WINDOW, "u1", false);
     expect(await entriesAround(db(), board(), WINDOW, "u1", 2)).toEqual([]);
+  });
+});
+
+/**
+ * A segment is a caller-supplied list, so it is a bound-parameter producer like any other.
+ *
+ * The HTTP boundary already refuses one over {@link MAX_SEGMENT_SIZE}, and that is why this was never a
+ * live defect. It is still a rule living at one call site: `topEntries` and `rankOf` are exported, an
+ * adopter calls them directly, and a 120-friend segment reached D1 with 124 parameters. The library says
+ * no now, with the same number the route says no with — found sweeping for a sixth producer of #250.
+ */
+describe("a segment and D1's bound-parameter ceiling", () => {
+  test("the cap sits inside core's budget, with the margin its author left on purpose", () => {
+    // Four filters plus the six the tiebreak predicate binds — the tightest of the segment queries.
+    expect(MAX_SEGMENT_SIZE).toBeLessThanOrEqual(boundParameterBudget(SEGMENT_FIXED_PARAMETERS));
+  });
+
+  test("topEntries refuses a segment it cannot bind, naming the cap", async () => {
+    await seed();
+    const segment = Array.from({ length: MAX_SEGMENT_SIZE + 1 }, (_, index) => `u${index}`);
+
+    const failure = await topEntries(db(), board(), WINDOW, 10, 0, { segment }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.detail).toContain(String(MAX_SEGMENT_SIZE));
+  });
+
+  test("rankOf refuses one too", async () => {
+    await seed();
+    const segment = Array.from({ length: MAX_SEGMENT_SIZE + 1 }, (_, index) => `u${index}`);
+
+    await expect(rankOf(db(), board(), WINDOW, "u1", false, { segment })).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("a segment at exactly the cap still reads, and binds no more than D1 accepts", async () => {
+    await seed();
+    const segment = ["u1", ...Array.from({ length: MAX_SEGMENT_SIZE - 1 }, (_, index) => `absent-${index}`)];
+
+    const { counts, error } = await recordBoundParameters(env.DB, async (d1) => {
+      await topEntries(leaderboardDatabase(d1), board(), WINDOW, 10, 0, { segment });
+      await rankOf(leaderboardDatabase(d1), board(), WINDOW, "u1", false, { segment });
+    });
+
+    if (error) throw error;
+    const worst = Math.max(...counts, 0);
+    expect(
+      worst,
+      `one statement bound ${worst} parameters, over D1's cap of ${MAX_BOUND_PARAMETERS}`,
+    ).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
   });
 });

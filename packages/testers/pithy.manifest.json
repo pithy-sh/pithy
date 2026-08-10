@@ -38,6 +38,7 @@
     {
       "key": "baseUrl",
       "default": "https://example.com",
+      "constant": "publicOrigin",
       "describe": "The absolute origin the opt-in link is built from. Required before an invitation can be sent, because an email cannot carry a relative URL. Set it to the origin your Worker actually answers on, per environment."
     },
     {

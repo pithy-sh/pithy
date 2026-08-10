@@ -6,13 +6,11 @@ import { join } from "node:path";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
-import type { WorkerConfig } from "../project/config";
 import { writeJsonc } from "../project/jsonc";
 import { alreadyProvided, execArgs, type PackageManager } from "../project/packageManager";
 import { readOptionalFile, requireRecord } from "../project/readOptionalFile";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
-import { deriveWorkerFirst } from "./routeAllowlist";
 import type { UiStub } from "./stubs";
 import { readManifestDocument, writeManifestDocument } from "./workerUi";
 
@@ -77,11 +75,15 @@ export async function readAssets(workerDir: string): Promise<{ runWorkerFirst: s
  * the adopter's. Overwriting it on every `pithy ui sync` would silently undo a deliberate change —
  * create-never-overwrite applied to a value rather than a file.
  *
- * Idempotent: re-running rewrites the same derived list. That is exactly what `pithy ui sync` is,
- * which is why the derivation and the write live together.
+ * Idempotent: re-running rewrites the same derived list. That is exactly what `pithy ui sync` is.
+ *
+ * **The allowlist arrives derived; this function does not compose anything.** It used to take the config
+ * and call {@link deriveWorkerFirst} itself, which put the step that can fail — assembling every
+ * capability's routes, in every environment — *inside* the writer, and therefore after `pithy ui add`
+ * had already written its whole template (#259). The derivation is the caller's now, so a composition
+ * that throws throws before a byte is written.
  */
-export async function wireAssets(workerDir: string, config: WorkerConfig): Promise<AssetsChange> {
-  const patterns = deriveWorkerFirst(config);
+export async function wireAssets(workerDir: string, patterns: readonly string[]): Promise<AssetsChange> {
   const document = (await readWranglerConfig(workerDir)) as { assets?: AssetsStanza };
 
   const existing = document.assets;
@@ -95,14 +97,14 @@ export async function wireAssets(workerDir: string, config: WorkerConfig): Promi
     // In place: the array object carries the adopter's comments.
     assets.run_worker_first.splice(0, assets.run_worker_first.length, ...patterns);
   } else {
-    assets.run_worker_first = patterns;
+    assets.run_worker_first = [...patterns];
   }
   document.assets = assets;
 
   await writeWranglerConfig(workerDir, document);
   return {
     before,
-    after: patterns,
+    after: [...patterns],
     notFoundHandling: assets.not_found_handling,
     wroteNotFoundHandling,
   };

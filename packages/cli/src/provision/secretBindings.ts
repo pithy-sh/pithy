@@ -5,6 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 
 /**
  * **The `secrets_store_secrets` stanza nothing wrote.**
@@ -36,18 +37,45 @@ export interface SecretStoreBinding {
   secret_name: string;
 }
 
-/** The secret registry a Worker composes, or `null` when it composes no secrets capability at all. */
+/**
+ * The secret registry a Worker composes, or `null` when it composes no secrets capability at all.
+ *
+ * **The aggregate, not the secrets capability's own slice.** `aggregateSecretRegistries` is the exact
+ * call the Worker makes at composition: every capability contributes the secrets it owns, and
+ * `CONNECTION_KEY_ENCRYPTION_KEY` is the adopter's `app` declaration rather than something re-typed into
+ * `secrets({ registry })`. Reading the slice bound the master key and nothing else — so a
+ * `cf-secrets-store` secret declared by auth, or by the adopter's own capability, got a binding from no
+ * command at all, and the Worker booted healthy and failed at the first read of it. That is the half of
+ * #238 the master key hid, and it is the same resolution `pithy seed` already uses (`devSecrets/targets`).
+ *
+ * The `secrets` capability stays the gate. A Worker that declares a `cf-secrets-store` secret and
+ * composes no `secrets` has no store to read it from and no `SECRETS` binding to reach one, so there is
+ * nothing there to bind.
+ */
 export function workerSecretRegistry(capabilities: readonly Capability[]): SecretRegistry | null {
-  const capability = capabilities.find(isSecretsCapability);
-  return capability ? capability.secretRegistry : null;
+  if (!capabilities.some(isSecretsCapability)) return null;
+  return aggregateSecretRegistries(capabilities);
+}
+
+/**
+ * The registry entries that need a `secrets_store_secrets` binding — one predicate, so a stanza writer
+ * and a stanza reader cannot disagree about what belongs in one.
+ *
+ * **A keyspace is skipped.** It has no single value and therefore no single entry; its members are
+ * written one key at a time by the application that mints them, and a binding under the bare name would
+ * address an entry nothing ever writes.
+ */
+export function boundSecretNames(registry: SecretRegistry): string[] {
+  return Object.entries(registry)
+    .filter(([, entry]) => entry.backend === "cf-secrets-store" && !entry.keyed)
+    .map(([binding]) => binding);
 }
 
 /**
  * Every `cf-secrets-store` secret a registry declares, as a complete binding named for `scope`.
  *
- * **A keyspace is skipped.** It has no single value and therefore no single entry; its members are
- * written one key at a time by the application that mints them, and a binding under the bare name
- * would address an entry nothing ever writes.
+ * Which secrets those are is {@link boundSecretNames}' answer, shared with the reader that reports a
+ * stanza missing one — the writer and the check cannot disagree about what belongs in a stanza.
  *
  * `exists` decides what is bound rather than what is declared. Cloudflare rejects a deploy whose
  * `secrets_store_secrets` entry names a secret that is not there, so binding a declared-but-unwritten
@@ -66,8 +94,8 @@ export async function secretsStoreBindings(options: {
 }): Promise<{ bound: SecretStoreBinding[]; missing: string[] }> {
   const bound: SecretStoreBinding[] = [];
   const missing: string[] = [];
-  for (const [binding, entry] of Object.entries(options.registry)) {
-    if (entry.backend !== "cf-secrets-store" || entry.keyed) continue;
+  for (const binding of boundSecretNames(options.registry)) {
+    const entry = options.registry[binding] as SecretRegistry[string];
     const secretName = options.scope.secretEntry(binding, entry.scope as SecretNameScope);
     if (await options.exists(secretName)) {
       bound.push({ binding, store_id: options.storeId, secret_name: secretName });

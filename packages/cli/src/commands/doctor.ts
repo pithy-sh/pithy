@@ -25,6 +25,7 @@ import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from 
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
@@ -33,6 +34,7 @@ import { classifyBump } from "../notifier/version";
 import { readRcFile } from "../platform/rc";
 import { detectShell, type ShellInfo } from "../platform/shell";
 import { loadProject, type ProjectConfig, projectCloudflareAccount } from "../project/config";
+import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -187,6 +189,16 @@ export interface DoctorReport {
    */
   environments: EnvironmentsCheck | null;
   /**
+   * Whether every environment this project declares names every origin it answers on (#253). `null`
+   * outside a readable project, on the same `loadProject` outcome as the checks above: with no declared
+   * set there is nothing to ask about.
+   *
+   * The question `pithy deploy` refuses on, asked without being asked — so an environment with no origin,
+   * or one whose `workers.dev` subdomain nobody decided about, is findable before a deploy is attempted
+   * rather than at the end of one.
+   */
+  origins: OriginsCheck | null;
+  /**
    * This project's dev-login preference file: where it goes, whether it is there, and whether it says
    * anything a seed can use. `null` outside a readable project, on the same footing as the two above.
    *
@@ -206,6 +218,17 @@ export interface DoctorReport {
    * still works is a surprise rather than a diagnosis. Migration is told, not enforced.
    */
   devSecrets: DevSecretsCheck | null;
+  /**
+   * Whether every declared environment binds the `cf-secrets-store` secrets its Worker reads (#238).
+   * `null` outside a project that composes `secrets` — with no registry there is nothing to bind.
+   *
+   * It reports and never fails the exit, on the same rule its neighbours follow: every project that
+   * composed `secrets` and has not yet run `pithy secrets provision` is in this state, and so is every
+   * project that predates the stanza existing at all. That is a step not yet taken rather than a
+   * contradiction. What it must not be is silent — until this line the only thing that reported a
+   * missing binding was the Worker's own 500 on its first request.
+   */
+  secretBindings: SecretBindingsCheck | null;
   /**
    * What is in a `.dev.vars.local` that nothing else in the project knows about — a key that exists only
    * in dev, and a key that shadows a registry secret. `null` when there is nothing to say, which is every
@@ -343,6 +366,8 @@ export interface DoctorReportOptions {
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
+  /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
+  checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /**
    * Dev-login preference seam; defaults to {@link checkDevPreferences} resolved against the same `homedir`
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
@@ -350,6 +375,8 @@ export interface DoctorReportOptions {
   checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
+  /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
+  checkSecretBindings?: (projectDir: string) => Promise<SecretBindingsCheck | null>;
   /** Seam: what this project's `.dev.vars.local` files carry that nothing else declares. */
   checkDevVarsLocal?: (projectDir: string) => Promise<DevVarsLocalCheck | null>;
   /**
@@ -414,10 +441,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
+  const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
   const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
+  const probeSecretBindings =
+    options.checkSecretBindings ?? ((dir: string) => checkSecretBindings({ projectDir: dir }));
   const probeDevVarsLocal = options.checkDevVarsLocal ?? ((dir: string) => checkDevVarsLocal({ projectDir: dir }));
   const probeDevVars =
     options.checkDevVars ??
@@ -539,12 +569,19 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
   // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
   const environments = inProject ? await probeEnvironments(options.projectDir) : null;
+  // One level further out again, and gated the same way: an environment is declared, and now what is
+  // true *about* it — where it answers — must be too. Files only, so it answers offline like the rest.
+  const origins = inProject ? await probeOrigins(options.projectDir).catch(() => null) : null;
   // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
   // there is no path to resolve and no file to look for. Files only, no account, no seed run.
   const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
   // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
   // database, no seed run — so it answers offline, in the project that is not working.
   const devSecrets = inProject ? await probeDevSecrets(options.projectDir).catch(() => null) : null;
+  // The same registry, asked about the deployed environments rather than the local file. Files only once
+  // more: whether a store *entry* exists is provisioning's question, and this one is whether the stanza
+  // that would bind it is there at all (#238).
+  const secretBindings = inProject ? await probeSecretBindings(options.projectDir).catch(() => null) : null;
   // Gated the same way, and asked separately: this one needs no registry, so it answers for a project
   // that has never composed `secrets` — which is the project most likely to be asking where the file is.
   const devSecretsFile = inProject ? await probeDevSecretsFile(options.projectDir).catch(() => null) : null;
@@ -568,8 +605,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     environments,
+    origins,
     devPreferences,
     devSecrets,
+    secretBindings,
     devSecretsFile,
     devVarsLocal,
     devVars,
@@ -615,6 +654,14 @@ export function doctorExitCode(report: DoctorReport): number {
   // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
   // establishes nothing, so only `drifted` gates.
   if (report.environments?.state === "drifted") return 1;
+  // The same standard, and only one of the two origin faults meets it. `workers-dev-open` is a Worker
+  // serving a live origin its own config does not name, established from that config alone — and it is
+  // the security half: on that origin the CSRF gate refuses the requests that establish who you are, and
+  // nothing bound to the hostname applies. `no-origin` is the state every freshly scaffolded project is
+  // in before it has a domain, which is legitimate and universal; failing it would turn `pithy doctor`
+  // red on day one for everyone and teach them to stop reading it. It is reported, loudly, and
+  // `pithy deploy` is what refuses it — the moment it stops being hypothetical.
+  if (report.origins?.drift.some((drift) => drift.fault === "workers-dev-open")) return 1;
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
   // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
   // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
@@ -765,6 +812,38 @@ function environmentsBlock(check: EnvironmentsCheck): string {
   return lines.join("\n");
 }
 
+/**
+ * The `Origins` lines — shown only when an environment serves an origin its config does not name, grouped
+ * one block per Worker, on the health block's shape (#253).
+ *
+ * No command is offered, on the same rule the environments block above states: neither remedy is
+ * something `pithy` can pick. Which hostname an environment answers on is the adopter's to declare, and
+ * whether the `workers.dev` subdomain should stay open is a decision rather than a default — so each
+ * drift's own sentence names the edit and the file it goes in.
+ */
+function originsBlock(check: OriginsCheck): string {
+  const lines = ["Origins:"];
+  for (const worker of [...new Set(check.drift.map((drift) => drift.worker))]) {
+    lines.push(`  ${worker}:`);
+    for (const drift of check.drift.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(`env.${drift.env}`, describeOriginDrift(drift)));
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `Secret bindings:` lines — shown only when a declared environment does not bind a
+ * `cf-secrets-store` secret its Worker reads (#238).
+ *
+ * Its own block rather than a line inside `Dev secrets:`, because it is about the opposite half of the
+ * project: that block is the machine-local file, this is the stanza a *deployed* Worker boots against.
+ * A single command answers every line in it, which is why the lines group per Worker-and-environment.
+ */
+function secretBindingsBlock(check: SecretBindingsCheck): string {
+  return ["Secret bindings:", ...describeSecretBindings(check).map((line) => `  ${line}`)].join("\n");
+}
+
 function workerNamesBlock(check: WorkerNameCheck): string {
   const lines = ["Worker names:"];
   const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
@@ -828,6 +907,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
+  // Both origin faults keep the report verbose, even though only one of them fails the exit. An
+  // environment with no origin is the thing `pithy deploy` will refuse, and a report that stayed silent
+  // about it would send the adopter to that refusal with no warning — which is exactly what #253 asked
+  // doctor to stop doing. Worth the ink, not worth a red CI.
+  const originsOk = !report.origins || report.origins.drift.length === 0;
   // A dev login is optional, so having none is a pass — the terse report is for the developer who has
   // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
   const devPreferencesState = report.devPreferences?.state;
@@ -837,6 +921,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // four OAuth pairs auth declares are unset in almost every project, and treating that as a fault would
   // drag every report in the world verbose. `devSecretsHealthy` draws that line; the block still prints.
   const devSecretsOk = !report.devSecrets || devSecretsHealthy(report.devSecrets);
+  // A deployed Worker that will answer every request with a missing-binding error is worth the ink for
+  // the same reason, and it does not fail the exit for the same reason either — see
+  // {@link DoctorReport.secretBindings}.
+  const secretBindingsOk = !report.secretBindings || report.secretBindings.missing.length === 0;
   // A Worker that would start with no bindings at all is worth the ink for exactly the same reason a
   // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
   // but a report that called this project healthy is what #178 was reported about.
@@ -854,8 +942,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     environmentsOk &&
+    originsOk &&
     devPreferencesOk &&
     devSecretsOk &&
+    secretBindingsOk &&
     devVarsOk &&
     aliasOk &&
     !report.projectLoadError;
@@ -987,6 +1077,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(environmentsBlock(report.environments));
   }
 
+  // Where each declared environment answers, and only when one of them serves an origin nothing named.
+  // Beside the environments block because it is the same argument one level down: an environment is
+  // declared, and now what is true about it must be too.
+  if (report.origins && report.origins.drift.length > 0) blocks.push(originsBlock(report.origins));
+
   // Dev secrets, and only when something is wrong with them. The block is the finding: a project whose
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
@@ -1003,6 +1098,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
       ...(report.devVarsLocal ? describeDevVarsLocal(report.devVarsLocal) : []),
     ];
     if (lines.length > 0) blocks.push(["Dev secrets:", ...lines.map((line) => `  ${line}`)].join("\n"));
+  }
+
+  // The same registry asked about the deployed environments. After `Dev secrets:` because a developer
+  // reads this report about the project in front of them first, and a deploy second.
+  if (report.secretBindings && report.secretBindings.missing.length > 0) {
+    blocks.push(secretBindingsBlock(report.secretBindings));
   }
 
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
@@ -1090,6 +1191,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           })),
         }
       : null,
+    // Same `null` discipline once more, and each drift carries its own sentence: the remedy for "no
+    // origin at all" is not the remedy for "workers.dev is open beside your domain", and a consumer must
+    // not have to work out which from a fault name.
+    origins: report.origins
+      ? {
+          state: report.origins.state,
+          drift: report.origins.drift.map((drift) => ({ ...drift, detail: describeOriginDrift(drift) })),
+        }
+      : null,
     // The path is absolute here, not tilde-abbreviated: `--json` is read by agents and scripts, which need
     // a path they can open, not one a human recognises. The same `null` discipline as the two above.
     devPreferences: report.devPreferences
@@ -1112,6 +1222,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           // and an agent reading either had no way to tell "no secrets" from "nothing loaded".
           unresolvable: report.devSecrets.unresolvable,
           detail: describeDevSecrets(report.devSecrets),
+        }
+      : null,
+    // Same `null` discipline once more, and each finding carries its own sentence: one command writes
+    // every one of them, and an agent must not have to reconstruct which from a binding name.
+    secretBindings: report.secretBindings
+      ? {
+          state: report.secretBindings.state,
+          missing: report.secretBindings.missing,
+          detail: describeSecretBindings(report.secretBindings),
         }
       : null,
     devVarsLocal: report.devVarsLocal

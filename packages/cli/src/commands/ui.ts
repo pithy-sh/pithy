@@ -88,6 +88,12 @@ const add = defineCommand({
       } else {
         process.stdout.write(`${report.created.length} files created.\n`);
       }
+      // Written and styled are two claims. Saying only the first is what let a backfill report a
+      // sign-in screen as created while three of the classes it renders were defined nowhere.
+      if (report.unstyled.length > 0) {
+        process.stdout.write(`These screens render classes nothing here defines: ${report.unstyled.join(", ")}.\n`);
+        process.stdout.write("Define them in src/styles.css, or restore src/pithy-screens.css.\n");
+      }
       process.stdout.write(`Worker-first: ${report.runWorkerFirst.join(", ")}.\n`);
       // Before the install line, because it is the instruction that would otherwise be wrong. While the
       // scope is unpublished the stub's `@pithy-sh/vite` range is dropped, so the install below succeeds
@@ -129,6 +135,7 @@ const sync = defineCommand({
       });
 
       const report = await runUiSync({
+        projectDir,
         workerDir: target.dir,
         config: target.config,
         check: args.check,

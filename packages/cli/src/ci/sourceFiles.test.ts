@@ -639,20 +639,36 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 /** The byte, never a literal one. It is also what `git ls-files -z` separates paths with. */
 const NUL = String.fromCharCode(0);
 
-/**
- * Every path in git's index. `-z` because a path may hold anything but this byte and a slash.
- *
- * **Two gates read this listing, and its scope is asserted once**, in the first test below — a scan that
- * silently reaches nothing passes every rule written under it (#185). A second copy of this function
- * would be a second thing to keep in step with what git actually tracks.
- */
-function tracked(): string[] {
-  const listing = execFileSync("git", ["ls-files", "-z"], {
+/** One `git ls-files` listing. `-z` because a path may hold anything but this byte and a slash. */
+function lsFiles(...flags: string[]): string[] {
+  const listing = execFileSync("git", ["ls-files", "-z", ...flags], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
   return listing.split(NUL).filter((path) => path !== "");
+}
+
+/**
+ * Every path git would carry: what the index holds, **plus what is written and not ignored**.
+ *
+ * The index alone made both gates below structurally one run late. `git ls-files` reads the index, so a
+ * file that exists but has never been `git add`ed is invisible — and the pre-commit hook runs Biome on
+ * staged files rather than this suite, so the first scan that could see a new file was the one *after*
+ * the commit that tracked it. That is exactly how a NUL byte reached `main` once already: not because
+ * the rule was wrong, but because the set it was quantified over did not yet contain the file.
+ *
+ * `--others --exclude-standard` closes it, and closes it without noise: everything `.gitignore` covers is
+ * excluded, so the scaffolds this repository's own suites write into `packages/cli/.smoke-*` and
+ * `.e2e-*`, `node_modules`, and `dist` are all out. What is left is a file somebody wrote and means to
+ * commit, which is precisely the file the rule is about.
+ *
+ * **Two gates read this listing, and its scope is asserted once**, in the first test below — a scan that
+ * silently reaches nothing passes every rule written under it (#185). A second copy of this function
+ * would be a second thing to keep in step with what git actually sees.
+ */
+function tracked(): string[] {
+  return [...new Set([...lsFiles(), ...lsFiles("--others", "--exclude-standard")])];
 }
 
 /**
@@ -710,6 +726,25 @@ describe("no file this repository commits is binary to git", () => {
     // A dotted directory the source walk skips by design, and real committed text all the same.
     expect(paths).toContain(".changeset/config.json");
     expect(paths.length).toBeGreaterThan(1500);
+  });
+
+  test("and a file written but never added, because the rule cannot wait for the commit", async () => {
+    // The gate used to read git's index alone, which made it one run late by construction: a new file is
+    // invisible until something stages it, and the pre-commit hook runs Biome rather than this suite. So
+    // the first scan that could see a file was the one after the commit that tracked it.
+    const written = join(REPO_ROOT, "packages", "cli", "src", "ci", `untracked-probe-${process.pid}.ts`);
+    await writeFile(written, "export const probe = 1;\n");
+    try {
+      expect(tracked()).toContain(relative(REPO_ROOT, written).split(sep).join("/"));
+    } finally {
+      await rm(written, { force: true });
+    }
+  });
+
+  test("and nothing .gitignore covers, so a scaffolded fixture is not a finding", () => {
+    // The other half of widening the set. This repository's own suites write whole projects into
+    // `packages/cli/.smoke-*` and `.e2e-*`, and a gate that reported them would be muted within a day.
+    expect(tracked().filter((path) => path.includes("node_modules") || path.includes("/.smoke-"))).toEqual([]);
   });
 
   test("and it sees the byte wherever it sits, including past the point git stops looking", async () => {

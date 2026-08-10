@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -102,6 +103,45 @@ describe("secretsStoreBindings", () => {
     ]);
   });
 
+  /**
+   * The registry a Worker reads through is **every** composed capability's, aggregated — the same call
+   * the Worker itself makes at composition, and the one `pithy seed` already resolves against. Reading
+   * only the secrets capability's own slice bound the master key and nothing else, so a
+   * `cf-secrets-store` secret declared by auth or by the adopter's own `app` capability got no binding
+   * from any command. That is the half of #238 the master key hid: the Worker booted, and failed at the
+   * first read of the secret instead of the first request.
+   */
+  test("binds a cf-secrets-store secret another capability declares, not only the secrets capability's own", async () => {
+    const app = {
+      name: "board",
+      secretRegistry: {
+        CONNECTION_KEY_ENCRYPTION_KEY: {
+          backend: "cf-secrets-store",
+          scope: "environment",
+          rotatable: true,
+          valueType: "text",
+        },
+      },
+    } as unknown as Capability;
+    const found = workerSecretRegistry([secrets({ registry: {} }), app]);
+    expect(found).not.toBeNull();
+
+    const { bound } = await secretsStoreBindings({
+      registry: found as SecretRegistry,
+      scope: environmentScope("replay", "prod"),
+      storeId: "store-1",
+      exists: all,
+    });
+    expect(bound.map((entry) => entry.binding).sort()).toEqual([
+      "CONNECTION_KEY_ENCRYPTION_KEY",
+      "SECRETS_ENCRYPTION_KEYS",
+    ]);
+  });
+
+  /**
+   * A Worker that declares a secret and composes no `secrets` has no store to read it from and no
+   * `SECRETS` binding to reach one — so there is nothing to bind, and this stays the gate it was.
+   */
   test("a Worker composing no secrets capability has no registry and no bindings", () => {
     expect(workerSecretRegistry([])).toBeNull();
   });

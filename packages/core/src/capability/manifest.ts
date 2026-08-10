@@ -218,7 +218,31 @@ export const CONFIG_OPTION_INDENT = "      ";
  * The comment above the line is not measured against {@link CONFIG_LINE_WIDTH}: Biome never reflows a
  * comment, so an option's `describe` may run as long as it needs to.
  */
-export function renderConfigOptionLine(key: string, value: ConfigOptionValue, indent: string): string {
+/**
+ * What a writer has decided to put on the right of an option line: a value, or one of the scaffold's
+ * constants referenced by name.
+ *
+ * A marker object rather than a string, because a string would be indistinguishable from a value that
+ * happens to spell an identifier — and the difference is quotes, which is the difference between an
+ * origin that follows the environment and one written down. Constructed by the CLI from
+ * `ConfigOption.constant` after it has checked the target config declares it; never parsed from a
+ * manifest, which states only the key.
+ */
+export interface ConfigConstantRef {
+  /** The constant to render, by key into {@link CONFIG_CONSTANTS}. */
+  readonly constant: ConfigConstant;
+}
+
+/** Whether a rendered value is a reference to one of the scaffold's constants rather than a literal. */
+function isConstantRef(value: ConfigOptionValue | ConfigConstantRef): value is ConfigConstantRef {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && "constant" in value;
+}
+
+export function renderConfigOptionLine(
+  key: string,
+  value: ConfigOptionValue | ConfigConstantRef,
+  indent: string,
+): string {
   if (!BARE_KEY.test(key)) {
     throw new ValidationError({
       message: `A config option key must be a bare identifier, and "${key}" is not.`,
@@ -226,7 +250,11 @@ export function renderConfigOptionLine(key: string, value: ConfigOptionValue, in
       detail: `Rendered as ${JSON.stringify(`${key}: …`)}, the generated pithy.config.ts would not parse as TypeScript — a key is written bare, so it cannot carry a hyphen, a space, a quote, or a leading digit.`,
     });
   }
-  return `${indent}${key}: ${renderConfigValue(value)},`;
+  // A constant is rendered bare — that is its whole point, and the identifier comes from
+  // {@link CONFIG_CONSTANTS} rather than from the manifest, so nothing a package states reaches the
+  // adopter's TypeScript unquoted.
+  const rendered = isConstantRef(value) ? CONFIG_CONSTANTS[value.constant] : renderConfigValue(value);
+  return `${indent}${key}: ${rendered},`;
 }
 
 /**
@@ -387,6 +415,28 @@ export function renderCapabilityRegistration({
  * {@link renderConfigOptionLine} and {@link renderConfigOptionComment} guarantee the whole line rather
  * than its right-hand side (#174).
  */
+/**
+ * The constants a scaffolded `pithy.config.ts` defines, that a manifest option may name instead of
+ * stating a literal — identifier by key, so the manifest carries a **name from a closed set** and never
+ * an expression.
+ *
+ * That is the whole security argument, and it is the same one #183 settled for a capability's name: a
+ * manifest is third-party data read out of `node_modules` and written into the adopter's TypeScript, so
+ * anything it states unquoted must come from a list this package controls. An `expression` field would
+ * put arbitrary code in the adopter's config on the strength of a package they installed.
+ *
+ * One entry today. `PUBLIC_ORIGIN` is the Worker's address for the environment it composes in, derived
+ * by `originFor(compositionEnvironment(), DOMAINS)` in the scaffolded config — the line that exists so no
+ * capability ever asks an adopter to write an origin down again.
+ */
+export const CONFIG_CONSTANTS = { publicOrigin: "PUBLIC_ORIGIN" } as const;
+
+/** Which scaffolded constant an option's value is, by key. */
+export const ConfigConstant = z
+  .enum(Object.keys(CONFIG_CONSTANTS) as [keyof typeof CONFIG_CONSTANTS])
+  .describe("A constant the scaffolded pithy.config.ts defines, named from a closed set rather than spelled out.");
+export type ConfigConstant = z.infer<typeof ConfigConstant>;
+
 export const ConfigOption = z
   .object({
     key: z
@@ -397,6 +447,9 @@ export const ConfigOption = z
       })
       .describe('Option name passed to the capability factory (e.g. "basePath"); a bare identifier.'),
     default: ConfigOptionValue.describe("Default value rendered into pithy.config.ts when no override is given."),
+    constant: ConfigConstant.optional().describe(
+      "A constant the scaffolded pithy.config.ts defines, rendered *unquoted* in place of `default` when the target config declares it. The one that exists is `publicOrigin` — `PUBLIC_ORIGIN`, this Worker's address for the environment it composes in. An option whose value is an origin must name it rather than state a URL, because a URL written down is production's URL written into staging: it is what mailed staging's testers magic links into production and unsubscribed them there (#256). `default` is still required and is what a config with no such constant gets, so an older project is never handed an identifier it does not define.",
+    ),
     describe: z
       .string()
       .min(1)

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
@@ -39,19 +40,29 @@ export class SystemSecretsStore {
     return new SystemSecretsStore(createDatabase(env.SECRETS, secretsTables), config);
   }
 
-  /** Decrypt and return the value envelopes for every requested name that exists (absent names omitted). */
+  /**
+   * Decrypt and return the value envelopes for every requested name that exists (absent names omitted).
+   *
+   * The name list is the *application's* size, not a query's: `secretsStore` hands this every D1-backed
+   * secret the registry declares, in one call, at boot. So it is chunked against D1's cap rather than
+   * assumed to fit. Unchunked, an app declaring 101 of them read none of them, and because every
+   * capability's secrets resolve through this one call, that is the whole Worker failing to start over a
+   * limit nothing in a registry mentions (#250).
+   */
   async getValues(names: string[]): Promise<Record<string, VersionedValue>> {
     if (names.length === 0) return {};
-    const rows = await this.#db
-      .selectFrom("pithySecretsSystemSecrets")
-      .select(["name", "encryptedValue", "iv", "keyVersion"])
-      .where("name", "in", names)
-      .execute();
-
     const out: Record<string, VersionedValue> = {};
-    for (const row of rows) {
-      const plaintext = await decryptValue(this.#config, row.encryptedValue, row.iv, row.keyVersion);
-      out[row.name] = decodeVersionedValue(plaintext);
+    for (const chunk of chunkByBoundParameters(names, 0)) {
+      const rows = await this.#db
+        .selectFrom("pithySecretsSystemSecrets")
+        .select(["name", "encryptedValue", "iv", "keyVersion"])
+        .where("name", "in", chunk)
+        .execute();
+
+      for (const row of rows) {
+        const plaintext = await decryptValue(this.#config, row.encryptedValue, row.iv, row.keyVersion);
+        out[row.name] = decodeVersionedValue(plaintext);
+      }
     }
     return out;
   }

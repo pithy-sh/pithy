@@ -5,7 +5,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
@@ -25,6 +27,23 @@ function routed(name: string, base: string) {
 const WITH_AUTH: WorkerConfig = { capabilities: [routed("auth", "/auth")] };
 const WITHOUT_AUTH: WorkerConfig = { capabilities: [routed("leaderboard", "/leaderboard")] };
 const WITH_PAYMENTS: WorkerConfig = { capabilities: [routed("auth", "/auth"), routed("payments", "/payments")] };
+
+/**
+ * A worker composing a capability that mounts its route **only** in a `dev` composition — the shape
+ * `@pithy-sh/auth` gives the dev-login route, and the shape no single composition can reveal.
+ */
+const DEV_ONLY: WorkerConfig = {
+  capabilities: [
+    defineCapability({
+      name: "auth",
+      requiredBindings: [],
+      routes: (app) => {
+        if (compositionEnvironment() !== "dev") return;
+        app.get(DEV_LOGIN_ROUTE, (c) => c.json({}));
+      },
+    }),
+  ],
+};
 
 /** The target worker's directory — the `<name>` in `apps/<name>`. */
 const WORKER = "board";
@@ -49,6 +68,12 @@ describe("pithy ui", () => {
       `${JSON.stringify({ name: DEPLOYED, scripts: { dev: "wrangler dev" } }, null, 2)}\n`,
     );
     await writeFile(join(projectDir, "tsconfig.json"), `${JSON.stringify({ files: [], references: [] }, null, 2)}\n`);
+    // A real root config, because the allowlist derivation reads the project's `environments` from it —
+    // a Worker's route table is a function of the environment it composes in, so the set is an input.
+    await writeFile(
+      join(projectDir, "pithy.config.ts"),
+      'export default { name: "replay", environments: ["staging", "prod"] };\n',
+    );
   });
   afterEach(async () => {
     await rm(projectDir, { recursive: true, force: true });
@@ -181,6 +206,39 @@ describe("pithy ui", () => {
     expect(second.skipped).toEqual(first.created);
   });
 
+  test("a backfill onto a hand-written stylesheet produces screens that render styled", async () => {
+    // The reported failure, exactly. A project scaffolded `--no-auth` before Pithy's screens carried
+    // their own stylesheet — so `src/pithy-screens.css` is absent — whose `src/styles.css` the adopter
+    // has since replaced with their own design. Then it gains the sign-in screens.
+    await runUiAdd({ ...options(WITH_AUTH), auth: false });
+    await rm(join(workerDir, "src", "pithy-screens.css"));
+    const mine = "/* Replay's own design. */\nbody { background: #0e0e10; }\n";
+    await writeFile(join(workerDir, "src", "styles.css"), mine);
+
+    const backfill = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+
+    expect(backfill.created).toContain("src/routes/pithy/sign-in.tsx");
+    // Theirs, untouched — skipping it is right, and is what left the screens unstyled before.
+    expect(backfill.skipped).toContain("src/styles.css");
+    expect(await readFile(join(workerDir, "src", "styles.css"), "utf8")).toBe(mine);
+    // And the screens are styled anyway, because the run that writes them writes their rules.
+    expect(backfill.created).toContain("src/pithy-screens.css");
+    expect(backfill.unstyled).toEqual([]);
+  });
+
+  test("a run whose screens would render unstyled says exactly which classes are missing", async () => {
+    // The planted violation, end to end: `pithy-screens.css` is on disk but the adopter has emptied
+    // it, so it is skipped as theirs and defines nothing. The command has to name what is missing
+    // rather than report the screens as created and stop there.
+    await runUiAdd({ ...options(WITH_AUTH), auth: false });
+    await writeFile(join(workerDir, "src", "pithy-screens.css"), "/* mine now */\n");
+    await writeFile(join(workerDir, "src", "styles.css"), "body { margin: 0; }\n");
+
+    const backfill = await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    expect(backfill.created).toContain("src/routes/pithy/sign-in.tsx");
+    expect(backfill.unstyled).toEqual(["divider", "muted", "otp", "screen", "secondary", "stack"]);
+  });
+
   test("--auth on a worker with no auth capability is actionable, never a broken scaffold", async () => {
     try {
       await runUiAdd({ ...options(WITHOUT_AUTH), auth: true });
@@ -238,12 +296,12 @@ describe("pithy ui", () => {
   test("sync is idempotent and picks up a capability added after the scaffold", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
 
-    const same = await runUiSync({ workerDir, config: WITHOUT_AUTH });
+    const same = await runUiSync({ projectDir, workerDir, config: WITHOUT_AUTH });
     expect(same.changed).toBe(false);
     expect(same.before).toEqual(same.after);
 
     const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
-    const changed = await runUiSync({ workerDir, config: grown });
+    const changed = await runUiSync({ projectDir, workerDir, config: grown });
     expect(changed.changed).toBe(true);
     expect(changed.after.filter((path) => !changed.before.includes(path))).toEqual(["/ledger", "/ledger/*"]);
 
@@ -267,7 +325,7 @@ describe("pithy ui", () => {
         },
       }),
     };
-    const report = await runUiSync({ workerDir, config: grown, check: true });
+    const report = await runUiSync({ projectDir, workerDir, config: grown, check: true });
 
     expect(report.uncovered).toEqual(["/api/organisations"]);
     expect(report.changed).toBe(true);
@@ -277,7 +335,7 @@ describe("pithy ui", () => {
 
   test("sync --check passes on a worker in sync", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
-    const report = await runUiSync({ workerDir, config: WITHOUT_AUTH, check: true });
+    const report = await runUiSync({ projectDir, workerDir, config: WITHOUT_AUTH, check: true });
     expect(report.uncovered).toEqual([]);
     expect(report.changed).toBe(false);
   });
@@ -285,13 +343,32 @@ describe("pithy ui", () => {
   test("a sync that writes leaves nothing uncovered", async () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
     const grown: WorkerConfig = { capabilities: [...WITHOUT_AUTH.capabilities, routed("ledger", "/ledger")] };
-    expect((await runUiSync({ workerDir, config: grown })).uncovered).toEqual([]);
-    expect((await runUiSync({ workerDir, config: grown, check: true })).uncovered).toEqual([]);
+    expect((await runUiSync({ projectDir, workerDir, config: grown })).uncovered).toEqual([]);
+    expect((await runUiSync({ projectDir, workerDir, config: grown, check: true })).uncovered).toEqual([]);
+  });
+
+  test("a route only a dev composition mounts is in the allowlist ui add writes", async () => {
+    // `pithy dev` composes this; `pithy ui add` does not. Nothing about the invocation says `dev`, so
+    // the project's own environment set is what has to reach the derivation — and `dev` rides with it.
+    const report = await runUiAdd({ ...options(DEV_ONLY), auth: false });
+    expect(report.runWorkerFirst).toContain("/__pithy");
+    expect(report.runWorkerFirst).toContain("/__pithy/*");
+  });
+
+  test("sync --check fails while a dev-only route is unreachable, and sync repairs it", async () => {
+    // The planted violation, end to end. The allowlist is written without the route — the state
+    // `pithy ui add` left every project in — and the check has to call it what it is.
+    await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
+    const stale = await runUiSync({ projectDir, workerDir, config: DEV_ONLY, check: true });
+    expect(stale.uncovered).toEqual([DEV_LOGIN_ROUTE]);
+
+    await runUiSync({ projectDir, workerDir, config: DEV_ONLY });
+    expect((await runUiSync({ projectDir, workerDir, config: DEV_ONLY, check: true })).uncovered).toEqual([]);
   });
 
   test("sync on a worker with no front end says so", async () => {
     try {
-      await runUiSync({ workerDir, config: WITHOUT_AUTH });
+      await runUiSync({ projectDir, workerDir, config: WITHOUT_AUTH });
       expect.unreachable("expected sync without a UI to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(PithyError);

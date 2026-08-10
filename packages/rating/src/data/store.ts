@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { RatingRecord } from "./rating";
 import { RATING_RATINGS_TABLE, type RatingDatabase } from "./tables";
 
@@ -33,13 +34,21 @@ export function ratingStore(db: RatingDatabase): RatingStore {
 
     async getMany(pool, userIds) {
       if (userIds.length === 0) return [];
-      const rows = await db
-        .selectFrom(RATING_RATINGS_TABLE)
-        .selectAll()
-        .where("pool", "=", pool)
-        .where("userId", "in", [...userIds])
-        .execute();
-      return rows.map((row) => RatingRecord.parse(row));
+      // A roster is as big as the game says it is: `players` has a minimum of two and no maximum, and
+      // the docs promise any count. So the roster is chunked against D1's cap rather than assumed to
+      // fit — one parameter per player, plus the pool. Unchunked, a 120-player game failed every
+      // `recordResult`, and no two-player test could have said so (#250).
+      const records: RatingRecord[] = [];
+      for (const chunk of chunkByBoundParameters(userIds, 1)) {
+        const rows = await db
+          .selectFrom(RATING_RATINGS_TABLE)
+          .selectAll()
+          .where("pool", "=", pool)
+          .where("userId", "in", chunk)
+          .execute();
+        for (const row of rows) records.push(RatingRecord.parse(row));
+      }
+      return records;
     },
 
     async upsert(record) {

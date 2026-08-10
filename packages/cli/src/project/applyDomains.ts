@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { baseUrlFor, DOMAIN_ENVIRONMENTS, domainFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { DOMAIN_ENVIRONMENTS, domainFor, originFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
 /**
@@ -44,6 +44,7 @@ interface DomainStanza {
   routes?: unknown[];
   route?: unknown;
   vars?: Record<string, unknown>;
+  workers_dev?: unknown;
 }
 interface DomainWrangler extends DomainStanza {
   env?: Record<string, DomainStanza | undefined>;
@@ -80,6 +81,31 @@ function upsertRoute(stanza: DomainStanza, pattern: string, zone: string): void 
 }
 
 /**
+ * Turn off `workers.dev` for an environment that now has a custom domain — unless the adopter has
+ * already said what they want.
+ *
+ * **A declared domain is the origin, and `workers.dev` is a second one nothing declared.** Wrangler's
+ * `workers_dev` defaults to `true` and declaring `routes` does not change it, so a Worker with a custom
+ * domain also answers on `<name>.<subdomain>.workers.dev` — and `preview_urls` defaults to whatever
+ * `workers_dev` is, so every deployed version is reachable there too. `vars.BASE_URL` beside it names
+ * only the custom domain, so on that second origin the OAuth callbacks and magic links point elsewhere
+ * and the CSRF same-origin gate refuses the very requests that establish who you are. Reachable, and
+ * broken in exactly that half. Anything bound to the hostname rather than the script — a WAF rule, an
+ * Access policy, a per-hostname rate limit — does not apply there at all.
+ *
+ * **Written only when the key is absent, unlike the route and `BASE_URL` beside it.** Those two are
+ * *derived* from the declaration and are overwritten every run, because a stale one contradicts it.
+ * This is not derived: the declaration makes `false` the right default and does not make it the only
+ * answer. A team that wants the `workers.dev` URL for staging until DNS is cut over writes
+ * `"workers_dev": true`, and that is a named origin rather than an unnamed one — which is the whole
+ * distinction `originDrift` is built on. Overwriting it would delete the sentence they wrote.
+ */
+function closeWorkersDev(stanza: DomainStanza): void {
+  if (typeof stanza.workers_dev === "boolean") return;
+  stanza.workers_dev = false;
+}
+
+/**
  * Write the declaration into a Worker's `wrangler.jsonc`. Returns what it wrote, per environment.
  *
  * Idempotent: running it twice writes the same bytes, and running it after an adopter moved their domain
@@ -103,8 +129,12 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
 
     upsertRoute(stanza, domain.pattern, domain.zone);
     stanza.vars ??= {};
-    const baseUrl = baseUrlFor(domain);
+    // Through `originFor`, never `baseUrlFor` directly — the same call an adopter's `pithy.config.ts`
+    // makes to hand a capability its origin (#256). That is what makes "`vars.BASE_URL` and the
+    // capability configs cannot disagree" a property of the code rather than a thing to remember.
+    const baseUrl = originFor(env, domains);
     stanza.vars.BASE_URL = baseUrl;
+    closeWorkersDev(stanza);
 
     applied.push({ env, pattern: domain.pattern, baseUrl });
   }

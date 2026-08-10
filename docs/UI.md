@@ -40,7 +40,8 @@ apps/api/
     index.ts                       the Worker entry — untouched
     client.tsx               new   SPA entry: mounts the router
     router.tsx               new   the two-glob router and its route guard
-    styles.css               new
+    styles.css               new   yours: the palette tokens, the reset, body
+    pithy-screens.css        new   Pithy's: every class Pithy's own screens render
     pithy-config.tsx         new   the one module that imports virtual:pithy/*
     session.tsx              new   --auth  session hook, signOut, signed-in guard
     turnstile.tsx            new   --auth  the widget and its token placement
@@ -73,6 +74,19 @@ Pithy writes a file **once**, and from that moment the file is yours.
 - `src/routes/app/` is written exactly once, at the initial scaffold, and never written again. It is your application. Pithy has no business in it.
 
 The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and write your own. Rewrite `styles.css` from scratch. Nothing upstream will argue with you, and nothing will silently revert.
+
+### Two stylesheets, and why
+
+`src/styles.css` is yours: the palette tokens, the reset, `body`. `src/pithy-screens.css` is Pithy's, and it defines **every class name a Pithy screen renders** — `screen`, `muted`, `stack`, `secondary`, `otp`, `divider`. Pithy's screens import it themselves.
+
+They are two files because ownership says they must be. Adding the sign-in screens to a project that already has a stylesheet — `pithy add auth`, then `pithy ui add react --auth` — writes the screens and correctly skips `styles.css`, because that file is yours. When one file held both, that run produced a sign-in screen whose classes nothing defined and reported it as created. A screen and the rules it needs are one artifact; splitting them by ownership is what lets each be written on its own schedule.
+
+Two properties make Pithy's file safe to keep:
+
+- **Everything in it sits in a `@layer pithy` cascade layer.** Unlayered CSS beats layered CSS regardless of order or specificity, so any rule you write wins over one of Pithy's with no `!important` and no regard for import order. Give `.screen` a different `max-width` in your own stylesheet and it takes.
+- **Its palette is six tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
+
+`pithy ui add` checks the result rather than assuming it. After writing, it reads the stylesheets actually on disk and names any class the screens render that none of them defines — under `--json` as `unstyled`. Empty is the ordinary answer; anything else is the exact list to fix.
 
 ### Where the templates live
 
@@ -242,10 +256,21 @@ Cloudflare's asset router runs **before** your Worker. With `not_found_handling:
 
 So `pithy ui add` writes an **explicit allowlist derived from that Worker's real composed route table**. Not `true`, and not a convention like `/api/*` — Pithy's routes sit at capability base paths (`/auth`, `/leaderboard`, `/ledger`, `/media`, `/matchmaking`, `/payments`, `/rating`, `/multiplayer`, `/storage`, `/vector`, `/_pithy/email`) plus `/health`, and nothing lives under `/api`. An allowlist that assumed otherwise would return the SPA shell for `GET /health` and reject `POST /auth/sign-in/magic-link` with a 405.
 
-Two rules the derivation follows:
+Three rules the derivation follows:
 
 - **Both forms, every time.** `"/auth/*"` does not match a bare `"/auth"`, so each base path is emitted as the pair `"/auth"` and `"/auth/*"`.
 - **Never a bare-prefix glob.** `"/media*"` would also capture `/mediafoo`. The pair `"/media"` + `"/media/*"` captures the route table and nothing beyond it.
+- **Every environment, not just this one.** A Worker has one route table *per environment*, so the list is the union across every environment the project declares plus `dev`.
+
+### Why every environment
+
+A capability may decide at registration whether to mount a route at all. `@pithy-sh/auth` does: `/__pithy/dev-login` exists only in a `dev` composition, because it mints a session with no credential presented and has no business in a route table that ships.
+
+Compose the Worker once — under whatever environment the command happens to be run in — and you get the route table of *that* environment while calling it the Worker's. That is how `/__pithy/dev-login` was left off every generated allowlist: `pithy ui sync` was not a `dev` composition, so the route did not exist to be found, and `--check` reported `every route reaches the worker` while `pithy dev`'s sign-in URL landed on the SPA's 404.
+
+So the derivation assembles the Worker once per environment and takes the union. Anything conditionally mounted — on the environment, on a flag, on a capability being composed — is covered without you naming a path. `CI` is deliberately ignored while deriving: `--check` runs in CI and `sync` runs on a laptop, and a list that differed between them could never be checked. An entry nothing serves costs a 404 from the Worker; a missing one costs a 200 with the wrong body.
+
+`dev` is never declared in `environments` — it is local and always present — so the derivation adds it itself.
 
 ### It is derived once, and every route you mount afterwards is yours to re-derive
 

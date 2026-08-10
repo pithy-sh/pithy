@@ -739,6 +739,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   removed: ["alias", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
+  // Both report an environment's `secrets_store_secrets`: provision says which entries it wrote, doctor
+  // says which a declared environment still has no binding for. One subject, two directions.
+  secretBindings: ["doctor", "provision"],
   shell: ["alias", "doctor"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
@@ -806,6 +809,9 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  *   write payloads and `init`, an `object[]` of per-environment records in `secrets status`, an `object`
  *   block in `doctor` (#241), and `array` on `media` and `storage`, which is why those two do not decide
  *   it either way.
+ * - **`secretBindings`** — an `object[]` of what `pithy provision` wrote for an environment, and an
+ *   `object` block in `doctor` reporting which declared environments still bind none (#238). One subject
+ *   asked in two directions, and the same report-versus-result shape as the four above.
  *
  * The first four share one shape: **`doctor`'s and `dev`'s payloads are reports, and a report's blocks
  * take the bare noun a result elsewhere spends on a scalar.** That is the fix to make, and it is one
@@ -815,6 +821,7 @@ const SHARED_JSON_KEY_TYPES_DISAGREE: Record<string, string[]> = {
   alias: ["object", "string"],
   environments: ["object", "object[]", "string[]"],
   project: ["object", "string"],
+  secretBindings: ["object", "object[]"],
   workers: ["object", "object[]"],
 };
 
@@ -911,7 +918,7 @@ describe("the --json contract agrees with itself", () => {
 
   /**
    * And the ones that do not agree, named exactly. A fifth entry cannot appear without someone writing it
-   * down beside the four, and none of the four can be fixed without deleting its line.
+   * down beside the others, and none of them can be fixed without deleting its line.
    */
   test("the shared keys whose pages disagree on a type are exactly the ones named", () => {
     expect(Object.fromEntries(Object.entries(SHARED_TYPES).filter(([, types]) => types.length > 1))).toEqual(

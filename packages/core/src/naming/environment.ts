@@ -127,8 +127,15 @@ export function assertValidEnvironment(name: string): void {
  */
 export const DEFAULT_ENVIRONMENTS = ["staging", "prod"] as const;
 
-/** The local environment. Never declared: it is the top-level wrangler stanza, and it always exists. */
-const LOCAL_ENVIRONMENT = "dev";
+/**
+ * The local environment. Never declared: it is the top-level wrangler stanza, and it always exists.
+ *
+ * Exported because "always exists and is never declared" is a fact other code has to act on, not only a
+ * rule this schema enforces. Anything deriving something over *every* environment a project has must add
+ * this one itself — {@link DeclaredEnvironments} will never hand it over — and a caller spelling `"dev"`
+ * inline is a caller that can spell it differently.
+ */
+export const LOCAL_ENVIRONMENT = "dev";
 
 /**
  * **The set of deployed environments a project has**, declared once in the root `pithy.config.ts`.

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { boundParameterBudget, chunkRowsByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tables";
@@ -14,11 +16,11 @@ import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tab
  * submission behind it. So the pass is chunked: many small, bounded statements the runtime can
  * interleave with real traffic.
  *
- * Two hard limits shape the chunk size:
- *
- *   - **100 bound parameters per query.** Each row in a bulk update costs three (`WHEN id THEN rank`,
- *     plus the id again in the `IN` list), and the board and window cost one each. Hence 32 rows.
- *   - **30 seconds per query**, which the chunk size keeps a long way off.
+ * A chunk is a **pacing** unit: how much of the board one keyset step walks, kept well inside D1's
+ * 30-second per-query limit. It is no longer also the width of a statement — the bulk update sizes
+ * itself against D1's bound-parameter cap through core's arithmetic, so a chunk of any size is written
+ * in as many statements as it takes. That separation is the fix for #250: `chunkSize` was unvalidated,
+ * and `chunkSize: 40` bound 120 and broke the pass with no warning that a limit was even involved.
  *
  * Chunks walk the board by keyset, not by `OFFSET`: an offset page makes SQLite count past every row it
  * skips, so an offset walk is quadratic in billed rows — the very cost `materialize` exists to avoid.
@@ -27,17 +29,24 @@ import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tab
  * why it lives in the package instead of in every adopter's repo.
  */
 
-/** D1's cap. Cloudflare documents this as a hard per-query limit. */
-export const MAX_BOUND_PARAMETERS = 100;
-
 /**
- * Rows per chunk: three bound parameters each, plus the board key and window key, under the cap.
- * `(32 * 3) + 2 = 98`.
+ * What one ranked row costs the bulk update: `WHEN id`, `THEN rank`, and the id again in the `IN` list.
+ *
+ * The cap itself is not restated here. It was, and a second copy of a platform limit is how a limit goes
+ * stale in one place and not the other — `MAX_BOUND_PARAMETERS` lives in `@pithy-sh/core`, once.
  */
-export const RANK_CHUNK_SIZE = 32;
+export const RANK_PARAMETERS_PER_ROW = 3;
 
 /**
- * Chunks a refresh ranks before it checkpoints its cursor. `2000 * 32` is ~64k entries per Workflow step.
+ * Rows per chunk by default: as many as one update statement can carry, from core's budget.
+ *
+ * Derived rather than written out, so it moves if the platform does. Any other size works — the update
+ * chunks itself — and this is simply the size at which a chunk is exactly one statement.
+ */
+export const RANK_CHUNK_SIZE = Math.floor(boundParameterBudget(0) / RANK_PARAMETERS_PER_ROW);
+
+/**
+ * Chunks a refresh ranks before it checkpoints its cursor. `2000 * 33` is ~66k entries per Workflow step.
  *
  * The batch cap is stated here rather than in `worker.entry.ts`, which is the module that passes it as
  * `maxChunks`. That module imports `cloudflare:workers`, so anything it exports is unreachable from a
@@ -82,7 +91,12 @@ export interface RefreshResult {
 }
 
 export interface RefreshOptions {
-  /** Rows per chunk. Defaults to {@link RANK_CHUNK_SIZE}; lower it only to be gentler on a hot database. */
+  /**
+   * Rows per keyset step. Defaults to {@link RANK_CHUNK_SIZE}; lower it to be gentler on a hot database.
+   *
+   * It carries no bound-parameter ceiling — the update chunks itself — so the only thing refused is a
+   * value that is not a count. A `chunkSize` of 0 used to report a board complete having ranked nobody.
+   */
   chunkSize?: number;
   /** Stop cleanly once this many chunks have run, whether or not the board is finished. Default: no cap. */
   maxChunks?: number;
@@ -109,6 +123,13 @@ export async function refreshWindowRanks(
   options: RefreshOptions = {},
 ): Promise<RefreshResult> {
   const chunkSize = options.chunkSize ?? RANK_CHUNK_SIZE;
+  if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+    throw new ValidationError({
+      message: "The rank refresh was asked for an impossible chunk size.",
+      action: "Pass a whole number of one or more, or omit chunkSize for the default.",
+      detail: `refreshWindowRanks received chunkSize=${chunkSize}; it must be a positive integer.`,
+    });
+  }
   const maxChunks = options.maxChunks ?? Number.POSITIVE_INFINITY;
   const descending = board.direction === "desc";
 
@@ -147,18 +168,28 @@ export async function refreshWindowRanks(
 
     if (rows.length === 0) return { ranked, chunks, complete: true, cursor: null };
 
-    // One bulk UPDATE per chunk: `SET rank = CASE id WHEN ? THEN ? … END WHERE id IN (…)`. Row-at-a-time
-    // updates would be correct too, and would cost one round trip each on a single-threaded database.
-    const ids = rows.map((row) => row.id);
-    let cases = sql``;
-    rows.forEach((row, index) => {
-      cases = sql`${cases} WHEN ${row.id} THEN ${ranked + index + 1}`;
-    });
-    await db
-      .updateTable(LEADERBOARD_ENTRIES_TABLE)
-      .set({ rank: sql<number>`CASE id ${cases} END` })
-      .where("id", "in", ids)
-      .execute();
+    // One bulk UPDATE per statement's worth of rows: `SET rank = CASE id WHEN ? THEN ? … END WHERE id
+    // IN (…)`. Row-at-a-time updates would be correct too, and would cost one round trip each on a
+    // single-threaded database. How many rows fit is core's arithmetic, not a number written out here,
+    // so a chunk larger than one statement is simply written as several.
+    let written = 0;
+    for (const group of chunkRowsByBoundParameters(rows, RANK_PARAMETERS_PER_ROW)) {
+      const base = ranked + written;
+      let cases = sql``;
+      group.forEach((row, index) => {
+        cases = sql`${cases} WHEN ${row.id} THEN ${base + index + 1}`;
+      });
+      await db
+        .updateTable(LEADERBOARD_ENTRIES_TABLE)
+        .set({ rank: sql<number>`CASE id ${cases} END` })
+        .where(
+          "id",
+          "in",
+          group.map((row) => row.id),
+        )
+        .execute();
+      written += group.length;
+    }
 
     ranked += rows.length;
     chunks += 1;
