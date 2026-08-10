@@ -585,6 +585,21 @@ Default values shown in brackets. `Y/n` means default yes; `y/N` means default n
 
 **Every one of these is skippable.** A project without a domain yet is legitimate, and most are on the first day; an empty answer writes no `domains` block at all, and adding one later is a config edit plus a deploy, never a rescaffold. A non-interactive run asks nothing and declares nothing — `domains` goes in `pithy.config.ts` directly, which is exactly what the prompt writes.
 
+**And the declaration is the only place an origin is written down.** Every capability that needs a public origin asks the same question: `auth.baseURL` builds OAuth callbacks, magic-link URLs and the CSRF allowed-origin; `email.baseUrl` builds tracking and unsubscribe links; `payments`' Stripe return URLs decide where Checkout sends the browser back. Write a URL into any of them and you have written *one* environment's origin into all of them — which is how a staging deploy mails real users links into production, an unsubscribe from a staging test unsubscribes that person in production, and a staging payer lands in production on an account that bought nothing. Three capabilities, one mistake, three separate discoveries.
+
+So derive it. `originFor(environment, domains)` from `@pithy-sh/core/src/naming/domains` is the one answer to "where is this Worker reachable", and it is the same call `pithy` itself makes to generate `vars.BASE_URL` — so the Worker's runtime origin and the origins its capabilities were configured with cannot disagree:
+
+```ts
+const domains = { staging: { … }, prod: { … } };
+const PUBLIC_ORIGIN = originFor(compositionEnvironment() ?? "dev", domains);
+```
+
+Name it for the Worker, not for the capability that asked first. The first project to write this called it `AUTH_BASE_URL`, and that is part of why `email` and `payments` kept their hardcoded URLs for days — the constant read as auth's private business when it is the Worker's address.
+
+**An environment absent from `domains` resolves to `http://localhost`, never to another environment's origin.** An undeclared environment is an unpublished one, and the only unpublished environment is the local one — so the fallback fails closed: a link that goes nowhere, which is useless rather than harmful. A *deployed* environment must never keep it, and it cannot: `pithy deploy --env <name>` refuses an environment whose config declares no origin, and `pithy doctor` reports it first.
+
+**One origin deliberately does not derive: `controlplane.issuer`.** It is an identity, not an address. A connection stores the issuer it was created with and verification checks that stored value, so a per-environment issuer would make a connection minted in staging unverifiable in production. That may well be the better isolation, but it is a decision about trust rather than about reachability — write it, do not derive it.
+
 ---
 
 ## 4. Help text

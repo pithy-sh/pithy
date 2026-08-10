@@ -4,7 +4,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { originFor, WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { parse } from "comment-json";
 import { describe, expect, it } from "vitest";
 import { applyDomains } from "./applyDomains";
@@ -124,6 +124,37 @@ describe("applyDomains", () => {
     const config = (await read(dir)) as { env: Record<string, { workers_dev?: boolean }> };
     expect(config.env.staging?.workers_dev).toBe(true);
     expect(config.env.prod?.workers_dev).toBe(false);
+  });
+
+  /**
+   * **The gate for #256: `vars.BASE_URL` and the origin an adopter's config composes are one value.**
+   *
+   * Not "both are `https://<pattern>`", which is a restatement of today's formula and would keep passing
+   * if one side grew a port, a path, or a trailing slash. What is asserted is that the string this writes
+   * *is* `originFor`'s answer for that environment — the same call `pithy.config.ts` makes to hand a
+   * capability its origin. So the Worker's runtime `BASE_URL` and its `auth.baseURL`, `email.baseUrl` and
+   * Checkout return URL cannot drift apart, because there is one function between them.
+   */
+  it("writes the origin an adopter's own config would derive, for every environment", async () => {
+    const dir = await worker();
+    const applied = await applyDomains(dir, DOMAINS);
+    expect(applied.length).toBe(2);
+    for (const entry of applied) {
+      expect(entry.baseUrl).toBe(originFor(entry.env, DOMAINS));
+    }
+    const config = (await read(dir)) as { env: Record<string, { vars: Record<string, string> }> };
+    for (const env of ["staging", "prod"]) {
+      expect(config.env[env]?.vars.BASE_URL).toBe(originFor(env, DOMAINS));
+    }
+  });
+
+  /** And it never writes the fallback: an environment with no domain is skipped, not defaulted. */
+  it("never writes the local-origin fallback into a deployed stanza", async () => {
+    const dir = await worker();
+    await applyDomains(dir, WorkerDomains.parse({ prod: { pattern: "api.example.com", zone: "example.com" } }));
+    const config = (await read(dir)) as { env: Record<string, { vars?: Record<string, string> }> };
+    expect(config.env.staging).toBeUndefined();
+    expect(config.env.prod?.vars?.BASE_URL).toBe(originFor("prod", DOMAINS));
   });
 
   it("preserves the adopter's comments", async () => {

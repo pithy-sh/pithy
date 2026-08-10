@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { baseUrlFor, DOMAIN_ENVIRONMENTS, domainFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { DOMAIN_ENVIRONMENTS, domainFor, originFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
 /**
@@ -129,7 +129,10 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
 
     upsertRoute(stanza, domain.pattern, domain.zone);
     stanza.vars ??= {};
-    const baseUrl = baseUrlFor(domain);
+    // Through `originFor`, never `baseUrlFor` directly — the same call an adopter's `pithy.config.ts`
+    // makes to hand a capability its origin (#256). That is what makes "`vars.BASE_URL` and the
+    // capability configs cannot disagree" a property of the code rather than a thing to remember.
+    const baseUrl = originFor(env, domains);
     stanza.vars.BASE_URL = baseUrl;
     closeWorkersDev(stanza);
 

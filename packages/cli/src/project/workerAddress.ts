@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { baseUrlFor, domainFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { resolveOrigin, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 
 /**
  * The one resolver for "where does this Worker answer".
@@ -116,9 +116,12 @@ function toAddress(value: string, source: WorkerAddressSource): WorkerAddress | 
 export function resolveWorkerAddress(input: ResolveWorkerAddressInput): WorkerAddress | null {
   if (input.environment === "dev") return null;
 
-  const declared = domainFor(input.domains, input.environment);
-  if (declared) {
-    return { url: baseUrlFor(declared), source: "declaration", hostname: declared.pattern };
+  // Through the shared resolver, so the answer this reports and the answer an adopter's config composes
+  // are the same function (#256). `declared` is what keeps the fallback out of here: a `LOCAL_ORIGIN`
+  // returned as an address would stop the route and `BASE_URL` tiers below from ever being reached.
+  const declared = resolveOrigin(input.environment, input.domains);
+  if (declared.declared) {
+    return { url: declared.origin, source: "declaration", hostname: declared.hostname };
   }
 
   const stanza = input.stanza;

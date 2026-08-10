@@ -105,3 +105,79 @@ export function domainFor(domains: WorkerDomains | undefined, environment: strin
 export function baseUrlFor(domain: WorkerDomain): string {
   return `https://${domain.pattern}`;
 }
+
+/**
+ * The origin an environment with no declared domain resolves to.
+ *
+ * **No port, and that is the whole design.** Local dev's port is assigned per Worker per run from the
+ * feature's reserved block, so it is the one address nobody can write down — `@pithy-sh/auth` resolves
+ * dev's base URL from the host the request arrived at for exactly that reason, and a config-time value
+ * could only ever be a stale guess at it. So this is a *placeholder that fails closed*: a link built
+ * against it goes nowhere, which is useless rather than harmful.
+ *
+ * Compare what it replaces. Every capability that made an adopter write an origin got production's
+ * written into staging, and the failure was never "the link is broken" — it was a staging deploy mailing
+ * real users magic links **into production**, an unsubscribe from a staging test unsubscribing that
+ * person in production, and a Checkout return landing a staging payer in production on an account that
+ * had bought nothing. A fallback that goes nowhere is the only one that cannot do any of that.
+ */
+export const LOCAL_ORIGIN = "http://localhost";
+
+/** An environment's public origin, and whether the declaration is where it came from. */
+export interface ResolvedOrigin {
+  /** The absolute origin — scheme and host, never a trailing slash. */
+  origin: string;
+  /** The hostname alone: a route pattern, and what Turnstile binds a widget to. */
+  hostname: string;
+  /** Whether `domains` declared it. `false` means {@link LOCAL_ORIGIN} was substituted. */
+  declared: boolean;
+}
+
+/**
+ * **Where is this Worker publicly reachable, in this environment?** — asked once, answered once.
+ *
+ * The two halves already existed ({@link domainFor} and {@link baseUrlFor}) and nothing composed them,
+ * so every caller that needed the answer did the two-step for itself and every *adopter* who needed it
+ * wrote a URL down. The first adopter's one Worker config carried `https://app.pithy.sh` three times —
+ * `auth.baseURL`, `email.baseUrl`, and the Stripe return URLs — each wrong for staging in its own way,
+ * each found on a different day. Fixing it inside one capability does not stop the next capability
+ * asking the same question, so the question gets one answer that anyone can call.
+ *
+ * **The fallback never reaches for another environment's origin.** An environment absent from `domains`
+ * is one that is not published, so it resolves to {@link LOCAL_ORIGIN} and nothing else. Falling back to
+ * production's is what the shape being replaced did, and it is the one behaviour here that was actively
+ * dangerous rather than merely wrong.
+ *
+ * **A deployed environment must never *keep* that fallback**, and it is not this function's job to say
+ * so — `pithy deploy --env <name>` refuses an environment whose origin its config does not declare
+ * (#253), and `pithy doctor` reports it first. One rule in two halves: this one cannot invent another
+ * environment's origin, and deploy makes sure the placeholder never ships.
+ *
+ * **Not every origin should derive from this, and `controlplane.issuer` is the one to name.** That is an
+ * **identity**, not an address: a connection stores the issuer it was created with and verification
+ * checks that stored value, so a per-environment issuer would make a connection minted in staging
+ * unverifiable in production. That may be the better isolation, but it is a decision about trust rather
+ * than about reachability, and a helper whose job is "where am I reachable" must not sweep it up.
+ */
+export function resolveOrigin(environment: string, domains: WorkerDomains | undefined): ResolvedOrigin {
+  const domain = domainFor(domains, environment);
+  if (domain) return { origin: baseUrlFor(domain), hostname: domain.pattern, declared: true };
+  return { origin: LOCAL_ORIGIN, hostname: "localhost", declared: false };
+}
+
+/**
+ * The one line an adopter writes: this Worker's public origin for the environment it is running in.
+ *
+ * ```ts
+ * const DOMAINS = { staging: { … }, prod: { … } };
+ * const PUBLIC_ORIGIN = originFor(ENVIRONMENT, DOMAINS);
+ * ```
+ *
+ * Named for what it is rather than for who asked. The first adopter's own version was called
+ * `AUTH_BASE_URL`, which is part of why `email` and `payments` were missed for days: the constant read
+ * as auth's private business when it is the Worker's address, and every capability that needs an origin
+ * needs this one.
+ */
+export function originFor(environment: string, domains: WorkerDomains | undefined): string {
+  return resolveOrigin(environment, domains).origin;
+}
