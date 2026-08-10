@@ -225,10 +225,15 @@ describe("the React 19 stub", () => {
 
   test("the client calls its API same-origin — no CORS config and no origin variable", () => {
     for (const [path, contents] of Object.entries(BOTH)) {
-      // The only absolute URL in the whole scaffold is Cloudflare's Turnstile script. Not Stripe's:
+      // **Comments are stripped first, and that is the invariant rather than a loophole.** What must
+      // not appear is a host the running client *reaches*; a comment citing GitHub's or Google's brand
+      // terms beside the mark they govern is documentation, and the rule beside the asset is exactly
+      // where #257 decided those terms belong. So this reads the code.
+      const code = contents.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+      // The only absolute URL the client reaches is Cloudflare's Turnstile script. Not Stripe's:
       // hosted Checkout needs no SDK. Not the app stores': those URLs live in @pithy-sh/payments, so a
       // store moving one is a minor release rather than an edit to a file Pithy may never rewrite.
-      const absolute = contents.match(/https?:\/\/[^"'\s`]+/g) ?? [];
+      const absolute = code.match(/https?:\/\/[^"'\s`]+/g) ?? [];
       for (const url of absolute) {
         expect(url, `${path}: ${url}`).toContain("challenges.cloudflare.com");
       }
@@ -260,29 +265,62 @@ describe("the React 19 stub", () => {
       expect(signIn).toContain(`id: "${provider}"`);
     }
     // Only enabled providers render at all.
-    expect(signIn).toContain("SOCIAL.filter((provider) => authConfig.providers[provider.id])");
-    // Anti-enumeration: the answer never distinguishes a known address from an unknown one.
+    expect(signIn).toContain("SOCIAL.filter((provider) => auth.providers[provider.id])");
+    // Anti-enumeration: the answer never distinguishes a known address from an unknown one. `setSent`
+    // is unconditional and the response is discarded, so there is nothing for the copy to branch on —
+    // stated about the code rather than as a banned phrase, because #257's account line is the words
+    // "No account yet?" and it is about this visitor, not about an address that was submitted.
     expect(signIn).toContain("Check your inbox.");
-    expect(signIn).not.toMatch(/no account/i);
+    expect(signIn).toContain("If that address can sign in");
+    const sendLink = signIn.slice(signIn.indexOf("async function sendLink"), signIn.indexOf("async function social"));
+    expect(sendLink).toContain("setSent(true);");
+    expect(sendLink).not.toMatch(/response|\.ok\b/);
   });
 
-  test("the social redirect refuses a non-http(s) scheme before navigating to it", () => {
+  test("one way in — the magic link, and nothing beside it", () => {
+    // #257. Two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
+    // and two inboxes' worth of mail for one intent. The OTP screen stays in the tree; nothing on the
+    // sign-in screen sends anybody to it.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    // `window.location.href = url` with a javascript: URL executes in this page, so the response
-    // body is scheme-checked first — the same guard @pithy-sh/email makes on a tracked link.
-    expect(signIn).toContain('protocol === "https:" || protocol === "http:"');
-    expect(signIn).toContain("window.location.href = body.url");
-    // The check has to sit in the type guard the assignment is gated on, not merely somewhere nearby.
-    const guard = signIn.slice(signIn.indexOf("function isRedirect"), signIn.indexOf("export default"));
-    expect(guard).toContain("protocol");
+    expect(signIn).toContain("/sign-in/magic-link");
+    expect(signIn).not.toContain("email-otp");
+    expect(signIn).not.toContain("/otp?");
+    // The one submit is the form's. A second `type="submit"` is a second intent on one screen.
+    expect(signIn.match(/type="submit"/g) ?? []).toHaveLength(1);
+  });
+
+  test("the brand panel is a slot, and it ships empty", () => {
+    // #257. The panel carries product claims — what a company does and does not keep — and a template
+    // shipping someone else's claims is a template deployed with them still in it.
+    const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
+    expect(signIn).toContain("const BRAND: ReactNode = null;");
+    expect(signIn).toContain("const MARK: ReactNode = null;");
+    // And the layout is told, so an empty slot is one column rather than a blank one.
+    expect(signIn).toContain('data-brand={props.brand ? "set" : "none"}');
+  });
+
+  test("the social redirect refuses a URL it cannot follow, before navigating to it", () => {
+    const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
+    // The check has to sit in the type guard the navigation is gated on, not merely somewhere nearby.
+    const guard = signIn.slice(signIn.indexOf("function followable"), signIn.indexOf("type Refusal"));
+    // `window.location.href = url` with a javascript: URL executes in this page, so the response body
+    // is scheme-checked first — the same guard @pithy-sh/email makes on a tracked link.
+    expect(guard).toContain('parsed.protocol !== "https:" && parsed.protocol !== "http:"');
+    // #257: an authorization URL naming no client is a provider switched on with a blank credential.
+    // The client projection carries booleans, so refusing the response is the only place to catch it.
+    expect(guard).toContain('parsed.searchParams.get("client_id")');
+    expect(signIn).toContain("window.location.href = url;");
+    expect(signIn).toContain("if (followable(body)) {");
   });
 
   test("the callback URL a provider is handed is always this app's own origin", () => {
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
     const callbacks = signIn.match(/callbackURL: `[^`]*`/g) ?? [];
     expect(callbacks.length).toBeGreaterThan(0);
-    // Interpolated from the page's own origin, never a value from config or a response.
-    for (const callback of callbacks) expect(callback).toContain("window.location.origin");
+    // Interpolated from `origin`, whose only default is the page's own — never a value from config or
+    // from a response. The prop exists so a test can render the screen without a window, nothing more.
+    for (const callback of callbacks) expect(callback).toMatch(/callbackURL: `\$\{origin\}\/callback`/);
+    expect(signIn).toContain("props.origin ?? window.location.origin");
   });
 
   test("turnstile gates the magic-link and OTP forms only, at action login", () => {
@@ -290,10 +328,25 @@ describe("the React 19 stub", () => {
     expect(widget).toContain('const ACTION = "login"');
     expect(widget).toContain("turnstileConfig.token.header");
     expect(widget).toContain("turnstileConfig.token.field");
-    // The widget renders inside the email form on both screens, and nowhere near a social button.
+    // The widget renders inside the email form on both screens, and nowhere near a social button. On
+    // the sign-in screen it arrives as `check.widget`, so the assertion is that the host is inside the
+    // form and that the social handler attaches nothing.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    expect(signIn.indexOf("<Turnstile")).toBeLessThan(signIn.indexOf("enabledSocial.length > 0"));
+    const form = signIn.slice(signIn.indexOf('<form className="stack"'), signIn.indexOf("</form>"));
+    expect(form).toContain('<div className="auth__check">{check.widget}</div>');
+    const social = signIn
+      .slice(signIn.indexOf("async function social"), signIn.indexOf("if (sent)"))
+      .replace(/^\s*\/\/.*$/gm, " ");
+    expect(social).not.toContain("check.attach");
     expect(AUTH["src/routes/pithy/otp.tsx"]).toContain("<Turnstile");
+  });
+
+  test("the widget is asked to fill the column the stylesheet gives it", () => {
+    // #257, both halves. Turnstile renders an iframe with an intrinsic size, so a `width: 100%` host
+    // does nothing on its own. `@pithy-sh/ui-react`'s `humanityCheckFit.test.ts` is the gate; this is
+    // the half in the file the CLI puts in front of an adopter.
+    expect(AUTH["src/turnstile.tsx"]).toContain('size: "flexible"');
+    expect(AUTH["src/pithy-screens.css"]).toContain("--pithy-check-min: 300px");
   });
 
   test("the OTP screen renders otpLength inputs, read from the same config the server validates against", () => {

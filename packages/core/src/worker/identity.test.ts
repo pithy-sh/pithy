@@ -9,6 +9,7 @@ import {
   WORKER_VAR,
   workerIdentity,
   workerVersion,
+  workerVersionMetadata,
 } from "./identity";
 
 describe("workerIdentity", () => {
@@ -145,5 +146,101 @@ describe("workerVersion", () => {
       expect(() => workerVersion(env)).not.toThrow();
       expect(workerVersion(env)).toBeNull();
     }
+  });
+});
+
+describe("workerVersionMetadata", () => {
+  it("reads every field the binding actually carries", () => {
+    // Measured, not taken from the docs. A `wrangler dev` (4.120.1) on a Worker declaring
+    // `version_metadata` hands the binding as `{ id, tag, timestamp }` — three own keys, every value a
+    // string, `timestamp` an ISO-8601 instant. The module docstring used to say "an id and a tag",
+    // which is where the discarded field came from.
+    expect(
+      workerVersionMetadata({
+        CF_VERSION_METADATA: {
+          id: "6bbf9e9b-90c6-46c5-829d-83241554ac2c",
+          tag: "release-42",
+          timestamp: "2026-08-10T21:39:55.716Z",
+        },
+      }),
+    ).toEqual({
+      id: "6bbf9e9b-90c6-46c5-829d-83241554ac2c",
+      tag: "release-42",
+      createdAt: "2026-08-10T21:39:55.716Z",
+    });
+  });
+
+  it("reads the shape a local wrangler dev actually hands a Worker", () => {
+    // The empty tag is not a fixture. Miniflare hardcodes `tag: ""`, and a production version carries
+    // one only where someone passed `wrangler versions upload --tag`. Empty means "no tag", so it reads
+    // as absent — an empty string on the wire would be a value to compare against.
+    expect(
+      workerVersionMetadata({
+        CF_VERSION_METADATA: {
+          id: "954d8c61-daa2-4ebf-9b3c-459b4abe7fcd",
+          tag: "",
+          timestamp: "2026-08-10T21:40:54.934Z",
+        },
+      }),
+    ).toEqual({ id: "954d8c61-daa2-4ebf-9b3c-459b4abe7fcd", tag: null, createdAt: "2026-08-10T21:40:54.934Z" });
+  });
+
+  it("hands back the platform's own string, never a re-serialized one", () => {
+    // A client compares and subtracts these. Re-encoding a leniently-parsed date would make this reader
+    // the author of a value it only relayed, and `Date.parse` is implementation-defined off ISO-8601 —
+    // so the guess would differ between runtimes reading the same deploy.
+    const meta = workerVersionMetadata({
+      CF_VERSION_METADATA: { id: "v-1", tag: "t", timestamp: "2026-08-10T21:39:55.716Z" },
+    });
+    expect(meta.createdAt).toBe("2026-08-10T21:39:55.716Z");
+  });
+
+  it("refuses a timestamp that is not a time, rather than passing it on", () => {
+    // The one place this reader rejects rather than relays, and the reason is the consumer: a client
+    // does `Date.parse` on this and compares. An unparseable string becomes `NaN`, and every `NaN`
+    // comparison is false — so garbage would read as "not newer", which is silently the same answer as
+    // "unchanged". Null says "cannot tell", which is the true one.
+    for (const timestamp of ["", "   ", "yesterday", "not-a-date", 1_754_863_195_716, null, {}]) {
+      expect(workerVersionMetadata({ CF_VERSION_METADATA: { id: "v-1", timestamp } }).createdAt).toBeNull();
+    }
+  });
+
+  it("reports every field null where the binding is absent, rather than inventing one", () => {
+    // Absence is the ordinary state: local dev before the binding is declared, and every project
+    // scaffolded before it existed. Absence must never render as a value a client can compare.
+    expect(workerVersionMetadata({})).toEqual({ id: null, tag: null, createdAt: null });
+    expect(workerVersionMetadata({ CF_VERSION_METADATA: null })).toEqual({ id: null, tag: null, createdAt: null });
+    expect(workerVersionMetadata({ CF_VERSION_METADATA: "v-1" })).toEqual({ id: null, tag: null, createdAt: null });
+  });
+
+  it("reads each field on its own, so one absent field does not blank the rest", () => {
+    // A partial binding is what a platform change looks like from inside a Worker. Dropping the whole
+    // identity because one key moved would turn a field rename into "this Worker cannot say".
+    expect(workerVersionMetadata({ CF_VERSION_METADATA: { id: "v-1" } })).toEqual({
+      id: "v-1",
+      tag: null,
+      createdAt: null,
+    });
+    expect(workerVersionMetadata({ CF_VERSION_METADATA: { timestamp: "2026-08-10T21:39:55.716Z" } })).toEqual({
+      id: null,
+      tag: null,
+      createdAt: "2026-08-10T21:39:55.716Z",
+    });
+  });
+
+  it("never throws on a non-object env", () => {
+    for (const env of [null, undefined, "env", 7, []]) {
+      expect(() => workerVersionMetadata(env)).not.toThrow();
+      expect(workerVersionMetadata(env)).toEqual({ id: null, tag: null, createdAt: null });
+    }
+  });
+
+  it("is the one reader — workerVersion is its id and nothing else", () => {
+    // Two readers of one binding is how the id and the timestamp drift apart. `workerVersion` keeps its
+    // shape because four callers hold it: the logger's correlation field, `/health`, the manifest, and
+    // the seam's header.
+    const env = { CF_VERSION_METADATA: { id: "v-abc123", tag: "", timestamp: "2026-08-10T21:39:55.716Z" } };
+    expect(workerVersion(env)).toBe(workerVersionMetadata(env).id);
+    expect(workerVersion(env)).toBe("v-abc123");
   });
 });

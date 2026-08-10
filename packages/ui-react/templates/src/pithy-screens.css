@@ -16,9 +16,9 @@
  *
  * ## Restyle by declaring the tokens
  *
- * The palette is six custom properties, each read with a fallback. Declare `--fg`, `--bg`, `--surface`,
- * `--fg-muted`, `--border` or `--accent` on `:root` in your own stylesheet and these screens adopt your
- * colours; declare none and they stand up on their own, light or dark. **Declare them as a set.** A
+ * The palette is seven custom properties, each read with a fallback. Declare `--fg`, `--bg`, `--surface`,
+ * `--fg-muted`, `--border`, `--accent` or `--danger` on `:root` in your own stylesheet and these screens
+ * adopt your colours; declare none and they stand up on their own, light or dark. **Declare them as a set.** A
  * screen where the background is yours and the text on it is Pithy's is the one way this file can still
  * produce something unreadable, and no fallback can detect it.
  *
@@ -36,6 +36,25 @@
     /* Saffron. The one colour that is Pithy's rather than a neutral, so it carries the brand even in a
      * project that has declared nothing. */
     --pithy-accent: var(--accent, #d4a017);
+    /* A failure the visitor has to read and act on — never the accent. A refused provider is the one
+     * place these screens have to say something went wrong. */
+    --pithy-danger: var(--danger, #b3261e);
+
+    /*
+     * Where Turnstile's `flexible` size stops shrinking. Cloudflare's number, not ours.
+     *
+     * It is a custom property rather than a value typed into the two rules that need it, because the
+     * sign-in layout is built *from* it: the form's measure is checked against it and the credentials
+     * column's gutter is derived from it. One constant means no two values can be edited into
+     * disagreement, and `src/humanityCheckFit.test.ts` in @pithy-sh/ui-react fails if either derivation
+     * is replaced by a number.
+     */
+    --pithy-check-min: 300px;
+    /* The form's measure: one width for the field, the widget, the buttons and the provider row. Above
+     * --pithy-check-min, and it has to stay there — a narrower column and the widget hangs out of it. */
+    --pithy-auth-measure: 24.5rem;
+    /* The most the credentials column will pad itself by. Never at the widget's expense; see below. */
+    --pithy-auth-gutter: 1.5rem;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -45,17 +64,27 @@
       --pithy-fg: var(--fg, #fafaf6);
       --pithy-fg-muted: var(--fg-muted, #9a988f);
       --pithy-border: var(--border, #2e2e2b);
+      --pithy-danger: var(--danger, #f2b8b5);
     }
   }
 
-  /* The screen container. Every Pithy screen's root element carries it. */
+  /*
+   * The two roots.
+   *
+   * `.screen` is a centred single column — the OTP screen, the callback, the paywall, the 404. `.auth`
+   * is the sign-in page, which is a full-bleed two-column layout rather than a column, so it cannot
+   * carry `.screen` as well. Everything below that styles a bare element is scoped to `:is(.screen,
+   * .auth)` for that reason: a field, a label or a button means the same thing on either root, and the
+   * alternative was one of the two quietly rendering a browser-default input.
+   */
+  /* The centred column. */
   .screen {
     margin: 0 auto;
     max-width: 26rem;
     padding: 4rem 1.5rem;
   }
 
-  .screen h1 {
+  :is(.screen, .auth) h1 {
     font-size: 1.75rem;
     letter-spacing: -0.03em;
     margin: 0 0 0.5rem;
@@ -73,7 +102,7 @@
     gap: 0.75rem;
   }
 
-  .screen label {
+  :is(.screen, .auth) label {
     display: block;
     font-size: 0.875rem;
     margin-bottom: 0.25rem;
@@ -81,7 +110,7 @@
 
   /* Background and foreground come from the same pair, never one of each: `color: inherit` over a
    * Pithy background is how a light-themed input ends up with light-themed text written on it. */
-  .screen input {
+  :is(.screen, .auth) input {
     background: var(--pithy-surface);
     border: 1px solid var(--pithy-border);
     border-radius: 0.375rem;
@@ -91,13 +120,13 @@
     width: 100%;
   }
 
-  .screen input:focus-visible {
+  :is(.screen, .auth) input:focus-visible {
     border-color: var(--pithy-accent);
     outline: 2px solid var(--pithy-accent);
     outline-offset: 1px;
   }
 
-  .screen button {
+  :is(.screen, .auth) button {
     background: var(--pithy-fg);
     border: 1px solid var(--pithy-fg);
     border-radius: 0.375rem;
@@ -107,13 +136,13 @@
     padding: 0.625rem 0.75rem;
   }
 
-  .screen button:disabled {
+  :is(.screen, .auth) button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
   }
 
   /* The quieter button: a social provider, "use a code instead", "start over". */
-  .screen button.secondary {
+  :is(.screen, .auth) button.secondary {
     background: var(--pithy-surface);
     border-color: var(--pithy-border);
     color: var(--pithy-fg);
@@ -146,5 +175,205 @@
     content: "";
     flex: 1;
     height: 1px;
+  }
+
+  /* ── the sign-in page ─────────────────────────────────────────────────────
+   *
+   * Two columns: your panel, and the form. Everything here is the form's half. The panel is a slot
+   * `routes/pithy/sign-in.tsx` ships empty, so these rules give it a box and a ground and say nothing
+   * about what goes in it.
+   */
+
+  /*
+   * The split, and the floor under the narrow track.
+   *
+   * `1fr / 1fr` alone would be wrong, because the credentials track is not free to be any width: the
+   * Turnstile widget's `flexible` size has a hard `--pithy-check-min` floor, and below that it stops
+   * matching the field and hangs out of the column. So that track's minimum is stated — as the measure
+   * plus its own gutters, derived rather than typed, so raising the measure moves the track with it.
+   *
+   * The two together mean the split is about a third at 1440px and holds until the floor takes over,
+   * which is well below where the panel stops rendering.
+   */
+  .auth {
+    display: grid;
+    grid-template-columns:
+      minmax(0, 1.08fr)
+      minmax(calc(var(--pithy-auth-measure) + 2 * var(--pithy-auth-gutter)), 0.92fr);
+    min-height: 100dvh;
+  }
+
+  /* An empty slot is one column, not a blank one. The form centres on the page instead of hugging an
+   * edge, and a project that never fills the panel still has a finished-looking screen. */
+  .auth[data-brand="none"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Your panel's box: a ground, an edge, and room. What is inside it is yours. */
+  .auth__brand {
+    background: var(--pithy-surface);
+    border-inline-end: 1px solid var(--pithy-border);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    justify-content: center;
+    padding: 4rem 3rem;
+  }
+
+  /*
+   * The column the form is centred in.
+   *
+   * The inline padding is derived from the widget's floor rather than chosen: it takes
+   * `--pithy-auth-gutter` wherever the viewport can afford it, and gives the width back to the column
+   * when it cannot. Without that, a fixed gutter on a 320px phone leaves the host under 300px and the
+   * widget overflows the one control on the screen that has to be tapped.
+   */
+  .auth__credentials {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    padding-block: 4rem;
+    padding-inline: clamp(0.5rem, calc((100vw - var(--pithy-check-min)) / 2), var(--pithy-auth-gutter));
+  }
+
+  /* The measure: one width for the field, the widget, the buttons and the provider row. `min-width: 0`
+   * because this is a flex child — without it the widget's intrinsic width sets the floor for the whole
+   * column and pushes the layout wider than a phone. */
+  .auth__form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-width: var(--pithy-auth-measure);
+    min-width: 0;
+    width: 100%;
+  }
+
+  /* The flex gap carries the rhythm here, so the heading brings no margin of its own to argue with it. */
+  .auth h1 {
+    margin: 0;
+  }
+
+  /* Your mark, in the column you act in. Hidden while the panel is on screen, so exactly one of the two
+   * is ever visible; shown at every width when there is no panel at all. */
+  .auth__form-mark {
+    display: none;
+  }
+
+  .auth[data-brand="none"] .auth__form-mark {
+    display: block;
+  }
+
+  /* Two providers side by side rather than stacked: they are one choice taken once, and stacking them
+   * pushes the email form — the path that always works — below the fold on a laptop. */
+  .auth__providers {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .auth__provider {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.5rem;
+    justify-content: center;
+  }
+
+  /* A mark is a fixed 16px object, never squeezed by the label beside it. */
+  .auth__mark {
+    flex: none;
+  }
+
+  /* The divider belongs to the flex column's rhythm, not to the centred screen's. */
+  .auth .divider {
+    margin: 0.25rem 0;
+  }
+
+  /*
+   * The widget's host, and the reason the widths line up.
+   *
+   * Turnstile renders an iframe with an intrinsic size, so `width: 100%` here is only half the answer —
+   * the other half is asking the widget for its `flexible` size in `turnstile.tsx`, which is what makes
+   * it fill this box instead of sitting at its default 300px. Both are required; either alone leaves a
+   * ragged edge beside a full-width input.
+   *
+   * The widget draws its own edge inside the iframe, so this host draws none — a second border around
+   * the first reads as one heavy line beside a field with a light one. `overflow: hidden` is what makes
+   * the radius bite: an iframe is a replaced element with square corners.
+   */
+  .auth__check {
+    background: var(--pithy-surface);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    width: 100%;
+  }
+
+  /* No turnstile composed, no empty box in the form. The host renders either way. */
+  .auth__check:empty {
+    display: none;
+  }
+
+  .auth__check iframe {
+    display: block;
+    width: 100%;
+  }
+
+  /* Why a provider button did not take you anywhere. Its own colour, never the accent. */
+  .auth__failed {
+    color: var(--pithy-danger);
+    font-size: 0.875rem;
+    margin: 0;
+  }
+
+  /*
+   * How an account gets made — reassurance, not navigation.
+   *
+   * Passwordless has no sign-up screen, so this is not a link and must never be styled as one. What it
+   * does is remove a worry: you are in the right place even if you have never been here. The answer
+   * carries the weight and takes the page's ink to carry it — bold at the muted colour is bold nobody
+   * notices.
+   */
+  .auth__signup {
+    color: var(--pithy-fg-muted);
+    font-size: 0.875rem;
+    margin: 0.5rem 0 0;
+    text-align: center;
+  }
+
+  .auth__signup strong {
+    color: var(--pithy-fg);
+    font-weight: 500;
+  }
+
+  /*
+   * Where the panel stops.
+   *
+   * **It is not stacked below the form — it is not rendered.** Copy under a sign-in form is copy nobody
+   * reads with a keyboard open, and it pushes the thing you came to do off the screen. Your mark moves
+   * into the form column instead, so the page still carries your identity.
+   */
+  @media (max-width: 64rem) {
+    .auth {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .auth__brand {
+      display: none;
+    }
+
+    .auth__form-mark {
+      display: block;
+    }
+
+    .auth__credentials {
+      padding-block: 3rem;
+    }
+  }
+
+  /* Two buttons in a phone's width leaves each narrower than its own label, and a truncated provider
+   * name is not a control anyone trusts with their account. */
+  @media (max-width: 30rem) {
+    .auth__providers {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 }

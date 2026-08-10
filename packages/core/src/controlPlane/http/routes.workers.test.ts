@@ -16,7 +16,7 @@ import { ControlPlaneManifest } from "../discovery/adminRoute";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import {
   ControlPlaneKeysResponse,
   ControlPlanePingResponse,
@@ -299,7 +299,11 @@ describe("GET /control-plane/manifest", () => {
     // stale value the moment the adopter deploys, which is precisely when it matters. And on the guard
     // rather than in a handler, so every capability's admin routes carry it too — not only the seam's.
     await connect([registered(alice)]);
-    const bindings = { ...BINDINGS, CF_VERSION_METADATA: { id: "v-deadbeef", tag: "" } };
+    // The shape a real `wrangler dev` hands a Worker: `{ id, tag, timestamp }`, every value a string.
+    const bindings = {
+      ...BINDINGS,
+      CF_VERSION_METADATA: { id: "v-deadbeef", tag: "", timestamp: "2026-08-10T21:39:55.716Z" },
+    };
 
     const allowed = await backend.request(
       "http://worker.example/control-plane/manifest",
@@ -308,19 +312,44 @@ describe("GET /control-plane/manifest", () => {
     );
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
+    // And the timestamp the platform reports for it, so a client comparing the pair can see the same
+    // build deployed again — which an id compared against an id never shows. Two headers: the id keeps
+    // carrying the id alone, so a client written against it reads exactly what it always did.
+    expect(allowed.headers.get(CONTROL_PLANE_VERSION_CREATED_HEADER)).toBe("2026-08-10T21:39:55.716Z");
 
     // A denial pins the build too. An operator reading a run of refusals needs to know which deploy was
     // refusing them.
     const denied = await backend.request("http://worker.example/control-plane/manifest", { method: "GET" }, bindings);
     expect(denied.status).toBe(401);
     expect(denied.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
+    expect(denied.headers.get(CONTROL_PLANE_VERSION_CREATED_HEADER)).toBe("2026-08-10T21:39:55.716Z");
   });
 
-  test("omits the version header entirely where the binding is absent", async () => {
-    // Absent reads as "this Worker cannot say". An empty or invented value would read as one to trust.
+  test("omits both version headers entirely where the binding is absent", async () => {
+    // Absent reads as "this Worker cannot say". An empty or invented value would read as one to trust —
+    // and this pair is what the first adopter invalidates a cached pane on, so a value it never got must
+    // reach it as silence rather than as a string it can compare.
     await connect([registered(alice)]);
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
     expect(response.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBeNull();
+    expect(response.headers.get(CONTROL_PLANE_VERSION_CREATED_HEADER)).toBeNull();
+  });
+
+  test("says which build without saying when, where the platform gives only the id", async () => {
+    // A partial binding is what a platform change looks like from inside a Worker, and it is what every
+    // deploy made before this field was read looks like. One header goes silent; the other keeps
+    // answering. Dropping both would turn a missing field into "this Worker cannot say" for a question
+    // it can still answer.
+    await connect([registered(alice)]);
+    const response = await backend.request(
+      "http://worker.example/control-plane/manifest",
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope: MANIFEST_READ_SCOPE }) } },
+      { ...BINDINGS, CF_VERSION_METADATA: { id: "v-deadbeef", tag: "" } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(CONTROL_PLANE_VERSION_HEADER)).toBe("v-deadbeef");
+    expect(response.headers.get(CONTROL_PLANE_VERSION_CREATED_HEADER)).toBeNull();
   });
 
   test("describes how to call each route, not merely that a capability exists", async () => {

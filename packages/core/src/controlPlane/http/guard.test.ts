@@ -12,8 +12,13 @@ import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connectio
 import type { ReplayGuard } from "../replay/guard";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
-import { CONTROL_PLANE_HEADER } from "../wire";
-import { type ControlPlaneVerifier, createControlPlaneVerifier, requireControlPlane } from "./guard";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import {
+  type ControlPlaneVerifier,
+  createControlPlaneVerifier,
+  requireControlPlane,
+  workerVersionHeaders,
+} from "./guard";
 import { RegisterKeyRequest } from "./schemas";
 
 /**
@@ -184,6 +189,97 @@ describe("requireControlPlane", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "controlplane/invalid_credential" } });
+  });
+});
+
+/**
+ * Every `env` worth asking the question of: the shape a real `wrangler dev` hands a Worker, the tagged
+ * and untagged deploys, a binding mid-platform-change, and the hostile ones that reach `unknown`.
+ */
+const ENVS: unknown[] = [
+  {
+    CF_VERSION_METADATA: { id: "6bbf9e9b-90c6-46c5-829d-83241554ac2c", tag: "", timestamp: "2026-08-10T21:39:55.716Z" },
+  },
+  { CF_VERSION_METADATA: { id: "v-abc", tag: "release-42", timestamp: "2026-08-10T21:39:55.716Z" } },
+  { CF_VERSION_METADATA: { id: "v-abc" } },
+  { CF_VERSION_METADATA: { timestamp: "2026-08-10T21:39:55.716Z" } },
+  { CF_VERSION_METADATA: { id: "v-abc", timestamp: "yesterday" } },
+  { CF_VERSION_METADATA: { id: "v-abc", timestamp: 1_754_863_195_716 } },
+  { CF_VERSION_METADATA: { id: "", tag: "", timestamp: "" } },
+  { CF_VERSION_METADATA: {} },
+  { CF_VERSION_METADATA: null },
+  {},
+  null,
+  undefined,
+  "env",
+  7,
+  [],
+];
+
+/** Every string the binding itself carried — the only values the seam is allowed to put on the wire. */
+function handedTo(env: unknown): Set<string> {
+  const values = new Set<string>();
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return values;
+  const meta = (env as Record<string, unknown>).CF_VERSION_METADATA;
+  if (typeof meta !== "object" || meta === null) return values;
+  for (const value of Object.values(meta as Record<string, unknown>)) {
+    if (typeof value === "string") values.add(value);
+  }
+  return values;
+}
+
+describe("workerVersionHeaders", () => {
+  test("stamps only what the binding handed it, verbatim, and stamps nothing else", () => {
+    // **The invariant, not a field list.** Everything this seam says about the running build is a value
+    // the platform handed this Worker, byte for byte — never defaulted, never computed at request time,
+    // never re-encoded. It crosses to a management client the customer scoped, so a value the Worker
+    // invented would be indistinguishable from one it was told, and a client invalidating a rendered
+    // pane on it would act on a fact nobody stated.
+    for (const env of ENVS) {
+      const headers = workerVersionHeaders(env);
+      const handed = handedTo(env);
+      for (const [name, value] of Object.entries(headers)) {
+        expect([CONTROL_PLANE_VERSION_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER]).toContain(name);
+        expect({ env, name, value, handed: [...handed] }).toMatchObject({ handed: expect.arrayContaining([value]) });
+      }
+      // And anything stamped as a time is a time. A client subtracts these; `NaN` compares false against
+      // everything, so an unparseable string would read as "not newer" — silently "unchanged".
+      const created = headers[CONTROL_PLANE_VERSION_CREATED_HEADER];
+      if (created !== undefined) expect(Number.isFinite(Date.parse(created))).toBe(true);
+    }
+  });
+
+  test("says nothing at all where the binding says nothing", () => {
+    // **Absence is never change.** An unbound Worker, a binding gone, a field that carried nothing
+    // usable — each is "this Worker cannot say", and each must reach the client as silence. An empty
+    // header value is a value: a client comparing it against what it last saw reads a deploy.
+    for (const env of [{}, null, undefined, "env", 7, [], { CF_VERSION_METADATA: null }, { CF_VERSION_METADATA: {} }]) {
+      expect(workerVersionHeaders(env)).toEqual({});
+    }
+    expect(workerVersionHeaders({ CF_VERSION_METADATA: { id: "", tag: "", timestamp: "" } })).toEqual({});
+  });
+
+  test("carries both halves when the platform has both, so the invariant above is not vacuous", () => {
+    // Stamping nothing would satisfy every assertion up there. This is what the issue asked for: the
+    // build, and when that build was made, as two values a client compares separately.
+    expect(
+      workerVersionHeaders({
+        CF_VERSION_METADATA: { id: "v-deadbeef", tag: "release-42", timestamp: "2026-08-10T21:39:55.716Z" },
+      }),
+    ).toEqual({
+      [CONTROL_PLANE_VERSION_HEADER]: "v-deadbeef",
+      [CONTROL_PLANE_VERSION_CREATED_HEADER]: "2026-08-10T21:39:55.716Z",
+    });
+  });
+
+  test("keeps the tag off the wire", () => {
+    // Read by the identity reader, deliberately not stamped. It is adopter-authored free text on a
+    // header crossing to a management client, and neither question a client asks — "different build?",
+    // "same build, deployed again?" — is answered by it. More than identity wants a reason.
+    const headers = workerVersionHeaders({
+      CF_VERSION_METADATA: { id: "v-abc", tag: "internal-hotfix-CVE-2026-1", timestamp: "2026-08-10T21:39:55.716Z" },
+    });
+    expect(JSON.stringify(headers)).not.toContain("internal-hotfix");
   });
 });
 

@@ -58,4 +58,10 @@ export { exportPublicJwk, type MintControlPlaneToken, mintControlPlaneToken } fr
 // The wire contract, from the module that imports nothing: a management client is often a browser
 // calling the adopter's Worker directly, and it must be able to name these headers without dragging
 // the verifier — and WebCrypto with it — into a DOM-typed build.
-export { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./controlPlane/wire";
+export {
+  CONTROL_PLANE_HEADER,
+  CONTROL_PLANE_VERSION_CREATED_HEADER,
+  CONTROL_PLANE_VERSION_HEADER,
+  type WorkerBuild,
+  workerBuildChanged,
+} from "./controlPlane/wire";

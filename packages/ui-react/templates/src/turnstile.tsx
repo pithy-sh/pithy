@@ -13,6 +13,15 @@ interface TurnstileApi {
       sitekey: string;
       action: string;
       appearance: "always" | "execute";
+      /** The widget is a cross-origin iframe we cannot style, so its palette is an argument, not CSS. */
+      theme: "light" | "dark" | "auto";
+      /**
+       * Its width is an argument too, and this is the half that is easy to miss. `normal` is a fixed
+       * 300px box — which is why a widget styled `width: 100%` still sat narrower than the email field
+       * beside it. `flexible` fills its container instead, with a 300px floor `pithy-screens.css`
+       * keeps the form's column above.
+       */
+      size: "normal" | "flexible" | "compact";
       callback: (value: string) => void;
       "expired-callback": () => void;
     },
@@ -72,6 +81,14 @@ export function Turnstile(props: { onToken: (value: string | null) => void }): R
           sitekey: turnstileConfig.sitekey,
           action: ACTION,
           appearance: turnstileConfig.mode === "invisible" ? "execute" : "always",
+          // `auto` is Turnstile's own name for `prefers-color-scheme`, which is what `pithy-screens.css`
+          // answers too. The widget is a cross-origin iframe, so this argument is the only lever — and
+          // it resolves the same question from the same source, with nothing to keep in step.
+          theme: "auto",
+          // Fill the column, so the check matches the field and the button above and below it. The host
+          // element supplies the width; see `.auth__check` in pithy-screens.css. Both halves are
+          // required — either one alone leaves a ragged edge beside a full-width input.
+          size: "flexible",
           callback: (value) => onToken(value),
           "expired-callback": () => onToken(null),
         });

@@ -4,12 +4,12 @@
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { PithyError } from "../../error/pithyError";
-import { workerVersion } from "../../worker/identity";
+import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
 import { ControlPlaneNotConnectedError } from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { type ControlPlaneVerifyDeps, verifyControlPlaneCall } from "./verify";
 
 /**
@@ -72,6 +72,28 @@ export function createControlPlaneVerifier(deps: ControlPlaneVerifyDeps): Contro
 }
 
 /**
+ * What this Worker may say about its own build, as headers — everything the binding handed it, and
+ * nothing else.
+ *
+ * A function rather than two lines in the middleware because this is where the seam's one invariant
+ * lives and one invariant wants one place to be gated: **every value here was handed to this Worker by
+ * the platform, byte for byte.** Nothing is defaulted, nothing is computed at request time, and a field
+ * the binding did not carry produces no header at all. That last clause is the load-bearing one — this
+ * pair is what a management client invalidates a rendered pane on, and an empty header is a value, so
+ * "cannot say" has to arrive as silence rather than as an empty string a client can compare.
+ *
+ * The tag stays off the wire. It is read by the identity reader and answers neither of the two
+ * questions a client asks, and this header crosses to a management client on adopter-authored text.
+ */
+export function workerVersionHeaders(env: unknown): Record<string, string> {
+  const meta = workerVersionMetadata(env);
+  const headers: Record<string, string> = {};
+  if (meta.id !== null) headers[CONTROL_PLANE_VERSION_HEADER] = meta.id;
+  if (meta.createdAt !== null) headers[CONTROL_PLANE_VERSION_CREATED_HEADER] = meta.createdAt;
+  return headers;
+}
+
+/**
  * Require a verified control-plane caller carrying `requirement`.
  *
  * Goes **before** any validator on the route line. A validator ahead of the gate turns a 401 into a
@@ -90,8 +112,12 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
     // holding a stale value the moment the adopter deploys — which is exactly when it matters. Per
     // response, each recorded action pins the build it actually hit, and a client can notice the version
     // changing mid-session, which is the moment a rendered pane has quietly gone out of date.
-    const version = workerVersion(c.env);
-    if (version) c.header(CONTROL_PLANE_VERSION_HEADER, version);
+    //
+    // **Two headers, because one value cannot answer both questions.** The id says which build; the
+    // timestamp beside it says whether the same build has been deployed again, which an id compared
+    // against an id can never report. `workerVersionHeaders` owns what may be said and what absence
+    // means; `workerBuildChanged` in `../wire` owns how the pair is read.
+    for (const [name, value] of Object.entries(workerVersionHeaders(c.env))) c.header(name, value);
 
     const verify = c.var.controlPlaneVerifier;
     if (!verify) {
