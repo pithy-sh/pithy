@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./wire";
+import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "./wire";
 
 // `import.meta.glob` is a vite/vitest feature; declared so plain `tsc` typecheck accepts it, exactly as
 // `worker-safety.test.ts` does. Reading the sources this way rather than through `node:fs` is what keeps
@@ -83,6 +83,18 @@ describe("control-plane wire constants", () => {
   test("name the headers both sides of the seam agree on", () => {
     expect(CONTROL_PLANE_HEADER).toBe("pithy-control-plane");
     expect(CONTROL_PLANE_VERSION_HEADER).toBe("pithy-worker-version");
+    expect(CONTROL_PLANE_VERSION_CREATED_HEADER).toBe("pithy-worker-version-created");
+  });
+
+  test("keep the build id a header of its own, so an old client cannot misread a new one", () => {
+    // The reason the version's creation time is a second header rather than a richer value in the
+    // first. A client already deployed compares the whole `pithy-worker-version` string; fold a second
+    // field into it and the day the adopter upgrades the kit reads as a version change that never
+    // happened — a false invalidation, which is the "absence is not change" failure wearing a hat. Two
+    // headers keep each value one comparable datum, and a client that never reads the second cannot
+    // misread it.
+    expect(CONTROL_PLANE_VERSION_CREATED_HEADER).not.toBe(CONTROL_PLANE_VERSION_HEADER);
+    expect(CONTROL_PLANE_VERSION_CREATED_HEADER.startsWith(`${CONTROL_PLANE_VERSION_HEADER}-`)).toBe(true);
   });
 
   // The point of the module. A browser calls the customer's Worker directly (docs/CONTROL-PLANE.md §4),

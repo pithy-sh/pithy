@@ -297,6 +297,22 @@ What the manifest *does* carry is **identity**, which is a different thing, and 
 
 The same build id is also on **every control-plane response**, as a `pithy-worker-version` header — allowed and denied alike, and on every capability's admin routes rather than only the seam's. A client that captured the version at connect holds a stale value the moment the adopter deploys, which is precisely when it matters; per response, each recorded action pins the build it actually hit, and a client can notice the version changing mid-session — the moment a rendered pane has quietly gone out of date.
 
+Beside it, **`pithy-worker-version-created`**: when that build was created, ISO-8601, exactly as Cloudflare issued it. Two headers rather than one richer value, because a client compares them separately and because a client already deployed compares the whole of the first — fold a second field into it and a kit upgrade reads as a version change that never happened.
+
+Holding the last pair it saw, a client tells three states apart:
+
+| What it sees | What it means |
+| --- | --- |
+| Both unchanged | The same build is still answering. Say nothing. |
+| `version` changed, `created` **later** | A newer build is live. What is rendered came from one that no longer serves. |
+| `version` changed, `created` **earlier** | An **older build was deployed again** — a rollback, and now nameable as one. |
+
+**Either header absent, on either side of the comparison, is never a change.** A Worker that does not declare `version_metadata` sends neither; a call that failed before its headers were read has none. Both mean "cannot say", and a client that treats a missing value as a new one invalidates on a deploy nobody made.
+
+**One case no header can reach: a deployment that creates no version.** `wrangler deploy` always uploads, so it always mints a new id — but `wrangler rollback` and `wrangler versions deploy` point a new *deployment* at an existing *version*, and this binding describes the version. Roll away from a build and back to it between two of a client's calls and both headers are byte-identical while the Worker has restarted. Nothing the runtime hands a script closes that; the only in-Worker proxy would be isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day, and a false change is worse than a missed one for a client that invalidates on it. A client that must know that case reads Cloudflare's deployments API — which is the customer's account, not this seam.
+
+The `tag` the binding also carries stays off the wire. It is adopter-authored free text, this header crosses a trust boundary, and neither question a client asks is answered by it.
+
 ### Declaring one
 
 ```ts

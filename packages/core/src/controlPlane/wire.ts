@@ -35,5 +35,31 @@ export const CONTROL_PLANE_HEADER = "pithy-control-plane";
  * the exact build it hit, and to notice a version changing mid-session, which is the moment a rendered
  * pane has quietly gone out of date. Absent where the `CF_VERSION_METADATA` binding is, which reads as
  * "this Worker cannot say" rather than as a value to trust.
+ *
+ * **Carries the id and nothing else, permanently.** Its companion below is a second header rather than
+ * a second field in this one for one reason: a client already deployed compares this whole string. Fold
+ * anything into it and the day the adopter upgrades the kit reads as a version change that never
+ * happened — a false invalidation, which is the failure the pair exists to prevent, arriving from the
+ * fix for it.
  */
 export const CONTROL_PLANE_VERSION_HEADER = "pithy-worker-version";
+
+/**
+ * The response header carrying **when that build was created** — ISO-8601, as the platform issued it.
+ *
+ * Read beside {@link CONTROL_PLANE_VERSION_HEADER}, never folded into it, so a client can answer two
+ * questions separately. Holding the last pair it saw:
+ *
+ * - both unchanged — the same version is still answering. Say nothing.
+ * - id changed, this later — a newer build is live.
+ * - id changed, this earlier — an older build was deployed again. A rollback, and now nameable as one;
+ *   the id alone could only say "changed".
+ * - either absent, on either side of the comparison — this Worker cannot say. **Never a change.**
+ *
+ * It is the version's **upload** time, not its deploy time, because that is what the platform gives a
+ * running Worker. So the one case it cannot see is a deployment that creates no version: roll away from
+ * a build and back to it between two calls and both headers are byte-identical while the Worker has
+ * restarted. Nothing in the runtime closes that — see `worker/identity.ts` for why isolate boot time is
+ * not the answer — and a client that must know it asks Cloudflare's deployments API.
+ */
+export const CONTROL_PLANE_VERSION_CREATED_HEADER = "pithy-worker-version-created";

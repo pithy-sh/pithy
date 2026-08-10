@@ -6,8 +6,9 @@
  * the one reader for them.
  *
  * The Cloudflare runtime hands a script **nothing** about its own identity. `TraceItem.scriptName` is
- * what a *tail consumer* sees about someone else, `version_metadata` carries an id and a tag but no
- * name, and `navigator.userAgent` is the constant `"Cloudflare-Workers"` in every Worker alive. So
+ * what a *tail consumer* sees about someone else, `version_metadata` carries an id, a tag and a
+ * creation time but no name, and `navigator.userAgent` is the constant `"Cloudflare-Workers"` in every
+ * Worker alive. So
  * identity is stamped, not derived: `pithy init` and `pithy worker add` write `PROJECT`, `ENVIRONMENT`,
  * and `WORKER` into every environment stanza of the Worker's own `wrangler.jsonc`.
  *
@@ -72,6 +73,52 @@ export interface WorkerIdentity {
   version: string | null;
 }
 
+/**
+ * Everything the `CF_VERSION_METADATA` binding carries about the build that is running.
+ *
+ * **Measured, not read off the docs.** A `wrangler dev` (4.120.1 / miniflare 4) against a Worker
+ * declaring `version_metadata` hands the binding as `{ id, tag, timestamp }` — three own keys, every
+ * value a string, `timestamp` an ISO-8601 instant. Every field is independently `null` here, because a
+ * partial binding is what a platform change looks like from inside a Worker and losing the id over a
+ * renamed sibling would be the worse trade.
+ *
+ * **It names a *version*, never a deployment.** That distinction is the whole ceiling on what a client
+ * can conclude from it — see {@link workerVersionMetadata}.
+ */
+export interface WorkerVersionMetadata {
+  /** The version id: opaque, per upload, and the answer to "which build". `null` where the binding is. */
+  id: string | null;
+  /**
+   * The version tag, set only by `wrangler versions upload --tag`, or `null`.
+   *
+   * Empty in every local dev and in every deploy nobody tagged, so `""` reads as absent rather than as a
+   * tag to compare against. Read here so this reader mirrors the binding; deliberately **not** stamped
+   * on the control-plane header — it is adopter-authored free text, and the two questions a management
+   * client asks are answered without it.
+   */
+  tag: string | null;
+  /**
+   * When this **version was created**, ISO-8601, verbatim as the platform issued it — or `null`.
+   *
+   * The binding spells it `timestamp`, which names a moment without saying which one, and which one is
+   * the entire point: this is the version's *upload* time, not the time it was deployed. A rollback
+   * creates a new deployment pointing at an existing version, so this value does not move when an
+   * already-uploaded build is deployed again.
+   *
+   * `null` for anything that is not a parseable instant. That is the one place this reader refuses
+   * rather than relays, and the consumer is the reason: a client does `Date.parse` on it and compares,
+   * an unparseable string is `NaN`, and every `NaN` comparison is false — so garbage would read as
+   * "not newer", which is silently indistinguishable from "unchanged".
+   */
+  createdAt: string | null;
+}
+
+/** One binding field, or `null` for anything that is not a non-empty string. */
+function carried(meta: Record<string, unknown>, field: string): string | null {
+  const value = meta[field];
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
 /** One var, trimmed, or `null` for anything that is not a non-empty string. */
 function stamped(env: Record<string, unknown>, name: string): string | null {
   const value = env[name];
@@ -104,17 +151,58 @@ export function workerIdentity(env: unknown): WorkerIdentity {
 }
 
 /**
+ * Read the whole `CF_VERSION_METADATA` binding: which build is running, and when that build was made.
+ *
+ * **The one reader of the binding**, which is why it returns all of it. The seam used to take the id and
+ * drop the rest, and the module docstring above described a two-field binding — so the field this
+ * function exists for was discarded by a reader that did not know it was there.
+ *
+ * ## What a client can conclude, and where that stops
+ *
+ * Holding the last `(id, createdAt)` it saw, a management client can tell apart:
+ *
+ * - **both unchanged** — the same version is still answering. Say nothing.
+ * - **`id` changed, `createdAt` later** — a newer build is live; what is rendered came from one that no
+ *   longer serves.
+ * - **`id` changed, `createdAt` earlier** — an older build was deployed again. A rollback, nameable as
+ *   one rather than as an opaque change, which the id alone could never say.
+ * - **either absent** — this Worker cannot say. Not a change; see {@link WorkerIdentity}.
+ *
+ * **What it cannot see, stated plainly: a deployment that creates no version.** `wrangler deploy`
+ * always uploads, so it always mints a new id — but `wrangler rollback` and `wrangler versions deploy`
+ * point a *new deployment* at an *existing version*, and this binding describes the version. Roll away
+ * from a build and back to it between two of a client's calls and every field here is byte-identical
+ * while the Worker has restarted. No field the runtime hands a script closes that: the only in-Worker
+ * proxy is isolate boot time, which changes on every cold start and would report a redeploy dozens of
+ * times a day. A false change is worse than a missed one for a client that invalidates on it, so
+ * nothing is stamped, and a client that must know that case asks Cloudflare's deployments API.
+ *
+ * Same never-throws, never-guesses contract as {@link workerIdentity}.
+ */
+export function workerVersionMetadata(env: unknown): WorkerVersionMetadata {
+  const absent: WorkerVersionMetadata = { id: null, tag: null, createdAt: null };
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return absent;
+  const meta = (env as Record<string, unknown>)[VERSION_METADATA_BINDING];
+  if (typeof meta !== "object" || meta === null) return absent;
+  const fields = meta as Record<string, unknown>;
+  const createdAt = carried(fields, "timestamp");
+  return {
+    id: carried(fields, "id"),
+    tag: carried(fields, "tag"),
+    // Relayed verbatim, never re-encoded — but only once it is a time at all.
+    createdAt: createdAt !== null && Number.isFinite(Date.parse(createdAt)) ? createdAt : null,
+  };
+}
+
+/**
  * The deployed build's version id, off the `CF_VERSION_METADATA` binding, or `null`.
  *
- * Exported on its own because two callers want the id without the rest of the identity: the request
- * logger's `version` correlation field, and the control-plane manifest and response header. Same
- * never-throws, never-guesses contract as {@link workerIdentity} — an absent binding is an ordinary,
- * permanent state for any Worker scaffolded before it was declared.
+ * Kept on its own because four callers want the id and nothing else: the request logger's `version`
+ * correlation field, `/health`, the control-plane manifest, and the seam's response header. Its shape
+ * is unchanged and deliberately so — every one of those compares or records a single opaque string, and
+ * widening it would have rewritten an audit column and a wire field to carry something none of them
+ * asked for. {@link workerVersionMetadata} is where the rest of the binding lives.
  */
 export function workerVersion(env: unknown): string | null {
-  if (typeof env !== "object" || env === null || Array.isArray(env)) return null;
-  const meta = (env as Record<string, unknown>)[VERSION_METADATA_BINDING];
-  if (typeof meta !== "object" || meta === null) return null;
-  const id = (meta as { id?: unknown }).id;
-  return typeof id === "string" && id.length > 0 ? id : null;
+  return workerVersionMetadata(env).id;
 }
