@@ -4,7 +4,7 @@
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
     { "type": "d1", "name": "EMAIL_SUPPRESSIONS" },
-    { "type": "workflow", "name": "EMAIL_SENDER" }
+    { "type": "workflow", "name": "EMAIL_SENDER", "job": "send", "className": "EmailSendWorkflow" }
   ],
   "peerCapabilities": ["secrets"],
   "migrationNamespace": "email",

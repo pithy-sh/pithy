@@ -14,11 +14,17 @@ import {
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
-import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { z } from "zod";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
+import {
+  appendBinding,
+  appendDurableObjectMigrations,
+  type BindingScope,
+  envStanzas,
+  stanzaHasBinding,
+  type WranglerStanza,
+} from "../project/bindingEntries";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
@@ -212,78 +218,9 @@ export interface BuildReconcilePlanOptions {
   countPending?: CountPending;
 }
 
-/**
- * A wrangler stanza's binding arrays — the keys reconcile reads and writes. Mirrors `pithy add`'s private
- * shape (the two are kept in lockstep by intent). `durable_objects.bindings` is per-environment; the DO
- * class `migrations` tag is top-level only.
- */
-interface WranglerBindings {
-  d1_databases?: { binding: string; database_name?: string }[];
-  kv_namespaces?: { binding: string }[];
-  r2_buckets?: { binding: string }[];
-  durable_objects?: { bindings: { name: string; class_name: string }[] };
-  migrations?: { tag: string; new_sqlite_classes?: string[] }[];
-  env?: Record<string, WranglerBindings | undefined>;
-}
-
-/** The single DO class-migration tag Pithy scaffolds under, matching `pithy add`. */
-const DO_MIGRATION_TAG = "v1";
-
 /** Escape a capability name for use inside a `RegExp`. */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Which project and which environment a stanza's proposed names are composed for. Mirrors `pithy add`. */
-interface NameScope {
-  /** The project name, or absent when the caller could not resolve one — in which case nothing is proposed. */
-  project?: string;
-  /** The environment this stanza *is* — `dev` for the top-level one, else the `env.<name>` key. */
-  env: string;
-}
-
-/**
- * The `<project>-<env>-<binding>` name to propose for a binding, or `undefined` when there is nothing
- * safe to propose. The naming facade owns the one rule *and* the per-namespace budget, so this proposal
- * is byte-identical to `pithy add`'s — see `add.ts:proposeName` for why the two skips exist.
- *
- * The skip on an unaccepted environment matters more here than it does in `add`: `buildReconcilePlan`
- * is what `pithy doctor` runs, and a diagnostic that throws on an adopter's own `env.<key>` reports
- * nothing at all about the environments it could have checked.
- */
-function proposeName(scope: NameScope, binding: string, kind: "d1" | "kv"): string | undefined {
-  if (scope.project === undefined || !isValidEnvironment(scope.env)) return undefined;
-  return resourceNames(scope.project).env(scope.env)[kind](binding);
-}
-
-/** Every environment's binding stanza: the top-level one (reported as "dev") plus each `env.<name>`. */
-function envStanzas(wrangler: WranglerBindings): { env: string; stanza: WranglerBindings }[] {
-  const list: { env: string; stanza: WranglerBindings }[] = [{ env: "dev", stanza: wrangler }];
-  for (const [env, stanza] of Object.entries(wrangler.env ?? {})) {
-    if (stanza) list.push({ env, stanza });
-  }
-  return list;
-}
-
-/**
- * Whether a stanza already declares a binding. `null` means the binding kind has no wrangler-array wiring
- * reconcile handles (email, secret, workflow, service, ai, vectorize, queue, ratelimit) — those are skipped,
- * matching what `pithy add` wires. r2 is handled here beyond `add`'s current set, since it maps cleanly to
- * `r2_buckets`.
- */
-function stanzaHasBinding(stanza: WranglerBindings, binding: BindingSpec): boolean | null {
-  switch (binding.type) {
-    case "d1":
-      return (stanza.d1_databases ?? []).some((entry) => entry.binding === binding.name);
-    case "kv":
-      return (stanza.kv_namespaces ?? []).some((entry) => entry.binding === binding.name);
-    case "r2":
-      return (stanza.r2_buckets ?? []).some((entry) => entry.binding === binding.name);
-    case "durable_object":
-      return (stanza.durable_objects?.bindings ?? []).some((entry) => entry.name === binding.name);
-    default:
-      return null;
-  }
 }
 
 /**
@@ -317,7 +254,7 @@ function effectiveBindings(manifest: CapabilityManifest, composed: Capability | 
 /** Every required binding absent from an environment, across every environment. Unsupported kinds are skipped. */
 function computeMissingBindings(
   manifest: CapabilityManifest,
-  stanzas: { env: string; stanza: WranglerBindings }[],
+  stanzas: { env: string; stanza: WranglerStanza }[],
   composed: Capability | undefined,
 ): MissingBinding[] {
   const missing: MissingBinding[] = [];
@@ -480,9 +417,9 @@ async function readConfigSource(workerDir: string): Promise<string> {
 }
 
 /** A Worker with no `wrangler.jsonc` has no stanzas to reconcile — report no binding drift rather than failing. */
-async function readStanzas(workerDir: string): Promise<{ env: string; stanza: WranglerBindings }[]> {
+async function readStanzas(workerDir: string): Promise<{ env: string; stanza: WranglerStanza }[]> {
   try {
-    return envStanzas((await readWranglerConfig(workerDir)) as WranglerBindings);
+    return envStanzas((await readWranglerConfig(workerDir)) as WranglerStanza);
   } catch {
     return [];
   }
@@ -562,72 +499,27 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
 }
 
 /**
- * Append a binding entry to a stanza if its name isn't already bound. Mirrors `pithy add`, plus r2 — the
- * two writers produce the same arrays through two implementations kept in lockstep by intent, so a change
- * to one is a change to the other. That includes the proposed `database_name`: if only `add` wrote it, a
- * capability wired by `pithy upgrade` would get a nameless D1 while a capability wired by `pithy add` got
- * a project-scoped one, from the same manifest.
+ * Append every binding a capability needs in this Worker to one environment's stanza.
  *
- * The presence check keys on `binding` **alone**, deliberately. Comparing the name too would read an
- * adopter's renamed database as a missing binding, and `upgrade` would append a second entry for a
- * binding wrangler already has.
+ * The entries are `project/bindingEntries.ts`'s, the same writer `pithy add` uses. Reconcile used to
+ * carry its own copy, "kept in lockstep by intent" with `add`'s, and the two had already drifted: `add`
+ * stamped a spec's `remote` flag and wrote the Workers AI binding, this did neither, so a capability
+ * wired by `pithy upgrade` got a different config from the same manifest than one wired by `pithy add`.
+ *
+ * The KV name proposal the writer returns is dropped here on purpose: `upgrade` reports drift, and a KV
+ * namespace title is something `pithy add` tells the adopter to create at the moment they compose the
+ * capability, not something a later reconcile can act on.
  */
 function appendBindings(
-  stanza: WranglerBindings,
+  stanza: WranglerStanza,
   manifest: CapabilityManifest,
-  scope: NameScope,
+  scope: BindingScope,
   composed: Capability | undefined,
 ): void {
   // Same source of truth as the plan — see `effectiveBindings`. Writing from the manifest here while the
   // plan reported from the composed instance would make `upgrade` decline to write the binding it had
   // just told the adopter was missing.
-  for (const binding of effectiveBindings(manifest, composed)) {
-    if (binding.type === "d1") {
-      stanza.d1_databases ??= [];
-      if (!stanza.d1_databases.some((entry) => entry.binding === binding.name)) {
-        const name = proposeName(scope, binding.name, "d1");
-        stanza.d1_databases.push({ binding: binding.name, ...(name ? { database_name: name } : {}) });
-      }
-    }
-    if (binding.type === "kv") {
-      stanza.kv_namespaces ??= [];
-      if (!stanza.kv_namespaces.some((entry) => entry.binding === binding.name)) {
-        stanza.kv_namespaces.push({ binding: binding.name });
-      }
-    }
-    if (binding.type === "r2") {
-      stanza.r2_buckets ??= [];
-      if (!stanza.r2_buckets.some((entry) => entry.binding === binding.name)) {
-        stanza.r2_buckets.push({ binding: binding.name });
-      }
-    }
-    if (binding.type === "durable_object" && binding.className) {
-      stanza.durable_objects ??= { bindings: [] };
-      stanza.durable_objects.bindings ??= [];
-      if (!stanza.durable_objects.bindings.some((entry) => entry.name === binding.name)) {
-        stanza.durable_objects.bindings.push({ name: binding.name, class_name: binding.className });
-      }
-    }
-  }
-}
-
-/** Register a manifest's DO classes in the top-level `migrations` tag, matching `pithy add`. */
-function appendDurableObjectMigrations(config: WranglerBindings, manifest: CapabilityManifest): void {
-  const classes = manifest.requiredBindings
-    .filter((binding) => binding.type === "durable_object" && binding.className)
-    .map((binding) => binding.className as string);
-  if (classes.length === 0) return;
-
-  config.migrations ??= [];
-  let tag = config.migrations.find((migration) => migration.tag === DO_MIGRATION_TAG);
-  if (!tag) {
-    tag = { tag: DO_MIGRATION_TAG, new_sqlite_classes: [] };
-    config.migrations.push(tag);
-  }
-  tag.new_sqlite_classes ??= [];
-  for (const className of classes) {
-    if (!tag.new_sqlite_classes.includes(className)) tag.new_sqlite_classes.push(className);
-  }
+  for (const binding of effectiveBindings(manifest, composed)) appendBinding(stanza, binding, scope);
 }
 
 /**
@@ -782,7 +674,7 @@ async function applyBindings(
 
   const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
-  const config = (await readWranglerConfig(workerDir)) as WranglerBindings;
+  const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
   const stanzas = envStanzas(config);
   let touched = false;
   for (const cap of caps) {
@@ -794,11 +686,11 @@ async function applyBindings(
       appendBindings(
         stanza,
         manifest,
-        { ...(project === undefined ? {} : { project }), env },
+        { ...(project === undefined ? {} : { project }), env, capability: manifest.name },
         composedByName.get(cap.name),
       );
     }
-    appendDurableObjectMigrations(config, manifest);
+    appendDurableObjectMigrations(config, manifest.requiredBindings);
     added.set(cap.name, cap.missingBindings);
     touched = true;
   }

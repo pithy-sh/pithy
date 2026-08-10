@@ -116,4 +116,16 @@ describe("pithy.manifest.json", () => {
   test("claims nothing for EMAIL_SENDER — a Workflow binding has no local stand-in to mint", () => {
     expect(manifest.devSecrets.map((secret) => secret.name)).not.toContain("EMAIL_SENDER");
   });
+
+  test("its EMAIL_SENDER binding names the same job and class this capability registers", () => {
+    // `pithy add` runs offline against the manifest and never executes this package, so the job and the
+    // class name are mirrored there — and a mirror drifts. They are what the CLI composes the deployed
+    // `<project>-<env>-email-send` name and the `class_name` from, so a manifest that fell out of step
+    // would write a `workflows` entry pointing at a Workflow nothing deploys: a config that loads, a
+    // Worker that boots, and a send that fails in production. #258.
+    const send = email(config).workflows?.send;
+    const binding = manifest.requiredBindings.find((entry) => entry.name === "EMAIL_SENDER");
+    expect(binding).toMatchObject({ type: "workflow", job: "send", className: send?.className });
+    expect(send?.binding).toBe(binding?.name);
+  });
 });

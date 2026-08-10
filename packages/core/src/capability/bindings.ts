@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { NAME_SEGMENT } from "../naming/segment";
 
 export const BindingType = z
   .union([
@@ -26,14 +27,19 @@ export const BindingType = z
 export type BindingType = z.infer<typeof BindingType>;
 
 /**
- * Whether a provision command creates this kind of binding, rather than an adopter writing it into
- * `wrangler.jsonc` by hand.
+ * Whether a provision command creates the **resource** behind this kind of binding, rather than the
+ * adopter standing it up themselves.
  *
- * The three are the ones `pithy add` deliberately leaves unwritten, and for the same reason each time:
- * the entry carries a value only provisioning knows. A `secret` is a Secrets Store entry (a `.dev.vars`
- * string in local dev); a `workflow` entry needs the deployed script's environment-scoped `name`; a
- * `vectorize` entry needs the provisioned `index_name`. Telling anyone to add one of these to
- * `wrangler.jsonc` sends them somewhere the value does not exist.
+ * The three are the ones whose resource exists only after `pithy <capability> provision`: a `secret` is a
+ * Secrets Store entry (a `.dev.vars` string in local dev), a `workflow` runs in a deployed host Worker,
+ * and a `vectorize` binding addresses a provisioned index. `pithy add` says so in a note, at the moment
+ * the adopter is thinking about the capability.
+ *
+ * **This is not the same question as "did anything write the stanza".** Collapsing the two is what left
+ * `workflow:EMAIL_SENDER` unwritten and every route answering 500 (#258): the entry is derivable offline
+ * even though the Workflow it names is not deployed yet, so {@link isWrittenBinding} writes it and this
+ * one still reports that provisioning is what makes it work. A binding can be in both sets, and the
+ * Workflow is.
  *
  * `service` is not here. Its entry is also written for the adopter — by `pithy feature`, out of the
  * target Worker's env-scoped script name — but it is wiring between an app's own Workers rather than a
@@ -41,6 +47,38 @@ export type BindingType = z.infer<typeof BindingType>;
  */
 export function isProvisionedBinding(type: BindingType): boolean {
   return type === "secret" || type === "workflow" || type === "vectorize";
+}
+
+/**
+ * Whether `pithy add` writes this kind's `wrangler.jsonc` entry, offline, at the moment it composes the
+ * capability.
+ *
+ * Together with {@link isProvisionedBinding} this is the whole answer to "where does this binding come
+ * from" — the invariant `capabilities/requiredBindings.test.ts` states. A kind in **neither** set is a
+ * binding a capability requires and nothing supplies: the composition refuses to assemble, the error
+ * names the binding, and no command anywhere fixes it. `ratelimit` was exactly that, which is why a
+ * scaffolded project composing `auth` answered 500 on every route including `/health` (#258).
+ *
+ * Membership turns on one question only: **is every field wrangler requires derivable offline?** A rate
+ * limiter's are — the stanza is a policy with no resource behind it. A Workflow's are, because the
+ * manifest binding states the job and the exported class, and the rest is the project-scoped naming rule.
+ * A Vectorize index's `index_name` is a provisioning output and is not, so an entry carrying only
+ * `binding` would fail wrangler's validator and stop `wrangler dev` and `wrangler deploy` both — worse
+ * than no entry. A `secret` has no `wrangler.jsonc` array at all.
+ *
+ * `service` is in neither, deliberately: `pithy feature` writes it out of the target Worker's env-scoped
+ * script name, and no shipped capability declares one.
+ */
+export function isWrittenBinding(type: BindingType): boolean {
+  return (
+    type === "d1" ||
+    type === "kv" ||
+    type === "r2" ||
+    type === "ai" ||
+    type === "durable_object" ||
+    type === "ratelimit" ||
+    type === "workflow"
+  );
 }
 
 /**
@@ -57,7 +95,20 @@ export const BindingSpec = z
       .min(1)
       .optional()
       .describe(
-        'The exported Durable Object class this namespace is backed by (e.g. "MultiplayerSession"). Meaningful only for a `durable_object` binding — it is the `class_name` the CLI writes into `durable_objects.bindings` and the DO class migration tag. Ignored for every other kind.',
+        'The exported class this binding is backed by. For a `durable_object` binding it is the DO class (e.g. "MultiplayerSession") the CLI writes into `durable_objects.bindings` and the DO class migration tag. For a `workflow` binding it is the `WorkflowEntrypoint` subclass (e.g. "EmailSendWorkflow") the CLI writes as `class_name` — the same value the capability\'s own `WorkflowSpec.className` carries. Ignored for every other kind.',
+      ),
+    job: z
+      .string()
+      .min(1)
+      // Constrained here rather than only where the name is composed, because a manifest is
+      // third-party data read out of `node_modules` and this string lands verbatim in the adopter's
+      // `wrangler.jsonc` as a Cloudflare Workflow name. `NAME_SEGMENT` is the one segment rule every
+      // composed name answers to, so a manifest that states something a deploy would refuse is refused
+      // at parse instead — attributed to the capability, before anything is written.
+      .regex(NAME_SEGMENT, "A job is one name segment: lowercase letters, digits, and single hyphens.")
+      .optional()
+      .describe(
+        'The job within the capability this Workflow runs (e.g. "send") — the `<job>` segment of the deployed `<project>-<env>-<capability>-<job>` name, and the second half of the `<capability>/<job>` dispatch key. Meaningful only for a `workflow` binding, where it is what lets `pithy add` name the Workflow offline instead of leaving the binding unwritten. Ignored for every other kind.',
       ),
     service: z
       .string()

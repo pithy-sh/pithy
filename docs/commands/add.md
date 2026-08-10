@@ -31,6 +31,14 @@ One capability, one Worker, in this order.
 
 **Wire that Worker.** `apps/<name>/pithy.config.ts` gains the import and the registration call; `apps/<name>/wrangler.jsonc` gains the manifest's required bindings, in every environment stanza the file declares, plus any Durable Object class migrations. Handler source stays in the package. Only the thin registration lands in your repo.
 
+Every binding whose entry `add` can complete offline is written: `d1_databases`, `kv_namespaces`, `r2_buckets`, `ai`, `durable_objects`, `ratelimits`, and `workflows`. Two are worth a sentence each.
+
+A **rate limiter** is a policy, not a resource — nothing exists behind it in your account. It is written at **100 requests per 60 seconds, per client IP**, which is a flood guard rather than a product rule. Tune it in `wrangler.jsonc`; `add` never rewrites an entry you have changed. Cloudflare accepts a `period` of `10` or `60` and nothing else.
+
+A **Workflow** entry names the capability's host Worker across scripts — `<project>-<env>-<capability>-<job>` running in `<project>-<env>-<capability>` — so it is complete before that host exists, and `wrangler dev` binds it either way. The host itself is deployed by `pithy <capability> provision`, which `notes` says.
+
+What is left out is left out because wrangler would refuse the file: a `vectorize` entry needs the `index_name` provisioning mints, and a `secret` has no array in `wrangler.jsonc` at all. Those come back in `notes`.
+
 **Scaffold the config options.** Values come from `--set` first, then from a prompt when a human is attached. An option whose default is an object or an array is left as the manifest scaffolds it — a secrets registry is not something anyone types at a prompt.
 
 **Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present.
