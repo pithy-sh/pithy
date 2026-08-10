@@ -25,6 +25,7 @@ import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from 
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
@@ -207,6 +208,17 @@ export interface DoctorReport {
    */
   devSecrets: DevSecretsCheck | null;
   /**
+   * Whether every declared environment binds the `cf-secrets-store` secrets its Worker reads (#238).
+   * `null` outside a project that composes `secrets` — with no registry there is nothing to bind.
+   *
+   * It reports and never fails the exit, on the same rule its neighbours follow: every project that
+   * composed `secrets` and has not yet run `pithy secrets provision` is in this state, and so is every
+   * project that predates the stanza existing at all. That is a step not yet taken rather than a
+   * contradiction. What it must not be is silent — until this line the only thing that reported a
+   * missing binding was the Worker's own 500 on its first request.
+   */
+  secretBindings: SecretBindingsCheck | null;
+  /**
    * What is in a `.dev.vars.local` that nothing else in the project knows about — a key that exists only
    * in dev, and a key that shadows a registry secret. `null` when there is nothing to say, which is every
    * project with no `.dev.vars.local` anywhere.
@@ -350,6 +362,8 @@ export interface DoctorReportOptions {
   checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
+  /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
+  checkSecretBindings?: (projectDir: string) => Promise<SecretBindingsCheck | null>;
   /** Seam: what this project's `.dev.vars.local` files carry that nothing else declares. */
   checkDevVarsLocal?: (projectDir: string) => Promise<DevVarsLocalCheck | null>;
   /**
@@ -418,6 +432,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
   const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
+  const probeSecretBindings =
+    options.checkSecretBindings ?? ((dir: string) => checkSecretBindings({ projectDir: dir }));
   const probeDevVarsLocal = options.checkDevVarsLocal ?? ((dir: string) => checkDevVarsLocal({ projectDir: dir }));
   const probeDevVars =
     options.checkDevVars ??
@@ -545,6 +561,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
   // database, no seed run — so it answers offline, in the project that is not working.
   const devSecrets = inProject ? await probeDevSecrets(options.projectDir).catch(() => null) : null;
+  // The same registry, asked about the deployed environments rather than the local file. Files only once
+  // more: whether a store *entry* exists is provisioning's question, and this one is whether the stanza
+  // that would bind it is there at all (#238).
+  const secretBindings = inProject ? await probeSecretBindings(options.projectDir).catch(() => null) : null;
   // Gated the same way, and asked separately: this one needs no registry, so it answers for a project
   // that has never composed `secrets` — which is the project most likely to be asking where the file is.
   const devSecretsFile = inProject ? await probeDevSecretsFile(options.projectDir).catch(() => null) : null;
@@ -570,6 +590,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     environments,
     devPreferences,
     devSecrets,
+    secretBindings,
     devSecretsFile,
     devVarsLocal,
     devVars,
@@ -765,6 +786,18 @@ function environmentsBlock(check: EnvironmentsCheck): string {
   return lines.join("\n");
 }
 
+/**
+ * The `Secret bindings:` lines — shown only when a declared environment does not bind a
+ * `cf-secrets-store` secret its Worker reads (#238).
+ *
+ * Its own block rather than a line inside `Dev secrets:`, because it is about the opposite half of the
+ * project: that block is the machine-local file, this is the stanza a *deployed* Worker boots against.
+ * A single command answers every line in it, which is why the lines group per Worker-and-environment.
+ */
+function secretBindingsBlock(check: SecretBindingsCheck): string {
+  return ["Secret bindings:", ...describeSecretBindings(check).map((line) => `  ${line}`)].join("\n");
+}
+
 function workerNamesBlock(check: WorkerNameCheck): string {
   const lines = ["Worker names:"];
   const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
@@ -837,6 +870,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // four OAuth pairs auth declares are unset in almost every project, and treating that as a fault would
   // drag every report in the world verbose. `devSecretsHealthy` draws that line; the block still prints.
   const devSecretsOk = !report.devSecrets || devSecretsHealthy(report.devSecrets);
+  // A deployed Worker that will answer every request with a missing-binding error is worth the ink for
+  // the same reason, and it does not fail the exit for the same reason either — see
+  // {@link DoctorReport.secretBindings}.
+  const secretBindingsOk = !report.secretBindings || report.secretBindings.missing.length === 0;
   // A Worker that would start with no bindings at all is worth the ink for exactly the same reason a
   // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
   // but a report that called this project healthy is what #178 was reported about.
@@ -856,6 +893,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     environmentsOk &&
     devPreferencesOk &&
     devSecretsOk &&
+    secretBindingsOk &&
     devVarsOk &&
     aliasOk &&
     !report.projectLoadError;
@@ -1005,6 +1043,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     if (lines.length > 0) blocks.push(["Dev secrets:", ...lines.map((line) => `  ${line}`)].join("\n"));
   }
 
+  // The same registry asked about the deployed environments. After `Dev secrets:` because a developer
+  // reads this report about the project in front of them first, and a deploy second.
+  if (report.secretBindings && report.secretBindings.missing.length > 0) {
+    blocks.push(secretBindingsBlock(report.secretBindings));
+  }
+
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
   const runtime =
@@ -1112,6 +1156,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           // and an agent reading either had no way to tell "no secrets" from "nothing loaded".
           unresolvable: report.devSecrets.unresolvable,
           detail: describeDevSecrets(report.devSecrets),
+        }
+      : null,
+    // Same `null` discipline once more, and each finding carries its own sentence: one command writes
+    // every one of them, and an agent must not have to reconstruct which from a binding name.
+    secretBindings: report.secretBindings
+      ? {
+          state: report.secretBindings.state,
+          missing: report.secretBindings.missing,
+          detail: describeSecretBindings(report.secretBindings),
         }
       : null,
     devVarsLocal: report.devVarsLocal
