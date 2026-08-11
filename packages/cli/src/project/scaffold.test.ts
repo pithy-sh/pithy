@@ -1107,6 +1107,10 @@ describe("the gate on the gate", () => {
    * manager that shares a store.
    */
   const FOLLOWS_ON_PURPOSE: Record<string, { probes: string; why: string }> = {
+    "cli/src/project/config.ts": {
+      probes: "access",
+      why: "Asks whether a pithy.config.ts is there, and then only imports it — following is right, since a config reached through a linked checkout is still that project's config. It writes to one other path: a `.pithy.reload.<uuid>.ts` copy beside it, carrying a name nothing can already hold and that no probe here answered about.",
+    },
     "cli/src/capabilities/remove.ts": {
       probes: "stat",
       why: "Asks whether `node_modules/<pkg>` is installed. Nothing is written there, and following is the right answer — a shared-store package manager links that path.",

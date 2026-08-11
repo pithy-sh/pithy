@@ -175,6 +175,8 @@ describe("runAdd", () => {
       kvNamespaces: [],
       // Every binding auth needs is one `add` writes, so there is nothing left to say.
       notes: [],
+      // This fixture's manifest declares no peers, so nothing was composed on the way in.
+      prerequisites: [],
       eject: undefined,
     });
   });
@@ -423,5 +425,134 @@ describe("runAdd", () => {
         resourceId: "ghost",
       }),
     ]);
+  });
+});
+
+/**
+ * **What `pithy add` does about a capability's declared prerequisites — the decision, and its shape.**
+ *
+ * The manifest has always carried `peerCapabilities` and `createBackend` has always refused to assemble
+ * without them; between the two, `pithy add` read the declaration from nowhere and reported `Done.` on a
+ * Worker that could not start (#273).
+ *
+ * Three answers, and which one a run gets is decided by what can be asked of it. A flag composes them. A
+ * human is asked once, for the whole cascade. Anything else is refused, naming the commands in the order
+ * they have to run — because a run that cannot answer a question must not have one answered for it, and
+ * "compose two capabilities nobody named" is the wrong default to pick in silence.
+ */
+describe("runAdd prerequisites", () => {
+  let dir: string;
+  let worker: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-prereq-"));
+    await scaffoldProject({ targetDir: dir, appName: "prereq-test" });
+    worker = join(dir, "apps", DEFAULT_WORKER);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** The real graph in miniature: auth ⇒ secrets + email, email ⇒ secrets. Every manifest binding-free. */
+  const GRAPH: Record<string, unknown> = {
+    auth: {
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      peerCapabilities: ["secrets", "email"],
+    },
+    email: { name: "email", package: "@pithy-sh/email", requiredBindings: [], peerCapabilities: ["secrets"] },
+    secrets: { name: "secrets", package: "@pithy-sh/secrets", requiredBindings: [] },
+  };
+
+  /**
+   * An installer that drops **whichever** manifest was asked for.
+   *
+   * The single-manifest stub above cannot express this defect: it answers every package with the same
+   * file, so a walk over the graph would find `auth` requiring `auth`. A prerequisite is a different
+   * package with a different manifest, and that is the whole subject.
+   */
+  const install = async ({ projectDir, pkg }: { projectDir: string; pkg: string }) => {
+    const name = pkg.replace("@pithy-sh/", "");
+    const pkgDir = join(projectDir, "node_modules", "@pithy-sh", name);
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, "pithy.manifest.json"), JSON.stringify(GRAPH[name]));
+    return { packageManager: "bun" as const };
+  };
+
+  const base = () => ({
+    account: null,
+    projectDir: dir,
+    workerDir: worker,
+    project: "acme",
+    capability: "auth",
+    install,
+    migrate: async () => [] as DatabaseRun[],
+  });
+
+  test("a non-interactive run is refused, naming the commands in dependency order", async () => {
+    const error = await runAdd(base()).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(PithyError);
+    // The action, not just the message: the commands and their order are the part an adopter acts on,
+    // and `pithy add email` before `pithy add secrets` reproduces the defect one capability along.
+    expect((error as PithyError).payload).toMatchObject({
+      message: `auth requires secrets and email, which ${DEFAULT_WORKER} does not compose.`,
+      action:
+        "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
+    });
+
+    // Refused before anything was wired. An install happened — that is how the manifest was readable at
+    // all — but the config is untouched, so the adopter is not left with half of what they asked for.
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    expect(config).not.toMatch(/^\s*auth\(/m);
+  });
+
+  test("--with-prerequisites composes them, deepest first, and reports what it composed", async () => {
+    const result = await runAdd({ ...base(), withPrerequisites: true });
+
+    expect(result.prerequisites).toEqual(["secrets", "email"]);
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    for (const capability of ["secrets", "email", "auth"]) {
+      expect(config).toMatch(new RegExp(`^\\s*${capability}\\(`, "m"));
+    }
+  });
+
+  test("a human is asked once, for the whole cascade — not once per capability", async () => {
+    // `email` needs `secrets` too. One intent is one question: the answer is carried down, and a nested
+    // add that re-asked would turn `pithy add auth` into an interrogation.
+    const ask = vi.fn(async () => true);
+    const result = await runAdd({ ...base(), askPrerequisites: ask });
+
+    expect(result.prerequisites).toEqual(["secrets", "email"]);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith({ capability: "auth", worker: DEFAULT_WORKER, missing: ["secrets", "email"] });
+  });
+
+  test("declining is a refusal, not a partial add", async () => {
+    await expect(runAdd({ ...base(), askPrerequisites: async () => false })).rejects.toThrow(
+      "auth requires secrets and email",
+    );
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    for (const capability of ["secrets", "email", "auth"]) {
+      expect(config).not.toMatch(new RegExp(`^\\s*${capability}\\(`, "m"));
+    }
+  });
+
+  test("a prerequisite already composed is not composed again, and asks nothing", async () => {
+    await runAdd({ ...base(), capability: "secrets", withPrerequisites: true });
+    await runAdd({ ...base(), capability: "email", withPrerequisites: true });
+
+    const ask = vi.fn(async () => true);
+    const result = await runAdd({ ...base(), askPrerequisites: ask });
+
+    // Both peers are registered already, so there is nothing missing and no question to ask. This is the
+    // path an adopter who composed them by hand takes, and it must not be a prompt.
+    expect(result.prerequisites).toEqual([]);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("the Worker in the refusal is the one --worker takes, never the deployed script name", async () => {
+    // `pithy add --worker board` on a project named replay deploys as `replay-board`. A refusal naming
+    // the deployed name sends the adopter to a flag value that resolves to nothing.
+    await expect(runAdd({ ...base(), worker: "acme-api" })).rejects.toThrow(`which ${DEFAULT_WORKER} does not compose`);
   });
 });

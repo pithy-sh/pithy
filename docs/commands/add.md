@@ -5,7 +5,7 @@ Install a capability, wire it into one Worker's config and bindings, and run tha
 ## Synopsis
 
 ```
-pithy add <capability> [--worker <name>] [--set key=value]… [--eject [--force]] [--json]
+pithy add <capability> [--worker <name>] [--with-prerequisites] [--set key=value]… [--eject [--force]] [--json]
 pithy add --list [--json]
 ```
 
@@ -19,6 +19,7 @@ pithy add --list [--json]
 | `--set key=value` | string | — | Override one of the capability's config options. Repeatable |
 | `--eject` | boolean | `false` | Copy the capability's source into your repo and repoint the wiring at it |
 | `--force` | boolean | `false` | With `--eject`, overwrite an existing local copy. Discards your edits |
+| `--with-prerequisites` | boolean | `false` | Compose the capabilities this one requires, if this Worker does not compose them yet |
 | `--json` | boolean | `false` | Machine-readable output |
 
 ## What it does
@@ -28,6 +29,25 @@ One capability, one Worker, in this order.
 **Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`.
 
 **Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
+
+**Resolve what it composes against.** A manifest's `peerCapabilities` are the capabilities this one reads a seam of: `auth` declares `secrets` and `email`, `email` declares `secrets`, and `payments`, `support`, `storage`, `media` and `turnstile` all declare `secrets`. They are not advice. `createBackend` refuses to assemble a capability without them — `Capability "auth" requires the "secrets" capability, which is not composed` — so a Worker missing one does not start at all.
+
+They are a **graph**, not a list, and they are composed deepest first. `secrets` before `email`, because `email` reads a secret at boot; `email` before `auth`. The order comes from walking the declarations, never from the order a manifest happens to write them in.
+
+Each one is a real `pithy add`: its package installed, its config and bindings written, its dev secrets minted, its own `capability/added` audit event. Their config options take manifest defaults — you asked for one capability, not for an interview about three — and `pithy add email --set …` afterwards edits the same registration.
+
+**What decides whether they are composed at all** is what the run can be asked:
+
+- **A terminal.** One question, for the whole cascade: `auth requires secrets, email. Compose them too?` A nested prerequisite is never asked about again — one intent, one question. Declining refuses the run.
+- **`--with-prerequisites`.** Composes them without asking. The deterministic answer, and the one to put in a script.
+- **Anything else** — `--json`, no TTY, an agent — is **refused**, exit 1, naming the exact commands in the order they must run. Nothing is wired: an install has happened, because that is how the manifest was readable, and the config is untouched.
+
+```
+$ pithy add auth --json
+{"error":{…,"message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+```
+
+Composing something nobody asked for is not a thing to do behind an adopter's back. Reporting `Done.` on a project that cannot boot is worse. A prompt where there is someone to ask and a flag where there is not is how the rest of this CLI settles that (§`--worker`, `pithy init`'s domains).
 
 **Wire that Worker.** `apps/<name>/pithy.config.ts` gains the import and the registration call; `apps/<name>/wrangler.jsonc` gains the manifest's required bindings, in every environment stanza the file declares, plus any Durable Object class migrations. Handler source stays in the package. Only the thin registration lands in your repo.
 
@@ -107,7 +127,8 @@ $ pithy add secrets --json
 | `kvNamespaces[].binding` | string | The Worker env binding the name is proposed for, e.g. `SESSIONS` |
 | `kvNamespaces[].env` | string | The environment whose stanza declares it — `dev` for the top-level one |
 | `kvNamespaces[].name` | string | The proposed resource name, `<project>-<env>-<binding>` |
-| `notes` | string[] | What `add` finished off-config, and what only a provision command can supply. One line each, in order. Empty for a capability every one of whose bindings `add` writes |
+| `notes` | string[] | What `add` finished off-config, and what only a provision command can supply. One line each, in order — a prerequisite's notes come first, so the dev master key `pithy add secrets` mints is never swallowed. Empty for a capability every one of whose bindings `add` writes |
+| `prerequisites` | string[] | The capabilities composed on the way to this one, in the order composed — deepest first. Empty when it declares none, and empty on a re-run into a Worker that already composes them |
 | `eject` | object | Present only when `--eject` ran |
 | `eject.capability` | string | The capability that was forked |
 | `eject.path` | string | The Worker-relative directory the source was copied into, `capabilities/<cap>` |
@@ -167,6 +188,13 @@ secrets option "registry" is not settable from the command line.
 Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 ```
 
+**A prerequisite this Worker does not compose**, in a run that cannot be asked. Exit 1, and the commands come back in dependency order.
+
+```
+$ pithy add auth --json
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+```
+
 **A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with `Run pithy add <name> to install it.`
 
 **A malformed manifest on the direct path.** The `--list` scan reports a fault and carries on; asking for that capability by name refuses, naming the package and the schema's own reason.
@@ -186,9 +214,21 @@ Edit the local copy, or re-run with --force to overwrite it (discards your chang
 Wire a capability into a single-Worker project.
 
 ```
-$ pithy add auth
+$ pithy add audit
+Wired audit into board.
+app: 1 applied.
+Done.
+```
+
+Compose a capability and everything it requires, in one command. `auth` reads `secrets` and sends through `email`, so both arrive with it — deepest first, each fully wired.
+
+```
+$ pithy add auth --with-prerequisites
+Composed secrets, email into board first — auth requires them.
 Wired auth into board.
 app: 1 applied.
+Minted a dev master key as SECRETS_ENCRYPTION_KEYS, into ~/.config/pithy/replay/secrets.jsonc. Local only, and it reaches each Worker's generated .dev.vars.
+Minted a dev email-link-signing-key into ~/.config/pithy/replay/secrets.jsonc. Local only.
 Minted a dev auth-session-secret into ~/.config/pithy/replay/secrets.jsonc. Local only.
 Deployed environments need pithy secrets create auth-session-secret.
 Done.

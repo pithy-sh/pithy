@@ -7,7 +7,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { runAdd } from "../capabilities/flow";
+import { type AddResult, runAdd } from "../capabilities/flow";
 import { writeDevVars } from "../devSecrets/devVars";
 import { loadWorkerConfig } from "./config";
 import { scaffoldProject } from "./scaffold";
@@ -15,11 +15,20 @@ import { scaffoldProject } from "./scaffold";
 /**
  * The shortest path through the product, run end to end: **scaffold, compose, boot, `GET /health`.**
  *
- * `pithy init` → `pithy add secrets` → `pithy add email` → `pithy add auth` → `pithy dev` →
- * `curl /health` answered **500** on every route, because `@pithy-sh/auth` requires
+ * `pithy init` → `pithy add auth` → `pithy dev` → `curl /health`, and it has failed twice, in two
+ * different ways, at two different points.
+ *
+ * **#258**: it answered **500** on every route, because `@pithy-sh/auth` requires
  * `ratelimit:AUTH_RATE_LIMITER` and `@pithy-sh/email` requires `workflow:EMAIL_SENDER` and nothing wrote
- * either binding into the Worker's `wrangler.jsonc` (#258). Two agents hit it independently, days apart,
- * in different scratch projects.
+ * either binding into the Worker's `wrangler.jsonc`. Two agents hit it independently, days apart, in
+ * different scratch projects.
+ *
+ * **#273**: it did not answer at all. The path above was three `add` commands then, because a project
+ * composing only `auth` did not start — `createBackend` refuses to assemble a capability without the
+ * peers its manifest declares, and `pithy add` read `peerCapabilities` from nowhere. So the path is one
+ * `add` now, which is what an adopter types, and `withPrerequisites` is what makes that one command
+ * enough. Every assertion below still names `secrets` and `email`: they are composed here because `auth`
+ * requires them, and nothing about their wiring may differ for having been composed that way.
  *
  * **It was invisible to every unit test in the repo**, and the reason is worth stating: it lives in the
  * gap between two commands. `add`'s tests assert what `add` writes. `createBackend`'s tests assert what
@@ -49,6 +58,8 @@ const REPO = resolve(import.meta.dirname, "..", "..", "..", "..");
 
 let dir: string;
 let workerDir: string;
+/** What the one `pithy add auth` reported — the prerequisites it composed are asserted from it. */
+let added: AddResult;
 
 /**
  * Scaffolded **inside `packages/cli`**, not the OS tmpdir, for the same reason `e2e.test.ts` is: vitest
@@ -70,20 +81,20 @@ beforeAll(async () => {
   await mkdir(scope, { recursive: true });
   for (const pkg of LINKED) await symlink(join(REPO, "packages", pkg), join(scope, pkg));
 
-  // The order the docs teach, and the order the issue reproduces in. The dev master key `add secrets`
-  // mints, and the signing keys `email` and `auth` mint, land in this project's dev secrets file.
-  for (const capability of ["secrets", "email", "auth"]) {
-    await runAdd({
-      account: null,
-      projectDir: dir,
-      workerDir,
-      worker: WORKER,
-      project: PROJECT,
-      capability,
-      // D1 is not what this proves, and a real migrate would want a Miniflare store.
-      migrate: async () => [],
-    });
-  }
+  // One command, because one command is what an adopter runs. `secrets` and `email` arrive with it, in
+  // that order, and the dev master key `add secrets` mints and the signing keys `email` and `auth` mint
+  // all land in this project's dev secrets file exactly as they do when each is asked for by name.
+  added = await runAdd({
+    account: null,
+    projectDir: dir,
+    workerDir,
+    worker: WORKER,
+    project: PROJECT,
+    capability: "auth",
+    withPrerequisites: true,
+    // D1 is not what this proves, and a real migrate would want a Miniflare store.
+    migrate: async () => [],
+  });
   // What `pithy dev` does before it starts wrangler: regenerate each Worker's `.dev.vars` from the dev
   // secrets file. This is where a `secret` binding comes from, and the reason the invariant admits a kind
   // that never appears in `wrangler.jsonc` at all.
@@ -125,6 +136,29 @@ function envFromStanza(stanza: Stanza, devVars: Record<string, string>): Record<
   if (stanza.ai) env[stanza.ai.binding] = { run: async () => ({}) };
   return env;
 }
+
+test("one pithy add auth composes secrets, then email, then auth — the order the graph decides", async () => {
+  // Deepest first, and `secrets` before `email` because `email` reads a secret at boot. `auth`'s manifest
+  // happens to list them in that order too, but nothing here depends on that: the plan is a walk of the
+  // declared graph, not an echo of one array (`capabilities/prerequisites.ts`).
+  expect(added.prerequisites).toEqual(["secrets", "email"]);
+  expect(added.capability).toBe("auth");
+
+  // Composed, not merely installed. The registration call is what `createBackend` sees.
+  const config = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+  for (const capability of ["secrets", "email", "auth"]) {
+    expect(config).toMatch(new RegExp(`^\\s*${capability}\\(`, "m"));
+  }
+});
+
+test("the prerequisites' notes reach the adopter — a dev master key is printed once or not at all", () => {
+  // `pithy add secrets` mints the dev master key and says where it went, in a line nothing repeats. A
+  // result that reported only `auth`'s own notes would swallow it, and the adopter would learn the key
+  // exists from a 500.
+  expect(added.notes.some((note) => note.includes("SECRETS_ENCRYPTION_KEYS"))).toBe(true);
+  expect(added.notes.some((note) => note.includes("email-link-signing-key"))).toBe(true);
+  expect(added.notes.some((note) => note.includes("auth-session-secret"))).toBe(true);
+});
 
 test("a scaffolded project composing secrets, email and auth answers 200 on /health", async () => {
   const stanza = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as Stanza;

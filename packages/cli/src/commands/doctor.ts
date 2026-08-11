@@ -753,9 +753,26 @@ function healthLine(label: string, content: string): string {
   return `${HEALTH_INDENT}${label.padEnd(HEALTH_LABEL)}${content}`;
 }
 
-/** One Worker's four check lines. Every check is shown, so a passing one still reads as checked. */
+/** One Worker's five check lines. Every check is shown, so a passing one still reads as checked. */
 function workerHealthLines(health: WorkerHealth): string[] {
   const lines: string[] = [];
+
+  // First, and above the rest, because it is the only one that means the Worker does not start. Binding
+  // drift and a pending migration are things a running Worker has; a missing prerequisite is a
+  // `createBackend` refusal at assembly, so every other line below it describes a Worker that is down.
+  if (health.prerequisites.ok) {
+    lines.push(healthLine("prereqs", "every composed capability has its peers ✓"));
+  } else {
+    health.prerequisites.missing.forEach((entry, index) => {
+      lines.push(
+        healthLine(
+          index === 0 ? "prereqs" : "",
+          `${entry.capability} requires ${entry.requires} — run: pithy add ${entry.requires}`,
+        ),
+      );
+    });
+    lines.push(`${HEALTH_CONT}This worker will not boot until they are composed.`);
+  }
 
   if (health.config.ok) {
     lines.push(healthLine("config", "parses against every capability schema ✓"));

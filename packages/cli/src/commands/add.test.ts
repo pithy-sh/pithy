@@ -23,7 +23,16 @@ describe("add command", () => {
   test("meta and args shape — --worker names the worker to wire", () => {
     const args = add.args as Record<string, { type: string; default?: unknown; required?: boolean }>;
     expect(add.meta).toMatchObject({ name: "add" });
-    expect(Object.keys(args)).toEqual(["capability", "list", "worker", "set", "eject", "force", "json"]);
+    expect(Object.keys(args)).toEqual([
+      "capability",
+      "list",
+      "worker",
+      "set",
+      "eject",
+      "force",
+      "with-prerequisites",
+      "json",
+    ]);
     expect(args.capability).toMatchObject({ type: "positional", required: false });
     expect(args.worker).toMatchObject({ type: "string" });
     expect(args.json).toMatchObject({ type: "boolean", default: false });

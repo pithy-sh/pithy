@@ -663,7 +663,7 @@ Use pithy <command> --help for more information about a command.
 
 ### 4.2 Subcommand help
 
-Same renderer, one command deep. `pithy add` is the representative case — a positional argument and six flags. Help never enumerates the capability catalog: `pithy add --list` is the command for that (§3.5), and it reads the installed set, which no static block can.
+Same renderer, one command deep. `pithy add` is the representative case — a positional argument and seven flags. Help never enumerates the capability catalog: `pithy add --list` is the command for that (§3.5), and it reads the installed set, which no static block can.
 
 ```
 $ pithy add --help
@@ -677,12 +677,13 @@ ARGUMENTS
 
 OPTIONS
 
-             --list    List the capabilities you can add (Default: false)
-  --worker=<worker>    Which worker to wire it into (apps/<name>)
-        --set=<set>    Override a config option: --set key=value (repeatable)
-            --eject    Copy the capability's source into your repo and own it (no upgrades) (Default: false)
-            --force    With --eject, overwrite an existing local copy (discards edits) (Default: false)
-             --json    Machine-readable output (Default: false)
+                --list    List the capabilities you can add (Default: false)
+     --worker=<worker>    Which worker to wire it into (apps/<name>)
+           --set=<set>    Override a config option: --set key=value (repeatable)
+               --eject    Copy the capability's source into your repo and own it (no upgrades) (Default: false)
+               --force    With --eject, overwrite an existing local copy (discards edits) (Default: false)
+  --with-prerequisites    Compose the capabilities this one requires, if they aren't composed yet (Default: false)
+                --json    Machine-readable output (Default: false)
 ```
 
 ### 4.3 Color in help

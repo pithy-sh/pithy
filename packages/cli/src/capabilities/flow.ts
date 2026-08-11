@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -10,12 +10,14 @@ import { type DatabaseRun, migrateProject } from "../migrations/run";
 import type { ProposedName } from "../project/bindingEntries";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { installPackage } from "../project/packageManager";
+import { readFileOutcome } from "../project/readOptionalFile";
 import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
 import { bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
-import { loadManifest } from "./manifests";
+import { availableManifests, loadManifest } from "./manifests";
+import { isRegistered, prerequisiteClosure, prerequisiteRefusal } from "./prerequisites";
 
 /**
  * Whether this option's value is one only the adopter can write — a registry of secrets, a set of
@@ -119,6 +121,25 @@ export type ConfigPrompt = (
   provided: Record<string, ConfigValue>,
 ) => Promise<Record<string, ConfigValue>>;
 
+/** What a prerequisite prompt is asked: the capability wanted, the Worker, and what it lacks — deepest first. */
+export interface PrerequisiteQuestion {
+  /** The capability the adopter asked for. */
+  capability: string;
+  /** The Worker it is being wired into. */
+  worker: string;
+  /** The prerequisites to compose first, in the order they would be composed. */
+  missing: string[];
+}
+
+/**
+ * Ask whether to compose a capability's missing prerequisites too.
+ *
+ * Supplied **only** when a human is attached, the same rule `targetWorker`'s Worker picker and
+ * `askDomains` follow. A run that cannot answer a question is never asked one: it either carries
+ * `withPrerequisites` and resolves deterministically, or it is refused naming the exact commands.
+ */
+export type PrerequisitePrompt = (question: PrerequisiteQuestion) => Promise<boolean>;
+
 /** Install the package with the project's package manager. Injectable for tests. */
 export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
 
@@ -155,7 +176,12 @@ const defaultInstall: InstallStep = (input) => installPackage(input);
  * arrived is in the registry.
  */
 const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, project, account }) => {
-  const config = await loadWorkerConfig(workerDir);
+  // `fresh`, and it is the whole point of the sentence above. The wiring was written moments ago, and
+  // this process has already imported this config — `pithy add` resolves the target Worker's capabilities
+  // before it wires anything. Taking the cache here returned the module from *before* the write, so the
+  // registry was built without the capability just added and its migrations were never applied. `add`
+  // reported a clean run and `pithy dev` served 500s off tables nothing had created (#273).
+  const config = await loadWorkerConfig(workerDir, { fresh: true });
   const runs = await migrateProject({
     projectDir,
     env: "dev",
@@ -210,6 +236,17 @@ export interface RunAddOptions {
   ejectStep?: EjectStep;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * Compose the capability's declared prerequisites too, without asking (`--with-prerequisites`).
+   *
+   * The deterministic answer a non-interactive run needs. Left unset, a run with a human attached is
+   * asked ({@link RunAddOptions.askPrerequisites}) and any other run is refused, naming the commands —
+   * because composing a capability nobody asked for is not something to do behind an adopter's back, and
+   * neither is reporting `Done.` on a project that cannot boot (#273).
+   */
+  withPrerequisites?: boolean;
+  /** Ask a human whether to compose the missing prerequisites. Omitted in non-interactive / `--json` runs. */
+  askPrerequisites?: PrerequisitePrompt;
 }
 
 export interface AddResult extends WorkerIdentity {
@@ -233,8 +270,117 @@ export interface AddResult extends WorkerIdentity {
    * Empty for a capability every one of whose bindings `add` writes.
    */
   notes: string[];
+  /**
+   * The prerequisites composed on the way to this one, in the order they were composed — deepest first,
+   * so `pithy add auth` on a bare Worker reports `["secrets", "email"]`.
+   *
+   * Empty when the capability declares none, and empty on a re-run into a Worker that already composes
+   * them. Each of them was a full `pithy add` of its own: package installed, config and bindings wired,
+   * dev secrets minted, audited as `capability/added` in its own right.
+   */
+  prerequisites: string[];
   /** Present when `--eject` ran: what was copied and which deps were promoted. */
   eject?: EjectResult;
+}
+
+/**
+ * The kit capabilities a Worker's `pithy.config.ts` composes: installed under the project root, **and**
+ * registered in this Worker's file.
+ *
+ * Both halves, for the reason `reconcile.ts` states — one install at the root is shared by every Worker,
+ * so "installed" describes the project and only the config says what this Worker is made of.
+ *
+ * The source is read, never imported. The config this is asked about is routinely one that cannot boot —
+ * that is the whole subject — and a capability whose package is half-installed would turn a question
+ * about composition into a module-resolution failure.
+ */
+async function composedCapabilities(installed: readonly CapabilityManifest[], workerDir: string): Promise<Set<string>> {
+  const read = await readFileOutcome(join(workerDir, "pithy.config.ts"));
+  const source = read.state === "read" ? read.text : "";
+  return new Set(installed.filter((manifest) => isRegistered(source, manifest.name)).map((manifest) => manifest.name));
+}
+
+/**
+ * The prerequisites this Worker lacks for the capability being added, deepest first.
+ *
+ * A peer's manifest is read when its package is already on disk — every capability's peers are its own
+ * npm dependencies, so installing `@pithy-sh/auth` brings `@pithy-sh/email` and `@pithy-sh/secrets` with
+ * it — and treated as a leaf when it is not. Either way the answer is complete enough to act on: each
+ * prerequisite is composed by a full `runAdd` of its own, which resolves *its* peers against a tree that
+ * now has them.
+ */
+async function missingFor(projectDir: string, workerDir: string, manifest: CapabilityManifest): Promise<string[]> {
+  if (manifest.peerCapabilities.length === 0) return [];
+  const { manifests } = await availableManifests(projectDir);
+  const composed = await composedCapabilities(manifests, workerDir);
+  const byName = new Map(manifests.map((found) => [found.name, found]));
+  return prerequisiteClosure({ manifest, composed, manifestFor: (name) => byName.get(name) });
+}
+
+/** What composing a capability's prerequisites produced — merged into the result the adopter reads. */
+interface ComposedPrerequisites {
+  /** The prerequisite names, in the order composed. */
+  names: string[];
+  /** Their `notes`, in order, ahead of this capability's own. */
+  notes: string[];
+  /** Their KV namespace proposals, in order, ahead of this capability's own. */
+  kvNamespaces: ProposedName[];
+}
+
+/**
+ * Compose whatever this capability declares and this Worker lacks — or refuse, naming the commands.
+ *
+ * **The decision is made once, and then it is carried.** A run that says yes to `auth` is not asked
+ * again about `email`'s own `secrets`: the nested add inherits `withPrerequisites` and no prompt. One
+ * intent, one question.
+ *
+ * **Each prerequisite is a real `pithy add`.** Not a config line written by this function — the same
+ * install, the same manifest read, the same bindings in every environment stanza, the same dev secrets,
+ * the same audit event. A cheaper "just add the import" is how the wiring for a capability composed this
+ * way would differ from the wiring for one composed by name, and that difference is a second defect
+ * waiting in the same place as the first.
+ *
+ * Their config options take manifest defaults. The adopter asked for one capability, not for an
+ * interview about three; `pithy add email --set …` re-runs against the same registration afterwards.
+ */
+async function composePrerequisites(
+  options: RunAddOptions & { worker: string; manifest: CapabilityManifest },
+): Promise<ComposedPrerequisites> {
+  const { projectDir, workerDir, worker, manifest } = options;
+  const empty: ComposedPrerequisites = { names: [], notes: [], kvNamespaces: [] };
+
+  const missing = await missingFor(projectDir, workerDir, manifest);
+  if (missing.length === 0) return empty;
+
+  // Named by its `apps/` directory, never by its deployed script name: every command in the sentence
+  // takes `--worker <dir>`, and a refusal that names `replay-board` sends the adopter to a flag value
+  // that does not resolve.
+  const named = workerIdentity({ name: worker, dir: workerDir }).worker;
+  const agreed =
+    options.withPrerequisites === true ||
+    (options.askPrerequisites !== undefined &&
+      (await options.askPrerequisites({ capability: manifest.name, worker: named, missing })));
+  if (!agreed) throw prerequisiteRefusal({ capability: manifest.name, worker: named, missing });
+
+  const composed: ComposedPrerequisites = { names: [], notes: [], kvNamespaces: [] };
+  for (const name of missing) {
+    const result = await runAdd({
+      projectDir,
+      workerDir,
+      worker,
+      project: options.project,
+      account: options.account,
+      capability: name,
+      withPrerequisites: true,
+      ...(options.install === undefined ? {} : { install: options.install }),
+      ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
+      ...(options.audit === undefined ? {} : { audit: options.audit }),
+    });
+    composed.names.push(...result.prerequisites, result.capability);
+    composed.notes.push(...result.notes);
+    composed.kvNamespaces.push(...result.kvNamespaces);
+  }
+  return composed;
 }
 
 /**
@@ -266,6 +412,12 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     const { packageManager } = await install({ projectDir, pkg: capabilityPackageName(capability) });
 
     const manifest = await loadManifest(capability, projectDir);
+
+    // Before a byte of this capability's wiring is written: what it composes against, and whether this
+    // Worker has it. Refusing here leaves an installed package and nothing else — a config half-wired
+    // around an absent peer is the state #273 is about.
+    const prerequisites = await composePrerequisites({ ...options, worker, manifest });
+
     let configValues = coerceSetFlags(manifest, options.setFlags ?? []);
     if (options.prompt && manifest.configOptions.length > 0) {
       configValues = await options.prompt(manifest, configValues);
@@ -322,9 +474,16 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       ...workerIdentity({ name: worker, dir: workerDir }),
       package: manifest.package,
       packageManager,
+      // One run, not four. The closing migrate re-reads the config and migrates everything this Worker
+      // now composes, prerequisites included, so merging each nested run's databases would report the
+      // same migrations several times over.
       databases,
-      kvNamespaces,
-      notes,
+      // Merged, and theirs first, because the order is the order things happened. A prerequisite's notes
+      // are the ones an adopter most needs to see and least expects to be given — the dev master key
+      // `add secrets` mints is a line printed once, and swallowing it costs them the key.
+      kvNamespaces: [...prerequisites.kvNamespaces, ...kvNamespaces],
+      notes: [...prerequisites.notes, ...notes],
+      prerequisites: prerequisites.names,
       eject,
     };
   } catch (error) {

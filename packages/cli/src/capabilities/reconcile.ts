@@ -33,6 +33,7 @@ import { declaresConstant } from "./configConstants";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
 import { availableManifests } from "./manifests";
+import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
 
 /**
  * The shared reconcile engine behind `pithy upgrade` and (read-only) `pithy doctor` — one plan-builder,
@@ -132,6 +133,11 @@ export const ReconcilePlan = z
       .array(z.string())
       .describe(
         "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
+      ),
+    missingPrerequisites: z
+      .array(MissingPrerequisite)
+      .describe(
+        "Capabilities this Worker composes whose manifest declares a peer it does not compose. The Worker will not assemble: createBackend refuses on exactly this pair, so it is a boot failure rather than drift. Report-only, like the entitlement gap — composing a capability is the adopter's decision, and `pithy add <cap> --with-prerequisites` is the command that makes it.",
       ),
     missingVersionMetadata: z
       .boolean()
@@ -506,6 +512,9 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     ejectedSkipped,
     pendingMigrations,
     entitlementGap,
+    // Across every composed capability, ejected ones included: eject copies the source, it does not
+    // change what that source composes against, and `createBackend` asks the same question of both.
+    missingPrerequisites: missingPrerequisites(manifests, composed),
     missingVersionMetadata,
   };
 }

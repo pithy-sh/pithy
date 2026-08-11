@@ -25,6 +25,7 @@ function clean(worker: string): ReconcilePlan {
     ejectedSkipped: [],
     pendingMigrations: 0,
     entitlementGap: [],
+    missingPrerequisites: [],
     missingVersionMetadata: false,
   };
 }

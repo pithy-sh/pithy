@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { access, copyFile, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -367,8 +368,41 @@ export function classifyConfigLoadFailure(wrapped: unknown): ConfigLoadFailure {
   return { kind: "unknown", action: "Check pithy.config.ts. Run the file directly to see how it fails." };
 }
 
-/** Import a `pithy.config.ts` and return its default export, with an error that names its own cause. */
-async function importConfig(path: string, missing: () => never): Promise<unknown> {
+/**
+ * Import a config the current process has **just written**, and get what is on disk rather than what was
+ * imported before the write.
+ *
+ * A module cache keyed on the path is correct almost everywhere and wrong in exactly one place: a command
+ * that edits a `pithy.config.ts` and then has to read the result. `pithy add` is that command — it
+ * resolves the target Worker (importing its config) before wiring, and its closing migrate imports the
+ * config again to build the registry. The second import returned the *pre-wiring* module, so the registry
+ * never contained the capability that had just been added and `add` applied none of its migrations while
+ * reporting a clean run. `pithy add auth` left a Worker that booted and answered 500 on every auth route,
+ * because the tables were not there (#273).
+ *
+ * **Only a different file busts it.** Measured on Bun 1.3: a `?t=…` query on the file URL does not, and
+ * neither does the same file reached by a differently-spelled path. So this imports a copy, beside the
+ * original — where the config's own relative imports and `import.meta.dirname` still resolve to the same
+ * directory — and removes it. Dot-prefixed and uniquely named, so a crashed run leaves nothing a tool
+ * collects and two concurrent runs cannot collide.
+ */
+async function importFreshCopy(path: string): Promise<{ default?: unknown }> {
+  const copy = join(dirname(path), `.pithy.reload.${randomUUID()}.ts`);
+  await copyFile(path, copy);
+  try {
+    return (await import(pathToFileURL(copy).href)) as { default?: unknown };
+  } finally {
+    await rm(copy, { force: true });
+  }
+}
+
+/**
+ * Import a `pithy.config.ts` and return its default export, with an error that names its own cause.
+ *
+ * `fresh` is for a caller that has written the file in this process — see {@link importFreshCopy}. Every
+ * other caller takes the cache, because a config imported twice in one command should be one module.
+ */
+async function importConfig(path: string, missing: () => never, fresh = false): Promise<unknown> {
   try {
     await access(path);
   } catch {
@@ -377,7 +411,7 @@ async function importConfig(path: string, missing: () => never): Promise<unknown
 
   let module: { default?: unknown };
   try {
-    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+    module = fresh ? await importFreshCopy(path) : ((await import(pathToFileURL(path).href)) as { default?: unknown });
   } catch (cause) {
     // The file is present but would not import. Which of the three ways it failed decides what to tell
     // the adopter — see {@link classifyConfigLoadFailure}. The raw cause still goes to `detail` and stops
@@ -394,18 +428,32 @@ async function importConfig(path: string, missing: () => never): Promise<unknown
   return module.default;
 }
 
+/** Options for {@link loadWorkerConfig}. */
+export interface LoadWorkerConfigOptions {
+  /**
+   * Re-read the file rather than take the module cache. **Only for a caller that has written this config
+   * in this process** — `pithy add`'s closing migrate is the one that must, and the one whose absence of
+   * it meant a capability's migrations silently never ran (see `importFreshCopy`).
+   */
+  fresh?: boolean;
+}
+
 /**
  * Load one Worker's `apps/<name>/pithy.config.ts` — the capabilities that Worker composes. Imported live
  * (the config is code), so this runs under a TS-capable runtime; Phase 0 ships the bin on Bun.
  */
-export async function loadWorkerConfig(workerDir: string): Promise<WorkerConfig> {
+export async function loadWorkerConfig(workerDir: string, options?: LoadWorkerConfigOptions): Promise<WorkerConfig> {
   const path = join(workerDir, "pithy.config.ts");
-  const value = await importConfig(path, () => {
-    throw new NotFoundError({
-      message: `No pithy.config.ts in ${workerDir}.`,
-      action: "Every worker under apps/ needs one. pithy worker add creates it.",
-    });
-  });
+  const value = await importConfig(
+    path,
+    () => {
+      throw new NotFoundError({
+        message: `No pithy.config.ts in ${workerDir}.`,
+        action: "Every worker under apps/ needs one. pithy worker add creates it.",
+      });
+    },
+    options?.fresh === true,
+  );
   if (!isWorkerConfig(value)) {
     throw new InternalError({
       message: `${path} doesn't default-export a worker config.`,
