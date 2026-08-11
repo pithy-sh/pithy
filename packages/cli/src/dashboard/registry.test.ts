@@ -13,6 +13,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { sourceFiles } from "../ci/sourceFiles";
 import type { SeedDriver } from "../seed/drivers";
 import { connectionRegistry, openConnectionRegistry } from "./registry";
 
@@ -95,9 +96,13 @@ describe("connectionRegistry", () => {
 
   test("appendKey appends and leaves the existing key's window open — a rotation never locks anyone out", async () => {
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
-    await registry.save(connection());
-
     const at = new Date("2026-08-01T00:00:00.000Z");
+    // Nothing live, so nothing could have signed a registration at the seam and the CLI is the only
+    // thing that can put a key back. The append is still an append: no existing window moves.
+    await registry.save(
+      connection({ keys: [{ ...key("key_1", new Date("2026-07-01T00:00:00.000Z")), revokedAt: at }] }),
+    );
+
     const updated = await registry.appendKey(key("key_2", at), at);
 
     expect(updated.keys.map((k) => k.keyId)).toEqual(["key_1", "key_2"]);
@@ -108,13 +113,15 @@ describe("connectionRegistry", () => {
 
   test("appendKey refuses a duplicate key id — the safety property lives in core, not here", async () => {
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
-    await registry.save(connection());
+    const at = new Date("2026-08-01T00:00:00.000Z");
+    await registry.save(
+      connection({ keys: [{ ...key("key_1", new Date("2026-07-01T00:00:00.000Z")), revokedAt: at }] }),
+    );
 
-    const error = await registry
-      .appendKey(key("key_1", new Date("2026-08-01T00:00:00.000Z")), new Date("2026-08-01T00:00:00.000Z"))
-      .catch((caught: unknown) => caught);
+    const error = await registry.appendKey(key("key_1", at), at).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.code).toBe("controlplane/key_conflict");
+    expect((error as PithyError).payload.detail).toContain("duplicate keyId");
   });
 
   test("appendKey with nothing connected raises controlplane/not_connected", async () => {
@@ -129,8 +136,8 @@ describe("connectionRegistry", () => {
     // the CLI writes it, the codecs round-trip it through D1, and core's lifecycle refuses the key.
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const at = new Date("2026-08-01T00:00:00.000Z");
-    await registry.save(connection());
-    await registry.appendKey(key("key_2", at), at);
+    // Two live keys: the state a rotation leaves behind, written here as the seam's route would.
+    await registry.save(connection({ keys: [key("key_1", new Date("2026-07-01T00:00:00.000Z")), key("key_2", at)] }));
 
     const updated = await registry.revokeKey("key_1", at);
 
@@ -163,6 +170,62 @@ describe("connectionRegistry", () => {
     expect((await registry.read())?.keys[0]?.revokedAt).toBeNull();
   });
 
+  test("appendKey is refused while a key is live, whoever is asking", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    const at = new Date("2026-08-01T00:00:00.000Z");
+    await registry.save(connection());
+
+    const error = await registry.appendKey(key("key_2", at), at).catch((caught: unknown) => caught);
+
+    expect((error as PithyError).payload.code).toBe("controlplane/key_conflict");
+    // The refusal names the call to make instead, mount point and signing key included.
+    expect((error as PithyError).payload.action).toContain("https://api.example.com/control-plane/keys");
+    expect((error as PithyError).payload.action).toContain("key_1");
+    expect((await registry.read())?.keys).toHaveLength(1);
+  });
+
+  test("save may not rewrite the keys of a connection it is keeping", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    const at = new Date("2026-08-01T00:00:00.000Z");
+    await registry.save(connection());
+
+    // A rotation wearing a create's clothes: same connection, new key set, straight into D1.
+    const error = await registry
+      .save(connection({ keys: [key("key_1", new Date("2026-07-01T00:00:00.000Z")), key("key_2", at)], updatedAt: at }))
+      .catch((caught: unknown) => caught);
+
+    expect((error as PithyError).payload.code).toBe("controlplane/key_conflict");
+    expect((await registry.read())?.keys).toHaveLength(1);
+  });
+
+  test("save still re-points the address and the grant, because neither adds a key", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    const at = new Date("2026-08-01T00:00:00.000Z");
+    await registry.save(connection());
+
+    await registry.save(
+      connection({ workerUrl: "https://moved.example.com", scopes: ["manifest:read"], updatedAt: at }),
+    );
+
+    const read = await registry.read();
+    expect(read?.workerUrl).toBe("https://moved.example.com");
+    expect(read?.scopes).toEqual(["manifest:read"]);
+  });
+
+  test("save still replaces a whole connection, because a new one has nothing live to sign for it", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    const at = new Date("2026-08-01T00:00:00.000Z");
+    await registry.save(connection());
+
+    // Starting over: a new id, a new keypair, nothing carried forward. That is first connect, and it
+    // has to keep working when the worker is unreachable — it is the way back from a lost credential.
+    await registry.save(
+      connection({ id: "9a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", keys: [key("key_9", at)], updatedAt: at }),
+    );
+
+    expect((await registry.read())?.keys.map((k) => k.keyId)).toEqual(["key_9"]);
+  });
+
   test("remove deletes the row, and is idempotent — revocation is safe to re-run", async () => {
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     await registry.save(connection());
@@ -170,6 +233,35 @@ describe("connectionRegistry", () => {
     expect(await registry.remove()).toBe(true);
     expect(await registry.read()).toBeNull();
     expect(await registry.remove()).toBe(false);
+  });
+});
+
+describe("the one door onto the connections table", () => {
+  /**
+   * The other half of #287's gate. {@link connectionRegistry} refuses a key write while something live
+   * could have signed for one at the seam — which is worth exactly as much as the guarantee that
+   * nothing else in the CLI opens that table.
+   *
+   * Stated as a property over the tree rather than as a list of blessed callers: any module that names
+   * the connections table or builds a control-plane database has a second route to the column, and a
+   * second route is how the duplicated authority regrows.
+   */
+  const CLI_SOURCE = join(import.meta.dirname, "..");
+  const DOOR = join(CLI_SOURCE, "dashboard", "registry.ts");
+
+  test("only registry.ts reaches the control-plane connections table", () => {
+    const scanned = sourceFiles(CLI_SOURCE);
+    // A silent walk finding nothing would pass the assertion below without proving anything.
+    expect(scanned.length).toBeGreaterThan(100);
+
+    const reaching = scanned
+      .filter(
+        (source) =>
+          source.text.includes("CONTROL_PLANE_CONNECTIONS_TABLE") || source.text.includes("controlPlaneDatabase("),
+      )
+      .map((source) => source.path);
+
+    expect(reaching, "route the write through connectionRegistry — the invariant is enforced there").toEqual([DOOR]);
   });
 });
 

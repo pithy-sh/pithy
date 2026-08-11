@@ -3,13 +3,16 @@
 
 import { join } from "node:path";
 import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
-import { appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
+import { activeKeys, appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import {
   CONTROL_PLANE_CONNECTIONS_TABLE,
   type ControlPlaneDatabase,
   controlPlaneDatabase,
 } from "@pithy-sh/core/src/controlPlane/data/tables";
-import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
+import {
+  ControlPlaneKeyConflictError,
+  ControlPlaneNotConnectedError,
+} from "@pithy-sh/core/src/controlPlane/error/errors";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { discoverWorkers } from "../project/workers";
@@ -30,7 +33,48 @@ import { openSeedDriver, type SeedDriver } from "../seed/drivers";
  * the only thing that knows that. And a key is appended through core's `appendKey`, never by touching
  * the array here: the ordering that keeps a failed rotation from locking the adopter out is a property
  * of that function, and a second implementation of it is a second thing to get wrong.
+ *
+ * ## The invariant (#287)
+ *
+ * **The CLI adds a key to a connection only when no live key exists to sign for one through the seam.**
+ *
+ * `POST {basePath}/keys` is the adopter's own boundary for registering a key: it checks the connection's
+ * `keys:rotate` grant, it records the registration in their audit trail, and it is signed with the key
+ * being replaced. A CLI writing the same column direct to D1 is a second authority over it — not a
+ * second implementation, since both paths call core's `appendKey`, but a second *place the decision is
+ * made*, which means the safety property holds for callers who remember and for nobody else.
+ *
+ * So the direct write is narrowed to the one case the seam cannot serve: a connection with nothing live
+ * to sign with. That is first connect — no key exists, and the Worker may not even be deployed, so
+ * requiring a running Worker to register the key that lets anyone talk to it would be a chicken-and-egg
+ * with no exit. It is also the recovery case, a connection whose every key was revoked, and the same
+ * sentence covers both because it is the same fact: nothing can sign.
+ *
+ * Stated as a property rather than a list of blessed callers, and enforced here rather than upstream,
+ * because a rule kept at the call sites regrows the moment someone adds one. {@link connectionRegistry}
+ * is the CLI's only door to that column, and `registry.test.ts` asserts both halves — that nothing else
+ * in the CLI opens the table, and that neither write gets through while a key is live.
+ *
+ * **Revocation is deliberately outside it.** {@link ConnectionRegistry.revokeKey} changes the key set of
+ * a connection with live keys, on purpose: it *removes* trust, and revocation that needed the Worker's
+ * cooperation would not be revocation (docs/CONTROL-PLANE.md §7). The invariant is about granting.
  */
+
+/**
+ * Refuse a key write while something live could have signed for it at the seam.
+ *
+ * The gate the invariant above is stated as. It reads the connection as stored — never as offered — so
+ * a caller cannot talk its way past by describing the keys it wishes were there.
+ */
+function refuseWhileSomethingCanSign(connection: ControlPlaneConnection, now: Date, detail: string): void {
+  const live = activeKeys(connection.keys, now);
+  if (live.length === 0) return;
+  throw new ControlPlaneKeyConflictError({
+    message: "That connection already has a live key.",
+    action: `Register the successor through the worker: POST ${connection.workerUrl}${connection.basePath}/keys, signed with ${live[0]?.keyId}. That is what pithy dashboard rotate does.`,
+    detail,
+  });
+}
 
 /** Read, write, and revoke one environment's registration. */
 export interface ConnectionRegistry {
@@ -38,7 +82,13 @@ export interface ConnectionRegistry {
   read(): Promise<ControlPlaneConnection | null>;
   /** Write the environment's connection, replacing whatever was registered for it. */
   save(connection: ControlPlaneConnection): Promise<void>;
-  /** Append a public key through core's lifecycle rules, and return the updated connection. */
+  /**
+   * Append a public key through core's lifecycle rules, and return the updated connection.
+   *
+   * **Refused while the connection has a live key** — see the invariant above. This is the bootstrap
+   * path only: nothing live means nothing can sign a registration at the seam, so the CLI is the only
+   * thing that can put a key there.
+   */
   appendKey(key: RegisteredKey, now: Date): Promise<ControlPlaneConnection>;
   /**
    * Revoke one registered key, immediately. Returns the updated connection, or null when no key answers
@@ -77,6 +127,21 @@ export function connectionRegistry(
     read,
 
     async save(connection) {
+      // `save` creates or replaces a whole connection, and replacing one is how an adopter starts over:
+      // a new id, a new keypair, nothing carried forward. Nothing live can sign for a key on a
+      // connection that does not exist yet, so a replacement is first connect and passes.
+      //
+      // Keeping the same connection and rewriting its keys is the other thing entirely — that is a
+      // rotation wearing a create's clothes, and it goes through the seam like every other one.
+      const stored = await read();
+      if (stored && stored.id === connection.id) {
+        const before = ControlPlaneConnection.shape.keys.encode([...stored.keys]);
+        const after = ControlPlaneConnection.shape.keys.encode([...connection.keys]);
+        if (before !== after) {
+          refuseWhileSomethingCanSign(stored, connection.updatedAt, `save rewrote the keys of connection ${stored.id}`);
+        }
+      }
+
       // One connection per environment. SQLite carries no unique index on `environment` — the column is
       // indexed for reads, not constrained — so the invariant is enforced here, by replacing.
       await db.deleteFrom(CONTROL_PLANE_CONNECTIONS_TABLE).where("environment", "=", env).execute();
@@ -90,6 +155,7 @@ export function connectionRegistry(
           detail: `no connection registered for environment ${env}`,
         });
       }
+      refuseWhileSomethingCanSign(connection, now, `appendKey ${key.keyId} on connection ${connection.id}`);
       // Core owns the rule. It refuses a duplicate id and a key that is already retired, and it never
       // moves an existing key's window — which is what leaves the old credential working until the new
       // one has been proven.
