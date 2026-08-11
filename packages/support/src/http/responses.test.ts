@@ -13,13 +13,18 @@ import {
   SupportFlagsResponse,
   SupportListedThreadView,
   SupportMessageView,
+  SupportMyMessageView,
+  SupportMyThreadResponse,
+  SupportMyThreadsResponse,
+  SupportMyThreadView,
   SupportRepliesResponse,
   SupportReplySentResponse,
+  SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
   SupportThreadView,
 } from "./responses";
-import { listedThreadView, messageView, senderView, threadView } from "./views";
+import { listedThreadView, messageView, myMessageView, myThreadView, senderView, threadView } from "./views";
 
 /**
  * The response schemas against what the projections actually produce.
@@ -37,12 +42,14 @@ const AT = new Date("2026-06-10T12:00:00.000Z");
 
 const THREAD: SupportThread = {
   id: "t-1",
+  channel: "email",
   inboxAddress: "support@acme.test",
   subject: "Where is my refund?",
   fromAddress: "ada@example.test",
   fromName: "Ada Lovelace",
   senderAuthenticated: true,
   userId: "u-1",
+  accountLinkSource: "email_address",
   category: "billing",
   priority: "urgent",
   sentiment: "frustrated",
@@ -65,6 +72,7 @@ const UNTOUCHED: SupportThread = {
   fromName: null,
   senderAuthenticated: false,
   userId: null,
+  accountLinkSource: null,
   confidence: null,
   model: null,
   classifiedAt: null,
@@ -73,12 +81,27 @@ const UNTOUCHED: SupportThread = {
   archivedBy: null,
 };
 
+/**
+ * An in-app submission: no envelope, a session-proven link, and — for a project with no mail
+ * configured — no address anywhere on the row. The nullable shape the app channel introduced.
+ */
+const APP_THREAD: SupportThread = {
+  ...THREAD,
+  id: "t-2",
+  channel: "app",
+  inboxAddress: null,
+  accountLinkSource: "session",
+};
+
 const LISTED: ListedThread = { ...THREAD, read: true, snoozedUntil: AT };
 
 const MESSAGE: SupportMessage = {
   id: "m-1",
   threadId: "t-1",
   direction: "inbound",
+  channel: "email" as const,
+  submittedByUserId: null,
+  context: null,
   mimeMessageId: "<a@example.test>",
   mimeInReplyTo: null,
   mimeReferences: [],
@@ -115,10 +138,26 @@ const SENDER: SenderContext = {
   entitlements: [{ key: "pro", active: false, expiresAt: new Date("2026-06-01T00:00:00.000Z"), source: "p-1" }],
 };
 
+/** The same message, filed from inside the app: context, a submitter, and no envelope recipient. */
+const APP_MESSAGE: SupportMessage = {
+  ...MESSAGE,
+  id: "m-2",
+  threadId: "t-2",
+  channel: "app",
+  submittedByUserId: "u-1",
+  context: { screen: "reports", appVersion: "2.4.1", platform: "web", environment: "prod", locale: "en-GB" },
+  toAddress: null,
+  htmlBody: null,
+  rawKey: null,
+  rawBytes: null,
+};
+
 describe("support response schemas", () => {
   test("each projection is exactly what its schema declares", () => {
     accepts(SupportThreadView, threadView(THREAD));
     accepts(SupportThreadView, threadView(UNTOUCHED));
+    accepts(SupportThreadView, threadView(APP_THREAD));
+    accepts(SupportMessageView, messageView(APP_MESSAGE));
     accepts(SupportListedThreadView, listedThreadView(LISTED));
     accepts(SupportListedThreadView, listedThreadView({ ...UNTOUCHED, read: false, snoozedUntil: null }));
     accepts(SupportMessageView, messageView(MESSAGE));
@@ -144,6 +183,49 @@ describe("support response schemas", () => {
     // Same for the attachment's storage key: server-derived, precisely so a client cannot name an
     // object or guess the one beside it.
     expect(Object.keys(SupportAttachmentView.shape)).not.toContain("storageKey");
+  });
+
+  test("the console can tell a session-proven link from a header-inferred one", () => {
+    // The whole argument of the in-app channel: a `From:` header is a claim and a session is not, so
+    // the two links must not be one indistinguishable boolean. `senderAuthenticated` is true on both
+    // of these — it says *may we believe this*, and `accountLinkSource` says *how did we come to*.
+    expect(threadView(THREAD).accountLinkSource).toBe("email_address");
+    expect(threadView(APP_THREAD).accountLinkSource).toBe("session");
+    expect(threadView(UNTOUCHED).accountLinkSource).toBeNull();
+    expect(threadView(THREAD).senderAuthenticated).toBe(threadView(APP_THREAD).senderAuthenticated);
+  });
+
+  test("the submitter's own view carries nothing an operator would see", () => {
+    accepts(SupportMyThreadView, myThreadView(APP_THREAD));
+    accepts(SupportMyMessageView, myMessageView(APP_MESSAGE, []));
+
+    // A machine's judgement about the person, the private flags of whoever is triaging, and the link
+    // that decides whether an operator sees their purchase history. None of it is the submitter's, and
+    // a projection built by omitting fields from the operator's view would disclose the next column
+    // somebody adds without anyone deciding to.
+    for (const field of [
+      "category",
+      "priority",
+      "sentiment",
+      "confidence",
+      "model",
+      "classifiedAt",
+      "userId",
+      "accountLinkSource",
+      "senderAuthenticated",
+      "archivedBy",
+      "inboxAddress",
+      "fromAddress",
+      "read",
+      "snoozedUntil",
+    ]) {
+      expect(Object.keys(SupportMyThreadView.shape), field).not.toContain(field);
+    }
+    // And the answer carries no operator identity either: who replied is a name in the body if they
+    // signed it, never an account.
+    for (const field of ["fromAddress", "fromName", "toAddress", "emailJobId", "submittedByUserId"]) {
+      expect(Object.keys(SupportMyMessageView.shape), field).not.toContain(field);
+    }
   });
 
   test("the envelopes accept what the routes return", () => {
@@ -172,6 +254,12 @@ describe("support response schemas", () => {
     accepts(SupportFlagsResponse, { ok: true });
     accepts(SupportRepliesResponse, {
       replies: [{ key: "general", label: "Thanks", body: "Thank you for writing in." }],
+    });
+    accepts(SupportSubmissionResponse, { threadId: "t-2", messageId: "m-2", opened: true, attachments: 1 });
+    accepts(SupportMyThreadsResponse, { threads: [myThreadView(APP_THREAD)], nextCursor: null });
+    accepts(SupportMyThreadResponse, {
+      thread: myThreadView(APP_THREAD),
+      messages: [myMessageView(APP_MESSAGE, [])],
     });
   });
 });

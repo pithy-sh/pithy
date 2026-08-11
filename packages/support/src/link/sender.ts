@@ -100,6 +100,59 @@ export async function resolveSenderUserId(d1: D1Database, address: string): Prom
   }
 }
 
+/**
+ * The address an operator's reply to an app thread will be sent to, or null when the account carries
+ * nothing deliverable.
+ *
+ * Extracted rather than inlined because it is the one decision in {@link resolveSubmitterAccount} with
+ * a wrong answer available, and inlining it puts that decision behind a guarded dynamic import where
+ * no test can reach it.
+ *
+ * **`parseAddress` only, with no `normalizeAddress` fallback.** The fallback merely trims and
+ * lowercases, so it would hand back an address this capability's own parser had just refused — and
+ * this value becomes the thread's `fromAddress`, which `sendReply` enqueues an answer to. Returning
+ * null makes an unparseable account the same hard fault as a missing one, which is what the caller
+ * already does with it: refusing the submission beats accepting a report whose only reply address
+ * cannot be delivered to.
+ */
+export function submitterAddress(email: string | null | undefined): string | null {
+  return (email && parseAddress(email)) || null;
+}
+
+/**
+ * The account behind an authenticated submitter — resolved by id, never by an address.
+ *
+ * The inverse of {@link resolveSenderUserId}, and it exists because the in-app channel starts from the
+ * opposite end: a session names a user id, and what the thread needs is the address a reply will go
+ * back to. Deriving that from anything the client sent would hand a signed-in caller the ability to
+ * point a support conversation — and every operator reply on it — at somebody else's mailbox.
+ *
+ * Returns null when `@pithy-sh/auth` is absent or the account is gone. A submission whose account
+ * cannot be read is refused by the caller rather than stored with a guessed address: an app thread with
+ * no working reply address is a report nobody can answer.
+ */
+export async function resolveSubmitterAccount(
+  d1: D1Database,
+  userId: string,
+): Promise<{ email: string; name?: string; emailVerified?: boolean } | null> {
+  try {
+    const { authDatabase } = await import("@pithy-sh/auth/src/data/tables");
+    const { User } = await import("@pithy-sh/auth/src/data/betterAuth");
+    const row = await authDatabase(d1)
+      .selectFrom("pithyAuthUsers")
+      .selectAll()
+      .where("id", "=", userId)
+      .executeTakeFirst();
+    if (!row) return null;
+    const user = User.parse(row);
+    const email = submitterAddress(user.email);
+    if (!email) return null;
+    return { email, name: user.name, emailVerified: user.emailVerified };
+  } catch {
+    return null;
+  }
+}
+
 /** Read the account's own fields, when auth is composed. */
 async function resolveAccount(
   d1: D1Database,
@@ -198,6 +251,32 @@ export async function resolveSenderContext(
     return { authenticated: false, userId: account.userId, name: account.name, purchases: [], entitlements: [] };
   }
 
+  return provenContext(d1, account, now);
+}
+
+/**
+ * The customer context behind a **session-proven** link, resolved from the user id itself.
+ *
+ * An app thread already holds the id its session proved, so re-deriving it from the thread's address
+ * would be both a step backwards and a correctness bug: `resolveSenderUserId` matches the `email`
+ * column exactly, and an account stored with capitals by some other route would silently resolve to
+ * nobody — turning the one link that *is* certain into the one the console shows as unknown.
+ *
+ * Everything below the link degrades exactly as it does on the mail path: purchases and entitlements
+ * are guarded dynamic imports and come back empty when `@pithy-sh/payments` is absent.
+ */
+export async function resolveSubmitterContext(d1: D1Database, userId: string, now: Date): Promise<SenderContext> {
+  const account = await resolveSubmitterAccount(d1, userId);
+  if (!account) return { authenticated: true, userId, purchases: [], entitlements: [] };
+  return provenContext(d1, { userId, name: account.name, emailVerified: account.emailVerified }, now);
+}
+
+/** The proven half, shared by both entry points: the account, plus what it bought and what it holds. */
+async function provenContext(
+  d1: D1Database,
+  account: { userId: string; name?: string; emailVerified?: boolean },
+  now: Date,
+): Promise<SenderContext> {
   const [purchases, entitlements] = await Promise.all([
     resolvePurchases(d1, account.userId),
     resolveLinkedEntitlements(d1, account.userId, now),

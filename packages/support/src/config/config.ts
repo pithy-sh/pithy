@@ -150,6 +150,141 @@ export const SupportGuardConfig = z
   .describe("Inbound bounds — size, per-sender rate, global rate, and what happens to spam.");
 export type SupportGuardConfig = z.output<typeof SupportGuardConfig>;
 
+/**
+ * What a signed-in user may attach to an in-app submission.
+ *
+ * **Stated here rather than inherited from `attachments`, and that is the point.** The mail path's
+ * bounds were written for parts of a MIME message somebody sent to a public address: they cap size and
+ * count, and they say nothing at all about type, because there is no useful type restriction on mail —
+ * refusing a `.docx` a customer attached to a bug report would lose the report. A direct upload from a
+ * browser is a different surface with a different answer: the client is authenticated but untrusted,
+ * the useful payload is a screenshot, and an allowlist is both possible and worth having. Inheriting
+ * the email numbers would have meant a 10 MB any-type upload endpoint arriving as a side effect of a
+ * setting an adopter tuned for their inbox.
+ *
+ * Bytes are stored exactly as the mail path stores them — server-derived opaque key,
+ * `application/octet-stream` on the object whatever was declared — so nothing here re-opens the
+ * stored-XSS question `attachment/store.ts` already closed.
+ */
+/**
+ * The hard ceiling on how many attachments one submission may declare, whatever
+ * `submission.attachments.maxCount` is set to.
+ *
+ * On the schema as well as in the handler because the two refuse at different moments and the earlier
+ * one is free: the validator rejects a thousand-element array before a handler runs, without reading
+ * the resolved config. The configured bound is what an adopter tunes; this is what is true regardless.
+ */
+export const MAX_SUBMISSION_ATTACHMENTS = 10;
+
+export const SupportSubmissionAttachmentsConfig = z
+  .object({
+    enabled: z
+      .boolean()
+      .default(true)
+      .describe(
+        "Accept attachments on an in-app submission. Off refuses any, which is the right setting for a project that wants feedback but no upload surface at all — the report is still stored, without the file.",
+      ),
+    maxBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(5 * 1024 * 1024)
+      .describe(
+        "The largest single attachment accepted, measured on the **decoded** bytes. Deliberately smaller than the mail path's bound: a phone screenshot is under a megabyte, and this is a limit on what a signed-in client may push into your R2 in one request rather than on what a stranger's mail client happened to send.",
+      ),
+    maxCount: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_SUBMISSION_ATTACHMENTS)
+      .default(3)
+      .describe(
+        "How many attachments one submission may carry. Low on purpose — a bug report is a screenshot or two, and every extra slot is another `maxBytes` a client may spend per request. Checked before any payload is decoded, so the cheapest refusal in the path does not sit behind its most expensive step.",
+      ),
+    allowedContentTypes: z
+      .array(z.string().min(3).describe("One exact MIME type, lowercased, e.g. `image/png`. No wildcards."))
+      .default(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"])
+      .describe(
+        "The exact types a submission may carry — **an allowlist, not a denylist**, so a type nobody considered is refused rather than accepted. The default is what a bug report is actually made of: screenshots, a PDF, a log paste. The declared type is recorded and never honoured when the bytes are served, so this bounds what lands in your bucket rather than standing in for that protection.",
+      ),
+  })
+  .describe(
+    "Bounds on a direct upload from a signed-in client — size, count, and an allowlist of types. Stated explicitly rather than inherited from the mail path, which answers a different question.",
+  );
+export type SupportSubmissionAttachmentsConfig = z.output<typeof SupportSubmissionAttachmentsConfig>;
+
+/**
+ * The ceilings a configured submission bound may not exceed — the route's own schema is written to
+ * these, so a payload beyond one is refused by the validator before a handler runs.
+ *
+ * Two layers, and both earn their place. The **config** bound is the adopter's number and produces the
+ * message their user reads; the **schema** ceiling is what stops a megabyte of text reaching a handler
+ * at all, and it cannot be config-derived because a request schema is built once at module load while
+ * config is resolved per project. Bounding the config field by the same constant is what keeps them
+ * from disagreeing: a setting above the ceiling would be a limit the route silently refused to honour.
+ */
+export const MAX_SUBMISSION_SUBJECT_CHARS = 500;
+/** The hard ceiling on a submission body, whatever `submission.maxBodyChars` is set to. */
+export const MAX_SUBMISSION_BODY_CHARS = 100_000;
+
+/**
+ * The in-app submission channel: a signed-in user of the adopter's own app opening a support thread
+ * without leaving it.
+ *
+ * **The hardest problem in the mail path does not exist here.** `inbound/authenticity.ts` spends two
+ * hundred lines earning a customer link from a `From:` header that anybody can write; a submission
+ * arrives on a request `requireAuth()` already proved, so the account is the identity rather than a
+ * guess about it. Everything below is therefore a bound on *volume and shape*, never on identity.
+ *
+ * Bounded separately from `guard` for the same reason it is counted separately: that block exists
+ * because a public address is a public write endpoint, and this surface is neither public nor
+ * anonymous. Abuse here is attributable to an account and revocable with it, which is a materially
+ * different threat model and deserves its own numbers rather than a share of somebody else's.
+ */
+
+export const SupportSubmissionConfig = z
+  .object({
+    enabled: z
+      .boolean()
+      .default(true)
+      .describe(
+        "Serve the in-app submission routes. On by default because the capability is inert without an address either way, and a project that composes support almost always wants its signed-in users able to write in. Off removes the routes entirely — they answer 404, not 403, because a route that is not served has nothing to say about who was asking.",
+      ),
+    maxSubjectChars: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_SUBMISSION_SUBJECT_CHARS)
+      .default(200)
+      .describe(
+        "The longest subject a submission may carry. It becomes the thread's name in the inbox and the subject line of every reply, so it is bounded to something that renders in a list.",
+      ),
+    maxBodyChars: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_SUBMISSION_BODY_CHARS)
+      .default(10_000)
+      .describe(
+        "The longest report body accepted. Generous — somebody describing a bug properly is exactly who this channel is for — but bounded, because it is a string a client chose and it lands in a D1 row and a model prompt.",
+      ),
+    maxPerAccountPerHour: z
+      .number()
+      .int()
+      .positive()
+      .default(10)
+      .describe(
+        "How many submissions one account may land in an hour. **Session-bound abuse is attributable and revocable in a way mail is not**, which is why this number is smaller than the mail path's and still safe: a real person filing a genuine report does not file eleven, and an account that does is one an adopter can act on. Counted from the messages table over the same sliding hour the mail guard uses, and counted **only against app submissions** — a busy inbox must never stop a user reporting the outage.",
+      ),
+    attachments: SupportSubmissionAttachmentsConfig.prefault({}).describe(
+      "What a signed-in client may upload with a report.",
+    ),
+  })
+  .describe(
+    "The in-app submission channel — whether it is served, what one submission may contain, and how many one account may send.",
+  );
+export type SupportSubmissionConfig = z.output<typeof SupportSubmissionConfig>;
+
 /** How a reply leaves the building. */
 export const SupportReplyConfig = z
   .object({
@@ -228,7 +363,8 @@ export const SupportConfig = z
       ),
     ai: SupportAiConfig.prefault({}).describe("Classification settings."),
     attachments: SupportAttachmentsConfig.prefault({}).describe("Attachment handling."),
-    guard: SupportGuardConfig.prefault({}).describe("Inbound size and rate bounds."),
+    guard: SupportGuardConfig.prefault({}).describe("Inbound mail size and rate bounds."),
+    submission: SupportSubmissionConfig.prefault({}).describe("The in-app submission channel."),
     reply: SupportReplyConfig.prefault({}).describe("Reply settings."),
     search: SupportSearchConfig.prefault({}).describe("How text search is answered."),
   })

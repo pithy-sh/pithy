@@ -359,6 +359,9 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
     id: messageId,
     threadId,
     direction: "inbound",
+    channel: "email",
+    submittedByUserId: null,
+    context: null,
     mimeMessageId: parsed.messageId ?? null,
     mimeInReplyTo: parsed.inReplyTo ?? null,
     mimeReferences: parsed.references.length > 0 ? parsed.references : null,
@@ -424,12 +427,16 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
 
       const thread: SupportThread = {
         id: threadId,
+        channel: "email",
         inboxAddress: inbox,
         subject,
         fromAddress: parsed.fromAddress,
         fromName: parsed.fromName ?? null,
         senderAuthenticated: authenticity.authenticated,
         userId,
+        // Matched from an address in a header, which is the weaker of the two provenances and the
+        // reason the column exists. Null when nothing matched — an absent link has no source.
+        accountLinkSource: userId ? "email_address" : null,
         ...UNCLASSIFIED,
         archived: false,
         archivedAt: null,
@@ -466,7 +473,9 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
       await deps.db
         .updateTable(SUPPORT_THREADS_TABLE)
         .set((eb) => ({
-          ...(linkedNow ? { userId: linkedNow, senderAuthenticated: 1 as const } : {}),
+          ...(linkedNow
+            ? { userId: linkedNow, senderAuthenticated: 1 as const, accountLinkSource: "email_address" as const }
+            : {}),
           messageCount: eb("messageCount", "+", 1),
           lastMessageAt: now.getTime(),
           updatedAt: now.getTime(),

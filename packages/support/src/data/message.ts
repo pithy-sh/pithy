@@ -3,7 +3,70 @@
 
 import { SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
-import { SupportMessageDirection } from "./enums";
+import { SupportChannel, SupportMessageDirection } from "./enums";
+
+/**
+ * What the app knows about the moment a report was written, and the user did not have to type.
+ *
+ * A bug report without the screen, the build, and the environment is a round trip — the first reply is
+ * always "which version, and where were you?". The app already holds all three, so asking a human to
+ * retype them is the kind of friction this channel exists to remove.
+ *
+ * **It is a closed object, and unknown keys are refused rather than stripped.** This is a capability,
+ * not a telemetry pipe: the risk of an open bag is that an adopter passes their whole client state
+ * through it and quietly lands a customer's data in a support inbox that a console renders and an
+ * operator reads. A closed set means a field that is not here cannot be posted by accident, and a
+ * refusal says so at the boundary rather than silently dropping what somebody believed they sent.
+ * Every field is bounded, because every one of them is a string a client chose.
+ */
+export const SupportSubmissionContext = z
+  .object({
+    screen: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        "Where in the app they were — a route, a screen name, whatever the app calls it. The single most useful field, because it turns 'the button does nothing' into a place to look.",
+      ),
+    appVersion: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "The build the report came from. Answers 'is this already fixed' without a round trip, which is the whole reason a bug report asks for it.",
+      ),
+    platform: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "The client the app is running as — `ios`, `android`, `web`, or whatever the adopter's own build calls itself. Free text rather than an enum: the set of clients is the adopter's, not this capability's.",
+      ),
+    environment: z
+      .string()
+      .min(1)
+      .max(32)
+      .optional()
+      .describe(
+        "Which environment the client was pointed at. A report from staging read as production is a bug hunted in the wrong database, and the client is the only thing that knows.",
+      ),
+    locale: z
+      .string()
+      .min(1)
+      .max(32)
+      .optional()
+      .describe(
+        "The locale the app was rendering in. Carried because a whole class of reports — a date a day out, a currency in the wrong place, text that overflows — is only reproducible in the reporter's locale.",
+      ),
+  })
+  .strict()
+  .describe(
+    "The bounded context an app supplies with a submission, so a bug report arrives with the facts its first reply would otherwise have to ask for.",
+  );
+export type SupportSubmissionContext = z.output<typeof SupportSubmissionContext>;
 
 /** The `References` header, split into ids. A JSON column so the chain stays a list rather than a string to re-split. */
 export const SupportReferenceIds = z
@@ -29,6 +92,20 @@ export const SupportMessage = z
     id: z.string().describe("UUID primary key for this message row — Pithy's id, not the sender's."),
     threadId: z.string().describe("The `pithy_support_threads.id` this message belongs to."),
     direction: SupportMessageDirection.describe("Which way this message travelled."),
+    channel: SupportChannel.describe(
+      "How this message travelled. Per message rather than only per thread, because the two genuinely differ: a reply to an `app` thread is `email` — it leaves through the same durable send path as every other reply, because email is where the person will read it.",
+    ),
+    submittedByUserId: z
+      .string()
+      .nullish()
+      .describe(
+        "The authenticated `pithy_auth_users.id` that posted this message from inside the app. Null on every mail-path message and on every outbound reply. Taken from the request's session and **never** from anything the client sent — it is the identity, so it is also what the per-account submission bound counts.",
+      ),
+    context: sqliteJson(SupportSubmissionContext)
+      .nullish()
+      .describe(
+        "The bounded context the app supplied — screen, build, platform, environment, locale. Null on every mail-path message, and on an app submission that declared none.",
+      ),
     mimeMessageId: z
       .string()
       .nullish()
@@ -48,7 +125,12 @@ export const SupportMessage = z
       ),
     fromAddress: z.string().describe("The sender's address, lowercased."),
     fromName: z.string().nullish().describe("The sender's display name. Untrusted text; render it escaped."),
-    toAddress: z.string().describe("The address this message was addressed to, lowercased."),
+    toAddress: z
+      .string()
+      .nullish()
+      .describe(
+        "The address this message was addressed to, lowercased. **Null on an app submission to a project with no inbound address configured** — there was no envelope, and inventing one would put a string nothing can deliver to into the column the idempotency index keys on. Never null on a mail-path message.",
+      ),
     subject: z.string().describe("This message's own subject line, which may differ from the thread's."),
     textBody: z
       .string()

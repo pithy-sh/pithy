@@ -180,7 +180,11 @@ export function support(options: SupportOptions = {}): SupportCapability {
       wiring.enqueueEmail = email?.enqueue;
     },
     adminRoutes: supportAdminRoutes(mountPath),
-    routes: registerSupportRoutes({ basePath: mountPath, resolveDeps: makeResolveDeps(wiring) }),
+    routes: registerSupportRoutes({
+      basePath: mountPath,
+      submission: resolved.submission.enabled,
+      resolveDeps: makeResolveDeps(wiring),
+    }),
     email: createSupportEmailHandler(wiring),
     seeds: [supportExampleSeed],
   });

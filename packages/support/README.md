@@ -1,6 +1,6 @@
 # @pithy-sh/support
 
-An inbound support inbox that lands mail in your own D1, classifies it on your own Workers AI binding, and links each sender to the account and purchases your app already knows about.
+A support inbox that lands mail — and your signed-in users' own reports — in your own D1, classifies both on your own Workers AI binding, and links each sender to the account and purchases your app already knows about.
 
 Support is the employee a solo developer cannot hire. Every piece needed to build one was already in the catalog — inbound mail, R2, identity, payments, audit — and nothing composed them. This does.
 
@@ -59,6 +59,55 @@ Mail arrives at your app worker's single `email()` entry, which fans it to every
 From there: the guard bounds it, `postal-mime` parses it (multipart and attachments included), the HTML is sanitised through the runtime's own parser, the raw MIME goes to R2 unchanged, and the row lands in D1. Only then is classification dispatched — as a Workflow, because an inbound handler has a tight CPU budget and a model call does not fit in it. A model that is slow or briefly down must never take the persistence of somebody's support request with it.
 
 Threading is on `In-Reply-To` and `References`, never on the subject. Subject matching is what puts two unrelated people who both wrote "Refund" in one thread, and what splits a real conversation the moment a client localises `Re:` to `Aw:`.
+
+## Writing in from inside the app
+
+`POST /support/feedback`, wearing `requireAuth()` and nothing weaker. It opens a thread, or appends to one the caller already owns — same table, same classifier, same taxonomy, same console. There is no second inbox, because a support person with two consoles has the whole conversation in neither.
+
+**This is the channel where the mail path's hardest problem does not exist.** Two hundred lines of `inbound/authenticity.ts` earn the right to say a thread belongs to a customer, because `From:` is an unauthenticated claim and decorating a spoofed thread with somebody's real billing history is the opening move of support-driven account takeover. An in-app submission has no `From:` to spoof. The session is the identity, and `requireAuth()` proved it before the handler ran.
+
+So the thread records **how** it came to name an account, not just whether to believe it:
+
+| `accountLinkSource` | What it means |
+|---|---|
+| `session` | An authenticated request proved it. The account *is* the caller. |
+| `email_address` | Matched against the address in a `From:` header nobody proved. |
+| `null` | No link — the address belongs to nobody with an account. |
+
+A console must render those differently. The same operator action — a refund, a password reset — follows from very different evidence, and a single boolean cannot say which one is on screen.
+
+`channel` (`email` or `app`) rides on the thread and on every message, and the inbox filters on it. It is per message as well as per thread because the two genuinely differ: **a reply to an app thread is `email`**, since that is where the person will read it. The submission is minted a `Message-ID` on the way in, so when they answer that reply their mail client's `References` finds the thread instead of opening a new one.
+
+The app supplies what the user should not have to type — screen, build, platform, environment, locale — and that set is **closed**. An undeclared key is refused rather than stored, because the risk of an open bag is an adopter passing their whole client state through it and quietly landing a customer's data in an inbox a console renders.
+
+```ts
+support({
+  submission: {
+    // Bounds on a surface that is authenticated but still untrusted.
+    maxBodyChars: 10_000,
+    maxPerAccountPerHour: 10,
+    attachments: {
+      maxBytes: 5 * 1024 * 1024,
+      maxCount: 3,
+      allowedContentTypes: ["image/png", "image/jpeg", "application/pdf"],
+    },
+  },
+})
+```
+
+**The attachment bounds are stated here rather than inherited, and that is deliberate.** The mail path caps size and count and says nothing about type, because refusing an unexpected type would lose a customer's bug report. A direct upload from a browser is a different surface with a different answer: the useful payload is a screenshot, and an allowlist is both possible and worth having. Inheriting the email numbers would have shipped a 10 MB any-type upload endpoint as a side effect of a setting somebody tuned for their inbox. Bytes are stored exactly as the mail path stores them — server-derived opaque key, `application/octet-stream` on the object whatever was declared.
+
+**Abuse here is attributable and revocable, which is what makes ten an hour a safe number.** A mail flood is anonymous; a submission carries an account you issued and can disable. The bound is counted per account over the same sliding hour the mail guard uses, and **only against app submissions** — neither channel may starve the other. A busy inbox must never stop a user reporting the outage, and heavy in-app feedback must never lock a paying customer's email out.
+
+## Reading it back
+
+`GET /support/feedback` and `GET /support/feedback/:id` hand a submitter their own conversations and nothing else. Scoped to their account **and** to the app channel: a mail thread linked to them was matched from an unproven header, and treating that as ownership would turn the mail path's known weakness into a read primitive.
+
+Somebody else's thread answers **404, not 403**. The two are the same answer on purpose — a 403 confirms the id names a real conversation, and on an inbox of other people's correspondence that confirmation is itself the disclosure.
+
+The submitter's view is built from scratch rather than by nulling fields on the operator's, because a projection that starts from the operator's shape leaks the next column somebody adds. They see their words, the answers, and whether it was resolved. Never the classification — a machine's judgement about them, and `angry` rendered back to the person it describes is its own kind of disaster — never the priority, never an operator's private flags, never another account's anything.
+
+Set `submission: { enabled: false }` and the routes are not mounted at all. They answer 404, which is the honest answer for a feature a deployment does not have; a 403 would say "this exists and you may not use it".
 
 ## Classification
 
@@ -158,6 +207,18 @@ Every route is `control-plane` and **default-denied**. There is no public and no
 | POST | `/support/threads/:id/reclassify` | `support:threads:reclassify` |
 | POST | `/support/threads/:id/flags` | `support:threads:flag` |
 
+Three more answer to the adopter's own signed-in user, and to no scope at all:
+
+| Method | Path | Strategy |
+|---|---|---|
+| POST | `/support/feedback` | `bearer` / `session` (+ same-origin) |
+| GET | `/support/feedback` | `bearer` / `session` |
+| GET | `/support/feedback/:id` | `bearer` / `session` |
+
+**The two surfaces never stack.** A management client holds no session and owns no account row — core leaves `c.var.auth` null for one deliberately — so a control-plane credential can never satisfy `requireAuth()`, and a user's session confers no scope. Stacking the gates would deny every legitimate call on both, permanently. `requireSameOrigin()` sits on the submission and on neither read: a cookie-mode POST here writes into a support inbox under a real customer's name, which is the one place an operator treats attribution as proven. Bearer callers are CSRF-exempt, and that exemption belongs to the gate `@pithy-sh/auth` publishes.
+
+`GET /control-plane/manifest` advertises the management routes only. A manifest entry for `/support/feedback` would offer a management client a path its credential can never open.
+
 Five scopes, not one admin flag. Reading an inbox exposes every customer's private correspondence; replying sends mail to a real person under your domain and DKIM. Those are not the same permission, and a compromised reply credential is a phishing platform with a verified sending domain attached.
 
 Listing is cursor-paginated on `(receivedAt, id)`, never offset — mail arrives at the front of the order the list is sorted by, so offset silently shifts rows under somebody's scroll.
@@ -169,7 +230,8 @@ Listing is cursor-paginated on `(receivedAt, id)`, never offset — mail arrives
 | `support/not_found` | 404 | No such thread, message, or attachment. |
 | `support/invalid_category` | 400 | A category or canned reply failed validation at author time. |
 | `support/unparseable_message` | 400 | Inbound mail was not readable as email, or carried no sender. |
-| `support/rejected` | 429 | The guard refused a message on size or rate. |
+| `support/rejected` | 429 | The guard refused a message on size or rate, or an account is over its submission bound. |
+| `validation/invalid_input` | 400 | A submission broke a configured bound — body length, attachment size, count, or type. |
 | `support/classification_failed` | 500 | The AI step could not run. A bad *answer* is not this — it becomes `uncategorized`. |
 | `support/reply_failed` | 502 | `@pithy-sh/email` is absent, or refused the job. |
 

@@ -32,12 +32,17 @@ export const support_0001_threads: Migration = {
     await db.schema
       .createTable("pithySupportThreads")
       .addColumn("id", "text", (c) => c.primaryKey())
-      .addColumn("inboxAddress", "text", (c) => c.notNull())
+      .addColumn("channel", "text", (c) => c.notNull().defaultTo("email"))
+      // Nullable, unlike every other address on this table: an `app` thread in a project with no
+      // inbound address configured never arrived anywhere, and collecting in-app feedback with no mail
+      // set up at all is a deployment this capability supports.
+      .addColumn("inboxAddress", "text")
       .addColumn("subject", "text", (c) => c.notNull())
       .addColumn("fromAddress", "text", (c) => c.notNull())
       .addColumn("fromName", "text")
       .addColumn("senderAuthenticated", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("userId", "text")
+      .addColumn("accountLinkSource", "text")
       .addColumn("category", "text", (c) => c.notNull().defaultTo("uncategorized"))
       .addColumn("priority", "text", (c) => c.notNull().defaultTo("normal"))
       .addColumn("sentiment", "text", (c) => c.notNull().defaultTo("neutral"))
@@ -77,18 +82,40 @@ export const support_0001_threads: Migration = {
       .execute();
     // "Everything from this customer", once the sender has been linked to an account.
     await db.schema.createIndex("pithySupportThreadsUserIdx").on("pithySupportThreads").column("userId").execute();
+    // The console's channel filter, and the submitter's own list. Both read one channel newest-first,
+    // so this carries the same `(lastMessageAt, id)` tail as the archived and category composites —
+    // an index on `channel` alone would filter and then sort rows it had to fetch first.
+    await db.schema
+      .createIndex("pithySupportThreadsChannelIdx")
+      .on("pithySupportThreads")
+      .columns(["channel", "lastMessageAt", "id"])
+      .execute();
+    // The read-back: this account's own app threads, newest first. Keyed on the pair rather than on
+    // `userId` alone because the read-back is scoped to both — an email thread linked to an account by
+    // an unproven header must never be readable by whoever currently holds that address.
+    await db.schema
+      .createIndex("pithySupportThreadsUserChannelIdx")
+      .on("pithySupportThreads")
+      .columns(["userId", "channel", "lastMessageAt", "id"])
+      .execute();
 
     await db.schema
       .createTable("pithySupportMessages")
       .addColumn("id", "text", (c) => c.primaryKey())
       .addColumn("threadId", "text", (c) => c.notNull())
       .addColumn("direction", "text", (c) => c.notNull())
+      .addColumn("channel", "text", (c) => c.notNull().defaultTo("email"))
+      .addColumn("submittedByUserId", "text")
+      .addColumn("context", "text")
       .addColumn("mimeMessageId", "text")
       .addColumn("mimeInReplyTo", "text")
       .addColumn("mimeReferences", "text")
       .addColumn("fromAddress", "text", (c) => c.notNull())
       .addColumn("fromName", "text")
-      .addColumn("toAddress", "text", (c) => c.notNull())
+      // Nullable for the same reason `pithy_support_threads.inbox_address` is: an app submission has
+      // no envelope recipient. It stays in the unique index below — SQLite treats two NULLs as
+      // distinct, so app rows never collide there.
+      .addColumn("toAddress", "text")
       .addColumn("subject", "text", (c) => c.notNull())
       .addColumn("textBody", "text", (c) => c.notNull())
       .addColumn("htmlBody", "text")
@@ -130,6 +157,22 @@ export const support_0001_threads: Migration = {
       .createIndex("pithySupportMessagesFromIdx")
       .on("pithySupportMessages")
       .columns(["fromAddress", "receivedAt"])
+      .execute();
+    // What the *submission* guard counts: one account's app submissions inside a window. The app
+    // channel's bound is per account rather than per address, because the account is what a session
+    // proves and what an adopter can revoke — so it needs its own index rather than the address one.
+    await db.schema
+      .createIndex("pithySupportMessagesSubmitterIdx")
+      .on("pithySupportMessages")
+      .columns(["submittedByUserId", "receivedAt"])
+      .execute();
+    // The mail guard counts only mail. Both rate bounds filter on `channel` so that neither surface
+    // can starve the other — heavy in-app feedback must never lock a real customer out of the inbox,
+    // and a mail flood must never stop the app's own users reporting the outage.
+    await db.schema
+      .createIndex("pithySupportMessagesChannelIdx")
+      .on("pithySupportMessages")
+      .columns(["channel", "direction", "receivedAt"])
       .execute();
 
     await db.schema
@@ -216,12 +259,16 @@ export const support_0001_threads: Migration = {
     await db.schema.dropIndex("pithySupportAttachmentsMessageIdx").execute();
     await db.schema.dropTable("pithySupportAttachments").execute();
 
+    await db.schema.dropIndex("pithySupportMessagesChannelIdx").execute();
+    await db.schema.dropIndex("pithySupportMessagesSubmitterIdx").execute();
     await db.schema.dropIndex("pithySupportMessagesFromIdx").execute();
     await db.schema.dropIndex("pithySupportMessagesInReplyToIdx").execute();
     await db.schema.dropIndex("pithySupportMessagesThreadIdx").execute();
     await db.schema.dropIndex("pithySupportMessagesMimeIdIdx").execute();
     await db.schema.dropTable("pithySupportMessages").execute();
 
+    await db.schema.dropIndex("pithySupportThreadsUserChannelIdx").execute();
+    await db.schema.dropIndex("pithySupportThreadsChannelIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsUserIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsFromIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsCategoryIdx").execute();

@@ -5,7 +5,15 @@ import type { SupportMessage } from "../data/message";
 import type { SupportThread } from "../data/thread";
 import type { SenderContext } from "../link/sender";
 import type { ListedThread } from "../store/threads";
-import type { SenderContextView, SupportListedThreadView, SupportMessageView, SupportThreadView } from "./responses";
+import type {
+  SenderContextView,
+  SupportAttachmentView,
+  SupportListedThreadView,
+  SupportMessageView,
+  SupportMyMessageView,
+  SupportMyThreadView,
+  SupportThreadView,
+} from "./responses";
 
 /**
  * The projections between a support row and the wire.
@@ -34,12 +42,14 @@ function iso(date: Date | null | undefined): string | null {
 export function threadView(thread: SupportThread): SupportThreadView {
   return {
     id: thread.id,
-    inboxAddress: thread.inboxAddress,
+    channel: thread.channel,
+    inboxAddress: thread.inboxAddress ?? null,
     subject: thread.subject,
     fromAddress: thread.fromAddress,
     fromName: thread.fromName ?? null,
     senderAuthenticated: thread.senderAuthenticated,
     userId: thread.userId ?? null,
+    accountLinkSource: thread.accountLinkSource ?? null,
     category: thread.category,
     priority: thread.priority,
     sentiment: thread.sentiment,
@@ -74,15 +84,55 @@ export function messageView(message: SupportMessage): SupportMessageView {
   return {
     id: message.id,
     direction: message.direction,
+    channel: message.channel,
+    context: message.context ?? null,
     fromAddress: message.fromAddress,
     fromName: message.fromName ?? null,
-    toAddress: message.toAddress,
+    toAddress: message.toAddress ?? null,
     subject: message.subject,
     // Already sanitised at ingest. The raw original stays in R2 and is never served here.
     htmlBody: message.htmlBody ?? null,
     textBody: message.textBody,
     emailJobId: message.emailJobId ?? null,
     receivedAt: message.receivedAt.toISOString(),
+  };
+}
+
+/**
+ * Project one thread for the person who opened it.
+ *
+ * **Built from scratch rather than from {@link threadView}, and that is the security boundary.** A
+ * submitter's view derived by omitting fields from an operator's would disclose the next column
+ * somebody adds, silently, on the day they add it — the failure would be a default rather than a
+ * decision. Starting from nothing means a field reaches a customer only because somebody wrote it
+ * here.
+ *
+ * So: no classification, no priority, no sentiment, no confidence, no model, no viewer flags, no
+ * account link, no `archivedBy`, no addresses. What is left is their conversation.
+ */
+export function myThreadView(thread: SupportThread): SupportMyThreadView {
+  return {
+    id: thread.id,
+    subject: thread.subject,
+    resolved: thread.archived,
+    messageCount: thread.messageCount,
+    lastMessageAt: thread.lastMessageAt.toISOString(),
+    createdAt: thread.createdAt.toISOString(),
+  };
+}
+
+/** Project one message for the person in the conversation. Their own attachments ride along. */
+export function myMessageView(message: SupportMessage, attachments: SupportAttachmentView[]): SupportMyMessageView {
+  return {
+    id: message.id,
+    direction: message.direction,
+    // `textBody` on both sides. An answer is composed as plain text by `reply/send.ts`, and a
+    // submission was plain text when it arrived — so there is no `htmlBody` to hand back, and nothing
+    // here needs a sanitiser because nothing here is markup.
+    body: message.textBody,
+    context: message.context ?? null,
+    attachments,
+    sentAt: message.receivedAt.toISOString(),
   };
 }
 

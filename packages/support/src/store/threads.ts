@@ -4,7 +4,7 @@
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { type SqlBool, sql } from "kysely";
 import { SupportAttachment } from "../data/attachment";
-import type { SupportPriority, SupportSentiment } from "../data/enums";
+import type { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
 import { SupportMessage } from "../data/message";
 import {
   SUPPORT_ATTACHMENTS_TABLE,
@@ -84,6 +84,8 @@ export interface ListThreadsQuery {
   priority?: SupportPriority;
   /** One sentiment. */
   sentiment?: SupportSentiment;
+  /** One channel — mail, or what signed-in users filed from inside the app. */
+  channel?: SupportChannel;
   /** Which inbox address, for a Worker serving more than one. */
   inbox?: string;
   /** Free text over subjects and bodies. */
@@ -188,6 +190,7 @@ async function runListThreads(
   if (query.priority !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.priority`, "=", query.priority);
   if (query.sentiment !== undefined)
     builder = builder.where(`${SUPPORT_THREADS_TABLE}.sentiment`, "=", query.sentiment);
+  if (query.channel !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.channel`, "=", query.channel);
   if (query.inbox !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.inboxAddress`, "=", query.inbox);
   if (query.q !== undefined) {
     if (isSearchable(query.q, options.fts)) {
@@ -253,6 +256,91 @@ export interface ThreadDetail {
 export async function readThread(db: SupportDatabase, threadId: string): Promise<ThreadDetail> {
   const row = await db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().where("id", "=", threadId).executeTakeFirst();
   if (!row) throw new SupportNotFoundError({ detail: `no support thread ${threadId}` });
+
+  const [messages, attachments] = await Promise.all([
+    db
+      .selectFrom(SUPPORT_MESSAGES_TABLE)
+      .selectAll()
+      .where("threadId", "=", threadId)
+      .orderBy("receivedAt", "asc")
+      .orderBy("id", "asc")
+      .execute(),
+    db.selectFrom(SUPPORT_ATTACHMENTS_TABLE).selectAll().where("threadId", "=", threadId).execute(),
+  ]);
+
+  return {
+    thread: SupportThread.parse(row),
+    messages: messages.map((message) => SupportMessage.parse(message)),
+    attachments: attachments.map((attachment) => SupportAttachment.parse(attachment)),
+  };
+}
+
+/**
+ * List one account's own in-app conversations.
+ *
+ * **Two conditions on the `where`, and the second is not redundant.** `userId` alone would also return
+ * every *email* thread this capability linked to the account — and that link was matched against an
+ * address in a header nobody proved, so it names an account the sender merely claimed to be. Serving
+ * those to whoever currently holds the address would turn the mail path's known weakness into a read
+ * primitive, which is precisely the trade this channel exists to avoid making.
+ *
+ * Archived threads are included, unlike the operator inbox. An inbox hides done threads because it is a
+ * work queue; a person looking at their own requests is looking for the one that was answered.
+ */
+export async function listOwnThreads(
+  db: SupportDatabase,
+  userId: string,
+  query: { cursor?: string; limit?: number },
+): Promise<{ threads: SupportThread[]; nextCursor: string | null }> {
+  const limit = Math.min(Math.max(query.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
+  const cursor = decodeCursor(query.cursor);
+
+  let builder = db
+    .selectFrom(SUPPORT_THREADS_TABLE)
+    .selectAll()
+    .where("userId", "=", userId)
+    .where("channel", "=", "app");
+
+  if (cursor) {
+    builder = builder.where((eb) =>
+      eb.or([
+        eb("lastMessageAt", "<", cursor.lastMessageAt),
+        eb.and([eb("lastMessageAt", "=", cursor.lastMessageAt), eb("id", "<", cursor.id)]),
+      ]),
+    );
+  }
+
+  const rows = await builder
+    .orderBy("lastMessageAt", "desc")
+    .orderBy("id", "desc")
+    .limit(limit + 1)
+    .execute();
+  const page = rows.slice(0, limit).map((row) => SupportThread.parse(row));
+  const last = page[page.length - 1];
+  return {
+    threads: page,
+    nextCursor:
+      rows.length > limit && last ? encodeCursor({ lastMessageAt: last.lastMessageAt.getTime(), id: last.id }) : null,
+  };
+}
+
+/**
+ * Read one of an account's own in-app conversations.
+ *
+ * **A 404 for somebody else's thread, never a 403.** The two are the same answer on purpose: a 403
+ * confirms the id names a real conversation, and on an inbox of other people's correspondence that
+ * confirmation is itself the disclosure. The scoping is in the `where`, not in a check after the read,
+ * so there is no version of this that fetches the row first and forgets to compare.
+ */
+export async function readOwnThread(db: SupportDatabase, threadId: string, userId: string): Promise<ThreadDetail> {
+  const row = await db
+    .selectFrom(SUPPORT_THREADS_TABLE)
+    .selectAll()
+    .where("id", "=", threadId)
+    .where("userId", "=", userId)
+    .where("channel", "=", "app")
+    .executeTakeFirst();
+  if (!row) throw new SupportNotFoundError({ detail: `no app thread ${threadId} owned by ${userId}` });
 
   const [messages, attachments] = await Promise.all([
     db
