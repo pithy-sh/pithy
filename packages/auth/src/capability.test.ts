@@ -2,10 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import type { BetterAuthPlugin } from "better-auth";
+import { admin } from "better-auth/plugins/admin";
+import { magicLink } from "better-auth/plugins/magic-link";
+import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
 import { AUTH_SESSION_SECRET, authSecretsRegistry } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
@@ -92,6 +99,83 @@ describe("auth capability", () => {
     // The unset providers stay off — each toggle is independent.
     expect(cap.authConfig.google.enabled).toBe(false);
     expect(cap.authConfig.apple.enabled).toBe(false);
+  });
+});
+
+// What an adopter can add, what they cannot displace, and what happens to the tables either way.
+describe("additional Better Auth plugins", () => {
+  test("a project that adds none is byte-identical to before — one migration, no extensions", () => {
+    const cap = build();
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(cap.extensions).toEqual([]);
+  });
+
+  test("a composed plugin contributes its migration, keyed by its id", () => {
+    const cap = build({ plugins: [organization()] });
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_plugin_organization"]);
+  });
+
+  test("a composed plugin is declared as an extension, with the tables it brought", () => {
+    // The one place a plugin is visible to anything outside `pithy.config.ts`: it has no package.json
+    // for `pithy doctor` to read a name off, and it adds both routes and tables.
+    expect(build({ plugins: [organization()] }).extensions).toEqual([
+      { kind: "better-auth-plugin", id: "organization", tables: ["organization", "member", "invitation"] },
+    ]);
+  });
+
+  test("a plugin that brings no tables is still declared — routes are not nothing", () => {
+    expect(build({ plugins: [admin()] }).extensions).toEqual([{ kind: "better-auth-plugin", id: "admin", tables: [] }]);
+  });
+
+  test("a config naming one of the kit's own four is refused, naming it", () => {
+    expect(() => build({ plugins: [magicLink({ sendMagicLink: async () => {} })] })).toThrow(ValidationError);
+    expect(() => build({ plugins: [magicLink({ sendMagicLink: async () => {} })] })).toThrow(/magic-link/);
+  });
+
+  test("a value that is not a plugin is refused at the config boundary", () => {
+    expect(() => build({ plugins: ["organization" as unknown as BetterAuthPlugin] })).toThrow();
+  });
+
+  // A plugin's tables carry the plugin's own names, with no `pithy_auth_` prefix keeping them out of an
+  // adopter's way. `auth()` sees only itself, so the collision is asked about at composition.
+  describe("a plugin's table against the rest of the composition", () => {
+    const cap = build({ plugins: [organization()] });
+    const email = {
+      name: "email",
+      requiredBindings: [],
+      emailConfig: {},
+      enqueue: async () => {},
+    } as unknown as Capability;
+
+    function composeWith(...others: Capability[]): void {
+      cap.compose?.({ capabilities: [email, cap, ...others] });
+    }
+
+    test("passes when nothing else claims one", () => {
+      expect(() => composeWith()).not.toThrow();
+    });
+
+    test("is refused at boot when another capability declares the same table, naming both", () => {
+      const rival = {
+        name: "crm",
+        requiredBindings: [],
+        databases: { app: { binding: "DB", tables: { member: z.object({}) } } },
+      } as unknown as Capability;
+
+      expect(() => composeWith(rival)).toThrow(ValidationError);
+      expect(() => composeWith(rival)).toThrow(/member/);
+      expect(() => composeWith(rival)).toThrow(/crm/);
+    });
+
+    test("a same-named table in a different D1 binding is not a collision", () => {
+      const elsewhere = {
+        name: "crm",
+        requiredBindings: [],
+        databases: { analytics: { binding: "ANALYTICS", tables: { member: z.object({}) } } },
+      } as unknown as Capability;
+
+      expect(() => composeWith(elsewhere)).not.toThrow();
+    });
   });
 });
 

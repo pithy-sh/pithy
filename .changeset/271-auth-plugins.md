@@ -1,0 +1,21 @@
+---
+"@pithy-sh/auth": minor
+"@pithy-sh/core": minor
+"@pithy-sh/cli": minor
+---
+
+An adopter can compose their own Better Auth plugins, and `pithy migrate` creates the tables those plugins need.
+
+`packages/auth/src/instance/auth.ts` hardcoded four plugins and nothing in the capability's config reached them, so an adopter who needed `organization`, `passkey`, `twoFactor`, `apiKey`, `admin` or a generic OAuth provider had two options: fork the capability, or stop using it. That is a large part of what Better Auth is, closed off by a list. `auth({ plugins: [organization()] })` is now the whole of it.
+
+**The four the kit composes are fixed, and additive is the rule.** `bearer`, `jwt`, `magic-link` and `emailOTP` are always present and are composed **first**; the adopter's list is appended. `magic-link` and `emailOTP` are the sign-in this product promises and there is no password to fall back to; `jwt` mints the JWKS the control-plane seam verifies against, and `bearer` is how a mobile client presents its credential. Better Auth merges plugin endpoints by id with the later registration winning, so "adding" one of the four would silently redefine it — a config that names one is refused at `auth()`, by name, and so is a list that repeats an id.
+
+**A plugin's tables are created, not deferred.** The kit's migration model had no path for tables an adopter introduced through a capability's plugin, and an app whose plugin queries a table nobody created fails at runtime on the first call. It needed no new path: the plugin list is in `pithy.config.ts`, which is the file `pithy migrate` already imports to collect capabilities. The auth capability asks Better Auth what schema the composed list implies, subtracts the schema its own four already imply, and contributes **one ordinary Kysely migration per plugin** — `0300_auth_0002_plugin_<id>` — beside `0001_init`, each with a tested `down`. Both halves of a plugin's schema are derived: `organization` creates `organization`, `member` and `invitation` **and** adds `active_organization_id` to `pithy_auth_sessions`, and a create-table-only reading would have shipped a schema where `setActive` fails on the first call.
+
+Three consequences worth stating. A column added to a table that already exists is **nullable** whatever the plugin declares, because SQLite will not add a `NOT NULL` column to a table with rows — Better Auth writes the value on every insert it makes, so the constraint holds where the plugin enforces it. A plugin's tables carry the plugin's own names, not `pithy_auth_*`; a collision with a table this capability owns, or between two plugins, is refused at `auth()` naming both, and a collision with a table another composed capability declares in the same D1 is refused at boot, which is the first moment anything can see both. And **removing** a plugin needs the same care as removing a capability — roll its migration back while it is still composed, then take it out of the config.
+
+**The client's surface is the adopter's to compose, and it needs no cast.** Better Auth builds a client from its own plugin list and the server's type never crosses into a browser bundle, so `organizationClient()` beside `organization()` is the answer, and `AuthInstance` is now parameterised in the plugin tuple for the one thing that genuinely needs the server's type — `inferAdditionalFields`. A typecheck-enforced test in the auth package compiles `authClient.organization.create(…)` with no cast anywhere in it.
+
+**Nothing an adopter plugs into a capability is invisible any more.** `Capability.extensions` is a new, additive, descriptive field on the composition contract — `{ kind, id, tables }` — and `pithy doctor` prints a `Capability extensions:` block from it. A composed plugin has no `package.json` for `Project capabilities:` to name it from, and it still adds routes to the Worker and tables to the database. The block is the only one in that report that is not a finding: an extension is a deliberate act, so it never fails the exit and `--terse` omits it. A capability declares its own, so the next extension point anywhere is a line in the report rather than a new check in the CLI.
+
+A project that composes no plugins is unchanged: one migration, no extensions, the same four plugins in the same order.

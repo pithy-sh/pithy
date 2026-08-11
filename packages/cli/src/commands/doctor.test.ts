@@ -475,6 +475,47 @@ describe("doctorExitCode", () => {
     expect(text).toContain("pithy worker sync");
   });
 
+  /**
+   * #271. A Better Auth plugin an adopter composed adds routes to the Worker and tables to the
+   * database, and has no `package.json` for `Project capabilities:` to name it from. It is not a fault
+   * — so it prints without one, and it never gates.
+   */
+  test("a composed extension is named, with the tables it brought, and never fails the exit", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        resolveWorkers: async () =>
+          [
+            {
+              name: "board",
+              dir: "/p/apps/board",
+              capabilities: [
+                {
+                  name: "auth",
+                  requiredBindings: [],
+                  extensions: [{ kind: "better-auth-plugin", id: "organization", tables: ["organization", "member"] }],
+                } as unknown as Capability,
+              ],
+            },
+          ] as unknown as ResolvedWorker[],
+        buildPlan: planStub(cleanPlanFor("board")),
+      }),
+    );
+
+    expect(doctorExitCode(report)).toBe(0);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Capability extensions:");
+    expect(text).toContain("auth: organization (better-auth-plugin), tables organization, member.");
+    expect(renderDoctorJson(report)).toMatchObject({
+      extensions: { extensions: [expect.objectContaining({ id: "organization", worker: "board" })] },
+    });
+  });
+
+  test("a project that composes no extension prints no block about it", async () => {
+    const report = await buildDoctorReport(baseOptions());
+    expect(report.extensions).toEqual({ extensions: [] });
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Capability extensions:");
+  });
+
   /** Nothing was established, so nothing gates — the same standard every other check here is held to. */
   test("zero when the workflow declaration could not be checked at all", async () => {
     const report = await buildDoctorReport(

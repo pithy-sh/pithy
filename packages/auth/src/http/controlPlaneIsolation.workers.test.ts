@@ -240,6 +240,7 @@ async function signIn(): Promise<{ token: string; userId: string }> {
     otpLength: 6,
     disableSignUp: false,
     emit: async () => {},
+    plugins: [],
   });
   await instance.api.sendVerificationOTP({ body: { email: "u@test.com", type: "sign-in" }, headers: new Headers() });
   const otp = mailbox.find((m) => m.template === "otp");

@@ -74,6 +74,7 @@ function instance(secret = SECRET) {
     otpLength: 6,
     disableSignUp: false,
     emit: async () => {},
+    plugins: [],
   });
 }
 

@@ -128,6 +128,7 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
     otpLength: 6,
     disableSignUp: false,
     emit: noopEmit,
+    plugins: [],
   });
   await instance.api.sendVerificationOTP({ body: { email: "u@test.com", type: "sign-in" }, headers: new Headers() });
   const otp = mailbox.find((m) => m.template === "otp");

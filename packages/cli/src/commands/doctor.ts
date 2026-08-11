@@ -35,6 +35,7 @@ import { readRcFile } from "../platform/rc";
 import { detectShell, type ShellInfo } from "../platform/shell";
 import { loadProject, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
+import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck } from "../project/workflows";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -209,6 +210,17 @@ export interface DoctorReport {
    * fails, no log line appears and no probe goes red to say so.
    */
   workflows: WorkflowsCheck | null;
+  /**
+   * What an adopter plugged into a capability — a Better Auth plugin composed through the auth
+   * capability's config is the first (#271). `null` outside a readable project, on the same
+   * `loadProject` outcome as the checks above: with no Workers there is nothing composed to read.
+   *
+   * It reports and **never fails the exit**, and it is the only block here that is not about a fault.
+   * An extension an adopter deliberately added is not drift. What it must not be is invisible: it has
+   * no `package.json` for `Project capabilities:` to name it from, and it adds routes to the Worker and
+   * tables to the database all the same.
+   */
+  extensions: ExtensionsCheck | null;
   /**
    * This project's dev-login preference file: where it goes, whether it is there, and whether it says
    * anything a seed can use. `null` outside a readable project, on the same footing as the two above.
@@ -517,6 +529,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Project block — omitted outside a Pithy project.
   let project: ProjectStatus | null = null;
   let projectLoadError: string | null = null;
+  // Filled from the resolved Workers below, where the composed capabilities are already in hand — this
+  // check needs no file of its own and reaches nothing.
+  let extensions: ExtensionsCheck | null = null;
   const load = options.loadProject ?? loadProject;
   const resolve = options.resolveWorkers ?? resolveWorkers;
   // Set the moment the root config loads, so a `core/not_found` raised *later* (no workers under apps/)
@@ -541,6 +556,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       projectDir: options.projectDir,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     });
+    extensions = checkExtensions(workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })));
     const health = await buildProjectHealth({
       projectDir: options.projectDir,
       env: "dev",
@@ -624,6 +640,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     environments,
     origins,
     workflows,
+    extensions,
     devPreferences,
     devSecrets,
     secretBindings,
@@ -875,6 +892,26 @@ function workflowsBlock(check: WorkflowsCheck): string {
     lines.push(`  ${worker}:`);
     for (const drift of check.drift.filter((entry) => entry.worker === worker)) {
       lines.push(healthLine(`env.${drift.env}`, describeWorkflowDrift(drift)));
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `Capability extensions:` lines — what an adopter plugged into a capability, grouped per Worker.
+ *
+ * The only block in this report that is not a finding, and shown whenever there is anything to show
+ * rather than only when something is wrong. That is deliberate: an extension is a deliberate act, so
+ * there is no fault to report — and it is also the only place a composed Better Auth plugin has a name
+ * outside the source of `pithy.config.ts`, which is what makes its absence from a report a problem and
+ * its presence not one.
+ */
+function extensionsBlock(check: ExtensionsCheck): string {
+  const lines = ["Capability extensions:"];
+  for (const worker of [...new Set(check.extensions.map((entry) => entry.worker))]) {
+    lines.push(`  ${worker}:`);
+    for (const entry of check.extensions.filter((candidate) => candidate.worker === worker)) {
+      lines.push(`    ${describeExtension(entry)}`);
     }
   }
   return lines.join("\n");
@@ -1140,6 +1177,14 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // about the same environment, one declaration further in.
   if (report.workflows && report.workflows.drift.length > 0) blocks.push(workflowsBlock(report.workflows));
 
+  // And what an adopter plugged into a capability. Beside the blocks above because it is the same
+  // subject — what this project actually composes — and unlike them it prints when there is nothing
+  // wrong, because there is nothing here that can be wrong. Terse runs skip it: it is not a fault, and
+  // `--terse` is the form that reports only faults.
+  if (!terse && report.extensions && report.extensions.extensions.length > 0) {
+    blocks.push(extensionsBlock(report.extensions));
+  }
+
   // Dev secrets, and only when something is wrong with them. The block is the finding: a project whose
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
@@ -1265,6 +1310,13 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       ? {
           state: report.workflows.state,
           drift: report.workflows.drift.map((drift) => ({ ...drift, detail: describeWorkflowDrift(drift) })),
+        }
+      : null,
+    // Same `null` discipline, and each entry carries its own sentence so an agent never has to
+    // reproduce the wording from the fields. Never a fault, so nothing here is a `state`.
+    extensions: report.extensions
+      ? {
+          extensions: report.extensions.extensions.map((entry) => ({ ...entry, detail: describeExtension(entry) })),
         }
       : null,
     // The path is absolute here, not tilde-abbreviated: `--json` is read by agents and scripts, which need

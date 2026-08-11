@@ -50,6 +50,7 @@ function instanceWithMailbox() {
     emit: async (event) => {
       events.push({ action: event.action, outcome: event.outcome });
     },
+    plugins: [],
   };
   return { auth: makeAuth(deps), mailbox, events };
 }
@@ -169,6 +170,7 @@ describe("social providers and account linking, via instance.options", () => {
       otpLength: 6,
       disableSignUp: false,
       emit: async () => {},
+      plugins: [],
       ...providers,
     };
     return makeAuth(deps);
