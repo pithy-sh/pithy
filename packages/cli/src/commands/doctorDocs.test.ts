@@ -189,7 +189,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(4);
+    expect(WHAT_BLOCKS).toHaveLength(5);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -225,6 +225,7 @@ describe("docs/commands/doctor.md", () => {
               ],
               pendingMigrations: 2,
               entitlementGap: [],
+              missingPrerequisites: [],
               missingVersionMetadata: false,
             },
           }),
@@ -254,6 +255,33 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
+   * The `prereqs` fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
+   *
+   * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
+   * the Worker does not start. It is pasted because it is the line that would have caught the defect
+   * before `pithy dev` did, and a line nobody can reproduce on purpose is a line that drifts.
+   */
+  test("the prerequisites fragment is what the renderer prints for a composed capability missing its peers", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api"),
+          buildPlan: planStub({
+            ...cleanPlanFor("api"),
+            missingPrerequisites: [
+              { capability: "auth", requires: "secrets" },
+              { capability: "auth", requires: "email" },
+            ],
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[0];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
    * The `manifests:` fragment, pinned against a project health block carrying one unusable manifest.
    *
    * Built onto the report rather than onto the disk: `buildProjectHealth` scans `node_modules/@pithy-sh`
@@ -276,7 +304,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[0];
+    const fragment = FRAGMENTS[1];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -302,7 +330,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[1];
+    const fragment = FRAGMENTS[2];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -328,7 +356,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[2];
+    const fragment = FRAGMENTS[3];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

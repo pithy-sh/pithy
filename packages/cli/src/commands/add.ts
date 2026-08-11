@@ -9,7 +9,14 @@ import { defineCommand } from "citty";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
 import { buildCatalogListing } from "../capabilities/catalog";
-import { type ConfigPrompt, coerceConfigValue, collectSetFlags, isHandWritten, runAdd } from "../capabilities/flow";
+import {
+  type ConfigPrompt,
+  coerceConfigValue,
+  collectSetFlags,
+  isHandWritten,
+  type PrerequisitePrompt,
+  runAdd,
+} from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
@@ -180,6 +187,26 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
   return values;
 };
 
+/**
+ * Ask whether to compose a capability's prerequisites too — one question for the whole cascade.
+ *
+ * Attached only when a human is attached, exactly like the Worker picker above it. Declining is a
+ * refusal, not a silent partial add: the caller raises the error that names the commands, so a `no` here
+ * and a non-interactive run reach the same place by different roads.
+ */
+const promptPrerequisites: PrerequisitePrompt = async ({ capability, missing }) => {
+  const { confirm, isCancel } = await import("@clack/prompts");
+  const one = missing.length === 1;
+  const answer = await confirm({
+    message: `${capability} requires ${missing.join(", ")}. Compose ${one ? "it" : "them"} too?`,
+  });
+  if (isCancel(answer)) {
+    process.stderr.write("Cancelled.\n");
+    process.exit(1);
+  }
+  return answer === true;
+};
+
 export default defineCommand({
   meta: { name: "add", description: "Add a capability" },
   args: {
@@ -197,6 +224,11 @@ export default defineCommand({
       type: "boolean",
       default: false,
       description: "With --eject, overwrite an existing local copy (discards edits)",
+    },
+    "with-prerequisites": {
+      type: "boolean",
+      default: false,
+      description: "Compose the capabilities this one requires, if they aren't composed yet",
     },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -238,6 +270,8 @@ export default defineCommand({
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
         prompt: interactive ? promptConfigValues : undefined,
+        withPrerequisites: args["with-prerequisites"],
+        askPrerequisites: interactive ? promptPrerequisites : undefined,
         eject: args.eject,
         force: args.force,
         audit: await buildAudit({
@@ -252,6 +286,13 @@ export default defineCommand({
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "add", ...result })}\n`);
         return;
+      }
+      // Said first, because it happened first, and because a capability composed on the adopter's behalf
+      // is the one thing in this output they did not type.
+      if (result.prerequisites.length > 0) {
+        process.stdout.write(
+          `Composed ${result.prerequisites.join(", ")} into ${result.worker} first — ${result.capability} requires ${result.prerequisites.length === 1 ? "it" : "them"}.\n`,
+        );
       }
       process.stdout.write(`Wired ${result.capability} into ${result.worker}.\n`);
       for (const run of result.databases) {

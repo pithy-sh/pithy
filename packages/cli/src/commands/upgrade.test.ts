@@ -43,6 +43,7 @@ const plan: ReconcilePlan = {
   ejectedSkipped: ["billing"],
   pendingMigrations: 3,
   entitlementGap: [],
+  missingPrerequisites: [],
   missingVersionMetadata: false,
 };
 
@@ -65,6 +66,7 @@ describe("plan rendering", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingPrerequisites: [],
       missingVersionMetadata: false,
     };
     expect(__test.planLines(clean)).toEqual(["Nothing to upgrade."]);
@@ -122,6 +124,7 @@ describe("worker grouping", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingPrerequisites: [],
       missingVersionMetadata: false,
     };
     const out = __test.renderUpgrade({
@@ -165,6 +168,7 @@ describe("worker grouping", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingPrerequisites: [],
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([
@@ -401,6 +405,7 @@ describe("manifest faults", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingPrerequisites: [],
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [fault] })).toEqual([
@@ -420,6 +425,7 @@ describe("manifest faults", () => {
       ejectedSkipped: [],
       pendingMigrations: 0,
       entitlementGap: [],
+      missingPrerequisites: [],
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([

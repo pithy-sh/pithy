@@ -3,6 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
+import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
@@ -53,7 +54,23 @@ export interface EntitlementHealth {
   gates: string[];
 }
 
-/** One Worker's health. `ok` is the AND of its four checks. */
+/**
+ * The `prerequisites` check: a composed capability whose manifest declares a peer this Worker does not
+ * compose.
+ *
+ * **The only check here that is a boot failure rather than drift.** `createBackend` refuses to assemble
+ * on exactly this pair, so the Worker does not start at all — which is what `pithy add auth` used to
+ * leave behind, on a project this command called healthy (#273). It reports and does not fix, like the
+ * entitlement gap: `pithy upgrade` writes bindings and config keys, and composing a capability is a
+ * different kind of decision. The line names the command that makes it.
+ */
+export interface PrerequisiteHealth {
+  ok: boolean;
+  /** Each composed capability paired with the peer it declares and this Worker lacks. */
+  missing: MissingPrerequisite[];
+}
+
+/** One Worker's health. `ok` is the AND of its five checks. */
 export interface WorkerHealth {
   /** The Worker's name, as `pithy worker list` shows it. */
   worker: string;
@@ -62,6 +79,7 @@ export interface WorkerHealth {
   bindings: BindingHealth;
   migrations: MigrationHealth;
   entitlements: EntitlementHealth;
+  prerequisites: PrerequisiteHealth;
 }
 
 /**
@@ -157,13 +175,19 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
 
   const entitlements: EntitlementHealth = { ok: plan.entitlementGap.length === 0, gates: plan.entitlementGap };
 
+  const prerequisites: PrerequisiteHealth = {
+    ok: plan.missingPrerequisites.length === 0,
+    missing: plan.missingPrerequisites,
+  };
+
   return {
     worker,
-    ok: config.ok && bindings.ok && migrations.ok && entitlements.ok,
+    ok: config.ok && bindings.ok && migrations.ok && entitlements.ok && prerequisites.ok,
     config,
     bindings,
     migrations,
     entitlements,
+    prerequisites,
   };
 }
 
@@ -171,9 +195,10 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
  * Build the project's health from one read-only reconcile plan per Worker. For each Worker, `config` fails
  * when a capability's `pithy.config.ts` registration is missing manifest options; `bindings` fails when a
  * required binding is absent from an environment; `migrations` fails when the target env has unapplied
- * migrations; `entitlements` fails when a route gates on an entitlement no composed capability resolves.
- * The project is healthy only when every Worker is. Writes nothing — safe to run on every
- * `pithy doctor` invocation.
+ * migrations; `entitlements` fails when a route gates on an entitlement no composed capability resolves;
+ * `prerequisites` fails when a composed capability declares a peer the Worker does not compose, which is
+ * the one that means the Worker will not start at all. The project is healthy only when every Worker is.
+ * Writes nothing — safe to run on every `pithy doctor` invocation.
  */
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {
   const build = options.buildPlan ?? defaultBuildPlan;
