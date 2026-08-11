@@ -5,6 +5,8 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { EncryptionConfig } from "./crypto/envelope";
 import { secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/bindings";
+import { secretsAdminRoutes } from "./http/guards";
+import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { MANAGER_CF_API_TOKEN_SECRET } from "./provision/provisionSecrets";
 import type { SecretRegistry, SecretRegistryEntry } from "./registry";
@@ -93,6 +95,11 @@ export interface SecretsConfig {
    * sooner; raise it to cut Secrets Store round-trips further.
    */
   secretsCacheTtlSeconds?: number;
+  /**
+   * Mount the management surface somewhere other than `/secrets`. Moves the paths the control-plane
+   * manifest advertises with it, so a client composing its calls from the manifest follows.
+   */
+  basePath?: string;
 }
 
 /**
@@ -113,12 +120,27 @@ export interface SecretsCapability extends Capability {
  * the `SECRETS_ENCRYPTION_KEYS` master-key binding (CF Secrets Store, worker-only), and carries the
  * project's {@link SecretRegistry} — with {@link masterKeyRegistryEntry} merged in, so the binding it
  * requires and the secret that fills it are one declaration rather than two that can drift.
+ *
+ * It also contributes a **read-only** control-plane surface behind `secrets:status:read` — when each
+ * secret was last rotated, and whether it is past the cadence its registry entry declares. Metadata
+ * only, and structurally so: `http/responses.ts` has no field that could carry a value. Like every
+ * capability's, the routes are always mounted and default-denied — with `controlplane()` uncomposed each
+ * one raises `controlplane/not_connected`, because a management surface that appears only when something
+ * else is installed is a surface nobody can discover.
  */
 export function secrets(config: SecretsConfig): SecretsCapability {
   const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
   // The capability's own secret, merged under the adopter's so a project that declares nothing still has
   // a routable master key — and so an adopter who deliberately overrides the entry keeps that power.
   const registry: SecretRegistry = { [MASTER_KEY_BINDING]: masterKeyRegistryEntry, ...config.registry };
+  // Resolved once, here, and handed to both the router and the manifest — so the advertised admin paths
+  // and the mounted ones cannot disagree about where the surface lives.
+  const mountPath = config.basePath ?? SECRETS_DEFAULT_BASE_PATH;
+  // What the status surface reports over, replaced by `compose` with the combined registry. It starts as
+  // this capability's own so a Worker that somehow answers before composing still reports honestly
+  // rather than emptily; after compose it is every capability's, which is the useful answer — a project's
+  // auth signing key and email link key are secrets its owner needs the status of just as much.
+  const reported = { current: registry };
   const capability = defineCapability({
     name: "secrets",
     // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
@@ -138,11 +160,19 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         migrations: { "0001_init": secrets_0001_init },
       },
     },
+    routes: registerSecretsRoutes({ registry: () => reported.current, basePath: mountPath }),
+    // Built from the resolved mount path, never the default: an adopter who mounts this at `/vault` gets
+    // a manifest naming `/vault/admin/status`, which is what a management client composes its calls from.
+    adminRoutes: secretsAdminRoutes(mountPath),
     // At worker startup, merge every capability's secret-registry slice into one combined registry and
     // back the shared per-invocation accessor from it — so all secrets resolve in one batch, shared
     // across capabilities, with this capability's configured TTL.
     compose: ({ capabilities }) => {
-      configureSharedSecrets({ registry: aggregateSecretRegistries(capabilities), ttlSeconds });
+      const combined = aggregateSecretRegistries(capabilities);
+      configureSharedSecrets({ registry: combined, ttlSeconds });
+      // The same combined set the accessor resolves is the set the status surface reports. One
+      // aggregation, so a secret that can be read is a secret whose freshness can be seen.
+      reported.current = combined;
     },
   });
   return Object.assign(capability, {

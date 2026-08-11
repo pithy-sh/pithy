@@ -254,3 +254,50 @@ describe("defineSecretRegistry — keyed entries", () => {
     ).toThrow(InternalError);
   });
 });
+
+describe("rotateEveryDays — the declared freshness expectation", () => {
+  test("is optional, and survives onto the entry", () => {
+    const registry = defineSecretRegistry({
+      "stripe-live-key": { backend: "d1", scope: "global", rotatable: false, valueType: "text", rotateEveryDays: 90 },
+      "no-opinion": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    });
+    expect(registry["stripe-live-key"].rotateEveryDays).toBe(90);
+    // `in`, not an undefined read: the `const` type param keeps the literal shapes, so an entry that
+    // never declared a cadence has no such property to read at all.
+    expect("rotateEveryDays" in registry["no-opinion"]).toBe(false);
+  });
+
+  test("is allowed on a rotatable: false secret — that is the case it exists for", () => {
+    // A third-party key no automation will ever rotate is precisely the one whose drift nothing else
+    // surfaces. Refusing the declaration here would silence the secrets that most need saying.
+    expect(() =>
+      defineSecretRegistry({
+        "stripe-live-key": { backend: "d1", scope: "global", rotatable: false, valueType: "text", rotateEveryDays: 30 },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects zero, a negative, and a fraction", () => {
+    // Each of these makes every future status read permanently overdue — a warning nobody can clear,
+    // and therefore one everybody learns to ignore.
+    for (const rotateEveryDays of [0, -1, 0.5]) {
+      expect(() =>
+        defineSecretRegistry(
+          asRegistry({
+            broken: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", rotateEveryDays },
+          }),
+        ),
+      ).toThrow(InternalError);
+    }
+  });
+
+  test("rejects a non-number", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          broken: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", rotateEveryDays: "90" },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+});

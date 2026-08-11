@@ -15,6 +15,7 @@ Each entry in your `SecretRegistry` declares:
 - **`rotatable`** — a boolean; forward-looking metadata for a future value-rotator. It does not change storage or the read API.
 - **`valueType`** — `text` or `json` (with a Zod schema).
 - **`devValue`** — optional. Set it to `random` when the value is *arbitrary*, and `pithy add <capability>` mints this project's dev value into the dev secrets file (see below). Leave it off when the value must match something outside the project.
+- **`rotateEveryDays`** — optional; how often this secret is expected to be rotated. It is what makes "overdue" a fact the capability states rather than a number a dashboard invented. Independent of `rotatable`: a third-party key no automation will ever rotate is exactly the one whose drift nothing else surfaces.
 
 The reader routes off these axes, resolves every secret **locally** (no RPC), and exposes one uniform API: `get(name)` for the current value, `getVersions(name)` for the current pointer plus every still-valid version. `backend` is a **storage** decision, not a read-time one — moving a secret between `d1` and `cf-secrets-store` is a one-line registry edit and every read site stays byte-identical. In local dev the same names resolve from `.dev.vars`; deployed, they resolve from the env's store. The call site is identical.
 
@@ -130,6 +131,23 @@ Every other capability gets the same treatment through its registry. An entry th
 
 `pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `<project>-global-secrets-manager-cf-api-token`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
 
+## Control-plane status read
+
+The capability contributes two read-only admin routes behind its own scope, `secrets:status:read`, so an adopter grants secret status separately from everything else at `pithy dashboard connect`:
+
+```
+GET {base}/admin/status                  # every declared secret's status
+GET {base}/admin/status/:name/rotations  # one secret's rotation history, newest first
+```
+
+Per secret: its name, `backend`, `valueType` and `rotatable` from the registry, the `keyVersion` its stored envelope sits under, when it was created and last written, `lastRotatedAt`, how many rotations are recorded, the declared `rotateEveryDays`, and whether it is `overdue`. Per rotation: the timestamps, the status, the trigger, and who.
+
+**No route reads a value, and no scope could grant one.** The response shapes are *incapable* of carrying a ciphertext, an IV, a metadata snapshot or a rotation's error message — those fields are absent from the type, not omitted by a projection, so widening them is a compile error rather than a review miss (`src/admin/status.ts`). A failure is reported as a status, never as a message: an error message is free text written at a failure site, which is where a value gets pasted by accident.
+
+Three nulls, three different facts. `lastRotatedAt: null` is **never rotated** — not zero, and not rotated long ago. `createdAt: null` means nothing is stored under that name in this database, which is why `backend` is reported: a `cf-secrets-store` secret never has a row here. `overdue: null` means the question has no answer, either because no cadence is declared or because there is nothing to measure from.
+
+The listing covers every **composed capability's** secrets — auth's signing key, email's link key — not only the ones you typed. Keyed entries are excluded: a keyspace has no single value, and its members are per-tenant rows, so listing them would be a tenant enumeration.
+
 ## The CLI
 
 ```
@@ -149,5 +167,6 @@ The CLI is the **cross-environment actor**: a `global` write reaches both enviro
 - Each env's workers bind only their own env's store and key — a staging worker can't reach prod ciphertext.
 - The manager's CF API token is a Secrets Store binding (never a plaintext env var) scoped to **Secrets Store Read + Write only** — least privilege for its sole job, the rotation write-back. The broad bootstrap token never reaches the worker.
 - JSON validation errors are redacted (`path:code`, never the value).
+- The control-plane status surface is read-only and metadata-only, by construction. It is audited on every call: a credential that quietly enumerates a project's secret estate otherwise leaves no trace, because nothing changed.
 
 Adoption is never gated behind Bun: this package is pure ESM on Node 22+.
