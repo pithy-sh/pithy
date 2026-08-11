@@ -7,6 +7,7 @@ import type { EmailKind } from "../data/enums";
 import { EmailInvalidPayloadError, EmailTemplateNotFoundError } from "../error/errors";
 import { precompiledPartials, precompiledTemplates } from "./precompiled.generated";
 import { type EmailTemplate, templates } from "./registry";
+import { severityColor, severityLabel } from "./severity";
 import { type EmailTheme, widthPx } from "./theme";
 
 /**
@@ -37,6 +38,15 @@ const hbs = Handlebars.create();
 for (const [name, spec] of Object.entries(precompiledPartials)) {
   hbs.registerPartial(name, hbs.template(spec));
 }
+
+// The only two helpers this engine has, and both exist for one reason: a severity has to be said in
+// three places — the subject line, the body, and the plain-text part — and a mapping repeated three
+// times is a mapping that will disagree with itself. Handlebars has no equality test, so without them a
+// template would carry nine `{{#if}}` blocks to render one word. Registered on this instance at module
+// load; precompiled specs resolve a helper by name at render time, so `scripts/precompile.ts` needs to
+// know nothing about them.
+hbs.registerHelper("severityLabel", severityLabel);
+hbs.registerHelper("severityColor", severityColor);
 
 interface Compiled {
   def: EmailTemplate;

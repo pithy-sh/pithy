@@ -36,7 +36,7 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 | Flag | Default | Purpose |
 |---|---|---|
 | `--to <address>` | — | **Required.** Who receives the sample |
-| `--template <id>` | `welcome` | Which template to render. One of `magicLink`, `supportReply`, `otp`, `welcome`, `securityAlert`, `invite`, `testerNudge`, `passwordChanged`, `newsletter`, `leadCapture`, `marketingCampaign` |
+| `--template <id>` | `welcome` | Which template to render. One of `magicLink`, `supportReply`, `otp`, `welcome`, `securityAlert`, `invite`, `testerNudge`, `passwordChanged`, `operationalNotice`, `newsletter`, `leadCapture`, `marketingCampaign` |
 | `--from <address>` | the configured `fromAddress` | Override the sending address for this one message |
 | `--json` | `false` | Machine-readable output |
 
@@ -150,7 +150,7 @@ Run `pithy secrets provision` first — the email worker reads its signing key f
 
 ```
 No sample payload for template "welcom".
-Known templates: magicLink, supportReply, otp, welcome, securityAlert, invite, testerNudge, passwordChanged, newsletter, leadCapture, marketingCampaign.
+Known templates: magicLink, supportReply, otp, welcome, securityAlert, invite, testerNudge, passwordChanged, operationalNotice, newsletter, leadCapture, marketingCampaign.
 ```
 
 **Several Workers and no `--worker`.** The resolution error `pithy add` raises, naming the Workers it found.

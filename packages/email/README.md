@@ -239,8 +239,53 @@ The one limit is cross-environment async bounces: because Cloudflare binds one i
 
 ## Templates
 
-`magicLink`, `otp`, `welcome`, `securityAlert`, `invite`, `passwordChanged`, `supportReply` (transactional); `newsletter` (iterable articles), `leadCapture`, `marketingCampaign`, `testerNudge` (elective). Each ships a Zod payload schema — the validated, documented input contract — plus a `category` and a `kind`. Templates are precompiled Handlebars (no runtime eval in the Worker) and render both HTML and plain text.
+`magicLink`, `otp`, `welcome`, `securityAlert`, `invite`, `passwordChanged`, `operationalNotice`, `supportReply` (transactional); `newsletter` (iterable articles), `leadCapture`, `marketingCampaign`, `testerNudge` (elective). Each ships a Zod payload schema — the validated, documented input contract — plus a `category` and a `kind`. Templates are precompiled Handlebars (no runtime eval in the Worker) and render both HTML and plain text.
 
 **The kind is declared by the template, never passed by a caller.** `transactional` answers something the person just did — a sign-in link, an invitation they are waiting on, a security notice. `elective` is mail somebody chose to receive. Only elective templates render an unsubscribe link, and only they carry `List-Unsubscribe` / `List-Unsubscribe-Post` (RFC 8058 one-click, which the callback route accepts as a POST). Transactional templates carry neither, structurally: there is no argument a call site can pass to put an opt-out on a sign-in link, because `List-Unsubscribe` on a login message publishes a mechanism for disabling authentication — and Gmail's and Yahoo's bulk-sender rules ask for one-click opt-out on *promotional* mail, which this is not.
 
 The two axes are separate on purpose. The category says what a message *is* (and a `marketing` one cannot render at all without an unsubscribe link); the kind says whether it may be *refused*. `testerNudge` is the case that proves they differ — transactional in style, elective in consent, because a testing programme chases one person repeatedly for a fortnight.
+
+### The operational notice
+
+*Something about your own infrastructure changed or needs attention.* A rotation that failed, a release with a security fix, a connection that stopped answering, a job that has been retrying for a day — every capability in this kit produces facts an operator would want told without signing in, and they all share one form: what happened, to what, when, how serious, and one place to act on it.
+
+```ts
+await enqueueEmail(deps, {
+  to: "ops@acme.test",
+  template: "operationalNotice",
+  payload: {
+    severity: "warning",                                     // info | warning | critical
+    summary: "A secret has not been rotated in 90 days",
+    thing: "STRIPE_SECRET_KEY",
+    when: "18 June, 14:02 UTC",
+    detail: "Rotation is overdue. The old value keeps working until the new one is in place.",
+    facts: [{ label: "Environment", value: "prod" }],
+    actionUrl: "https://acme.test/secrets/stripe-secret-key",
+    actionLabel: "Rotate it",
+  } satisfies OperationalNoticePayload,
+});
+```
+
+**It is not `securityAlert`.** That template is about a session — it describes a sign-in and closes with *"if this was you, no action is needed"*, which is the opposite of what an overdue secret means. This one assumes the recipient is the operator and that the fact is true. There is nothing to confirm, only something to do or to know.
+
+**Severity is expressed, not flattened.** Each level owns a word — `Notice:`, `Action needed:`, `Critical:` — and that word leads the subject line, so the urgency is legible in an inbox list before anything is opened. It is repeated in the body and in the plain-text part, and *then* reinforced by colour, which is the order that survives a text-only client, a monochrome screen, and a reader who cannot tell the red one from the amber one. A design where the only difference between "a release is out" and "sign-in is broken" is a hex value has flattened them, and a reader who cannot see that difference learns to ignore both. The severity has no default: a capability that forgot the field would otherwise send an outage at the volume of a release note.
+
+**It renders with no link-signing key.** The template is transactional, so it never needs an unsubscribe link and never mints a token; nothing about it depends on configuration a project might not have finished. An operational notice that cannot render is the notice you needed most.
+
+The `actionUrl` is optional, and deliberately so. A caller with nowhere to send somebody would otherwise invent a link, and a dead link in a critical notice is worse than no link — the summary, the thing and the facts stand on their own.
+
+### The registry is closed
+
+There is no `registerTemplate`. An adopter composing `email` sends the templates above and no others. That is a decision, and this is the argument for it — written down here because the alternative is equally defensible and neither position was on record.
+
+**The runtime settles the first half.** The Workers runtime forbids code generation entirely — no `eval`, no `new Function`, not even at isolate startup — so `Handlebars.compile()` cannot run where the mail is sent. Every body in this package is turned into a *spec* by `scripts/precompile.ts` at build time and revived with `Handlebars.template(spec)`, which never evaluates a string. An open registry therefore cannot accept a template; it can only accept a precompiled spec, built by the adopter's own Handlebars, in their own build. Handlebars refuses a spec whose compiler revision differs from the runtime's, so the kit would be publishing a version-locked build artifact format as its extension surface — and the failure mode of getting it wrong is every email failing to render at once, at the next unrelated dependency bump.
+
+**Two things would stop being structural.** The kind would go back to being a claim: [#281](https://github.com/pithy-sh/pithy/issues/281)'s fix rests on a call site being *unable* to assert that a message is transactional, and a registerable template makes that assertion writable again — mail that ignores an unsubscribe, sent over the adopter's own DKIM signature, charged to their own sending domain. And escaping here is a property of the fixed bodies, not of a convention: `testerNudge` is safe because its supplied words render through `{{this}}`, and one `{{{triple}}}` in a supplied body is a phishing page on a domain the recipients already trust.
+
+**What the closure obliges in exchange**, because a closed registry with no obligations is just a wall:
+
+- **A missing shape is a bug in the kit, not a gap in your project.** This template exists because `pithy-sh/dashboard` had notification settings switched on and nothing to send. File the shape; it gets built.
+- **Where the words are yours, the template takes them as payload.** `supportReply` (a human's letter), `testerNudge` (a cohort's nudge) and `operationalNotice` (any fact about your own infrastructure) are all the same pattern: the kit owns the shell, the caller owns the copy. Between them they cover most of what a bespoke template would have been for.
+- **Nothing here locks the door.** `EmailSender` is an interface, and a project that genuinely must render its own body can compose one and send through it. That is an escape hatch, not a recommendation: it leaves the job table, the retries, the tracking callbacks and — the part that matters — the suppression check behind. Anything sent that way is mail this capability cannot stop going to an address that hard-bounced or reported spam, and the damage lands on the sending domain every other message shares.
+
+The day the runtime allows a spec to be handed across a version boundary safely, this is worth revisiting. Until then, opening the registry would trade two structural guarantees for an extension point that breaks on a patch release.
