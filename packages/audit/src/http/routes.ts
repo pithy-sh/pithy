@@ -100,9 +100,11 @@ function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
  *
  * Built here rather than inline in the `metadata:` literal for two reasons. It keeps dates as ISO
  * strings — a `Date` would round-trip out of the JSON column as a string anyway, so writing one is a
- * silent type change. And `metadata` may not carry top-level origin keys (`project`, `environment`,
- * `worker`), which are columns; nesting the filter under one key keeps the record of *what was asked
- * for* distinct from the record of *where the reading happened*, which is what those columns mean.
+ * silent type change. And `metadata` may not carry top-level keys that name a column (`project`,
+ * `environment`, `worker`, `tenant`); nesting the filter under one key keeps the record of *what was
+ * asked for* distinct from the record of *where the reading happened* and *whose events these were*,
+ * which is what those columns mean. A `tenant` here is a filter the caller typed, not the tenant this
+ * read belonged to — collapsing the two would make the trail lie about its own reads.
  */
 function askedFor(query: ListAuditEventsQuery): Record<string, unknown> {
   const { from, to, cursor, ...rest } = query;

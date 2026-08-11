@@ -51,6 +51,10 @@ export const AuditEventView = z
     environment: z.string().nullable().describe("The environment the recording Worker served, or null."),
     worker: z.string().nullable().describe("The `apps/<name>` Worker that recorded it, or null for a CLI action."),
     version: z.string().nullable().describe("The Cloudflare build id that recorded it, or null."),
+    tenant: z
+      .string()
+      .nullable()
+      .describe("The tenant the action was taken for, or null when it was not tenant-scoped."),
   })
   .describe("One audit event as the listing shows it. No client IP, no user-agent, no metadata bag.");
 export type AuditEventView = z.output<typeof AuditEventView>;

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { AUDIT_MIGRATION_ORDER } from "@pithy-sh/audit/src/capability";
 import { resolveActor } from "@pithy-sh/audit/src/cli/resolveActor";
 import { audit_0001_init } from "@pithy-sh/audit/src/migrations/0001_init";
+import { audit_0002_tenant } from "@pithy-sh/audit/src/migrations/0002_tenant";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { accountResource } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
@@ -44,7 +45,7 @@ function auditMigrations(): MigrationProvider {
       database: "app",
       namespace: "audit",
       order: AUDIT_MIGRATION_ORDER,
-      migrations: { "0001_init": audit_0001_init },
+      migrations: { "0001_init": audit_0001_init, "0002_tenant": audit_0002_tenant },
     },
   ]);
   const provider = registry.app;

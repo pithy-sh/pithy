@@ -76,6 +76,14 @@ export type AuditMetadata = z.output<typeof AuditMetadata>;
  * write time when absent. The nullable correlation fields (`actorId`, `sessionId`, request fields,
  * resource fields) are populated from request context where available; an emitter sets only what it
  * knows. The recorder turns this into the stored `pithy_audit_events` row.
+ *
+ * `tenant` is the one field here that names a *dimension* of the trail rather than a detail of the
+ * action, and it is on this seam rather than on the recorder's origin for the reason the origin fields
+ * are not: the recorder cannot know it. `project`, `environment` and `worker` are constant across every
+ * row a multi-tenant Worker writes, so without this the trail cannot be read per customer at all — and
+ * it must be stamped here, at write time, because the tenant of an action is a fact *at the time of the
+ * action* while membership is a fact *now*. Deriving one from the other later moves a year of history
+ * between tenants every time somebody joins or leaves.
  */
 export const AuditEvent = z
   .object({
@@ -105,6 +113,12 @@ export const AuditEvent = z
       .string()
       .nullish()
       .describe("The request correlation id, tying this event to a single request/trace; null when unknown."),
+    tenant: z
+      .string()
+      .nullish()
+      .describe(
+        "Whose action it was — the id of the tenant the action was taken *for*, in the emitter's own tenancy model. Opaque here: compared, never interpreted. **The one dimension an emitter supplies.** The recorder stamps `project`, `environment` and `worker` from the Worker's own vars and no emitter can touch them, but no var can know which customer an action belonged to, so this one comes from the call site and is exactly as trustworthy as it — set it where the tenant is already resolved and authorized, never from an unvalidated request field. Optional and nullable: a single-tenant app has no such dimension and must not invent one, and null means *not tenant-scoped* (a CLI-originated action, a fleet-wide operator action) rather than unknown. It is not `actorId`: one person can act in two tenants, so who acted does not answer for whom.",
+      ),
     occurredAt: z
       .date()
       .optional()

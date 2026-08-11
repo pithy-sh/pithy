@@ -25,7 +25,7 @@ import { AuditInvalidEventError, AuditWriteFailedError } from "./error/errors";
  */
 
 /**
- * Where the recording happened — the three origin columns, supplied to the **recorder**, never by an
+ * Where the recording happened — the origin columns, supplied to the **recorder**, never by an
  * emitter.
  *
  * This is deliberately not a field on `AuditEvent`. Origin is a property of the *writer*, not of the
@@ -37,6 +37,12 @@ import { AuditInvalidEventError, AuditWriteFailedError } from "./error/errors";
  * Every field is nullable because every field is genuinely unknowable in some real case: a Worker
  * scaffolded before the vars existed carries none of them, and `worker` is always null for a
  * CLI-originated action, which came from no Worker at all.
+ *
+ * **`tenant` is deliberately not here.** It is the mirror image of these: whose action it was is a
+ * property of the *action*, not of the writer, and no `env` var can know it — so it lives on
+ * `AuditEvent`, comes from the emitter, and this recorder can neither default it nor check it. That is
+ * the honest trade. Putting it here would mean stamping every row in a multi-tenant Worker with one
+ * constant, which is precisely the gap the column exists to close.
  */
 export interface AuditOrigin {
   /** The owning project, from the Worker's `PROJECT` var or the CLI's resolved project name. */
@@ -124,6 +130,11 @@ export async function recordAuditEvent(
             userAgent: event.userAgent ?? null,
             requestId: event.requestId ?? null,
             metadata: event.metadata == null ? null : AuditMetadataColumn.encode(event.metadata),
+            // From `event`, and it is the only dimension column that is. The recorder cannot forge this
+            // one and cannot default it: `origin` is read from the Worker's own vars, and no var knows
+            // which customer an action was taken for. So it is exactly as trustworthy as the emit site,
+            // and omitted it is null — "not tenant-scoped" — rather than a guess.
+            tenant: event.tenant ?? null,
             // Last, and from `options` rather than `event` — the event cannot reach these columns.
             project: origin.project,
             environment: origin.environment,

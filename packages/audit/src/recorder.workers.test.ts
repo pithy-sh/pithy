@@ -6,6 +6,7 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
+import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { createAuditEmit, recordAuditEvent } from "./recorder";
 
 /** Migrate the audit table into the test `DB` before each test, from a clean slate. */
@@ -13,7 +14,9 @@ beforeEach(async () => {
   for (const table of ["pithy_audit_events"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
-  await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  const db = auditDatabase(env.DB) as unknown as Kysely<unknown>;
+  await audit_0001_init.up(db);
+  await audit_0002_tenant.up(db);
 });
 
 async function rowCount(): Promise<number> {
@@ -141,6 +144,13 @@ async function originRow(): Promise<{
   return row;
 }
 
+/** Reads the emitter-supplied tenant off the single row a test wrote. */
+async function tenantOf(): Promise<string | null> {
+  const row = await env.DB.prepare("select tenant from pithy_audit_events").first<{ tenant: string | null }>();
+  if (!row) throw new Error("expected a recorded row");
+  return row.tenant;
+}
+
 describe("the origin columns", () => {
   const EVENT = { action: "auth/login", outcome: "success", actorType: "user", actorId: "u1" } as const;
 
@@ -198,11 +208,59 @@ describe("the origin columns", () => {
     });
   });
 
+  test("the tenant is not one of them — a recorder given a full origin still records none", async () => {
+    // The line this column crosses. Origin is a property of the writer and the recorder owns all of it;
+    // whose action it was is a property of the action, and no Worker var knows it. A recorder that
+    // defaulted a tenant here would be inventing one.
+    await recordAuditEvent(auditDatabase(env.DB), EVENT, {
+      origin: { project: "acme", environment: "prod", worker: "api", version: "build-7" },
+    });
+    expect(await tenantOf()).toBeNull();
+  });
+
   test("record a partial origin as far as it is known", async () => {
     // A Worker carrying PROJECT but scaffolded before WORKER existed. Two of three is worth keeping.
     await recordAuditEvent(auditDatabase(env.DB), EVENT, {
       origin: { project: "acme", environment: "prod", worker: null, version: null },
     });
     expect(await originRow()).toEqual({ project: "acme", environment: "prod", worker: null, version: null });
+  });
+});
+
+describe("the tenant column", () => {
+  const EVENT = { action: "admin/config_changed", outcome: "success", actorType: "user", actorId: "u1" } as const;
+
+  test("is written from the event — the one dimension the emitter supplies", async () => {
+    // The inverse of every origin test above. `project`/`environment`/`worker` are stamped by the
+    // recorder and an emitter cannot reach them; this one has to come from the emitter, because no
+    // Worker var can know which customer an action was taken for.
+    await recordAuditEvent(auditDatabase(env.DB), { ...EVENT, tenant: "org-1" });
+    expect(await tenantOf()).toBe("org-1");
+  });
+
+  test("records null when the emitter states none", async () => {
+    // A single-tenant app never sets it, and a fleet-wide action genuinely has no tenant. Null means
+    // "not tenant-scoped", not "unknown" — and the recorder invents nothing to avoid it.
+    await recordAuditEvent(auditDatabase(env.DB), EVENT);
+    expect(await tenantOf()).toBeNull();
+  });
+
+  test("an explicit null is recorded as null", async () => {
+    await recordAuditEvent(auditDatabase(env.DB), { ...EVENT, tenant: null });
+    expect(await tenantOf()).toBeNull();
+  });
+
+  test("the same actor in two tenants produces two distinguishable rows", async () => {
+    // Why `actorId` is not this column. One person administers two organisations; every event they
+    // produce carries the same actor, so a trail scoped by actor returns the other tenant's history.
+    const db = auditDatabase(env.DB);
+    await recordAuditEvent(db, { ...EVENT, tenant: "org-1" });
+    await recordAuditEvent(db, { ...EVENT, tenant: "org-2" });
+    const rows = await env.DB.prepare("select actor_id, tenant from pithy_audit_events order by tenant").all<{
+      actor_id: string;
+      tenant: string;
+    }>();
+    expect(rows.results.map((row) => row.actor_id)).toEqual(["u1", "u1"]);
+    expect(rows.results.map((row) => row.tenant)).toEqual(["org-1", "org-2"]);
   });
 });

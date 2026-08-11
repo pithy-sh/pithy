@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
 
 /**
- * Origin belongs in its columns, never back in the `metadata` bag.
+ * A dimension with a column belongs in it, never back in the `metadata` bag.
  *
  * Before the origin columns existed, emitters that cared about where an event came from smuggled it
  * into the free-form JSON: `packages/cli/src/project/deploy.ts` wrote
@@ -27,11 +27,17 @@ const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..");
 const PACKAGES = join(REPO_ROOT, "packages");
 
 /**
- * The keys that name an event's origin. `env` is here alongside `environment` because it is what the
- * old workaround actually used — banning only the column's own spelling would leave the exact key that
- * motivated this test perfectly legal.
+ * The keys that name a dimension the row already has a column for. `env` is here alongside
+ * `environment` because it is what the old workaround actually used — banning only the column's own
+ * spelling would leave the exact key that motivated this test perfectly legal.
+ *
+ * `tenant` joins them (#270) even though it is not an origin: it is emitter-supplied where the others
+ * are recorder-stamped, but the failure mode is identical and it is the one that was actually about to
+ * happen. `metadata` was the documented interim workaround for a missing tenant column, so the day the
+ * column landed there were emit sites ready to keep writing the key — and a dimension only some
+ * emitters remember to set is worse than none, because a query over it looks like it worked.
  */
-const ORIGIN_KEYS = new Set(["project", "environment", "env", "worker"]);
+const DIMENSION_KEYS = new Set(["project", "environment", "env", "worker", "tenant"]);
 
 /**
  * Every non-test source file under each package's own `src` directory.
@@ -111,7 +117,7 @@ function topLevelKeys(body: string): string[] {
   return keys;
 }
 
-describe("audit origin stays in its columns", () => {
+describe("audit dimensions stay in their columns", () => {
   const files = sourceFiles();
 
   it("scans a real set of files, so the rule below is not vacuous", () => {
@@ -135,12 +141,12 @@ describe("audit origin stays in its columns", () => {
     expect(topLevelKeys("error: { project: x }")).toEqual(["error"]);
   });
 
-  it("no emitter writes an origin key into the metadata bag", () => {
+  it("no emitter writes a dimension key into the metadata bag", () => {
     const offenders: string[] = [];
     for (const file of files) {
       for (const literal of metadataLiterals(readSource(file) ?? "")) {
         for (const key of topLevelKeys(literal)) {
-          if (ORIGIN_KEYS.has(key)) offenders.push(`${file.slice(REPO_ROOT.length + 1)}: metadata.${key}`);
+          if (DIMENSION_KEYS.has(key)) offenders.push(`${file.slice(REPO_ROOT.length + 1)}: metadata.${key}`);
         }
       }
     }

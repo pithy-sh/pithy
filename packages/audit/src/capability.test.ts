@@ -32,9 +32,11 @@ describe("audit capability", () => {
     expect(cap.requiredBindings.map((b) => b.name)).toEqual(["ANALYTICS"]);
   });
 
-  test("ships the 0001_init migration at its declared order", () => {
+  test("ships its migrations in order, at its declared order", () => {
+    // The keys are the order they run in, so the list is asserted rather than the count: a migration
+    // added ahead of `0001_init` would compose a ledger name that sorts before an applied one.
     const db = audit().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_tenant"]);
     expect(db?.migrationOrder).toBe(AUDIT_MIGRATION_ORDER);
   });
 
