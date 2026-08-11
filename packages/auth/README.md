@@ -46,6 +46,72 @@ auth({
 
 No handler code lands in your repo. The logic lives in the package and upgrades on a minor release.
 
+## Composing more Better Auth plugins
+
+Better Auth is an ecosystem, and four plugins are not it. `organization`, `passkey`, `twoFactor`, `apiKey`, `admin`, a generic OAuth provider — any of them composes through this capability's own config:
+
+```ts
+import { organization } from "better-auth/plugins/organization";
+
+auth({
+  baseURL: "https://api.example.com",
+  plugins: [organization()],
+});
+```
+
+### The four the kit composes are fixed, and additive is the whole rule
+
+`bearer`, `jwt`, `magic-link` and `emailOTP` are always present, they are composed **first**, and your list is added after them. A config that names one of the four is refused at `auth()`, by name.
+
+They are fixed because the rest of the kit depends on them and cannot see your config. `magic-link` and `emailOTP` **are** the sign-in this product promises — there is no password to fall back to. `jwt` mints the JWKS every Worker verifies an access token against, and it is what the control-plane seam is built on. `bearer` is how a mobile client presents its credential. Removing one is not a preference; it is breaking a contract three packages away. And because Better Auth merges plugin endpoints by id with the later registration winning, "adding" one of the four would silently redefine it — which is why a duplicate is refused rather than ignored.
+
+Two plugins sharing an id are refused the same way, and for the same reason.
+
+### A plugin's tables are created by `pithy migrate`
+
+A plugin brings schema. `organization` alone adds `organization`, `member` and `invitation` tables, plus an `active_organization_id` column on `pithy_auth_sessions`; `passkey`, `apiKey` and `twoFactor` each bring their own.
+
+`pithy migrate` creates them. The capability asks Better Auth what schema your plugin list implies, subtracts the schema the kit's own four already imply, and contributes **one ordinary Kysely migration per plugin** — `0300_auth_0002_plugin_<id>` — beside `0001_init`. Nothing new was added to the migration model: your plugin list is in `pithy.config.ts`, which is the file `pithy migrate` already imports to collect capabilities. Every derived migration has a tested `down`.
+
+Three things are worth knowing about the derivation:
+
+- **A column added to a table that already exists is nullable**, whatever the plugin declares. SQLite refuses `ALTER TABLE … ADD COLUMN … NOT NULL` without a constant default, and the table has rows. Better Auth writes the value on every insert it makes, so the constraint holds where the plugin enforces it.
+- **Foreign keys are omitted**, matching `0001_init` and the rest of the kit — D1 does not enforce them without a per-connection pragma. Linkage is by indexed id columns, and the plugin's declared indexes are created.
+- **A plugin's table names are the plugin's own**, not `pithy_auth_*` — `organization`, `member`, `invitation`. They are your tables now, in your database. If one collides with a table you already own, rename it through the plugin's own `schema: { <model>: { modelName: "…" } }` option. A collision with a table this capability owns, or between two plugins, is refused at `auth()` with both names; a collision with a table another composed capability declares in the same D1 is refused at boot, because that is the first moment anything can see both.
+
+**Removing a plugin needs the same care as removing a capability.** Its migration disappears from the set while its row is still in the ledger, and Kysely refuses to run against a ledger it cannot account for. Roll it back first — `pithy migrate --rollback` while the plugin is still composed — then take it out of the config.
+
+### The client surface
+
+Better Auth builds a client from its **own** plugin list. The server's type never crosses into a browser bundle, so composing `organization()` on the server is half of it — add `organizationClient()` beside it and `authClient.organization` is fully typed, with no cast:
+
+```ts
+import { createAuthClient } from "better-auth/client";
+import { emailOTPClient, magicLinkClient, organizationClient } from "better-auth/client/plugins";
+
+export const authClient = createAuthClient({
+  baseURL: "https://api.example.com",
+  basePath: "/auth",
+  plugins: [magicLinkClient(), emailOTPClient(), organizationClient()],
+});
+```
+
+The kit's own sign-in plugins have client halves too, and they go in the same list — nothing about the client is inherited from the server.
+
+The one thing that does need the server's type is `inferAdditionalFields`, which teaches the client about extra user and session fields. `AuthInstance` is parameterised in the plugin tuple for exactly that:
+
+```ts
+import type { AuthInstance } from "@pithy-sh/auth/src/instance/auth";
+import type { organization } from "better-auth/plugins/organization";
+
+type AppAuth = AuthInstance<[ReturnType<typeof organization>]>;
+// …then `inferAdditionalFields<AppAuth>()` in the plugins list above.
+```
+
+### Composed plugins are reported
+
+`pithy doctor` prints a `Capability extensions:` block naming every composed plugin and the tables it introduced. A plugin has no `package.json` for the capability listing to name it from, and it adds both routes and tables — so it gets a line of its own rather than living only in the source of `pithy.config.ts`.
+
 ## Dependencies
 
 **Required.** `secrets` and `email`. Magic-link and OTP delivery never sends inline — the route enqueues an `@pithy-sh/email` job (`magicLink` or `otp` template) that a Workflow delivers.
@@ -83,6 +149,8 @@ All `pithy_auth_*`, all run by `pithy migrate`:
 `users`, `sessions`, `accounts`, `verifications`, `jwks`, `rate_limit`, `devices`.
 
 The first six are Better Auth's. `devices` is Pithy's own.
+
+A composed Better Auth plugin adds its own, under its own names — see [Composing more Better Auth plugins](#composing-more-better-auth-plugins). `pithy migrate` creates those too.
 
 ## Signing in locally
 

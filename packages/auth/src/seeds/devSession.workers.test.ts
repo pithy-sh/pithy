@@ -54,6 +54,7 @@ function instance(secret = SECRET, baseURL = "http://localhost:8787") {
     otpLength: 6,
     disableSignUp: false,
     emit: async () => {},
+    plugins: [],
   });
 }
 

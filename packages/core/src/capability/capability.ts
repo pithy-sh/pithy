@@ -160,6 +160,30 @@ export interface TokenProfileSeam {
 export type TokenProfileSeamMap = Record<string, TokenProfileSeam>;
 
 /**
+ * One thing an **adopter** plugged into a capability — the capability's own name for something the kit
+ * did not ship and cannot enumerate. `@pithy-sh/auth` declares one per additional Better Auth plugin
+ * (`{ kind: "better-auth-plugin", id: "organization", tables: ["organization", "member", "invitation"] }`).
+ *
+ * It exists because an extension is otherwise **invisible**. A capability composed from a package has a
+ * name and a version the CLI can read off `package.json`; something an adopter passed into a
+ * capability's config has neither, and it can still add routes to the Worker and tables to the database.
+ * `pithy doctor` reports these the way it reports capabilities, from this one field, so a new extension
+ * point in any capability is a line in the report rather than a new branch in the CLI.
+ *
+ * Descriptive, never behavioural: nothing in the runtime reads it, and no command acts on it. A
+ * capability that lies here has told a diagnostic something untrue, which is why every field is
+ * something the capability has already resolved rather than something it intends.
+ */
+export interface CapabilityExtension {
+  /** What kind of extension point this is, in the capability's own vocabulary (e.g. `better-auth-plugin`). */
+  readonly kind: string;
+  /** The extension's identity within that kind — what an adopter would go and delete. */
+  readonly id: string;
+  /** The database tables it introduced, if any, by the name the migration creates them under. */
+  readonly tables?: readonly string[];
+}
+
+/**
  * Context handed to a capability's {@link Capability.compose} hook at worker startup: every composed
  * capability (libraries + app), so a capability can perform cross-capability wiring it could not do
  * at construction time (when it sees only itself). `@pithy-sh/secrets` uses it to aggregate every
@@ -337,6 +361,12 @@ export interface Capability<
    * non-destructively. App-shape fixtures are re-encoded and Zod-validated at write time.
    */
   seeds?: readonly SeedSet[];
+  /**
+   * What an adopter plugged into this capability — see {@link CapabilityExtension}. Additive and
+   * optional; the normal case is none. Resolved from this capability's own config at construction
+   * time, and read by `pithy doctor`.
+   */
+  extensions?: readonly CapabilityExtension[];
   /** Bindings this capability needs in the env (normalized — `optional` is always set). */
   requiredBindings: BindingSpec[];
 }

@@ -2,15 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
-import { betterAuth } from "better-auth";
+import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { bearer } from "better-auth/plugins/bearer";
-import { emailOTP } from "better-auth/plugins/email-otp";
-import { jwt } from "better-auth/plugins/jwt";
-import { magicLink } from "better-auth/plugins/magic-link";
 import { emitAfterRequest } from "../audit/emit";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
+import { kitPlugins } from "./plugins";
 import type {
   AppleOAuthCredentials,
   FacebookOAuthCredentials,
@@ -93,8 +90,13 @@ export type AuthEmailMessage =
 /** The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic. */
 export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
 
-/** Everything the Better-Auth instance needs, resolved per invocation from config + request env. */
-export interface AuthInstanceDeps {
+/**
+ * Everything the Better-Auth instance needs, resolved per invocation from config + request env.
+ *
+ * Generic in the adopter's plugin tuple so the composed instance's type — and therefore its `$Infer`
+ * surface — reflects what was actually composed rather than only the kit's four.
+ */
+export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = readonly BetterAuthPlugin[]> {
   /** The shared Kysely over the `pithy_auth_*` tables (carries `CamelCasePlugin`). */
   db: AuthDatabase;
   /** The Better-Auth signing/encryption secret, sourced from `@pithy-sh/secrets`. */
@@ -127,10 +129,26 @@ export interface AuthInstanceDeps {
   disableSignUp: boolean;
   /** Audit seam — emits `auth/*` events. A no-op when the audit capability is absent. */
   emit: AuditEmit;
+  /**
+   * The adopter's additional Better Auth plugins, from `auth({ plugins: [...] })`. Composed **after**
+   * the kit's four, never in place of one — `assertAdditivePlugins` has already refused a list that
+   * names one of them.
+   */
+  plugins: Plugins;
 }
 
-/** The concrete return type of `makeAuth` — the Better-Auth instance with Pithy's plugin set. */
-export type AuthInstance = ReturnType<typeof makeAuth>;
+/**
+ * The concrete return type of `makeAuth` — the Better-Auth instance with Pithy's plugin set, and the
+ * adopter's on top of it.
+ *
+ * Parameterised in the plugin tuple so an adopter can name the instance their own composition produces:
+ * `AuthInstance<[ReturnType<typeof organization>]>`. That is the type
+ * `inferAdditionalFields<…>()` needs on the client, and the reason the plugin tuple is threaded through
+ * `makeAuth` rather than widened to `BetterAuthPlugin[]` at the door.
+ */
+export type AuthInstance<Plugins extends readonly BetterAuthPlugin[] = readonly BetterAuthPlugin[]> = ReturnType<
+  typeof makeAuth<Plugins>
+>;
 
 /**
  * Build the Better-Auth instance for one request.
@@ -140,7 +158,7 @@ export type AuthInstance = ReturnType<typeof makeAuth>;
  * `pithy_auth_*` columns the migration created. Dates are ISO-8601 text on SQLite; ids are WebCrypto
  * UUIDs; rate limiting is durable (D1-backed) since memory limiting is per-isolate on Workers.
  */
-export function makeAuth(deps: AuthInstanceDeps) {
+export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps: AuthInstanceDeps<Plugins>) {
   return betterAuth({
     appName: "Pithy",
     baseURL: deps.baseURL,
@@ -241,25 +259,10 @@ export function makeAuth(deps: AuthInstanceDeps) {
       const providers = socialProviders(deps);
       return providers ? { socialProviders: providers } : {};
     })(),
-    plugins: [
-      bearer(),
-      jwt({ schema: { jwks: { modelName: "pithyAuthJwks" } } }),
-      magicLink({
-        expiresIn: deps.verificationExpiresIn,
-        disableSignUp: deps.disableSignUp,
-        sendMagicLink: async ({ email, url, token }) => {
-          await deps.sendEmail({ to: email, template: "magicLink", token, url });
-        },
-      }),
-      emailOTP({
-        otpLength: deps.otpLength,
-        expiresIn: deps.verificationExpiresIn,
-        disableSignUp: deps.disableSignUp,
-        sendVerificationOTP: async ({ email, otp, type }) => {
-          if (type !== "sign-in") return;
-          await deps.sendEmail({ to: email, template: "otp", code: otp });
-        },
-      }),
-    ],
+    // The kit's four first, the adopter's after. Order is the contract: Better Auth merges plugin
+    // endpoints by id and a later registration wins, so composing the adopter's list first would let
+    // it quietly redefine the sign-in this product promises. `assertAdditivePlugins` has already
+    // refused a list that names one of the four; this order is what makes that refusal the only way in.
+    plugins: [...kitPlugins(deps), ...deps.plugins],
   });
 }

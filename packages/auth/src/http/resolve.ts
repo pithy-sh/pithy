@@ -96,5 +96,9 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // Read the emit seam lazily so a later-composed audit capability is honored regardless of the
     // capability order (the instance may be built before audit's middleware runs).
     emit: (event) => c.var.emit(event),
+    // The adopter's additional Better Auth plugins, exactly as `auth({ plugins: [...] })` declared them
+    // and already checked for additivity at `auth()` call time. The same list the derived migrations
+    // were built from — the routes a plugin serves and the tables it needs come from one declaration.
+    plugins: cfg.plugins,
   });
 }
