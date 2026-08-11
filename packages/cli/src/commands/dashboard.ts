@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
+import type { D1Database } from "@cloudflare/workers-types";
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
+import { createCliAudit } from "../audit/cliAudit";
+import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { httpDashboardClient } from "../dashboard/api";
 import {
   authorizeDashboard,
@@ -27,6 +32,7 @@ import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/re
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { isProductionEnv } from "../seed/safety";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -232,6 +238,41 @@ function announce(authorization: DeviceAuthorization): void {
 /** The device-code flow, wired to this CLI's announcer. */
 const authorize = (client: DashboardClient): Promise<string> => authorizeDashboard(client, { announce });
 
+/**
+ * The recorder every write to the connection row records itself through (#294).
+ *
+ * Built over the handle {@link openConnectionRegistry} resolved, never over a database id looked up a
+ * second time — the row and its record have to land in the same store, and on `dev` a resolved id names
+ * the real remote database while the row goes to local Miniflare.
+ *
+ * Two things are deliberately tolerant. `audit` composed by **any** Worker means the project has a
+ * trail, because a connection is project-wide and a `--worker` here only says which `wrangler.jsonc`
+ * resolves the database. And Cloudflare credentials are optional: connecting a `dev` environment touches
+ * no account, so demanding an account token to record it would make the trail depend on something the
+ * action does not. Without one the row is written unattributed rather than dropped.
+ */
+async function openAudit(projectDir: string, env: string, account: CloudflareAccountSelection | null) {
+  const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities).catch(NO_CAPABILITIES);
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const named = accountId !== "" && apiToken !== "";
+  return (database: D1Database) =>
+    createCliAudit({
+      projectDir,
+      env,
+      // `--env` here is the environment acted on as well as where the row lands: a connection is per
+      // environment, and this command touches exactly the one named.
+      actedOn: env,
+      capabilities,
+      database,
+      ...(named ? { clients: new CloudflareClients({ accountId, apiToken }), apiToken } : {}),
+    });
+}
+
+/** A capability lookup that failed says nothing rather than throwing — auditing never breaks a command. */
+const NO_CAPABILITIES = (): Capability[] => [];
+
 /** Open the registry, run the work, and always release the driver. */
 async function withRegistry<T>(
   options: { env: string; worker?: string },
@@ -241,11 +282,14 @@ async function withRegistry<T>(
   // and the one place the project's account is resolved for it (#234). A `--env staging` lookup opens
   // the app database over REST, and it is this project's account that says which one that is.
   const projectDir = process.cwd();
+  const env = requireEnvironment(options.env);
+  const account = await projectCloudflareAccount(projectDir);
   const registry = await openConnectionRegistry({
     projectDir,
-    env: requireEnvironment(options.env),
-    account: await projectCloudflareAccount(projectDir),
+    env,
+    account,
     ...(options.worker === undefined ? {} : { worker: options.worker }),
+    openAudit: await openAudit(projectDir, env, account),
   });
   try {
     return await work(registry);

@@ -22,6 +22,36 @@ const unusedClients = {
   },
 } as unknown as CloudflareClients;
 
+/**
+ * A `D1Database` that answers every write and remembers what it was asked to run.
+ *
+ * Enough for the Kysely D1 dialect the recorder inserts through, and no more: the question these tests
+ * ask is *which handle* the row went to, which needs the statement and its bindings and nothing else.
+ * The row landing in a real database is covered against real D1 in `dashboard/registry.test.ts`.
+ */
+function capturingD1(): { database: D1Database; statements: string[]; bindings: unknown[][] } {
+  const statements: string[] = [];
+  const bindings: unknown[][] = [];
+  const database = {
+    prepare(sql: string) {
+      statements.push(sql);
+      const statement = {
+        bind(...values: unknown[]) {
+          bindings.push(values);
+          return statement;
+        },
+        all: async () => ({ results: [], success: true, meta: {} }),
+        run: async () => ({ results: [], success: true, meta: {} }),
+        first: async () => null,
+        raw: async () => [],
+      };
+      return statement;
+    },
+    batch: async () => [],
+  } as unknown as D1Database;
+  return { database, statements, bindings };
+}
+
 /** Write a Worker's `apps/<name>/wrangler.jsonc`, as the per-Worker layout has it. */
 async function writeWorker(projectDir: string, name: string, config: unknown): Promise<string> {
   const dir = join(projectDir, "apps", name);
@@ -141,6 +171,53 @@ describe("createCliAudit", () => {
     // so the account scope has to reach the resolver. Handed only `user()`, it attributed every account
     // token to `system`, silently, because resolution failure is never fatal.
     expect([...touched].sort()).toEqual(["accountTokens", "user"]);
+  });
+
+  test("an injected database is written to, and no id is ever looked up", async () => {
+    // #294. `pithy dashboard` already holds the adopter's database open — the one the connection row was
+    // just written through — and the event has to land in *that* one. On `dev` a resolved id names the
+    // real remote database while the row went to local Miniflare, so a second lookup would record the
+    // change in a store nothing touched.
+    //
+    // Both halves are asserted at once: `staging` has no stanza here, so a lookup would resolve nothing
+    // and leave an inert emitter, and `unusedClients` throws if `d1()` is reached at all. A statement
+    // arriving at the injected handle proves neither happened.
+    // Actor resolution legitimately still runs, so only `d1()` is the forbidden call here.
+    const clients = {
+      d1: () => {
+        throw new Error("must not resolve a database when one was injected");
+      },
+      user: () => ({}),
+      accountTokens: () => ({}),
+    } as unknown as CloudflareClients;
+
+    const { database, statements } = capturingD1();
+    const emit = await createCliAudit({
+      projectDir: dir,
+      env: "staging",
+      capabilities: [audit, app],
+      clients,
+      apiToken: "cfat_x",
+      database,
+    });
+    await emit({ action: "controlplane/connection_registered", outcome: "success" });
+
+    expect(statements.some((sql) => sql.includes("pithy_audit_events"))).toBe(true);
+  });
+
+  test("records without Cloudflare credentials, unattributed rather than dropped", async () => {
+    // A `dev` connect touches no Cloudflare account, so requiring an account token to record it would
+    // make the trail depend on something the action does not. The union type is what keeps this from
+    // loosening the ordinary case: dropping `clients` without injecting a database does not compile.
+    const { database, bindings, statements } = capturingD1();
+    const emit = await createCliAudit({ projectDir: dir, env: "dev", capabilities: [audit, app], database });
+    await emit({ action: "controlplane/connection_registered", outcome: "success" });
+
+    expect(statements.some((sql) => sql.includes("pithy_audit_events"))).toBe(true);
+    // `system` with a note, deliberately the shape `resolveActor` falls back to, so one filter finds
+    // every unattributed row. Unnamed is the true answer here; dropping the row is not.
+    expect(bindings.flat()).toContain("system");
+    expect(JSON.stringify(bindings)).toContain("actorResolutionFailed");
   });
 
   test("is a no-op when the environment's audit database cannot be resolved", async () => {

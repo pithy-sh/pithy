@@ -43,6 +43,28 @@ export type CliAuditEvent = import("@pithy-sh/audit/src/cli/emitFromCLI").CliAud
  */
 type AuditOrigin = import("@pithy-sh/audit/src/recorder").AuditOrigin;
 
+/** Who a CLI-recorded event is attributed to. Type-only for the same reason as the two above. */
+type ResolvedActor = import("@pithy-sh/audit/src/cli/resolveActor").ResolvedActor;
+
+/**
+ * The actor recorded when no Cloudflare token is at hand to name one.
+ *
+ * `system`, with a note — deliberately the same shape `resolveActor` falls back to when a token cannot
+ * be attributed, so one filter finds every unattributed row rather than two. A person at a terminal is
+ * not a system job, and this does not claim otherwise: it says the writer could not be named, which is
+ * the true and useful thing. A command reaching a real Cloudflare resource always has a token, so this
+ * is the local-only case — `pithy dashboard connect --env dev` against a Miniflare store touches no
+ * account, and demanding an account credential to record it would be the wrong dependency.
+ */
+const UNATTRIBUTED: ResolvedActor = {
+  actorType: "system",
+  actorId: null,
+  metadata: {
+    actorResolutionFailed: true,
+    note: "No Cloudflare API token in this environment, so the operator at the terminal could not be named.",
+  },
+};
+
 /**
  * Records an audit event. Always safe to call: a no-op when auditing is unavailable, never throws.
  * The CLI counterpart of core's in-Worker {@link import("@pithy-sh/core/src/audit/recorder").AuditEmit}
@@ -158,7 +180,45 @@ async function cliOrigin(projectDir: string, environment: string | null): Promis
   }
 }
 
-export interface CreateCliAuditOptions {
+/**
+ * How a CLI audit reaches a database, and who it can name as the actor. Two shapes, because the second
+ * one is what a caller holding an open handle actually has.
+ *
+ * **Resolved** is the ordinary case: `clients` and `apiToken` are both required, the audit database id
+ * is read from a Worker's `wrangler.jsonc`, and the row is written over REST.
+ *
+ * **Injected** is for a command that already has the adopter's database open and must write *into that
+ * one*. `pithy dashboard` is the case (#294): its lifecycle events record a row it just wrote through
+ * the connection registry, and an event that landed in a separately-resolved database would be a record
+ * of a write that did not happen there. On `dev` those are not even the same store — the registry's
+ * handle is the local Miniflare one and a resolved id names the real remote database — so resolving
+ * again would put the event somewhere the action never touched.
+ *
+ * With a handle injected the Cloudflare pair becomes optional, because it is no longer what finds the
+ * database — it only names the actor, and a purely local action legitimately has neither. Absent, the
+ * row is attributed to {@link UNATTRIBUTED}. The union is what keeps that from loosening the ordinary
+ * case: drop `clients` without injecting a database and it does not compile.
+ */
+export type CliAuditTarget =
+  | {
+      /** Write into this already-open database rather than resolving one from `wrangler.jsonc`. */
+      database: D1Database;
+      /** Cloudflare clients, used only to name the actor here. Optional: a local action has none. */
+      clients?: CloudflareClients;
+      /** The active CF API token — the actor's identity. Optional for the same reason. */
+      apiToken?: string;
+    }
+  | {
+      /** Not injected, so the database is resolved from the project's `wrangler.jsonc`. */
+      database?: undefined;
+      /** The configured Cloudflare clients, used for the D1 write and to resolve the actor behind the token. */
+      clients: CloudflareClients;
+      /** The active CF API token — the actor's identity (a person locally, the CI token in automation). */
+      apiToken: string;
+    };
+
+/** Everything a CLI audit needs beyond {@link CliAuditTarget}: what is being recorded, and where it belongs. */
+export interface CliAuditContext {
   /** The project root — the parent of `apps/`, whose Workers' `wrangler.jsonc` resolve the audit database. */
   projectDir: string;
   /**
@@ -184,11 +244,10 @@ export interface CreateCliAuditOptions {
   capabilities: readonly Capability[];
   /** Restrict the audit-database lookup to this Worker (a command's `--worker`). Optional. */
   worker?: string;
-  /** The configured Cloudflare clients, used for the D1 write and to resolve the actor behind the token. */
-  clients: CloudflareClients;
-  /** The active CF API token — the actor's identity (a person locally, the CI token in automation). */
-  apiToken: string;
 }
+
+/** Everything {@link createCliAudit} takes: what is being recorded, and how it reaches a database. */
+export type CreateCliAuditOptions = CliAuditContext & CliAuditTarget;
 
 /**
  * Build the audit emitter for a command. Returns a no-op emitter — never null — so call sites stay free
@@ -199,8 +258,15 @@ export interface CreateCliAuditOptions {
 export async function createCliAudit(options: CreateCliAuditOptions): Promise<CliAuditEmit> {
   if (!options.capabilities.some((capability) => capability.name === "audit")) return NO_OP;
 
-  const databaseId = await resolveAuditDatabaseId(options.projectDir, options.env, options.worker);
-  if (!databaseId) return NO_OP;
+  // An injected handle skips the lookup entirely — it is already the database the action wrote to, and
+  // resolving a second one is how an event ends up recorded against a store nothing touched.
+  const database =
+    options.database ??
+    (await (async () => {
+      const databaseId = await resolveAuditDatabaseId(options.projectDir, options.env, options.worker);
+      return databaseId === undefined ? undefined : (options.clients?.d1(databaseId) as unknown as D1Database);
+    })());
+  if (!database) return NO_OP;
 
   let emitFromCLI: typeof import("@pithy-sh/audit/src/cli/emitFromCLI").emitFromCLI;
   let createCachedActorResolver: typeof import("@pithy-sh/audit/src/cli/resolveActor").createCachedActorResolver;
@@ -211,14 +277,18 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
     return NO_OP; // audit isn't installed in this project — nothing to record through.
   }
 
-  const database = options.clients.d1(databaseId) as unknown as D1Database;
   const origin = await cliOrigin(options.projectDir, options.actedOn ?? null);
   // Both scopes, because the token decides which one is valid: a `cfut_*` token reads `/user/*`, a
   // `cfat_*` token reads `/accounts/{id}/tokens/*` and is rejected by every user endpoint.
-  const resolveActor = createCachedActorResolver(options.apiToken, {
-    user: options.clients.user(),
-    accountTokens: options.clients.accountTokens(),
-  });
+  //
+  // No token means nothing to read either scope with, and the event is written unattributed rather than
+  // dropped: an unnamed record of a real change beats no record of it.
+  const clients = options.clients;
+  const apiToken = options.apiToken;
+  const resolveActor =
+    clients && apiToken
+      ? createCachedActorResolver(apiToken, { user: clients.user(), accountTokens: clients.accountTokens() })
+      : async () => UNATTRIBUTED;
   // Surface a dropped audit write through the CLI logger. Without this a lost record is invisible —
   // and an audit trail you cannot tell is broken is worse than none.
   const log = createCliLogger().child("audit");
