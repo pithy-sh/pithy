@@ -973,13 +973,20 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
       // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
       // row records a closed period and has no "next".
-      const row = await db
+      const rows = await db
         .selectFrom(PAYMENTS_PURCHASES_TABLE)
         .selectAll()
         .where("userId", "=", userId)
         .where("type", "=", "subscription")
         .orderBy("providerEventAt", "desc")
-        .executeTakeFirst();
+        .execute();
+      // The row that carries the subscription's *standing*, preferred over any receipt.
+      //
+      // On Lemon Squeezy a subscriber's newest rows are `charge` receipts — one per invoice — and a receipt
+      // names a closed period no rail can price. Taking the newest of any role therefore returned null for
+      // every LS subscriber while looking like it had worked. Every other rail writes `charge` for
+      // everything and has no `state` row, so the fallback is what serves them.
+      const row = rows.find((candidate) => candidate.role === "state") ?? rows[0];
       if (row === undefined) return c.json({ pricing: null }, 200);
 
       const purchase = PaymentsPurchase.parse(row);
@@ -1026,16 +1033,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
         const discounts = await provider.listDiscounts({ now: clock(), deployment: deploymentName(c) });
 
-        await c.var.emit({
-          action: PaymentsAuditActions.discountCreated,
-          outcome: "success",
-          actorType: "service",
-          actorId: c.var.controlPlane?.connectionId ?? "control-plane",
-          resourceType: "discount",
-          resourceId: rail,
-          // A count and the rail. Every management read is audited the same way, and never with its rows.
-          metadata: { rail, read: true, count: discounts.length },
-        });
+        // Through `recordRead`, like every other management read: its own action, the caller's `sub` as the
+        // actor, and a count rather than the rows.
+        await recordRead(c, PaymentsAuditActions.discountsRead, rail, { rail, count: discounts.length });
 
         return c.json({ discounts: [...discounts] } satisfies PaymentsAdminDiscountsResponse, 200);
       },
@@ -1073,19 +1073,23 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
         const created = await provider.createDiscount(input.terms, { now: clock() });
 
+        const who = controlPlaneCaller(c);
         await c.var.emit({
           action: PaymentsAuditActions.discountCreated,
           outcome: "success",
-          actorType: "service",
-          actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+          // The token's `sub`, so the trail names which person at the dashboard minted it rather than merely
+          // "the dashboard" — one connection is normally shared by everybody using that console.
+          actorType: "control-plane",
+          actorId: who.subject,
           resourceType: "discount",
           resourceId: created.providerDiscountId,
-          // What was minted and how much it is worth — an administrative act with a cost attached, and the
-          // trail is the only record of who decided a customer should pay less. The code itself is named
-          // because a run of mints is what an operator reads this for.
+          // What was minted and what it is worth, and the **store's id** rather than the code itself. The
+          // code is a live bearer value: anyone who can read the trail could redeem it, and an audit trail
+          // is queryable, long-lived, and read by more people than can mint. The id finds it in the
+          // dashboard, which is where somebody entitled to see the code already is.
           metadata: {
             rail: input.rail,
-            code: created.code,
+            connectionId: who.connectionId,
             amount:
               created.terms.amount.kind === "percent"
                 ? `${created.terms.amount.percent}%`

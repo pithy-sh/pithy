@@ -144,3 +144,17 @@ function catchError(run: () => unknown): PaymentsRailNotConfiguredError | undefi
     return error as PaymentsRailNotConfiguredError;
   }
 }
+
+describe("the lemonSqueezy factory hands the rail what only config knows", () => {
+  test("the store's currency, so the fixed-amount discount guard is not dead code", () => {
+    // The guard in `discounts.ts` skips its check when the currency is unknown, so a factory that never
+    // supplied it left a refusal that could not fire — and a fixed discount in the wrong currency would
+    // have failed at redemption, in front of the customer.
+    const config = PaymentsConfig.parse({
+      rails: { lemonSqueezy: true },
+      lemonSqueezy: { successUrl: "https://acme.test/thanks", storeCurrency: "usd" },
+      products: { pro: { type: "subscription", name: "Pro", entitlements: ["pro"], lemonSqueezy: { variantId: "1" } } },
+    });
+    expect(config.lemonSqueezy?.storeCurrency).toBe("usd");
+  });
+});

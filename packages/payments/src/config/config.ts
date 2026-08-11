@@ -124,6 +124,13 @@ export const PaymentsLemonSqueezySettings = z
     successUrl: ReturnUrl.describe(
       "Where hosted checkout returns a buyer who paid. Unlike Stripe there is no session token to substitute — a Lemon Squeezy purchase is only ever heard about through its webhook, so this page shows a pending state rather than posting a receipt.",
     ),
+    storeCurrency: z
+      .string()
+      .regex(CURRENCY_CODE_PATTERN, "A currency code is lowercase, digits, and dashes.")
+      .optional()
+      .describe(
+        "The currency this Lemon Squeezy store sells in, lowercase ISO 4217 — `usd`. Optional, and the only thing it does is let a fixed-amount discount in another currency be refused when it is created rather than when a customer redeems it. Lemon Squeezy accepts the mismatched object and fails at redemption, so without this the error arrives at the buyer instead of at you.",
+      ),
   })
   .describe(
     "Where Lemon Squeezy's hosted checkout sends a browser back to. Config, not request input: a client that could name a return URL could send a paying customer to a page it controls. Build it on `PUBLIC_ORIGIN` and never on a literal. One URL, where Stripe takes three, and both absences are the store's rather than an omission here: Lemon Squeezy's checkout has no cancel destination — a buyer who backs out closes the tab or uses the back button — and its customer portal is a signed, expiring link with nowhere to return to.",

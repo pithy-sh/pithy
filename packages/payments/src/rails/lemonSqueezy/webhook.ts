@@ -169,9 +169,9 @@ export async function parseLemonSqueezyNotification(
   // Another deployment's buyer, on the store we share with it. Authentic, recorded, and none of our business.
   if (fencedOut(webhook, options.deployment)) return nothing(webhook, providerEventId);
 
-  if (SUBSCRIPTION_EVENTS.has(name)) return subscriptionNotification(webhook, providerEventId, options);
+  if (SUBSCRIPTION_EVENTS.has(name)) return await subscriptionNotification(webhook, providerEventId, options);
   if (INVOICE_EVENTS.has(name)) return await invoiceNotification(webhook, providerEventId, name, options);
-  if (ORDER_EVENTS.has(name)) return orderNotification(webhook, providerEventId, options);
+  if (ORDER_EVENTS.has(name)) return await orderNotification(webhook, providerEventId, options);
 
   // A type Lemon Squeezy shipped after this package did — a licence key, an affiliate payout. Authentic,
   // recorded, and projecting nothing. Never a throw: the store would redeliver it forever.
@@ -179,18 +179,18 @@ export async function parseLemonSqueezyNotification(
 }
 
 /** A subscription-domain delivery: one state row, no round-trip. */
-function subscriptionNotification(
+async function subscriptionNotification(
   webhook: LemonSqueezyWebhook,
   providerEventId: string,
   options: ParseLemonSqueezyNotificationOptions,
-): VerifiedNotification {
+): Promise<VerifiedNotification> {
   const subscription = LemonSqueezySubscription.parse(webhook.data.attributes);
   return {
     providerEventId,
     payload: { ...webhook },
     event: subscriptionEvent(webhook.data.id, subscription),
     providerAccountId: subscription.customer_id === undefined ? null : String(subscription.customer_id),
-    accountReference: accountReferenceOf(webhook, options.deployment),
+    accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
   };
 }
 
@@ -212,11 +212,11 @@ function subscriptionNotification(
  * it. `resolveRailProvider` has the config, so the rail is handed the question rather than guessing at it or
  * paying for an extra call.
  */
-function orderNotification(
+async function orderNotification(
   webhook: LemonSqueezyWebhook,
   providerEventId: string,
   options: ParseLemonSqueezyNotificationOptions,
-): VerifiedNotification {
+): Promise<VerifiedNotification> {
   const order = LemonSqueezyOrder.parse(webhook.data.attributes);
   const variantId = String(order.first_order_item?.variant_id ?? "");
 
@@ -229,7 +229,7 @@ function orderNotification(
       // carries the account this deployment stamped at checkout, and dropping it would orphan the
       // subscription's own events that arrive without one.
       providerAccountId: order.customer_id === undefined ? null : String(order.customer_id),
-      accountReference: accountReferenceOf(webhook, options.deployment),
+      accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
       // Null: this is ordinary, expected traffic for a subscription sale, not something to warn about.
       note: null,
     };
@@ -240,7 +240,7 @@ function orderNotification(
     payload: { ...webhook },
     event: orderEvent(webhook.data.id, order),
     providerAccountId: order.customer_id === undefined ? null : String(order.customer_id),
-    accountReference: accountReferenceOf(webhook, options.deployment),
+    accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
   };
 }
 
@@ -271,7 +271,7 @@ async function invoiceNotification(
       payload: { ...webhook },
       event: null,
       providerAccountId: invoice.customer_id === undefined ? null : String(invoice.customer_id),
-      accountReference: accountReferenceOf(webhook, options.deployment),
+      accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
       note: `Lemon Squeezy no longer knows subscription ${subscriptionId}, which invoice ${webhook.data.id} bills.`,
     };
   }
@@ -283,7 +283,7 @@ async function invoiceNotification(
     payload: { ...webhook },
     event,
     providerAccountId: invoice.customer_id === undefined ? null : String(invoice.customer_id),
-    accountReference: accountReferenceOf(webhook, options.deployment),
+    accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
     stateEvent: name === "subscription_payment_refunded" ? revocation(subscriptionId, subscription, event) : null,
   };
 }

@@ -75,7 +75,17 @@ export async function createStripeDiscount(
   // `once` and `forever` are Stripe's own words for the same ideas; only `repeating` needs converting.
   coupon.duration = terms.duration.kind;
   if (terms.duration.kind === "repeating") {
-    coupon.duration_in_months = durationInMonths(terms.duration.billingPeriods, terms.billingInterval ?? "month");
+    if (terms.billingInterval === undefined) {
+      // `DiscountTerms` refuses this combination, so reaching it means somebody built the object without
+      // parsing. Refusing here too rather than defaulting to "month": the default would be right for a
+      // monthly plan and would turn an annual one into a twelve-year discount — exactly the failure the
+      // required field exists to prevent, committed silently.
+      throw new PaymentsDiscountInvalidError({
+        detail:
+          "A repeating discount reached the Stripe rail with no `billingInterval`. Stripe counts a duration in months, so billing periods cannot be converted without it. Build terms through `DiscountTerms.parse`.",
+      });
+    }
+    coupon.duration_in_months = durationInMonths(terms.duration.billingPeriods, terms.billingInterval);
   }
 
   const created = await stripeJson(transport, "/coupons", {

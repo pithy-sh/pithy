@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { LEMON_SQUEEZY_CUSTOM_ACCOUNT, LEMON_SQUEEZY_CUSTOM_ENV } from "../objects";
+import {
+  accountReferenceProof,
+  LEMON_SQUEEZY_CUSTOM_ACCOUNT,
+  LEMON_SQUEEZY_CUSTOM_ENV,
+  LEMON_SQUEEZY_CUSTOM_PROOF,
+} from "../objects";
 
 /**
  * Lemon Squeezy deliveries, built rather than checked in as JSON.
@@ -30,23 +35,44 @@ export const ACCOUNT_REFERENCE = "user-ada";
 /** What the fences are tested against. */
 export const THIS_DEPLOYMENT = "staging";
 
-/** The `meta.custom_data` a delivery carries when our own checkout created the purchase. */
-function custom(deployment: string | undefined = THIS_DEPLOYMENT): Record<string, string> {
+/** The signing secret every fixture is minted against, matching what the tests hand the rail. */
+export const FIXTURE_WEBHOOK_SECRET = "ls_whsec_test";
+
+/**
+ * The `meta.custom_data` a delivery carries when our own checkout created the purchase — **proof included**.
+ *
+ * The proof is computed with the real function rather than hard-coded, so a fixture cannot drift from the
+ * verifier and quietly stop exercising it. `forge` mints the two public values with no proof, which is
+ * exactly what a stranger can build from a storefront buy link.
+ */
+async function custom(
+  deployment: string | undefined = THIS_DEPLOYMENT,
+  options: { forge?: boolean } = {},
+): Promise<Record<string, string>> {
   const data: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: ACCOUNT_REFERENCE };
-  if (deployment !== undefined) data[LEMON_SQUEEZY_CUSTOM_ENV] = deployment;
+  if (deployment !== undefined) {
+    data[LEMON_SQUEEZY_CUSTOM_ENV] = deployment;
+    if (options.forge !== true) {
+      data[LEMON_SQUEEZY_CUSTOM_PROOF] = await accountReferenceProof(
+        ACCOUNT_REFERENCE,
+        deployment,
+        FIXTURE_WEBHOOK_SECRET,
+      );
+    }
+  }
   return data;
 }
 
 /** One delivery envelope. */
-function delivery(
+async function delivery(
   eventName: string,
   id: string,
   type: string,
   attributes: Record<string, unknown>,
-  options: { deployment?: string | undefined; stamped?: boolean } = {},
-): string {
+  options: { deployment?: string | undefined; stamped?: boolean; forge?: boolean } = {},
+): Promise<string> {
   const meta: Record<string, unknown> = { event_name: eventName, test_mode: false };
-  if (options.stamped !== false) meta.custom_data = custom(options.deployment);
+  if (options.stamped !== false) meta.custom_data = await custom(options.deployment, { forge: options.forge });
   return JSON.stringify({ meta, data: { type, id, attributes } });
 }
 
@@ -103,36 +129,36 @@ export function order(overrides: Record<string, unknown> = {}): Record<string, u
 }
 
 /** A subscription-domain delivery. */
-export function subscriptionDelivery(
+export async function subscriptionDelivery(
   eventName: string,
   overrides: Record<string, unknown> = {},
-  options: { deployment?: string | undefined; stamped?: boolean } = {},
-): string {
-  return delivery(eventName, SUBSCRIPTION_ID, "subscriptions", subscription(overrides), options);
+  options: { deployment?: string | undefined; stamped?: boolean; forge?: boolean } = {},
+): Promise<string> {
+  return await delivery(eventName, SUBSCRIPTION_ID, "subscriptions", subscription(overrides), options);
 }
 
 /** An invoice-domain delivery. */
-export function invoiceDelivery(
+export async function invoiceDelivery(
   eventName: string,
   id: string = INVOICE_ONE,
   overrides: Record<string, unknown> = {},
-  options: { deployment?: string | undefined; stamped?: boolean } = {},
-): string {
-  return delivery(eventName, id, "subscription-invoices", invoice(overrides), options);
+  options: { deployment?: string | undefined; stamped?: boolean; forge?: boolean } = {},
+): Promise<string> {
+  return await delivery(eventName, id, "subscription-invoices", invoice(overrides), options);
 }
 
 /** An order-domain delivery. */
-export function orderDelivery(
+export async function orderDelivery(
   eventName: string,
   overrides: Record<string, unknown> = {},
-  options: { deployment?: string | undefined; stamped?: boolean } = {},
-): string {
-  return delivery(eventName, ORDER_ID, "orders", order(overrides), options);
+  options: { deployment?: string | undefined; stamped?: boolean; forge?: boolean } = {},
+): Promise<string> {
+  return await delivery(eventName, ORDER_ID, "orders", order(overrides), options);
 }
 
 /** A delivery of a type this build does not map — a licence key, say. */
-export function unknownDelivery(): string {
-  return delivery("license_key_created", "42", "license-keys", {
+export async function unknownDelivery(): Promise<string> {
+  return await delivery("license_key_created", "42", "license-keys", {
     status: "active",
     created_at: "2026-04-01T00:00:00Z",
   });

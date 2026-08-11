@@ -105,6 +105,10 @@ const RAIL_FACTORIES: Partial<Record<PaymentsRail, RailFactory>> = {
       // whole answer — see `orderNotification` for why the rail must not guess it.
       sellsSubscription: (variantId) =>
         productForProviderSku(config, "lemonSqueezy", variantId)?.product.type === "subscription",
+      // Without this the fixed-amount currency guard in `discounts.ts` never runs: it is written to skip
+      // the check when the store's currency is unknown, and nothing was ever telling it. The catalog knows
+      // — a `grants` clause names the currency a product's economy is denominated in.
+      storeCurrency: config.lemonSqueezy?.storeCurrency,
     }),
 };
 

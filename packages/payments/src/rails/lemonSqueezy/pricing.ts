@@ -34,7 +34,6 @@ const PricedSubscription = z
       .object({
         attributes: z
           .object({
-            renews_at: z.string().nullish(),
             first_subscription_item: z.object({ price_id: z.number().optional() }).loose().nullish(),
           })
           .loose(),
@@ -43,21 +42,30 @@ const PricedSubscription = z
   })
   .loose();
 
-/** A subscription invoice preview — the store's own arithmetic for the next renewal. */
-const PricedInvoice = z
+/**
+ * The subscription's invoices — a **collection**, which is what `/v1/subscription-invoices` returns.
+ *
+ * `data` is an array. Parsing it as a single resource is the defect this replaced: `safeParse` failed
+ * silently, every amount fell back to null, and `GET /payments/pricing` reported nothing for every Lemon
+ * Squeezy subscriber while looking like it had worked.
+ */
+const PricedInvoices = z
   .object({
-    data: z
-      .object({
-        attributes: z
-          .object({
-            currency: z.string().nullish(),
-            subtotal: z.number().nullish(),
-            total: z.number().nullish(),
-            discount_total: z.number().nullish(),
-          })
-          .loose(),
-      })
-      .loose(),
+    data: z.array(
+      z
+        .object({
+          attributes: z
+            .object({
+              currency: z.string().nullish(),
+              subtotal: z.number().nullish(),
+              total: z.number().nullish(),
+              discount_total: z.number().nullish(),
+              created_at: z.string().nullish(),
+            })
+            .loose(),
+        })
+        .loose(),
+    ),
   })
   .loose();
 
@@ -81,16 +89,18 @@ export async function readLemonSqueezyPricing(
   const subscription = PricedSubscription.safeParse(body);
   if (!subscription.success) return undefined;
 
-  // The store's own figures for what the next renewal comes to, discounted and undiscounted.
-  const invoice = await lemonSqueezyJson(transport, `/subscriptions/${encodeURIComponent(id)}/invoices`, {
-    what: `subscription ${id} next invoice`,
+  // The store's own figures, from its most recent invoice for this subscription. A filtered collection on
+  // `/v1/subscription-invoices` — there is no `/subscriptions/{id}/invoices` sub-resource, and asking for
+  // one 404s into a silently empty answer.
+  const invoices = await lemonSqueezyJson(transport, "/subscription-invoices", {
+    what: `subscription ${id} invoices`,
     apiKey: options.credentials.apiKey,
+    query: { "filter[subscription_id]": id, "page[size]": "1", sort: "-created_at" },
     absentOn404: true,
   });
-  const priced = invoice === undefined ? undefined : PricedInvoice.safeParse(invoice);
-  const amounts = priced?.success === true ? priced.data.data.attributes : undefined;
+  const priced = invoices === undefined ? undefined : PricedInvoices.safeParse(invoices);
+  const amounts = priced?.success === true ? priced.data.data[0]?.attributes : undefined;
 
-  const renews = subscription.data.data.attributes.renews_at;
   return {
     currency: amounts?.currency ?? null,
     currentAmountMinor: amounts?.total ?? null,
@@ -98,9 +108,17 @@ export async function readLemonSqueezyPricing(
     // two coincide, which is exactly what `SubscriptionPricing` says an undiscounted subscription looks like.
     listAmountMinor: amounts?.subtotal ?? amounts?.total ?? null,
     discountCode: null,
-    // Lemon Squeezy expresses a repeating discount's remaining life in periods rather than as a date, so the
-    // renewal date is the honest answer to "when does this change" only when a discount is actually ending.
-    // Absent that, null — which `SubscriptionPricing` documents as "no discount, or one that runs forever".
-    discountEndsAt: (amounts?.discount_total ?? 0) > 0 && renews ? new Date(renews) : null,
+    // **Null, always, on this rail — and that is the honest answer rather than a gap.**
+    //
+    // `SubscriptionPricing.discountEndsAt` means "the date this rate stops". Lemon Squeezy expresses a
+    // repeating discount's remaining life in billing *periods* on the discount object, and does not publish
+    // the resulting date on the subscription. The previous code returned `renews_at` whenever the last
+    // invoice carried any discount at all, which reported the **next renewal** as the end date for a
+    // discount running for another eleven periods — telling a customer their bill changes next month when
+    // it does not, which is the same class of surprise this field exists to prevent, pointed the other way.
+    //
+    // Null is documented as "no discount, or one that runs forever". A screen reads it beside
+    // `discountCode`; both null on this rail means "we cannot say", which is true.
+    discountEndsAt: null,
   };
 }

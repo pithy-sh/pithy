@@ -75,6 +75,14 @@ export const PaymentsAuditActions = {
    */
   /** A discount code was minted at a store. An administrative act with a cost attached, so it is recorded. */
   discountCreated: "payments/discount_created",
+  /**
+   * A management client listed the discount codes a store holds.
+   *
+   * Its own action rather than a flag on the mint event. A read-scoped connection polling a pane would
+   * otherwise write thousands of mint-shaped rows into the one record of who decided a customer should pay
+   * less — and `payments:discounts:read` is granted precisely to connections that cannot mint anything.
+   */
+  discountsRead: "payments/discounts_read",
   entitlementGranted: "payments/entitlement_granted",
   /** An entitlement was revoked by hand through the control plane. The other of the two, for the same reason. */
   entitlementRevoked: "payments/entitlement_revoked",

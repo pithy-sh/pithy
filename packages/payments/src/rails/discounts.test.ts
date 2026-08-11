@@ -223,3 +223,30 @@ describe("the code", () => {
     expect(attributes.is_limited_redemptions).toBe(true);
   });
 });
+
+describe("what the reviews found, held", () => {
+  test("a repeating discount with no interval is refused by the rail, not defaulted to months", async () => {
+    // `DiscountTerms` refuses this, so reaching the rail means somebody skipped the parse. Defaulting to
+    // "month" would be right for a monthly plan and would silently turn an annual one into twelve years.
+    await expect(
+      createStripeDiscount(
+        {
+          amount: { kind: "percent", percent: 20 },
+          duration: { kind: "repeating", billingPeriods: 12 },
+        } as never,
+        { ...STRIPE, transport: stripeStub() },
+      ),
+    ).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("the Lemon Squeezy currency guard runs when the store's currency is declared", async () => {
+    // It reads `options.storeCurrency` and skips when undefined, so it was dead until the factory supplied
+    // it from config. This is the check working; `providers.test.ts` is where the wiring is held.
+    await expect(
+      createLemonSqueezyDiscount(
+        terms({ amount: { kind: "fixed", amountMinor: 500, currency: "eur" }, duration: { kind: "once" } }),
+        { ...LS, storeCurrency: "usd", transport: lsStub() },
+      ),
+    ).rejects.toBeInstanceOf(PithyError);
+  });
+});

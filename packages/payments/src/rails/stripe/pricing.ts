@@ -34,7 +34,7 @@ const DiscountedSubscription = z
     discount: z
       .object({
         end: z.number().nullish(),
-        promotion_code: z.string().nullish(),
+        promotion_code: z.unknown().nullish(),
         coupon: z.object({ name: z.string().nullish() }).loose().nullish(),
       })
       .loose()
@@ -73,10 +73,14 @@ export async function readStripePricing(
   if (!parsed.success) return undefined;
   const subscription = parsed.data;
 
-  const upcoming = await stripeJson(transport, "/invoices/upcoming", {
+  // `/v1/invoices/create_preview`, not `/v1/invoices/upcoming`. The latter is what every older integration
+  // guide shows and it is **gone** in the API version this rail pins (`2025-04-30.basil`) — so calling it
+  // 404s, `absentOn404` swallows the 404, and every amount below comes back null. A pricing read that
+  // silently reports nothing is worse than one that fails, because a screen renders the nothing.
+  const upcoming = await stripeJson(transport, "/invoices/create_preview", {
     what: `subscription ${subscriptionId} next invoice`,
     secretKey: options.credentials.secretKey,
-    query: { subscription: subscriptionId },
+    form: { subscription: subscriptionId },
     absentOn404: true,
   });
   const invoice = upcoming === undefined ? undefined : UpcomingInvoice.safeParse(upcoming);
@@ -91,9 +95,29 @@ export async function readStripePricing(
     currency: amounts?.currency ?? subscription.currency ?? null,
     currentAmountMinor: amounts?.total ?? null,
     listAmountMinor: amounts?.subtotal ?? listed,
-    discountCode: subscription.discount?.promotion_code ?? null,
+    // The code a customer typed, never the `promo_…` id. `SubscriptionPricing.discountCode` is typed as a
+    // `DiscountCode` and is rendered on a billing screen; showing an opaque id there is showing the
+    // customer a value that is not theirs and that they cannot match to the code they entered. Stripe
+    // returns the id unless the discount is expanded, so an unexpanded one reports null rather than a lie.
+    discountCode: promotionCode(subscription.discount?.promotion_code),
     // Seconds since the epoch on Stripe's side. Null means no discount, or one that runs forever — a screen
     // must read it beside `discountCode` to know which, which `SubscriptionPricing` says out loud.
     discountEndsAt: typeof end === "number" ? new Date(end * 1000) : null,
   };
+}
+
+/**
+ * The customer-facing code off Stripe's `promotion_code` field, or null.
+ *
+ * Stripe returns either the id (`promo_…`) or, when expanded, the object carrying `code`. Only the second
+ * is a code a customer would recognise; a bare id is reported as null, because "no code shown" is honest
+ * and "PROMO_1QxYz" on a billing screen is not.
+ */
+function promotionCode(value: unknown): string | null {
+  if (typeof value === "string") return value.startsWith("promo_") ? null : value;
+  if (typeof value === "object" && value !== null) {
+    const code = (value as { code?: unknown }).code;
+    return typeof code === "string" && code !== "" ? code : null;
+  }
+  return null;
 }

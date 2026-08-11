@@ -20,4 +20,6 @@ An invalid or expired code is refused as `payments/discount_invalid` (400) namin
 
 Creation sits behind `payments:discounts:create`, granted separately from the entitlement writes, and emits its own audit event: minting a discount is an administrative act with a cost attached. `GET /payments/admin/discounts` reads back what was issued behind its own narrower `payments:discounts:read` — a management client that can create a code and never see it leaves a pane computing *absent* rather than blocked, which no grant repairs (#247). Neither reaches a browser: what an adopter has issued is a commercial fact, and the client projection draws the same line here it draws for SKUs and the `grants` block.
 
+`lemonSqueezy.storeCurrency` is optional and does one thing: it lets a fixed-amount discount in another currency be refused when it is created rather than when a customer redeems it. Without it the store accepts the object and fails at redemption, so the error arrives at the buyer instead of at the adopter who could fix it.
+
 The kit provides the verb; the adopter provides the policy. Who may be offered a code, what it is worth, where that offer is recorded and when it stops being advertised are commercial decisions with a company's pricing behind them.

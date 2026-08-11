@@ -67,6 +67,20 @@ export const LEMON_SQUEEZY_CUSTOM_ACCOUNT = "pithy_account_reference";
 export const LEMON_SQUEEZY_CUSTOM_ENV = "pithy_env";
 
 /**
+ * The `checkout_data.custom` key carrying the proof that **this deployment's server** wrote the two above.
+ *
+ * Without it the other two prove nothing. Lemon Squeezy's public storefront buy links accept
+ * `checkout[custom][...]` parameters and the webhook echoes them exactly as an API-created checkout's would,
+ * so anyone can set `pithy_account_reference`. The environment stamp does not save it: these key names are
+ * exported constants in an open-source package and the value is one of three (`dev`, `staging`, `prod`), so
+ * requiring it asks an attacker to guess nothing at all.
+ *
+ * A MAC is the only thing that distinguishes the two, because it is the only thing a stranger cannot
+ * produce. See {@link accountReferenceProof}.
+ */
+export const LEMON_SQUEEZY_CUSTOM_PROOF = "pithy_ref_proof";
+
+/**
  * One identifier, prefixed by the object type it came from.
  *
  * The prefix is part of the row's identity forever, so it is never derived from anything that could change
@@ -360,11 +374,89 @@ export function orderEvent(id: string, order: LemonSqueezyOrder): UnboundProvide
  * direction: the cost is a purchase that lands unbound and is repairable from the trail, where the other way
  * round is an unauthenticated write into the account map that nothing ever undoes.
  */
-export function accountReferenceOf(webhook: LemonSqueezyWebhook, deployment: string | undefined): string | null {
+export async function accountReferenceOf(
+  webhook: LemonSqueezyWebhook,
+  deployment: string | undefined,
+  secret: string,
+): Promise<string | null> {
   if (deployment === undefined) return null;
-  if (webhook.meta.custom_data?.[LEMON_SQUEEZY_CUSTOM_ENV] !== deployment) return null;
-  const value = webhook.meta.custom_data?.[LEMON_SQUEEZY_CUSTOM_ACCOUNT];
-  return typeof value === "string" && value !== "" ? value : null;
+
+  const custom = webhook.meta.custom_data;
+  const reference = custom?.[LEMON_SQUEEZY_CUSTOM_ACCOUNT];
+  const stampedEnv = custom?.[LEMON_SQUEEZY_CUSTOM_ENV];
+  const proof = custom?.[LEMON_SQUEEZY_CUSTOM_PROOF];
+  if (typeof reference !== "string" || reference === "") return null;
+  if (typeof stampedEnv !== "string" || typeof proof !== "string") return null;
+
+  // The environment is checked as part of the MAC's message rather than beside it, so a proof minted for
+  // staging cannot be replayed against production by editing one field.
+  if (stampedEnv !== deployment) return null;
+  return (await accountReferenceProofMatches(reference, deployment, secret, proof)) ? reference : null;
+}
+
+/**
+ * The proof this deployment stamps beside an account reference, and the only reason the reference is worth
+ * anything.
+ *
+ * An HMAC over the environment and the user id, keyed with a secret a stranger does not have. The message is
+ * domain-separated by a fixed prefix so this MAC can never be confused with the webhook-body signature that
+ * shares its key: the two answer different questions, and a value that satisfied both would be a
+ * cross-protocol attack waiting to be found.
+ *
+ * The key is the webhook signing secret because it is already per-environment, already rotated with the
+ * rail, and already known only to this deployment and to Lemon Squeezy — and Lemon Squeezy is not the
+ * attacker here. The attacker is anyone who can open a storefront buy link, which is everyone.
+ */
+export async function accountReferenceProof(reference: string, deployment: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const message = `${ACCOUNT_REFERENCE_DOMAIN}${deployment}:${reference}`;
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(mac)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Domain separation, so this MAC and the webhook body signature can never be mistaken for one another. */
+const ACCOUNT_REFERENCE_DOMAIN = "pithy:lemonSqueezy:account-reference:v1:";
+
+/** Whether a stamped proof matches, compared in constant time by the runtime rather than by `===`. */
+async function accountReferenceProofMatches(
+  reference: string,
+  deployment: string,
+  secret: string,
+  candidate: string,
+): Promise<boolean> {
+  const expected = await accountReferenceProof(reference, deployment, secret);
+  if (candidate.length !== expected.length) return false;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  const bytes = hexToBytes(candidate);
+  if (bytes === undefined) return false;
+  return await crypto.subtle.verify(
+    "HMAC",
+    key,
+    bytes,
+    new TextEncoder().encode(`${ACCOUNT_REFERENCE_DOMAIN}${deployment}:${reference}`),
+  );
+}
+
+/** Decode hex, or undefined when it is not hex. */
+function hexToBytes(value: string): Uint8Array | undefined {
+  if (value.length === 0 || value.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(value)) return undefined;
+  const bytes = new Uint8Array(value.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
 }
 
 /**

@@ -7,7 +7,12 @@ import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput, HostedSession } from "../contract";
 import { type LemonSqueezyHttpFetch, lemonSqueezyHttpFetch, lemonSqueezyJson } from "./api";
-import { LEMON_SQUEEZY_CUSTOM_ACCOUNT, LEMON_SQUEEZY_CUSTOM_ENV } from "./objects";
+import {
+  accountReferenceProof,
+  LEMON_SQUEEZY_CUSTOM_ACCOUNT,
+  LEMON_SQUEEZY_CUSTOM_ENV,
+  LEMON_SQUEEZY_CUSTOM_PROOF,
+} from "./objects";
 
 /**
  * Hosted checkout, and nothing else.
@@ -71,7 +76,17 @@ export async function createLemonSqueezyCheckoutSession(
   options: LemonSqueezyCheckoutOptions,
 ): Promise<HostedSession> {
   const custom: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: input.userId };
-  if (options.deployment !== undefined) custom[LEMON_SQUEEZY_CUSTOM_ENV] = options.deployment;
+  if (options.deployment !== undefined) {
+    custom[LEMON_SQUEEZY_CUSTOM_ENV] = options.deployment;
+    // The proof, without which the two values above are worth nothing: a stranger can set them from a
+    // public storefront buy link, and both key names are exported constants. This is the part they cannot
+    // produce. See `accountReferenceProof`.
+    custom[LEMON_SQUEEZY_CUSTOM_PROOF] = await accountReferenceProof(
+      input.userId,
+      options.deployment,
+      options.credentials.webhookSecret,
+    );
+  }
 
   const created = await withDiscountRefusal(input.discountCode, () =>
     lemonSqueezyJson(options.transport ?? lemonSqueezyHttpFetch, "/checkouts", {
@@ -140,7 +155,12 @@ async function withDiscountRefusal<T>(code: string | undefined, call: () => Prom
   try {
     return await call();
   } catch (cause) {
-    if (cause instanceof PithyError && cause.payload.code === "payments/rail_not_configured") {
+    // A 401 or a 403 is our credentials, not their code, and `api.ts` folds both into
+    // `rail_not_configured` — so reclassifying every one of those would tell a customer their perfectly
+    // good code was rejected while the real fault is an API key nobody rotated. `detail` still carries the
+    // status, which is what distinguishes them.
+    const credentials = /with 40[13]\./.test(cause instanceof PithyError ? (cause.payload.detail ?? "") : "");
+    if (cause instanceof PithyError && cause.payload.code === "payments/rail_not_configured" && !credentials) {
       throw new PaymentsDiscountInvalidError(
         {
           message: `"${code}" is not a discount code we can accept.`,
