@@ -50,7 +50,7 @@ export const paymentsConfig = paymentsModule.enabled
   : {
       enabled: false as const,
       environment: "dev",
-      rails: { apple: false, google: false, stripe: false },
+      rails: { apple: false, google: false, stripe: false, lemonSqueezy: false },
       basePath: "/payments",
       products: [] as {
         id: string;
@@ -58,5 +58,6 @@ export const paymentsConfig = paymentsModule.enabled
         entitlements: string[];
         name: string;
         stripePriceId: string | null;
+        lemonSqueezyVariantId: string | null;
       }[],
     };

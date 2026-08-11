@@ -670,6 +670,7 @@ describe("upsertPurchaseStatement — the guards the database applies at commit"
       id: "purchase-compiled",
       userId: "ada",
       rail: "apple",
+      role: "charge",
       providerTransactionId: "txn-1",
       productId: "pro_monthly",
       providerProductId: "com.acme.pro.monthly",

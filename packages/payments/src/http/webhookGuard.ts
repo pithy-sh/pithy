@@ -151,7 +151,11 @@ export function requireSignedWebhook(
 
     let notification: VerifiedNotification;
     try {
-      notification = await provider.parseNotification({ body, headers: c.req.raw.headers }, { now });
+      const deployment = (c.env as Record<string, unknown>).ENVIRONMENT;
+      notification = await provider.parseNotification(
+        { body, headers: c.req.raw.headers },
+        { now, deployment: typeof deployment === "string" && deployment !== "" ? deployment : undefined },
+      );
     } catch (cause) {
       // Not the sender's failure, so not the sender's error code. See the module doc.
       if (cause instanceof PithyError && PASS_THROUGH_CODES.has(cause.payload.code)) throw cause;

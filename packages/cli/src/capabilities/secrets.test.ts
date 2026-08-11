@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -190,6 +191,69 @@ describe("runSecretWrite", () => {
       ),
     ).rejects.toBeInstanceOf(NotFoundError);
     expect(events).toEqual([]);
+  });
+});
+
+/**
+ * The payments credential bundle, through the CLI path that actually writes it.
+ *
+ * `pithy payments provision` writes no credential — nothing can mint an API key — so every rail's block
+ * arrives here, through `pithy secrets create payments-provider-credentials`. The registry is the real one
+ * the capability ships, so this is the CLI's half of the contract: a rail's block either survives the write
+ * intact or is refused before anything leaves the machine.
+ */
+describe("payments-provider-credentials", () => {
+  const LEMON_SQUEEZY = { apiKey: "ls_live_abc", webhookSecret: "whsec_abc", storeId: "42" };
+
+  test("a lemonSqueezy block round-trips through the write, field for field", async () => {
+    const dispatcher = new StubDispatcher();
+
+    const envs = await runSecretWrite(paymentsSecretsRegistry, dispatcher, {
+      mode: "create",
+      name: PAYMENTS_PROVIDER_SECRET,
+      value: JSON.stringify({ lemonSqueezy: LEMON_SQUEEZY }),
+      env: "prod",
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    expect(envs).toEqual(["prod"]);
+    const dispatched = dispatcher.calls[0];
+    expect(dispatched).toMatchObject({ name: PAYMENTS_PROVIDER_SECRET, valueType: "json", env: "prod" });
+    expect(JSON.parse(dispatched?.value ?? "null")).toEqual({ lemonSqueezy: LEMON_SQUEEZY });
+  });
+
+  test("a rail's block joins the others rather than replacing them", async () => {
+    // One secret, four optional rails: adding a rail reshapes no storage and adds no binding. What it must
+    // not do is cost an operator the blocks already there.
+    const dispatcher = new StubDispatcher();
+    const both = { stripe: { secretKey: "sk_test_51Abc", webhookSecret: "whsec_stripe" }, lemonSqueezy: LEMON_SQUEEZY };
+
+    await runSecretWrite(paymentsSecretsRegistry, dispatcher, {
+      mode: "update",
+      name: PAYMENTS_PROVIDER_SECRET,
+      value: JSON.stringify(both),
+      env: "prod",
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    expect(JSON.parse(dispatcher.calls[0]?.value ?? "null")).toEqual(both);
+  });
+
+  test("half a Lemon Squeezy credential is refused here, not at the first webhook", async () => {
+    // A block is present in full or absent entirely. Half of it dispatched is a signature check that
+    // silently never passes, in an environment nobody is watching.
+    const dispatcher = new StubDispatcher();
+
+    await expect(
+      runSecretWrite(paymentsSecretsRegistry, dispatcher, {
+        mode: "create",
+        name: PAYMENTS_PROVIDER_SECRET,
+        value: JSON.stringify({ lemonSqueezy: { apiKey: LEMON_SQUEEZY.apiKey } }),
+        env: "prod",
+        environments: DEFAULT_ENVIRONMENTS,
+      }),
+    ).rejects.toBeInstanceOf(PithyError);
+    expect(dispatcher.calls).toEqual([]);
   });
 });
 

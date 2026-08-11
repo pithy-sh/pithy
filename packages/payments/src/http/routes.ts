@@ -6,7 +6,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { InternalError, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -19,6 +19,7 @@ import {
   type PaymentsConfig,
   type PaymentsStripeSettings,
   providerProductId,
+  railEnabled,
   resolveProduct,
 } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
@@ -70,6 +71,7 @@ import {
   EntitlementGrantRequest,
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
+  LemonSqueezyWebhookNotification,
   PurchaseSubmission,
   RestoreRequest,
   StripeWebhookNotification,
@@ -198,6 +200,20 @@ function deploymentEnvironment(c: Context<PithyHonoEnv>): PurchaseEnvironment {
 }
 
 /**
+ * This deployment's `ENVIRONMENT` var, verbatim, or undefined.
+ *
+ * Deliberately *not* {@link deploymentEnvironment}'s two-valued answer. A rail sharing one store across
+ * every environment — Lemon Squeezy, whose test mode is a flag on an object rather than a separate store —
+ * fences its webhooks on this, and `dev` and `staging` both evaluate to `sandbox`, so fencing on that would
+ * separate neither. The two are different questions: one asks whether real money moved, this asks which
+ * deployment is speaking.
+ */
+function deploymentName(c: Context<PithyHonoEnv>): string | undefined {
+  const value = (c.env as Record<string, unknown>).ENVIRONMENT;
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
  * The caller's own id. `requireAuth()` has run on every route that calls this, so a null `auth` is a wiring
  * mistake rather than an unauthenticated request — hence `InternalError`, not a 401.
  */
@@ -297,9 +313,90 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     return config.stripe;
   }
 
-  /** The Stripe rail, narrowed to the interface that creates hosted sessions. */
-  async function checkoutRail(c: Context<PithyHonoEnv>): Promise<PaymentsRailProvider & CheckoutRail> {
-    const provider = resolveRailProvider("stripe", config, await credentials(c), trust);
+  /**
+   * Where a hosted checkout returns the browser, for whichever rail is taking the money.
+   *
+   * Each rail carries its own pair, because each returns to a different page: a Stripe success URL holds a
+   * `{CHECKOUT_SESSION_ID}` token the return page posts back, and a Lemon Squeezy one cannot — that rail has
+   * no submittable receipt, so its page shows a pending state and waits for the webhook.
+   */
+  function returnUrls(rail: PaymentsRail): { successUrl: string; cancelUrl?: string } {
+    if (rail === "lemonSqueezy") {
+      if (config.lemonSqueezy === undefined) {
+        throw new PaymentsRailNotConfiguredError({
+          detail: "The lemonSqueezy rail is off in this project's config, so there are no hosted flows to start.",
+        });
+      }
+      // No cancel URL: that store's checkout has no cancel destination to send one to.
+      return { successUrl: config.lemonSqueezy.successUrl };
+    }
+    const settings = stripeSettings();
+    return { successUrl: settings.successUrl, cancelUrl: settings.cancelUrl };
+  }
+
+  /**
+   * The rails that create hosted sessions, in the order a product's blocks are considered.
+   *
+   * Order matters only when a product sells on both and the caller named neither — and in that case the
+   * request is refused rather than resolved by this order, so nothing here is a silent policy. It exists to
+   * make the refusal's message deterministic.
+   */
+  const CHECKOUT_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy"];
+
+  /**
+   * Which hosted-checkout rail this request is for.
+   *
+   * A product declares its rails by carrying their blocks, so the candidates are the checkout-capable rails
+   * this project has enabled *and* this product is listed on. One candidate is the common case and needs no
+   * request field. Two, with the caller naming neither, is refused: picking one would decide who takes a
+   * customer's money on their behalf, and an adopter selling on two rails means to offer the choice.
+   */
+  function checkoutRailFor(entry: PaymentsCatalogEntry, requested: PaymentsRail | undefined): PaymentsRail {
+    const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+
+    // No hosted-checkout rail at all. That is a fact about the deployment rather than about the product —
+    // a mobile-only project sells through Apple and Google and has no browser flow to start — so it is the
+    // rail refusal, and it costs no credential read and no round-trip to give.
+    if (enabled.length === 0) {
+      throw new PaymentsRailNotConfiguredError({
+        detail:
+          "No hosted-checkout rail is on in this project's config, so there are no hosted flows to start. Enable `rails.stripe` or `rails.lemonSqueezy`.",
+      });
+    }
+
+    const candidates = enabled.filter((rail) => providerProductId(entry.product, rail) !== undefined);
+
+    if (requested !== undefined) {
+      if (candidates.includes(requested)) return requested;
+      // Named a rail this product is not sold on, or one this project has turned off. A 404 on the product
+      // rather than the rail: naming which of the two it was would describe the deployment to a stranger.
+      throw new PaymentsProductNotFoundError({
+        detail: `Product "${entry.id}" cannot be bought through ${requested} here — the rail is off, or the product declares no ${requested} block.`,
+      });
+    }
+
+    const [only, ...rest] = candidates;
+    if (only === undefined) {
+      throw new PaymentsProductNotFoundError({
+        detail: `Product "${entry.id}" declares no enabled hosted-checkout rail, so it cannot be bought through this route.`,
+      });
+    }
+    if (rest.length > 0) {
+      throw new ValidationError({
+        message: "Choose how to pay.",
+        action: `Send \`rail\` as one of: ${candidates.join(", ")}.`,
+        detail: `Product "${entry.id}" is sold through ${candidates.join(" and ")}, and the request named neither.`,
+      });
+    }
+    return only;
+  }
+
+  /** One rail, narrowed to the interface that creates hosted sessions. */
+  async function checkoutRail(
+    c: Context<PithyHonoEnv>,
+    rail: PaymentsRail,
+  ): Promise<PaymentsRailProvider & CheckoutRail> {
+    const provider = resolveRailProvider(rail, config, await credentials(c), trust);
     if (!isCheckoutRail(provider)) {
       // Structural rather than a name check, so a future rail that initiates purchases needs no edit here and one
       // that does not can never be asked.
@@ -681,6 +778,26 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     );
 
     /**
+     * SIGNED WEBHOOK — Lemon Squeezy. A bare HMAC in `X-Signature`, over the exact received bytes, which the
+     * guard has checked before this validator ever parses the body.
+     *
+     * **No timestamp, so no freshness window**, and that is a true fact about the scheme rather than an omission
+     * here — `rails/lemonSqueezy/signature.ts` says so in its type by taking no clock. Replay protection is
+     * entirely the guard's `UNIQUE (rail, providerEventId)` insert, and the projection's monotonic rule behind
+     * it.
+     *
+     * The same handler again. This is where every Lemon Squeezy purchase enters the system, because that rail
+     * has no client-submission path at all: its order ids are sequential integers, so no submitted receipt
+     * could be trusted.
+     */
+    app.post(
+      `${base}/webhooks/lemon-squeezy`,
+      requireSignedWebhook("lemonSqueezy", { config, now: clock, trust }),
+      zValidator("json", LemonSqueezyWebhookNotification, validationHook),
+      webhookHandler("lemonSqueezy"),
+    );
+
+    /**
      * AUTHED WRITE — Stripe only. Create a hosted Checkout Session and hand back where to send the browser.
      *
      * Everything that decides what is bought and where the buyer is returned to comes from config or from the
@@ -690,32 +807,33 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * to a page it controls; one that could name a purchaser could attach its purchase to another account.
      */
     app.post(`${base}/checkout`, requireAuth(), zValidator("json", CheckoutRequest, validationHook), async (c) => {
-      const settings = stripeSettings();
       const input = c.req.valid("json");
       const entry = product(config, input.productId);
-      const priceId = providerProductId(entry.product, "stripe");
-      if (priceId === undefined) {
-        // In the catalog, but not sold here. A 404 on the product rather than on the rail: Stripe is available,
-        // this product simply is not one of the things it sells.
+      const rail = checkoutRailFor(entry, input.rail);
+      const settings = returnUrls(rail);
+      const sku = providerProductId(entry.product, rail);
+      if (sku === undefined) {
+        // In the catalog, but not sold here. A 404 on the product rather than on the rail: the rail is
+        // available, this product simply is not one of the things it sells.
         throw new PaymentsProductNotFoundError({
-          detail: `Product "${entry.id}" declares no stripe price, so it cannot be bought through hosted Checkout.`,
+          detail: `Product "${entry.id}" declares no ${rail} SKU, so it cannot be bought through hosted checkout.`,
         });
       }
 
       const userId = callerId(c);
-      const provider = await checkoutRail(c);
+      const provider = await checkoutRail(c, rail);
       const session = await provider.createCheckoutSession(
         {
-          providerProductId: priceId,
+          providerProductId: sku,
           subscription: entry.product.type === "subscription",
           userId,
-          // Reuse the buyer's existing Stripe customer, so one buyer keeps one account and their billing portal
+          // Reuse the buyer's existing store customer, so one buyer keeps one account and their billing portal
           // shows every purchase rather than only the last one's.
-          providerAccountId: await accountFor(c, "stripe", userId),
+          providerAccountId: await accountFor(c, rail, userId),
           successUrl: settings.successUrl,
           cancelUrl: settings.cancelUrl,
         },
-        { now: clock() },
+        { now: clock(), deployment: deploymentName(c) },
       );
 
       await c.var.emit({
@@ -726,7 +844,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         sessionId: c.var.auth?.sessionId,
         resourceType: "product",
         resourceId: entry.id,
-        metadata: { rail: "stripe", productId: entry.id, subscription: entry.product.type === "subscription" },
+        metadata: { rail, productId: entry.id, subscription: entry.product.type === "subscription" },
       });
       return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
@@ -739,23 +857,42 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * any signed-in caller could open a session against somebody else's billing history and cancel it.
      */
     app.post(`${base}/portal`, requireAuth(), async (c) => {
-      const settings = stripeSettings();
       const userId = callerId(c);
-      const providerAccountId = await accountFor(c, "stripe", userId);
-      if (providerAccountId === null) {
-        // Nothing has ever been bought through Stripe by this caller, so there is no billing to manage. Not a
-        // payments-domain refusal: the rail is configured and working, the resource simply does not exist.
+
+      // Which rail this caller actually bought on, found by asking the account map rather than by taking it
+      // from the request. Still no body: the caller names neither the customer nor the rail, so there is
+      // nothing here anyone could point at somebody else's billing.
+      let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
+      for (const rail of CHECKOUT_RAILS) {
+        if (!railEnabled(config, rail)) continue;
+        const providerAccountId = await accountFor(c, rail, userId);
+        if (providerAccountId !== null) {
+          found = { rail, providerAccountId };
+          break;
+        }
+      }
+
+      if (found === undefined) {
+        // Nothing has ever been bought through a hosted rail by this caller, so there is no billing to
+        // manage. Not a payments-domain refusal: the rail is configured and working, the resource simply
+        // does not exist.
         throw new NotFoundError({
           message: "No billing account yet.",
           action: "Buy a subscription first, then manage it here.",
-          detail: `No stripe provider account is linked to ${userId}.`,
+          detail: `No hosted-rail provider account is linked to ${userId}.`,
         });
       }
 
-      const provider = await checkoutRail(c);
+      const provider = await checkoutRail(c, found.rail);
       const session = await provider.createPortalSession(
-        { providerAccountId, returnUrl: settings.portalReturnUrl },
-        { now: clock() },
+        {
+          providerAccountId: found.providerAccountId,
+          // Undefined for a rail whose portal takes no return parameter — Lemon Squeezy's is a signed,
+          // expiring link with nowhere to go back to. The contract admits that rather than have the rail
+          // silently drop a URL an adopter configured.
+          returnUrl: found.rail === "stripe" ? stripeSettings().portalReturnUrl : undefined,
+        },
+        { now: clock(), deployment: deploymentName(c) },
       );
 
       await c.var.emit({
@@ -765,8 +902,8 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         actorId: userId,
         sessionId: c.var.auth?.sessionId,
         resourceType: "provider_account",
-        resourceId: providerAccountId,
-        metadata: { rail: "stripe" },
+        resourceId: found.providerAccountId,
+        metadata: { rail: found.rail },
       });
       return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
@@ -1050,6 +1187,21 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           reason,
           severity: "warning",
         });
+      }
+
+      // A second event the same notification implied — the subscription's standing, where the one above was a
+      // charge. Only Lemon Squeezy sends one, and only on a refund: the invoice row goes `refunded` so the
+      // ledger claws back, and this stops the subscription granting, because the buyer has their money back.
+      //
+      // Projected with the same owner, and outside the catch above on purpose: it is the half that revokes
+      // access, so a failure must reach the store as a non-2xx and be redelivered rather than be acknowledged
+      // as handled. Never fulfilled — a `state` row refuses both credit and clawback by role.
+      if (notification.stateEvent) {
+        await projectPurchase(
+          d1,
+          { ...notification.stateEvent, userId },
+          { config, environment: deploymentEnvironment(c), now },
+        );
       }
 
       // Fulfillment sits outside that catch, and the asymmetry is deliberate. Every refusal the catch answers

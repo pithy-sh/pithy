@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { PaymentsProductType } from "../config/config";
 import { PurchaseEnvironment } from "../data/purchase";
@@ -82,7 +83,7 @@ const REFUSAL = {
  */
 describe("the client's literal unions match the schemas they mirror", () => {
   test("rails", () => {
-    const rails: PaymentsClientRail[] = ["apple", "google", "stripe"];
+    const rails: PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy"];
     expect([...PAYMENTS_RAILS].sort()).toEqual([...rails].sort());
   });
 
@@ -131,7 +132,8 @@ describe("the guards", () => {
 describe("getEntitlements", () => {
   test("reads the caller's own entitlements same-origin, with the session cookie", async () => {
     const fetcher = stubFetch(200, ENTITLEMENTS);
-    expect(await getEntitlements({ fetch: fetcher })).toEqual([{ key: "pro", granted: true, expiresAt: null }]);
+    const result = await getEntitlements({ fetch: fetcher });
+    expect(result).toEqual({ ok: true, value: [{ key: "pro", granted: true, expiresAt: null }] });
 
     const [call] = fetcher.calls;
     expect(call?.url).toBe("/payments/entitlements");
@@ -146,27 +148,94 @@ describe("getEntitlements", () => {
     expect(fetcher.calls[0]?.url).toBe("/billing/entitlements");
   });
 
-  test("a 500 reads as not entitled, not as a throw", async () => {
-    // The safe direction for a client affordance: a paywall that cannot reach the worker shows the
-    // paywall. The server check is the boundary, so failing closed here costs nothing.
-    await expect(getEntitlements({ fetch: stubFetch(500, {}) })).resolves.toEqual([]);
+  test("a customer who genuinely holds nothing reads as a successful empty list", async () => {
+    // The case every failure below must be distinguishable from. `[]` here is an answer.
+    await expect(getEntitlements({ fetch: stubFetch(200, { entitlements: [] }) })).resolves.toEqual({
+      ok: true,
+      value: [],
+    });
   });
 
-  test("an unreachable worker, an unparseable body, and a 401 all read as not entitled", async () => {
-    await expect(getEntitlements({ fetch: offline })).resolves.toEqual([]);
-    await expect(getEntitlements({ fetch: unreadable })).resolves.toEqual([]);
-    await expect(getEntitlements({ fetch: stubFetch(401, REFUSAL) })).resolves.toEqual([]);
-  });
+  test("a failed read is never an empty list — the four failures each keep their own code", async () => {
+    // The whole of #302. `[]` is a positive claim that the customer is on the free floor, and a screen
+    // that names the plan renders it as such. None of these four may be mistaken for it.
+    const unreachable = await getEntitlements({ fetch: offline });
+    expect(unreachable).toEqual({
+      ok: false,
+      failure: { code: "client/unreachable", message: expect.any(String), action: expect.any(String) },
+    });
 
-  test("one malformed entry drops the whole list rather than half of it", async () => {
-    // A partially-read list is worse than none: a screen would render as if the missing key were unheld.
+    const nonJson = await getEntitlements({ fetch: unreadable });
+    expect(nonJson.ok).toBe(false);
+    if (!nonJson.ok) expect(nonJson.failure.code).toBe("client/unreadable");
+
+    // A 500 carrying the Worker's own error envelope keeps the server's code, so an operator sees it.
+    const server = await getEntitlements({ fetch: stubFetch(500, REFUSAL) });
+    expect(server.ok).toBe(false);
+    if (!server.ok) expect(server.failure.code).toBe(REFUSAL.error.code);
+
+    // A body that fails the type guard is unreadable, not empty.
     const body = { entitlements: [{ key: "pro", granted: true, expiresAt: null }, { key: "team" }] };
-    await expect(getEntitlements({ fetch: stubFetch(200, body) })).resolves.toEqual([]);
+    const malformed = await getEntitlements({ fetch: stubFetch(200, body) });
+    expect(malformed.ok).toBe(false);
+    if (!malformed.ok) expect(malformed.failure.code).toBe("client/unreadable");
   });
 
-  test("with no fetch anywhere it answers empty rather than throwing", async () => {
+  test("with no fetch anywhere it answers a failure rather than throwing", async () => {
     // Server-side rendering, or a test harness with no global. Still not a throw.
-    await expect(getEntitlements({ fetch: undefined, global: {} })).resolves.toEqual([]);
+    const result = await getEntitlements({ fetch: undefined, global: {} });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure.code).toBe("client/unreachable");
+  });
+
+  test("fail-shut is one line the caller writes, and it reads as the decision it is", async () => {
+    // The behaviour the old signature hard-coded, kept by whoever wants it — `holdsEntitlement` does
+    // exactly this. The point is that it is now visible at the call site instead of buried in the reader.
+    const result = await getEntitlements({ fetch: offline });
+    expect(result.ok ? result.value : []).toEqual([]);
+  });
+});
+
+describe("no reader in this module discards a PaymentsResult", () => {
+  // #302 landed because one reader threw away a failure `call` had already built. A fifth producer must
+  // fail the build rather than repeat it. `PaymentsResult` is a type and erased at runtime, so the only
+  // honest check is over the source text — the same shape as capabilityVersions.test.ts.
+  const source = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
+
+  /**
+   * The same source with comments removed. The negative sweep below is about what the module *does*, and
+   * this module documents the shape it refuses by quoting it — so a sweep over raw text would flag the
+   * docblock that explains the rule as a violation of it.
+   */
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  /** Every exported function in api.ts, as `[name, returnAnnotation, body]`. */
+  const exported = [...code.matchAll(/export (?:async )?function (\w+)\(([\s\S]*?)\): ([^{]+)\{([\s\S]*?)\n\}/g)].map(
+    (match) => ({ name: match[1] ?? "", returns: (match[3] ?? "").trim(), body: match[4] ?? "" }),
+  );
+
+  test("the sweep sees the module it is guarding", () => {
+    // Anti-vacuous: a regex that silently matched nothing would pass every assertion below.
+    expect(exported.length).toBeGreaterThan(6);
+    expect(exported.map((fn) => fn.name)).toContain("getEntitlements");
+  });
+
+  test("every reader that goes through `call` answers a PaymentsResult", () => {
+    // A "reader" is a function whose body reaches the one fetch path. The three navigators
+    // (startCheckout, openBillingPortal) deliberately answer `PaymentsFailure | null` — they are actions
+    // that leave the page, not readers, and they reach `call` only through `leaveFor`.
+    const navigators = new Set(["startCheckout", "openBillingPortal"]);
+    const readers = exported.filter((fn) => /\bcall[(<]/.test(fn.body) && !navigators.has(fn.name));
+
+    expect(readers.length).toBeGreaterThan(3);
+    for (const reader of readers) {
+      expect(`${reader.name}: ${reader.returns}`).toMatch(/PaymentsResult</);
+    }
+  });
+
+  test("no reader collapses a refusal into an empty value", () => {
+    // The exact line #302 removed: `return result.ok ? result.value.entitlements : [];`
+    expect(code).not.toMatch(/result\.ok\s*\?[^:]*:\s*(\[\]|null|undefined|false)/);
   });
 });
 

@@ -43,7 +43,7 @@ declare module "virtual:pithy/payments" {
         /** The environment this bundle was built for. */
         environment: string;
         /** Which rails this project sells through. Apple and Google are display-only on the web. */
-        rails: { apple: boolean; google: boolean; stripe: boolean };
+        rails: { apple: boolean; google: boolean; stripe: boolean; lemonSqueezy: boolean };
         /** Where the payments routes mount, e.g. `/payments`. */
         basePath: string;
         /**
@@ -62,6 +62,8 @@ declare module "virtual:pithy/payments" {
           name: string;
           /** The Stripe price, or null for a product this project does not sell through Stripe. */
           stripePriceId: string | null;
+          /** The Lemon Squeezy variant, or null for a product this project does not sell through it. */
+          lemonSqueezyVariantId: string | null;
         }[];
       };
   export default config;

@@ -93,7 +93,7 @@ describe("resolveRailProvider", () => {
     // and exercised rather than deleted: the day the fourth rail is half-added, this is the refusal it gets.
     const unimplemented = {
       ...config({ apple: true }),
-      rails: { apple: false, google: false, stripe: false, amazon: true },
+      rails: { apple: false, google: false, stripe: false, lemonSqueezy: false, amazon: true },
     };
     const thrown = catchError(() =>
       resolveRailProvider("amazon" as PaymentsRail, unimplemented as PaymentsConfig, CREDENTIALS),
@@ -114,7 +114,7 @@ describe("resolveRailProvider", () => {
     // Three different causes, one public message. `detail` carries the difference and the HTTP codec strips it.
     const unimplemented = {
       ...config({ apple: true }),
-      rails: { apple: false, google: false, stripe: false, amazon: true },
+      rails: { apple: false, google: false, stripe: false, lemonSqueezy: false, amazon: true },
     };
     const messages = new Set(
       [
@@ -128,10 +128,10 @@ describe("resolveRailProvider", () => {
 });
 
 describe("implementedRails", () => {
-  test("names what this build can serve — all three rails", () => {
+  test("names what this build can serve — all four rails", () => {
     // The list is the honest answer to "which rails work". A rail added to config that is not here refuses
     // rather than half-working, and this assertion is what makes adding one a deliberate edit.
-    expect(implementedRails()).toEqual(["apple", "google", "stripe"]);
+    expect(implementedRails()).toEqual(["apple", "google", "stripe", "lemonSqueezy"]);
   });
 });
 

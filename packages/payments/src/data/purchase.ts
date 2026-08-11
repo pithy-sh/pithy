@@ -17,6 +17,32 @@ export const PurchaseEnvironment = z
   .describe("The store environment a purchase happened in. A sandbox purchase never grants in production.");
 export type PurchaseEnvironment = z.infer<typeof PurchaseEnvironment>;
 
+/**
+ * What a purchase row *is* — the thing that grants access, or the thing that took the money.
+ *
+ * On three of the four rails these are one object and `charge` is the only value ever written: an Apple
+ * renewal, a Play renewal and a Stripe invoice each carry both the money and the subscription's state, so
+ * one row does both jobs and nothing needs distinguishing.
+ *
+ * Lemon Squeezy splits them, and splits them at the source. Its `subscription_*` webhooks carry a
+ * subscription object with the status and the renewal date and no charge; its `subscription_payment_*`
+ * webhooks carry an invoice with the money and no subscription state. Neither names the other's key —
+ * an LS subscription has no latest-invoice pointer — so collapsing them onto one row would mean inventing
+ * the missing pointer and stamping two different clocks into one monotonic watermark, which is exactly
+ * the ordering defect `providerEventAt` exists to prevent.
+ *
+ * So that rail writes two rows, and this field says which is which. **`state` never credits a ledger.**
+ * A `grants` clause fires once per paid provider transaction, and a subscription's state is not a
+ * transaction — without this discriminator a live subscription's honest `active` status passes
+ * `purchaseIsPaid` and every subscriber is credited once more than they paid for.
+ */
+export const PurchaseRole = z
+  .enum(["charge", "state"])
+  .describe(
+    "Whether this row records money moving (`charge`) or a subscription's standing (`state`). Only `charge` rows fulfill a `grants` clause. Every rail but Lemon Squeezy writes `charge` for everything.",
+  );
+export type PurchaseRole = z.infer<typeof PurchaseRole>;
+
 /** The raw verified provider payload — an object, whatever the rail's own shape. Retained as received. */
 const ProviderPayload = z
   .record(z.string(), z.unknown())
@@ -52,6 +78,9 @@ export const PaymentsPurchase = z
       "The product type, copied from the catalog at projection time so a later config edit cannot rewrite history.",
     ),
     status: PurchaseStatus.describe("The normalized status. Nothing downstream ever sees a rail-specific state."),
+    role: PurchaseRole.default("charge").describe(
+      "Whether this row is the money or the subscription's standing. Defaults to `charge`, which is what every rail but Lemon Squeezy writes for every row.",
+    ),
     environment: PurchaseEnvironment.describe(
       "Which store environment the purchase happened in. Every purchase carries it: a sandbox StoreKit transaction reaching production must never grant a real entitlement.",
     ),

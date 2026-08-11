@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { PurchaseEnvironment } from "../data/purchase";
+import { PurchaseEnvironment, PurchaseRole } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
 
@@ -38,6 +38,9 @@ export const ProviderEvent = z
         "The Pithy user the transaction belongs to. A client submission takes it from the authenticated caller; a webhook resolves it through the provider-account map.",
       ),
     status: PurchaseStatus.describe("The transaction's current normalized state, as the rail reports it."),
+    role: PurchaseRole.default("charge").describe(
+      "Whether this event records money moving or a subscription's standing. Omitted by every rail but Lemon Squeezy, which reports the two separately because its store does.",
+    ),
     environment: PurchaseEnvironment.describe(
       "Which store environment the transaction happened in. Checked against the deployment's own before anything is written.",
     ),

@@ -133,6 +133,7 @@ describe("payments()", () => {
       "/billing/restore",
       "/billing/webhooks/apple",
       "/billing/webhooks/google",
+      "/billing/webhooks/lemon-squeezy",
       "/billing/webhooks/stripe",
     ]);
   });
@@ -199,7 +200,12 @@ describe("payments()", () => {
   test("composes with no arguments at all — an empty catalog is a legal starting point", () => {
     const capability = payments();
     expect(capability.paymentsConfig.products).toEqual({});
-    expect(capability.paymentsConfig.rails).toEqual({ apple: false, google: false, stripe: false });
+    expect(capability.paymentsConfig.rails).toEqual({
+      apple: false,
+      google: false,
+      stripe: false,
+      lemonSqueezy: false,
+    });
   });
 
   test("rejects an impossible catalog at assembly, not on the first webhook", () => {
@@ -283,10 +289,17 @@ const NEVER_IN_A_BUNDLE = [
 describe("payments().client — virtual:pithy/payments", () => {
   const projection = resolveClientProjection(payments(CLIENT_CATALOG), { environment: "prod" });
 
-  test("projects exactly five keys, and per product exactly five more", () => {
+  test("projects exactly five keys, and per product exactly six more", () => {
     expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "environment", "products", "rails"]);
     for (const product of projection.products as Record<string, unknown>[]) {
-      expect(Object.keys(product).sort()).toEqual(["entitlements", "id", "name", "stripePriceId", "type"]);
+      expect(Object.keys(product).sort()).toEqual([
+        "entitlements",
+        "id",
+        "lemonSqueezyVariantId",
+        "name",
+        "stripePriceId",
+        "type",
+      ]);
     }
   });
 
@@ -328,12 +341,12 @@ describe("payments().client — virtual:pithy/payments", () => {
   });
 
   test("carries the enabled rails, so a paywall knows which products it can actually sell", () => {
-    expect(projection.rails).toEqual({ apple: true, google: true, stripe: true });
+    expect(projection.rails).toEqual({ apple: true, google: true, stripe: true, lemonSqueezy: false });
     const mobileOnly = resolveClientProjection(
       payments({ rails: { apple: true }, products: { remove_ads: CLIENT_CATALOG.products.remove_ads } }),
       { environment: "dev" },
     );
-    expect(mobileOnly.rails).toEqual({ apple: true, google: false, stripe: false });
+    expect(mobileOnly.rails).toEqual({ apple: true, google: false, stripe: false, lemonSqueezy: false });
   });
 
   test("names the environment the bundle was built for", () => {

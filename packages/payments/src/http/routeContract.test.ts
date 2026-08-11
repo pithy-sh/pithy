@@ -97,6 +97,7 @@ describe("payments route contract", () => {
       "/payments/restore",
       "/payments/webhooks/apple",
       "/payments/webhooks/google",
+      "/payments/webhooks/lemon-squeezy",
       "/payments/webhooks/stripe",
     ]);
     // One `:segment`, which is what makes the param gate above do work rather than pass vacuously.

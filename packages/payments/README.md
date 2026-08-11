@@ -34,6 +34,7 @@ Then set up the stores. That is the part nobody can do for you, and it has its o
 - [Apple in-app purchase](docs/apple-iap.md)
 - [Google Play Billing](docs/google-play-billing.md)
 - [Stripe](docs/stripe.md)
+- [Lemon Squeezy](docs/lemon-squeezy.md) — the merchant of record, which owns the tax registration you would otherwise own
 
 ## Configure
 
@@ -249,7 +250,7 @@ const { entitled, loading } = useEntitlement("pro");
 const { start, starting, failure } = useCheckout();
 ```
 
-Four of them — `useEntitlement`, `useSubscription`, `useCheckout`, `usePurchase` — over a framework-free `src/client/api.ts` that a non-React client can call directly. **Nothing here throws**: a read that fails reads as "not entitled", because the server's `requireEntitlement()` is the boundary and failing closed in a browser costs nothing.
+Four of them — `useEntitlement`, `useSubscription`, `useCheckout`, `usePurchase` — over a framework-free `src/client/api.ts` that a non-React client can call directly. **Nothing here throws, and nothing hides a failure either**: every reader answers a `PaymentsResult`, so an unreachable Worker is distinguishable from a customer who holds nothing. Failing shut is the caller's decision to write down — `useEntitlement` locks and reports `readFailure`; `useSubscription`, which names the plan, reports the failure rather than rendering an empty list as the free tier. The server's `requireEntitlement()` is still the boundary.
 
 `react` is an **optional** peer dependency and neither client module is exported from `src/index.ts`. That is what keeps React out of a Worker bundle that composes payments; both are reached by their own deep path.
 

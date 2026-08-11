@@ -72,6 +72,14 @@ export interface UseEntitlement {
   entitled: boolean;
   /** Whether the first read is still in flight. */
   loading: boolean;
+  /**
+   * Why the last read could not be made, or null.
+   *
+   * Distinct from `entitled: false`, which is an answer. This is the absence of one, and a screen that
+   * says "you don't have Pro" and one that says "we couldn't check" are different screens. `entitled`
+   * still fails closed while this is set — the lock holds, it just admits it is guessing.
+   */
+  readFailure: PaymentsFailure | null;
   /** Re-read. Call it after a purchase completes. */
   refresh: () => void;
 }
@@ -82,10 +90,15 @@ export interface UseEntitlement {
  * Starts `false`, always. Starting `true` would flash the paid screen to everyone for one frame, which is
  * both a leak and worse to look at than a spinner. An unreachable Worker reads as not entitled for the
  * same reason: the server check is the boundary, so failing closed here costs nothing.
+ *
+ * The failing-closed happens *here*, visibly, rather than inside {@link getEntitlements} — a lock is a
+ * refusal and can carry an escape route on it, which is what `readFailure` is. A caller that names the
+ * plan instead of locking it must not inherit this choice; see {@link useSubscription}.
  */
 export function useEntitlement(key: string, options?: PaymentsClientOptions): UseEntitlement {
   const [entitled, setEntitled] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
   const live = useLive();
   const basePath = options?.basePath;
@@ -95,16 +108,18 @@ export function useEntitlement(key: string, options?: PaymentsClientOptions): Us
     // `basePath` is read here rather than off the ref, so it is a real dependency: it is the one option
     // that changes the request, and a project that moved its routes must re-read. Everything else comes
     // through the ref, which is why an inline options object does not restart this on every render.
-    void getEntitlements({ ...latest.current, basePath }).then((list) => {
+    void getEntitlements({ ...latest.current, basePath }).then((result) => {
       if (!live.current) return;
-      setEntitled(list.some((entitlement) => entitlement.key === key && entitlement.granted));
+      // Fail closed on the answer, report the failure beside it. Both, not either.
+      setEntitled(result.ok && result.value.some((entitlement) => entitlement.key === key && entitlement.granted));
+      setReadFailure(result.ok ? null : result.failure);
       setLoading(false);
     });
   }, [key, basePath, latest, live]);
 
   useEffect(refresh, [refresh]);
 
-  return { entitled, loading, refresh };
+  return { entitled, loading, readFailure, refresh };
 }
 
 /** What {@link useSubscription} gives a subscription screen. */
@@ -123,8 +138,18 @@ export interface UseSubscription {
   manageStore: (rail: "apple" | "google") => void;
   /** Whether a portal session is being created. */
   managing: boolean;
-  /** The last refusal, or null. */
+  /** The last refusal of something the subscriber *asked for* — opening the portal — or null. */
   failure: PaymentsFailure | null;
+  /**
+   * Why the entitlements could not be read, or null. Kept apart from `failure` deliberately.
+   *
+   * This screen names the plan, and free is the floor of every ladder: an empty `entitlements` is a
+   * positive claim that the account is on the cheapest tier. Rendering that from a read that never
+   * happened tells a paying customer they are on Free and offers to sell them what they have. So a
+   * failed read leaves `entitlements` empty *and* says so here, and a screen must consult this before
+   * it renders a tier name. Collapsing it into `failure` would let a stale portal refusal mask it.
+   */
+  readFailure: PaymentsFailure | null;
 }
 
 /**
@@ -139,6 +164,7 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
   const [loading, setLoading] = useState(true);
   const [managing, setManaging] = useState(false);
   const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const [readFailure, setReadFailure] = useState<PaymentsFailure | null>(null);
   const latest = useLatest(options);
   const live = useLive();
   const basePath = options?.basePath;
@@ -147,9 +173,13 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
     setLoading(true);
     // `basePath` explicitly, for the reason `useEntitlement` gives: it is the option that changes the
     // request, so it has to be a dependency rather than something read off a ref.
-    void getEntitlements({ ...latest.current, basePath }).then((list) => {
+    void getEntitlements({ ...latest.current, basePath }).then((result) => {
       if (!live.current) return;
-      setEntitlements(list);
+      // A refusal leaves the previous list alone rather than blanking it — the same rule `usePurchase`
+      // follows. What a screen must not do is read the untouched list as this account's current plan,
+      // which is what `readFailure` is there to stop.
+      if (result.ok) setEntitlements(result.value);
+      setReadFailure(result.ok ? null : result.failure);
       setLoading(false);
     });
   }, [basePath, latest, live]);
@@ -184,6 +214,7 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
     manageStore,
     managing,
     failure,
+    readFailure,
   };
 }
 

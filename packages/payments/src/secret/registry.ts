@@ -121,11 +121,38 @@ export const PaymentsStripeCredentials = z
   .describe("Stripe's credentials: the secret key that creates hosted sessions, and the webhook signing secret.");
 export type PaymentsStripeCredentials = z.infer<typeof PaymentsStripeCredentials>;
 
+export const PaymentsLemonSqueezyCredentials = z
+  .strictObject({
+    apiKey: z
+      .string()
+      .min(1)
+      .describe(
+        "The Lemon Squeezy API key. Creates hosted checkouts, reads orders and subscriptions, and mints customer-portal links. Account-wide: it returns test-mode objects to a production deployment too, which is why `test_mode` on the object — never the key — decides a purchase's environment.",
+      ),
+    webhookSecret: z
+      .string()
+      .min(1)
+      .describe(
+        "The webhook's signing secret, set when the webhook is created. What the `X-Signature` HMAC-SHA256 over the exact received body is checked against.",
+      ),
+    storeId: z
+      .string()
+      .min(1)
+      .describe(
+        "The Lemon Squeezy store id this deployment sells through. Account-level identity, the way Apple's `bundleId` is, which is why it sits with the credentials rather than in config.",
+      ),
+  })
+  .describe("Lemon Squeezy's credentials: the API key, the webhook signing secret, and the store's identity.");
+export type PaymentsLemonSqueezyCredentials = z.infer<typeof PaymentsLemonSqueezyCredentials>;
+
 export const PaymentsProviderCredentials = z
   .strictObject({
     apple: PaymentsAppleCredentials.optional().describe("Apple's credentials, when the Apple rail is enabled."),
     google: PaymentsGoogleCredentials.optional().describe("Google's credentials, when the Google rail is enabled."),
     stripe: PaymentsStripeCredentials.optional().describe("Stripe's credentials, when the Stripe rail is enabled."),
+    lemonSqueezy: PaymentsLemonSqueezyCredentials.optional().describe(
+      "Lemon Squeezy's credentials, when that rail is enabled.",
+    ),
   })
   .describe(
     "Every enabled rail's credentials, in one secret. A rail's block is present in full or absent entirely — adding a rail never reshapes storage.",

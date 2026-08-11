@@ -147,6 +147,41 @@ describe("the committed reconcile-worker template", () => {
     expect(resolved.triggers).toEqual({ crons: ["0 4 * * *"] });
   });
 
+  test("a Lemon Squeezy catalog travels whole, credentials excepted", async () => {
+    // The pass maps a refreshed variant back to a product before it can project it, so the rail's toggle,
+    // its return URLs and its variant ids all have to survive the trip into `PAYMENTS_CONFIG`. A rail
+    // added to the schema and dropped here would reconcile nothing and report zero drift, which reads
+    // exactly like a rail with nothing wrong.
+    const catalog = PaymentsConfig.parse({
+      rails: { lemonSqueezy: true },
+      lemonSqueezy: { successUrl: "https://app.example.com/thanks" },
+      products: {
+        pro_monthly: {
+          type: "subscription",
+          name: "Pro",
+          entitlements: ["pro"],
+          lemonSqueezy: { variantId: "123456" },
+        },
+      },
+    });
+
+    const resolved = resolvePaymentsConfig(await template(), {
+      project: PROJECT,
+      env: "prod",
+      appDatabaseId: "app-db",
+      secretsDatabaseId: "secrets-db",
+      storeId: "store-1",
+      paymentsConfig: catalog,
+    });
+
+    expect(JSON.parse(resolved.vars?.PAYMENTS_CONFIG ?? "null")).toEqual(catalog);
+    // The var is a plain one, and it stays that way because nothing secret is in it. The API key, the
+    // webhook secret and the store id live in `payments-provider-credentials`, which this never touches.
+    for (const shape of ["apiKey", "webhookSecret", "storeId"]) {
+      expect(resolved.vars?.PAYMENTS_CONFIG, shape).not.toContain(shape);
+    }
+  });
+
   test("the template's entry point is the module the class is exported from", async () => {
     // A `main` that does not resolve is a deploy that fails after every id has been looked up.
     const parsed = await template();

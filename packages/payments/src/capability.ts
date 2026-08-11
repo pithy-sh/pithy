@@ -124,13 +124,21 @@ function clientProjection(config: PaymentsConfig, environment: string): ClientPr
     entitlements: [...product.entitlements],
     name: product.name,
     stripePriceId: product.stripe?.priceId ?? null,
+    // A variant id is publishable for the same reason a Stripe price id is: it is what a hosted checkout
+    // names, so it may reach a browser. The API key and the signing secret never do.
+    lemonSqueezyVariantId: product.lemonSqueezy?.variantId ?? null,
   }));
   if (products.length === 0) return { enabled: false };
 
   return {
     enabled: true,
     environment,
-    rails: { apple: config.rails.apple, google: config.rails.google, stripe: config.rails.stripe },
+    rails: {
+      apple: config.rails.apple,
+      google: config.rails.google,
+      stripe: config.rails.stripe,
+      lemonSqueezy: config.rails.lemonSqueezy,
+    },
     basePath: config.basePath,
     // Catalog order, not sorted: the order an adopter wrote their products in is the order a paywall
     // should list them, and it is stable for a given config either way.

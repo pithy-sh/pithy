@@ -19,12 +19,12 @@ import { capabilityLoadError } from "./loadFailure";
  * The live payments provisioner — the Cloudflare + wrangler implementation behind `pithy payments provision`.
  *
  * **Payments provisions less than any other capability, and that is the design.** There is no bucket, no KV
- * namespace, no index, and — this is the part worth stating — **no secret written here**. Three stores' worth
- * of credentials are things a human downloads from three consoles: Apple's `.p8`, Google's service-account
- * JSON, Stripe's key pair. Nothing can mint them, so nothing here pretends to; they arrive through
- * `pithy secrets set` and this command deploys the worker that reads them. What is left is one prebuilt
- * Workflow host per environment, and the `workflows` binding that `pithy add` cannot write because the
- * deployed Workflow name is per environment.
+ * namespace, no index, and — this is the part worth stating — **no secret written here**. Four stores' worth
+ * of credentials are things a human downloads from four consoles: Apple's `.p8`, Google's service-account
+ * JSON, Stripe's key pair, Lemon Squeezy's API key and webhook secret. Nothing can mint them, so nothing here
+ * pretends to; they arrive through `pithy secrets set` and this command deploys the worker that reads them.
+ * What is left is one prebuilt Workflow host per environment, and the `workflows` binding that `pithy add`
+ * cannot write because the deployed Workflow name is per environment.
  *
  * `@pithy-sh/payments` is an **optional** capability, so the CLI must not hard-depend on it. Types come in
  * through type-only imports (erased at build), and every runtime value comes through {@link loadPayments} — a

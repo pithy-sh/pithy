@@ -12,6 +12,8 @@ import type { PaymentsRailProvider } from "./contract";
 import type { GoogleHttpFetch } from "./google/http";
 import type { GoogleJwk } from "./google/oidc";
 import { googleRail } from "./google/rail";
+import type { LemonSqueezyHttpFetch } from "./lemonSqueezy/api";
+import { lemonSqueezyRail } from "./lemonSqueezy/rail";
 import type { StripeHttpFetch } from "./stripe/api";
 import { stripeRail } from "./stripe/rail";
 
@@ -64,6 +66,8 @@ export interface RailTrustOptions {
   googleAccessToken?: string;
   /** The HTTP transport the Stripe rail reaches Stripe's API through. Defaults to `fetch`. */
   stripeTransport?: StripeHttpFetch;
+  /** The HTTP transport the Lemon Squeezy rail reaches its API through. Defaults to `fetch`. */
+  lemonSqueezyTransport?: LemonSqueezyHttpFetch;
 }
 
 /** Build a rail provider from the credential bundle. Each factory takes only its own rail's block. */
@@ -89,6 +93,8 @@ const RAIL_FACTORIES: Partial<Record<PaymentsRail, RailFactory>> = {
     }),
   stripe: (credentials, trust) =>
     stripeRail(railCredentials(credentials, "stripe"), { transport: trust.stripeTransport }),
+  lemonSqueezy: (credentials, trust) =>
+    lemonSqueezyRail(railCredentials(credentials, "lemonSqueezy"), { transport: trust.lemonSqueezyTransport }),
 };
 
 /** The rails this build can serve at all, whatever a project's config says. */

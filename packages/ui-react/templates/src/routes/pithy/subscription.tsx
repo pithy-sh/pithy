@@ -27,15 +27,22 @@ function holding(entitlement: { granted: boolean; expiresAt: string | null }): s
 }
 
 export default function Subscription() {
-  const { entitlements, subscribed, loading, manage, manageStore, managing, failure } = useSubscription(paymentsClient);
+  const { entitlements, subscribed, loading, manage, manageStore, managing, failure, readFailure } =
+    useSubscription(paymentsClient);
 
   if (loading) return <p className="muted">One moment.</p>;
 
   return (
     <main className="screen">
-      <h1>{subscribed ? "You're subscribed." : "Nothing yet."}</h1>
+      {/* A read that failed is not an account that holds nothing. "Nothing yet." over an unreachable
+          Worker tells a paying subscriber they have no subscription, and this screen is one click from
+          the paywall that would sell them a second one. So the failure gets its own heading and the
+          empty state is never rendered from an answer nobody received. */}
+      <h1>{readFailure ? "We couldn't check." : subscribed ? "You're subscribed." : "Nothing yet."}</h1>
 
-      {entitlements.length === 0 ? (
+      {readFailure ? (
+        <p className="muted">{readFailure.message}</p>
+      ) : entitlements.length === 0 ? (
         <p className="muted">You don't hold anything on this account.</p>
       ) : (
         <div className="stack">

@@ -54,10 +54,24 @@ import type { ProviderEventInput } from "../projection/event";
  */
 export type UnboundProviderEvent = Omit<ProviderEventInput, "userId">;
 
-/** What a rail needs from the request it is serving. Just the clock — everything else is on the rail. */
+/** What a rail needs from the request it is serving. The clock, and which deployment is asking. */
 export interface RailRequestContext {
   /** The clock, for certificate validity and freshness windows. Injected so verification is deterministic. */
   now: Date;
+  /**
+   * This deployment's `ENVIRONMENT` var, verbatim — `dev`, `staging`, `prod` — or undefined.
+   *
+   * For a rail whose store is **one namespace across every environment**, which is the case for Lemon
+   * Squeezy: test mode is a flag on an object, not a separate store, so a `dev` deployment and a `staging`
+   * deployment pointed at one store both hear everything the other's buyers do. Such a rail stamps this
+   * value into the checkout it creates and reads it back off the webhook, and an event stamped for another
+   * deployment projects nothing.
+   *
+   * Deliberately the raw var and not `deploymentEnvironment`'s two-valued answer: that returns `sandbox`
+   * for `dev` and `staging` alike, so fencing on it would not separate the two environments this exists to
+   * separate. Optional because the other three stores partition by credential and have nothing to fence.
+   */
+  deployment?: string;
 }
 
 /**
@@ -147,6 +161,25 @@ export interface VerifiedNotification {
    */
   accountReference?: string | null;
   /**
+   * A second event the same notification implies, describing the **subscription's standing** where `event`
+   * describes a **charge** — or null, which is the case on every rail but one.
+   *
+   * Exists because one store reports the two separately and neither message names the other's key. A Lemon
+   * Squeezy `subscription_payment_*` webhook carries an invoice: the money, and nothing about whether the
+   * subscription is still live. Its `subscription_*` webhooks carry the standing and no money. So that rail
+   * writes two rows — see {@link PurchaseRole} — and a notification that changes both has to say both.
+   *
+   * The case that forces it is a refund. Lemon Squeezy is a merchant of record and issues refunds on its own,
+   * for a chargeback or a tax dispute, with no local write preceding it; the invoice row must go `refunded` so
+   * the ledger claws back, *and* the subscription must stop granting, because the buyer has their money back.
+   * One event could do one or the other, and doing only the first leaves a refunded subscriber with the
+   * feature.
+   *
+   * The route projects it with the same owner as `event` and after it. It is never fulfilled for credit — a
+   * `state` row is not a charge, so `purchaseIsPaid` and the clawback both refuse it by role.
+   */
+  stateEvent?: UnboundProviderEvent | null;
+  /**
    * Why an authentic notification produced no event, when that is worth recording — written to the webhook row's
    * `error` column so it is queryable and the reconciliation pass can act on it.
    *
@@ -215,16 +248,33 @@ export interface CheckoutSessionInput {
   providerAccountId?: string | null;
   /** Where the store sends the browser after a completed purchase. */
   successUrl: string;
-  /** Where the store sends the browser if the purchase is abandoned. */
-  cancelUrl: string;
+  /**
+   * Where the store sends the browser if the purchase is abandoned, or undefined for a store that offers
+   * nowhere to abandon *to*.
+   *
+   * Optional for the same reason {@link PortalSessionInput.returnUrl} is: Lemon Squeezy's hosted checkout
+   * has no cancel destination — a buyer who backs out closes the tab — and a required field there would
+   * mean asking an adopter for a URL the rail then silently discarded.
+   */
+  cancelUrl?: string;
 }
 
 /** What a billing-portal session needs: the store account whose subscription is being managed. */
 export interface PortalSessionInput {
   /** The store's own account identifier for the caller, resolved from the provider-account map. */
   providerAccountId: string;
-  /** Where the store sends the browser when the user is done. */
-  returnUrl: string;
+  /**
+   * Where the store sends the browser when the user is done, or undefined for a store that offers nowhere
+   * to return to.
+   *
+   * Optional because one store genuinely is shaped that way, and saying so in the type is better than the
+   * alternative. Lemon Squeezy's customer portal is a signed, expiring link read off the customer object;
+   * it takes no return parameter, and the subscriber closes the tab. A required field there would leave
+   * the rail silently discarding a URL an adopter configured and believed in — the failure would be a
+   * button that goes nowhere rather than a type error. So the contract admits the gap, and a project
+   * running that rail alone is never asked for a URL nothing will use.
+   */
+  returnUrl?: string;
 }
 
 /** A hosted page the client is sent to. Pithy never owns payment UI, SCA, tax, or proration. */
