@@ -18,6 +18,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { AuditConfig } from "../capability";
 import { type AuditDatabase, auditDatabase } from "../data/tables";
 import { audit_0001_init } from "../migrations/0001_init";
+import { audit_0002_tenant } from "../migrations/0002_tenant";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
@@ -157,6 +158,7 @@ async function trail() {
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
   await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  await audit_0002_tenant.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   emitted = [];
 });
 
@@ -230,6 +232,38 @@ describe("GET /audit/events", () => {
       events: { actorId: string }[];
     }>();
     expect(byTime.events.map((e) => e.actorId)).toEqual(["u-2"]);
+  });
+
+  test("filters by tenant, and by no tenant at all", async () => {
+    // The pane this route exists for draws one customer's history. `?tenant=` — the parameter present
+    // and empty — is the null filter: an empty string is not a legal tenant id, so it can never collide
+    // with one, and the question "what was done outside any customer's account" stays askable over HTTP
+    // instead of only from Kysely.
+    await seed(
+      { action: "admin/config_changed", outcome: "success", actorType: "user", actorId: "ada", tenant: "org-a" },
+      new Date(1_000),
+    );
+    await seed(
+      { action: "admin/config_changed", outcome: "success", actorType: "user", actorId: "ada", tenant: "org-b" },
+      new Date(2_000),
+    );
+    await seed({ action: "secrets/rotated", outcome: "success", actorType: "system" }, new Date(3_000));
+
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const byTenant = await (await call(app, `${BASE}/events?tenant=org-a`, AUDIT_TRAIL_READ_SCOPE)).json<{
+      events: { tenant: string | null; actorId: string }[];
+    }>();
+    expect(byTenant.events.map((e) => e.tenant)).toEqual(["org-a"]);
+
+    const untenanted = await (await call(app, `${BASE}/events?tenant=`, AUDIT_TRAIL_READ_SCOPE)).json<{
+      events: { tenant: string | null; action: string }[];
+    }>();
+    expect(untenanted.events.map((e) => e.action)).toEqual(["secrets/rotated"]);
+    expect(untenanted.events.map((e) => e.tenant)).toEqual([null]);
+
+    // And absent means unfiltered — the three events, not the untenanted one.
+    const all = await (await call(app, `${BASE}/events`, AUDIT_TRAIL_READ_SCOPE)).json<{ events: unknown[] }>();
+    expect(all.events).toHaveLength(3);
   });
 
   test("refuses a page larger than the shared ceiling, and a bound that is not a time", async () => {

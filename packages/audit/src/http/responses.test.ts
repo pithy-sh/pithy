@@ -41,6 +41,7 @@ const ROW: AuditEventRow = {
   environment: "prod",
   worker: "api",
   version: "build-7",
+  tenant: "org-42",
 };
 
 /** The same event with every optional column empty — the shape a CLI-originated row actually has. */
@@ -58,6 +59,7 @@ const SPARSE: AuditEventRow = {
   environment: null,
   worker: null,
   version: null,
+  tenant: null,
 };
 
 describe("audit response schemas", () => {
@@ -69,6 +71,15 @@ describe("audit response schemas", () => {
   test("the detail view is exactly what the detail schema declares", () => {
     accepts(AuditEventDetailView, auditEventDetailView(ROW));
     accepts(AuditEventDetailView, auditEventDetailView(SPARSE));
+  });
+
+  test("the listing view carries the tenant — a trail you cannot attribute is not one", () => {
+    // In the listing, not only the detail read. The pane this serves draws one tenant's history, so a
+    // client that could filter by tenant but never see which tenant a row belongs to would have to take
+    // the filter on trust — and a row shown under the wrong heading is the failure the column exists to
+    // prevent. It is an opaque id the adopter already holds, not personal data, so it is not one of the
+    // three fields the detail scope gates.
+    expect(Object.keys(AuditEventView.shape)).toContain("tenant");
   });
 
   test("the listing view carries no network identifier and no metadata bag", () => {

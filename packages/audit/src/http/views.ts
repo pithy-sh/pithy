@@ -71,6 +71,10 @@ export function auditEventView(row: AuditEventRow): AuditEventView {
     // The point of the column: it turns "this was revoked, by this subject" into "…against this exact
     // build". A forensic view that omitted it would leave the reader guessing which code ran.
     version: row.version,
+    // In the listing, not gated behind the detail scope. It is an opaque id the adopter already holds,
+    // not personal data — and a client that can filter by tenant but cannot see which tenant a row
+    // carries has to take the filter on trust, which is how a row ends up drawn under the wrong heading.
+    tenant: row.tenant,
   };
 }
 

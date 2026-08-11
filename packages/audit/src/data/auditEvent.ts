@@ -105,6 +105,12 @@ export const AuditEventRow = z
       .describe(
         'The Cloudflare version id of the build that recorded the event, stamped by the recorder from the `CF_VERSION_METADATA` binding. Null for a CLI-originated action, for a Worker that does not declare the binding, and on rows written before this column existed. It is what turns "this was revoked" into "this was revoked, by this subject, against this exact build".',
       ),
+    tenant: z
+      .string()
+      .nullable()
+      .describe(
+        "Whose action it was — the id of the tenant it was taken *for*, indexed with `occurredAt` for the (tenant, time) read this column exists to serve. **Supplied by the emitter, not stamped by the recorder** — the opposite of the four columns above it, and deliberately: `project`, `environment` and `worker` are properties of the writer, constant across every row a multi-tenant Worker writes, and no Worker var can know which customer an action belonged to. So this one is exactly as trustworthy as the call site that sets it, and it cannot be defaulted or verified here. Null means *not tenant-scoped* — a single-tenant app, a CLI-originated action, a fleet-wide operator action — and on rows written before this column existed. Never derived from a membership table afterwards: the tenant of an action is a fact at the time of the action, membership is a fact now.",
+      ),
   })
   .describe("One audit event in `pithy_audit_events` — the durable, queryable record of a security-relevant action.");
 export type AuditEventRow = z.output<typeof AuditEventRow>;

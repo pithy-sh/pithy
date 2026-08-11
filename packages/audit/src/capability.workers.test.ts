@@ -11,11 +11,14 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { audit } from "./capability";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
+import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { queryAuditEvents } from "./query";
 
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
-  await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  const db = auditDatabase(env.DB) as unknown as Kysely<unknown>;
+  await audit_0001_init.up(db);
+  await audit_0002_tenant.up(db);
 });
 
 describe("audit capability through createBackend", () => {
@@ -126,6 +129,42 @@ describe("audit capability through createBackend", () => {
 
     const [event] = await queryAuditEvents(auditDatabase(env.DB), { actorId: "u-forge" });
     expect(event).toMatchObject({ project: "acme", environment: "dev", worker: "api" });
+  });
+
+  test("a route states the tenant through the seam, and the trail reads back per tenant", async () => {
+    // The mirror of the forgery test above, through the same composition. Origin is the recorder's and
+    // a route cannot touch it; the tenant is the route's and nothing else can know it — the Worker's
+    // vars are identical on both of these requests, so without this column the two customers' histories
+    // would be indistinguishable rows.
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post("/act/:tenant", async (c) => {
+          await c.var.emit({
+            action: "admin/config_changed",
+            outcome: "success",
+            actorType: "user",
+            actorId: "ada",
+            tenant: c.req.param("tenant"),
+          });
+          return c.json({ ok: true });
+        });
+      },
+    });
+
+    const backend = createBackend({ capabilities: [audit()], app });
+    const vars = { ...env, PROJECT: "acme", ENVIRONMENT: "prod", WORKER: "api" };
+    await backend.request("/act/org-a", { method: "POST" }, vars);
+    await backend.request("/act/org-b", { method: "POST" }, vars);
+
+    const forOrgA = await queryAuditEvents(auditDatabase(env.DB), { tenant: "org-a" });
+    expect(forOrgA.map((e) => e.tenant)).toEqual(["org-a"]);
+    // Same actor, same project, same environment, same Worker — the tenant is the only thing that
+    // separates them.
+    const byActor = await queryAuditEvents(auditDatabase(env.DB), { actorId: "ada" });
+    expect(byActor).toHaveLength(2);
+    expect(new Set(byActor.map((e) => e.project))).toEqual(new Set(["acme"]));
   });
 
   test("a non-fatal write failure routes through the logger seam (not console) as an audit/* record", async () => {

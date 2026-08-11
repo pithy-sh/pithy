@@ -26,6 +26,7 @@ describe("AuditEventRow codec round-trip", () => {
       environment: "prod",
       worker: "api",
       version: null,
+      tenant: "org-42",
     } as const;
 
     const event = AuditEventRow.parse(row);
@@ -50,6 +51,37 @@ describe("AuditEventRow codec round-trip", () => {
     expect(JSON.parse(encoded.metadata as string)).toEqual({ provider: "google" });
     // Plain text columns, so they survive the round trip unchanged — no codec to get wrong.
     expect([encoded.project, encoded.environment, encoded.worker]).toEqual(["acme", "prod", "api"]);
+    expect([event.tenant, encoded.tenant]).toEqual(["org-42", "org-42"]);
+  });
+
+  test("a row with no tenant decodes — null means the action was not tenant-scoped", () => {
+    // Not "unknown". A CLI-originated action and a fleet-wide operator action genuinely have no tenant,
+    // and a single-tenant app never states one, so null is a first-class value on this column rather
+    // than a gap waiting to be filled.
+    const event = AuditEventRow.parse({
+      id: 3,
+      eventId: "55555555-5555-5555-5555-555555555555",
+      occurredAt: 1_700_000_000_000,
+      action: "secrets/rotated",
+      outcome: "success",
+      severity: "info",
+      actorType: "system",
+      actorId: null,
+      sessionId: null,
+      resourceType: null,
+      resourceId: null,
+      ip: null,
+      userAgent: null,
+      requestId: null,
+      metadata: null,
+      project: null,
+      environment: null,
+      worker: null,
+      version: null,
+      tenant: null,
+    });
+    expect(event.tenant).toBeNull();
+    expect(AuditEventRow.encode(event).tenant).toBeNull();
   });
 
   test("a row with no recorded origin still decodes", () => {
@@ -76,6 +108,7 @@ describe("AuditEventRow codec round-trip", () => {
       environment: null,
       worker: null,
       version: null,
+      tenant: null,
     });
     expect([event.project, event.environment, event.worker]).toEqual([null, null, null]);
     const encoded = AuditEventRow.encode(event);
@@ -103,6 +136,7 @@ describe("AuditEventRow codec round-trip", () => {
       environment: null,
       worker: null,
       version: null,
+      tenant: null,
     });
     expect(event.actorId).toBeNull();
     expect(event.metadata).toBeNull();

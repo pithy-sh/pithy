@@ -27,6 +27,18 @@ const MAX_FILTER_LENGTH = 256;
 const FilterValue = z.string().min(1).max(MAX_FILTER_LENGTH);
 
 /**
+ * The tenant filter, where **an empty value is the null filter**: `?tenant=acme` is one tenant's trail,
+ * `?tenant=` is the events that belong to no tenant, and omitting it entirely filters nothing.
+ *
+ * Three states over a query string that natively has two, so the third needs an encoding. The empty
+ * string is the one value that cannot collide: `FilterValue` is `min(1)`, so no tenant id is ever
+ * empty, and no adopter can be locked out of filtering for a tenant whose id happens to be the sentinel
+ * — which is what `?tenant=none` or `?tenant=null` would have risked. It is decoded here rather than in
+ * the handler, so `AuditQuery`'s `string | null` is what reaches the query builder.
+ */
+const TenantFilter = z.union([FilterValue, z.literal("").transform(() => null)]);
+
+/**
  * An inclusive time bound, as ISO-8601, decoded to a `Date` by the schema rather than by the handler.
  *
  * The conversion belongs here because a handler takes typed values: the route signature carries the
@@ -76,6 +88,9 @@ export const ListAuditEventsQuery = z
     environment: FilterValue.optional().describe("Filter to one environment (`dev` | `staging` | `prod`)."),
     worker: FilterValue.optional().describe(
       "Filter to one `apps/<name>` Worker. Two Workers sharing a database share this table, so this is the only column that tells their events apart.",
+    ),
+    tenant: TenantFilter.optional().describe(
+      "Filter to one tenant — whose actions these were, as the emitter recorded them. Send it empty (`?tenant=`) for the events that belong to no tenant: a CLI-originated action, a fleet-wide one, or a row recorded before the column existed. Omit it to filter nothing.",
     ),
     from: TimeBound.optional().describe("Inclusive lower bound on when the event occurred, ISO-8601."),
     to: TimeBound.optional().describe("Inclusive upper bound on when the event occurred, ISO-8601."),

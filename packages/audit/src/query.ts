@@ -10,7 +10,10 @@ import type { AuditDatabase } from "./data/tables";
 /**
  * A filter over the audit trail. Every field is optional and ANDed together; an empty filter returns
  * the whole trail (newest first). This is the typed read seam consumers use to read events by actor,
- * action, time range, resource, outcome, and severity.
+ * action, time range, resource, outcome, severity, origin, and tenant.
+ *
+ * `tenant` is the only field where `null` is a value rather than an absence — see its own doc. Every
+ * other field is "match this or don't filter".
  *
  * It is a Kysely query first: `src/http/routes.ts` is the control-plane surface over it, and it is
  * this package's own contribution behind `requireControlPlane(scope)` rather than something core
@@ -38,6 +41,17 @@ export interface AuditQuery {
   environment?: string;
   /** Match the recording Worker's `apps/<name>` directory name. */
   worker?: string;
+  /**
+   * Match the tenant the action was taken for — the read this column exists to serve, usually with a
+   * time range.
+   *
+   * **`null` is a filter, not an absence.** Omitted (`undefined`) means "do not filter by tenant";
+   * `null` means "the events that belong to no tenant" — a CLI-originated action, a fleet-wide operator
+   * action, a row recorded before the column existed. Both are questions an adopter genuinely asks, and
+   * the second one is why this is `string | null` rather than `string`: without it, asking it means
+   * writing SQL against this capability's own table.
+   */
+  tenant?: string | null;
   /** Inclusive lower bound on `occurredAt`. */
   from?: Date;
   /** Inclusive upper bound on `occurredAt`. */
@@ -93,6 +107,14 @@ function auditEventQuery(db: AuditDatabase, filter: AuditQuery) {
   if (filter.project !== undefined) query = query.where("project", "=", filter.project);
   if (filter.environment !== undefined) query = query.where("environment", "=", filter.environment);
   if (filter.worker !== undefined) query = query.where("worker", "=", filter.worker);
+  // The tenant filter, and the one place `null` is a value rather than "unset". `= null` matches
+  // nothing in SQL, so a null filter has to become `is null` — which is also the reason this reads
+  // `!== undefined` rather than a truthiness check. Placed before the time bounds so it leads
+  // `pithyAuditEventsTenantIdx`, whose second column is `occurredAt`: one tenant's trail over a window
+  // is the query, and it must not scan the largest table in the project.
+  if (filter.tenant !== undefined) {
+    query = filter.tenant === null ? query.where("tenant", "is", null) : query.where("tenant", "=", filter.tenant);
+  }
   if (filter.from !== undefined) query = query.where("occurredAt", ">=", SQLiteDate.encode(filter.from));
   if (filter.to !== undefined) query = query.where("occurredAt", "<=", SQLiteDate.encode(filter.to));
 

@@ -33,6 +33,18 @@ const minutesAgo = (minutes: number): Date => new Date(Date.now() - minutes * 60
 const EXAMPLE_ORIGIN = { project: "example-app", environment: null, worker: "api", version: null } as const;
 
 /**
+ * Two fictional tenants, so a dev database can show what the tenant filter is for.
+ *
+ * **Ada's events are split across both**, deliberately: one person administering two accounts is the
+ * case `actorId` cannot answer, and a fixture where every actor sat in exactly one tenant would make
+ * the column look redundant. One row is left with no tenant at all — null is a value, not a gap. It is
+ * the shape every row in a single-tenant app has, and it gives the "belongs to no tenant" filter
+ * something to return.
+ */
+const EXAMPLE_TENANT_ACME = "example-tenant-acme";
+const EXAMPLE_TENANT_GLOBEX = "example-tenant-globex";
+
+/**
  * A handful of example audit events — the durable, queryable trail the licensed dashboard reads. They
  * are attributed to the shared cast from `@pithy-sh/core` ({@link EXAMPLE_ADA} et al.), so the audit
  * trail lines up with the same users `auth` seeds and `leaderboard`/`ledger`/`multiplayer` reference:
@@ -68,6 +80,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0001",
         metadata: { method: "magic_link" },
+        tenant: EXAMPLE_TENANT_ACME,
         ...EXAMPLE_ORIGIN,
       },
       {
@@ -86,6 +99,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0002",
         metadata: { reason: "expired_link" },
+        tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
       },
       {
@@ -104,6 +118,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: null,
         requestId: "example-req-0003",
         metadata: { plan: "pro", grantedBy: "system" },
+        tenant: EXAMPLE_TENANT_ACME,
         ...EXAMPLE_ORIGIN,
       },
       {
@@ -122,6 +137,8 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0004",
         metadata: { field: "seatLimit", from: 5, to: 10 },
+        // The same actor as event 1, in the other tenant — what `actorId` alone cannot tell apart.
+        tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
       },
       {
@@ -140,6 +157,7 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "curl/8.4.0",
         requestId: "example-req-0005",
         metadata: { familyId: "example-family-grace", action: "family_revoked" },
+        tenant: EXAMPLE_TENANT_GLOBEX,
         ...EXAMPLE_ORIGIN,
       },
       {
@@ -158,6 +176,8 @@ export const auditExampleSeed: SeedSet = defineSeed({
         userAgent: "PithyDemo/1.0 (dev seed)",
         requestId: "example-req-0006",
         metadata: { amount: 50, currency: "coins" },
+        // No tenant, on purpose: the shape every row in a single-tenant app has.
+        tenant: null,
         ...EXAMPLE_ORIGIN,
       },
     ]),

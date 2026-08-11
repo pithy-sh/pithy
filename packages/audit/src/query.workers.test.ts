@@ -6,6 +6,7 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
+import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { queryAuditEvents } from "./query";
 import { recordAuditEvent } from "./recorder";
 
@@ -14,6 +15,7 @@ const T0 = 1_700_000_000_000;
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
   await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
+  await audit_0002_tenant.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
 
   const db = auditDatabase(env.DB);
   await recordAuditEvent(db, {
@@ -130,5 +132,89 @@ describe("queryAuditEvents", () => {
     // question about a specific project.
     const events = await queryAuditEvents(auditDatabase(env.DB), { project: "acme" });
     expect(events.every((event) => event.project === "acme")).toBe(true);
+  });
+});
+
+describe("filtering by tenant", () => {
+  /** One person administering two tenants, plus an action belonging to neither. */
+  async function twoTenants(): Promise<void> {
+    const db = auditDatabase(env.DB);
+    await recordAuditEvent(db, {
+      action: "admin/config_changed",
+      outcome: "success",
+      actorType: "user",
+      actorId: "ada",
+      tenant: "org-a",
+      occurredAt: new Date(T0 + 10_000),
+    });
+    await recordAuditEvent(db, {
+      action: "admin/config_changed",
+      outcome: "success",
+      actorType: "user",
+      actorId: "ada",
+      tenant: "org-b",
+      occurredAt: new Date(T0 + 11_000),
+    });
+    await recordAuditEvent(db, {
+      action: "secrets/rotated",
+      outcome: "success",
+      actorType: "system",
+      occurredAt: new Date(T0 + 12_000),
+    });
+  }
+
+  test("returns one tenant's trail, and not the other's", async () => {
+    // The question the column exists to answer, and the one nothing on the row could answer before it:
+    // in a multi-tenant app `project`, `environment` and `worker` are constant across every row.
+    await twoTenants();
+    const events = await queryAuditEvents(auditDatabase(env.DB), { tenant: "org-a" });
+    expect(events.map((event) => event.tenant)).toEqual(["org-a"]);
+    expect(events[0]?.actorId).toBe("ada");
+  });
+
+  test("the actor is not the tenant — filtering by actor returns both tenants' history", async () => {
+    // Why this is a column and not a query over `actorId`. One person acts in two tenants; every event
+    // they produce carries the same actor, so an actor-scoped read leaks across the boundary.
+    await twoTenants();
+    const byActor = await queryAuditEvents(auditDatabase(env.DB), { actorId: "ada" });
+    expect(byActor.map((event) => event.tenant).sort()).toEqual(["org-a", "org-b"]);
+  });
+
+  test("filters for null — the events that belong to no tenant", async () => {
+    // A first-class value, not a gap: a CLI-originated action and a fleet-wide operator action have no
+    // tenant, and "show me what was done outside any customer's account" is a real question. Without
+    // this an adopter writes SQL against the capability's own table to ask it.
+    await twoTenants();
+    const events = await queryAuditEvents(auditDatabase(env.DB), { tenant: null });
+    expect(events.every((event) => event.tenant === null)).toBe(true);
+    expect(events.map((event) => event.action)).toContain("secrets/rotated");
+    // The seeded rows from `beforeEach` carry no tenant either, so this is the whole untenanted trail.
+    expect(events).toHaveLength(4);
+  });
+
+  test("an absent filter is not a null filter", async () => {
+    // `undefined` means "do not filter" and `null` means "match the rows that have none". Collapsing
+    // the two would make the whole trail unreadable or the null read a full scan.
+    await twoTenants();
+    const all = await queryAuditEvents(auditDatabase(env.DB));
+    expect(all).toHaveLength(6);
+  });
+
+  test("combines with a time range — the (tenant, time) read the index serves", async () => {
+    await twoTenants();
+    const events = await queryAuditEvents(auditDatabase(env.DB), {
+      tenant: "org-b",
+      from: new Date(T0 + 11_000),
+      to: new Date(T0 + 11_000),
+    });
+    expect(events.map((event) => event.tenant)).toEqual(["org-b"]);
+  });
+
+  test("a tenant filter excludes rows recorded before the column existed", async () => {
+    // They read as null, and null is not a wildcard. Nothing back-fills them, because the tenant of an
+    // action is a fact at the time of the action and no membership table can answer it retroactively.
+    await twoTenants();
+    const events = await queryAuditEvents(auditDatabase(env.DB), { tenant: "org-a" });
+    expect(events.every((event) => event.tenant === "org-a")).toBe(true);
   });
 });
