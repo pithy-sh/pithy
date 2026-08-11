@@ -10,6 +10,7 @@ import {
   type PaymentsClientOptions,
   type PaymentsClientRail,
   type PaymentsFailure,
+  type PaymentsHostedRail,
   type PurchaseView,
   restorePurchases,
   startCheckout,
@@ -35,9 +36,15 @@ import {
  * Cookie/session throughout, because `./api` is: same-origin, `credentials: "include"`, no token in web
  * storage, no bearer header. Bearer stays the mobile path.
  *
- * **Nothing here throws, and nothing here is a security boundary.** A read that fails reads as "not
- * entitled" and a refusal is a message to render. The server's `requireEntitlement()` is the gate; these
- * exist so a user is sent to the paywall rather than shown a 403.
+ * **Nothing here throws, and nothing here is a security boundary.** A refusal is a message to render, and
+ * the server's `requireEntitlement()` is the gate; these exist so a user is sent to the paywall rather than
+ * shown a 403.
+ *
+ * **A failed read is not an answer, and each hook says so in the way its caller needs.** `useEntitlement`
+ * is a lock, so it fails closed — `entitled` stays false — and reports `readFailure` beside it so a screen
+ * can tell "you don't have Pro" from "we couldn't check". `useSubscription` *names the plan*, where failing
+ * closed would be a lie: an empty entitlement list is a positive claim that the account is on the free
+ * floor, so it reports the failure instead of rendering one.
  */
 
 /**
@@ -221,7 +228,13 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
 /** What {@link useCheckout} gives a paywall's buy button. */
 export interface UseCheckout {
   /** Create a Checkout Session for a catalog product and hand the browser to Stripe. */
-  start: (productId: string) => Promise<void>;
+  /**
+   * Start hosted checkout for a product.
+   *
+   * `rail` is only needed for a product sold on **both** hosted rails, where the server refuses to choose
+   * on the buyer's behalf. A product sold on one needs no argument.
+   */
+  start: (productId: string, rail?: PaymentsHostedRail) => Promise<void>;
   /** Whether a session is being created. Disable the button on it — a double click is a double session. */
   starting: boolean;
   /** The last refusal, or null. Cleared at the start of every attempt. */
@@ -243,10 +256,10 @@ export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   const live = useLive();
 
   const start = useCallback(
-    async (productId: string) => {
+    async (productId: string, rail?: PaymentsHostedRail) => {
       setStarting(true);
       setFailure(null);
-      const refused = await startCheckout({ productId }, latest.current);
+      const refused = await startCheckout({ productId, rail }, latest.current);
       if (!live.current) return;
       setStarting(false);
       if (refused) setFailure(refused);

@@ -44,7 +44,11 @@ function reads(body: string = subscriptionResponse(), status = 200): LemonSqueez
 /** Sign a body with the real secret and hand it to the rail, exactly as the guard would. */
 async function parse(
   body: string,
-  options: { deployment?: string; transport?: LemonSqueezyHttpFetch } = {},
+  options: {
+    deployment?: string;
+    transport?: LemonSqueezyHttpFetch;
+    sellsSubscription?: (variantId: string) => boolean;
+  } = {},
 ): Promise<VerifiedNotification> {
   const headers = new Headers({ "x-signature": await signLemonSqueezyBody(body, CREDENTIALS.webhookSecret) });
   return await parseLemonSqueezyNotification(
@@ -53,6 +57,7 @@ async function parse(
       credentials: CREDENTIALS,
       deployment: options.deployment ?? THIS_DEPLOYMENT,
       transport: options.transport ?? reads(),
+      sellsSubscription: options.sellsSubscription,
     },
   );
 }
@@ -64,6 +69,35 @@ describe("authenticity", () => {
     await expect(
       parseLemonSqueezyNotification({ body, headers }, { credentials: CREDENTIALS, transport: reads() }),
     ).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("nothing outside the signed body decides anything", async () => {
+    // The HMAC covers the body and nothing else, so every header is attacker-controlled on a replayed
+    // delivery. Lemon Squeezy also sends the event name in `X-Event-Name`; reading it would hand a replay
+    // adversary the dedup key AND the choice of handler, from one captured authentic body.
+    //
+    // Both halves asserted: the composed providerEventId must not move, and a success must not be steered
+    // into the refund branch that revokes a subscriber.
+    const body = invoiceDelivery("subscription_payment_success");
+    const signature = await signLemonSqueezyBody(body, CREDENTIALS.webhookSecret);
+
+    const honest = await parseLemonSqueezyNotification(
+      { body, headers: new Headers({ "x-signature": signature }) },
+      { credentials: CREDENTIALS, deployment: THIS_DEPLOYMENT, transport: reads() },
+    );
+    const lied = await parseLemonSqueezyNotification(
+      {
+        body,
+        headers: new Headers({ "x-signature": signature, "x-event-name": "subscription_payment_refunded" }),
+      },
+      { credentials: CREDENTIALS, deployment: THIS_DEPLOYMENT, transport: reads() },
+    );
+
+    expect(lied.providerEventId).toBe(honest.providerEventId);
+    expect(lied.providerEventId).toContain("subscription_payment_success");
+    expect(lied.event?.status).toBe("expired");
+    // The refund branch is the one that revokes access. A header must never reach it.
+    expect(lied.stateEvent ?? null).toBeNull();
   });
 
   test("an absent signature is refused", async () => {
@@ -241,6 +275,39 @@ describe("order-domain events", () => {
     expect(notification.event?.revokedAt).toEqual(new Date("2026-03-05T09:00:00.000Z"));
   });
 
+  test("the order that started a subscription is not a second payment", async () => {
+    // A payment received creates a charge row, and one payment must create exactly one. Lemon Squeezy
+    // raises an Order for a subscription purchase AND a subscription invoice for every period including the
+    // first — the same money, reported twice. Projecting both credits one period twice, and the order's row
+    // would grant forever besides: an order carries no expiry, so a never-expiring `active` row outranks
+    // the subscription's state row even after a cancellation.
+    const notification = await parse(orderDelivery("order_created"), {
+      sellsSubscription: () => true,
+    });
+    expect(notification.event).toBeNull();
+    // Ordinary traffic for a subscription sale, so no audit warning.
+    expect(notification.note ?? null).toBeNull();
+    // The customer and the reference still land: this is the delivery carrying what checkout stamped, and
+    // the subscription's own events arrive without one.
+    expect(notification.providerAccountId).toBe(String(CUSTOMER_ID));
+    expect(notification.accountReference).toBe(ACCOUNT_REFERENCE);
+  });
+
+  test("a genuine one-off order is still a payment", async () => {
+    const notification = await parse(orderDelivery("order_created"), { sellsSubscription: () => false });
+    expect(notification.event).toMatchObject({ role: "charge", status: "active", amountMinor: 4900 });
+    expect(notification.event?.expiresAt ?? null).toBeNull();
+  });
+
+  test("an order whose money never arrived grants nothing, whatever the catalog says", async () => {
+    // `in_grace` grants by policy, and an order has no expiry — so a pending order mapped to grace was
+    // permanent free access for money that never cleared.
+    const notification = await parse(orderDelivery("order_created", { status: "pending" }), {
+      sellsSubscription: () => false,
+    });
+    expect(notification.event?.status).toBe("on_hold");
+  });
+
   test("an order id and an invoice id of the same number are different rows", async () => {
     // Lemon Squeezy numbers each object type from one, so a bare id would fuse them under
     // UNIQUE (rail, providerTransactionId) — one buyer's refund landing on another's subscription.
@@ -270,11 +337,44 @@ describe("the shared-store fence", () => {
     expect(notification.event).not.toBeNull();
   });
 
-  test("an unstamped event is not fenced — a storefront order carries no custom_data", async () => {
+  test("an unstamped event is not fenced — a storefront order still sold something", async () => {
     const notification = await parse(orderDelivery("order_created", {}, { stamped: false }), {
       deployment: "prod",
     });
     expect(notification.event).not.toBeNull();
+    expect(notification.accountReference).toBeNull();
+  });
+
+  test("an account reference without our own env stamp beside it is not honoured", async () => {
+    // Lemon Squeezy's public storefront buy links accept `checkout[custom][...]` parameters, so a stranger
+    // can put any string in `custom_data` and the webhook echoes it exactly as one of ours would. The route
+    // writes the provider-account link from `accountReference`, and `linkProviderAccount` never rebinds —
+    // so honouring an unstamped one is an unauthenticated, permanent write into the account map.
+    const forged = await parse(subscriptionDelivery("subscription_created", {}, { stamped: false }), {
+      deployment: "prod",
+    });
+    expect(forged.accountReference).toBeNull();
+    // The purchase still projects. It simply arrives unbound, which the trail makes repairable.
+    expect(forged.event).not.toBeNull();
+  });
+
+  test("an account reference stamped for another deployment is not honoured either", async () => {
+    // Fenced out entirely, so it never reaches the account map by any path.
+    const other = await parse(subscriptionDelivery("subscription_created", {}, { deployment: "dev" }), {
+      deployment: "prod",
+    });
+    expect(other.accountReference).toBeNull();
+  });
+
+  test("a deployment that does not know its own environment trusts no reference at all", async () => {
+    // It cannot tell its own checkout's stamp from a stranger's, so it declines to bind. The cost is a
+    // purchase that lands unbound; the other direction is a permanent write nothing undoes.
+    const body = subscriptionDelivery("subscription_created");
+    const headers = new Headers({ "x-signature": await signLemonSqueezyBody(body, CREDENTIALS.webhookSecret) });
+    const notification = await parseLemonSqueezyNotification(
+      { body, headers },
+      { credentials: CREDENTIALS, transport: reads() },
+    );
     expect(notification.accountReference).toBeNull();
   });
 
@@ -348,5 +448,31 @@ describe("the event id", () => {
     const created = await parse(subscriptionDelivery("subscription_created"));
     const updated = await parse(subscriptionDelivery("subscription_updated"));
     expect(created.providerEventId).not.toBe(updated.providerEventId);
+  });
+
+  test("differs for two events of the SAME type about one object", async () => {
+    // The one that matters, and the one an event-name-plus-object-id key gets wrong. `subscription_updated`
+    // fires on every renewal, plan change, pause and status move for one subscription. If they shared an id
+    // the guard would project the first and answer every later one 200/duplicate without reprojecting — so
+    // a subscriber's cancellation would be dropped and they would keep paid access forever.
+    const renewal = await parse(
+      subscriptionDelivery("subscription_updated", { updated_at: "2026-02-01T10:00:00.000000Z" }),
+    );
+    const cancellation = await parse(
+      subscriptionDelivery("subscription_updated", {
+        status: "cancelled",
+        updated_at: "2026-02-10T08:00:00.000000Z",
+      }),
+    );
+    expect(renewal.providerEventId).not.toBe(cancellation.providerEventId);
+  });
+
+  test("still collides for a redelivery of one event, which is how a retry is recognized", async () => {
+    // The other half. A store retries at-least-once, and a redelivery must be recognized rather than
+    // reprojected — so the id may not carry anything that moves between attempts.
+    const body = subscriptionDelivery("subscription_updated");
+    const first = await parse(body);
+    const second = await parse(body);
+    expect(first.providerEventId).toBe(second.providerEventId);
   });
 });

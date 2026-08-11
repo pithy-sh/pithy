@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
@@ -124,6 +125,68 @@ describe("payments route contract", () => {
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * The README's Routes table, held against the real registrations.
+ *
+ * The table is what a **person** reads to find out whether this capability can answer their question — a
+ * management client discovers routes from the manifest, but nobody chooses a capability from a manifest. It
+ * had been missing the four management reads since they landed, so the README said the answer was no.
+ *
+ * The cost of that gap was not cosmetic and it was already paid once: the fifth management read deliberately
+ * withheld its row, because one row in a table missing four peers reads as completeness. A documentation gap
+ * that recurs is a missing gate rather than a missing paragraph, so this is the gate.
+ *
+ * Both directions, deliberately. A route with no row is the omission that happened; a row with no route is a
+ * table describing a surface that was removed, which is the same lie told the other way round.
+ */
+describe("the README's Routes table", () => {
+  /** `| `METHOD /path` | purpose | verification |` — the first cell of every row in the Routes table. */
+  function documentedRoutes(): string[] {
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const section = readme.split("\n## Routes\n")[1]?.split("\n## ")[0] ?? "";
+    return [...section.matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE) (\/[^`]*)`\s*\|/gm)]
+      .map((row) => `${row[1]} ${row[2]}`)
+      .sort();
+  }
+
+  /** Every route actually registered, as `METHOD /path`. Hono records one entry per handler. */
+  function registeredRoutes(): string[] {
+    return [...new Set(makeApp().routes.map((route) => `${route.method} ${route.path}`))].sort();
+  }
+
+  test("is reading the real table, not an empty string", () => {
+    // Anti-vacuous: a split that silently matched nothing would make both assertions below pass.
+    expect(documentedRoutes().length).toBeGreaterThan(10);
+  });
+
+  test("names every route this capability registers", () => {
+    const undocumented = registeredRoutes().filter((route) => !documentedRoutes().includes(route));
+    expect(
+      undocumented,
+      `These routes are registered and absent from the Routes table in packages/payments/README.md. An adopter reading that table is told this capability does not serve them:\n${undocumented.map((route) => `  ${route}`).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("names nothing it does not register", () => {
+    const registered = registeredRoutes();
+    const phantom = documentedRoutes().filter((route) => !registered.includes(route));
+    expect(
+      phantom,
+      `The Routes table in packages/payments/README.md documents routes this capability does not register:\n${phantom.map((route) => `  ${route}`).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("names the scope every control-plane route's guard demands", () => {
+    // A control-plane row without its scope tells an integrator to ask for a credential and not which one,
+    // which is the question the row exists to answer. Every scope the guards declare must appear.
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const routes = readme.split("\n## Routes\n")[1]?.split("\n## ")[0] ?? "";
+    for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) {
+      expect(routes, `The Routes table names no route demanding \`${scope}\``).toContain(`\`${scope}\``);
+    }
   });
 });
 

@@ -58,7 +58,13 @@ export async function refreshLemonSqueezyPurchase(
   purchase: PaymentsPurchase,
   options: RefreshLemonSqueezyOptions,
 ): Promise<UnboundProviderEvent | undefined> {
-  const key = split(purchase.originalTransactionId ?? purchase.providerTransactionId);
+  // **The row's own key, never the family's.** Other rails fall back to `originalTransactionId` because
+  // their store can only be asked about the family — Apple's `originalTransactionId`, Play's purchase token.
+  // Here the row's own key already names an addressable object, and falling back would be actively wrong: a
+  // money row's family key is `subscription:<id>`, so it would re-read the *subscription* and answer with a
+  // state event keyed to a different row. Reconciliation would then read that as the row having been
+  // superseded, mark the invoice expired, and project nothing in its place.
+  const key = split(purchase.providerTransactionId);
   if (key === undefined) return undefined;
 
   const read = { credentials: options.credentials, transport: options.transport ?? lemonSqueezyHttpFetch };

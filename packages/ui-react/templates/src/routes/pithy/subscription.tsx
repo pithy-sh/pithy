@@ -60,7 +60,10 @@ export default function Subscription() {
           Portal is a session the server mints; Apple's and Google's are pages in their own stores, and a
           web page cannot cancel a StoreKit or Play Billing subscription however much it would like to. */}
       <div className="stack">
-        {paymentsConfig.rails.stripe && (
+        {/* Either hosted rail mints a portal session, and the server picks whichever one this caller
+            actually bought on. Gating on Stripe alone left a Lemon-Squeezy-only project with no way to
+            reach a portal that works. */}
+        {(paymentsConfig.rails.stripe || paymentsConfig.rails.lemonSqueezy) && (
           <button type="button" disabled={managing} onClick={() => void manage()}>
             Manage billing
           </button>

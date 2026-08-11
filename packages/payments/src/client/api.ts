@@ -55,6 +55,16 @@ export const CHECKOUT_SESSION_PARAM = "session";
  */
 export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy";
 
+/**
+ * The rails that create a hosted checkout a browser can be sent to.
+ *
+ * A strict subset of {@link PaymentsClientRail}: Apple and Google purchases happen inside a store SDK, so
+ * there is no page to send anyone to. Nameable from a browser because a rail decides *who takes the money*,
+ * not how much or on whose behalf — a paywall for a product sold on both can put two buttons on the page,
+ * and a product sold on one needs no field at all.
+ */
+export type PaymentsHostedRail = "stripe" | "lemonSqueezy";
+
 /** What kind of thing a product is, as a browser reads it. */
 export type PaymentsClientProductType = "consumable" | "non_consumable" | "subscription";
 
@@ -415,7 +425,7 @@ export function restorePurchases(
 
 /** Create a hosted Stripe Checkout Session and return where to send the browser. */
 export async function createCheckout(
-  input: { productId: string },
+  input: { productId: string; rail?: PaymentsHostedRail },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<string>> {
   const result = await call("/checkout", jsonPost(input), options, isHostedSession);
@@ -462,7 +472,7 @@ async function leaveFor(
  * proration, and this is where that decision is visible.
  */
 export function startCheckout(
-  input: { productId: string },
+  input: { productId: string; rail?: PaymentsHostedRail },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsFailure | null> {
   return leaveFor(createCheckout(input, options), options);

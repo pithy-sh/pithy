@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -862,9 +863,19 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // Which rail this caller actually bought on, found by asking the account map rather than by taking it
       // from the request. Still no body: the caller names neither the customer nor the rail, so there is
       // nothing here anyone could point at somebody else's billing.
+      const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+      // No hosted rail at all is a fact about the deployment, not about this caller — a mobile-only project
+      // has no billing portal to open. Same refusal `/checkout` gives, rather than a 404 that reads as "you
+      // have no account" to somebody who could never have had one.
+      if (enabled.length === 0) {
+        throw new PaymentsRailNotConfiguredError({
+          detail:
+            "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe` or `rails.lemonSqueezy`.",
+        });
+      }
+
       let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
-      for (const rail of CHECKOUT_RAILS) {
-        if (!railEnabled(config, rail)) continue;
+      for (const rail of enabled) {
         const providerAccountId = await accountFor(c, rail, userId);
         if (providerAccountId !== null) {
           found = { rail, providerAccountId };
@@ -934,6 +945,34 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         // constrains a string, it is never built from a configured key set. `EntitlementKey` has already
         // said the key is well-formed; this says it means something.
         if (!grantable.has(input.entitlement)) {
+          // The refusal is the outcome worth recording here, and it was the only one not recorded. A
+          // credential scoped only to grant can otherwise enumerate this project's entitlement vocabulary
+          // one key at a time — 400 for a miss, 200 for a hit — and leave the customer nothing to read
+          // afterwards. One refusal is a typo; a run of them against one connection is somebody mapping
+          // what a project sells.
+          //
+          // `safeEmit` for the same reason the webhook guard uses it: the 400 is already decided, and an
+          // audit write that threw would answer 500 for a failing store and 400 for a healthy one.
+          await safeEmit(
+            c.var.emit,
+            {
+              action: PaymentsAuditActions.entitlementGranted,
+              outcome: "denied",
+              severity: "warning",
+              actorType: "service",
+              actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+              resourceType: "entitlement",
+              resourceId: input.entitlement,
+              // The route and the submitted key, and nothing else the caller supplied. The key is safe to
+              // record — `EntitlementKey` has already bounded it to `^[a-z][a-z0-9_]*$` at 64 characters —
+              // and it is the only field that makes a run of refusals legible. Never the catalogue: the
+              // defined set goes in `detail`, which the codec strips, and must not be copied into a
+              // queryable, long-lived trail.
+              metadata: { route: "entitlements/grant", entitlement: input.entitlement },
+            },
+            c.var.log,
+          );
+
           throw new PaymentsEntitlementNotInCatalogError({
             message: `No entitlement "${input.entitlement}" is defined here.`,
             // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's

@@ -272,7 +272,7 @@ export const PaymentsConfig = z
         input: ctx.value,
         path: ["lemonSqueezy"],
         message:
-          "The Lemon Squeezy rail is on, so `lemonSqueezy` must declare `successUrl` and `cancelUrl`. Hosted checkout has nowhere to return a browser without them.",
+          "The Lemon Squeezy rail is on, so `lemonSqueezy` must declare a `successUrl`. Hosted checkout has nowhere to return a browser without it.",
       });
     }
 
@@ -282,7 +282,7 @@ export const PaymentsConfig = z
         input: ctx.value,
         path: ["lemonSqueezy"],
         message:
-          "`lemonSqueezy` declares return URLs, but `rails.lemonSqueezy` is off. Enable the rail, or drop the block.",
+          "`lemonSqueezy` declares a return URL, but `rails.lemonSqueezy` is off. Enable the rail, or drop the block.",
       });
     }
 

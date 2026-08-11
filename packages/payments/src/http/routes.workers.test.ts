@@ -289,6 +289,11 @@ afterEach(() => resetSharedSecrets());
  * production's default refuses a chain Apple did not issue.
  */
 interface AppOptions {
+  /**
+   * The audit recorder. Absent records into `emitted`; a rejecting one stands in for a store that has
+   * stopped accepting writes, which is what proves a denial's status code does not depend on the trail.
+   */
+  emit?: (event: AuditEventInput) => Promise<void>;
   /** Drop the suite's certificate root, so Apple's default trust set is what decides. */
   trustedApple?: boolean;
   /** Drop the suite's push key from the configured set, so Google's published keys are what decides. */
@@ -368,6 +373,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
     c.set("controlPlaneVerifier", verifier);
     c.set("emit", async (event) => {
       emitted.push(event);
+      if (options.emit) await options.emit(event);
     });
     await next();
   });
@@ -1126,6 +1132,47 @@ describe("POST /payments/webhooks/apple", () => {
     expect(await errorCode(response)).toBe("payments/webhook_unverified");
     expect(await webhookEvents()).toEqual([]);
     expect(await purchases()).toEqual([]);
+  });
+
+  test("a notification that fails its authenticity check leaves one denied audit row", async () => {
+    // The one payments event that is about an attacker rather than a customer, and it was the only outcome
+    // with no record: `webhookReceived` fires on the authentic path, so the audited answer was "received"
+    // or nothing. One rejection is noise; a run of them against one endpoint is somebody probing a rail.
+    await request(makeApp(CATALOG, { trustedApple: false }), "POST", "/payments/webhooks/apple", {
+      body: { signedPayload: await notification() },
+    });
+
+    const denied = emitted.filter((event) => event.action === "payments/webhook_unverified");
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({ outcome: "denied", severity: "warning", actorId: "apple" });
+    expect(denied[0]?.metadata).toMatchObject({ rail: "apple" });
+  });
+
+  test("the audit row carries the rail and the failing step, and nothing the sender supplied", async () => {
+    // The trail is queryable and long-lived, so a forger must not be able to write into it. The step is our
+    // own error code — a value this package defined — never a message a sender could influence.
+    const forged = await notification();
+    await request(makeApp(CATALOG, { trustedApple: false }), "POST", "/payments/webhooks/apple", {
+      body: { signedPayload: forged },
+    });
+
+    const denied = emitted.find((event) => event.action === "payments/webhook_unverified");
+    const metadata = (denied?.metadata ?? {}) as Record<string, unknown>;
+    expect(Object.keys(metadata).sort()).toEqual(["rail", "step"]);
+    expect(String(metadata.step)).toMatch(/^payments\//);
+    // Nothing the sender sent, verbatim or otherwise.
+    expect(JSON.stringify(denied)).not.toContain(forged);
+  });
+
+  test("an audit store that is failing still answers 401, never 500", async () => {
+    // `safeEmit`'s whole discipline: by the time we are here the 401 is already decided. An audit write
+    // that threw would hand a forger a different response for a failing store than for a healthy one.
+    const app = makeApp(CATALOG, { trustedApple: false, emit: () => Promise.reject(new Error("audit store down")) });
+    const response = await request(app, "POST", "/payments/webhooks/apple", {
+      body: { signedPayload: await notification() },
+    });
+    expect(response.status).toBe(401);
+    expect(await errorCode(response)).toBe("payments/webhook_unverified");
   });
 
   test("a notification for another app's bundle id is 401", async () => {
@@ -2401,6 +2448,45 @@ describe("POST /payments/entitlements/grant", () => {
     // each used to be a 200, a row, and a customer who stays locked out. The key is echoed because the
     // caller sent it; the *defined set* is not, because reading what a project sells is its own scope.
     const response = await request(makeApp(), "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "pr" },
+    });
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("a refusal leaves one denied audit row, so a run of them is legible", async () => {
+    // The benign path was recorded and the suspicious one was not. A credential scoped only to grant could
+    // otherwise enumerate the entitlement vocabulary one key at a time — 400 for a miss, 200 for a hit —
+    // and leave the customer nothing to read afterwards.
+    await request(makeApp(), "POST", path, { ...granting, body: { userId: "grace", entitlement: "pr" } });
+
+    const denied = emitted.filter(
+      (event) => event.action === "payments/entitlement_granted" && event.outcome === "denied",
+    );
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({ severity: "warning", resourceId: "pr" });
+    expect(denied[0]?.metadata).toEqual({ route: "entitlements/grant", entitlement: "pr" });
+  });
+
+  test("the audit row records the submitted key and never the catalog", async () => {
+    // The key is safe: `EntitlementKey` bounded it before the handler ran, and it is the only field that
+    // makes a run of refusals legible. The defined set is a separate disclosure behind its own scope, and
+    // it must not be copied into a queryable, long-lived trail.
+    await request(makeApp(), "POST", path, { ...granting, body: { userId: "grace", entitlement: "pr" } });
+
+    const denied = emitted.find(
+      (event) => event.action === "payments/entitlement_granted" && event.outcome === "denied",
+    );
+    const serialized = JSON.stringify(denied);
+    expect(serialized).toContain("pr");
+    for (const key of ["pro", "team", "ads_removed"]) expect(serialized).not.toContain(`"${key}"`);
+  });
+
+  test("an audit store that is failing still answers 400, never 500", async () => {
+    const app = makeApp(CATALOG, { emit: () => Promise.reject(new Error("audit store down")) });
+    const response = await request(app, "POST", path, {
       ...granting,
       body: { userId: "grace", entitlement: "pr" },
     });

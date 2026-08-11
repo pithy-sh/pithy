@@ -25,11 +25,16 @@ import { verifyLemonSqueezySignature } from "./signature";
  *
  * ## The event id, and where replay protection lives
  *
- * Lemon Squeezy does not put an event id in the body. It sends one in `X-Event-Name` and a delivery id in
- * `X-Signature`'s sibling headers only sometimes, so the id this rail reports is composed from what is
- * always present: the event name and the object it is about. That is stable across redeliveries of the same
- * event — which is the whole property `UNIQUE (rail, providerEventId)` needs — and different for two
- * genuinely different events about one object.
+ * Lemon Squeezy does not put an event id in the body, so the id this rail reports is composed from what the
+ * **signed bytes** always carry: `meta.event_name` and the object it is about. That is stable across
+ * redeliveries of the same event — which is the whole property `UNIQUE (rail, providerEventId)` needs — and
+ * different for two genuinely different events about one object.
+ *
+ * **Nothing outside the signed body may contribute to it.** The HMAC covers the body alone, so the
+ * `X-Event-Name` header Lemon Squeezy also sends is attacker-controlled on a replayed delivery; composing the
+ * id from it would let one captured body be resent under any name, defeating the only replay defence this
+ * rail has. Every other rail derives its id from signed content too — Stripe's `event.id`, Apple's
+ * `notificationUUID` from inside the JWS — and this one is no exception.
  *
  * It is deliberately *not* unique per delivery attempt. A redelivery must collide, because colliding is how
  * the guard recognizes it and answers 200 without reprojecting.
@@ -53,10 +58,40 @@ export interface ParseLemonSqueezyNotificationOptions {
   deployment?: string;
   /** The transport the subscription read goes through. Defaults to the runtime's `fetch`. */
   transport?: LemonSqueezyHttpFetch;
+  /**
+   * Whether this variant is sold as a subscription, per the adopter's catalog.
+   *
+   * The rail cannot answer it — a Lemon Squeezy order carries no subscription marker — and it must not
+   * guess, because guessing wrong either double-credits a subscriber's first period or drops a one-off
+   * sale. `resolveRailProvider` has the config, so it supplies the answer. Absent means "assume one-off",
+   * which is the behaviour for a project whose catalog the rail was built without.
+   */
+  sellsSubscription?: (variantId: string) => boolean;
 }
 
-/** The header Lemon Squeezy names the event in. Used only to compose the event id. */
-const EVENT_NAME_HEADER = "x-event-name";
+/**
+ * This delivery's id: the event name, the object, and **the object's own clock**.
+ *
+ * The clock is the part that makes it an *event* id rather than an object id, and leaving it out was a
+ * defect rather than a simplification. `subscription_updated` fires on every renewal, plan change, pause and
+ * status move for one subscription, so `subscription_updated:90001` names all of them. The guard inserts
+ * `UNIQUE (rail, providerEventId)` and answers a row it has already processed with a 200 and no reprojection
+ * — so the first update would be projected and **every later one silently dropped as a replay**, including
+ * the cancellation.
+ *
+ * `updated_at` moves with each of those changes and is inside the signed bytes, so two genuinely different
+ * events differ and a redelivery of one event still collides, which is exactly what the guard needs. Where
+ * the object carries no clock the id falls back to the pair, which is no worse than before.
+ *
+ * Not `receivedAt` or a random value: a redelivery **must** collide, because colliding is how a store's
+ * at-least-once retry is recognized rather than reprocessed.
+ */
+function composeEventId(name: string, webhook: LemonSqueezyWebhook): string {
+  const clock = webhook.data.attributes.updated_at;
+  return typeof clock === "string" && clock !== ""
+    ? `${name}:${webhook.data.id}:${clock}`
+    : `${name}:${webhook.data.id}`;
+}
 
 /** Every subscription-domain event: the standing changed, and no money moved. */
 const SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
@@ -119,15 +154,24 @@ export async function parseLemonSqueezyNotification(
   }
   const webhook = envelope.data;
 
-  const name = delivery.headers.get(EVENT_NAME_HEADER) ?? webhook.meta.event_name;
-  const providerEventId = `${name}:${webhook.data.id}`;
+  // **The signed body, and never the header.** The HMAC covers `delivery.body` and nothing else, so every
+  // header on the request is unauthenticated attacker input — including `X-Event-Name`, which Lemon Squeezy
+  // also sends. Preferring it would hand a replay adversary two things at once: `name` composes
+  // `providerEventId`, which is this rail's entire replay defence, and it selects the domain handler,
+  // including the refund branch that revokes a subscription. One captured authentic body could then be
+  // resent under any event name, evading the guard's UNIQUE insert and steering the handler.
+  //
+  // `meta.event_name` is inside the signed bytes and is required by the envelope schema, so it is always
+  // there to use. If the header is ever wanted, it may only be a cross-check that *refuses* on disagreement.
+  const name = webhook.meta.event_name;
+  const providerEventId = composeEventId(name, webhook);
 
   // Another deployment's buyer, on the store we share with it. Authentic, recorded, and none of our business.
   if (fencedOut(webhook, options.deployment)) return nothing(webhook, providerEventId);
 
-  if (SUBSCRIPTION_EVENTS.has(name)) return subscriptionNotification(webhook, providerEventId);
+  if (SUBSCRIPTION_EVENTS.has(name)) return subscriptionNotification(webhook, providerEventId, options);
   if (INVOICE_EVENTS.has(name)) return await invoiceNotification(webhook, providerEventId, name, options);
-  if (ORDER_EVENTS.has(name)) return orderNotification(webhook, providerEventId);
+  if (ORDER_EVENTS.has(name)) return orderNotification(webhook, providerEventId, options);
 
   // A type Lemon Squeezy shipped after this package did — a licence key, an affiliate payout. Authentic,
   // recorded, and projecting nothing. Never a throw: the store would redeliver it forever.
@@ -135,26 +179,68 @@ export async function parseLemonSqueezyNotification(
 }
 
 /** A subscription-domain delivery: one state row, no round-trip. */
-function subscriptionNotification(webhook: LemonSqueezyWebhook, providerEventId: string): VerifiedNotification {
+function subscriptionNotification(
+  webhook: LemonSqueezyWebhook,
+  providerEventId: string,
+  options: ParseLemonSqueezyNotificationOptions,
+): VerifiedNotification {
   const subscription = LemonSqueezySubscription.parse(webhook.data.attributes);
   return {
     providerEventId,
     payload: { ...webhook },
     event: subscriptionEvent(webhook.data.id, subscription),
     providerAccountId: subscription.customer_id === undefined ? null : String(subscription.customer_id),
-    accountReference: accountReferenceOf(webhook),
+    accountReference: accountReferenceOf(webhook, options.deployment),
   };
 }
 
-/** An order-domain delivery: one row, money and state together. */
-function orderNotification(webhook: LemonSqueezyWebhook, providerEventId: string): VerifiedNotification {
+/**
+ * An order-domain delivery: one row, money and state together — **unless the order started a subscription**.
+ *
+ * A payment received is what creates a charge row, and one payment must create exactly one. Lemon Squeezy
+ * raises an Order for a subscription purchase as well as the subscription itself, and it raises a
+ * subscription invoice for every billing period *including the first* — so for a subscription the order and
+ * the first invoice are the **same money**, reported twice. Projecting both credits one period twice, and
+ * the order's row would grant forever besides: an order is a one-off, so it carries no expiry, and a
+ * never-expiring `active` row outranks the subscription's state row even after a cancellation.
+ *
+ * A subscription's money is its invoices. So an order that started one records nothing here and says why,
+ * and the subscription's own events carry both halves.
+ *
+ * The discriminator is the **catalog**, not a round-trip: a Lemon Squeezy variant is a subscription variant
+ * or a one-off variant and never both, so the product an adopter declared for that variant already answers
+ * it. `resolveRailProvider` has the config, so the rail is handed the question rather than guessing at it or
+ * paying for an extra call.
+ */
+function orderNotification(
+  webhook: LemonSqueezyWebhook,
+  providerEventId: string,
+  options: ParseLemonSqueezyNotificationOptions,
+): VerifiedNotification {
   const order = LemonSqueezyOrder.parse(webhook.data.attributes);
+  const variantId = String(order.first_order_item?.variant_id ?? "");
+
+  if (options.sellsSubscription?.(variantId) === true) {
+    return {
+      providerEventId,
+      payload: { ...webhook },
+      event: null,
+      // The customer is still worth learning, and the reference still binds them: this is the delivery that
+      // carries the account this deployment stamped at checkout, and dropping it would orphan the
+      // subscription's own events that arrive without one.
+      providerAccountId: order.customer_id === undefined ? null : String(order.customer_id),
+      accountReference: accountReferenceOf(webhook, options.deployment),
+      // Null: this is ordinary, expected traffic for a subscription sale, not something to warn about.
+      note: null,
+    };
+  }
+
   return {
     providerEventId,
     payload: { ...webhook },
     event: orderEvent(webhook.data.id, order),
     providerAccountId: order.customer_id === undefined ? null : String(order.customer_id),
-    accountReference: accountReferenceOf(webhook),
+    accountReference: accountReferenceOf(webhook, options.deployment),
   };
 }
 
@@ -185,7 +271,7 @@ async function invoiceNotification(
       payload: { ...webhook },
       event: null,
       providerAccountId: invoice.customer_id === undefined ? null : String(invoice.customer_id),
-      accountReference: accountReferenceOf(webhook),
+      accountReference: accountReferenceOf(webhook, options.deployment),
       note: `Lemon Squeezy no longer knows subscription ${subscriptionId}, which invoice ${webhook.data.id} bills.`,
     };
   }
@@ -197,7 +283,7 @@ async function invoiceNotification(
     payload: { ...webhook },
     event,
     providerAccountId: invoice.customer_id === undefined ? null : String(invoice.customer_id),
-    accountReference: accountReferenceOf(webhook),
+    accountReference: accountReferenceOf(webhook, options.deployment),
     stateEvent: name === "subscription_payment_refunded" ? revocation(subscriptionId, subscription, event) : null,
   };
 }

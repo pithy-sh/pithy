@@ -43,6 +43,13 @@ import { parseLemonSqueezyNotification } from "./webhook";
 export interface LemonSqueezyRailOptions {
   /** The HTTP seam Lemon Squeezy's API is reached through. Defaults to the runtime's `fetch`. */
   transport?: LemonSqueezyHttpFetch;
+  /**
+   * Whether a variant is sold as a subscription, answered from the adopter's catalog.
+   *
+   * Supplied by `resolveRailProvider`, which has the config. It decides whether an `order_created` is a
+   * one-off sale or the container a subscription arrived in — the second of which is not its own payment.
+   */
+  sellsSubscription?: (variantId: string) => boolean;
 }
 
 /** The Lemon Squeezy rail. Parses webhooks, re-reads purchases, and creates hosted checkouts and portal links. */
@@ -65,6 +72,7 @@ export function lemonSqueezyRail(
         credentials,
         deployment: context.deployment,
         transport: options.transport,
+        sellsSubscription: options.sellsSubscription,
       });
     },
 

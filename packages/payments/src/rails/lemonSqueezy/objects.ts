@@ -235,7 +235,9 @@ export function invoiceStatus(invoice: LemonSqueezySubscriptionInvoice): Purchas
     case "paid":
       return "expired";
     case "pending":
-      return "in_grace";
+      // An invoice raised and not yet settled. Neither status grants on a money row, but `on_hold` is what
+      // "the payment is outstanding" means, and the two must not drift apart across the pair.
+      return "on_hold";
     case "void":
     case "failed":
       return "never_paid";
@@ -253,7 +255,10 @@ export function orderStatus(order: LemonSqueezyOrder): PurchaseStatus {
     case "paid":
       return "active";
     case "pending":
-      return "in_grace";
+      // `on_hold`, not `in_grace`. Grace means a *paid* subscriber whose renewal is retrying, and it grants
+      // by policy — on an order, which carries no expiry, that would be permanent free access for money
+      // that never arrived. `on_hold` is the status for a payment outstanding, and it never grants.
+      return "on_hold";
     case "failed":
       return "never_paid";
     default:
@@ -336,8 +341,28 @@ export function orderEvent(id: string, order: LemonSqueezyOrder): UnboundProvide
   };
 }
 
-/** The account reference this deployment stamped into the checkout, or null for a storefront purchase. */
-export function accountReferenceOf(webhook: LemonSqueezyWebhook): string | null {
+/**
+ * The account reference this deployment stamped into the checkout, or null.
+ *
+ * **Honoured only when this deployment's own environment stamp is beside it**, and that condition is the
+ * whole security of the field. `accountReference`'s contract says it is "a value this deployment's own
+ * server wrote and the store returned unchanged" — the route writes the provider-account link from it, and
+ * `linkProviderAccount` never rebinds, so the first pairing is permanent.
+ *
+ * Lemon Squeezy's public storefront buy links accept `checkout[custom][...]` query parameters, and the
+ * resulting webhook echoes them in `meta.custom_data` exactly as an API-created checkout's would. So
+ * `custom_data` on its own is **not** evidence our server wrote anything: an unauthenticated stranger can
+ * put any string in it and permanently bind their store customer to an account they chose. The env stamp is
+ * the discriminator, because it is written only by {@link createLemonSqueezyCheckoutSession}, and a checkout
+ * a stranger built through the storefront carries either no stamp or another deployment's.
+ *
+ * A deployment that does not know its own `ENVIRONMENT` trusts no reference at all. That is the safe
+ * direction: the cost is a purchase that lands unbound and is repairable from the trail, where the other way
+ * round is an unauthenticated write into the account map that nothing ever undoes.
+ */
+export function accountReferenceOf(webhook: LemonSqueezyWebhook, deployment: string | undefined): string | null {
+  if (deployment === undefined) return null;
+  if (webhook.meta.custom_data?.[LEMON_SQUEEZY_CUSTOM_ENV] !== deployment) return null;
   const value = webhook.meta.custom_data?.[LEMON_SQUEEZY_CUSTOM_ACCOUNT];
   return typeof value === "string" && value !== "" ? value : null;
 }

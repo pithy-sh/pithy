@@ -3,11 +3,13 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, MiddlewareHandler } from "hono";
+import { PaymentsAuditActions } from "../audit/actions";
 import type { PaymentsConfig } from "../config/config";
 import type { PaymentsRail } from "../data/rail";
 import { PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
@@ -54,6 +56,20 @@ import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/reg
  * throws when the gate did not run. The last is the only one with no way to reach an unverified payload and no
  * effect outside this package.
  */
+
+/**
+ * Our own name for what refused a delivery, for the audit row's `metadata.step`.
+ *
+ * Derived from the rail's error **code**, never from its `detail` or a raw `Error.message`: a code is a value
+ * this package defined, where a message can carry text a sender influenced, and the trail must hold nothing a
+ * forger wrote. An unrecognized throw is `unknown` rather than its message, for the same reason.
+ *
+ * `detail` on the 401 still carries the full reason for the operator reading logs — this is the queryable
+ * half, and it is deliberately coarser.
+ */
+function failingStep(cause: unknown): string {
+  return cause instanceof PithyError ? cause.payload.code : "unknown";
+}
 
 /** The codes a rail may raise that describe our side rather than the sender's, and so keep their own status. */
 const PASS_THROUGH_CODES: ReadonlySet<string> = new Set([
@@ -159,6 +175,30 @@ export function requireSignedWebhook(
     } catch (cause) {
       // Not the sender's failure, so not the sender's error code. See the module doc.
       if (cause instanceof PithyError && PASS_THROUGH_CODES.has(cause.payload.code)) throw cause;
+
+      // The one payments event that is about an attacker rather than about a customer. One rejection is
+      // noise; a run of them against one endpoint is somebody probing a payment rail, and that pattern is
+      // exactly what a trail is read for. Recorded through `safeEmit` because the 401 is already decided by
+      // the time we get here — an audit write that threw would hand a forger a 500 for a failing store and a
+      // 401 for a healthy one, which is both an availability bug and a signal it should not have.
+      await safeEmit(
+        c.var.emit,
+        {
+          action: PaymentsAuditActions.webhookUnverified,
+          outcome: "denied",
+          severity: "warning",
+          actorType: "service",
+          actorId: rail,
+          resourceType: "webhook",
+          resourceId: rail,
+          // The rail and the step that failed, and nothing the sender supplied verbatim — not the body, not
+          // the signature header, not an id it chose. The trail is queryable and long-lived, and a forger
+          // must not be able to write into it. The step is our own code's name for what it refused.
+          metadata: { rail, step: failingStep(cause) },
+        },
+        c.var.log,
+      );
+
       throw new PaymentsWebhookUnverifiedError(
         {
           detail: `${rail}: ${cause instanceof PithyError ? `${cause.payload.code} — ${cause.payload.detail ?? cause.payload.message}` : "the notification could not be verified"}`,
