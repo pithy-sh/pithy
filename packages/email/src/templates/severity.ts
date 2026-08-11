@@ -1,0 +1,84 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { z } from "zod";
+
+/**
+ * How urgent an operational notice is, and how that urgency is said out loud.
+ *
+ * **Severity is words first and colour second, and the order matters.** A notice is read in an inbox
+ * list before it is opened, in a plain-text client that has no colours at all, and by people who cannot
+ * tell the red one from the amber one. So each level owns a *label* — which goes in the subject line,
+ * in the body, and in the text part — and a colour that only ever reinforces it. A design where the
+ * only difference between "a release is out" and "your sign-in is broken" is a hex value has flattened
+ * them, and a reader who cannot see the difference learns to ignore both.
+ *
+ * The labels name the response, not the volume. "Action needed" tells somebody what the message wants
+ * from them; "Warning" only tells them how loudly it is being said.
+ */
+
+export const NoticeSeverity = z
+  .enum(["info", "warning", "critical"])
+  .describe(
+    "How urgent an operational notice is. `info` is something that happened and needs nothing (a release is out); `warning` is something that needs attention before it becomes a fault (a secret is overdue for rotation); `critical` is something that is failing now. The level sets the subject-line label, so it is visible in an inbox before the message is opened.",
+  );
+export type NoticeSeverity = z.output<typeof NoticeSeverity>;
+
+/** One severity's presentation: the word it is called, and the colour that reinforces it in each mode. */
+interface SeverityPresentation {
+  /** The word in the subject line, the body, and the text part. */
+  label: string;
+  /** The light-mode colour, applied inline. Contrast-checked against the card white every preset uses. */
+  light: string;
+  /** The dark-mode colour, swapped in by class under `prefers-color-scheme: dark`. */
+  dark: string;
+}
+
+/**
+ * The one place a severity's presentation is decided.
+ *
+ * Colours are fixed rather than themed, deliberately: an accent belongs to a brand, but "this is on
+ * fire" belongs to the reader. A project whose accent is red would otherwise render a routine notice
+ * in the colour of an emergency. Both ramps are contrast-checked — the light values against the white
+ * card every preset ships, the dark values against the near-black one.
+ */
+const PRESENTATION = {
+  info: { label: "Notice", light: "#475467", dark: "#98A2B3" },
+  warning: { label: "Action needed", light: "#B54708", dark: "#FEC84B" },
+  critical: { label: "Critical", light: "#B42318", dark: "#FDA29B" },
+} as const satisfies Record<NoticeSeverity, SeverityPresentation>;
+
+/**
+ * The presentation for a value that has already been through {@link NoticeSeverity}.
+ *
+ * A template renders after its payload is parsed, so the value is always one of the three. The
+ * fallback exists because a Handlebars helper must return *something* and `info` is the only safe
+ * guess: a notice that renders as calmer than it is can still be read, while one that throws mid-render
+ * is the notice nobody receives.
+ */
+function presentationOf(severity: unknown): SeverityPresentation {
+  return typeof severity === "string" && severity in PRESENTATION
+    ? PRESENTATION[severity as NoticeSeverity]
+    : PRESENTATION.info;
+}
+
+/** The `{{severityLabel severity}}` helper: the word this level is called. */
+export function severityLabel(severity: unknown): string {
+  return presentationOf(severity).label;
+}
+
+/** The `{{severityColor severity}}` helper: the light-mode colour, applied inline like every other one. */
+export function severityColor(severity: unknown): string {
+  return presentationOf(severity).light;
+}
+
+/**
+ * The dark-mode overrides for the severity colours, generated from the same table.
+ *
+ * The shared head partial carries the light values inline and swaps these in under
+ * `prefers-color-scheme: dark`, exactly as it does for the theme's own palette. Generated rather than
+ * written out so a colour changed here cannot leave dark mode showing the old one.
+ */
+export const severityDarkModeCss: string = Object.entries(PRESENTATION)
+  .map(([name, { dark }]) => `    .sev-${name} { color: ${dark} !important; }`)
+  .join("\n");

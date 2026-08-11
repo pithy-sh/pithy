@@ -13,8 +13,20 @@ import { EmailJobStatus, SendMode, TemplateCategory } from "./enums";
  */
 export const EmailJobPayload = z
   .record(z.string(), z.unknown())
-  .describe("The validated template input variables for this job, re-rendered by the send Workflow.");
+  .describe(
+    "The validated template input variables for this job, re-rendered by the send Workflow. Empty once `payloadRedactedAt` is set — a transactional job's inputs are dropped when the message goes out.",
+  );
 export type EmailJobPayload = z.output<typeof EmailJobPayload>;
+
+/**
+ * What the `payload` column holds once a job's inputs are spent.
+ *
+ * An empty object, encoded through the same codec every other write uses rather than written as a
+ * `"{}"` literal — a column this schema could not read back would turn a delivered job into a row that
+ * throws when an operator opens it. The fact that it *was* redacted is `payloadRedactedAt`; this is
+ * only what is left where the variables were.
+ */
+export const SPENT_PAYLOAD = sqliteJson(EmailJobPayload).encode({});
 
 /**
  * One row in `pithy_email_jobs` — the spine of the capability. Every email is a row first: a request
@@ -38,7 +50,12 @@ export const EmailJob = z
     category: TemplateCategory.describe(
       "The template's category — drives unsubscribe enforcement and tracking defaults.",
     ),
-    payload: sqliteJson(EmailJobPayload).describe("The validated template input variables, as a JSON column."),
+    payload: sqliteJson(EmailJobPayload).describe(
+      "The validated template input variables, as a JSON column. Emptied when the message is delivered, for every template whose category is `transactional` — see `payloadRedactedAt`.",
+    ),
+    payloadRedactedAt: SQLiteDate.nullish().describe(
+      "When this job's inputs were dropped, or null while it still holds them. A magic link's payload *is* the sign-in link, so keeping it after delivery is a second, permanent copy of a credential in a table nobody thinks of as holding secrets. Null and an empty payload mean different things — the first is a job enqueued with no variables, the second is one whose variables were spent — which is why this is a timestamp and not the absence of data.",
+    ),
     status: EmailJobStatus.describe("The job's lifecycle state."),
     mode: SendMode.describe("How this job's send time was determined."),
     attempts: z.number().int().describe("How many send attempts have been made; incremented on each Workflow try."),

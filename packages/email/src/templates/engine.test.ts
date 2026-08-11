@@ -28,6 +28,16 @@ const validPayloads: Record<string, unknown> = {
   securityAlert: { event: "New sign-in", when: "today", actionUrl: "https://acme.test/activity" },
   invite: { inviterName: "Pat", organizationName: "Acme", acceptUrl: "https://acme.test/accept" },
   passwordChanged: { when: "today", supportUrl: "https://acme.test/support" },
+  operationalNotice: {
+    severity: "critical",
+    summary: "Sign-in is failing for every user",
+    thing: "@pithy-sh/auth",
+    when: "10 minutes ago",
+    detail: "The signing key was revoked and no replacement is in place.",
+    facts: [{ label: "Environment", value: "prod" }],
+    actionUrl: "https://acme.test/secrets",
+    actionLabel: "Open secrets",
+  },
   supportReply: {
     subject: "Re: I was charged twice",
     body: "Hi Ada,\n\nI have refunded the duplicate charge.",
@@ -65,6 +75,9 @@ describe("template registry", () => {
         "marketingCampaign",
         "supportReply",
         "newsletter",
+        // *Something about your own infrastructure needs attention* — the shape `securityAlert` cannot
+        // carry, because it is about a session and closes by saying no action is needed.
+        "operationalNotice",
         "otp",
         "passwordChanged",
         "securityAlert",
@@ -178,6 +191,7 @@ describe("tracking", () => {
     const kinds = Object.fromEntries(Object.values(templates).map((def) => [def.id, def.kind]));
     expect(kinds).toEqual({
       magicLink: "transactional",
+      operationalNotice: "transactional",
       otp: "transactional",
       welcome: "transactional",
       securityAlert: "transactional",
@@ -302,6 +316,100 @@ describe("the testers envelope refuses to render supplied markup", () => {
   });
 });
 
+/**
+ * The operational notice is the template an adopter sends about their *own* infrastructure, and the
+ * property that makes it worth sending is that its urgency survives the trip. These tests hold that
+ * severity is carried in words — into the subject line, where it is read before the message is opened —
+ * rather than in a colour a plain-text client, a monochrome screen or a colour-blind reader never sees.
+ */
+describe("the operational notice expresses severity rather than flattening it", () => {
+  const notice = {
+    summary: "A secret has not been rotated in 90 days",
+    thing: "STRIPE_SECRET_KEY",
+    when: "18 June, 14:02 UTC",
+  };
+
+  test("the severity leads the subject line, and the three levels do not read alike", async () => {
+    const subjects = await Promise.all(
+      (["info", "warning", "critical"] as const).map(
+        async (severity) => (await renderEmail("operationalNotice", { ...notice, severity }, theme)).subject,
+      ),
+    );
+    expect(subjects).toEqual([
+      "Notice: A secret has not been rotated in 90 days",
+      "Action needed: A secret has not been rotated in 90 days",
+      "Critical: A secret has not been rotated in 90 days",
+    ]);
+    expect(new Set(subjects).size).toBe(3);
+  });
+
+  test("both MIME parts say the level in words, and the HTML colours it as well as says it", async () => {
+    const critical = await renderEmail("operationalNotice", { ...notice, severity: "critical" }, theme);
+    const info = await renderEmail("operationalNotice", { ...notice, severity: "info" }, theme);
+
+    expect(critical.text).toContain("Critical —");
+    expect(critical.html).toContain("Critical");
+    expect(info.text).toContain("Notice —");
+
+    // The colour reinforces the word; it never replaces it. Different levels, different hues, and a
+    // dark-mode hook the shared head partial can swap.
+    expect(critical.html).toContain('class="sev-critical"');
+    expect(info.html).toContain('class="sev-info"');
+    expect(critical.html).toContain("#B42318");
+    expect(info.html).not.toContain("#B42318");
+  });
+
+  test("it renders with no signing key at all — the notice you needed most must not be the one that fails", async () => {
+    // #281's constraint, pinned. The template is transactional, so it never needs an unsubscribe link,
+    // and nothing in it depends on being able to mint a token. A project that has not configured a
+    // link-signing key still gets its notices.
+    const result = await renderEmail("operationalNotice", { ...notice, severity: "critical" }, theme, undefined);
+    expect(result.subject).toContain("Critical");
+    expect(result.html).toContain("STRIPE_SECRET_KEY");
+    expect(result.text).toContain("STRIPE_SECRET_KEY");
+    expect(result.unsubscribeUrl).toBeUndefined();
+  });
+
+  test("a fact read off a system renders as text, never as markup", async () => {
+    // Facts and the detail paragraph are values a capability read somewhere — a version string, a
+    // resource name, an error. Somewhere upstream one of them is attacker-influenced, and this template
+    // goes out over the adopter's own DKIM signature.
+    const result = await renderEmail(
+      "operationalNotice",
+      {
+        ...notice,
+        severity: "warning",
+        detail: '<a href="https://evil.test/login">Verify your account</a>',
+        facts: [{ label: "Version", value: "<script>alert(1)</script>" }],
+      },
+      theme,
+    );
+    expect(result.html).not.toMatch(/<script/i);
+    expect(result.html).not.toMatch(/href="https:\/\/evil\.test/i);
+    expect(result.html).toContain("&lt;");
+  });
+
+  test("the action is optional, and its absence renders nothing rather than a dead button", async () => {
+    const without = await renderEmail("operationalNotice", { ...notice, severity: "info" }, theme);
+    expect(without.html).not.toContain("<a href");
+    const with_ = await renderEmail(
+      "operationalNotice",
+      { ...notice, severity: "info", actionUrl: "https://acme.test/secrets", actionLabel: "Rotate it" },
+      theme,
+    );
+    expect(with_.html).toContain("https://acme.test/secrets");
+    expect(with_.text).toContain("Rotate it: https://acme.test/secrets");
+  });
+
+  test("a missing severity is refused at render, not defaulted to calm", async () => {
+    // There is no default on purpose. A capability that forgot the field would otherwise send an
+    // outage at the volume of a release note.
+    await expect(renderEmail("operationalNotice", notice, theme)).rejects.toMatchObject({
+      payload: { code: "email/invalid_payload" },
+    });
+  });
+});
+
 describe("a template's variables must be declared on its payload", () => {
   /**
    * Root-level `{{var}}` and `{{#if var}}` names a template body references.
@@ -326,6 +434,21 @@ describe("a template's variables must be declared on its payload", () => {
     return found;
   }
 
+  /**
+   * Names passed as a helper's argument — `{{severityLabel severity}}`.
+   *
+   * The plain-variable patterns above require `}}` immediately after the name, so a helper call is
+   * invisible to them. Without this, the first template to reach its payload through a helper would
+   * quietly leave that field unchecked, which is the exact hole this whole test exists to close.
+   */
+  function helperArguments(source: string): Set<string> {
+    const found = new Set<string>();
+    for (const match of source.matchAll(/\{\{[a-zA-Z_][a-zA-Z0-9_]*\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g)) {
+      if (match[1]) found.add(match[1]);
+    }
+    return found;
+  }
+
   /** Values the engine injects onto the render context after the payload is parsed. */
   const ENGINE_INJECTED = new Set(["theme", "layoutWidth", "openPixelUrl", "unsubscribeUrl"]);
 
@@ -339,7 +462,7 @@ describe("a template's variables must be declared on its payload", () => {
     for (const [id, def] of Object.entries(templates)) {
       const declared = new Set(Object.keys((def.payload as unknown as { shape: Record<string, unknown> }).shape ?? {}));
       for (const source of [def.html, def.text, def.subject]) {
-        for (const variable of referencedVariables(source)) {
+        for (const variable of [...referencedVariables(source), ...helperArguments(source)]) {
           if (ENGINE_INJECTED.has(variable) || declared.has(variable)) continue;
           missing.push(`${id}: {{${variable}}} is rendered but not declared on its payload schema`);
         }

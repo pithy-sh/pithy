@@ -114,6 +114,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     template: input.template,
     category: template.category,
     payload: input.payload as Record<string, unknown>,
+    payloadRedactedAt: null,
     status,
     mode,
     attempts: 0,

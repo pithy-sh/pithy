@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import type { EmailKind, TemplateCategory } from "../data/enums";
+import { NoticeSeverity } from "./severity";
 import type { ContentWidth } from "./theme";
 
 /**
@@ -13,6 +14,29 @@ import type { ContentWidth } from "./theme";
  * (`{{var}}`, `{{#each}}`, `{{#if}}`) and include the shared `{{> emailHead}}` / `{{> emailFoot}}`
  * partials, so every template inherits the light/dark theme and the Gmail-safe shell; `links` names the
  * URL locations the engine rewrites for click tracking.
+ *
+ * ## This map is closed to adopters, and that is a decision rather than an omission
+ *
+ * There is no `registerTemplate`. An adopter composing `email` sends what is in this file, and the
+ * argument for that — with what it costs, and what the kit owes in exchange — is in this package's
+ * README under *The registry is closed*. The short form is three things, of which the first is not
+ * negotiable by design taste:
+ *
+ * 1. **The Workers runtime forbids code generation**, so a template cannot be compiled where it runs.
+ *    Every body here is turned into a spec by `scripts/precompile.ts` at build time. Accepting an
+ *    adopter's template means accepting a *precompiled spec* built by their own Handlebars, and
+ *    Handlebars refuses a spec whose compiler revision differs from the runtime's — a version skew
+ *    nobody would see until every email failed to render at once.
+ * 2. **The kind would go back to being a claim.** #281's fix rests on a call site being unable to
+ *    assert that a message is transactional; a registerable template makes that assertion writable
+ *    again, and the mail it produces ignores an unsubscribe under the adopter's own sending domain.
+ * 3. **Escaping is structural here, not conventional.** `testerNudge` and `supportReply` are safe
+ *    because their bodies are fixed and the words arrive as escaped values. A supplied body with one
+ *    `{{{triple}}}` is a phishing page sent over the adopter's DKIM signature.
+ *
+ * What the closure obliges instead: where a shape is missing, the kit adds it, and where the *words*
+ * are the adopter's, the template takes them as payload. `supportReply`, `testerNudge` and
+ * `operationalNotice` are all that pattern — the kit owns the shell, the caller owns the copy.
  */
 
 /** A URL location within a payload that the engine may rewrite to a tracked click callback. A `path`
@@ -184,6 +208,86 @@ const PasswordChangedPayload = z
   })
   .describe("Inputs for the account-credential-changed security notice.");
 
+/** One labelled fact in an operational notice — what makes the notice specific rather than a mood. */
+const OperationalNoticeFact = z
+  .object({
+    label: z.string().describe("What this fact is: `Environment`, `Last rotated`, `Version`, `Owner`."),
+    value: z
+      .string()
+      .describe("The fact itself, as text. Rendered HTML-escaped — it is a value read off a system, never markup."),
+  })
+  .describe("One label/value row in an operational notice's fact table.");
+
+/**
+ * The operational notice: *something about your own infrastructure changed or needs attention*.
+ *
+ * **It is not `securityAlert`, and the difference is the whole reason it exists.** That template is
+ * about a session — it describes a sign-in and closes with "if this was you, no action is needed",
+ * which is the opposite of what an overdue secret or a security release means. This one assumes the
+ * recipient is the operator and that the fact is true; there is nothing to confirm, only something to
+ * do or to know.
+ *
+ * **One template rather than one per notice, and one per capability is what it replaces.** A rotation
+ * that failed, a release with a security fix, a connection that stopped answering and a job retrying
+ * for a day differ only in their words and their urgency. Both of those are payload. What is fixed —
+ * the shell, the escaping, the kind, the severity vocabulary — is what the kit is for.
+ *
+ * The severity is required and has no default. A default would be `info`, and a capability that forgot
+ * the field would then send a critical fault at the volume of a newsletter.
+ */
+export const OperationalNoticePayload = z
+  .object({
+    severity: NoticeSeverity.describe(
+      "How urgent this is. Sets the subject-line label (`Notice:` / `Action needed:` / `Critical:`), so the level is visible in the inbox before the message is opened.",
+    ),
+    summary: z
+      .string()
+      .describe("What happened, in one line. It is the subject after the severity label, and the heading in the body."),
+    thing: z
+      .string()
+      .describe(
+        "What it happened to, named the way an operator would recognise it: `STRIPE_SECRET_KEY`, `@pithy-sh/auth`, `acme-prod-db`. A notice that does not name its subject cannot be acted on.",
+      ),
+    when: z
+      .string()
+      .describe(
+        "When it happened, human-readable (`2 hours ago`, `18 June, 14:02 UTC`). Formatted by the caller, who knows the recipient's locale and whether an exact time matters.",
+      ),
+    detail: z
+      .string()
+      .optional()
+      .describe(
+        "One paragraph explaining what it means or what to do. Rendered HTML-escaped as a single block. Optional — the summary and the facts already stand alone.",
+      ),
+    facts: z
+      .array(OperationalNoticeFact)
+      .default([])
+      .describe(
+        "Supporting facts as label/value rows — version, environment, last success, owner. Empty renders nothing at all rather than an empty table.",
+      ),
+    actionUrl: z
+      .string()
+      .optional()
+      .describe(
+        "The one place this can be acted on. Optional, because a caller with nowhere to send somebody would otherwise invent a link, and a dead link in a critical notice is worse than none. Tracked when click tracking is on.",
+      ),
+    actionLabel: z
+      .string()
+      .default("Open")
+      .describe("The button's words. Only rendered alongside `actionUrl`; defaults to a plain `Open`."),
+  })
+  .describe(
+    "Inputs for an operational notice — what happened, to what, when, how serious, and one place to act on it.",
+  );
+/**
+ * `z.input`, not `z.output`: `facts` and `actionLabel` carry defaults, so the parsed shape is the
+ * renderer's and this one is the caller's. It is exported because a capability building a notice should
+ * be told at compile time that it forgot the severity — the payload reaches `enqueueEmail` as
+ * `unknown`, and a Zod failure there is a runtime error in a code path that only runs when something is
+ * already wrong.
+ */
+export type OperationalNoticePayload = z.input<typeof OperationalNoticePayload>;
+
 const NewsletterArticle = z
   .object({
     title: z.string().describe("The article headline."),
@@ -349,6 +453,29 @@ export const templates: Record<string, EmailTemplate> = {
     ),
     text: "Hi{{#if name}} {{name}}{{/if}},\n\nYour account credentials were changed on {{when}}. If this wasn't you, contact support: {{supportUrl}}",
     links: [{ path: "supportUrl", label: "password-support" }],
+  },
+  operationalNotice: {
+    id: "operationalNotice",
+    category: "transactional",
+    // Transactional in both axes. An operator who unsubscribed from a product newsletter has not asked
+    // to stop being told their secret expired — and unlike a nudge, nothing here is a request they can
+    // let lapse. The notice is about infrastructure they are responsible for.
+    kind: "transactional",
+    width: "narrow",
+    payload: OperationalNoticePayload,
+    // The label leads the subject, so the severity is legible in a list of forty unread messages. It is
+    // also why the summary is one line: everything after `Critical: ` competes with the sender name for
+    // the width of a phone.
+    subject: "{{severityLabel severity}}: {{summary}}",
+    html: layout(
+      // The severity renders as a word in colour, not as a colour. `sev-{{severity}}` is the dark-mode
+      // hook (the class is safe to interpolate: the value is enum-constrained before it reaches here),
+      // and `severityColor` supplies the light value inline, the way every other colour in this shell
+      // is applied.
+      `<p class="sev-{{severity}}" style="margin:0 0 10px; font-size:12px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:{{severityColor severity}}">{{severityLabel severity}}</p>${heading("{{summary}}")}<p class="t-subtle" style="margin:0 0 20px; font-size:13px; color:{{theme.light.textSubtle}}">{{thing}} &middot; {{when}}</p>{{#if detail}}<p style="margin:0 0 16px">{{detail}}</p>{{/if}}{{#if facts.length}}<table cellpadding="0" cellspacing="0" role="none" style="width:100%; margin:0 0 8px">{{#each facts}}<tr><td class="t-subtle" style="padding:4px 16px 4px 0; font-size:13px; color:{{../theme.light.textSubtle}}; vertical-align:top">{{label}}</td><td class="t-ink" style="padding:4px 0; font-size:13px; color:{{../theme.light.text}}; vertical-align:top">{{value}}</td></tr>{{/each}}</table>{{/if}}{{#if actionUrl}}${button("actionUrl", "{{actionLabel}}")}{{/if}}`,
+    ),
+    text: "{{severityLabel severity}} — {{summary}}\n\n{{thing}}\n{{when}}\n\n{{#if detail}}{{detail}}\n\n{{/if}}{{#each facts}}{{label}}: {{value}}\n{{/each}}{{#if actionUrl}}\n{{actionLabel}}: {{actionUrl}}{{/if}}",
+    links: [{ path: "actionUrl", label: "operational-action" }],
   },
   supportReply: {
     id: "supportReply",

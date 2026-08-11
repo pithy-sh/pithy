@@ -23,3 +23,8 @@ export {
 } from "./http/guards";
 export { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 export { listTemplates } from "./templates/engine";
+// The one payload contract exported by name. Every other template is called by a capability in this
+// repo, which deep-imports; an operational notice is the template an *adopter* sends, about their own
+// infrastructure, and it is the one where getting the severity wrong should not wait for runtime.
+export { OperationalNoticePayload } from "./templates/registry";
+export { NoticeSeverity } from "./templates/severity";

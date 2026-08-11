@@ -31,7 +31,9 @@ import { getJob } from "./read";
  *
  * Every other state is refused with `core/conflict`, and each refusal is a different thing going wrong:
  *
- * - `sent` — already delivered. Retrying is a duplicate email to a real person.
+ * - `sent` — already delivered. Retrying is a duplicate email to a real person. It is also the one
+ *   state whose inputs are gone: a transactional job's payload is dropped when the message goes out,
+ *   which is safe precisely because this refusal is what makes `sent` terminal.
  * - `pending` / `scheduled` / `sending` — still in flight. Resetting it races the scheduler, and
  *   `sending` in particular is a job a Workflow is holding right now.
  * - `suppressed` — the address is on the block list. Retrying is the one send this capability must

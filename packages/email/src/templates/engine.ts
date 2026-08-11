@@ -7,6 +7,7 @@ import type { EmailKind } from "../data/enums";
 import { EmailInvalidPayloadError, EmailTemplateNotFoundError } from "../error/errors";
 import { precompiledPartials, precompiledTemplates } from "./precompiled.generated";
 import { type EmailTemplate, templates } from "./registry";
+import { severityColor, severityLabel } from "./severity";
 import { type EmailTheme, widthPx } from "./theme";
 
 /**
@@ -37,6 +38,15 @@ const hbs = Handlebars.create();
 for (const [name, spec] of Object.entries(precompiledPartials)) {
   hbs.registerPartial(name, hbs.template(spec));
 }
+
+// The only two helpers this engine has, and both exist for one reason: a severity has to be said in
+// three places — the subject line, the body, and the plain-text part — and a mapping repeated three
+// times is a mapping that will disagree with itself. Handlebars has no equality test, so without them a
+// template would carry nine `{{#if}}` blocks to render one word. Registered on this instance at module
+// load; precompiled specs resolve a helper by name at render time, so `scripts/precompile.ts` needs to
+// know nothing about them.
+hbs.registerHelper("severityLabel", severityLabel);
+hbs.registerHelper("severityColor", severityColor);
 
 interface Compiled {
   def: EmailTemplate;
@@ -110,6 +120,31 @@ export function getTemplate(id: string): EmailTemplate {
  */
 export function templateKind(templateId: string): EmailKind {
   return compiled.get(templateId)?.def.kind ?? "elective";
+}
+
+/**
+ * Whether this template's payload is dropped once the message is delivered.
+ *
+ * **Keyed on the category, not the kind.** The kind answers "may this be refused"; this question is
+ * "are these inputs a one-time credential". `testerNudge` is the template that proves they are
+ * different axes — it is *elective*, because somebody may say stop chasing me, and its payload carries
+ * an opt-in URL that authenticates a tester. Keying on the kind would have left exactly that one live.
+ *
+ * A transactional message is a reply to something one person just did, and its payload is that
+ * person's one-time input: a sign-in URL, a code, an invitation token. A marketing message's payload is
+ * copy authored for a batch, carrying no per-recipient credential and answering the real question
+ * "what did the forty thousand of them actually receive". So the category is the line, and it falls in
+ * the right place on every template in the registry.
+ *
+ * There is no per-template override, because no template needs one today and an escape hatch nobody
+ * uses is where the bug comes back. The day a marketing template carries a per-recipient credential,
+ * the override is the change to make — with a reason written beside it.
+ *
+ * An id nobody registered redacts, which is the safe direction and, like `templateKind`, decides
+ * nothing real: a job naming an unknown template fails at render and never reaches a delivery.
+ */
+export function redactsPayloadOnDelivery(templateId: string): boolean {
+  return compiled.get(templateId)?.def.category !== "marketing";
 }
 
 /** The registered template ids, for introspection and the CLI. */

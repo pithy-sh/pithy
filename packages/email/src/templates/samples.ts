@@ -36,6 +36,21 @@ export const samplePayloads: Record<string, unknown> = {
     optOutLabel: "No thanks, take me off this list",
   },
   passwordChanged: { name: "Sam", when: "just now", supportUrl: "https://example.com/support" },
+  // `warning` rather than `info`: a sample is what somebody looks at to decide whether the severity is
+  // legible, and the middle level is the one that has to earn its place between the other two.
+  operationalNotice: {
+    severity: "warning",
+    summary: "A secret has not been rotated in 90 days",
+    thing: "STRIPE_SECRET_KEY",
+    when: "18 June, 14:02 UTC",
+    detail: "Rotation is overdue. The old value keeps working until the new one is in place.",
+    facts: [
+      { label: "Environment", value: "prod" },
+      { label: "Last rotated", value: "20 March" },
+    ],
+    actionUrl: "https://example.com/secrets/stripe-secret-key",
+    actionLabel: "Rotate it",
+  },
   newsletter: {
     subject: "Sample newsletter",
     intro: "Here's what's new this week.",
