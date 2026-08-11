@@ -157,6 +157,7 @@ describe("renderDoctorText", () => {
             },
           ],
           pendingMigrations: 2,
+          undeclaredMigrations: [],
           entitlementGap: [],
           missingPrerequisites: [],
           missingVersionMetadata: false,
@@ -228,6 +229,33 @@ describe("renderDoctorText", () => {
         "    entitlements no gated route without a provider ✓",
       ].join("\n"),
     );
+  });
+
+  /**
+   * #282. Nothing was pending, so the line read `none pending ✓` — about a database `pithy migrate`
+   * refused to touch. The two directions are two different faults with two different remedies, so the
+   * undeclared one gets its own sentence rather than a second number on the pending line.
+   */
+  test("a migration the ledger records and the project no longer declares gets its own line and remedy", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0", core: "1.2.0" }),
+        installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
+        buildPlan: planStub({
+          ...cleanPlan,
+          undeclaredMigrations: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain(
+      [
+        "    migrations   DB records 0250_audit_0002_tenant. This project no longer declares it.",
+        "                 Nothing migrates until the ledger and the declaration agree. This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run pithy migrate --env dev again.",
+      ].join("\n"),
+    );
+    expect(doctorExitCode(report)).toBe(1);
   });
 
   test("an entitlement gap names the gating files and the command that fixes it", async () => {
@@ -397,7 +425,12 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(
       baseOptions({ buildPlan: planStub({ ...cleanPlan, pendingMigrations: 3 }) }),
     );
-    expect(report.project?.health.workers[0]?.migrations).toEqual({ ok: false, pending: 3, env: "dev" });
+    expect(report.project?.health.workers[0]?.migrations).toEqual({
+      ok: false,
+      pending: 3,
+      undeclared: [],
+      env: "dev",
+    });
     expect(doctorExitCode(report)).toBe(1);
   });
 
@@ -647,7 +680,7 @@ describe("project health — installed is not composed (regression)", () => {
       projectDir,
       resolveWorkers: async () => workers,
       buildPlan: undefined,
-      countPending: async () => 0,
+      readLedger: async () => ({ pending: 0, undeclared: [] }),
     });
   }
 

@@ -47,6 +47,7 @@ export const cleanPlanFor = (worker: string): ReconcilePlan => ({
   perCapability: [],
   ejectedSkipped: [],
   pendingMigrations: 0,
+  undeclaredMigrations: [],
   entitlementGap: [],
   missingPrerequisites: [],
   missingVersionMetadata: false,

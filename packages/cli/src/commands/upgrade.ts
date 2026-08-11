@@ -7,7 +7,7 @@ import { availableManifests, type ManifestFault } from "../capabilities/manifest
 import {
   applyReconcilePlan,
   buildReconcilePlan,
-  type CountPending,
+  type ReadLedger,
   type ReconcileApplied,
   type ReconcilePlan,
   type RunMigrate,
@@ -58,8 +58,8 @@ export interface UpgradeRunOptions {
   migrate: boolean;
   /** Worker-set resolver seam; defaults to {@link resolveWorkers}. */
   resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<UpgradeWorker[]>;
-  /** Test seam: count pending migrations without a real Miniflare/D1 run. */
-  countPending?: CountPending;
+  /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
+  readLedger?: ReadLedger;
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
@@ -128,7 +128,7 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
       env: options.env,
       account: options.account,
       capabilities: worker.capabilities,
-      ...(options.countPending ? { countPending: options.countPending } : {}),
+      ...(options.readLedger ? { readLedger: options.readLedger } : {}),
     });
     if (options.dryRun) {
       results.push({ plan, applied: null });

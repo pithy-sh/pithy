@@ -7,8 +7,14 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
-import { appCapability, createTable, migrateHarness, multiplayerCapability } from "../test-utils/migrateHarness";
-import { countPendingMigrations, migrateProject } from "./run";
+import {
+  appCapability,
+  createTable,
+  migrateHarness,
+  multiplayerCapability,
+  pendingFrom,
+} from "../test-utils/migrateHarness";
+import { migrateProject } from "./run";
 
 /**
  * `migrateProject`'s fan-out across a project's workers — the group that dominated the suite's
@@ -55,9 +61,9 @@ describe("migrateProject", () => {
       expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0500_multiplayer_0001_rooms"]);
 
       // The unnamed worker's own migration never ran — it is still pending.
-      expect(
-        await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev", worker: "api" }),
-      ).toBe(1);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev", worker: "api" })).toBe(
+        1,
+      );
     });
 
     test("an unknown --worker fails with an actionable error naming the known workers", async () => {
@@ -94,7 +100,7 @@ describe("migrateProject", () => {
         expect(runs[1]?.databases[0]?.sharedWith).toEqual(["api"]);
 
         // Counted once, too — not once per worker.
-        expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
+        expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
       });
 
       test("merges both workers' capabilities into one run, each credited with its own", async () => {
@@ -111,7 +117,7 @@ describe("migrateProject", () => {
         expect(runs[1]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0500_multiplayer_0001_rooms"]);
 
         // Both tables landed in the one shared local D1, and nothing is pending afterwards.
-        expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
+        expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
         const mf = new Miniflare({
           modules: true,
           script: "export default {};",

@@ -16,7 +16,8 @@ import {
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import { countPendingMigrations, type DatabaseRun, migrateProject } from "../migrations/run";
+import { UndeclaredMigration } from "../migrations/ledger";
+import { type DatabaseRun, migrateProject, type ProjectLedger, readProjectLedger } from "../migrations/run";
 import {
   appendBinding,
   appendDurableObjectMigrations,
@@ -129,6 +130,11 @@ export const ReconcilePlan = z
       .describe(
         "Unapplied migrations for `env` across this Worker's databases — applied only when upgrade runs with --migrate.",
       ),
+    undeclaredMigrations: z
+      .array(UndeclaredMigration)
+      .describe(
+        "Migrations `env`'s databases have applied that this Worker's capabilities no longer declare. The other direction of the same comparison, and the one a pending count is blind to: nothing is missing, so nothing is pending, while Kysely reads the ledger as a corrupted chain and `pithy migrate` refuses to run at all. Empty is the healthy state. Report-only — an upgrade cannot fix it, because whether to restore the migration or drop its ledger row depends on what the database holds.",
+      ),
     entitlementGap: z
       .array(z.string())
       .describe(
@@ -181,8 +187,15 @@ export interface MigrateScope extends MigrationScope {
   project: string;
 }
 
-/** Count one Worker's pending migrations for an environment — the migration seam, injectable for tests. */
-export type CountPending = (options: MigrationScope) => Promise<number>;
+/**
+ * Read one Worker's migration ledger for an environment — the migration seam, injectable for tests.
+ *
+ * It used to return a number, and that number was the whole of what any caller could learn: how many
+ * declared migrations had not run. An applied migration the project no longer declares is invisible to
+ * that subtraction and is the state that stops `pithy migrate` dead, so the seam returns the comparison
+ * rather than one side of it (#282).
+ */
+export type ReadLedger = (options: MigrationScope) => Promise<ProjectLedger>;
 
 /** Run one Worker's migrations for an environment — the apply-time migration seam, injectable for tests. */
 export type RunMigrate = (options: MigrateScope) => Promise<DatabaseRun[]>;
@@ -194,7 +207,7 @@ function scopeFor({ projectDir, workerDir, worker, env, capabilities, account }:
   return { projectDir, env, account, workers: [{ name: worker, dir: workerDir, capabilities }] };
 }
 
-const defaultCountPending: CountPending = (scope) => countPendingMigrations(scopeFor(scope));
+const defaultReadLedger: ReadLedger = (scope) => readProjectLedger(scopeFor(scope));
 
 const defaultRunMigrate: RunMigrate = async (scope) =>
   (await migrateProject({ ...scopeFor(scope), project: scope.project })).flatMap((run) => run.databases);
@@ -224,8 +237,8 @@ export interface BuildReconcilePlanOptions {
    * network-capable step, the pending-migration count, and nothing else (#234).
    */
   account: CloudflareAccountSelection | null;
-  /** Test seam: count pending migrations without a real Miniflare/D1 run. */
-  countPending?: CountPending;
+  /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
+  readLedger?: ReadLedger;
 }
 
 /** Escape a capability name for use inside a `RegExp`. */
@@ -453,12 +466,12 @@ async function readStanzas(workerDir: string): Promise<{ env: string; stanza: Wr
 export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Promise<ReconcilePlan> {
   const { projectDir, workerDir, env } = options;
   // The deployed name, kept under its own binding because two different consumers want two different
-  // things from it. `countPending` below builds a migration scope, where the Worker is identified the way
+  // things from it. `readLedger` below builds a migration scope, where the Worker is identified the way
   // the migration ledger identifies it; the plan this returns is read by a person or a script holding the
   // checkout, where the `apps/` directory is the useful handle. Collapsing them is pithy-sh/pithy#144.
   const deployedAs = options.worker ?? basename(workerDir);
   const capabilities = options.capabilities ?? allCapabilities(await loadWorkerConfig(workerDir));
-  const countPending = options.countPending ?? defaultCountPending;
+  const readLedger = options.readLedger ?? defaultReadLedger;
 
   const { manifests } = await availableManifests(projectDir);
   const ejected = await ejectedCapabilities(workerDir);
@@ -484,7 +497,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
-  const pendingMigrations = await countPending({
+  const ledger = await readLedger({
     projectDir,
     workerDir,
     worker: deployedAs,
@@ -510,7 +523,8 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     env,
     perCapability,
     ejectedSkipped,
-    pendingMigrations,
+    pendingMigrations: ledger.pending,
+    undeclaredMigrations: ledger.undeclared,
     entitlementGap,
     // Across every composed capability, ejected ones included: eject copies the source, it does not
     // change what that source composes against, and `createBackend` asks the same question of both.

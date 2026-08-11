@@ -189,7 +189,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(5);
+    expect(WHAT_BLOCKS).toHaveLength(6);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -224,6 +224,7 @@ describe("docs/commands/doctor.md", () => {
                 },
               ],
               pendingMigrations: 2,
+              undeclaredMigrations: [],
               entitlementGap: [],
               missingPrerequisites: [],
               missingVersionMetadata: false,
@@ -255,6 +256,31 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
+   * The `migrations` fragment (#282), pinned against a Worker whose ledger records a migration nothing
+   * declares.
+   *
+   * The half of that check a pending count is blind to, and the reason the page has to show it: an
+   * adopter meeting this line has a database `pithy migrate` will refuse, and the remedy is neither of the
+   * two commands the rest of this block names.
+   */
+  test("the migrations fragment is what the renderer prints for a ledger row nothing declares", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api"),
+          buildPlan: planStub({
+            ...cleanPlanFor("api"),
+            undeclaredMigrations: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[0];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the migrations fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
    * The `prereqs` fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
@@ -276,7 +302,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[0];
+    const fragment = FRAGMENTS[1];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -304,7 +330,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[1];
+    const fragment = FRAGMENTS[2];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -330,7 +356,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[2];
+    const fragment = FRAGMENTS[3];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -356,7 +382,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[3];
+    const fragment = FRAGMENTS[4];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

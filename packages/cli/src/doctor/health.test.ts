@@ -24,6 +24,7 @@ function clean(worker: string): ReconcilePlan {
     perCapability: [],
     ejectedSkipped: [],
     pendingMigrations: 0,
+    undeclaredMigrations: [],
     entitlementGap: [],
     missingPrerequisites: [],
     missingVersionMetadata: false,
@@ -47,7 +48,7 @@ describe("buildProjectHealth", () => {
     expect(health.workers[0]?.worker).toBe("api");
     expect(health.workers[0]?.config.ok).toBe(true);
     expect(health.workers[0]?.bindings.ok).toBe(true);
-    expect(health.workers[0]?.migrations).toEqual({ ok: true, pending: 0, env: "dev" });
+    expect(health.workers[0]?.migrations).toEqual({ ok: true, pending: 0, undeclared: [], env: "dev" });
   });
 
   test("config check fails on missing config keys, listing them per capability", async () => {
@@ -112,7 +113,21 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: { ...clean("api"), pendingMigrations: 2 } }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({ ok: false, pending: 2, env: "dev" });
+    expect(health.workers[0]?.migrations).toEqual({ ok: false, pending: 2, undeclared: [], env: "dev" });
+  });
+
+  test("migrations check fails on an applied migration nothing declares, with nothing pending", async () => {
+    // The state that used to pass: the subtraction finds nothing missing, and migrate refuses anyway.
+    const undeclared = [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }];
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api],
+      buildPlan: planStub({ api: { ...clean("api"), undeclaredMigrations: undeclared } }),
+    });
+    expect(health.ok).toBe(false);
+    expect(health.workers[0]?.migrations).toEqual({ ok: false, pending: 0, undeclared, env: "dev" });
   });
 
   test("entitlements check surfaces the gating files of a Worker with no provider composed", async () => {
@@ -145,15 +160,15 @@ describe("buildProjectHealth", () => {
     expect(defaultBuildPlan).toBe(buildReconcilePlan);
   });
 
-  test("forwards each worker's directory, name, capabilities, and the shared countPending seam", async () => {
+  test("forwards each worker's directory, name, capabilities, and the shared readLedger seam", async () => {
     const build = planStub({ api: clean("api"), collab: clean("collab") });
-    const countPending = vi.fn(async () => 0);
+    const readLedger = vi.fn(async () => ({ pending: 0, undeclared: [] }));
     await buildProjectHealth({
       account: null,
       projectDir: "/p",
       env: "staging",
       workers: [api, collab],
-      countPending,
+      readLedger,
       buildPlan: build,
     });
     expect(build).toHaveBeenNthCalledWith(1, {
@@ -163,7 +178,7 @@ describe("buildProjectHealth", () => {
       env: "staging",
       account: null,
       capabilities: [],
-      countPending,
+      readLedger,
     });
     expect(build).toHaveBeenNthCalledWith(2, {
       projectDir: "/p",
@@ -172,7 +187,7 @@ describe("buildProjectHealth", () => {
       env: "staging",
       account: null,
       capabilities: [],
-      countPending,
+      readLedger,
     });
   });
 });
