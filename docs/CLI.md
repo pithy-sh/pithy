@@ -763,6 +763,8 @@ Changelog: https://pithy.sh/changelog/2.0
 
 For **patch** version bumps (`1.2.0` → `1.2.1`), notifications are **suppressed** unless the release is flagged with `pithy:security` in its release metadata. Patch noise trains users to ignore notifications; reserving the surface for meaningful updates keeps it useful.
 
+Version comparison comes from `parseSemver` and `compareSemver` in `@pithy-sh/core/src/semver/semver` — the same primitive any capability ranking versions uses. The notifier then **narrows** it: `parseVersion` keeps `major.minor.patch` and drops the prerelease, so `1.3.0-rc.1` and `1.3.0` are the same version here and nobody on the stable channel is nagged about a release candidate. The narrowing lives in `packages/cli/src/notifier/version.ts`, not in the primitive, because the notifier is the only caller that wants it.
+
 ### 5.3 Installer detection
 
 Pithy detects which package manager installed the binary by inspecting `process.argv[1]`. The detection is path-based:

@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
@@ -21,7 +22,7 @@ import {
 import { getJob, listJobs } from "../jobs/read";
 import { retryJob } from "../jobs/retry";
 import type { SendWorkflowBinding } from "../send/enqueue";
-import { listSuppressions, normalizeEmail, suppress, unsuppress } from "../send/suppression";
+import { listSuppressions, suppress, unsuppress } from "../send/suppression";
 import {
   EMAIL_JOBS_READ_SCOPE,
   EMAIL_JOBS_RETRY_SCOPE,
@@ -333,7 +334,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
         const input = c.req.valid("json");
         const who = caller(c);
         const now = clock();
-        const email = normalizeEmail(input.email);
+        const email = normalizeAddress(input.email);
         const db = suppressions(c);
 
         // **A write must never weaken an existing block.** `suppress()` is an upsert, so without this
@@ -424,7 +425,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
       async (c) => {
         const input = c.req.valid("json");
         const who = caller(c);
-        const email = normalizeEmail(input.email);
+        const email = normalizeAddress(input.email);
         const db = suppressions(c);
 
         // Read before write, so the trail records *what was undone* rather than only that something

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { messageOf } from "@pithy-sh/core/src/error/pithyError";
@@ -128,7 +129,7 @@ export async function resolveActivity(
   options: ActivityOptions,
   log: Logger = noopLogger,
 ): Promise<Map<string, TesterActivity>> {
-  const normalized = [...new Set(emails.map((email) => email.trim().toLowerCase()))];
+  const normalized = [...new Set(emails.map(normalizeAddress))];
   const results = new Map<string, TesterActivity>();
   for (const email of normalized) {
     results.set(email, blind(email, options.unreachable.has(email) ? "unreachable" : "unobservable"));
@@ -174,7 +175,7 @@ async function readActivityInto(
   const users: { id: string; email: string }[] = [];
   for (const chunk of chunkByBoundParameters(normalized, 0)) {
     const rows = await db.selectFrom("pithyAuthUsers").select(["id", "email"]).where("email", "in", chunk).execute();
-    for (const row of rows) users.push({ id: String(row.id), email: String(row.email).toLowerCase() });
+    for (const row of rows) users.push({ id: String(row.id), email: normalizeAddress(String(row.email)) });
   }
   if (users.length === 0) return;
 

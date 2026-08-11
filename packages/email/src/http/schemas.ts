@@ -86,8 +86,9 @@ const Limit = z.coerce
  *
  * Validated as a real address, because blocking a typo blocks nothing and the caller never finds out:
  * a suppression is silent to everyone, so a malformed one is a mistake that only surfaces as mail
- * still arriving. Lowercasing and trimming happen in the handler, through `normalizeEmail`, so the
- * stored key always matches what the send path checks.
+ * still arriving. Lowercasing and trimming happen in the handler, through core's `normalizeAddress`,
+ * so the stored key always matches what the send path checks — and what every other capability that
+ * compares an address arrives at.
  */
 const WritableAddress = z
   .email()

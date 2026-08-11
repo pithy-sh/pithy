@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { parseAddress } from "@pithy-sh/core/src/address/address";
 import PostalMime, { type Address, type Attachment, type Email } from "postal-mime";
 import { SupportUnparseableMessageError } from "../error/errors";
-import { normalizeAddress, normalizeDisplayName } from "./address";
+import { normalizeDisplayName } from "./address";
 import { normalizeMessageId, parseReferences } from "./threading";
 import { truncateToBytes } from "./truncate";
 
@@ -116,7 +117,7 @@ function addressesOf(value: Address | Address[] | undefined): string[] {
     // its own, so both forms flatten to the same list before anything is normalized.
     const members = entry.group !== undefined ? entry.group : entry.address !== undefined ? [entry] : [];
     for (const member of members) {
-      const normalized = normalizeAddress(member.address);
+      const normalized = parseAddress(member.address);
       if (normalized) found.push(normalized);
     }
   }
@@ -278,7 +279,7 @@ export async function parseInbound(
       ...new Set([
         ...addressesOf(email.to),
         ...addressesOf(email.cc),
-        ...(normalizeAddress(email.deliveredTo) ? [normalizeAddress(email.deliveredTo) as string] : []),
+        ...(parseAddress(email.deliveredTo) ? [parseAddress(email.deliveredTo) as string] : []),
       ]),
     ],
     subject: (email.subject ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_SUBJECT),

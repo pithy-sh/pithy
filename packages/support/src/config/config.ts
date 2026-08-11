@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress, parseAddress } from "@pithy-sh/core/src/address/address";
 import { z } from "zod";
-import { normalizeAddress } from "../mime/address";
 import { SupportReplySnippet } from "../reply/snippets";
 
 /**
@@ -165,7 +165,9 @@ export const SupportReplyConfig = z
       // Normalized for the same reason, and it matters more here: this address is what a customer's
       // answer comes back to, so a casing mismatch against `inboundAddresses` ends the conversation
       // silently rather than loudly.
-      .transform((address) => (address === undefined ? undefined : (normalizeAddress(address) ?? address)))
+      .transform((address) =>
+        address === undefined ? undefined : (parseAddress(address) ?? normalizeAddress(address)),
+      )
       .describe(
         "The `Reply-To` a reply carries — the address the customer's answer comes back to, which must be one of `inboundAddresses` or the conversation ends there. Defaults to the inbox address the thread arrived on, which is almost always what you want.",
       ),
@@ -212,7 +214,7 @@ export const SupportConfig = z
           // envelope recipient. Without this, `Support@Help.Example.com` in an adopter's config
           // matches nothing, every message returns `not_addressed`, and the inbox is *silently*
           // inert — no error, no warning, just no mail ever appearing.
-          .transform((address) => normalizeAddress(address) ?? address.trim().toLowerCase()),
+          .transform((address) => parseAddress(address) ?? normalizeAddress(address)),
       )
       .default([])
       .describe(

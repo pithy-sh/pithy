@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { CapabilityEmailHandler } from "@pithy-sh/core/src/capability/capability";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import PostalMime from "postal-mime";
@@ -12,7 +13,7 @@ import {
   emailSuppressionDatabase,
 } from "../data/tables";
 import { recordEvent } from "../send/events";
-import { normalizeEmail, suppress } from "../send/suppression";
+import { suppress } from "../send/suppression";
 import { classifyInbound, type InboundClassification } from "./classify";
 
 /**
@@ -60,7 +61,7 @@ export async function applyInbound(
         .executeTakeFirst()
     : undefined;
 
-  const recipient = c.recipient ? normalizeEmail(c.recipient) : job ? normalizeEmail(job.toAddress) : undefined;
+  const recipient = c.recipient ? normalizeAddress(c.recipient) : job ? normalizeAddress(job.toAddress) : undefined;
   const isSuppressing = c.type === "hard" || c.type === "complaint";
   let suppressed = false;
 
@@ -96,7 +97,7 @@ export async function applyInbound(
       db,
       {
         jobId: job.id,
-        recipient: recipient ?? normalizeEmail(job.toAddress),
+        recipient: recipient ?? normalizeAddress(job.toAddress),
         type: c.type === "complaint" ? "complaint" : "bounce",
         campaignId: job.campaignId ?? null,
         detail: c.code ?? null,

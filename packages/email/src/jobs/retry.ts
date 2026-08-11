@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailJob } from "../data/emailJob";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailSuppressedError } from "../error/errors";
 import type { SendWorkflowBinding } from "../send/enqueue";
-import { isSuppressed, normalizeEmail } from "../send/suppression";
+import { isSuppressed } from "../send/suppression";
 import { getJob } from "./read";
 
 /**
@@ -98,7 +99,7 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
     });
   }
 
-  const recipient = normalizeEmail(existing.toAddress);
+  const recipient = normalizeAddress(existing.toAddress);
   if (await isSuppressed(deps.suppressionDb, recipient, deps.now)) {
     throw new EmailSuppressedError({
       message: "That recipient is on the suppression list, so this job cannot be retried.",

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
 import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
@@ -236,7 +237,10 @@ function requireUser(preferences: unknown, users: readonly SeededUser[]): Seeded
       action: `Set { "user": "<email>" } in it. ${nameOneOf(users)}`,
     });
   }
-  const user = users.find((candidate) => candidate.email === parsed.data.user);
+  // Both sides normalized: `dev.json` is hand-typed, and refusing to sign in over the capital in
+  // `Ada@example.com` would be a puzzle rather than an error.
+  const wanted = normalizeAddress(parsed.data.user);
+  const user = users.find((candidate) => normalizeAddress(candidate.email) === wanted);
   if (!user) {
     throw new ValidationError({
       message: `dev.json asks to sign in as ${parsed.data.user}, which this seed run does not create.`,

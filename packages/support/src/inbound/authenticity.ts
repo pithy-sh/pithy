@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { parseAddress } from "@pithy-sh/core/src/address/address";
 import { getDomain } from "tldts";
-import { normalizeAddress } from "../mime/address";
 
 /**
  * Whether a message's `From:` header is something we are entitled to believe.
@@ -44,7 +44,7 @@ export interface SenderAuthenticity {
 
 /** The domain half of an address, lowercased. */
 function domainOf(address: string | undefined): string | undefined {
-  const normalized = normalizeAddress(address);
+  const normalized = parseAddress(address);
   const at = normalized?.lastIndexOf("@") ?? -1;
   return normalized && at > 0 ? normalized.slice(at + 1) : undefined;
 }

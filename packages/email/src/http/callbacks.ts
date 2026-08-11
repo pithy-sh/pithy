@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
@@ -17,7 +18,7 @@ import {
 } from "../data/tables";
 import { EmailInvalidTokenError } from "../error/errors";
 import { recordEvent } from "../send/events";
-import { normalizeEmail, suppress } from "../send/suppression";
+import { suppress } from "../send/suppression";
 import { CALLBACK_BASE } from "../templates/engine";
 import { CallbackTokenParam, UnsubscribeQuery } from "./schemas";
 
@@ -77,7 +78,7 @@ export async function handleClick(db: EmailDatabase, keys: SigningKeys, token: s
     db,
     {
       jobId: claims.jobId,
-      recipient: normalizeEmail(claims.recipient),
+      recipient: normalizeAddress(claims.recipient),
       type: "click",
       linkLabel: claims.linkLabel ?? null,
       linkUrl: destination,
@@ -95,7 +96,7 @@ export async function handleOpen(db: EmailDatabase, keys: SigningKeys, token: st
     db,
     {
       jobId: claims.jobId,
-      recipient: normalizeEmail(claims.recipient),
+      recipient: normalizeAddress(claims.recipient),
       type: "open",
       campaignId: claims.campaignId ?? null,
     },
@@ -123,7 +124,7 @@ export async function handleUnsubscribe(
   environment?: string,
 ): Promise<Response> {
   const claims = await verify(keys, token, "unsubscribe", now);
-  const recipient = normalizeEmail(claims.recipient);
+  const recipient = normalizeAddress(claims.recipient);
   const detail = reason ? reason.slice(0, 200) : "unsubscribe link";
   await suppress(
     suppressionDb,

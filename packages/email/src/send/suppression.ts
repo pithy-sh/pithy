@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import { EmailSuppression } from "../data/emailSuppression";
@@ -9,8 +10,12 @@ import type { EmailSuppressionDatabase } from "../data/tables";
 
 /**
  * The suppression list: addresses that must not be emailed, fed by hard bounces, complaints, and
- * unsubscribes. The send path checks it before every send and skips a match. Addresses are normalized
- * (trimmed, lowercased) so a check and a write always agree on the key.
+ * unsubscribes. The send path checks it before every send and skips a match.
+ *
+ * Every address here goes through `normalizeAddress` from core, so a check and a write agree on the
+ * key — and so does `auth` matching a sign-in, `support` linking a sender, and `testers` reading this
+ * very table. A suppression written under one rule and read under another is a suppression that does
+ * not suppress, and it reports itself as "the list did not work" rather than as anything about case.
  *
  * The list is also the one thing in this capability a management client both reads and writes, and it
  * is **global** — one database shared by every environment, so a row here stops mail from staging and
@@ -18,17 +23,12 @@ import type { EmailSuppressionDatabase } from "../data/tables";
  * control-plane scopes rather than one.
  */
 
-/** Normalize an address for the suppression key — trim and lowercase. */
-export function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
-
 /** Whether an address is currently suppressed (a non-expired row exists). */
 export async function isSuppressed(db: EmailSuppressionDatabase, email: string, now: Date): Promise<boolean> {
   const row = await db
     .selectFrom("pithyEmailSuppressions")
     .select(["expiresAt"])
-    .where("email", "=", normalizeEmail(email))
+    .where("email", "=", normalizeAddress(email))
     .executeTakeFirst();
   if (!row) return false;
   if (row.expiresAt === null || row.expiresAt === undefined) return true;
@@ -48,7 +48,7 @@ export async function suppress(
   },
   now: Date,
 ): Promise<void> {
-  const email = normalizeEmail(input.email);
+  const email = normalizeAddress(input.email);
   const jobId = input.jobId ?? null;
   const environment = input.environment ?? null;
   const detail = input.detail ?? null;
@@ -74,7 +74,7 @@ export async function suppress(
 export async function unsuppress(db: EmailSuppressionDatabase, email: string): Promise<boolean> {
   const result = await db
     .deleteFrom("pithyEmailSuppressions")
-    .where("email", "=", normalizeEmail(email))
+    .where("email", "=", normalizeAddress(email))
     .executeTakeFirst();
   return (result.numDeletedRows ?? 0n) > 0n;
 }
@@ -137,7 +137,7 @@ export async function listSuppressions(
   // Exact equality on the normalized key, never a prefix or a LIKE: a lookup that also matched
   // neighbours would be a way to enumerate the list one query at a time while looking like a question
   // about a single address.
-  if (filter.email) query = query.where("email", "=", normalizeEmail(filter.email));
+  if (filter.email) query = query.where("email", "=", normalizeAddress(filter.email));
   if (after) {
     query = query.where((eb) =>
       eb.or([eb("createdAt", "<", after.sort), eb.and([eb("createdAt", "=", after.sort), eb("id", "<", after.id)])]),

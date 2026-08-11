@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { parseAddress } from "@pithy-sh/core/src/address/address";
 import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
-import { normalizeAddress } from "../mime/address";
 
 /**
  * The link from an address in a `From` header to the customer the app already knows about.
@@ -82,7 +82,7 @@ export const MAX_LINKED_PURCHASES = 25;
  * customer's request.
  */
 export async function resolveSenderUserId(d1: D1Database, address: string): Promise<string | null> {
-  const normalized = normalizeAddress(address);
+  const normalized = parseAddress(address);
   if (!normalized) return null;
 
   try {
@@ -178,7 +178,7 @@ export async function resolveSenderContext(
 ): Promise<SenderContext> {
   const empty: SenderContext = { authenticated: options.authenticated, userId: null, purchases: [], entitlements: [] };
 
-  const normalized = normalizeAddress(address);
+  const normalized = parseAddress(address);
   if (!normalized) return empty;
 
   const account = await resolveAccount(d1, normalized);
