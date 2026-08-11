@@ -114,6 +114,53 @@ describe("SystemSecretsStore", () => {
 });
 
 /**
+ * The moved row, in the storage the envelope actually protects.
+ *
+ * The unit test proves the primitive refuses a foreign context; this proves the store hands it the
+ * row's own name, so the refusal survives a real D1 write nothing in the store performed.
+ */
+describe("SystemSecretsStore and a ciphertext moved between rows", () => {
+  test("a ciphertext copied into another secret's row does not decrypt", async () => {
+    const store = newStore();
+    await store.put("billing-webhook-secret", initialVersionedValue("the-real-value"));
+    await store.put("analytics-webhook-secret", initialVersionedValue("harmless"));
+
+    // The database-write attacker, or an ordinary row mix-up: same key, same store, wrong row.
+    await env.SECRETS.prepare(
+      `update pithy_secrets_system_secrets
+         set encrypted_value = (select encrypted_value from pithy_secrets_system_secrets where name = ?),
+             iv = (select iv from pithy_secrets_system_secrets where name = ?),
+             key_version = (select key_version from pithy_secrets_system_secrets where name = ?)
+       where name = ?`,
+    )
+      .bind("billing-webhook-secret", "billing-webhook-secret", "billing-webhook-secret", "analytics-webhook-secret")
+      .run();
+
+    await expect(store.getValue("analytics-webhook-secret")).rejects.toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "secrets/crypto_failed" }) }),
+    );
+    // The row it was lifted from is untouched and still opens.
+    expect(await store.getValue("billing-webhook-secret")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "the-real-value" },
+    });
+  });
+
+  test("renaming a row in SQL leaves a secret nothing can open — the rename goes through put", async () => {
+    const store = newStore();
+    await store.put("old-name", initialVersionedValue("v"));
+
+    await env.SECRETS.prepare("update pithy_secrets_system_secrets set name = ? where name = ?")
+      .bind("new-name", "old-name")
+      .run();
+
+    await expect(store.getValue("new-name")).rejects.toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "secrets/crypto_failed" }) }),
+    );
+  });
+});
+
+/**
  * The boot read, at the size a registry can actually reach.
  *
  * `getValues` is handed **every D1-backed secret the registry declares**, so its parameter count is the

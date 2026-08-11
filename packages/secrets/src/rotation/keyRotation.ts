@@ -73,7 +73,7 @@ export async function reencryptBatch(
   const result: ReencryptResult = { rotated: 0, failed: 0, errors: [] };
   const rows = await db
     .selectFrom("pithySecretsSystemSecrets")
-    .select(["id", "encryptedValue", "iv", "keyVersion"])
+    .select(["id", "name", "encryptedValue", "iv", "keyVersion"])
     .where("keyVersion", "!=", Number(config.currentVersion))
     .limit(batchSize)
     .execute();
@@ -81,8 +81,9 @@ export async function reencryptBatch(
 
   for (const row of rows) {
     try {
-      const plaintext = await decryptValue(config, row.encryptedValue, row.iv, row.keyVersion);
-      const reencrypted = await encryptValue(config, plaintext);
+      // Same name in and out: re-encryption changes the key, never the bound context.
+      const plaintext = await decryptValue(config, row.name, row);
+      const reencrypted = await encryptValue(config, row.name, plaintext);
       await db
         .updateTable("pithySecretsSystemSecrets")
         .set({

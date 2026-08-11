@@ -60,7 +60,8 @@ export class SystemSecretsStore {
         .execute();
 
       for (const row of rows) {
-        const plaintext = await decryptValue(this.#config, row.encryptedValue, row.iv, row.keyVersion);
+        // The row's own name is the bound context: a ciphertext moved to another row does not open.
+        const plaintext = await decryptValue(this.#config, row.name, row);
         out[row.name] = decodeVersionedValue(plaintext);
       }
     }
@@ -84,12 +85,14 @@ export class SystemSecretsStore {
 
   /**
    * Encrypt `value` under the current key version and upsert the row. Inserts on first write,
-   * updates the envelope in place otherwise. The caller owns the envelope's shape —
+   * updates the envelope in place otherwise. `name` is sealed into the ciphertext as authenticated
+   * data (`crypto/envelope`), so a rename has to go through here and not through SQL: an
+   * `UPDATE ... SET name` leaves a row nothing can open. The caller owns the envelope's shape —
    * `initialVersionedValue` for a create, an edited envelope for an update, `appendVersion` for a
    * value rotation.
    */
   async put(name: string, value: VersionedValue, valueType: SecretValueType = "text"): Promise<void> {
-    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, encodeVersionedValue(value));
+    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, name, encodeVersionedValue(value));
     const now = SQLiteDate.encode(new Date());
 
     if (await this.has(name)) {
