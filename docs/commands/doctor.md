@@ -69,6 +69,33 @@ healthy Worker collapses to one line, and the whole block is omitted when every 
 exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
 required binding is missing before deploy does.
 
+The **`migrations`** line asks the question in **both directions**, and the second one is why it exists. A
+migration this project declares that the environment's database has not applied is `N pending`, and `pithy
+migrate` is the remedy. A migration the database has *applied* that the project no longer declares is a
+different fault with a different remedy — and it is invisible to a pending count, because nothing is
+missing, so nothing is pending. That state stops the migrator dead: Kysely reads an applied migration its
+registry does not carry as a corrupted chain and applies nothing. So doctor called a database healthy that
+`pithy migrate` refused to touch, which is the whole of #282.
+
+```
+Project health:
+  api:
+    prereqs      every composed capability has its peers ✓
+    config       parses against every capability schema ✓
+    bindings     all required bindings present ✓
+    migrations   DB records 0250_audit_0002_tenant. This project no longer declares it.
+                 Nothing migrates until the ledger and the declaration agree. This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run pithy migrate --env dev again.
+    entitlements no gated route without a provider ✓
+```
+
+Both halves fail the exit. The remedy names which case applies rather than leaving it to be guessed,
+because the tool knows: `dev` is the Miniflare store under `.wrangler/state` and throwing it away costs a
+re-migrate, while a deployed environment is a database with real rows in it, where the same advice would be
+data loss. There the line says to restore the migration or remove its `pithy_migrations` row. It is the
+same sentence `pithy migrate` refuses with — one wording, two commands, so the two can never disagree about
+one database again. In `--json` the check carries `pending` and `undeclared`, the latter one entry per
+migration with its `database`, `binding` and `name`.
+
 The block's first per-Worker line is **`prereqs`**, and it is the only check here that is not drift. A capability's manifest declares the capabilities it composes against — `auth` declares `secrets` and `email`, `email` declares `secrets` — and `createBackend` refuses to assemble without them. So a Worker failing this line does not start at all, and every other line below it is describing a Worker that is down. It is reported first for that reason.
 
 ```
@@ -230,7 +257,7 @@ A **`Worker names:`** block appears when a Worker's three names stop agreeing �
 
 ```
 $ pithy doctor --json
-{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"env":"dev"},"entitlements":{"ok":true,"gates":[]},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
+{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"undeclared":[],"env":"dev"},"entitlements":{"ok":true,"gates":[]},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
 ```
 
 Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognised by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `environments`, `origins`, `workflows`, `devPreferences`, `devSecretsFile`, `devSecrets`, `secretBindings`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.

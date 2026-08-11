@@ -29,6 +29,8 @@ The registry, the ordering, and the per-database runs are identical everywhere; 
 
 **The database has an owner.** Every database in the run is claimed for this project — a row beside the migration ledger — *before any of them is written to*, and a database another project owns aborts the whole run rather than being discovered halfway through. An unstamped database is adopted on first migrate; your own is a no-op. This is why `migrate` needs `name` in the root `pithy.config.ts` and refuses to guess one: a guessed name would stamp one value and check a different one next run, locking a project out of its own database.
 
+**The ledger has to match the declaration, in both directions.** Before anything is written, every database in the run is read back: a migration this project declares and the database has not applied is what the run applies, and a migration the database has applied that **nothing declares any more** is refused by name. That second state is what deleting a migration file leaves behind, and Kysely treats it as a corrupted chain — so nothing can migrate until the two agree. No migration is broken there, so the remedy is not "fix the migration": on `dev` it is to delete `.wrangler/state` and run again, and on a deployed environment it is to restore the migration or remove its `pithy_migrations` row, because that database has real rows in it. `pithy doctor` reports the same state before you reach for `migrate`.
+
 **Migrate never seeds and never deploys.** It moves schema. Data fixtures are `pithy seed`; shipping code is `pithy deploy`, which warns when the target environment's schema is behind but never migrates for you.
 
 Credentials for a remote run are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, from `<config>/cloudflare.json` locally — or straight from the environment in CI, which has no config file. A `dev` run needs neither.
@@ -64,7 +66,8 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 - **`Cloudflare credentials are missing.`** Remote runs only.
 - **Two databases on one binding, within a Worker.** A wiring mistake — they would migrate against a single physical store. Give each its own binding.
 - **Two Workers migrating one binding under one namespace with different migrations.** Two capabilities wearing one name; their composed keys would collide in the ledger. Rename one, or bind the Workers to different databases.
-- **A migration itself failing.** D1 applies migrations non-transactionally, so the refusal names the migration that failed *and* what was applied before it.
+- **`<binding> records <migration>. This project no longer declares it.`** The ledger holds a migration this project has since dropped, so the migrator refuses the whole chain. The action line says which remedy applies to *this* database: wipe the local dev store, or reconcile the row on a database with real rows in it.
+- **A migration itself failing.** The refusal names the migration, the binding it was running against, and what the runtime actually said. D1 applies migrations non-transactionally, so `detail` also carries what was applied before it.
 - **`--env` is validated at the flag.** `production` is answered with `prod` before any config loads or any database opens.
 
 ## Examples

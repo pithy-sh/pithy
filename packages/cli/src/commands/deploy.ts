@@ -5,7 +5,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { countPendingMigrations } from "../migrations/run";
+import { readProjectLedger } from "../migrations/run";
 import { projectCloudflareAccount } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { assertOriginsDeclared } from "../project/domains";
@@ -35,7 +35,10 @@ async function pendingFor(
   account: CloudflareAccountSelection | null,
 ): Promise<number | undefined> {
   try {
-    return await countPendingMigrations({ projectDir, env, account });
+    // Only the pending half here. A drifted ledger is a fault `pithy doctor` names and `pithy migrate`
+    // refuses on, and deploy never migrates — it reports how far the schema is behind, which stays a
+    // truthful number either way.
+    return (await readProjectLedger({ projectDir, env, account })).pending;
   } catch {
     return undefined;
   }

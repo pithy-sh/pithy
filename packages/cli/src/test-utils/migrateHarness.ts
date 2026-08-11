@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { Migration } from "kysely/migration";
 import { afterEach, beforeEach } from "vitest";
-import type { WorkerScope } from "../migrations/run";
+import { type MigrationFanOutOptions, readProjectLedger, type WorkerScope } from "../migrations/run";
 
 /**
  * Shared scaffolding for the `migrateProject` suites, extracted so those suites can live in more
@@ -20,6 +20,14 @@ import type { WorkerScope } from "../migrations/run";
  * was 11.8s, and it set the floor for the whole package's 28.0s node suite. One file per heavy
  * group lets those groups run at the same time.
  */
+
+/**
+ * The pending half of {@link readProjectLedger}, for the suites that assert how far a schema is behind.
+ * The other half — a migration the ledger records and the project no longer declares — has its own
+ * suite in `migrations/ledger.test.ts`, because it is a refusal rather than a number.
+ */
+export const pendingFrom = async (options: MigrationFanOutOptions): Promise<number> =>
+  (await readProjectLedger(options)).pending;
 
 /** Creates a one-column table — the smallest migration that proves `up`/`down` ran. */
 export const createTable = (name: string): Migration => ({

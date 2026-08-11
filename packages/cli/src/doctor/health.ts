@@ -7,10 +7,11 @@ import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
-  type CountPending,
+  type ReadLedger,
   type ReconcilePlan,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import type { UndeclaredMigration } from "../migrations/ledger";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -35,10 +36,21 @@ export interface BindingHealth {
   missing: { name: string; type: string; envs: string[] }[];
 }
 
-/** The `migrations` check: unapplied migrations for the target environment. */
+/**
+ * The `migrations` check: the target environment's ledger against what this Worker declares — **both
+ * directions**.
+ *
+ * `pending` alone passed a database `pithy migrate` refused to touch. An extra applied migration is
+ * invisible to declared-minus-applied: nothing is missing, so nothing is pending, so the check was
+ * green while the migrator read the same ledger as a corrupted chain and applied nothing (#282). Each
+ * half fails the check on its own, because either one means the schema is not where the project says.
+ */
 export interface MigrationHealth {
   ok: boolean;
+  /** Declared migrations not yet applied. */
   pending: number;
+  /** Applied migrations this Worker's capabilities no longer declare. Non-empty means migrate refuses. */
+  undeclared: UndeclaredMigration[];
   env: string;
 }
 
@@ -135,8 +147,8 @@ export interface ProjectHealthOptions {
   account: CloudflareAccountSelection | null;
   /** The Workers to check, in report order. Doctor resolves them once and passes them in. */
   workers: HealthWorker[];
-  /** Test seam: count pending migrations without a real Miniflare/D1 run. */
-  countPending?: CountPending;
+  /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
+  readLedger?: ReadLedger;
   /** Test seam: substitute the plan builder. Defaults to the shared reconcile engine. */
   buildPlan?: BuildPlan;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
@@ -168,8 +180,9 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   const bindings: BindingHealth = { ok: missing.length === 0, missing };
 
   const migrations: MigrationHealth = {
-    ok: plan.pendingMigrations === 0,
+    ok: plan.pendingMigrations === 0 && plan.undeclaredMigrations.length === 0,
     pending: plan.pendingMigrations,
+    undeclared: plan.undeclaredMigrations,
     env: plan.env,
   };
 
@@ -194,8 +207,8 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
 /**
  * Build the project's health from one read-only reconcile plan per Worker. For each Worker, `config` fails
  * when a capability's `pithy.config.ts` registration is missing manifest options; `bindings` fails when a
- * required binding is absent from an environment; `migrations` fails when the target env has unapplied
- * migrations; `entitlements` fails when a route gates on an entitlement no composed capability resolves;
+ * required binding is absent from an environment; `migrations` fails when the target env has unapplied migrations **or** has applied one
+ * this Worker no longer declares; `entitlements` fails when a route gates on an entitlement no composed capability resolves;
  * `prerequisites` fails when a composed capability declares a peer the Worker does not compose, which is
  * the one that means the Worker will not start at all. The project is healthy only when every Worker is.
  * Writes nothing — safe to run on every `pithy doctor` invocation.
@@ -219,7 +232,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
       env: options.env,
       account: options.account,
       capabilities: worker.capabilities,
-      countPending: options.countPending,
+      readLedger: options.readLedger,
     });
     workers.push(healthFromPlan(worker.name, plan));
   }

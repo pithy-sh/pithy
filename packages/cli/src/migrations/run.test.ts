@@ -14,8 +14,9 @@ import {
   createThings,
   migrateHarness,
   multiplayerCapability,
+  pendingFrom,
 } from "../test-utils/migrateHarness";
-import { countPendingMigrations, dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
+import { dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
 
 describe("migrateProject", () => {
   const h = migrateHarness();
@@ -145,7 +146,7 @@ describe("migrateProject", () => {
     ]);
     // And the project is still migratable: the ledger is behind nothing.
     expect(
-      await countPendingMigrations({
+      await pendingFrom({
         account: null,
         projectDir: h.projectDir,
         workers: [h.api([email, audit, auth])],
@@ -194,7 +195,7 @@ describe("migrateProject", () => {
     test("rolls every migration back then forward, leaving the ledger consistent", async () => {
       const workers = [h.api([appCapability()])];
       await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
-      expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
 
       const runs = await resetProject({
         account: null,
@@ -212,7 +213,7 @@ describe("migrateProject", () => {
       ]);
 
       // The ledger is consistent afterwards: nothing pending, and a following plain migrate is a no-op.
-      expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
       const again = await migrateProject({
         account: null,
         projectDir: h.projectDir,
@@ -286,20 +287,18 @@ describe("migrateProject", () => {
     });
   });
 
-  describe("countPendingMigrations", () => {
+  describe("readProjectLedger", () => {
     test("counts unapplied migrations, and drops to zero once migrated", async () => {
       const workers = [h.api([appCapability()])];
 
-      expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(1);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(1);
 
       await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
-      expect(await countPendingMigrations({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
     });
 
     test("an empty registry has nothing pending", async () => {
-      expect(
-        await countPendingMigrations({ account: null, projectDir: h.projectDir, workers: [h.api([])], env: "dev" }),
-      ).toBe(0);
+      expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers: [h.api([])], env: "dev" })).toBe(0);
     });
   });
 

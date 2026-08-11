@@ -12,7 +12,8 @@ import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
   dropMigrations,
-  pendingMigrations,
+  type MigrationTarget,
+  readMigrationLedger,
   resetMigrations,
   rollbackMigration,
   runMigrations,
@@ -23,6 +24,7 @@ import { Miniflare } from "miniflare";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { wranglerConfigPath } from "../provision/featureConfig";
+import { assertLedgerDeclared, type UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
 
 /**
@@ -65,7 +67,7 @@ export interface WorkerScope {
 /**
  * The fan-out every project-scoped migration entry point shares — which project root, which
  * environment, which Workers. It carries no project **name**, because it is also what the read-only
- * entry points take: {@link countPendingMigrations} and {@link previewReset} inspect a database without
+ * entry points take: {@link readProjectLedger} and {@link previewReset} inspect a database without
  * writing to it, so they have no claim to make and `pithy doctor` may run them on a nameless project.
  */
 export interface MigrationFanOutOptions {
@@ -163,8 +165,13 @@ interface WorkerPlanEntry {
   sets: NamespacedMigrations[];
 }
 
-/** One physical D1 and everything that migrates into it — the unit a run actually executes. */
-interface DatabaseGroup {
+/**
+ * One physical D1 and everything that migrates into it — the unit a run actually executes.
+ *
+ * Exported for {@link ./ledger}, which compares each group's provider against the ledger of the database
+ * this same run is about to write to. A type-only import there, so the two files do not form a cycle.
+ */
+export interface DatabaseGroup {
   /** The resolved D1 identity every entry shares: locally the binding/name fallback, remotely the `database_id`. */
   id: string;
   /** The first entry's database name — the group's label in the report. */
@@ -182,7 +189,7 @@ interface DatabaseGroup {
 }
 
 /** A resolved set of D1s to migrate — the only thing that differs between local and remote — plus teardown. */
-interface MigrationDriver {
+export interface MigrationDriver {
   /** The D1 for a group; every group is resolved before the run loop reads it. */
   database(group: DatabaseGroup): D1Database;
   /** Release the driver's resources (Miniflare instance locally; a no-op remotely). */
@@ -627,11 +634,27 @@ async function claimGroups(context: RunContext, driver: MigrationDriver, groups:
   }
 }
 
-/** Open the driver, run `execute` per group, fold the results into a per-Worker report, and tear down. */
-async function runGroups(
-  context: RunContext,
-  execute: (database: D1Database, provider: MigrationProvider) => Promise<MigrationResult[]>,
-): Promise<WorkerMigrationRun[]> {
+/**
+ * One pass over every database in a run: what to do to each, and whether the provider doing it speaks
+ * for the whole ledger.
+ */
+interface MigrationPass {
+  /** The work itself. The target rides along so a failure names the database it failed on (#282). */
+  execute: (database: D1Database, provider: MigrationProvider, target: MigrationTarget) => Promise<MigrationResult[]>;
+  /**
+   * Whether the provider carries every migration the ledger could hold.
+   *
+   * True for migrate, rollback and reset, which run the whole composed registry — so a ledger row the
+   * provider does not carry is a migration this project no longer declares, and the run is refused
+   * before it writes. False for `pithy remove --drop`, whose provider is *deliberately* one capability's
+   * migrations against a database full of other capabilities' rows: to it every other row is
+   * undeclared, and a check here would refuse the command it exists to serve.
+   */
+  spansLedger: boolean;
+}
+
+/** Open the driver, run the pass per group, fold the results into a per-Worker report, and tear down. */
+async function runGroups(context: RunContext, pass: MigrationPass): Promise<WorkerMigrationRun[]> {
   const report = emptyReport(context.workers);
   const groups = await scopedGroups(context);
   if (groups.length === 0) return report;
@@ -639,8 +662,10 @@ async function runGroups(
   const driver = await driverFor(context, groups);
   try {
     await claimGroups(context, driver, groups);
+    if (pass.spansLedger) await assertLedgerDeclared({ env: context.env, driver, groups });
     for (const group of groups) {
-      record(report, group, await execute(driver.database(group), group.provider));
+      const target = { binding: group.binding, database: group.database };
+      record(report, group, await pass.execute(driver.database(group), group.provider, target));
     }
     return report;
   } finally {
@@ -701,9 +726,11 @@ async function contextFor(options: MigrationFanOutOptions & { project?: string }
  */
 export function migrateProject(options: MigrateProjectOptions): Promise<WorkerMigrationRun[]> {
   return contextFor(options).then((context) =>
-    runGroups(context, (database, provider) =>
-      options.rollback ? rollbackMigration(database, provider) : runMigrations(database, provider),
-    ),
+    runGroups(context, {
+      spansLedger: true,
+      execute: (database, provider, target) =>
+        options.rollback ? rollbackMigration(database, provider, target) : runMigrations(database, provider, target),
+    }),
   );
 }
 
@@ -717,7 +744,7 @@ export function migrateProject(options: MigrateProjectOptions): Promise<WorkerMi
  * destructive seed needs before calling it.
  */
 export function resetProject(options: ResetProjectOptions): Promise<WorkerMigrationRun[]> {
-  return contextFor(options).then((context) => runGroups(context, resetMigrations));
+  return contextFor(options).then((context) => runGroups(context, { spansLedger: true, execute: resetMigrations }));
 }
 
 /** One database's place in a {@link resetProject} run: which database, its binding, and how many migrations it carries. */
@@ -747,25 +774,45 @@ export async function previewReset(options: MigrationFanOutOptions): Promise<Res
   return preview;
 }
 
+/** What one environment's databases have applied, against what this project declares. */
+export interface ProjectLedger {
+  /** How many declared migrations have not run yet, across every database in scope. */
+  pending: number;
+  /**
+   * Every applied migration this project no longer declares, in group order. Non-empty means `migrate`
+   * refuses — see {@link ./ledger} — so a reporter that shows the count and hides this is the #282 bug.
+   */
+  undeclared: UndeclaredMigration[];
+}
+
 /**
- * Count the unapplied migrations across every Worker for an environment — read-only, applying nothing.
- * It runs the same fan-out, grouping, and driver as {@link migrateProject}, so it reports against the
- * same D1s (local under the project root's `.wrangler/state`, or the remote databases over REST) migrate
- * would touch, and counts a database two Workers share once. The seam behind `pithy deploy`'s warn-only
- * "schema is behind" check.
+ * Read every Worker's databases for an environment against what the project declares — read-only,
+ * applying nothing. It runs the same fan-out, grouping, and driver as {@link migrateProject}, so it
+ * reports against the same D1s (local under the project root's `.wrangler/state`, or the remote
+ * databases over REST) migrate would touch, and reads a database two Workers share once. The seam behind
+ * `pithy doctor`'s migrations line and `pithy deploy`'s warn-only "schema is behind" check.
+ *
+ * **Both directions, because the count alone was the fault.** This replaced `countPendingMigrations`,
+ * whose callers could only ever learn that a declared migration had not run — never that the ledger held
+ * one the project had dropped, which is the state that stops migrate dead (#282). Returning one object
+ * is what keeps a caller from re-acquiring half the question.
  */
-export async function countPendingMigrations(options: MigrationFanOutOptions): Promise<number> {
+export async function readProjectLedger(options: MigrationFanOutOptions): Promise<ProjectLedger> {
   const context = await contextFor(options);
   const groups = await scopedGroups(context);
-  if (groups.length === 0) return 0;
+  if (groups.length === 0) return { pending: 0, undeclared: [] };
 
   const driver = await driverFor(context, groups);
   try {
-    let total = 0;
+    const ledger: ProjectLedger = { pending: 0, undeclared: [] };
     for (const group of groups) {
-      total += await pendingMigrations(driver.database(group), group.provider);
+      const state = await readMigrationLedger(driver.database(group), group.provider);
+      ledger.pending += state.pending.length;
+      for (const name of state.undeclared) {
+        ledger.undeclared.push({ database: group.database, binding: group.binding, name });
+      }
     }
-    return total;
+    return ledger;
   } finally {
     await driver.dispose();
   }
@@ -825,6 +872,8 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     project: options.project,
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
-  const [run] = await runGroups(context, dropMigrations);
+  // `spansLedger: false`: this provider is one capability's migrations, and every other capability's row
+  // in the same database is undeclared to it. See {@link MigrationPass}.
+  const [run] = await runGroups(context, { spansLedger: false, execute: dropMigrations });
   return run?.databases ?? [];
 }

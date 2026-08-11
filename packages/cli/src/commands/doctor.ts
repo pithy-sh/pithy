@@ -27,6 +27,7 @@ import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../do
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
+import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
 import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from "../notifier/state";
@@ -375,8 +376,8 @@ export interface DoctorReportOptions {
   resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<ResolvedWorker[]>;
   /** Health plan-builder seam, forwarded to {@link buildProjectHealth}. */
   buildPlan?: (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
-  /** Migration-count seam for the health plan. */
-  countPending?: BuildReconcilePlanOptions["countPending"];
+  /** Migration-ledger seam for the health plan. */
+  readLedger?: BuildReconcilePlanOptions["readLedger"];
   /**
    * Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests
    * never call out. It takes no project directory: the credentials are account-scoped (#182), so the
@@ -566,7 +567,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       account,
       workers: workers.map((worker) => ({ name: worker.name, dir: worker.dir, capabilities: worker.capabilities })),
       buildPlan: options.buildPlan,
-      countPending: options.countPending,
+      readLedger: options.readLedger,
     });
     project = { capabilities, health };
   } catch (error) {
@@ -794,14 +795,25 @@ function workerHealthLines(health: WorkerHealth): string[] {
   }
 
   if (health.migrations.ok) {
-    lines.push(healthLine("migrations", "none pending ✓"));
+    lines.push(healthLine("migrations", "none pending, none undeclared ✓"));
   } else {
-    lines.push(
-      healthLine(
-        "migrations",
-        `${health.migrations.pending} pending — run: pithy migrate --env ${health.migrations.env}`,
-      ),
-    );
+    if (health.migrations.pending > 0) {
+      lines.push(
+        healthLine(
+          "migrations",
+          `${health.migrations.pending} pending — run: pithy migrate --env ${health.migrations.env}`,
+        ),
+      );
+    }
+    // The other direction, and the one nothing reported until #282. It is not "N pending" with a
+    // different number: nothing is pending, migrate refuses outright, and the remedy is neither `pithy
+    // migrate` nor `pithy upgrade`. So it gets its own sentence, written once in `migrations/ledger.ts`
+    // and printed here exactly as `pithy migrate` refuses with it — two commands, one wording.
+    if (health.migrations.undeclared.length > 0) {
+      const label = health.migrations.pending > 0 ? "" : "migrations";
+      lines.push(healthLine(label, describeUndeclared(health.migrations.undeclared)));
+      lines.push(`${HEALTH_CONT}${undeclaredRemedy(health.migrations.env)}`);
+    }
   }
 
   if (health.entitlements.ok) {

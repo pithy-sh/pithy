@@ -10,13 +10,13 @@ import deploy from "./deploy";
  *
  * The deploy itself has named its account since #206 — it is the pair handed to `wrangler deploy`, and
  * getting it wrong ships to another company's tenant and exits 0. But the warning line beside it goes
- * through `countPendingMigrations`, which took the account as an *optional* parameter, and this command
+ * through the ledger read, which took the account as an *optional* parameter, and this command
  * omitted it. So one command resolved two different accounts in one run: the right one for the deploy,
  * the default file for the count. Best-effort is not the same as unattributed — a count read off
  * another account's D1 is a number about somebody else's schema, printed as though it were yours.
  */
 
-/** The options every `countPendingMigrations` call was handed. */
+/** The options every ledger read was handed. */
 const counted = vi.hoisted(() => ({ calls: [] as unknown[] }));
 
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
@@ -29,9 +29,9 @@ vi.mock("../project/config", async (importOriginal) => ({
 
 vi.mock("../migrations/run", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../migrations/run")>()),
-  countPendingMigrations: async (options: unknown) => {
+  readProjectLedger: async (options: unknown) => {
     counted.calls.push(options);
-    return 0;
+    return { pending: 0, undeclared: [] };
   },
 }));
 

@@ -281,9 +281,9 @@ describe("buildReconcilePlan — per Worker", () => {
       workerDir,
       env: "staging",
       capabilities: AUTH,
-      countPending: async ({ projectDir, workerDir: wd, env }) => {
+      readLedger: async ({ projectDir, workerDir: wd, env }) => {
         seen.push({ projectDir, workerDir: wd, env });
-        return 0;
+        return { pending: 0, undeclared: [] };
       },
     });
     expect(seen).toEqual([{ projectDir: dir, workerDir, env: "staging" }]);
@@ -430,7 +430,7 @@ describe("buildReconcilePlan — migrations and purity", () => {
       workerDir,
       env: "staging",
       capabilities: AUTH,
-      countPending: async ({ env }) => (env === "staging" ? 4 : 0),
+      readLedger: async ({ env }) => ({ pending: env === "staging" ? 4 : 0, undeclared: [] }),
     });
     expect(plan.env).toBe("staging");
     expect(plan.pendingMigrations).toBe(4);

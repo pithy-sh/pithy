@@ -6,7 +6,7 @@ import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
 import { createMigrationRegistry } from "./registry";
-import { dropMigrations, pendingMigrations, rollbackMigration, runMigrations } from "./runner";
+import { dropMigrations, readMigrationLedger, rollbackMigration, runMigrations } from "./runner";
 
 /** The provider for a database name, asserting it was registered (narrows the indexed access). */
 function providerFor(registry: Record<string, MigrationProvider>, database: string): MigrationProvider {
@@ -184,14 +184,21 @@ describe("runMigrations", () => {
       },
     ]);
 
-    const failure: unknown = await runMigrations(env.DB, providerFor(registry, "app")).catch((error: unknown) => error);
+    const failure: unknown = await runMigrations(env.DB, providerFor(registry, "app"), {
+      binding: "DB",
+      database: "app",
+    }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(InternalError);
     const error = failure as InternalError;
-    expect(error.payload.message).toBe('Couldn\'t apply "0000_core_0002_boom".');
+    // The key, the database, and what the runtime actually said — all in the field that is rendered.
+    // `boom` used to live in `detail` alone, which the terminal never prints (#282).
+    expect(error.payload.message).toBe('Couldn\'t apply "0000_core_0002_boom" on DB. boom.');
     expect(error.payload.action).toBe("Fix the migration. Run pithy migrate again.");
     // D1 applies migrations non-transactionally, so the error names what stuck.
-    expect(error.payload.detail).toBe('boom. Applied before the failure: "0000_core_0001_things".');
+    expect(error.payload.detail).toBe(
+      'Database "app" on binding DB. Applied before the failure: "0000_core_0001_things".',
+    );
     expect(error.cause).toBeInstanceOf(Error);
 
     // D1 has no transactional DDL: the migration before the failure stays applied.
@@ -199,8 +206,8 @@ describe("runMigrations", () => {
   });
 });
 
-describe("pendingMigrations", () => {
-  test("counts un-run migrations without applying them, and reaches zero once run", async () => {
+describe("readMigrationLedger", () => {
+  test("reports un-run migrations without applying them, and reaches zero once run", async () => {
     const registry = createMigrationRegistry([
       {
         database: "app",
@@ -211,12 +218,54 @@ describe("pendingMigrations", () => {
     ]);
     const provider = providerFor(registry, "app");
 
-    expect(await pendingMigrations(env.DB, provider)).toBe(2);
-    // Counting is read-only: no tables were created.
+    expect(await readMigrationLedger(env.DB, provider)).toEqual({
+      pending: ["0000_core_0001_things", "0000_core_0002_widgets"],
+      undeclared: [],
+    });
+    // Reading is read-only: no tables were created.
     expect(await tableNames()).toEqual([]);
 
     await runMigrations(env.DB, provider);
-    expect(await pendingMigrations(env.DB, provider)).toBe(0);
+    expect(await readMigrationLedger(env.DB, provider)).toEqual({ pending: [], undeclared: [] });
+  });
+
+  test("names an applied migration the declaration has dropped — what a pending count cannot see", async () => {
+    const both = providerFor(
+      createMigrationRegistry([
+        {
+          database: "app",
+          namespace: "core",
+          order: 0,
+          migrations: { "0001_things": createThings, "0002_widgets": createWidgets },
+        },
+      ]),
+      "app",
+    );
+    await runMigrations(env.DB, both);
+
+    // The declaration loses one. Nothing is missing from the database, so nothing is pending — and that
+    // is exactly the state `pithy doctor` used to call healthy while `migrate` refused to run (#282).
+    const fewer = providerFor(
+      createMigrationRegistry([
+        { database: "app", namespace: "core", order: 0, migrations: { "0001_things": createThings } },
+      ]),
+      "app",
+    );
+
+    expect(await readMigrationLedger(env.DB, fewer)).toEqual({
+      pending: [],
+      undeclared: ["0000_core_0002_widgets"],
+    });
+  });
+
+  test("a database with no ledger table has applied nothing and declares everything as pending", async () => {
+    const provider = providerFor(
+      createMigrationRegistry([
+        { database: "app", namespace: "core", order: 0, migrations: { "0001_things": createThings } },
+      ]),
+      "app",
+    );
+    expect(await readMigrationLedger(env.DB, provider)).toEqual({ pending: ["0000_core_0001_things"], undeclared: [] });
   });
 });
 
