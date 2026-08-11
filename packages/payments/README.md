@@ -171,6 +171,12 @@ Nothing is recorded for a delivery that fails verification, so a forger cannot f
 
 A grant is **held** against the projection. Every other row in the entitlements table is recomputed from the purchases table whenever a write touches its key, which is what keeps the read model from disagreeing with the money — and it is also what would have erased a comp of `pro` the moment the user's next renewal arrived. So a grant sets a flag the derivation skips, and a comp lasts whether or not the catalog also sells the key.
 
+**A grant must name a key this project defines.** `GET /payments/admin/catalog` is the read behind it, on its own scope — `payments:catalog:read` — and it publishes each product's id, kind, display name, and entitlement keys. Strictly less than the client projection a browser already gets: no price, no store SKU, no rail identifier, because a management client is filling a list of things that can be comped and a comp names a key. An empty catalog answers `{ enabled: false }`, the same modelled state the client projection uses, so "nothing to sell" reads as itself rather than as a dropdown that came back broken.
+
+The read makes a good control possible; the check on the grant makes a bad one impossible. `POST /payments/entitlements/grant` refuses a key outside that set with `payments/entitlement_not_in_catalog`, naming the key. Before it did, an operator who meant `pro` and typed `pr` got a success, a row, and a customer who stayed locked out — invisible on both sides until somebody read the table.
+
+Gating on a key nothing sells is legitimate, and the escape is **declared** rather than achieved by not checking: put it in `manualEntitlements`, and it is grantable and offered on the catalog read beside the products. Only grants are constrained. A revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for every account still holding it.
+
 A revoke **releases** the hold rather than setting it. That asymmetry is deliberate: it makes a revoke the exact inverse of a grant, and it stops a revoke becoming a permanent block on a user who later pays. An entitlement the purchases still support is re-derived on the next event, so revoking a paid subscription here holds only until the store next says something about it. To end a paid entitlement, refund it through the store — that is the record the projection reads, and the only one that keeps the read model and the money agreeing.
 
 ## Errors
@@ -189,6 +195,7 @@ Runtime code throws `PithyError` with `payments/*` codes. Internal detail never 
 | `payments/provider_unavailable` | 503 | The store could not be reached. Retry; reconciliation repairs it either way. |
 | `payments/clawback_failed` | 409 | A refund's debit was refused by the ledger. |
 | `payments/entitlement_required` | 403 | The caller does not hold an entitlement the route requires. Raised by core's gate. |
+| `payments/entitlement_not_in_catalog` | 400 | A manual grant named an entitlement key no product grants and `manualEntitlements` does not declare. |
 
 **`payments/webhook_unverified` is 401 on purpose, not by oversight.** 401 says "you did not prove who you are", which is exactly a failed signature; 403 says "you are known and not allowed", which a forged notification is not. It reads oddly next to the other webhook responses, so it is written down here — please do not "fix" it.
 

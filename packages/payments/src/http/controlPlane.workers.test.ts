@@ -21,12 +21,15 @@ import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
 import {
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./guards";
 import {
+  PaymentsAdminCatalogProduct,
+  PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
@@ -127,7 +130,7 @@ function verifier(scopes: readonly ControlPlaneScope[]): ControlPlaneVerifier {
 }
 
 /** The app, with a live control-plane verifier and a capturing audit seam. */
-function makeApp(scopes: readonly ControlPlaneScope[]) {
+function makeApp(scopes: readonly ControlPlaneScope[], config: PaymentsConfig = CONFIG) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   const cpVerifier = verifier(scopes);
@@ -141,7 +144,7 @@ function makeApp(scopes: readonly ControlPlaneScope[]) {
     c.set("log", noopLogger);
     await next();
   });
-  registerPaymentsRoutes({ config: CONFIG, now: () => NOW })(app);
+  registerPaymentsRoutes({ config, now: () => NOW })(app);
   return app;
 }
 
@@ -209,6 +212,223 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(db);
   emitted = [];
+});
+
+/**
+ * The catalog read (#300), and the invariant that keeps it narrow.
+ *
+ * `SENTINEL_CATALOG` loads every field the catalog has that must **not** cross with a value nothing else
+ * in this file could produce — a Stripe price, three store SKUs, a ledger currency and amount, three
+ * return URLs. The assertion is not a list of banned field names. It is: *every string and every number
+ * in the response is one of the four facts this surface publishes about some product, or a key the
+ * adopter declared grantable.* A field added here carrying a price fails it whatever the field is called,
+ * which is the difference between describing what must be true and enumerating what somebody thought of.
+ */
+const SENTINEL_CATALOG = PaymentsConfig.parse({
+  rails: { apple: true, google: true, stripe: true },
+  stripe: {
+    successUrl: "https://sentinel.example/thanks?session={CHECKOUT_SESSION_ID}",
+    cancelUrl: "https://sentinel.example/pricing",
+    portalReturnUrl: "https://sentinel.example/account",
+  },
+  manualEntitlements: ["founder"],
+  products: {
+    pro_monthly: {
+      type: "subscription",
+      name: "Pro",
+      entitlements: ["pro"],
+      apple: { productId: "com.sentinel.pro.monthly" },
+      google: { productId: "sentinel_pro_monthly" },
+      stripe: { priceId: "price_1Sentinel" },
+    },
+    coins_100: {
+      type: "consumable",
+      name: "100 Coins",
+      entitlements: ["coins"],
+      grants: { ledger: { currency: "sentinelcoin", amount: 4242 } },
+      clawback: true,
+      apple: { productId: "com.sentinel.coins.100" },
+    },
+  },
+});
+
+/** Every string and number in a JSON document, wherever it sits. Object keys are collected separately. */
+function scalarsIn(value: unknown): (string | number)[] {
+  if (typeof value === "string" || typeof value === "number") return [value];
+  if (Array.isArray(value)) return value.flatMap(scalarsIn);
+  if (value !== null && typeof value === "object") return Object.values(value).flatMap(scalarsIn);
+  return [];
+}
+
+/** Every object key in a JSON document, wherever it sits. */
+function keysIn(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(keysIn);
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, nested]) => [key, ...keysIn(nested)]);
+  }
+  return [];
+}
+
+describe("GET /payments/admin/catalog", () => {
+  test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
+    const response = await call(
+      makeApp([PAYMENTS_CATALOG_READ_SCOPE]),
+      "/payments/admin/catalog",
+      PAYMENTS_CATALOG_READ_SCOPE,
+    );
+    expect(response.status).toBe(200);
+    const body = PaymentsAdminCatalogResponse.parse(await response.json());
+    expect(body.enabled).toBe(true);
+    if (!body.enabled) throw new Error("unreachable");
+    // Catalog order, not sorted: the order the adopter wrote is the order a list should show.
+    expect(body.products).toEqual([
+      { id: "pro_monthly", type: "subscription", name: "Pro", entitlements: ["pro"] },
+      { id: "coins_100", type: "consumable", name: "100 Coins", entitlements: ["coins"] },
+    ]);
+    expect(body.manualEntitlements).toEqual([]);
+  });
+
+  test("nothing but the published facts can cross it, whatever a field is called", async () => {
+    // The invariant, stated rather than enumerated. Two halves, because either alone permits the mistake:
+    // a value the catalog carries must not appear under *any* key, and a key must be one the response
+    // schema declares — the second is what stops a field arriving with a value from somewhere else.
+    const app = makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG);
+    const raw = await (await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE)).json();
+
+    const published = new Set<string | number>(SENTINEL_CATALOG.manualEntitlements);
+    for (const [id, product] of Object.entries(SENTINEL_CATALOG.products)) {
+      published.add(id);
+      published.add(product.type);
+      published.add(product.name);
+      for (const key of product.entitlements) published.add(key);
+    }
+    const crossed = scalarsIn(raw).filter((scalar) => !published.has(scalar));
+    expect(
+      crossed,
+      `These values reached a management client and are not a product's id, kind, display name, or entitlement key:\n  ${crossed.join("\n  ")}`,
+    ).toEqual([]);
+
+    // Derived from the schema, so widening the schema to admit a field does not also widen this.
+    const declared = new Set([
+      ...Object.keys(PaymentsAdminCatalogProduct.shape),
+      "enabled",
+      "products",
+      "manualEntitlements",
+    ]);
+    const undeclared = keysIn(raw).filter((key) => !declared.has(key));
+    expect(undeclared, `Undeclared keys in the catalog response: ${undeclared.join(", ")}`).toEqual([]);
+  });
+
+  test("the sweep is running against a catalog that really carries all of it", async () => {
+    // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold a
+    // price, three SKUs, a currency, an amount and three return URLs, or that test proves nothing.
+    const serialized = JSON.stringify(SENTINEL_CATALOG);
+    for (const secret of [
+      "price_1Sentinel",
+      "com.sentinel.pro.monthly",
+      "sentinel_pro_monthly",
+      "com.sentinel.coins.100",
+      "sentinelcoin",
+      "4242",
+      "https://sentinel.example/pricing",
+    ]) {
+      expect(serialized, secret).toContain(secret);
+    }
+    // And what is meant to cross does cross.
+    const app = makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG);
+    const text = await (await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE)).text();
+    for (const published of ["pro_monthly", "subscription", "Pro", "coins", "founder"]) {
+      expect(text, published).toContain(published);
+    }
+  });
+
+  test("declared manual keys are offered beside the products", async () => {
+    // The escape has to be visible to the client that would otherwise never offer it — a comp control
+    // omitting `founder` would refuse the grant it then submitted.
+    const body = PaymentsAdminCatalogResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG),
+          "/payments/admin/catalog",
+          PAYMENTS_CATALOG_READ_SCOPE,
+        )
+      ).json(),
+    );
+    expect(body.enabled && body.manualEntitlements).toEqual(["founder"]);
+  });
+
+  test("a project that defines nothing answers { enabled: false }, not an empty list", async () => {
+    // The same modelled answer `clientProjection` gives, and for the same reason: a client branches on
+    // `enabled`, so "composed with nothing to sell" reads as its own state rather than as a dropdown that
+    // came back broken. A catalog that failed to *load* is a non-200 or a body that does not parse, which
+    // no branch on `enabled` can be confused by.
+    const body = PaymentsAdminCatalogResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_CATALOG_READ_SCOPE], PaymentsConfig.parse({})),
+          "/payments/admin/catalog",
+          PAYMENTS_CATALOG_READ_SCOPE,
+        )
+      ).json(),
+    );
+    expect(body).toEqual({ enabled: false });
+  });
+
+  test("its own scope — the entitlement reads do not open it, and it opens neither of them", async () => {
+    // Reading what a project sells is not reading what anybody bought, in both directions. `scopeCovers`
+    // matches exactly, with no prefix rule, which is what makes the split real rather than documentary.
+    const withEntitlements = await call(
+      makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
+      "/payments/admin/catalog",
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+    );
+    expect(withEntitlements.status).toBe(403);
+    expect(await errorCode(withEntitlements)).toBe("controlplane/insufficient_scope");
+
+    const withCatalog = await call(
+      makeApp([PAYMENTS_CATALOG_READ_SCOPE]),
+      "/payments/admin/entitlements",
+      PAYMENTS_CATALOG_READ_SCOPE,
+    );
+    expect(withCatalog.status).toBe(403);
+    const purchases = await call(
+      makeApp([PAYMENTS_CATALOG_READ_SCOPE]),
+      "/payments/admin/purchases",
+      PAYMENTS_CATALOG_READ_SCOPE,
+    );
+    expect(purchases.status).toBe(403);
+  });
+
+  test("no credential at all is refused", async () => {
+    const response = await makeApp([PAYMENTS_CATALOG_READ_SCOPE]).request(
+      "http://x/payments/admin/catalog",
+      { method: "GET" },
+      { ...env, ENVIRONMENT },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  test("the read is audited, with the operator and the connection recorded", async () => {
+    await call(makeApp([PAYMENTS_CATALOG_READ_SCOPE]), "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE);
+    const event = emitted.find((e) => e.action === "payments/catalog_read");
+    expect(event?.actorType).toBe("control-plane");
+    expect(event?.actorId).toBe("operator-1");
+    expect((event?.metadata as { connectionId?: string; products?: number } | undefined)?.connectionId).toBe(
+      CONNECTION_ID,
+    );
+    expect((event?.metadata as { products?: number } | undefined)?.products).toBe(2);
+  });
+
+  test("it reads no database at all — a catalog is config", async () => {
+    // The `DB` binding is not even consulted, which is why this is the one management read that answers
+    // on a Worker whose migrations have never run.
+    const app = makeApp([PAYMENTS_CATALOG_READ_SCOPE]);
+    for (const table of ["pithy_payments_entitlements", "pithy_payments_purchases"]) {
+      await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+    const response = await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE);
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("GET /payments/admin/purchases", () => {

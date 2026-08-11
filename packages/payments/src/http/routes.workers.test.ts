@@ -2396,6 +2396,65 @@ describe("POST /payments/entitlements/grant", () => {
     expect(await errorCode(response)).toBe("validation/invalid_input");
   });
 
+  test("refuses a key the catalog does not define, naming it, and writes nothing", async () => {
+    // The defect #300 is about. `pr` for `pro`, `pro ` with a trailing space, a key renamed last month —
+    // each used to be a 200, a row, and a customer who stays locked out. The key is echoed because the
+    // caller sent it; the *defined set* is not, because reading what a project sells is its own scope.
+    const response = await request(makeApp(), "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "pr" },
+    });
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("the refusal names the key and does not enumerate the catalog", async () => {
+    const response = await request(makeApp(), "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "pr" },
+    });
+    const body = await response.json<{ error: { message: string; action?: string; detail?: string } }>();
+    expect(body.error.message).toContain("pr");
+    // `detail` carries the throw-site context and the codec strips it. A caller learns which key it got
+    // wrong, never which keys exist — that answer is behind `payments:catalog:read`.
+    expect(body.error.detail).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("coins");
+  });
+
+  test("a key the adopter declared grantable without a sale is granted", async () => {
+    // The explicit escape. An adopter may gate on something comped by hand and never sold — and that has
+    // to be *declared*, not achieved by nobody checking.
+    const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
+    const response = await request(app, "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "founder" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ entitlement: { key: "founder", granted: true, expiresAt: null } });
+  });
+
+  test("declaring one key opens that key and no other", async () => {
+    const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
+    const response = await request(app, "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "foudner" },
+    });
+    expect(response.status).toBe(400);
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("an empty catalog grants nothing at all", async () => {
+    // Nothing is sold and nothing is declared, so there is no key this project defines. A grant that
+    // succeeded here would be writing a row against a vocabulary that does not exist.
+    const response = await request(makeApp({}), "POST", path, {
+      ...granting,
+      body: { userId: "grace", entitlement: "pro" },
+    });
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
+  });
+
   test("one token, one call — a replayed request is refused", async () => {
     // The guard reads the body to check the digest and the validator parses it afterwards, so the happy path
     // above already proves the clone. This proves the other half: the same token cannot be spent twice.
@@ -2471,6 +2530,18 @@ describe("POST /payments/entitlements/revoke", () => {
       userId: "ada",
       entitlement: "pro",
     });
+  });
+
+  test("takes back a key the catalog no longer defines — the asymmetry with grant", async () => {
+    // Deliberately not gated by the catalog. A catalog edit removes a key that accounts are still holding,
+    // and the whole reason to reach for a revoke is to take that key away. Refusing it would make the
+    // catalog edit irreversible for every account that already held it.
+    const response = await request(makeApp(), "POST", path, {
+      ...revoking,
+      body: { userId: "ada", entitlement: "retired_tier" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ entitlement: { key: "retired_tier", granted: false, expiresAt: null } });
   });
 
   test("is idempotent, and legal against an account that never held the key", async () => {

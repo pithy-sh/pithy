@@ -117,8 +117,9 @@ describe("payments()", () => {
     payments({ ...CATALOG, basePath: "/billing" }).routes?.(app);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
     expect(paths).toEqual([
-      // The management surface (#247), under `admin/` because the player surface already owns
+      // The management surface (#247, #300), under `admin/` because the player surface already owns
       // `/billing/entitlements` and `/billing/purchases`.
+      "/billing/admin/catalog",
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
       "/billing/admin/purchases",

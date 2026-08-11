@@ -14,6 +14,7 @@ import type { Context, Hono } from "hono";
 import { listEntitlements, listPurchases, listSubscriptions, readEntitlements } from "../admin/read";
 import { type PaymentsAuditAction, PaymentsAuditActions } from "../audit/actions";
 import {
+  grantableEntitlements,
   type PaymentsCatalogEntry,
   type PaymentsConfig,
   type PaymentsStripeSettings,
@@ -26,6 +27,7 @@ import type { PaymentsRail } from "../data/rail";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
 import {
+  PaymentsEntitlementNotInCatalogError,
   PaymentsProductNotFoundError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
@@ -38,6 +40,7 @@ import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "..
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
 import {
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -46,6 +49,7 @@ import {
   requireAuth,
 } from "./guards";
 import type {
+  PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
@@ -70,7 +74,7 @@ import {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./schemas";
-import { adminEntitlementView, adminPurchaseView, entitlementView, purchaseView } from "./view";
+import { adminCatalogView, adminEntitlementView, adminPurchaseView, entitlementView, purchaseView } from "./view";
 import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhookGuard";
 
 /**
@@ -87,6 +91,7 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   POST /payments/entitlements/grant   → comp or repair an entitlement  (control-plane)     json: EntitlementGrantRequest
  *   POST /payments/entitlements/revoke  → take one back                  (control-plane)     json: EntitlementRevokeRequest
  *
+ *   GET  /payments/admin/catalog                → what this project sells        (control-plane: payments:catalog:read)        —
  *   GET  /payments/admin/purchases              → the purchase log, paged        (control-plane: payments:purchases:read)      query: AdminPurchasesQuery
  *   GET  /payments/admin/subscriptions          → the purchases that renew       (control-plane: payments:subscriptions:read)  query: AdminSubscriptionsQuery
  *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
@@ -385,9 +390,43 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     });
   }
 
+  /**
+   * Every entitlement key a manual grant may name, computed once.
+   *
+   * The catalog is config and cannot change under a running Worker, so this is a constant of the
+   * composition rather than something to recompute per request. It is also the set the catalog read
+   * publishes, which is what keeps "what a client may offer" and "what a grant will accept" from being two
+   * lists that drift.
+   */
+  const grantable = grantableEntitlements(config);
+
   return (app) => {
     // The management surface: control-plane, read-only, under `admin/`. Its paths are disjoint from the
     // player surface by construction, so registering it first is presentation rather than semantics.
+
+    /**
+     * CONTROL PLANE. What this project sells — the catalog, with the entitlement keys each product grants.
+     *
+     * **The read that makes a comp control possible.** Without it a management client offering "give this
+     * person an entitlement" has nothing to populate a list from, so it offers a text box — and a text box
+     * beside a free-text key is how an operator who means `pro` types `pr` and gets a success. The
+     * validation on `entitlements/grant` is the other half, and it is the half that matters: this makes a
+     * good control possible, that makes a bad one impossible.
+     *
+     * Its own scope. Reading what a project sells is not reading what anybody bought — it names no account
+     * and no transaction, and would answer identically against a database with no rows in it — so a tool
+     * that needs a dropdown can hold this and nothing else.
+     *
+     * No query at all, and none to add: the catalog is small, fixed at deploy, and has no page. What
+     * crosses is decided by `adminCatalogView` and asserted as an invariant rather than as a field list.
+     */
+    app.get(`${base}/admin/catalog`, requireControlPlane(PAYMENTS_CATALOG_READ_SCOPE), async (c) => {
+      const view = adminCatalogView(config);
+      await recordRead(c, PaymentsAuditActions.catalogRead, null, {
+        products: view.enabled ? view.products.length : 0,
+      });
+      return c.json(view satisfies PaymentsAdminCatalogResponse, 200);
+    });
 
     /**
      * CONTROL PLANE. The purchase log, paged, newest first.
@@ -753,6 +792,19 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       zValidator("json", EntitlementGrantRequest, validationHook),
       async (c) => {
         const input = c.req.valid("json");
+        // The key is checked against what this project defines, and the check is here rather than on the
+        // route line for the reason every config-backed resolution in this package is: a request schema
+        // constrains a string, it is never built from a configured key set. `EntitlementKey` has already
+        // said the key is well-formed; this says it means something.
+        if (!grantable.has(input.entitlement)) {
+          throw new PaymentsEntitlementNotInCatalogError({
+            message: `No entitlement "${input.entitlement}" is defined here.`,
+            // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's
+            // logs gets the near miss spelled out; the caller learns only which key it sent, because what
+            // this project sells is a separate disclosure behind `payments:catalog:read`.
+            detail: `No product grants "${input.entitlement}" and \`manualEntitlements\` does not declare it. Defined: ${[...grantable].sort().join(", ") || "nothing"}.`,
+          });
+        }
         const caller = controlPlaneCaller(c);
         const granted = await grantEntitlement(
           database(c),

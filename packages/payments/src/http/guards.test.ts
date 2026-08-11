@@ -18,6 +18,7 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import {
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
@@ -118,12 +119,14 @@ describe("the payments control-plane scopes", () => {
     for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) expect(ControlPlaneScope.parse(scope)).toBe(scope);
   });
 
-  test("the aggregate is exactly the five operations, reads first, in a stable order", () => {
+  test("the aggregate is exactly the six operations, reads first, in a stable order", () => {
     // What `pithy dashboard connect` offers for payments. A scope that exists and is offered nowhere is a
     // scope an adopter cannot grant, so the list and the route lines are asserted against each other.
     // Reads lead because they are the grant most connections want and the smallest one that makes a
-    // dashboard useful — and because for a while there were none (#247).
+    // dashboard useful — and because for a while there were none (#247). The catalog leads the reads: it
+    // is the only one that names no account, and the smallest grant that makes a comp control possible.
     expect(PAYMENTS_CONTROL_PLANE_SCOPES).toEqual([
+      PAYMENTS_CATALOG_READ_SCOPE,
       PAYMENTS_PURCHASES_READ_SCOPE,
       PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -143,6 +146,12 @@ describe("the payments control-plane scopes", () => {
     expect(scopeCovers(PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_PURCHASES_READ_SCOPE, renewalMonitor)).toBe(false);
     const reader = [PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_SUBSCRIPTIONS_READ_SCOPE, PAYMENTS_ENTITLEMENTS_READ_SCOPE];
     expect(scopeCovers(PAYMENTS_ENTITLEMENT_GRANT_SCOPE, PAYMENTS_ENTITLEMENT_GRANT_SCOPE, reader)).toBe(false);
+    // And what a project sells is a separate disclosure from what its customers bought, in both
+    // directions: three read grants over the commerce confer nothing about the catalog (#300).
+    expect(scopeCovers(PAYMENTS_CATALOG_READ_SCOPE, PAYMENTS_CATALOG_READ_SCOPE, reader)).toBe(false);
+    expect(
+      scopeCovers(PAYMENTS_ENTITLEMENTS_READ_SCOPE, PAYMENTS_ENTITLEMENTS_READ_SCOPE, [PAYMENTS_CATALOG_READ_SCOPE]),
+    ).toBe(false);
     expect(scopeCovers(PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, reader)).toBe(false);
   });
 

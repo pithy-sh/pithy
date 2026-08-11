@@ -9,6 +9,7 @@ import { describe, expect, test } from "vitest";
 import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
 import {
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
@@ -78,10 +79,11 @@ describe("payments route contract", () => {
   test("the gate is inspecting the real payments routes, not an empty app", () => {
     const app = makeApp();
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this build serves — the ten from issue #79 plus the four management reads from #247.
-    // The list is what makes adding a fifteenth a deliberate edit rather than a surprise, and it is the
-    // only place a route can be counted.
+    // Every route this build serves — the ten from issue #79, the four management reads from #247, and
+    // the catalog read from #300. The list is what makes adding a sixteenth a deliberate edit rather than
+    // a surprise, and it is the only place a route can be counted.
     expect(paths).toEqual([
+      "/payments/admin/catalog",
       "/payments/admin/entitlements",
       "/payments/admin/entitlements/:userId",
       "/payments/admin/purchases",
@@ -154,7 +156,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(6);
+    expect(capability.adminRoutes).toHaveLength(7);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
@@ -163,6 +165,7 @@ describe("the admin surface payments advertises", () => {
     // would 404 every management call from a client that assumed the `/payments` default.
     const { capability, app } = composed("/billing");
     expect(capability.adminRoutes?.map((route) => route.path)).toEqual([
+      "/billing/admin/catalog",
       "/billing/admin/purchases",
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
@@ -178,6 +181,7 @@ describe("the admin surface payments advertises", () => {
     // manifest naming a different string would tell a client to ask for a grant nothing checks.
     const { capability } = composed();
     expect(capability.adminRoutes?.map((route) => route.scope)).toEqual([
+      PAYMENTS_CATALOG_READ_SCOPE,
       PAYMENTS_PURCHASES_READ_SCOPE,
       PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -209,7 +213,7 @@ describe("the admin surface payments advertises", () => {
     // are asserted together because either alone permits the mistake.
     const { capability } = composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
-    expect(reads).toHaveLength(4);
+    expect(reads).toHaveLength(5);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });

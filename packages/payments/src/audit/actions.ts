@@ -99,6 +99,15 @@ export const PaymentsAuditActions = {
    * console looked at as well as what it changed.
    */
   entitlementsRead: "payments/entitlements_read",
+  /**
+   * A management client read the catalog — what this project sells.
+   *
+   * Audited like the others, and the reason is the same one: the customer's ability to reconstruct what a
+   * dashboard did with the access they granted does not have an exception for the reads that touch no
+   * account. This one discloses no person and no transaction, so the event carries a count and nothing
+   * else — which is also the only fact about it worth asking after.
+   */
+  catalogRead: "payments/catalog_read",
 } as const;
 
 /** One of the payments audit action codes. */

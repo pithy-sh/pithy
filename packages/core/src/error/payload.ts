@@ -1036,6 +1036,18 @@ const PaymentsClawbackFailedPublic = z
   })
   .describe("A refund could not be clawed back from a spent balance (409).");
 
+const PaymentsEntitlementNotInCatalogPublic = z
+  .object({
+    code: z
+      .literal("payments/entitlement_not_in_catalog")
+      .describe(
+        "A control-plane grant named an entitlement key this project does not define — no product lists it and the adopter did not declare it grantable by hand. 400 rather than 404 because a grant names a vocabulary, not a resource: `pr` for `pro` is a malformed request, and left unchecked it is a success, a row, and a customer who stays locked out.",
+      ),
+    status: z.literal(400).describe("Bad Request — no product grants that key and none was declared."),
+    ...publicFields,
+  })
+  .describe("A manual grant named an entitlement key the catalog does not define (400).");
+
 // --- @pithy-sh/core: the `control-plane` verification strategy ---
 //
 // NOT Cloudflare's control plane. Everywhere else in this repo "control plane" means the Cloudflare
@@ -1389,6 +1401,7 @@ export const KitPublicErrorPayload = z
     PaymentsProviderUnavailablePublic,
     PaymentsEntitlementRequiredPublic,
     PaymentsClawbackFailedPublic,
+    PaymentsEntitlementNotInCatalogPublic,
     ControlPlaneNotConnectedPublic,
     ControlPlaneInvalidCredentialPublic,
     ControlPlaneInsufficientScopePublic,
@@ -1649,6 +1662,9 @@ const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(det
 const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(detailField).describe(
   PaymentsClawbackFailedPublic.description ?? "",
 );
+const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.extend(detailField).describe(
+  PaymentsEntitlementNotInCatalogPublic.description ?? "",
+);
 const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(detailField).describe(
   ControlPlaneNotConnectedPublic.description ?? "",
 );
@@ -1809,6 +1825,7 @@ export const KitErrorPayload = z
     PaymentsProviderUnavailable,
     PaymentsEntitlementRequired,
     PaymentsClawbackFailed,
+    PaymentsEntitlementNotInCatalog,
     ControlPlaneNotConnected,
     ControlPlaneInvalidCredential,
     ControlPlaneInsufficientScope,
