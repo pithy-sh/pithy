@@ -90,6 +90,7 @@ async function seedThread(): Promise<void> {
     .values(
       SupportThread.encode({
         id: "t1",
+        channel: "email",
         inboxAddress: INBOX,
         subject: "Charged twice",
         fromAddress: "ada@example.com",
@@ -129,6 +130,9 @@ async function seedMessage(seed: {
         id: seed.id,
         threadId: "t1",
         direction: seed.direction ?? "inbound",
+        channel: "email" as const,
+        submittedByUserId: null,
+        context: null,
         mimeMessageId: `${seed.id}@mail.example.com`,
         mimeInReplyTo: null,
         mimeReferences: null,

@@ -45,12 +45,37 @@ describe("support route contract", () => {
     expect(app.routes.length).toBeGreaterThan(0);
     const paramPaths = [...new Set(app.routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path))].sort();
     expect(paramPaths).toEqual([
+      "/support/feedback/:id",
       "/support/threads/:id",
       "/support/threads/:id/archive",
       "/support/threads/:id/flags",
       "/support/threads/:id/reclassify",
       "/support/threads/:id/reply",
     ]);
+  });
+
+  test("the submission routes are mounted, and vanish when the channel is off", () => {
+    // Not mounted rather than guarded inside a handler: a route that is not served answers 404, which
+    // is the honest answer for a feature this deployment does not have. A 403 would say "this exists
+    // and you may not use it".
+    const mounted = new Hono<PithyHonoEnv>();
+    registerSupportRoutes({ resolveDeps: async () => ({}) as never })(mounted);
+    expect(mounted.routes.some((route) => route.path === "/support/feedback")).toBe(true);
+
+    const off = new Hono<PithyHonoEnv>();
+    registerSupportRoutes({ submission: false, resolveDeps: async () => ({}) as never })(off);
+    expect(off.routes.some((route) => route.path.startsWith("/support/feedback"))).toBe(false);
+    // The management surface is untouched by the switch — the two are separate surfaces, not two
+    // strengths of one.
+    expect(off.routes.some((route) => route.path === "/support/threads")).toBe(true);
+  });
+
+  test("the submission surface is never advertised as an admin route", () => {
+    // `GET /control-plane/manifest` describes what a *management* client may call. The feedback routes
+    // answer to a user's session and to no scope at all, so a manifest entry for one would offer a
+    // management client a path its credential can never open.
+    const capability = support({ inboundAddresses: ["support@help.example.com"] });
+    expect(capability.adminRoutes?.some((route) => route.path.includes("/feedback"))).toBe(false);
   });
 
   test("every advertised admin route is one support actually mounts", () => {

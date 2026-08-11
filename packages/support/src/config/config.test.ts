@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { DEFAULT_CLASSIFY_MODEL, SupportConfig } from "./config";
+import {
+  DEFAULT_CLASSIFY_MODEL,
+  MAX_SUBMISSION_BODY_CHARS,
+  MAX_SUBMISSION_SUBJECT_CHARS,
+  SupportConfig,
+} from "./config";
 
 describe("SupportConfig defaults", () => {
   test("an empty object parses, so an adopter can compose the capability before configuring it", () => {
@@ -26,6 +31,24 @@ describe("SupportConfig defaults", () => {
       maxCount: 10,
       retainRaw: true,
     });
+  });
+
+  test("the in-app channel is served by default, with its own bounds rather than the mail path's", () => {
+    const submission = SupportConfig.parse({}).submission;
+    expect(submission.enabled).toBe(true);
+    expect(submission.maxSubjectChars).toBe(200);
+    expect(submission.maxBodyChars).toBe(10_000);
+    // Smaller than the mail path's 20-an-hour, and safe at that size for a reason mail cannot claim:
+    // a submission is attributable to an account the adopter issued and can revoke.
+    expect(submission.maxPerAccountPerHour).toBe(10);
+  });
+
+  test("a configured bound may not exceed the ceiling the route's own schema is written to", () => {
+    // The two layers must not disagree. A setting above the ceiling would be a limit the route
+    // silently refused to honour, which is worse than a refusal at config time.
+    expect(() => SupportConfig.parse({ submission: { maxSubjectChars: MAX_SUBMISSION_SUBJECT_CHARS + 1 } })).toThrow();
+    expect(() => SupportConfig.parse({ submission: { maxBodyChars: MAX_SUBMISSION_BODY_CHARS + 1 } })).toThrow();
+    expect(() => SupportConfig.parse({ submission: { maxSubjectChars: MAX_SUBMISSION_SUBJECT_CHARS } })).not.toThrow();
   });
 
   test("the guard bounds are present without being asked for — a public address is a public write endpoint", () => {

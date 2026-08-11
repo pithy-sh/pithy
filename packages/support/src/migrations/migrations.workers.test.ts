@@ -79,6 +79,7 @@ async function search(term: string): Promise<string[]> {
 /** A valid thread, for the schema assertions above. */
 const THREAD = {
   id: "t1",
+  channel: "email",
   inboxAddress: "support@help.example.com",
   subject: "Hi",
   fromAddress: "ada@example.com",

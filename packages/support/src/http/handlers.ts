@@ -3,6 +3,7 @@
 
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
 import { attachmentUrl } from "../attachment/store";
@@ -12,24 +13,37 @@ import type { SupportAttachment } from "../data/attachment";
 import type { SupportCategories } from "../data/categories";
 import type { SupportDatabase } from "../data/tables";
 import { SupportClassificationError, SupportNotFoundError } from "../error/errors";
-import { resolveSenderContext } from "../link/sender";
+import { resolveSenderContext, resolveSubmitterAccount, resolveSubmitterContext } from "../link/sender";
 import { sendReply } from "../reply/send";
 import type { SupportReplySnippets } from "../reply/snippets";
 import { repliesForCategory } from "../reply/snippets";
-import { listThreads, readThread, setArchived, setFlags } from "../store/threads";
+import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "../store/threads";
+import { decodeBase64 } from "../submission/encoding";
+import { submitFeedback } from "../submission/submit";
 import { latestInboundMessageId } from "../workflows/classify";
 import type {
   SupportAttachmentView,
   SupportFlagsResponse,
+  SupportMyThreadResponse,
+  SupportMyThreadsResponse,
   SupportReclassifiedResponse,
   SupportReplySentResponse,
   SupportReplyView,
+  SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
   SupportThreadView,
 } from "./responses";
-import type { ArchiveThreadInput, FlagsInput, ListThreadsQuery, RepliesQuery, ReplyInput } from "./schemas";
-import { listedThreadView, messageView, senderView, threadView } from "./views";
+import type {
+  ArchiveThreadInput,
+  FlagsInput,
+  ListThreadsQuery,
+  MyThreadsQuery,
+  RepliesQuery,
+  ReplyInput,
+  SubmitFeedbackInput,
+} from "./schemas";
+import { listedThreadView, messageView, myMessageView, myThreadView, senderView, threadView } from "./views";
 
 /**
  * The support handlers — every one of them behind the `control-plane` gate, and every one of them
@@ -84,6 +98,7 @@ export async function listInbox(
       category: query.category,
       priority: query.priority,
       sentiment: query.sentiment,
+      channel: query.channel,
       inbox: query.inbox,
       q: query.q,
       cursor: query.cursor,
@@ -134,9 +149,15 @@ export async function readConversation(deps: HandlerDeps, threadId: string): Pro
   const detail = await readThread(deps.db, threadId);
   const [attachments, sender] = await Promise.all([
     presentAttachments(deps, detail.attachments),
-    resolveSenderContext(deps.d1, detail.thread.fromAddress, deps.now(), {
-      authenticated: detail.thread.senderAuthenticated,
-    }),
+    // A session-proven thread already holds the id its session established, so the context is resolved
+    // from that rather than re-derived from an address. Not a shortcut: `resolveSenderUserId` matches
+    // the `email` column exactly, so an account stored with capitals by some other route would resolve
+    // to nobody — turning the one link that *is* certain into the one the console shows as unknown.
+    detail.thread.accountLinkSource === "session" && detail.thread.userId
+      ? resolveSubmitterContext(deps.d1, detail.thread.userId, deps.now())
+      : resolveSenderContext(deps.d1, detail.thread.fromAddress, deps.now(), {
+          authenticated: detail.thread.senderAuthenticated,
+        }),
   ]);
 
   return {
@@ -268,4 +289,129 @@ export async function updateFlags(
 /** The canned reply catalog. */
 export function listReplies(deps: HandlerDeps, query: RepliesQuery): SupportReplyView[] {
   return repliesForCategory(deps.snippets, query.category ?? "");
+}
+
+/**
+ * Take an in-app support request from a signed-in user.
+ *
+ * `userId` is a parameter rather than something read out of `input`, and that is the contract this
+ * whole channel rests on: it comes from `c.var.auth`, which `requireAuth()` filled before the route's
+ * validator ran. Nothing in the submitted body names an account, and the schema has no field that
+ * could.
+ *
+ * The configured length bounds are applied here rather than in the schema, for the reason
+ * `schemas.ts` states: a request schema is built once at module load and the adopter's numbers are
+ * resolved per project. This is config-backed resolution, which belongs in a handler — the same rule
+ * that keeps `board()` and `currency()` lookups out of a param schema.
+ */
+export async function submitFeedbackRequest(
+  deps: HandlerDeps,
+  input: SubmitFeedbackInput,
+  userId: string,
+): Promise<SupportSubmissionResponse> {
+  const bounds = deps.config.submission;
+  if (input.subject.length > bounds.maxSubjectChars) {
+    throw new ValidationError({
+      message: `A subject may be at most ${bounds.maxSubjectChars} characters.`,
+      action: "Shorten the subject and try again.",
+      detail: `submitted subject is ${input.subject.length} characters, over the ${bounds.maxSubjectChars} bound`,
+    });
+  }
+  if (input.body.length > bounds.maxBodyChars) {
+    throw new ValidationError({
+      message: `A support request may be at most ${bounds.maxBodyChars} characters.`,
+      action: "Shorten the message and try again, or attach the detail as a file.",
+      detail: `submitted body is ${input.body.length} characters, over the ${bounds.maxBodyChars} bound`,
+    });
+  }
+  // **The count bound belongs here, ahead of the decode, and not only inside `submitFeedback`.**
+  // `decodeBase64` bounds each payload before it allocates, but nothing bounded *how many* of them a
+  // request could carry until the array had already been mapped — so the cheapest refusal in the whole
+  // path sat behind the most expensive step in it. `submitFeedback` checks the same bound again for
+  // any caller that reaches it directly.
+  if (input.attachments.length > bounds.attachments.maxCount) {
+    throw new ValidationError({
+      message: `A support request may carry at most ${bounds.attachments.maxCount} attachments.`,
+      action: `Send at most ${bounds.attachments.maxCount} files.`,
+      detail: `submission declared ${input.attachments.length} attachments, over the ${bounds.attachments.maxCount} bound`,
+    });
+  }
+
+  const outcome = await submitFeedback(
+    {
+      db: deps.db,
+      config: deps.config,
+      bucket: deps.bucket,
+      fts: deps.fts,
+      resolveAccount: (id) => resolveSubmitterAccount(deps.d1, id),
+      dispatchClassify: deps.dispatchClassify,
+      emit: deps.emit,
+      log: deps.log,
+      newId: deps.newId,
+      now: deps.now,
+    },
+    {
+      userId,
+      subject: input.subject,
+      body: input.body,
+      threadId: input.threadId,
+      context: input.context,
+      // Decoded here, at the transport boundary, so `submitFeedback` takes bytes and stays testable
+      // without a request — the same split `ingest.ts` has from the `email()` handler. The decode is
+      // bounded before it allocates: `atob` materialises the whole result, so a size check afterwards
+      // has already paid for the attack it was meant to refuse.
+      attachments: input.attachments.map((attachment) => ({
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        bytes: decodeBase64(attachment.data, { maxBytes: bounds.attachments.maxBytes }),
+      })),
+    },
+  );
+
+  return {
+    threadId: outcome.threadId,
+    messageId: outcome.messageId,
+    opened: outcome.newThread,
+    attachments: outcome.attachments,
+  };
+}
+
+/** List the caller's own in-app conversations. */
+export async function listMyThreads(
+  deps: HandlerDeps,
+  query: MyThreadsQuery,
+  userId: string,
+): Promise<SupportMyThreadsResponse> {
+  const page = await listOwnThreads(deps.db, userId, { cursor: query.cursor, limit: query.limit });
+  return { threads: page.threads.map(myThreadView), nextCursor: page.nextCursor };
+}
+
+/**
+ * Read one of the caller's own conversations.
+ *
+ * The scoping is `readOwnThread`'s `where`, so a thread belonging to somebody else raises the same
+ * `support/not_found` as one that never existed. The projection is `myThreadView`/`myMessageView`,
+ * built from scratch rather than by omitting fields from the operator's — see `views.ts` for why that
+ * distinction is the security boundary rather than a style preference.
+ */
+export async function readMyThread(
+  deps: HandlerDeps,
+  threadId: string,
+  userId: string,
+): Promise<SupportMyThreadResponse> {
+  const detail = await readOwnThread(deps.db, threadId, userId);
+  const attachments = await presentAttachments(deps, detail.attachments);
+  const byMessage = new Map<string, SupportAttachmentView[]>();
+  for (const [index, attachment] of detail.attachments.entries()) {
+    const view = attachments[index];
+    if (!view) continue;
+    const bucket = byMessage.get(attachment.messageId);
+    if (bucket) bucket.push(view);
+    else byMessage.set(attachment.messageId, [view]);
+  }
+
+  return {
+    thread: myThreadView(detail.thread),
+    messages: detail.messages.map((message) => myMessageView(message, byMessage.get(message.id) ?? [])),
+  };
 }

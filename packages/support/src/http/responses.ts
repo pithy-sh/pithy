@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { SupportMessageDirection, SupportPriority, SupportSentiment } from "../data/enums";
+import {
+  SupportAccountLinkSource,
+  SupportChannel,
+  SupportMessageDirection,
+  SupportPriority,
+  SupportSentiment,
+} from "../data/enums";
+import { SupportSubmissionContext } from "../data/message";
 
 /**
  * What the support routes return, as Zod objects a management client can validate against.
@@ -33,16 +40,27 @@ const NextCursor = z
 export const SupportThreadView = z
   .object({
     id: z.string().describe("The thread's UUID — what every other route on this surface takes."),
-    inboxAddress: z.string().describe("The support address this thread arrived on, lowercased."),
+    channel: SupportChannel.describe(
+      "How this conversation started — `email` at an inbound address, or `app` from a signed-in user of the adopter's own app.",
+    ),
+    inboxAddress: z
+      .string()
+      .nullable()
+      .describe(
+        "The support address this thread arrived on, lowercased, and the address a reply comes back to. Null only on an `app` thread in a project with no inbound address configured.",
+      ),
     subject: z.string().describe("The subject of the message that opened the thread. Later replies never rewrite it."),
     fromAddress: z.string().describe("The sender's address, lowercased."),
     fromName: z.string().nullable().describe("The sender's display name, or null. Untrusted text; render it escaped."),
     senderAuthenticated: z
       .boolean()
       .describe(
-        "Whether the `From:` header was proved to belong to the sender. False means unproven, not forged — and it is what withholds the customer link.",
+        "Whether the sender was proved to be who they claim. On `email` that means the `From:` header was proved, and false means unproven rather than forged — it is what withholds the customer link. Always true on `app`, where a session proved it before the request arrived.",
       ),
     userId: z.string().nullable().describe("The user this sender resolves to, or null when nobody or unproven."),
+    accountLinkSource: SupportAccountLinkSource.nullable().describe(
+      "How `userId` was established, or null when there is no link. **Render these differently.** `session` means an authenticated request proved it and the account *is* the caller; `email_address` means it was matched against an address in a header nobody proved. The same operator action — a refund, a reset — follows from very different evidence.",
+    ),
     category: z.string().describe("The current category key, from this project's own federated taxonomy."),
     priority: SupportPriority.describe("How fast this thread needs a human."),
     sentiment: SupportSentiment.describe("How the sender sounds — the churn signal."),
@@ -90,9 +108,18 @@ export const SupportMessageView = z
   .object({
     id: z.string().describe("The message's UUID — Pithy's id, not the sender's."),
     direction: SupportMessageDirection.describe("`inbound` from the customer, `outbound` from this Worker."),
+    channel: SupportChannel.describe(
+      "How this message travelled. A reply to an `app` thread is `email`, because that is where the person will read it.",
+    ),
+    context: SupportSubmissionContext.nullable().describe(
+      "The bounded context an app submission carried — screen, build, platform, environment, locale. Null on every mail-path message.",
+    ),
     fromAddress: z.string().describe("The sender's address, lowercased."),
     fromName: z.string().nullable().describe("The sender's display name, or null. Untrusted text."),
-    toAddress: z.string().describe("The address this message was addressed to, lowercased."),
+    toAddress: z
+      .string()
+      .nullable()
+      .describe("The address this message was addressed to, lowercased. Null on an app submission with no envelope."),
     subject: z.string().describe("This message's own subject, which may differ from the thread's."),
     textBody: z.string().describe("The plain-text body."),
     htmlBody: z
@@ -239,6 +266,98 @@ export const SupportFlagsResponse = z
   .object({ ok: z.literal(true).describe("Always true. The write either happened or the request failed.") })
   .describe("The acknowledgement of one viewer's private flags.");
 export type SupportFlagsResponse = z.output<typeof SupportFlagsResponse>;
+
+/**
+ * ## The submitter's own view, and what it deliberately omits
+ *
+ * Everything above this line is written for a **management client**: an operator triaging an inbox,
+ * who needs the classification to sort by and the sender's purchase history to act on. Everything
+ * below is written for the **person who wrote the message**, and it is a different object rather than
+ * the same one with fields nulled — because a projection that starts from the operator's shape leaks
+ * the first time somebody adds a column and forgets which of the two callers is reading.
+ *
+ * A submitter is shown their own words, the answers to them, and whether the thread is done. They are
+ * never shown the classification (a machine's judgement about them, and a filter on it is the inbox's
+ * business), the priority or sentiment (the same, and `angry` rendered back to the person it describes
+ * is its own kind of disaster), the per-viewer flags (private to an operator), the account link or its
+ * provenance (they know who they are), or anything at all about another account.
+ */
+
+/** One of the submitter's own conversations. */
+export const SupportMyThreadView = z
+  .object({
+    id: z.string().describe("The conversation's id — what the read-back and a follow-up submission take."),
+    subject: z.string().describe("What they called it when they opened it. Later messages never rewrite it."),
+    resolved: z
+      .boolean()
+      .describe(
+        "Whether support has marked this done. Named for the reader rather than mirroring the column: `archived` is an inbox's word for a thread it has finished with, and to the person waiting on an answer the fact is that it was resolved. Writing again reopens it.",
+      ),
+    messageCount: z.number().int().describe("How many messages the conversation holds, theirs and the answers."),
+    lastMessageAt: z.iso.datetime().describe("When the conversation last moved, ISO-8601. The list sorts on this."),
+    createdAt: z.iso.datetime().describe("When they opened it, ISO-8601."),
+  })
+  .describe("One of the caller's own in-app support conversations, as the person who opened it sees it.");
+export type SupportMyThreadView = z.output<typeof SupportMyThreadView>;
+
+/** One message in the submitter's own conversation. */
+export const SupportMyMessageView = z
+  .object({
+    id: z.string().describe("The message's id."),
+    direction: SupportMessageDirection.describe(
+      "`inbound` is theirs, `outbound` is the answer. The only identity on this view: who answered is a person's name in the body if they signed it, and never an operator's account.",
+    ),
+    body: z
+      .string()
+      .describe(
+        "The message text. Plain text on both sides — what they sent, and what was sent back. Never HTML, so a client renders it escaped and there is nothing here to sanitise.",
+      ),
+    context: SupportSubmissionContext.nullable().describe(
+      "The context their app attached to this message, so a client can show what was sent on their behalf. Null on an answer.",
+    ),
+    attachments: z.array(SupportAttachmentView).describe("What they attached to this message. Empty on an answer."),
+    sentAt: z.iso.datetime().describe("When it was sent, ISO-8601."),
+  })
+  .describe("One message in the caller's own conversation — their words, or the answer to them.");
+export type SupportMyMessageView = z.output<typeof SupportMyMessageView>;
+
+/** `POST {base}/feedback`. */
+export const SupportSubmissionResponse = z
+  .object({
+    threadId: z.string().describe("The conversation it landed in — a new one, or the one it continued."),
+    messageId: z.string().describe("The message that was stored."),
+    opened: z
+      .boolean()
+      .describe(
+        "True when this opened a conversation, false when it continued one. A client that sent no `threadId` and gets false has hit nothing surprising — it cannot happen — so this is here for the client that sent one and wants to confirm which.",
+      ),
+    attachments: z
+      .number()
+      .int()
+      .describe(
+        "How many attachments were stored. Reported rather than assumed: a deployment with no bucket bound stores the report and none of its files, and a client that showed a paperclip should be able to say so.",
+      ),
+  })
+  .describe("What an in-app support request produced.");
+export type SupportSubmissionResponse = z.output<typeof SupportSubmissionResponse>;
+
+/** `GET {base}/feedback`. */
+export const SupportMyThreadsResponse = z
+  .object({
+    threads: z.array(SupportMyThreadView).describe("The caller's own conversations, newest first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the caller's own support conversations.");
+export type SupportMyThreadsResponse = z.output<typeof SupportMyThreadsResponse>;
+
+/** `GET {base}/feedback/:id`. */
+export const SupportMyThreadResponse = z
+  .object({
+    thread: SupportMyThreadView.describe("The conversation."),
+    messages: z.array(SupportMyMessageView).describe("Its messages, oldest first — a conversation reads downward."),
+  })
+  .describe("One of the caller's own conversations, in full.");
+export type SupportMyThreadResponse = z.output<typeof SupportMyThreadResponse>;
 
 /** `GET {base}/replies`. */
 export const SupportRepliesResponse = z

@@ -29,6 +29,16 @@ import { SUPPORT_MESSAGES_TABLE, type SupportDatabase } from "../data/tables";
  *
  * The window is a sliding hour rather than a fixed bucket, because a fixed bucket lets twice the
  * limit through across a boundary — which is exactly when a retry storm arrives.
+ *
+ * ## Mail only, and the in-app channel has its own bound
+ *
+ * Both counts filter on `channel = "email"`, so an in-app submission is invisible here and a piece of
+ * mail is invisible to `submission/guard.ts`. **Neither surface may starve the other.** Counting them
+ * together would mean a burst of in-app feedback during an outage locks a paying customer's email out
+ * of the inbox, and a mail flood stops the app's own users reporting the very outage that caused it —
+ * each of which is the failure arriving at the worst possible moment. They are also bounded on
+ * different keys for a real reason: a mail sender is an address anybody can write, while a submitter is
+ * an account the adopter issued and can revoke.
  */
 
 /** One hour, in milliseconds — the window every rate bound is measured over. */
@@ -84,6 +94,7 @@ export async function checkRates(
     .selectFrom(SUPPORT_MESSAGES_TABLE)
     .select((eb) => eb.fn.countAll<number>().as("count"))
     .where("direction", "=", "inbound")
+    .where("channel", "=", "email")
     .where("fromAddress", "=", input.fromAddress)
     .where("receivedAt", ">=", since.getTime())
     .executeTakeFirst();
@@ -100,6 +111,7 @@ export async function checkRates(
     .selectFrom(SUPPORT_MESSAGES_TABLE)
     .select((eb) => eb.fn.countAll<number>().as("count"))
     .where("direction", "=", "inbound")
+    .where("channel", "=", "email")
     .where("receivedAt", ">=", since.getTime())
     .executeTakeFirst();
 

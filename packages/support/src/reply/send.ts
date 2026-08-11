@@ -126,7 +126,19 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
   // The customer's answer has to come back to an address this inbox actually claims, or the
   // conversation ends at the reply. Defaulting to the inbox the thread arrived on is right for every
   // deployment that has not deliberately configured otherwise.
+  //
+  // **Both can be absent, and only on an `app` thread**: a project collecting in-app feedback with no
+  // mail configured has no address a thread arrived at and none to answer from. Refused rather than
+  // sent from whatever the email capability defaults to — a reply the customer cannot answer is worse
+  // than a refusal an operator can read, because it looks like the conversation continued.
   const replyTo = deps.config.reply.replyToAddress ?? thread.inboxAddress;
+  if (!replyTo) {
+    throw new SupportReplyFailedError({
+      message: "This deployment has no address a reply can come back to.",
+      action: "Set `inboundAddresses` or `reply.replyToAddress` on the support capability, then retry.",
+      detail: `thread ${input.threadId} has no inboxAddress and no reply.replyToAddress is configured`,
+    });
+  }
 
   let jobId: string;
   try {
@@ -150,6 +162,13 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     id: messageId,
     threadId: input.threadId,
     direction: "outbound",
+    // `email`, on every thread including an app-submitted one. A reply leaves through the same durable
+    // send path whatever the question arrived on, because email is where the person will read it — and
+    // recording it as `app` would make the channel column a property of the thread written twice
+    // rather than a fact about how each message actually travelled.
+    channel: "email",
+    submittedByUserId: null,
+    context: null,
     mimeMessageId: null,
     mimeInReplyTo: parent?.mimeMessageId ?? null,
     mimeReferences: chain.length > 0 ? chain : null,

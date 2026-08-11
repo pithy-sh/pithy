@@ -34,6 +34,43 @@ export const SupportMessageDirection = z
 export type SupportMessageDirection = z.infer<typeof SupportMessageDirection>;
 
 /**
+ * How a message reached this inbox.
+ *
+ * Closed for the same reason priority is: a channel is a *transport this capability implements*, not a
+ * vocabulary an adopter brings — there is no third answer a project could need that the code would not
+ * also have to be taught to speak. It is the axis the two halves of the capability differ on, and the
+ * differences are real rather than cosmetic: `email` arrives at a public address from an unauthenticated
+ * `From:` header, and `app` arrives on a request whose session was already proved.
+ */
+export const SupportChannel = z
+  .enum(["email", "app"])
+  .describe(
+    "How this arrived: `email` at a configured inbound address, or `app` from a signed-in user of the adopter's own app. The axis the console filters on, and the one the account link's provenance follows from.",
+  );
+export type SupportChannel = z.infer<typeof SupportChannel>;
+
+/**
+ * How a thread came to name an account — the provenance of `userId`, and the distinction
+ * `inbound/authenticity.ts` spends two hundred lines earning.
+ *
+ * A `From:` header is an unauthenticated claim, so an email thread's link is a *match on an address
+ * anybody could have written*. An in-app submission has no `From:` to spoof: `requireAuth()` proved
+ * the session before the handler ran, so the link is the identity rather than a guess about it.
+ *
+ * **A console must not render the two the same way.** They differ in exactly the situation that
+ * matters — deciding whether to act on somebody's billing history — and a single boolean cannot say
+ * which one it is looking at. `senderAuthenticated` answers *may we believe this*, and this answers
+ * *how did we come to believe it*; the second is what an operator needs when the first is false and
+ * there is still a name on the thread.
+ */
+export const SupportAccountLinkSource = z
+  .enum(["session", "email_address"])
+  .describe(
+    "How this thread's `userId` was established: `session` means an authenticated request proved it, `email_address` means it was matched from the address in a `From:` header. Never equivalent — one is the identity, the other is a lookup on a claim.",
+  );
+export type SupportAccountLinkSource = z.infer<typeof SupportAccountLinkSource>;
+
+/**
  * The category every taxonomy carries, whatever else it declares, and the value a classification
  * falls back to.
  *

@@ -3,7 +3,7 @@
 
 import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
-import { SupportPriority, SupportSentiment, UNCATEGORIZED } from "./enums";
+import { SupportAccountLinkSource, SupportChannel, SupportPriority, SupportSentiment, UNCATEGORIZED } from "./enums";
 
 /**
  * One conversation in `pithy_support_threads` — the row the inbox is a list of.
@@ -28,10 +28,14 @@ export const SupportThread = z
       .describe(
         "UUID primary key. Text, not autoincrement, because a thread id reaches a dashboard and an enumerable inbox is an enumerable customer list.",
       ),
+    channel: SupportChannel.describe(
+      "How this conversation started — `email` at an inbound address, or `app` from a signed-in user. Never rewritten by a later message: the channel a thread opened on is what its account link's provenance follows from, and a thread that changed channel would change what its link means.",
+    ),
     inboxAddress: z
       .string()
+      .nullish()
       .describe(
-        "The support address this thread arrived on, lowercased. Stored per thread so one Worker can serve several inboxes (support@, security@) and the dashboard can filter by which.",
+        "The support address this thread arrived on, lowercased. Stored per thread so one Worker can serve several inboxes (support@, security@) and the dashboard can filter by which — and it is the address a reply comes back to. **Null on an `app` thread with no inbound address configured**, which is a supported deployment: a project can collect in-app feedback with no mail set up at all. Never null on an `email` thread, which by definition arrived at one.",
       ),
     subject: z
       .string()
@@ -41,7 +45,7 @@ export const SupportThread = z
     fromAddress: z
       .string()
       .describe(
-        "The sender's address, lowercased. The join key for the user link, the sender history, and the volume guard — so it is normalized on the way in, once.",
+        "The sender's address, lowercased. The join key for the user link, the sender history, and the volume guard — so it is normalized on the way in, once. On an `app` thread it is the authenticated account's own email, read from the account rather than from anything the client sent, which is what lets a reply leave on the existing mail path with nothing new to configure.",
       ),
     fromName: z
       .string()
@@ -50,14 +54,17 @@ export const SupportThread = z
         "The sender's display name from the `From` header, when they had one. Untrusted text; render it escaped.",
       ),
     senderAuthenticated: SQLiteBoolean.describe(
-      "Whether the `From:` header was proved to belong to the sender — DMARC passed, or SPF passed on an aligned domain. **False does not mean forged**, it means unproven, which is the common case for a domain publishing no DMARC policy. It gates the customer link: an unproven sender is never decorated with somebody's real purchase history, because that is what turns a spoofed message into support-driven account takeover.",
+      "Whether the sender was proved to be who they claim. On an `email` thread that means the `From:` header was proved — DMARC passed, or SPF passed on an aligned domain — and **false does not mean forged**, it means unproven, which is the common case for a domain publishing no DMARC policy. On an `app` thread it is always true, and it is true for a stronger reason: there was no header to prove, because `requireAuth()` proved the session before the request reached a handler. It gates the customer link: an unproven sender is never decorated with somebody's real purchase history, because that is what turns a spoofed message into support-driven account takeover.",
     ),
     userId: z
       .string()
       .nullish()
       .describe(
-        "The `pithy_auth_users.id` this sender resolves to, or null when the address belongs to nobody with an account — or when the sender was not authenticated, because an unproven `From:` must not resolve to a real customer. Derived, so a customer who signs up later is linked by the next message rather than by a repair.",
+        "The `pithy_auth_users.id` this sender resolves to, or null when the address belongs to nobody with an account — or when the sender was not authenticated, because an unproven `From:` must not resolve to a real customer. Derived on the mail path, so a customer who signs up later is linked by the next message rather than by a repair; on the app path it is the session's own user id and there is nothing to derive.",
       ),
+    accountLinkSource: SupportAccountLinkSource.nullish().describe(
+      "How `userId` was established, or null when there is no link. **The column that keeps a session-proven link from reading like a header-inferred one** — `senderAuthenticated` says whether to believe it, this says what was believed. A console rendering the two identically is the failure this exists to prevent, because the same operator action follows from very different evidence.",
+    ),
     category: z
       .string()
       .describe(

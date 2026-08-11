@@ -50,6 +50,21 @@ export const SupportAuditActions = {
    * situation where an operator most needs to see it.
    */
   inboundRejected: "support/inbound_rejected",
+  /**
+   * An in-app submission was refused — over the per-account bound. Outcome `denied`.
+   *
+   * Its own action rather than a share of `inboundRejected`, because the two answer different
+   * questions and an operator acts on them differently. A refused *message* names an address in a
+   * header nobody proved, so its actor is anonymous and the event is evidence of a flood. A refused
+   * *submission* names an account the adopter issued: the actor is real, and the action available is
+   * to disable it. Folding them together would put a proven identity and an unproven claim in the same
+   * `actorId` column, which is the distinction this whole channel exists to keep.
+   *
+   * Same argument for auditing it at all as the mail path's: an accepted submission leaves a row in
+   * the messages table, which is a better record than an event could be — a refused one leaves nothing
+   * anywhere, and one account quietly filling the inbox is exactly when somebody needs to see it.
+   */
+  submissionRejected: "support/submission_rejected",
 } as const;
 
 /** One of the support audit action codes. */

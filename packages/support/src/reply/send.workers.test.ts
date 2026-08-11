@@ -58,6 +58,7 @@ async function seedThread(subject = "Double charge"): Promise<void> {
     .values(
       SupportThread.encode({
         id: "t1",
+        channel: "email",
         inboxAddress: INBOX,
         subject,
         fromAddress: CUSTOMER,
@@ -99,6 +100,9 @@ async function seedMessage(seed: {
         id: seed.id,
         threadId: "t1",
         direction: seed.direction,
+        channel: "email" as const,
+        submittedByUserId: null,
+        context: null,
         mimeMessageId: seed.mimeMessageId ?? null,
         mimeInReplyTo: null,
         mimeReferences: seed.mimeReferences ?? null,
@@ -315,5 +319,97 @@ describe("sendReply", () => {
     await expect(sendReply(deps, { threadId: "ghost", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
       payload: { code: "support/not_found" },
     });
+  });
+});
+
+describe("answering a thread that started in the app", () => {
+  /** Replace the seeded thread with one filed through `POST /support/feedback`. */
+  async function seedAppThread(inboxAddress: string | null): Promise<void> {
+    await db.deleteFrom(SUPPORT_THREADS_TABLE).where("id", "=", "t1").execute();
+    const at = new Date(T0);
+    await db
+      .insertInto(SUPPORT_THREADS_TABLE)
+      .values(
+        SupportThread.encode({
+          id: "t1",
+          channel: "app",
+          inboxAddress,
+          subject: "Export button does nothing",
+          // The account's own address, read from the account at submission time — which is what lets a
+          // reply leave on the existing mail path with nothing new to configure.
+          fromAddress: CUSTOMER,
+          fromName: "Ada",
+          senderAuthenticated: true,
+          userId: "user-ada",
+          accountLinkSource: "session",
+          category: "bug_report",
+          priority: "normal",
+          sentiment: "neutral",
+          confidence: null,
+          model: null,
+          classifiedAt: null,
+          archived: false,
+          archivedAt: null,
+          archivedBy: null,
+          messageCount: 1,
+          firstMessageAt: at,
+          lastMessageAt: at,
+          createdAt: at,
+          updatedAt: at,
+        }),
+      )
+      .execute();
+  }
+
+  test("the reply reaches the submitter by email, on the unchanged reply path", async () => {
+    await seedAppThread(INBOX);
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "app-1@help.example.com" });
+    const { deps, sent } = harness();
+
+    const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe(CUSTOMER);
+    // The answer comes back to an address this inbox claims, so the conversation does not end here.
+    expect(sent[0]?.replyTo).toBe(INBOX);
+    // Threaded against the id minted for the submission — without it her answer opens a second thread
+    // and the conversation fragments into one message per reply.
+    expect(sent[0]?.inReplyTo).toBe("<app-1@help.example.com>");
+    expect(result.jobId).toBe("job-1");
+  });
+
+  test("the outbound row is `email`, whatever the thread started as", async () => {
+    await seedAppThread(INBOX);
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "app-1@help.example.com" });
+    const { deps } = harness();
+
+    await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+    const rows = await outbound();
+    // Per message rather than only per thread, because this is the case where the two differ.
+    expect(rows[0]?.channel).toBe("email");
+  });
+
+  test("with no address anywhere the reply is refused rather than sent from a guess", async () => {
+    // Only reachable on an app thread: a project collecting in-app feedback with no mail configured.
+    // A reply the customer cannot answer looks like the conversation continued, which is worse than a
+    // refusal an operator can read.
+    await seedAppThread(null);
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+    const { deps, sent } = harness({ config: {} });
+
+    await expect(sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
+      payload: { code: "support/reply_failed" },
+    });
+    expect(sent).toEqual([]);
+    expect(await outbound()).toEqual([]);
+  });
+
+  test("a configured reply-to answers a mail-less project's app thread", async () => {
+    await seedAppThread(null);
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+    const { deps, sent } = harness({ config: { reply: { replyToAddress: INBOX } } });
+
+    await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+    expect(sent[0]?.replyTo).toBe(INBOX);
   });
 });

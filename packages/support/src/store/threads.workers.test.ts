@@ -18,7 +18,15 @@ import { listedThreadView, messageView, threadView } from "../http/views";
 import { support_0001_threads } from "../migrations/0001_threads";
 import { indexMessage } from "./search";
 import { createSearchIndex } from "./searchIndex";
-import { listThreads, MAX_PAGE_SIZE, readThread, setArchived, setFlags } from "./threads";
+import {
+  listOwnThreads,
+  listThreads,
+  MAX_PAGE_SIZE,
+  readOwnThread,
+  readThread,
+  setArchived,
+  setFlags,
+} from "./threads";
 
 /**
  * The inbox query against real D1 — pagination, filters, and both search backends on live rows.
@@ -60,6 +68,7 @@ function threadRow(seed: {
   const at = new Date(seed.lastMessageAt);
   return SupportThread.encode({
     id: seed.id,
+    channel: "email",
     inboxAddress: seed.inbox ?? INBOX,
     subject: seed.subject ?? `Thread ${seed.id}`,
     fromAddress: "ada@example.com",
@@ -104,6 +113,9 @@ async function seedMessage(seed: {
         id: seed.id,
         threadId: seed.threadId,
         direction: "inbound",
+        channel: "email" as const,
+        submittedByUserId: null,
+        context: null,
         mimeMessageId: `${seed.id}@mail.example.com`,
         mimeInReplyTo: null,
         mimeReferences: null,
@@ -167,6 +179,27 @@ describe("listThreads", () => {
     expect(
       ids(await listThreads(db, { archived: true }, { fts: false, viewer: VIEWER, now: new Date(T0 + 10_000_000) })),
     ).toEqual(["done"]);
+  });
+
+  test("the console filters by channel, and shows both when it does not", async () => {
+    await seedThread({ id: "by-mail", lastMessageAt: T0 + 200 });
+    await db
+      .insertInto(SUPPORT_THREADS_TABLE)
+      .values(
+        SupportThread.encode({
+          ...SupportThread.parse(threadRow({ id: "in-app", lastMessageAt: T0 + 100 })),
+          id: "in-app",
+          channel: "app",
+        }),
+      )
+      .execute();
+
+    const now = new Date(T0 + 10_000_000);
+    // Absent is both, because the inbox is one queue however things arrived — that is the argument for
+    // this being a channel rather than a second capability.
+    expect(ids(await listThreads(db, {}, { fts: false, viewer: VIEWER, now }))).toEqual(["by-mail", "in-app"]);
+    expect(ids(await listThreads(db, { channel: "app" }, { fts: false, viewer: VIEWER, now }))).toEqual(["in-app"]);
+    expect(ids(await listThreads(db, { channel: "email" }, { fts: false, viewer: VIEWER, now }))).toEqual(["by-mail"]);
   });
 
   test("category, priority, sentiment, and inbox each narrow the page", async () => {
@@ -409,6 +442,87 @@ describe("readThread", () => {
 
   test("throws support/not_found for a thread that does not exist", async () => {
     await expect(readThread(db, "ghost")).rejects.toMatchObject({ payload: { code: "support/not_found" } });
+  });
+});
+
+describe("the submitter's read-back", () => {
+  /** An app thread owned by `userId`, so the read-back has something to be scoped against. */
+  async function seedAppThread(id: string, userId: string | null, lastMessageAt: number): Promise<void> {
+    await db
+      .insertInto(SUPPORT_THREADS_TABLE)
+      .values(
+        SupportThread.encode({
+          ...SupportThread.parse(threadRow({ id, lastMessageAt })),
+          id,
+          channel: "app",
+          userId,
+          accountLinkSource: userId ? "session" : null,
+        }),
+      )
+      .execute();
+  }
+
+  test("lists this account's own app threads, newest first", async () => {
+    await seedAppThread("mine-old", "user-ada", T0 + 100);
+    await seedAppThread("mine-new", "user-ada", T0 + 300);
+    await seedAppThread("someone-else", "user-grace", T0 + 200);
+
+    const page = await listOwnThreads(db, "user-ada", {});
+    expect(ids(page)).toEqual(["mine-new", "mine-old"]);
+  });
+
+  test("an archived thread is still the submitter's to read", async () => {
+    // The operator inbox hides done threads because it is a work queue. A person looking at their own
+    // requests is looking for the one that was answered.
+    await seedAppThread("mine", "user-ada", T0 + 100);
+    await setArchived(db, "mine", true, "ops", new Date(T0 + 200));
+
+    expect(ids(await listOwnThreads(db, "user-ada", {}))).toEqual(["mine"]);
+    await expect(readOwnThread(db, "mine", "user-ada")).resolves.toMatchObject({ thread: { id: "mine" } });
+  });
+
+  test("an email thread linked to the same account is never in the read-back", async () => {
+    // The link on a mail thread was matched against an address in a header nobody proved. Serving it
+    // to whoever currently holds that address would turn the mail path's known weakness into a read
+    // primitive — which is exactly the trade the in-app channel exists to avoid.
+    await seedThread({ id: "by-mail", lastMessageAt: T0 + 400 });
+    await db.updateTable(SUPPORT_THREADS_TABLE).set({ userId: "user-ada" }).where("id", "=", "by-mail").execute();
+    await seedAppThread("in-app", "user-ada", T0 + 100);
+
+    expect(ids(await listOwnThreads(db, "user-ada", {}))).toEqual(["in-app"]);
+    await expect(readOwnThread(db, "by-mail", "user-ada")).rejects.toMatchObject({
+      payload: { code: "support/not_found" },
+    });
+  });
+
+  test("somebody else's thread is indistinguishable from one that does not exist", async () => {
+    // A 403 would confirm the id names a real conversation, and on an inbox of other people's
+    // correspondence that confirmation is itself the disclosure.
+    await seedAppThread("theirs", "user-grace", T0 + 100);
+    for (const id of ["theirs", "no-such-thread"]) {
+      await expect(readOwnThread(db, id, "user-ada"), id).rejects.toMatchObject({
+        payload: { code: "support/not_found" },
+      });
+    }
+  });
+
+  test("the page is cursor-paginated on the same ordering as the inbox", async () => {
+    for (let index = 0; index < 3; index += 1) await seedAppThread(`t${index}`, "user-ada", T0 + index * 100);
+
+    const first = await listOwnThreads(db, "user-ada", { limit: 2 });
+    expect(ids(first)).toEqual(["t2", "t1"]);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await listOwnThreads(db, "user-ada", { limit: 2, cursor: first.nextCursor ?? undefined });
+    expect(ids(second)).toEqual(["t0"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("a limit beyond the page cap is clamped rather than honoured", async () => {
+    await seedAppThread("t1", "user-ada", T0 + 100);
+    await expect(listOwnThreads(db, "user-ada", { limit: MAX_PAGE_SIZE + 1000 })).resolves.toMatchObject({
+      nextCursor: null,
+    });
   });
 });
 

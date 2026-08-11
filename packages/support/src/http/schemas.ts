@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { SupportPriority, SupportSentiment } from "../data/enums";
+import { MAX_SUBMISSION_ATTACHMENTS, MAX_SUBMISSION_BODY_CHARS, MAX_SUBMISSION_SUBJECT_CHARS } from "../config/config";
+import { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
+import { SupportSubmissionContext } from "../data/message";
 import { MAX_PAGE_SIZE } from "../store/threads";
 
 /**
@@ -49,6 +51,9 @@ export const ListThreadsQuery = z
     category: CategoryFilter.optional().describe("Filter to one category."),
     priority: SupportPriority.optional().describe("Filter to one priority."),
     sentiment: SupportSentiment.optional().describe("Filter to one sentiment."),
+    channel: SupportChannel.optional().describe(
+      "Filter to one channel — `email` for mail, `app` for what signed-in users filed from inside the app. Absent shows both, which is the right default for an inbox that is one queue however things arrived.",
+    ),
     inbox: z
       .string()
       .min(3)
@@ -123,6 +128,111 @@ export const FlagsInput = z
   })
   .describe("One viewer's private read and snooze state.");
 export type FlagsInput = z.infer<typeof FlagsInput>;
+
+/**
+ * One file on an in-app submission.
+ *
+ * The bytes arrive base64-encoded in JSON so the whole request stays one Zod object on the route line,
+ * like every other route in this capability. **The size and type bounds are not here**: they are the
+ * adopter's `submission.attachments` config, resolved in the handler, because a request schema is built
+ * once at module load and cannot know them. What this bounds is the shape — a filename that renders, a
+ * MIME type that looks like one, and a payload that is base64 at all.
+ */
+export const SubmittedAttachmentInput = z
+  .object({
+    filename: z
+      .string()
+      .min(1)
+      .max(255)
+      .describe(
+        "The filename as the client declares it. **Recorded and never honoured** — the R2 key is server-derived, so this is metadata a console renders escaped, not a path anything resolves.",
+      ),
+    contentType: z
+      .string()
+      .min(3)
+      .max(128)
+      .regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/)
+      .describe(
+        "The MIME type as the client declares it, lowercased, checked against the configured allowlist in the handler. Never used to serve the bytes: every object is stored as `application/octet-stream`, because R2 echoes a stored type back on a presigned GET and a browser renders `text/html`.",
+      ),
+    data: z
+      // **Both alphabets, and the union is not belt-and-braces.** `z.base64()` rejects any string
+      // containing `-` or `_`, so it alone would 400 every client whose platform encoder emits
+      // `base64url` — Swift's `base64EncodedString(options:)`, Node's `toString("base64url")`, and
+      // most JWT-adjacent helpers — while `decodeBase64` sits behind it happily normalising the two.
+      // A validator that refuses what the decoder documents as fine is the validator that is wrong.
+      .union([z.base64(), z.base64url()])
+      .describe(
+        "The file's bytes, base64 — the standard alphabet or the URL-safe one, because a client whose encoder emits the latter has not made a mistake worth a 400. The configured `maxBytes` bound is measured on the **decoded** length, which is a third smaller than this string.",
+      ),
+  })
+  .describe("One file attached to an in-app support request, as bytes a signed-in client encoded.");
+export type SubmittedAttachmentInput = z.infer<typeof SubmittedAttachmentInput>;
+
+/**
+ * The in-app submission body.
+ *
+ * **Nothing here names an account, and nothing here could.** The submitter is `c.var.auth.userId`,
+ * proved before this schema ran — a `userId` field would be a client-supplied identity on the one
+ * surface whose whole argument is that it does not need one.
+ *
+ * The lengths are the hard ceilings from `config/config.ts`, not the adopter's configured bounds: this
+ * schema is built once at module load, and the configured numbers are applied in the handler where the
+ * resolved config lives. A body over the ceiling never reaches a handler at all.
+ */
+export const SubmitFeedbackInput = z
+  .object({
+    subject: z
+      .string()
+      .min(1)
+      .max(MAX_SUBMISSION_SUBJECT_CHARS)
+      .describe("What the request is about. Becomes the thread's name in the inbox and the subject of every reply."),
+    body: z
+      .string()
+      .min(1)
+      .max(MAX_SUBMISSION_BODY_CHARS)
+      .describe("The report itself, as the person wrote it. Plain text — it is prose, never markup."),
+    threadId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe(
+        "Continue this conversation instead of opening one. Accepted only for the caller's **own** app thread; anybody else's answers 404, which is the same answer a thread that does not exist gets — a 403 would confirm the id names a real conversation.",
+      ),
+    context: SupportSubmissionContext.optional().describe(
+      "What the app knows and the user did not type — screen, build, platform, environment, locale. A closed set: an undeclared key is refused rather than stored, so this cannot quietly become a telemetry pipe.",
+    ),
+    attachments: z
+      .array(SubmittedAttachmentInput)
+      .max(MAX_SUBMISSION_ATTACHMENTS)
+      .default([])
+      .describe(
+        "Files attached to the request. Bounded by `submission.attachments` in the adopter's config — count, decoded size, and an allowlist of types — and refused as a whole rather than silently trimmed. The ceiling here is the one that holds whatever that config says, and it is checked before any payload is decoded.",
+      ),
+  })
+  .describe("An in-app support request from a signed-in user: what it is about, what happened, and what it carries.");
+export type SubmitFeedbackInput = z.infer<typeof SubmitFeedbackInput>;
+
+/** The submitter's own thread list. */
+export const MyThreadsQuery = z
+  .object({
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PAGE_SIZE)
+      .optional()
+      .describe("How many conversations to return. Bounded, because a signed-in caller can still have a bug."),
+  })
+  .describe(
+    "The submitter's own conversation list. No filters: this is one person's handful of requests, not an inbox to triage.",
+  );
+export type MyThreadsQuery = z.infer<typeof MyThreadsQuery>;
 
 /** The canned-reply catalog query. */
 export const RepliesQuery = z
