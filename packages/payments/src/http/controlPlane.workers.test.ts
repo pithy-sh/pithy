@@ -219,10 +219,18 @@ beforeEach(async () => {
  *
  * `SENTINEL_CATALOG` loads every field the catalog has that must **not** cross with a value nothing else
  * in this file could produce — a Stripe price, three store SKUs, a ledger currency and amount, three
- * return URLs. The assertion is not a list of banned field names. It is: *every string and every number
- * in the response is one of the four facts this surface publishes about some product, or a key the
- * adopter declared grantable.* A field added here carrying a price fails it whatever the field is called,
- * which is the difference between describing what must be true and enumerating what somebody thought of.
+ * return URLs, and a `clawback` flag. The assertion is not a list of banned field names. It is two
+ * statements, and both are needed because either alone lets the mistake through: *every leaf in the
+ * response is one of the four facts this surface publishes about some product, a key the adopter
+ * declared grantable, or the `true` that `enabled` is* — and *every key in the response is one of the
+ * seven written out by hand below.*
+ *
+ * **The key list is a frozen literal, not `Object.keys(PaymentsAdminCatalogProduct.shape)`.** It was the
+ * latter, which made the gate read its own subject: adding `apple: boolean` to the schema and to
+ * `adminCatalogView` in one edit widened the permitted set by the same edit, and the test whose entire
+ * job is to catch that passed. A gate derived from what it polices cannot fail when what it polices
+ * changes. So the permitted keys are typed out here, and widening this response means editing that line
+ * deliberately, in a test, beside the sentence saying why it is narrow.
  */
 const SENTINEL_CATALOG = PaymentsConfig.parse({
   rails: { apple: true, google: true, stripe: true },
@@ -252,12 +260,28 @@ const SENTINEL_CATALOG = PaymentsConfig.parse({
   },
 });
 
-/** Every string and number in a JSON document, wherever it sits. Object keys are collected separately. */
-function scalarsIn(value: unknown): (string | number)[] {
-  if (typeof value === "string" || typeof value === "number") return [value];
-  if (Array.isArray(value)) return value.flatMap(scalarsIn);
-  if (value !== null && typeof value === "object") return Object.values(value).flatMap(scalarsIn);
-  return [];
+/** Anything a JSON document holds that is not an object or an array. */
+type JsonLeaf = string | number | boolean | null;
+
+/**
+ * Every leaf in a JSON document, wherever it sits. Object keys are collected separately.
+ *
+ * **Every leaf type, not only strings and numbers.** This swept `string | number` and returned `[]` for
+ * everything else, so booleans and nulls crossed the gate untouched — and `{ apple: true }`, the shape a
+ * "which stores is this product on" field would take, passed a test whose whole claim is that nothing but
+ * the published facts can cross. Nothing forbidden in `PaymentsConfig` happens to be a boolean today,
+ * which is what kept that from being a live leak rather than what made it safe.
+ *
+ * The unreachable branch throws rather than returning `[]`. Returning `[]` for a type this sweep cannot
+ * name **is** the defect above: a silent exemption, granted by a fallthrough, for a whole JSON type.
+ */
+function leavesIn(value: unknown): JsonLeaf[] {
+  if (Array.isArray(value)) return value.flatMap(leavesIn);
+  if (value !== null && typeof value === "object") return Object.values(value).flatMap(leavesIn);
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return [value];
+  }
+  throw new Error(`The catalog response held a ${typeof value}, which this sweep cannot compare.`);
 }
 
 /** Every object key in a JSON document, wherever it sits. */
@@ -268,6 +292,22 @@ function keysIn(value: unknown): string[] {
   }
   return [];
 }
+
+/**
+ * Every key the catalog response is permitted to carry. Seven: the envelope's three, and a product's four.
+ *
+ * Written out, on purpose, and never read off `PaymentsAdminCatalogResponse` — see the note above
+ * `SENTINEL_CATALOG` for the failure that cost.
+ */
+const PUBLISHED_CATALOG_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "products",
+  "manualEntitlements",
+  "id",
+  "type",
+  "name",
+  "entitlements",
+]);
 
 describe("GET /payments/admin/catalog", () => {
   test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
@@ -290,38 +330,43 @@ describe("GET /payments/admin/catalog", () => {
 
   test("nothing but the published facts can cross it, whatever a field is called", async () => {
     // The invariant, stated rather than enumerated. Two halves, because either alone permits the mistake:
-    // a value the catalog carries must not appear under *any* key, and a key must be one the response
-    // schema declares — the second is what stops a field arriving with a value from somewhere else.
+    // a value the catalog carries must not appear under *any* key, and a key must be one of the seven
+    // named by hand — the second is what stops a field arriving with a value from somewhere else.
     const app = makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG);
     const raw = await (await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE)).json();
 
-    const published = new Set<string | number>(SENTINEL_CATALOG.manualEntitlements);
+    // The published facts, plus the one leaf that is envelope rather than fact: the `true` of `enabled`.
+    // `true`, `false` and `null` belong to every JSON document's vocabulary, so this half can never police
+    // a boolean or a null on its own. The key half is what does, which is why there are two of them.
+    const published = new Set<JsonLeaf>([true, ...SENTINEL_CATALOG.manualEntitlements]);
     for (const [id, product] of Object.entries(SENTINEL_CATALOG.products)) {
       published.add(id);
       published.add(product.type);
       published.add(product.name);
       for (const key of product.entitlements) published.add(key);
     }
-    const crossed = scalarsIn(raw).filter((scalar) => !published.has(scalar));
+    const crossed = leavesIn(raw).filter((leaf) => !published.has(leaf));
     expect(
       crossed,
-      `These values reached a management client and are not a product's id, kind, display name, or entitlement key:\n  ${crossed.join("\n  ")}`,
+      `These values reached a management client and are not a product's id, kind, display name, or entitlement key:\n  ${crossed.map(String).join("\n  ")}`,
     ).toEqual([]);
 
-    // Derived from the schema, so widening the schema to admit a field does not also widen this.
-    const declared = new Set([
-      ...Object.keys(PaymentsAdminCatalogProduct.shape),
-      "enabled",
-      "products",
-      "manualEntitlements",
-    ]);
-    const undeclared = keysIn(raw).filter((key) => !declared.has(key));
+    const undeclared = keysIn(raw).filter((key) => !PUBLISHED_CATALOG_KEYS.has(key));
     expect(undeclared, `Undeclared keys in the catalog response: ${undeclared.join(", ")}`).toEqual([]);
+  });
+
+  test("the response schema declares nothing the hand-written key list does not name", () => {
+    // The second place a widening fails, and the earlier one: it fails on the schema edit, before any view
+    // has been written to fill the new field. The list polices the schema; the schema never polices itself.
+    const declared = ["enabled", "products", "manualEntitlements", ...Object.keys(PaymentsAdminCatalogProduct.shape)];
+    expect(declared.filter((key) => !PUBLISHED_CATALOG_KEYS.has(key))).toEqual([]);
+    // And in the other direction, so a field removed from the schema does not leave a permission behind it.
+    expect([...PUBLISHED_CATALOG_KEYS].filter((key) => !declared.includes(key))).toEqual([]);
   });
 
   test("the sweep is running against a catalog that really carries all of it", async () => {
     // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold a
-    // price, three SKUs, a currency, an amount and three return URLs, or that test proves nothing.
+    // price, three SKUs, a currency, an amount, three return URLs and a flag, or that test proves nothing.
     const serialized = JSON.stringify(SENTINEL_CATALOG);
     for (const secret of [
       "price_1Sentinel",
@@ -331,6 +376,9 @@ describe("GET /payments/admin/catalog", () => {
       "sentinelcoin",
       "4242",
       "https://sentinel.example/pricing",
+      // A boolean the catalog carries and the response must not. The leaf sweep was blind to this whole
+      // JSON type, so the sentinel now holds one and the assertion above has something to be blind to.
+      '"clawback":true',
     ]) {
       expect(serialized, secret).toContain(secret);
     }
