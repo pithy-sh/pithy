@@ -117,6 +117,34 @@ Two consequences worth stating plainly.
 
 **A test beside a screen is still just a test.** Co-locate `home.test.tsx` next to `home.tsx`, as the kit asks you to everywhere else. Both globs negate `*.test.tsx` and `*.spec.tsx` — the test runner's own names for its own files — so a co-located test is registered as nothing and reaches no bundle. That negation is the one filename rule the router has, and it earns its place: without it the file is a route, and everything in it — fixtures, stub tokens, the shape of an endpoint and how it fails — is served to anyone who asks. A companion file under another tool's convention, a `.stories.tsx` say, is not covered; give it its own negation, or keep it outside `src/routes/`.
 
+### Path parameters
+
+A segment beginning `:` is a parameter, and its value arrives as a typed `params` prop.
+
+```tsx
+import type { ScreenProps } from "../../router";
+
+export const path = "/invitations/:token";
+
+export default function Invitation({ params }: ScreenProps<typeof path>) {
+  return <p>Accepting {params.token}.</p>;
+}
+```
+
+`ScreenProps<typeof path>` is what makes the names real: `params.token` is a `string`, and `params.tokne` does not compile. That works because `path` is a `const` string literal, which is how every screen already declares it — read the names off the pattern and there is no second place to keep them in step.
+
+Identifier-in-path is the ordinary shape for anything arriving by link: an invitation, a password reset, a shared record, an unsubscribe confirmation. Four rules, all of them decided rather than emergent.
+
+**A static segment beats a dynamic one, at the leftmost segment where two patterns differ in kind.** `/invitations/new` answers `/invitations/new`; `/invitations/:token` answers everything else in that position. The winner is chosen by comparing patterns, not by which glob reached a file first, so it is the same on every machine and after every rename. Two patterns of identical shape — `/a/:x` and `/a/:y` — are one route written twice; the router picks the same one every time, but it cannot pick the one you meant.
+
+**Values are decoded once, in the router.** No screen calls `decodeURIComponent`. The path is split on `/` before decoding, so `%2F` is a slash *inside* a value rather than a segment boundary, and an id containing a slash survives the round trip. A segment whose encoding is malformed — `%zz` — does not match, and the visitor gets the not-found screen rather than a screen holding something nobody sent.
+
+**A parameter captures at least one character.** `/invitations/` does not match `/invitations/:token`. An empty token is not a token.
+
+**One level, and no more.** A pattern matches a path with the same number of segments. There are no wildcards, no optional segments, no nested routes and no layouts — `/a` does not answer `/a/b`. Nesting is a different and much larger request; this is the piece that was missing.
+
+**Prefer a path over a query string for anything link-addressed.** A query string lands in referrer headers and access logs more readily than a path segment. It is not a large difference — a token in a URL is a token in a URL — but it is the wrong thing to be forced into. Pithy's own `/otp` screen keeps its `?email=`, and says why in the file: that URL points at the code-entry screen, the address is a prefill rather than the resource, and `/otp` with no email is a valid screen.
+
 ## `virtual:pithy/<capability>`
 
 Your screens need to know things about the backend: which social providers are enabled, whether a Turnstile widget must render and with which public sitekey, what the auth base path is. That knowledge lives in `pithy.config.ts`, which is server-side. The bridge is a set of virtual modules served by the `pithy()` Vite plugin in `@pithy-sh/vite`.

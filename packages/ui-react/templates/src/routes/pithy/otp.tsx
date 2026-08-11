@@ -13,6 +13,14 @@ export const path = "/otp";
 // and two inboxes' worth of mail for one intent. This screen stays because the server route behind it
 // does: if you would rather have a code, send one from your own screen and route here with
 // `navigate(`/otp?email=${encodeURIComponent(email)}`)`.
+//
+// **The email stays a query parameter, now that `/otp/:email` is expressible.** A path parameter
+// identifies the thing a URL points at, and this URL points at the code entry screen — the address is
+// a prefill, not the resource. `/otp` with no email is a valid screen and renders "your inbox", which
+// a path segment cannot say without an optional-segment rule the router deliberately does not have.
+// Nothing mails a link here either, so the argument for identifiers in the path — that a link is the
+// way in — does not apply. And an address in a path is PII in every access log and referrer along the
+// way: the same argument that favours the path for a token, pointing the other way for an email.
 
 export default function Otp() {
   const email = new URLSearchParams(window.location.search).get("email") ?? "";
