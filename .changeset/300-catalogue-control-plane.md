@@ -1,0 +1,16 @@
+---
+"@pithy-sh/payments": minor
+"@pithy-sh/core": minor
+---
+
+The catalog never reached the control plane, so a grant was an unvalidated free-text key.
+
+Each product carries the entitlement keys it grants, and that is a dropdown: *Pro (subscription) → grants `pro`*. It was projected in exactly one place — `clientProjection`, inlined into the adopter's own client bundle — so it reached their players' browsers and never a management client. A console offering "comp this person an entitlement" had nothing to populate a list from, and `EntitlementGrantRequest.entitlement` took a key nothing compared to anything. An operator who meant `pro` and typed `pr` got a 200, a row, and a customer who stayed locked out. Invisible on both sides, and permanent until somebody read the table — a bad failure for a support action whose whole premise is that the person is already unhappy.
+
+**`GET {base}/admin/catalog` — `payments:catalog:read`.** Its own scope, granted separately, because reading what a project sells is not reading what anybody bought: this route names no account and no transaction and answers identically against a database with no rows in it. It publishes each product's `id`, `type`, `name` and `entitlements`, and that is all — strictly less than the browser projection, which also carries the Stripe price id. No price, no store SKU, no rail identifier, no `grants` block: `clientProjection`'s own argument for keeping the SKUs and the economy server-side is the specification, and a management client filling a list of comp-able things needs less again. The rule is enforced as an invariant rather than a field list — every string and number in the response must be one of those four facts about some product — so a field added later carrying a price fails whatever it is called.
+
+**And the grant validates against it.** `POST {base}/entitlements/grant` refuses a key no product grants with `payments/entitlement_not_in_catalog`, a 400 naming the key. 400 rather than the 404 a missing SKU gets: a grant names the vocabulary gating code is written in, not a resource. The refusal echoes the key the caller sent and never the set it got wrong — what a project sells is a separate disclosure, behind the scope above.
+
+**Gating on a key nothing sells stays possible, and is now declared.** `manualEntitlements` in the payments config lists the keys the control plane may grant with no product behind them — a beta flag, an internal tier, a founder comp — and they are offered on the catalog read beside the products, so a console does not omit from its list the very keys it would then submit. The escape is explicit rather than achieved by not checking: with it empty, every key outside the catalog is refused. Only grants are constrained. A revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for every account still holding it.
+
+**An empty catalog is a state, not an empty list.** A project that sells nothing and declares nothing answers `{ enabled: false }` — the same modelled answer `clientProjection` gives, so "composed with nothing to sell" reads as itself rather than as a dropdown that came back broken. A catalog that failed to *load* is a non-200 or a body that does not parse, which no branch on `enabled` can confuse it with.

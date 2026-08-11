@@ -192,6 +192,36 @@ export class PaymentsClawbackFailedError extends PithyError {
   }
 }
 
+/**
+ * A manual grant named an entitlement key this project does not define.
+ *
+ * 400 rather than the 404 the catalog's other refusals use, and the difference is what the caller named. A
+ * SKU or a product id names a *resource* the catalog either holds or does not, so a miss is Not Found. An
+ * entitlement key names the *vocabulary* gating code is written in, and a key outside it is a malformed
+ * request — `pr` for `pro`, `pro ` with a trailing space, a key renamed a release ago. Unchecked, each of
+ * those was a 200, a row, and a customer who stays locked out with nothing anywhere to read.
+ *
+ * **The `message` echoes the key and never the set.** A caller learns which key it got wrong, because it
+ * sent it. What this project defines is a separate disclosure behind `payments:catalog:read`, and a refusal
+ * that listed it would be that read, ungated.
+ */
+export class PaymentsEntitlementNotInCatalogError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/entitlement_not_in_catalog",
+        status: 400,
+        message: args.message ?? "That entitlement is not one this project defines.",
+        action:
+          args.action ??
+          "Grant a key one of the catalog's products lists, or declare it in `manualEntitlements` in pithy.config.ts.",
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
 /** The caller does not hold an entitlement the route requires. Core's gate is what normally raises it. */
 export class PaymentsEntitlementRequiredError extends PithyError {
   constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {

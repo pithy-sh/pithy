@@ -180,6 +180,12 @@ export const PaymentsConfig = z
       .describe(
         "The catalog, keyed by logical product id — the id that lands in every purchase row. Keys are yours and outlive any store's SKU, so renaming a SKU in a console never rewrites history.",
       ),
+    manualEntitlements: z
+      .array(EntitlementKey)
+      .default([])
+      .describe(
+        "Entitlement keys the control plane may grant that no product sells — a beta flag, an internal tier, a key that exists only to be comped. Declared, because the alternative to declaring is not checking: with this empty, a grant of any key outside the catalog is refused, which is what turns `pr` for `pro` into a 400 instead of a row nobody notices. Only grants are constrained; a revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for everyone still holding it.",
+      ),
     stripe: PaymentsStripeSettings.optional().describe(
       "Where Stripe's hosted Checkout and Billing Portal return the browser. Required when the Stripe rail is on — the two routes cannot create a session without them.",
     ),
@@ -353,6 +359,23 @@ export function productForProviderSku(
     if (providerProductId(product, rail) === sku) return { id, product };
   }
   return undefined;
+}
+
+/**
+ * Every entitlement key this project defines — what the catalog's products grant, plus what the adopter
+ * declared grantable with no sale behind it.
+ *
+ * The set a manual grant is checked against, and the set the control-plane catalog read publishes the first
+ * half of. Computed once per composition: the catalog is config, so it cannot change under a running Worker.
+ *
+ * **Empty is a real answer.** A project composing payments with nothing to sell and nothing declared defines
+ * no keys, and every grant against it is refused — which is correct, because there is no vocabulary to grant
+ * in. It is the same statement `clientProjection` makes as `{ enabled: false }`.
+ */
+export function grantableEntitlements(config: PaymentsConfig): ReadonlySet<string> {
+  const keys = new Set<string>(config.manualEntitlements);
+  for (const product of Object.values(config.products)) for (const key of product.entitlements) keys.add(key);
+  return keys;
 }
 
 /** The entitlement keys a product grants, or an empty list for an unknown product or one that grants none. */

@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import {
   entitlementsForProduct,
+  grantableEntitlements,
   PaymentsConfig,
   type PaymentsConfigInput,
   type PaymentsProductInput,
@@ -289,6 +290,36 @@ describe("catalog lookups", () => {
     expect(entitlementsForProduct(config, "pro_monthly")).toEqual(["pro"]);
     expect(entitlementsForProduct(config, "coins_100")).toEqual([]);
     expect(entitlementsForProduct(config, "nope")).toEqual([]);
+  });
+
+  test("the grantable set is what the catalog sells plus what the adopter declared", () => {
+    // The set a manual grant is checked against (#300). Deduplicated across products, because two
+    // products granting one key is the whole point of the catalog's shape.
+    expect([...grantableEntitlements(config)].sort()).toEqual(["ads_removed", "pro"]);
+    const withDeclared = PaymentsConfig.parse({
+      rails: { apple: true },
+      manualEntitlements: ["founder", "pro"],
+      products: {
+        pro_monthly: {
+          type: "subscription",
+          name: "Pro",
+          entitlements: ["pro"],
+          apple: { productId: "com.acme.pro.monthly" },
+        },
+      },
+    });
+    expect([...grantableEntitlements(withDeclared)].sort()).toEqual(["founder", "pro"]);
+  });
+
+  test("a project selling nothing and declaring nothing defines no key at all", () => {
+    // Empty is a real answer, not a missing one: every grant against it is refused, because there is no
+    // vocabulary to grant in. The same statement the catalog read makes as `{ enabled: false }`.
+    expect(grantableEntitlements(PaymentsConfig.parse({})).size).toBe(0);
+  });
+
+  test("a declared manual key must still be a well-formed entitlement key", () => {
+    // The escape widens *which* keys are legal, never what a key may look like — gating code names these.
+    expect(() => PaymentsConfig.parse({ manualEntitlements: ["Founder Tier!"] })).toThrow();
   });
 
   test("reports which rails are enabled", () => {

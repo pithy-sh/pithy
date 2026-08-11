@@ -3,8 +3,11 @@
 
 import { describe, expect, test } from "vitest";
 import type { z } from "zod";
+import { PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
 import {
+  PaymentsAdminCatalogProduct,
+  PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminEntitlementView,
   PaymentsAdminPurchasesResponse,
@@ -19,7 +22,7 @@ import {
   PaymentsPurchaseView,
   PaymentsRestoreResponse,
 } from "./responses";
-import { adminEntitlementView, adminPurchaseView } from "./view";
+import { adminCatalogView, adminEntitlementView, adminPurchaseView } from "./view";
 
 /**
  * The response schemas against the shapes the handlers build.
@@ -166,5 +169,32 @@ describe("the management read schemas", () => {
     // No cursor on the per-account read: `UNIQUE (userId, entitlement)` bounds it, so there is no page.
     accepts(PaymentsAdminUserEntitlementsResponse, { userId: "ada", entitlements: [entitlement] });
     accepts(PaymentsAdminUserEntitlementsResponse, { userId: "nobody", entitlements: [] });
+  });
+
+  test("the catalog view is what the schema says, in both of its two states", () => {
+    // Equality rather than a bare parse, as everywhere in this file: a Zod object strips unknown keys, so
+    // parsing alone would pass a projection that had grown one.
+    const config = PaymentsConfig.parse({
+      rails: { apple: true },
+      manualEntitlements: ["founder"],
+      products: {
+        pro_monthly: {
+          type: "subscription",
+          name: "Pro",
+          entitlements: ["pro"],
+          apple: { productId: "com.acme.pro.monthly" },
+        },
+      },
+    });
+    accepts(PaymentsAdminCatalogResponse, adminCatalogView(config));
+    accepts(PaymentsAdminCatalogResponse, adminCatalogView(PaymentsConfig.parse({})));
+    expect(adminCatalogView(PaymentsConfig.parse({}))).toEqual({ enabled: false });
+  });
+
+  test("a catalog product carries four facts, and none of them is commercial", () => {
+    // The field list is locked here; the *invariant* — that no value outside these four can cross — is
+    // asserted over a real response in `controlPlane.workers.test.ts`. Both, because this one names the
+    // shape a client codes against and that one catches a field nobody thought to ban.
+    expect(Object.keys(PaymentsAdminCatalogProduct.shape).sort()).toEqual(["entitlements", "id", "name", "type"]);
   });
 });

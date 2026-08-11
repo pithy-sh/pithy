@@ -4,6 +4,7 @@
 import { KitErrorPayload, PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
 import {
+  PaymentsEntitlementNotInCatalogError,
   PaymentsEntitlementRequiredError,
   PaymentsEnvironmentMismatchError,
   PaymentsInvalidReceiptError,
@@ -26,6 +27,11 @@ const FAMILY = [
   { error: () => new PaymentsReceiptAlreadyOwnedError(), code: "payments/receipt_already_owned", status: 409 },
   { error: () => new PaymentsProviderUnavailableError(), code: "payments/provider_unavailable", status: 503 },
   { error: () => new PaymentsEntitlementRequiredError(), code: "payments/entitlement_required", status: 403 },
+  {
+    error: () => new PaymentsEntitlementNotInCatalogError(),
+    code: "payments/entitlement_not_in_catalog",
+    status: 400,
+  },
 ] as const;
 
 describe("payments error family", () => {
@@ -62,6 +68,20 @@ describe("payments error family", () => {
     expect(thrown.payload.message).toBe("Unknown pack.");
     expect(thrown.payload.action).toBe("Pick another pack.");
     expect(thrown.payload.code).toBe("payments/product_not_found");
+  });
+
+  test("the catalog refusal names the key in the message and the defined set only in detail", () => {
+    // The client-safe half echoes what the caller sent; the set it got wrong is throw-site context, and
+    // the codec strips it. What this project sells is a separate disclosure behind `payments:catalog:read`,
+    // and a refusal that listed it would be that read with no gate on it.
+    const thrown = new PaymentsEntitlementNotInCatalogError({
+      message: 'No entitlement "pr" is defined here.',
+      detail: 'No product grants "pr". Defined: coins, pro.',
+    });
+    expect(thrown.payload.message).toContain("pr");
+    const wire = PublicErrorPayload.parse(thrown.payload);
+    expect(JSON.stringify(wire)).not.toContain("coins");
+    expect("detail" in wire).toBe(false);
   });
 
   test("a cause is preserved, so a rail's own failure stays attached to the throw", () => {

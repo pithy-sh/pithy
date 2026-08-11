@@ -19,11 +19,13 @@ import { payments } from "../capability";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
 import {
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./guards";
 import {
+  PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
@@ -241,15 +243,33 @@ beforeEach(async () => {
 });
 
 describe("what a management client discovers about payments", () => {
-  test("the manifest names all three reads, at the base path this project actually mounted", async () => {
+  test("the manifest names all four reads, at the base path this project actually mounted", async () => {
     await connect([MANIFEST_READ_SCOPE]);
     const routes = paymentsRoutes(await manifest());
     expect(routes.filter((route) => route.method === "GET").map((route) => route.path)).toEqual([
+      "/billing/admin/catalog",
       "/billing/admin/purchases",
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
     ]);
+  });
+
+  test("a comp control discovers the catalog read and calls it from the manifest alone (#300)", async () => {
+    // The shape of #300, as the same difference between two words #247 was about. Before this read, a
+    // control offering "comp this person an entitlement" found nothing in the manifest to populate a list
+    // from and could only render a text box beside a free-text key. Now it discovers the route, learns
+    // which scope it needs, and gets the keys — without concatenating a path or assuming a base.
+    await connect([MANIFEST_READ_SCOPE, PAYMENTS_CATALOG_READ_SCOPE]);
+    const route = collection(paymentsRoutes(await manifest()), "catalog");
+    expect(route?.path).toBe("/billing/admin/catalog");
+    expect(route?.scope).toBe(PAYMENTS_CATALOG_READ_SCOPE);
+
+    const body = PaymentsAdminCatalogResponse.parse(await (await get(route?.path ?? "", route?.scope ?? "")).json());
+    expect(body.enabled && body.products.map((product) => product.id)).toEqual(["pro_monthly", "coins_100"]);
+    expect(body.enabled && body.products.flatMap((product) => product.entitlements)).toEqual(["pro", "coins"]);
+    // The keys are the point: they are what a grant names, and what the grant route now checks against.
+    expect(await (await get("/billing/admin/purchases", PAYMENTS_CATALOG_READ_SCOPE)).status).toBe(403);
   });
 
   test("without the read scopes the panes are blocked, not absent", async () => {

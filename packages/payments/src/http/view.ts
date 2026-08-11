@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsPurchaseRecord } from "../admin/read";
+import type { PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
 import type { PurchaseProjection } from "../projection/writer";
 import type {
+  PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementView,
   PaymentsAdminPurchaseView,
   PaymentsEntitlementView,
@@ -77,6 +79,33 @@ export function entitlementView(entitlement: {
   expiresAt: Date | null;
 }): PaymentsEntitlementView {
   return { key: entitlement.key, granted: entitlement.active, expiresAt: entitlement.expiresAt?.toISOString() ?? null };
+}
+
+/**
+ * Project the catalog for a management client — what this project sells, and nothing about who bought it.
+ *
+ * The one projection in this file built from **config** rather than from a row, and that is the whole
+ * reason it is safe: the value it reads is `pithy.config.ts`, so a credential, a stored payload, and a
+ * customer's identity are not merely withheld here, they are not in the input. What *is* in the input and
+ * must not cross is the commercial half of the catalog — every rail's SKU, the Stripe price id, and the
+ * `grants` block's currency and amount — and the four fields below are the whole of what does.
+ *
+ * `{ enabled: false }` when the project defines nothing, matching `clientProjection`'s answer for the same
+ * state and for the same reason: a client branches on `enabled`, so "composed with nothing to sell" must
+ * read as its own state rather than as an empty list that looks like a failed load.
+ */
+export function adminCatalogView(config: PaymentsConfig): PaymentsAdminCatalogResponse {
+  const products = Object.entries(config.products).map(([id, product]) => ({
+    id,
+    type: product.type,
+    name: product.name,
+    entitlements: [...product.entitlements],
+  }));
+  const manualEntitlements = [...config.manualEntitlements];
+  if (products.length === 0 && manualEntitlements.length === 0) return { enabled: false };
+  // Catalog order, not sorted: the order an adopter wrote their products in is the order a list should
+  // show them, exactly as the client projection argues.
+  return { enabled: true, products, manualEntitlements };
 }
 
 /** Project one purchase for a management client. The record's columns, verbatim, with dates as strings. */

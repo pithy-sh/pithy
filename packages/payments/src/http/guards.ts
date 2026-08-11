@@ -105,6 +105,23 @@ export const PAYMENTS_SUBSCRIPTIONS_READ_SCOPE: ControlPlaneScope = "payments:su
 export const PAYMENTS_ENTITLEMENTS_READ_SCOPE: ControlPlaneScope = "payments:entitlements:read";
 
 /**
+ * Read what this project **sells** — each product's id, type, display name, and the entitlement keys it
+ * grants. Not what anybody bought.
+ *
+ * **Its own scope, and the reason is that the two disclosures are unrelated.** Every other read here is a
+ * page of the adopter's customers: who paid, what they hold, when it lapses. This one names no account and
+ * no transaction, and would read identically against a database with no rows in it. A tool that populates a
+ * "comp this person an entitlement" list needs exactly this and nothing else, and it should be able to hold
+ * exactly this and nothing else — a dropdown is not a reason to hand a client the purchase log.
+ *
+ * The converse matters as much and is why it is not folded into {@link PAYMENTS_ENTITLEMENTS_READ_SCOPE}: a
+ * catalog is a commercial fact — every tier a company sells and every feature it gates — and a connection
+ * granted the entitlement model should not acquire it by implication. `scopeCovers` matches exactly, so
+ * neither scope confers the other.
+ */
+export const PAYMENTS_CATALOG_READ_SCOPE: ControlPlaneScope = "payments:catalog:read";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
@@ -113,6 +130,7 @@ export const PAYMENTS_ENTITLEMENTS_READ_SCOPE: ControlPlaneScope = "payments:ent
  * grant most connections want and the smallest one that makes a dashboard useful.
  */
 export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
+  PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -141,6 +159,13 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  */
 export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
   return [
+    {
+      method: "GET",
+      path: `${basePath}/admin/catalog`,
+      scope: PAYMENTS_CATALOG_READ_SCOPE,
+      summary:
+        "What this project sells — each product's id, kind, display name, and the entitlement keys it grants. The list a comp control fills its dropdown from.",
+    },
     {
       method: "GET",
       path: `${basePath}/admin/purchases`,

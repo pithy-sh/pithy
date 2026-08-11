@@ -116,6 +116,76 @@ export type PaymentsEntitlementResponse = z.output<typeof PaymentsEntitlementRes
  * since payments stores no address of its own.
  */
 
+/**
+ * One catalog product, as a management client sees it.
+ *
+ * **Strictly less than the client projection already ships, and the reasoning is that file's.**
+ * `clientProjection` argues that a product's Apple and Google SKUs stay server-side because a browser has
+ * no use for them, and that the `grants` block stays there because a currency code and an amount describe
+ * the economy. A management client needs less again: it is filling a list of *things that can be comped*,
+ * and a comp names an entitlement key. So there is no Stripe price id here either — publishable in a
+ * paywall, where it is the thing a Checkout Session names, and simply not this surface's business.
+ *
+ * The invariant, rather than the field list, is what `controlPlane.workers.test.ts` asserts: every value in
+ * the response is one of these four facts about some product. A field added here carrying anything else
+ * fails that test whatever it is called, which is the point — a projection somebody must remember not to
+ * widen is not a control.
+ */
+export const PaymentsAdminCatalogProduct = z
+  .object({
+    id: z.string().describe("The logical product id — the key in `products`, and what lands in every purchase row."),
+    type: PaymentsProductType.describe("What kind of product it is. Decides how a renewal and a restore behave."),
+    name: z.string().describe("The display name the adopter wrote — `Pro`, `Remove ads`. What a list renders."),
+    entitlements: z
+      .array(z.string())
+      .describe(
+        "The entitlement keys this product grants. The whole reason this read exists: a comp names a key, so this is the list a grant control offers instead of a text box.",
+      ),
+  })
+  .describe("One catalog product as a management client sees it: what it is, and what it grants.");
+export type PaymentsAdminCatalogProduct = z.output<typeof PaymentsAdminCatalogProduct>;
+
+/**
+ * `GET {base}/admin/catalog` — what this project sells.
+ *
+ * **`enabled` is the same modelled answer `clientProjection` gives, and deliberately the same shape.** A
+ * catalog with nothing in it answers `{ enabled: false }` rather than an empty list, so "composed with
+ * nothing to sell" is a state a client renders as *there is nothing to comp here* instead of as a dropdown
+ * that came back broken. A catalog that failed to load is not this: it is a non-200, or a body that does
+ * not parse, and a client that branches on `enabled` never confuses the two.
+ *
+ * A discriminated union rather than an optional `products`, because the two states are genuinely different
+ * answers and an optional array makes "empty" and "absent" indistinguishable at the exact moment a caller
+ * needs them apart.
+ */
+export const PaymentsAdminCatalogResponse = z
+  .discriminatedUnion("enabled", [
+    z
+      .object({
+        enabled: z
+          .literal(false)
+          .describe(
+            "This project defines nothing — no product is configured and no key was declared grantable, so there is no entitlement a comp control could offer and no grant that would succeed.",
+          ),
+      })
+      .describe("A project composing payments with an empty catalog. The same answer as not composing it at all."),
+    z
+      .object({
+        enabled: z.literal(true).describe("This project sells something."),
+        products: z
+          .array(PaymentsAdminCatalogProduct)
+          .describe("The catalog, in the order the adopter wrote it — which is the order a list should show."),
+        manualEntitlements: z
+          .array(z.string())
+          .describe(
+            "Entitlement keys the adopter declared grantable with no product behind them. Offered beside the products because a comp control that omitted them would refuse the grants it then submitted.",
+          ),
+      })
+      .describe("The catalog, as a management client reads it."),
+  ])
+  .describe("What this project sells, or that it sells nothing. Never a price, a SKU, or a rail's identifier.");
+export type PaymentsAdminCatalogResponse = z.output<typeof PaymentsAdminCatalogResponse>;
+
 /** Where a page resumes, or the end of the list. */
 const NextCursor = z
   .string()
