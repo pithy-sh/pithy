@@ -21,8 +21,22 @@ import { PAYMENTS_ENTITLEMENTS_TABLE, paymentsDatabase } from "../data/tables";
  * A comp has no purchase behind it, so a derivation would find nothing supporting it and clear it — and a
  * support comp erased by the user's next renewal is worse than no comp at all, because nobody would notice.
  *
- * So a grant sets `manual`, and the projection skips a row carrying it. The two shapes both work and both
- * last: comping a key the catalog does not sell (`beta_access`, `founder`) and comping one it does (`pro`).
+ * So a grant sets `manual`, and the projection skips a row carrying it. Both shapes work and both last:
+ * comping a key the catalog does not sell (`founder`) and comping one it does (`pro`).
+ *
+ * ## The function takes any key; the route does not
+ *
+ * {@link grantEntitlement} writes whatever key it is handed. That is the mechanism, and the hold against
+ * the projection is the whole of what it decides — the catalog is not its input and never was.
+ * `POST /payments/entitlements/grant` is narrower: it refuses a key this project does not define, with
+ * `payments/entitlement_not_in_catalog`, a 400 naming the key (#300). An operator who meant `pro` and
+ * typed `pr` used to get a 200, a row, and a customer who stayed locked out, invisible on both sides.
+ *
+ * Which is why comping a key nothing sells is now **declared** rather than achieved by nobody checking:
+ * `manualEntitlements` in `pithy.config.ts` is where an adopter names the keys they comp but do not sell,
+ * and those keys are grantable and are published on the catalog read beside the products. Only grants are
+ * constrained. A revoke is not, or dropping a product from the catalog would be irreversible for every
+ * account still holding its key.
  *
  * A **revoke clears the hold** rather than setting it, which is the deliberate asymmetry. It means a revoke
  * is the exact inverse of a grant — it takes the row back out of a human's hands — and it means a revoke

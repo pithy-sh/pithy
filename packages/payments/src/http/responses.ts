@@ -126,10 +126,13 @@ export type PaymentsEntitlementResponse = z.output<typeof PaymentsEntitlementRes
  * and a comp names an entitlement key. So there is no Stripe price id here either — publishable in a
  * paywall, where it is the thing a Checkout Session names, and simply not this surface's business.
  *
- * The invariant, rather than the field list, is what `controlPlane.workers.test.ts` asserts: every value in
- * the response is one of these four facts about some product. A field added here carrying anything else
- * fails that test whatever it is called, which is the point — a projection somebody must remember not to
- * widen is not a control.
+ * What `controlPlane.workers.test.ts` asserts is the invariant first: every leaf in the response is one of
+ * these four facts about some product. A field added here carrying anything else fails it whatever the
+ * field is called, which is the point — a projection somebody must remember not to widen is not a control.
+ * Beside it sits a hand-written list of the seven keys that may cross, because the value half alone cannot
+ * police a boolean or a null: `true` and `null` are in every JSON document's vocabulary. That list is
+ * deliberately **not** read off this schema. It was, and a field added here and to the view together
+ * widened the gate by the same edit (#308).
  */
 export const PaymentsAdminCatalogProduct = z
   .object({

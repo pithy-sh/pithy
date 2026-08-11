@@ -205,7 +205,7 @@ export const EntitlementGrantRequest = z
         "The account to grant. Support acts on somebody else's account, so this is the one route where the subject is a request field rather than the authenticated caller.",
       ),
     entitlement: EntitlementKey.describe(
-      "The entitlement key to grant, as gating code names it. Not a store SKU, and not required to be in the catalog — comping a key nothing sells is the durable case.",
+      "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one this project defines — a key some product grants, or one the adopter declared in `manualEntitlements` — and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it is how a project says so.",
     ),
     expiresAt: JsonDate.optional().describe(
       "When the grant lapses, as an ISO 8601 timestamp. Omit for a comp that never ends. A past timestamp writes a row that grants nothing, which is a slower way of revoking.",
