@@ -81,13 +81,15 @@ describe("the audit destination is never recorded as the environment acted on", 
 
   it("a command whose env is a real variable does declare what it acted on", () => {
     // The other direction, so the rule above cannot be satisfied by simply never recording an
-    // environment. `deploy`, `secrets`, and `token` each take a real `--env`; that IS the acted-on one.
+    // environment. `deploy`, `secrets`, `token` and `dashboard` each take a real `--env`; that IS the
+    // acted-on one. `dashboard` is the least ambiguous of the four: a connection is per environment, so
+    // the `--env` that decides which row is written is the same one the row is about (#294).
     const declaring: string[] = [];
     for (const [name, source] of sources) {
       for (const body of auditOptionBodies(source)) {
         if (/\benv,/.test(body) && /\bactedOn: env,/.test(body)) declaring.push(name);
       }
     }
-    expect(declaring.sort()).toEqual(["deploy.ts", "secrets.ts", "token.ts"]);
+    expect(declaring.sort()).toEqual(["dashboard.ts", "deploy.ts", "secrets.ts", "token.ts"]);
   });
 });

@@ -23,6 +23,19 @@ import type { Logger } from "../../logger/logger";
  *
  * Emission goes through core's `emit` seam (`c.var.emit`), a no-op when the audit capability is
  * absent, so the seam never imports audit at runtime either (principle 4).
+ *
+ * **Four of these are emitted by a route; three are emitted by the CLI** (#294). The connection
+ * lifecycle — registered, updated, removed — is written by `pithy dashboard` opening the adopter's D1
+ * directly, because those operations never reach their Worker: a first connect has no key to sign with
+ * and the Worker may not be deployed, an update re-points an address the Worker never reads, and a
+ * disconnect withdraws trust, which must not depend on a working connection (docs/CONTROL-PLANE.md §15).
+ * So there is no route in a position to record them, and the write records itself instead — in the same
+ * D1, from `connectionRegistry`. The `actorType` is what tells the two writers apart: a route records
+ * `control-plane`, meaning the management client called in and proved it, while a CLI-side event carries
+ * the adopter's own operator and no session at all.
+ *
+ * A declared code that nothing emits is a surface the trail promises and never delivers, which is what
+ * these three were until #294. `packages/cli/src/ci/auditActions.test.ts` fails the build on one.
  */
 export const ControlPlaneAuditActions = {
   /** A verified, in-scope management call was admitted. The trail of what the dashboard actually did. */
@@ -33,9 +46,9 @@ export const ControlPlaneAuditActions = {
   keyRegistered: "controlplane/key_registered",
   /** A superseded public key was given an end date and stopped being accepted. */
   keyExpired: "controlplane/key_expired",
-  /** A management client was connected to this environment for the first time. */
+  /** A management client was connected to this environment — a new connection, or one started over. */
   connectionRegistered: "controlplane/connection_registered",
-  /** An existing connection changed — its granted scopes, or the Worker URL it is pointed at. */
+  /** An existing connection changed — its granted scopes, the Worker URL it points at, or the keys it trusts. */
   connectionUpdated: "controlplane/connection_updated",
   /** A connection was removed. The seam returns to its shipped state: connected to nothing, denying everything. */
   connectionRemoved: "controlplane/connection_removed",

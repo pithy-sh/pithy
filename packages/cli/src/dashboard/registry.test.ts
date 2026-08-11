@@ -5,6 +5,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import { auditDatabase } from "@pithy-sh/audit/src/data/tables";
+import { audit_0001_init } from "@pithy-sh/audit/src/migrations/0001_init";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys, findVerifyingKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
@@ -13,6 +16,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { type CliAuditEmit, type CliAuditEvent, createCliAudit } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { SeedDriver } from "../seed/drivers";
 import { connectionRegistry, openConnectionRegistry } from "./registry";
@@ -236,6 +240,197 @@ describe("connectionRegistry", () => {
   });
 });
 
+/**
+ * #294 — a write to the connections table records itself in the adopter's own trail.
+ *
+ * The three connection-lifecycle codes were declared from the day the seam shipped and emitted by
+ * nothing, because those writes never reach the adopter's Worker and no route is in a position to
+ * record them. These assert the registry does it instead, at the write, so no call site can forget.
+ */
+describe("a write records itself", () => {
+  /** Collect what the registry recorded, in order. */
+  function recorder(): { events: CliAuditEvent[]; record: CliAuditEmit } {
+    const events: CliAuditEvent[] = [];
+    return {
+      events,
+      record: async (event) => {
+        events.push(event);
+      },
+    };
+  }
+
+  /** The metadata of the one event recorded, as a plain bag. */
+  function metadata(events: readonly CliAuditEvent[], index = 0): Record<string, unknown> {
+    return (events[index]?.metadata ?? {}) as Record<string, unknown>;
+  }
+
+  test("a first connect is a registration, naming the client's reach into this environment", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.action).toBe("controlplane/connection_registered");
+    expect(events[0]?.outcome).toBe("success");
+    // The same fields the seam's own key routes use, so one filter gets both halves of a connection's
+    // history rather than two writers naming the same thing two ways.
+    expect(events[0]?.resourceType).toBe("controlplane_connection");
+    expect(events[0]?.resourceId).toBe("5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31");
+    expect(events[0]?.environment).toBe("prod");
+    expect(metadata(events)).toMatchObject({
+      connectionId: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
+      connectionEnvironment: "prod",
+      issuer: "https://app.pithy.sh",
+      workerUrl: "https://api.example.com",
+      scopes: ["manifest:read", "keys:rotate"],
+      registeredKeyIds: ["key_1"],
+    });
+  });
+
+  test("the event names no actor — a CLI write does not get to claim a verified caller", () => {
+    // `CliAuditEvent` omits `actorType`/`actorId` outright; the emitter resolves them. A route records
+    // `control-plane`, meaning the client called in and proved it, and nothing here may say that.
+    const event: CliAuditEvent = { action: "controlplane/connection_registered", outcome: "success" };
+    expect(Object.keys(event)).not.toContain("actorType");
+  });
+
+  test("no key material ever reaches the trail — ids only", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    await registry.remove();
+
+    // The trail is queryable and long-lived. A public key is not a secret, but a row nobody needs is a
+    // row that grows, and `x` is the one field that would make these events carry key material at all.
+    for (const event of events) expect(JSON.stringify(event)).not.toContain(JWK.x);
+  });
+
+  test("re-pointing the same connection is an update, and says what moved", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const original = connection();
+    await registry.save(original);
+    await registry.save({ ...original, workerUrl: "https://moved.example.com", scopes: ["manifest:read"] });
+
+    expect(events).toHaveLength(2);
+    expect(events[1]?.action).toBe("controlplane/connection_updated");
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["workerUrl", "scopes"],
+      workerUrl: { from: "https://api.example.com", to: "https://moved.example.com" },
+      scopes: { from: ["keys:rotate", "manifest:read"], to: ["manifest:read"] },
+    });
+  });
+
+  test("a reordered grant is not a change — a grant is what it contains", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const original = connection();
+    await registry.save(original);
+    await registry.save({ ...original, scopes: ["keys:rotate", "manifest:read"] });
+
+    // Reporting a reordering as a change is how the one that matters gets buried.
+    expect(metadata(events, 1).changed).toEqual([]);
+  });
+
+  test("starting over is a registration, and names the connection that stopped working", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    await registry.save(connection({ id: "9a0b1c2d-3e4f-4a5b-8c9d-0e1f2a3b4c5d" }));
+
+    expect(events[1]?.action).toBe("controlplane/connection_registered");
+    expect(metadata(events, 1).replacedConnectionId).toBe("5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31");
+  });
+
+  test("a recovered key is a change to the connection, not a registration of one", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const at = new Date("2026-07-01T00:00:00.000Z");
+    await registry.save(connection({ keys: [{ ...key("key_1", at), revokedAt: at }] }));
+    await registry.appendKey(key("key_2", at), at);
+
+    // The connection existed and now trusts a key it did not. `keyRegistered` is the seam's code for a
+    // registration the Worker accepted through the route, and nothing here went near the Worker.
+    expect(events[1]?.action).toBe("controlplane/connection_updated");
+    expect(metadata(events, 1)).toMatchObject({ changed: ["keys"], registeredKeyId: "key_2" });
+  });
+
+  test("a revocation is recorded, and says what is still live after it", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const at = new Date("2026-07-01T00:00:00.000Z");
+    await registry.save(connection({ keys: [key("key_1", at), key("key_2", at)] }));
+    await registry.revokeKey("key_1", new Date("2026-07-02T00:00:00.000Z"));
+
+    expect(events[1]?.action).toBe("controlplane/connection_updated");
+    // Revoking the last one leaves the connection denying everything, which is the fact a reader asking
+    // "when did this stop working" is looking for.
+    expect(metadata(events, 1)).toMatchObject({ revokedKeyId: "key_1", liveKeyIdsAfter: ["key_2"] });
+  });
+
+  test("a revocation that matched no key records nothing", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    expect(await registry.revokeKey("key_absent", new Date())).toBeNull();
+    expect(events).toHaveLength(1);
+  });
+
+  test("a disconnect is recorded from the connection as it was — after the delete there is nothing left", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+    await registry.remove();
+
+    expect(events[1]?.action).toBe("controlplane/connection_removed");
+    expect(events[1]?.resourceId).toBe("5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31");
+    expect(metadata(events, 1)).toMatchObject({
+      issuer: "https://app.pithy.sh",
+      workerUrl: "https://api.example.com",
+      removedKeyIds: ["key_1"],
+    });
+  });
+
+  test("a re-run of disconnect deletes nothing and records nothing", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    expect(await registry.remove()).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  test("a write that was refused records nothing", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const at = new Date("2026-07-01T00:00:00.000Z");
+    await registry.save(connection());
+    // #287's gate: a key cannot be added while something live could sign for one at the seam.
+    await expect(registry.appendKey(key("key_2", at), at)).rejects.toBeInstanceOf(PithyError);
+
+    // The row is written first and the event follows. A connect that recorded a registration it did not
+    // make is worse than one that recorded nothing.
+    expect(events).toHaveLength(1);
+  });
+
+  test("a trail that cannot be written does not fail the write it was recording", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, async () => {
+      throw new Error("the audit database is unreachable");
+    });
+
+    // The emitter is non-fatal by contract, and this is the belt: a connect must not fail because the
+    // adopter's trail was unavailable. The record is evidence of the change, never part of making it.
+    await expect(registry.save(connection())).resolves.toBeUndefined();
+    expect(await registry.read()).not.toBeNull();
+  });
+
+  test("a project not composing audit writes exactly as it did — no recorder, no change", async () => {
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection());
+    await registry.revokeKey("key_1", new Date());
+    expect(await registry.remove()).toBe(true);
+    expect(await registry.read()).toBeNull();
+  });
+});
+
 describe("the one door onto the connections table", () => {
   /**
    * The other half of #287's gate. {@link connectionRegistry} refuses a key write while something live
@@ -305,6 +500,71 @@ describe("openConnectionRegistry", () => {
     expect(seen[0]?.persistRoot).toBe(projectDir);
     expect(seen[0]?.workerDir).toBe(join(projectDir, "apps", "api"));
     expect(seen[0]?.env).toBe("dev");
+  });
+
+  test("the recorder is built over the database the row was written through", async () => {
+    // #294, end to end and against real D1: the audit table lives in the adopter's app database, the same
+    // one the connection row does, and `openConnectionRegistry` is what resolves it. So the recorder is a
+    // factory taking that handle rather than an emitter passed in ready-made — a database id looked up a
+    // second time is a different store on `dev`, and the record of a change would land where the change
+    // did not.
+    await audit_0001_init.up(auditDatabase(d1) as unknown as Kysely<unknown>);
+
+    const registry = await openConnectionRegistry({
+      account: null,
+      projectDir,
+      env: "dev",
+      openDriver: async () => ({ d1: () => d1, dispose: async () => {} }) as unknown as SeedDriver,
+      openAudit: async (database) =>
+        createCliAudit({
+          projectDir,
+          env: "dev",
+          actedOn: "dev",
+          capabilities: [defineCapability({ name: "audit", requiredBindings: [] })],
+          database,
+        }),
+    });
+    await registry.save(connection({ environment: "dev" }));
+    await registry.remove();
+    await registry.dispose();
+
+    const rows = await auditDatabase(d1)
+      .selectFrom("pithyAuditEvents")
+      .select(["action", "outcome", "severity", "actorType", "resourceId", "environment"])
+      .orderBy("id")
+      .execute();
+
+    expect(rows.map((row) => row.action)).toEqual([
+      "controlplane/connection_registered",
+      "controlplane/connection_removed",
+    ]);
+    // Not `control-plane`: that is the actor a route records, meaning the management client called in and
+    // proved it. This came from a person at a terminal with no Cloudflare token to name them by.
+    expect(rows.every((row) => row.actorType === "system")).toBe(true);
+    expect(rows.every((row) => row.severity === "warning")).toBe(true);
+    expect(rows.every((row) => row.environment === "dev")).toBe(true);
+    expect(rows.every((row) => row.resourceId === "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31")).toBe(true);
+  });
+
+  test("a project not composing audit connects, with no error and no partial write", async () => {
+    // The audit table is not even created here. An adopter need not compose `audit`, and a connect must
+    // not fail — or half-happen — because there was nowhere to record it.
+    const registry = await openConnectionRegistry({
+      account: null,
+      projectDir,
+      env: "dev",
+      openDriver: async () => ({ d1: () => d1, dispose: async () => {} }) as unknown as SeedDriver,
+      openAudit: async (database) =>
+        createCliAudit({
+          projectDir,
+          env: "dev",
+          capabilities: [defineCapability({ name: "app", requiredBindings: [] })],
+          database,
+        }),
+    });
+    await expect(registry.save(connection({ environment: "dev" }))).resolves.toBeUndefined();
+    expect(await registry.read()).not.toBeNull();
+    await registry.dispose();
   });
 
   test("no worker declares DB — an actionable error, not a crash", async () => {

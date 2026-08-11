@@ -379,14 +379,30 @@ So one rule, stated as a property rather than a list:
 
 > **The CLI adds a key to your connection only when no live key exists to sign for one through the seam.**
 
-| Command | Where the write happens | Why |
-|---|---|---|
-| `connect` (first, or starting over) | The CLI, into your D1 | No key exists, so nothing can sign a registration — and your Worker may not be deployed at all. **The one exemption.** |
-| `connect --public-key` (first) | The CLI, into your D1 | The same case with no dashboard in it. |
-| `connect --public-key` (a successor) | Refused | A live key exists, so the seam can serve it. The CLI cannot: the private half is yours. It prints the call to make. |
-| `connect --update` | The CLI, into your D1 | Adds no key. It re-points an address your Worker never reads, and changes a grant only you may change — a route letting a client widen its own grant is the thing scopes exist to prevent. The client is told the new address first, and the row is written only if that succeeded. |
-| `rotate` | **The seam**, `POST /control-plane/keys` | A live key exists to sign with, so the registration is your Worker's to accept, audit, and scope-check. |
-| expiry | **The seam**, `POST /control-plane/keys/:keyId/expire` | Never the CLI's at all, and never was: it belongs to the client that proved the successor from its own infrastructure (§6). |
-| `revoke-key`, `disconnect` | The CLI, into your D1 | Revocation *removes* trust, and revocation that needed our cooperation would not be revocation (§7). |
+| Command | Where the write happens | Recorded as | Why |
+|---|---|---|---|
+| `connect` (first, or starting over) | The CLI, into your D1 | `controlplane/connection_registered` | No key exists, so nothing can sign a registration — and your Worker may not be deployed at all. **The one exemption.** |
+| `connect --public-key` (first) | The CLI, into your D1 | `controlplane/connection_registered` | The same case with no dashboard in it. |
+| `connect --public-key` (a successor) | Refused | — | A live key exists, so the seam can serve it. The CLI cannot: the private half is yours. It prints the call to make. |
+| `connect --public-key` (recovery) | The CLI, into your D1 | `controlplane/connection_updated` | The connection existed and had nothing live, so nothing could sign. Its keys changed; the connection was not created. |
+| `connect --update` | The CLI, into your D1 | `controlplane/connection_updated` | Adds no key. It re-points an address your Worker never reads, and changes a grant only you may change — a route letting a client widen its own grant is the thing scopes exist to prevent. The client is told the new address first, and the row is written only if that succeeded. |
+| `rotate` | **The seam**, `POST /control-plane/keys` | `controlplane/key_registered` | A live key exists to sign with, so the registration is your Worker's to accept, audit, and scope-check. |
+| expiry | **The seam**, `POST /control-plane/keys/:keyId/expire` | `controlplane/key_expired` | Never the CLI's at all, and never was: it belongs to the client that proved the successor from its own infrastructure (§6). |
+| `revoke-key` | The CLI, into your D1 | `controlplane/connection_updated` | Revocation *removes* trust, and revocation that needed our cooperation would not be revocation (§7). |
+| `disconnect` | The CLI, into your D1 | `controlplane/connection_removed` | The same, at connection granularity: every credential for this environment stops working at once. |
 
 Exactly one operation is exempt, and it is exempt because the seam cannot serve it rather than because it is convenient: a connection with nothing live has nothing to sign a registration with. Requiring a running Worker to register the key that lets anyone talk to it is a chicken-and-egg with no exit. That same sentence covers recovery — a connection whose every key you revoked is back to having nothing that can sign, and `connect` is the way out.
+
+### A CLI-side write records itself
+
+**Every row in that table has a code beside it, and the CLI-side ones are written by the CLI.** A write that never reaches your Worker cannot be recorded by a route — there is no request to record — so `pithy dashboard` writes the event itself, into the same D1 as the connection row, through `connectionRegistry`. That is the only door onto the table, which is what makes "every write is recorded" a property rather than a habit.
+
+It matters most for the ones that never touch your Worker at all. A management client gaining reach into an environment, that reach moving, and every credential for it dying at once are the three widest-blast-radius changes on your side, and until they were emitted you could read a *key* rotation in your own trail but not the connection being created or destroyed. The larger event was the invisible one.
+
+Three things follow, and each is visible in the row:
+
+- **The actor is not `control-plane`.** That kind means a management client called in and proved it. These came from a person at a terminal, named from your Cloudflare token where the command had one and recorded as `system` with a note where it did not. `worker` and `version` are null, because no Worker recorded it and there is no build id to name.
+- **Nothing is recorded that did not happen.** The row is written first and the event follows. A refused write records nothing.
+- **The trail never fails the command.** If you do not compose `audit`, the events go nowhere and `connect` is unchanged. If your trail is unreachable, the write still lands and the drop is logged. A `disconnect` that failed because the audit database was down would leave a credential live on the strength of an audit problem, which is exactly backwards.
+
+The metadata names ids and addresses — the connection, the keys by id, the scopes, what a re-point moved from and to. Never key material.
