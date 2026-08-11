@@ -72,6 +72,24 @@ describe("secrets capability", () => {
     expect(cap().secretsCacheTtlSeconds).toBe(60);
     expect(secrets({ registry, secretsCacheTtlSeconds: 10 }).secretsCacheTtlSeconds).toBe(10);
   });
+
+  test("declares a management surface, always, behind its own scope", () => {
+    // Always declared and always mounted, so it is default-denied rather than absent: a surface that
+    // appears only once `controlplane()` is composed is a surface nobody can discover.
+    expect(cap().adminRoutes?.map((route) => `${route.method} ${route.path}`)).toEqual([
+      "GET /secrets/admin/status",
+      "GET /secrets/admin/status/:name/rotations",
+    ]);
+    for (const route of cap().adminRoutes ?? []) expect(route.scope).toBe("secrets:status:read");
+  });
+
+  test("moves the advertised paths with the mount point", () => {
+    // The trap: a `?? "/secrets"` fallback living only in the route registrar would let the manifest
+    // advertise one path while the routes mounted at another, and a management client composing its
+    // calls from the manifest would 404 against exactly the adopters who customised anything.
+    const moved = secrets({ registry, basePath: "/vault" });
+    for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/vault/")).toBe(true);
+  });
 });
 
 describe("secrets capability compose hook", () => {

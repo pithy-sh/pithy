@@ -368,9 +368,11 @@
       "name": "@pithy-sh/secrets",
       "version": "0.0.0",
       "dependencies": {
+        "@hono/zod-validator": "^0.9.0",
         "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/core": "workspace:*",
         "comment-json": "^5.0.0",
+        "hono": "^4.12.0",
         "kysely": "^0.29.0",
         "zod": "^4.0.0",
       },

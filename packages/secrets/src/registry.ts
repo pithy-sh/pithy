@@ -57,6 +57,26 @@ interface SecretRegistryEntryBase {
    */
   rotatable: boolean;
   /**
+   * How often this secret is expected to be rotated, in days. Absent means no expectation, and then
+   * nothing may call it overdue.
+   *
+   * **This is why "overdue" is a fact rather than a client's guess.** An age is a number; whether that
+   * age is late is a policy, and the policy belongs beside the secret it is about. Ninety days is
+   * unremarkable for a session signing key and a long time for a payment processor's live key. Without
+   * this, every management client picks its own threshold, they disagree, and the one an owner happens
+   * to be looking at decides whether they are told.
+   *
+   * **It is independent of {@link rotatable}, deliberately.** `rotatable` says what automation may do;
+   * this says what the *organisation* expects, whoever performs it. A `rotatable: false` third-party
+   * key — a Stripe key, an OAuth client secret — is exactly the case where no tooling will ever help
+   * and a stated expectation is the only thing that surfaces the drift. Refusing this field on a
+   * non-rotatable secret would silence the secrets that most need saying.
+   *
+   * Measured from the newest successful rotation, or from when the secret was first written when there
+   * has never been one. See `admin/status.ts`.
+   */
+  rotateEveryDays?: number;
+  /**
    * How this secret's **dev** value may be minted, when it may be minted at all.
    *
    * Set it when the value is *arbitrary* — a session signing key, a link signing key: any random
@@ -190,6 +210,16 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
     }
     if (typeof entry.rotatable !== "boolean") {
       throw new InternalError({ message: `secret registry: entry "${name}" must declare rotatable as a boolean.` });
+    }
+    if (entry.rotateEveryDays !== undefined) {
+      // A cadence that is not a whole number of days, or is zero or negative, would make every read of
+      // this secret's status permanently overdue — a warning nobody can clear and everybody learns to
+      // ignore. Caught at define time, where the author is.
+      if (!Number.isInteger(entry.rotateEveryDays) || entry.rotateEveryDays < 1) {
+        throw new InternalError({
+          message: `secret registry: entry "${name}" must declare rotateEveryDays as a whole number of days, at least 1.`,
+        });
+      }
     }
     if (entry.valueType === "json" && !(entry.schema instanceof z.ZodType)) {
       throw new InternalError({ message: `secret registry: json entry "${name}" must declare a Zod schema.` });
