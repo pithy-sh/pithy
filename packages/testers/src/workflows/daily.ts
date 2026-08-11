@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -264,7 +265,7 @@ async function readSuppressed(deps: DailyPassDeps, emails: readonly string[]): P
         // would strand a tester for the whole cohort because their mailbox was full one afternoon.
         const expiresAt =
           row.expiresAt === null || row.expiresAt === undefined ? null : new Date(Number(row.expiresAt));
-        if (expiresAt === null || expiresAt > deps.now) found.add(String(row.email).toLowerCase());
+        if (expiresAt === null || expiresAt > deps.now) found.add(normalizeAddress(String(row.email)));
       }
     }
     return found;

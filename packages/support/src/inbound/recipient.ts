@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { normalizeAddress } from "../mime/address";
+import { parseAddress } from "@pithy-sh/core/src/address/address";
 
 /**
  * Which inbound messages belong to this capability.
@@ -48,7 +48,7 @@ export function resolveInbox(options: {
   const { inboundAddresses } = options;
   if (inboundAddresses.length === 0) return undefined;
 
-  const envelope = normalizeAddress(options.envelopeTo);
+  const envelope = parseAddress(options.envelopeTo);
   if (envelope !== undefined) {
     // The envelope was usable, so it decides — including deciding *against*. Falling through to the
     // headers here would be the whole vulnerability: a message routed to `hello@` could then claim
@@ -60,7 +60,7 @@ export function resolveInbox(options: {
   // message did reach a Worker that only receives what a routing rule sent it — so the headers are
   // the best evidence left rather than an unvetted claim.
   for (const candidate of options.headerRecipients) {
-    const normalized = normalizeAddress(candidate);
+    const normalized = parseAddress(candidate);
     if (claims(inboundAddresses, normalized)) return normalized;
   }
   return undefined;

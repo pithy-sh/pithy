@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
@@ -924,7 +925,7 @@ async function resolveCallerEmail(d1: D1Database, userId: string): Promise<strin
       .select(["email"])
       .where("id", "=", userId)
       .executeTakeFirst();
-    return row ? String(row.email).toLowerCase() : null;
+    return row ? normalizeAddress(String(row.email)) : null;
   } catch {
     return null;
   }

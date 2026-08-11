@@ -2,57 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Address normalization — the single place an email address becomes a comparable value.
+ * What a MIME header contributes that an address rule does not.
  *
- * Every join in this capability keys on an address: which inbox a message claimed, which sender a
- * thread belongs to, which account it links to, and what the volume guard counts. So there is one
- * normalization, applied on the way in, and comparisons are plain equality afterwards. The
- * alternative — normalizing at each comparison — is how `Ada@Example.com` ends up with two threads,
- * one rate-limit bucket each.
+ * Addresses themselves are `@pithy-sh/core/src/address/address` — `parseAddress` reads one out of a
+ * header and `normalizeAddress` puts it in the form every comparison in the kit is against. This
+ * capability used to own that rule; it does not any more, because `auth`, `email` and `testers`
+ * compare addresses too, and four rules is four chances to disagree about whether two strings are the
+ * same person. That disagreement presents as one customer with two threads, not as anything about
+ * addresses.
  *
- * **The local part is lowercased too, even though RFC 5321 says it is case-sensitive.** That is
- * deliberate and it is what every mail provider actually does. Treating `Ada@` and `ada@` as two
- * people would split one customer's history in half, and the failure mode of being wrong the other
- * way — two genuinely distinct mailboxes differing only in case — does not exist in practice.
- *
- * Nothing here strips subaddressing (`ada+shop@`) or dots. Gmail collapses both; most providers do
- * not, and folding them would merge addresses that really are different people on a self-hosted
- * domain. A support inbox that occasionally shows one customer as two is recoverable; one that shows
- * two customers as one is not.
+ * What is left here is the display name, which is this capability alone: nobody else stores one, and it
+ * is the half of a `From` header that is free text an attacker wrote.
  */
-
-/** The longest address accepted. RFC 5321 caps a path at 256 octets; anything longer is malformed. */
-const MAX_ADDRESS_LENGTH = 256;
-
-/**
- * Normalize an address for storage and comparison: trim, unwrap `<…>`, lowercase, and reject
- * anything that is not recognizably one address.
- *
- * Returns `undefined` rather than throwing. Inbound mail is attacker-controlled, so a malformed
- * `From` is an expected input, not an exception — the caller decides whether that means "drop the
- * message" or "store it with no sender", and both are reasonable.
- */
-export function normalizeAddress(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") return undefined;
-  let candidate = value.trim();
-  if (candidate.length === 0 || candidate.length > MAX_ADDRESS_LENGTH) return undefined;
-
-  // `Ada Lovelace <ada@example.com>` — take what the angle brackets delimit, which is the address
-  // even when the display name itself contains an `@`.
-  const angled = /<([^<>]*)>\s*$/.exec(candidate);
-  if (angled?.[1] !== undefined) candidate = angled[1].trim();
-
-  const at = candidate.lastIndexOf("@");
-  if (at <= 0 || at === candidate.length - 1) return undefined;
-
-  const local = candidate.slice(0, at);
-  const domain = candidate.slice(at + 1);
-  // A domain with no dot is either localhost or a mistake, and a space anywhere means this was never
-  // one address. Both are cheap to check and both are worth refusing before anything is stored.
-  if (!domain.includes(".") || /[\s,;<>"]/.test(candidate)) return undefined;
-
-  return `${local.toLowerCase()}@${domain.toLowerCase()}`;
-}
 
 /**
  * A display name, made safe to store.

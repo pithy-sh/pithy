@@ -101,3 +101,54 @@ Classifying is not always the answer. Two cheaper ones:
 A classification used by two call sites may stay at both. **Three is this repository's count** for
 hoisting a rule out of its call sites — the same threshold `readOptionalFile.ts` states for itself. When
 a third appears, the home is beside the primitive that owns the decision, not in a `utils` file.
+
+## Shared values
+
+Two things every capability handles, and neither may be handled twice.
+
+### An address is compared through `normalizeAddress`, and nothing else
+
+`@pithy-sh/core/src/address/address` owns the rule for whether two strings are the same person. Four
+capabilities ask that question — `auth` matches a sign-in address, `email` suppresses one, `support`
+links a sender by `From`, `testers` invites one — and `matchmaking` resolves an invitee by one. Five
+copies of `trim().toLowerCase()` is five chances to drift apart, and drift here does not present as
+anything about addresses. It presents as "the suppression list did not work", or as one customer with
+two support threads, or as an invitation nobody can accept.
+
+**What it normalizes**
+
+- Surrounding whitespace.
+- Case, in **both** halves. RFC 5321 says the local part is case-sensitive; no provider treats it that
+  way, and treating `Ada@` and `ada@` as two people splits one customer's history in half.
+
+**What it deliberately does not**
+
+- **Subaddressing (`ada+shop@`) and dots.** Gmail collapses both; most providers do not. Folding them
+  would merge two real people on a self-hosted domain. Showing one customer as two is recoverable;
+  showing two customers as one is not.
+- **Unicode normalization.** No NFC, no NFKC. NFKC maps distinct codepoints onto ASCII, which is the
+  confusable-domain attack performed by us, on our own comparison.
+- **IDN / punycode.** A unicode domain is not converted to `xn--`, or back. A project that accepts one
+  spelling must accept only one, at its boundary.
+- **Validation.** `normalizeAddress` is total: every string has a normal form, including the ones that
+  are not addresses. Whether a string *is* an address belongs to the boundary that accepted it — Zod,
+  or `parseAddress` where the input is a mail header. A normalizer that also rejects is a normalizer
+  whose callers stop calling it.
+
+`parseAddress` is the second function: it reads one address out of `Ada Lovelace <ada@example.com>`,
+bounds it at the RFC 5321 path limit, refuses anything that is not recognizably one address, and
+returns it normalized. Inbound mail is attacker-controlled, so it returns `undefined` rather than
+throwing — a malformed `From` is an expected input.
+
+### Versions are ranked through `compareSemver`
+
+`@pithy-sh/core/src/semver/semver` is semver §11.4, once. Ordering a release feed, deciding what sits
+between installed and latest, sorting a prerelease against the stable it precedes — all of it is the
+same four rules, and every one of them is a line to get wrong quietly: numeric identifiers compare
+numerically and alphanumerics lexically, a numeric identifier ranks *below* an alphanumeric one, a
+longer identifier set wins when every shared identifier is equal, and a stable outranks every
+prerelease of the same core. A second implementation does not fail; it puts a feed in the wrong order.
+
+A caller that wants less may narrow it. The CLI's update notifier is the standing example: it drops
+the prerelease so a user on the stable channel is never nagged about an `rc.1`. The narrowing lives at
+the caller, not in the primitive.

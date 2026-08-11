@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -13,7 +14,7 @@ import type { EmailTheme } from "../templates/theme";
 import { classifySendError } from "./errorMapping";
 import { recordEvent } from "./events";
 import type { EmailSender } from "./sender";
-import { blockingSuppression, normalizeEmail, suppress } from "./suppression";
+import { blockingSuppression, suppress } from "./suppression";
 
 /**
  * Send one job — the body the send Workflow runs inside a durable step. Never called from a request
@@ -95,7 +96,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   if (job.status === "sent") return { jobId, status: "sent", messageId: job.messageId ?? undefined };
   if (job.status === "cancelled") return { jobId, status: "cancelled", skipped: true };
 
-  const recipient = normalizeEmail(job.toAddress);
+  const recipient = normalizeAddress(job.toAddress);
 
   // The template's own declaration, not `job.category` and not anything the enqueuing call site chose.
   // Deriving it here means a template whose kind is corrected in a later release corrects the jobs
@@ -194,7 +195,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
       );
       await recordEvent(
         deps.db,
-        { jobId, recipient: normalizeEmail(bounced), type: "bounce", detail: "permanent bounce on send" },
+        { jobId, recipient: normalizeAddress(bounced), type: "bounce", detail: "permanent bounce on send" },
         deps.now,
       );
     }

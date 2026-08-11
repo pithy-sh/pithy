@@ -55,4 +55,11 @@ describe("classifyBump", () => {
   test("none for an unparseable pair", () => {
     expect(classifyBump("1.2.0", "garbage")).toBe("none");
   });
+
+  test("a prerelease of the same core is not a bump, in either direction", () => {
+    // The narrowness this module exists for, pinned now that the ordering comes from a primitive that
+    // *can* rank prereleases. A user on the stable channel must not be nagged about an `rc.1`.
+    expect(classifyBump("1.3.0", "1.3.0-rc.1")).toBe("none");
+    expect(classifyBump("1.3.0-rc.1", "1.3.0")).toBe("none");
+  });
 });

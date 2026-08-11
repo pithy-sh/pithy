@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { SQLiteBoolean } from "@pithy-sh/core/src/data/codecs";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isStoreOptInUrl, type ResetPolicy, STORE_OPT_IN_HOSTS, type TesterPlatform } from "../config/config";
@@ -90,7 +91,7 @@ export async function findMemberByEmail(
     .selectFrom(TESTERS_MEMBERS_TABLE)
     .selectAll()
     .where("cohortId", "=", cohortId)
-    .where("email", "=", email.trim().toLowerCase())
+    .where("email", "=", normalizeAddress(email))
     .executeTakeFirst();
   return row ? TestersMember.parse(row) : undefined;
 }
@@ -131,7 +132,7 @@ export async function inviteMember(
   deps: WriteDeps,
   input: { cohortId: string; email: string; name?: string | null; maxRosterSize: number; actor?: EventActor },
 ): Promise<InviteResult> {
-  const email = input.email.trim().toLowerCase();
+  const email = normalizeAddress(input.email);
   const existing = await findMemberByEmail(deps.db, input.cohortId, email);
 
   if (existing && LIVE_STATES.includes(existing.state)) {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { MatchmakingUserNotFoundError } from "../error/errors";
 
 /**
@@ -44,7 +45,9 @@ export async function resolveInvitee(db: D1Database, target: InviteTarget): Prom
   if (byEmail) {
     const row = await auth
       .selectFrom("pithyAuthUsers")
-      .where("email", "=", target.email as string)
+      // Normalized, so an invite typed `Ada@Example.com` finds the account that signed in as
+      // `ada@example.com`. Both sides of every address comparison in the kit go through this rule.
+      .where("email", "=", normalizeAddress(target.email as string))
       .selectAll()
       .executeTakeFirst();
     if (!row) {

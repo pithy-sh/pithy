@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { EmailKind, SuppressionReason } from "../data/enums";
 import { emailSuppressionDatabase } from "../data/tables";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
-import { blockingSuppression, normalizeEmail, suppress, suppressionBlocks } from "./suppression";
+import { blockingSuppression, suppress, suppressionBlocks } from "./suppression";
 
 /**
  * The suppression list read the way the send path reads it: address *and* kind.
@@ -68,9 +69,12 @@ describe("blockingSuppression", () => {
   });
 
   test("the address is normalized on both sides of the question", async () => {
+    // The write and the read go through the same rule — core's `normalizeAddress`, which is also what
+    // `auth`, `support` and `testers` compare an address with. A key written under one rule and read
+    // under another is a suppression that silently stops suppressing.
     await suppress(db(), { email: "  Ada@Example.COM ", reason: "complaint" }, now);
     expect(await blockingSuppression(db(), "ADA@example.com", now, "transactional")).toBe("complaint");
-    expect(normalizeEmail("  Ada@Example.COM ")).toBe("ada@example.com");
+    expect(normalizeAddress("  Ada@Example.COM ")).toBe("ada@example.com");
   });
 
   test("a lapsed suppression blocks nothing, and expiry exactly at now counts as lapsed", async () => {

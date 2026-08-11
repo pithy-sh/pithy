@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailJob } from "../data/emailJob";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailSuppressedError } from "../error/errors";
 import type { SendWorkflowBinding } from "../send/enqueue";
-import { blockingSuppression, normalizeEmail } from "../send/suppression";
+import { blockingSuppression } from "../send/suppression";
 import { templateKind } from "../templates/engine";
 import { getJob } from "./read";
 
@@ -99,7 +100,7 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
     });
   }
 
-  const recipient = normalizeEmail(existing.toAddress);
+  const recipient = normalizeAddress(existing.toAddress);
   // Asked the same way `runSend` asks it, kind included. An operator retrying a failed magic link to
   // somebody who unsubscribed from a newsletter must not be told the address is unreachable — the send
   // would go through, so refusing it here would be this capability inventing a block of its own.
