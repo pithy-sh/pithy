@@ -9,7 +9,6 @@ import { auditTables } from "./data/tables";
 import { auditAdminRoutes } from "./http/guards";
 import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
-import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -85,7 +84,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
         binding: resolved.database,
         tables: auditTables,
         migrationOrder: AUDIT_MIGRATION_ORDER,
-        migrations: { "0001_init": audit_0001_init, "0002_tenant": audit_0002_tenant },
+        migrations: { "0001_init": audit_0001_init },
       },
     },
     seeds: [auditExampleSeed],

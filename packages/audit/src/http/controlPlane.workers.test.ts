@@ -18,7 +18,6 @@ import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { AuditConfig } from "../capability";
 import { type AuditDatabase, auditDatabase } from "../data/tables";
 import { audit_0001_init } from "../migrations/0001_init";
-import { audit_0002_tenant } from "../migrations/0002_tenant";
 import { queryAuditEvents } from "../query";
 import { recordAuditEvent } from "../recorder";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
@@ -158,7 +157,6 @@ async function trail() {
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
   await audit_0001_init.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
-  await audit_0002_tenant.up(auditDatabase(env.DB) as unknown as Kysely<unknown>);
   emitted = [];
 });
 

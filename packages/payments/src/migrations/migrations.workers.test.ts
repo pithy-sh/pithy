@@ -6,7 +6,6 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { payments_0001_purchases } from "./0001_purchases";
-import { payments_0002_control_plane_reads } from "./0002_control_plane_reads";
 
 /** `createDatabase(env.DB, {})` — the empty map is the idiom for handing a migration an untyped Kysely. */
 const db = () => createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
@@ -25,6 +24,24 @@ async function catalog(): Promise<string[]> {
   ).all<{ name: string }>();
   return results.map((r) => r.name);
 }
+
+/**
+ * Every object the one migration creates, in `sqlite_master` name order — four tables and six indexes.
+ * Written out rather than counted: an index a read was planned around is part of that read's contract,
+ * and folding a chain into one migration is exactly the change that can lose one silently.
+ */
+const EXPECTED_CATALOG = [
+  "pithy_payments_entitlements",
+  "pithy_payments_entitlements_created_idx",
+  "pithy_payments_provider_accounts",
+  "pithy_payments_purchases",
+  "pithy_payments_purchases_expiry_idx",
+  "pithy_payments_purchases_owner_idx",
+  "pithy_payments_purchases_purchased_idx",
+  "pithy_payments_purchases_type_purchased_idx",
+  "pithy_payments_webhook_events",
+  "pithy_payments_webhook_events_pending_idx",
+];
 
 /** A complete purchase row, so a constraint test varies exactly one column. */
 const PURCHASE_COLUMNS =
@@ -49,18 +66,12 @@ beforeEach(async () => {
 });
 
 describe("payments_0001_purchases", () => {
-  test("up creates the four tables and the three read indexes, all prefixed pithy_payments_", async () => {
-    // The exact catalog, not a `toContain`: a table added without a prefix, or an index quietly renamed,
-    // has to fail here rather than in an adopter's database.
-    expect(await catalog()).toEqual([
-      "pithy_payments_entitlements",
-      "pithy_payments_provider_accounts",
-      "pithy_payments_purchases",
-      "pithy_payments_purchases_expiry_idx",
-      "pithy_payments_purchases_owner_idx",
-      "pithy_payments_webhook_events",
-      "pithy_payments_webhook_events_pending_idx",
-    ]);
+  test("up creates the four tables and all six indexes, all prefixed pithy_payments_", async () => {
+    // The exact catalog, not a `toContain`: a table added without a prefix, or an index quietly renamed
+    // or dropped, has to fail here rather than in an adopter's database. Six indexes — three for the
+    // capability's own reads, three for the control-plane reads (#247), and an index a query was planned
+    // around is part of that read's contract, so it is named rather than counted.
+    expect(await catalog()).toEqual(EXPECTED_CATALOG);
   });
 
   test("UNIQUE (rail, providerTransactionId) refuses a second row for one provider transaction", async () => {
@@ -121,40 +132,9 @@ describe("payments_0001_purchases", () => {
     await expect(insert("w2")).rejects.toThrow(/UNIQUE constraint failed/i);
   });
 
-  test("down is the exact inverse and up is re-runnable after it", async () => {
-    await payments_0001_purchases.down?.(db());
-    expect(await catalog()).toEqual([]);
-    await payments_0001_purchases.up(db());
-    expect(await catalog()).toHaveLength(7);
-  });
-});
-
-describe("payments_0002_control_plane_reads", () => {
-  beforeEach(async () => {
-    await payments_0002_control_plane_reads.up(db());
-  });
-
-  test("up adds the three indexes the management reads were written for", async () => {
-    // Named exactly, because an index a query was planned around is part of the read's contract: rename
-    // one and the pane still returns the right rows, having sorted a customer's whole order history to do
-    // it. That failure is invisible in a test that only checks the answer.
-    expect(await catalog()).toEqual([
-      "pithy_payments_entitlements",
-      "pithy_payments_entitlements_created_idx",
-      "pithy_payments_provider_accounts",
-      "pithy_payments_purchases",
-      "pithy_payments_purchases_expiry_idx",
-      "pithy_payments_purchases_owner_idx",
-      "pithy_payments_purchases_purchased_idx",
-      "pithy_payments_purchases_type_purchased_idx",
-      "pithy_payments_webhook_events",
-      "pithy_payments_webhook_events_pending_idx",
-    ]);
-  });
-
-  test("the purchase listing plans on the new index rather than sorting the table", async () => {
+  test("the purchase listing plans on its index rather than sorting the table", async () => {
     // SQLite's own answer, not ours. `USE TEMP B-TREE FOR ORDER BY` in this plan is the defect the
-    // migration exists to prevent, and it is the one thing a correctness test of the read can never catch.
+    // index exists to prevent, and it is the one thing a correctness test of the read can never catch.
     const { results } = await env.DB.prepare(
       "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_purchases ORDER BY purchased_at DESC, id DESC LIMIT 26",
     ).all<{ detail: string }>();
@@ -172,12 +152,22 @@ describe("payments_0002_control_plane_reads", () => {
     expect(plan).not.toContain("TEMP B-TREE");
   });
 
-  test("down drops all three and up is re-runnable after it", async () => {
-    // Lossless both ways: an index carries no rows, so a rollback costs the reads their plan and nothing
-    // else. The tables must survive it, which is the half a `dropTable` in the wrong migration would break.
-    await payments_0002_control_plane_reads.down?.(db());
-    expect(await catalog()).toHaveLength(7);
-    await payments_0002_control_plane_reads.up(db());
-    expect(await catalog()).toHaveLength(10);
+  test("the entitlement listing plans on its own index", async () => {
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_entitlements ORDER BY created_at DESC, id DESC LIMIT 26",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("pithy_payments_entitlements_created_idx");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("down is the exact inverse, with rows recorded, and up is re-runnable after it", async () => {
+    // Rolled back against a populated database: `down` drops every index before the table it belongs
+    // to, and a rollback only ever run on an empty schema is a rollback nobody has tested.
+    await insertPurchase();
+    await payments_0001_purchases.down?.(db());
+    expect(await catalog()).toEqual([]);
+    await payments_0001_purchases.up(db());
+    expect(await catalog()).toEqual(EXPECTED_CATALOG);
   });
 });

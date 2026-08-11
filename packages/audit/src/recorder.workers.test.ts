@@ -6,7 +6,6 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
-import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { createAuditEmit, recordAuditEvent } from "./recorder";
 
 /** Migrate the audit table into the test `DB` before each test, from a clean slate. */
@@ -16,7 +15,6 @@ beforeEach(async () => {
   }
   const db = auditDatabase(env.DB) as unknown as Kysely<unknown>;
   await audit_0001_init.up(db);
-  await audit_0002_tenant.up(db);
 });
 
 async function rowCount(): Promise<number> {

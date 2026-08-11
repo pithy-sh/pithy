@@ -17,7 +17,6 @@ import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { payments } from "../capability";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
-import { payments_0002_control_plane_reads } from "../migrations/0002_control_plane_reads";
 import { projectPurchase } from "../projection/writer";
 import {
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -239,7 +238,6 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await controlplane_0001_init.up(db);
   await payments_0001_purchases.up(db);
-  await payments_0002_control_plane_reads.up(db);
 });
 
 describe("what a management client discovers about payments", () => {

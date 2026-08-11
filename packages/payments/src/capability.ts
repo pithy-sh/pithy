@@ -18,7 +18,6 @@ import { installEntitlementResolver } from "./entitlement/resolver";
 import { paymentsAdminRoutes } from "./http/guards";
 import { registerPaymentsRoutes } from "./http/routes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
-import { payments_0002_control_plane_reads } from "./migrations/0002_control_plane_reads";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -173,7 +172,6 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
 
   const migrations: Record<string, Migration> = {
     "0001_purchases": payments_0001_purchases,
-    "0002_control_plane_reads": payments_0002_control_plane_reads,
   };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — all four pithy_payments_* tables live here.

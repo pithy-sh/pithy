@@ -7,8 +7,7 @@ import { z } from "zod";
 import { MediaConfig } from "../config/config";
 import { extendMediaAsset } from "../data/extend";
 import { mediaDatabase } from "../data/tables";
-import { media_0001_hashes } from "../migrations/0001_hashes";
-import { media_0002_assets } from "../migrations/0002_assets";
+import { media_0001_init } from "../migrations/0001_init";
 import { d1RecordStore } from "../record/d1Store";
 import { d1HashStore } from "../record/hashStore";
 import type { MediaStorage } from "../storage/storage";
@@ -65,8 +64,8 @@ function makeDeps(overrides: Partial<HandlerDeps> = {}): HandlerDeps & { dispatc
 beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_media_assets");
   await env.DB.exec("DROP TABLE IF EXISTS pithy_media_hashes");
-  await media_0001_hashes.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0001_hashes.up>[0]);
-  await media_0002_assets.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0002_assets.up>[0]);
+  const migration = media_0001_init({ withAssets: true });
+  await migration.up(mediaDatabase(env.DB) as unknown as Parameters<typeof migration.up>[0]);
 });
 
 // The handlers now take the already-parsed value the route's `zValidator("json", CreateMediaInput, …)`

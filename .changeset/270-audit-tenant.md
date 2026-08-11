@@ -13,6 +13,6 @@ An audit event records which tenant it was for, not only which Worker wrote it.
 
 `AuditQuery` gains the filter, including for null — `{ tenant: "org_7" }` is one customer's trail, `{ tenant: null }` is what was done outside any account, and omitting it filters nothing. Over HTTP the null filter is `?tenant=`, an empty value that no tenant id can collide with. The column is in the listing view as well as the detail one; a client that can filter by tenant but cannot see it has to take the filter on trust.
 
-Migration `0002_tenant` adds the column and a `(tenant, occurred_at)` index for the read this exists to serve, with a tested `down` that drops the index before the column — SQLite refuses the other order. Rows written before it read as null, exactly as `project`/`environment`/`worker` already document, and nothing back-fills them.
+`0001_init` carries the column and a `(tenant, occurred_at)` index for the read this exists to serve, with a tested `down`. An event nobody states a tenant for reads as null, exactly as `project`/`environment`/`worker` already document, and nothing back-fills them.
 
 Found building `pithy-sh/dashboard` on the kit: its "Our audit" pane could not be built without it, and every event recorded before it landed is permanently unattributable.

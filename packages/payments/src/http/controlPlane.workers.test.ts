@@ -19,7 +19,6 @@ import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
-import { payments_0002_control_plane_reads } from "../migrations/0002_control_plane_reads";
 import { projectPurchase } from "../projection/writer";
 import {
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
@@ -209,7 +208,6 @@ beforeEach(async () => {
   }
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await payments_0001_purchases.up(db);
-  await payments_0002_control_plane_reads.up(db);
   emitted = [];
 });
 
