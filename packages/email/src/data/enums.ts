@@ -11,9 +11,16 @@ import { z } from "zod";
 export const TemplateCategory = z
   .enum(["transactional", "marketing"])
   .describe(
-    "What kind of email a template produces. `transactional` is triggered by a user action (magic link, receipt) and never carries an unsubscribe link; `marketing` is promotional and must — the category drives unsubscribe enforcement and tracking defaults.",
+    "What a template's message *is*. `transactional` is triggered by a user action (magic link, receipt); `marketing` is promotional, and cannot render at all without an unsubscribe link. The category drives tracking defaults and that hard requirement. Whether a person may *refuse* the message is a separate question, answered by `EmailKind` — a testing-programme nudge is transactional in style and elective in consent.",
   );
 export type TemplateCategory = z.output<typeof TemplateCategory>;
+
+export const EmailKind = z
+  .enum(["transactional", "elective"])
+  .describe(
+    "Whether a recipient may refuse a message. `transactional` answers something the person just did — a sign-in link, an invitation they are waiting on, a security notice — and carries no unsubscribe affordance and no `List-Unsubscribe` header; `elective` is mail somebody chose to receive and carries both. The kind is declared by the template, never passed by a caller, and it decides how the suppression list is consulted: an unsubscribe blocks elective mail only, while a bounce or a complaint blocks everything.",
+  );
+export type EmailKind = z.output<typeof EmailKind>;
 
 export const SendMode = z
   .enum(["immediate", "scheduled", "timezone"])

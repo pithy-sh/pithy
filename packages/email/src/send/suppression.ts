@@ -4,18 +4,24 @@
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import { EmailSuppression } from "../data/emailSuppression";
-import type { SuppressionReason } from "../data/enums";
+import { type EmailKind, SuppressionReason } from "../data/enums";
 import type { EmailSuppressionDatabase } from "../data/tables";
 
 /**
  * The suppression list: addresses that must not be emailed, fed by hard bounces, complaints, and
- * unsubscribes. The send path checks it before every send and skips a match. Addresses are normalized
- * (trimmed, lowercased) so a check and a write always agree on the key.
+ * unsubscribes. The send path checks it before every send and skips a match, naming the reason it
+ * skipped for. Addresses are normalized (trimmed, lowercased) so a check and a write always agree on
+ * the key.
  *
  * The list is also the one thing in this capability a management client both reads and writes, and it
  * is **global** — one database shared by every environment, so a row here stops mail from staging and
  * production alike. That is why reading it, adding to it, and removing from it are three separate
  * control-plane scopes rather than one.
+ *
+ * **The reason is part of the answer, not just a label on the row.** The list is keyed by address and
+ * holds no memory of which message a person was refusing, so treating every reason alike meant one
+ * unsubscribe from a weekly digest also withheld that person's sign-in link — and passwordless has no
+ * password to fall back on. `suppressionBlocks` is where the four reasons stop being interchangeable.
  */
 
 /** Normalize an address for the suppression key — trim and lowercase. */
@@ -23,16 +29,52 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-/** Whether an address is currently suppressed (a non-expired row exists). */
-export async function isSuppressed(db: EmailSuppressionDatabase, email: string, now: Date): Promise<boolean> {
+/**
+ * Whether a live suppression for this reason blocks a message of this kind.
+ *
+ * | reason | elective | transactional |
+ * |---|---|---|
+ * | `hard_bounce` | block | **block** — the mailbox does not exist. Sending is futile, and hammering dead addresses damages the sending domain for every other adopter on it. |
+ * | `complaint` | block | **block** — they reported us as spam. Continuing after a complaint is how a domain gets blocked outright. |
+ * | `unsubscribe` | block | **send** — an opt-out is a statement about mail somebody chose to receive. A sign-in link is not that; withholding it respects no preference, it locks the account. |
+ * | `manual` | block | block — an operator's deliberate act, and the one reason a human can point at. Narrowing it would silently overrule the person who set it. |
+ *
+ * Bounce and complaint are facts about the mailbox; unsubscribe and manual are decisions about mail.
+ * Only the unsubscribe decision is about a *category* of mail, which is why it is the only one the kind
+ * can narrow.
+ */
+export function suppressionBlocks(reason: SuppressionReason, kind: EmailKind): boolean {
+  if (reason === "unsubscribe") return kind === "elective";
+  return true;
+}
+
+/**
+ * The live suppression reason blocking a message of this kind, or `null` if nothing does.
+ *
+ * The kind is required rather than defaulted. A default would have to be one of the two, and the one
+ * that reads as safe — block everything — is the one that locks people out of their own accounts.
+ */
+export async function blockingSuppression(
+  db: EmailSuppressionDatabase,
+  email: string,
+  now: Date,
+  kind: EmailKind,
+): Promise<SuppressionReason | null> {
   const row = await db
     .selectFrom("pithyEmailSuppressions")
-    .select(["expiresAt"])
+    .select(["reason", "expiresAt"])
     .where("email", "=", normalizeEmail(email))
     .executeTakeFirst();
-  if (!row) return false;
-  if (row.expiresAt === null || row.expiresAt === undefined) return true;
-  return SQLiteDate.parse(row.expiresAt).getTime() > now.getTime();
+  if (!row) return null;
+  const live =
+    row.expiresAt === null || row.expiresAt === undefined || SQLiteDate.parse(row.expiresAt).getTime() > now.getTime();
+  if (!live) return null;
+  // Parsed, not cast: this crosses the D1 boundary, and an unrecognised reason must not fall through the
+  // `=== "unsubscribe"` test into "send it anyway". A row nobody can read is reported as `manual`, the
+  // one reason that claims no observed fact — it blocks, and it does not pretend to know why.
+  const parsed = SuppressionReason.safeParse(row.reason);
+  if (!parsed.success) return "manual";
+  return suppressionBlocks(parsed.data, kind) ? parsed.data : null;
 }
 
 /** Add (or refresh) a suppression for an address. Idempotent on the unique `email` column. */

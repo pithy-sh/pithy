@@ -421,6 +421,27 @@ describe("POST /email/jobs/:id/retry", () => {
     expect((await jobStatus(job.id)).status).toBe("failed");
   });
 
+  test("an unsubscribe does not block retrying a sign-in link, but does block a newsletter", async () => {
+    // The retry check asks the question the same way `runSend` does, kind included. Refusing here for a
+    // send that would go through would be this route inventing a block of its own, and telling an
+    // operator an account is unreachable when it is not.
+    const login = await failedJob();
+    const digest = await failedJob({ template: "newsletter", category: "marketing" });
+    const suppressionDb = emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS);
+    await suppress(suppressionDb, { email: login.toAddress, reason: "unsubscribe" }, NOW);
+    await suppress(suppressionDb, { email: digest.toAddress, reason: "unsubscribe" }, NOW);
+    const app = makeApp([EMAIL_JOBS_RETRY_SCOPE]);
+
+    const allowed = await call(app, "POST", `/email/jobs/${login.id}/retry`, EMAIL_JOBS_RETRY_SCOPE);
+    expect(allowed.status).toBe(200);
+    expect(dispatched).toEqual([[login.id]]);
+
+    const refused = await call(app, "POST", `/email/jobs/${digest.id}/retry`, EMAIL_JOBS_RETRY_SCOPE);
+    expect(refused.status).toBe(409);
+    expect(await errorCode(refused)).toBe("email/suppressed");
+    expect(dispatched).toEqual([[login.id]]);
+  });
+
   test("an expired suppression does not block the retry", async () => {
     const job = await failedJob();
     await suppress(

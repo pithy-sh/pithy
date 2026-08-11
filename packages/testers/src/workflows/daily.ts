@@ -255,8 +255,12 @@ async function readSuppressed(deps: DailyPassDeps, emails: readonly string[]): P
         .where("email", "in", chunk)
         .execute();
       for (const row of rows) {
+        // The reason is deliberately not consulted, unlike on the send path: `testerNudge` is elective
+        // mail, so every reason blocks it — a bounce, a complaint and an opt-out all mean "stop chasing
+        // this person". A cohort is something you can leave.
+        //
         // A row whose `expiresAt` has passed is a lapsed temporary suppression, not a live one — the
-        // same rule `@pithy-sh/email`'s own `isSuppressed` applies. Treating every row as suppressing
+        // same rule `@pithy-sh/email`'s own `blockingSuppression` applies. Treating every row as suppressing
         // would strand a tester for the whole cohort because their mailbox was full one afternoon.
         const expiresAt =
           row.expiresAt === null || row.expiresAt === undefined ? null : new Date(Number(row.expiresAt));

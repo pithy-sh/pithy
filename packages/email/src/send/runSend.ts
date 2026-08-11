@@ -6,20 +6,24 @@ import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { Updateable } from "kysely";
 import { EmailJob } from "../data/emailJob";
-import type { EmailJobStatus } from "../data/enums";
+import type { EmailJobStatus, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase, EmailTables } from "../data/tables";
-import { type RenderTracking, renderEmail } from "../templates/engine";
+import { type RenderTracking, renderEmail, templateKind } from "../templates/engine";
 import type { EmailTheme } from "../templates/theme";
 import { classifySendError } from "./errorMapping";
 import { recordEvent } from "./events";
 import type { EmailSender } from "./sender";
-import { isSuppressed, normalizeEmail, suppress } from "./suppression";
+import { blockingSuppression, normalizeEmail, suppress } from "./suppression";
 
 /**
  * Send one job — the body the send Workflow runs inside a durable step. Never called from a request
  * handler. It loads the job, skips a suppressed recipient, renders (with tracking per the job's flags),
  * sends through the binding, and records the outcome on the row plus an event. On a retryable failure
  * it throws (the Workflow step retries with backoff) until `maxAttempts`, then marks the job failed.
+ *
+ * **Whether a suppression applies depends on the message.** The kind comes from the template, not from
+ * the job row and not from a caller, so a magic link is transactional by declaration and an unrelated
+ * unsubscribe cannot swallow it.
  */
 
 /** The current signing key plus the valid version set, for minting tracking/unsubscribe links. */
@@ -57,6 +61,15 @@ export interface SendOutcome {
   status: EmailJobStatus;
   messageId?: string;
   skipped?: boolean;
+  /**
+   * Why nothing was sent, when the recipient was on the suppression list.
+   *
+   * A skipped send has to be reported, not swallowed. Without this the caller sees an outcome that is
+   * not `failed` and the person sees an empty inbox, which is what made the whole class of bug invisible
+   * from both ends. "Suppressed" alone is not enough either — an operator deciding what to do next needs
+   * to know whether the address bounced, complained, or opted out.
+   */
+  suppressionReason?: SuppressionReason;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,10 +97,15 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
 
   const recipient = normalizeEmail(job.toAddress);
 
-  if (await isSuppressed(deps.suppressionDb, recipient, deps.now)) {
-    await patchJob(deps, jobId, { status: "suppressed", error: "recipient on suppression list" });
-    await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: "on suppression list" }, deps.now);
-    return { jobId, status: "suppressed", skipped: true };
+  // The template's own declaration, not `job.category` and not anything the enqueuing call site chose.
+  // Deriving it here means a template whose kind is corrected in a later release corrects the jobs
+  // already queued against it, and that a stored value can never drift from the template it names.
+  const kind = templateKind(job.template);
+  const blocked = await blockingSuppression(deps.suppressionDb, recipient, deps.now, kind);
+  if (blocked) {
+    await patchJob(deps, jobId, { status: "suppressed", error: `recipient suppressed: ${blocked}` });
+    await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: blocked }, deps.now);
+    return { jobId, status: "suppressed", skipped: true, suppressionReason: blocked };
   }
 
   // A marketing send needs a signing key for its unsubscribe link; without one it cannot render. This
@@ -128,6 +146,19 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // together in some mail clients and splits in others.
   if (job.inReplyTo) headers["In-Reply-To"] = job.inReplyTo;
   if (job.references) headers.References = job.references;
+  // One-click opt-out, and **only** where the body already offers one — `rendered.unsubscribeUrl` is
+  // present exactly for an elective template, so this cannot appear on a sign-in link. That restraint is
+  // the point: Gmail's and Yahoo's bulk-sender rules require one-click unsubscribe for *promotional*
+  // mail, and some clients surface the header as prominently as the message body. On a magic link it
+  // would publish a mechanism for disabling authentication, one tap from the mail the account depends on.
+  //
+  // Both headers together, per RFC 8058: `List-Unsubscribe-Post` is what tells a client the URL will
+  // honour a POST, and the callback accepts one for that reason. Sending it without a POST route would
+  // advertise an opt-out that silently does nothing.
+  if (rendered.unsubscribeUrl) {
+    headers["List-Unsubscribe"] = `<${rendered.unsubscribeUrl}>`;
+    headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+  }
   const message = {
     to: recipient,
     from: { email: job.fromAddress, name: job.fromName },

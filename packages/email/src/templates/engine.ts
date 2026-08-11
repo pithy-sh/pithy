@@ -3,6 +3,7 @@
 
 import Handlebars from "handlebars";
 import { mintToken } from "../crypto/token";
+import type { EmailKind } from "../data/enums";
 import { EmailInvalidPayloadError, EmailTemplateNotFoundError } from "../error/errors";
 import { precompiledPartials, precompiledTemplates } from "./precompiled.generated";
 import { type EmailTemplate, templates } from "./registry";
@@ -16,8 +17,13 @@ import { type EmailTheme, widthPx } from "./theme";
  *
  * Tracking is applied here, not in the template: callback tokens are minted ahead of render (signing
  * is async; Handlebars helpers are not) and the resulting URLs are placed into the render context.
- * Click tracking rewrites the declared link locations; open tracking injects a pixel; and a marketing
- * template always gets an unsubscribe link — it cannot render without one.
+ * Click tracking rewrites the declared link locations; open tracking injects a pixel; and an **elective**
+ * template gets an unsubscribe link, which a marketing template additionally cannot render without.
+ *
+ * **A transactional template can never be given one.** The affordance is gated on the kind the template
+ * itself declares, so there is no argument a call site could pass to put an opt-out on a sign-in link —
+ * and `renderEmail` reports the URL it minted, so the send path sets `List-Unsubscribe` from what was
+ * actually rendered rather than from a second, drift-prone judgement of its own.
  */
 
 /** The mount prefix of the callback routes. Tracking URLs are built against `${baseUrl}${CALLBACK_BASE}`. */
@@ -74,11 +80,17 @@ export interface RenderTracking {
   clickTracking: boolean;
 }
 
-/** A rendered email: the three parts a send needs. */
+/** A rendered email: the three parts a send needs, plus the opt-out URL it actually carries. */
 export interface RenderResult {
   subject: string;
   html: string;
   text: string;
+  /**
+   * The unsubscribe URL rendered into the body, when one was. Present only for an elective template with
+   * a signing context; the send path turns it into the `List-Unsubscribe` header, so the header and the
+   * link in the body can never disagree about whether this message can be opted out of.
+   */
+  unsubscribeUrl?: string;
 }
 
 /** Look up a template by id, or throw `email/template_not_found`. */
@@ -86,6 +98,18 @@ export function getTemplate(id: string): EmailTemplate {
   const found = compiled.get(id);
   if (!found) throw new EmailTemplateNotFoundError({ detail: `no template registered with id '${id}'` });
   return found.def;
+}
+
+/**
+ * The kind a template declares — the one answer to "may this message be refused".
+ *
+ * An id nobody registered is reported as `elective`, deliberately. It cannot be *proved* transactional,
+ * and the alternative reading would let a template deleted in a later release quietly reopen sending to
+ * addresses that opted out. Nothing is locked out by the choice: a job naming an unknown template fails
+ * at render moments later either way, so this only decides which of two failures gets reported.
+ */
+export function templateKind(templateId: string): EmailKind {
+  return compiled.get(templateId)?.def.kind ?? "elective";
 }
 
 /** The registered template ids, for introspection and the CLI. */
@@ -142,9 +166,14 @@ async function rewriteLink(
 
 /**
  * Render a template to `{ subject, html, text }`. Validates the payload against the template's schema
- * (throws `email/invalid_payload`), applies click/open tracking and the marketing unsubscribe link per
- * the `tracking` context, then substitutes. A marketing template with no tracking context throws —
- * it cannot render without an unsubscribe link.
+ * (throws `email/invalid_payload`), applies click/open tracking and — for an elective template — the
+ * unsubscribe link, then substitutes. A marketing template with no tracking context throws: it cannot
+ * render without an unsubscribe link.
+ *
+ * The opt-out rule is two-tier on purpose. Every elective template carries the link *when the engine can
+ * mint one*; a marketing template additionally *refuses to render* without it. Tying the hard refusal to
+ * the kind instead would mean a project that has not configured a link-signing key suddenly cannot send
+ * its testing-cohort nudges — a new outage, in a change whose whole subject is mail that fails silently.
  */
 export async function renderEmail(
   templateId: string,
@@ -162,6 +191,7 @@ export async function renderEmail(
   }
 
   const isMarketing = entry.def.category === "marketing";
+  const isElective = entry.def.kind === "elective";
   if (isMarketing && !tracking) {
     throw new EmailInvalidPayloadError({
       message: "Marketing emails require an unsubscribe link.",
@@ -174,6 +204,7 @@ export async function renderEmail(
     theme,
     layoutWidth: widthPx(entry.def.width),
   };
+  let unsubscribeUrl: string | undefined;
 
   if (tracking) {
     const base = trimTrailingSlash(tracking.baseUrl) + CALLBACK_BASE;
@@ -196,9 +227,11 @@ export async function renderEmail(
       context.openPixelUrl = `${base}/o/${await mint("open", {})}.png`;
     }
 
-    // A marketing template always carries an unsubscribe link; transactional never does.
-    if (isMarketing) {
-      context.unsubscribeUrl = `${base}/u/${await mint("unsubscribe", {})}`;
+    // Elective mail carries an unsubscribe link; transactional mail never does. Keyed on the kind the
+    // template declared, so this cannot be reached for a sign-in link by any argument a caller passes.
+    if (isElective) {
+      unsubscribeUrl = `${base}/u/${await mint("unsubscribe", {})}`;
+      context.unsubscribeUrl = unsubscribeUrl;
     }
   }
 
@@ -206,5 +239,6 @@ export async function renderEmail(
     subject: entry.subject(context).trim(),
     html: entry.html(context),
     text: entry.text(context),
+    ...(unsubscribeUrl ? { unsubscribeUrl } : {}),
   };
 }
