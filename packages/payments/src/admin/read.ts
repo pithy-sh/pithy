@@ -44,7 +44,7 @@ import { PAYMENTS_ENTITLEMENTS_TABLE, PAYMENTS_PURCHASES_TABLE, paymentsDatabase
  * The primary key here is a **text UUID**, deliberately (sequential ids would leak order volume), so it
  * is no use as a sort: it is unique but it is not monotonic. Purchases therefore sort on `purchasedAt`
  * with the id as the tiebreak, and entitlements on `createdAt` with the same. Both columns are indexed
- * for exactly this by `payments_0002_control_plane_reads` — without it a purchases pane would sort a
+ * for exactly this by `payments_0001_purchases` — without those indexes a purchases pane would sort a
  * customer's entire order history on every page load.
  */
 

@@ -38,6 +38,20 @@ The [Pithy board](https://github.com/orgs/pithy-sh/projects/1) tracks each issue
 gh auth refresh -s project
 ```
 
+## Migrations
+
+**Until the first publish, a capability's schema is one migration per database.** Not a chain — one file, holding the whole shape, with one tested `down`.
+
+**The condition is the whole rule, so read it before copying the shape.** Nothing in this repository has ever been published. Every package sits at `0.0.0`, `npm view @pithy-sh/core version` is a 404, and the only adopter is `pithy-sh/dashboard`, whose dev database is recreated in two minutes. A migration chain buys exactly one thing: the ability to walk a database that already holds rows from an old shape to a new one. There is no such database, so a `0002` today is a step from a shape that never ran to a shape that never shipped — two `down`s, two test suites, and a history nobody will replay. Git already records when each column arrived, which is the only thing a chain actually preserves. Three capabilities had drifted into one anyway (#276).
+
+**After the first publish, the chain is append-only.** A migration that has run somewhere real is history, and history is not edited. From that day a schema change is a new migration, always, and folding one into `0001` would silently re-shape a database somebody is already running. Nothing about a tidy `0001` tells you which side of that line you are on — so check the condition, do not infer it from the file.
+
+`packages/cli/src/migrations/oneMigration.test.ts` enforces the rule while it holds and goes quiet on its own the day a version is cut. It states the invariant twice over: every authored migration is numbered `0001` (the number orders a migration *within its database*, so a `0002` is by definition a second step against one that already has a first), and a package authors no more migrations than the databases it declares a `<NAME>_MIGRATION_ORDER` for.
+
+**Two `0001`s can be right.** `@pithy-sh/email` ships `0001_init.ts` **and** `0001_suppressions.ts`, and folding those together would be a defect: they target different databases. `0001_init` creates the send log in the app `DB`; `0001_suppressions` creates the suppression list in `EMAIL_SUPPRESSIONS`, a separate, durable D1 shared by every environment, because an address that hard-bounced must never be emailed from *any* environment. The capability declares both under `databases`, each with its own binding, its own migration order, and its own migration. Two databases, one migration each — the rule, not an exception to it.
+
+**Generated migrations are outside the rule.** `@pithy-sh/auth`'s `pluginTables.ts` and `@pithy-sh/media`'s `extend.ts` synthesise a migration per adopter, from the plugins or extension schema *that adopter* composes. They are not this repository's schema, no author edits them, and they have no numbered file.
+
 ## Licence headers
 
 Every `.ts` and `.tsx` under `packages/*/src` and `tooling/*/src` carries two lines:

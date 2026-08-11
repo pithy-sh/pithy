@@ -39,7 +39,7 @@ import { readSource, sourcePaths } from "../ci/sourceFiles";
  * single foreign key in the repo is storage-internal (`pithy_storage_shares` → `pithy_storage_objects`),
  * and `@pithy-sh/auth`'s migration states outright that foreign keys are omitted because D1 does not
  * enforce them. So an order needs only two properties — unique within its database, and **stable
- * forever**. Renumbering a released capability renames its composed keys (`0350_media_0001_hashes`),
+ * forever**. Renumbering a released capability renames its composed keys (`0350_media_0001_init`),
  * which makes Kysely treat applied migrations as unapplied and re-run them.
  *
  * There is no shortage of numbers. The ceiling is 9999 per database and the `app` database currently
@@ -168,7 +168,7 @@ describe("migration orders across every shipped capability", () => {
   });
 
   test("every order is within the range the registry can encode", () => {
-    // The composed key zero-pads to four digits (`0350_media_0001_hashes`), so 9999 is the ceiling and
+    // The composed key zero-pads to four digits (`0350_media_0001_init`), so 9999 is the ceiling and
     // a negative or fractional order would produce a key that sorts wrongly rather than failing loudly.
     for (const [name, order] of scanned) {
       expect(Number.isInteger(order), `${name} must be an integer`).toBe(true);

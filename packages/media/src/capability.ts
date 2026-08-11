@@ -11,8 +11,7 @@ import { MediaConfig, type MediaConfigInput } from "./config/config";
 import { extendMediaAsset, extensionColumns } from "./data/extend";
 import { mediaTables } from "./data/tables";
 import { registerMediaRoutes } from "./http/routes";
-import { media_0001_hashes } from "./migrations/0001_hashes";
-import { media_0002_assets } from "./migrations/0002_assets";
+import { media_0001_init } from "./migrations/0001_init";
 import { mediaExtendMigration } from "./migrations/extend";
 import { assertValidKvMetadata } from "./record/kvStore";
 import { mediaSecretsRegistry } from "./secret/registry";
@@ -21,7 +20,7 @@ import { mediaWorkflows } from "./workflows/specs";
 
 /**
  * Sort order of the media migrations within the app database, relative to other capabilities (core low,
- * app high). Unique per database; the registry composes keys like `0350_media_0001_hashes`.
+ * app high). Unique per database; the registry composes keys like `0350_media_0001_init`.
  *
  * Sits after auth (300), which holds it: a media record's `ownerId` names a user, so the table that
  * users live in should exist first. Media was itself at 300 until this was corrected — `pithy migrate`
@@ -34,7 +33,7 @@ export const MEDIA_MIGRATION_ORDER = 350;
 export type MediaOptions = MediaConfigInput & {
   /**
    * Extend a media record with the adopter's own fields (an owning `userId`, a tenant id, tags), as a
-   * `z.ZodObject`. From this one schema the capability derives real D1 columns (a generated `0003_extend`
+   * `z.ZodObject`. From this one schema the capability derives real D1 columns (a generated `0002_extend`
    * migration) or a validated KV value — with no backend-specific work. Base fields are never redefined.
    */
   extend?: z.ZodObject;
@@ -75,13 +74,14 @@ export function media(options: MediaOptions = {}): MediaCapability {
   assertValidKvMetadata(resolved.kvMetadata, schema);
   const isKv = resolved.recordStore === "kv";
 
-  // The hash table is always created (dedup is D1-only); the record table and its extension columns are
-  // created only for the D1 record store.
-  const migrations: Record<string, Migration> = { "0001_hashes": media_0001_hashes };
+  // One authored migration, told what to create: the hash table always (dedup is D1-only), plus the
+  // record table for the D1 record store. The extension columns are generated per adopter from their
+  // own schema, so they arrive as a second, synthesised migration rather than as part of the schema
+  // this package authors — the same shape as `@pithy-sh/auth`'s plugin tables.
+  const migrations: Record<string, Migration> = { "0001_init": media_0001_init({ withAssets: !isKv }) };
   if (!isKv) {
-    migrations["0002_assets"] = media_0002_assets;
     const extendMigration = mediaExtendMigration(extensionColumns(extend));
-    if (extendMigration) migrations["0003_extend"] = extendMigration;
+    if (extendMigration) migrations["0002_extend"] = extendMigration;
   }
 
   const requiredBindings: BindingSpecInput[] = [

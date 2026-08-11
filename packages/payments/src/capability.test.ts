@@ -151,7 +151,7 @@ describe("payments()", () => {
 
   test("ships its migrations under stable local keys, at its allocated order", () => {
     const spec = payments(CATALOG).databases?.app;
-    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases", "0002_control_plane_reads"]);
+    expect(Object.keys(spec?.migrations ?? {})).toEqual(["0001_purchases"]);
     expect(spec?.migrationOrder).toBe(PAYMENTS_MIGRATION_ORDER);
     expect(PAYMENTS_MIGRATION_ORDER).toBe(1000);
   });
@@ -169,7 +169,6 @@ describe("payments()", () => {
     ]);
     expect(Object.keys(await (registry.app?.getMigrations() ?? Promise.resolve({})))).toEqual([
       "1000_payments_0001_purchases",
-      "1000_payments_0002_control_plane_reads",
     ]);
   });
 

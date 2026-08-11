@@ -11,14 +11,12 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { audit } from "./capability";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
-import { audit_0002_tenant } from "./migrations/0002_tenant";
 import { queryAuditEvents } from "./query";
 
 beforeEach(async () => {
   await env.DB.prepare("drop table if exists pithy_audit_events").run();
   const db = auditDatabase(env.DB) as unknown as Kysely<unknown>;
   await audit_0001_init.up(db);
-  await audit_0002_tenant.up(db);
 });
 
 describe("audit capability through createBackend", () => {

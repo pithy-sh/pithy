@@ -15,6 +15,18 @@ import type { Migration } from "kysely/migration";
  * no-op update rather than a second purchase. `UNIQUE (userId, entitlement)` on entitlements is what
  * makes the read model a read model: one row per user per entitlement, whichever purchase currently
  * grants it. Correctness lives in the schema, not in a hopeful application-level check a race could skip.
+ *
+ * The indexes come in two families. Three serve the questions the capability asks of itself — a buyer's
+ * own purchases, the reconciliation sweep, the pending-delivery queue. Three serve the control-plane
+ * reads (#247), which ask a different question: the newest rows across every account. The purchases
+ * primary key is a **text UUID**, deliberately, so it is unique but not monotonic and is no use as a
+ * sort; without those three, every page of a purchases pane sorts a customer's entire order history to
+ * return twenty-five rows, and does it again for the next page. That is not a slow query so much as a
+ * defect shipped into other people's production databases, which is why the reads' indexes are part of
+ * the schema rather than a note about it.
+ *
+ * This is the whole payments schema, in one migration — see `CONTRIBUTING.md` §Migrations for why that
+ * is the shape while nothing is published, and what changes the day something is.
  */
 export const payments_0001_purchases: Migration = {
   up: async (db: Kysely<unknown>): Promise<void> => {
@@ -64,6 +76,25 @@ export const payments_0001_purchases: Migration = {
       .columns(["status", "expiresAt"])
       .execute();
 
+    // The purchase log, newest first: `GET {base}/admin/purchases`. The keyset resumes on
+    // `(purchasedAt, id)`, and `purchasedAt` leading is what makes the page a range scan the LIMIT can
+    // genuinely stop.
+    await db.schema
+      .createIndex("pithyPaymentsPurchasesPurchasedIdx")
+      .on("pithyPaymentsPurchases")
+      .columns(["purchasedAt", "id"])
+      .execute();
+
+    // The subscriptions listing: `GET {base}/admin/subscriptions`. `type` is an equality and
+    // `purchasedAt` is the ordering column, so the filtered page is a range scan of its own rather than a
+    // scan of the whole log looking for the rows that renew. A project selling mostly consumables is
+    // exactly the one where the difference is large.
+    await db.schema
+      .createIndex("pithyPaymentsPurchasesTypePurchasedIdx")
+      .on("pithyPaymentsPurchases")
+      .columns(["type", "purchasedAt", "id"])
+      .execute();
+
     await db.schema
       .createTable("pithyPaymentsEntitlements")
       .addColumn("id", "text", (c) => c.primaryKey())
@@ -82,6 +113,16 @@ export const payments_0001_purchases: Migration = {
       .addUniqueConstraint("pithyPaymentsEntitlementsOwnerIdx", ["userId", "entitlement"])
       .addCheckConstraint("pithyPaymentsEntitlementsActive", sql`active in (0, 1)`)
       .addCheckConstraint("pithyPaymentsEntitlementsManual", sql`manual in (0, 1)`)
+      .execute();
+
+    // The entitlement listing: `GET {base}/admin/entitlements`. `createdAt` rather than `updatedAt`,
+    // because the projection re-derives every affected row on every purchase write — ordering on
+    // `updatedAt` would shuffle rows under a reader for reasons that have nothing to do with the grant.
+    // The per-account read needs no index of its own: `UNIQUE (userId, entitlement)` already serves it.
+    await db.schema
+      .createIndex("pithyPaymentsEntitlementsCreatedIdx")
+      .on("pithyPaymentsEntitlements")
+      .columns(["createdAt", "id"])
       .execute();
 
     await db.schema
@@ -122,7 +163,10 @@ export const payments_0001_purchases: Migration = {
     await db.schema.dropIndex("pithyPaymentsWebhookEventsPendingIdx").execute();
     await db.schema.dropTable("pithyPaymentsWebhookEvents").execute();
     await db.schema.dropTable("pithyPaymentsProviderAccounts").execute();
+    await db.schema.dropIndex("pithyPaymentsEntitlementsCreatedIdx").execute();
     await db.schema.dropTable("pithyPaymentsEntitlements").execute();
+    await db.schema.dropIndex("pithyPaymentsPurchasesTypePurchasedIdx").execute();
+    await db.schema.dropIndex("pithyPaymentsPurchasesPurchasedIdx").execute();
     await db.schema.dropIndex("pithyPaymentsPurchasesExpiryIdx").execute();
     await db.schema.dropIndex("pithyPaymentsPurchasesOwnerIdx").execute();
     await db.schema.dropTable("pithyPaymentsPurchases").execute();

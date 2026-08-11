@@ -7,7 +7,7 @@ import { z } from "zod";
 import { extendMediaAsset } from "../data/extend";
 import { MediaAsset } from "../data/mediaAsset";
 import { mediaDatabase } from "../data/tables";
-import { media_0002_assets } from "../migrations/0002_assets";
+import { media_0001_init } from "../migrations/0001_init";
 import { d1RecordStore } from "./d1Store";
 import { kvRecordStore } from "./kvStore";
 import type { MediaRecord, RecordStore } from "./store";
@@ -41,10 +41,13 @@ function makeRecord(overrides: Partial<MediaRecord> = {}): MediaRecord {
   } as MediaRecord;
 }
 
-/** Reset D1: drop and recreate the media table via the migration's `up`. */
+/** Reset D1: drop and recreate the media tables via the migration's `up`. */
 async function resetD1(): Promise<void> {
-  await env.DB.exec("DROP TABLE IF EXISTS pithy_media_assets");
-  await media_0002_assets.up(mediaDatabase(env.DB) as unknown as Parameters<typeof media_0002_assets.up>[0]);
+  const migration = media_0001_init({ withAssets: true });
+  for (const table of ["pithy_media_assets", "pithy_media_hashes"]) {
+    await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
+  await migration.up(mediaDatabase(env.DB) as unknown as Parameters<typeof migration.up>[0]);
 }
 
 /** Reset KV: delete every key. */

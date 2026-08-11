@@ -13,8 +13,12 @@ import type { Migration } from "kysely/migration";
  * table `pithy_audit_events`; the column names match the Zod schema.
  *
  * The indexes serve the query shapes the trail is read by — time range (`occurredAt`), per-action
- * (`action`), per-actor (`actorType`, `actorId`), and per-resource (`resourceType`, `resourceId`).
+ * (`action`), per-actor (`actorType`, `actorId`), per-resource (`resourceType`, `resourceId`), and
+ * per-tenant over a window (`tenant`, `occurredAt`).
  * `down` is the tested inverse: drop the indexes, then the table (D1 has no transactional DDL).
+ *
+ * This is the whole audit schema, in one migration — see `CONTRIBUTING.md` §Migrations for why that is
+ * the shape while nothing is published, and what changes the day something is.
  */
 export const audit_0001_init: Migration = {
   up: async (db: Kysely<unknown>): Promise<void> => {
@@ -47,6 +51,18 @@ export const audit_0001_init: Migration = {
       .addColumn("environment", "text")
       .addColumn("worker", "text")
       .addColumn("version", "text")
+      // Whose action it was. The four columns above say which deployment of *ours* wrote a row; in a
+      // multi-tenant application all four are constant across every row, so nothing on the event
+      // distinguished one customer's history from another's. `actorId` does not either: one person can
+      // administer two tenants, and every event they produce carries the same actor.
+      //
+      // Nullable, with no default, permanently — for the same reason the origin columns are. A
+      // single-tenant app has no such dimension and must not be made to invent one; a CLI-originated
+      // action and a fleet-wide operator action genuinely have no tenant. `null` means "not
+      // tenant-scoped", which is a true statement. The tenant of an action is a fact at the time of the
+      // action; a membership table only knows who belongs where *now*, so deriving one from the other
+      // would hand a year of one tenant's history to another the day somebody changes teams.
+      .addColumn("tenant", "text")
       .execute();
 
     // Unique on eventId — the recorder's idempotency key. A retried write reuses the same eventId, so
@@ -79,8 +95,17 @@ export const audit_0001_init: Migration = {
       .on("pithyAuditEvents")
       .columns(["project", "environment", "worker"])
       .execute();
+    // The tenant read is (tenant, time): one tenant's trail, newest first, usually over a window. So the
+    // index leads with `tenant` and carries `occurredAt` — a `tenant`-only index would still leave the
+    // sort to a scan of the largest table in most projects.
+    await db.schema
+      .createIndex("pithyAuditEventsTenantIdx")
+      .on("pithyAuditEvents")
+      .columns(["tenant", "occurredAt"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyAuditEventsTenantIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsOriginIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsResourceIdx").execute();
     await db.schema.dropIndex("pithyAuditEventsActorIdx").execute();

@@ -32,11 +32,12 @@ describe("audit capability", () => {
     expect(cap.requiredBindings.map((b) => b.name)).toEqual(["ANALYTICS"]);
   });
 
-  test("ships its migrations in order, at its declared order", () => {
-    // The keys are the order they run in, so the list is asserted rather than the count: a migration
-    // added ahead of `0001_init` would compose a ledger name that sorts before an applied one.
+  test("ships its one migration, at its declared order", () => {
+    // Asserted as a list rather than a count. It is one entry because nothing here is published and a
+    // capability's schema is one migration until it is — `packages/cli/src/migrations/oneMigration.test.ts`
+    // holds that rule for the whole repo, and this pins audit's half of it beside the capability.
     const db = audit().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_tenant"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
     expect(db?.migrationOrder).toBe(AUDIT_MIGRATION_ORDER);
   });
 
