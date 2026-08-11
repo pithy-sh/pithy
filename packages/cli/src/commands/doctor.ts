@@ -36,6 +36,7 @@ import { detectShell, type ShellInfo } from "../platform/shell";
 import { loadProject, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck } from "../project/workflows";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -198,6 +199,16 @@ export interface DoctorReport {
    * rather than at the end of one.
    */
   origins: OriginsCheck | null;
+  /**
+   * Whether each declared environment's `wrangler.jsonc` stanza binds exactly the Workflows and cron its
+   * Worker's app capability declares (#267). `null` outside a readable project, or one that names no
+   * project — a Workflow name leads with the project, so without one there is nothing to compare.
+   *
+   * The one fault in this report that is otherwise **completely silent**. A declared job that was never
+   * synced ships with no `workflows` entry and no `triggers.crons`: the cron never fires, and no request
+   * fails, no log line appears and no probe goes red to say so.
+   */
+  workflows: WorkflowsCheck | null;
   /**
    * This project's dev-login preference file: where it goes, whether it is there, and whether it says
    * anything a seed can use. `null` outside a readable project, on the same footing as the two above.
@@ -368,6 +379,8 @@ export interface DoctorReportOptions {
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
+  /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
+  checkWorkflows?: (projectDir: string) => Promise<WorkflowsCheck>;
   /**
    * Dev-login preference seam; defaults to {@link checkDevPreferences} resolved against the same `homedir`
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
@@ -442,6 +455,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
+  const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -572,6 +586,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // One level further out again, and gated the same way: an environment is declared, and now what is
   // true *about* it — where it answers — must be too. Files only, so it answers offline like the rest.
   const origins = inProject ? await probeOrigins(options.projectDir).catch(() => null) : null;
+  // The same shape once more, on the other thing a `pithy.config.ts` declares and a `wrangler.jsonc` has
+  // to agree with: the app capability's Workflows and cron. Files only, so it answers offline like the rest.
+  const workflows = inProject ? await probeWorkflows(options.projectDir).catch(() => null) : null;
   // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
   // there is no path to resolve and no file to look for. Files only, no account, no seed run.
   const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
@@ -606,6 +623,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     workerNames,
     environments,
     origins,
+    workflows,
     devPreferences,
     devSecrets,
     secretBindings,
@@ -665,6 +683,13 @@ export function doctorExitCode(report: DoctorReport): number {
   // `pithy doctor` red on day one for everyone and teach them to stop reading it. It is reported, loudly,
   // and `pithy deploy` is what refuses it — the moment it stops being hypothetical.
   if (report.origins?.drift.some((drift) => drift.fault !== "no-origin")) return 1;
+  // The same standard, and **both** faults meet it — there is no day-one state here to spare. A project
+  // that declares no Workflows has no drift to report; one that declares them and has not synced is a
+  // contradiction between its own two files, checkable offline, and the only fault in this report whose
+  // consequence is nothing happening at all: the cron never fires and nothing anywhere says so (#267).
+  // An unwritable declaration is the same standard once more — the declaration itself is what no command
+  // can act on. `could-not-check` establishes nothing and carries no drift, so it never reaches here.
+  if (report.workflows && report.workflows.drift.length > 0) return 1;
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
   // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
   // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
@@ -837,6 +862,25 @@ function originsBlock(check: OriginsCheck): string {
 }
 
 /**
+ * The `Workflows:` lines — shown only when an environment's stanza does not bind what its Worker's app
+ * capability declares (#267), grouped one block per Worker, on the same shape as the block above.
+ *
+ * One command answers every `unsynced-stanza` line in it, and each drift's own sentence names it — the
+ * block adds no trailing remedy of its own, because the other fault has a different one: a declaration
+ * that cannot be reduced to a stanza is fixed in `pithy.config.ts`, and no command can write it.
+ */
+function workflowsBlock(check: WorkflowsCheck): string {
+  const lines = ["Workflows:"];
+  for (const worker of [...new Set(check.drift.map((drift) => drift.worker))]) {
+    lines.push(`  ${worker}:`);
+    for (const drift of check.drift.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(`env.${drift.env}`, describeWorkflowDrift(drift)));
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
  * The `Secret bindings:` lines — shown only when a declared environment does not bind a
  * `cf-secrets-store` secret its Worker reads (#238).
  *
@@ -916,6 +960,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // about it would send the adopter to that refusal with no warning — which is exactly what #253 asked
   // doctor to stop doing. Worth the ink, not worth a red CI.
   const originsOk = !report.origins || report.origins.drift.length === 0;
+  // Worth the ink and worth a red CI both, unlike the origins block above: this is the fault whose whole
+  // symptom is that nothing happens, so a terse report over it would be the toolchain agreeing that
+  // nothing is wrong.
+  const workflowsOk = !report.workflows || report.workflows.drift.length === 0;
   // A dev login is optional, so having none is a pass — the terse report is for the developer who has
   // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
   const devPreferencesState = report.devPreferences?.state;
@@ -947,6 +995,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     workerNamesOk &&
     environmentsOk &&
     originsOk &&
+    workflowsOk &&
     devPreferencesOk &&
     devSecretsOk &&
     secretBindingsOk &&
@@ -1086,6 +1135,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // declared, and now what is true about it must be too.
   if (report.origins && report.origins.drift.length > 0) blocks.push(originsBlock(report.origins));
 
+  // And what each declared environment runs, when its stanza does not bind what the app declares. Beside
+  // the origins block for the same reason that one sits beside the environments block: the same argument
+  // about the same environment, one declaration further in.
+  if (report.workflows && report.workflows.drift.length > 0) blocks.push(workflowsBlock(report.workflows));
+
   // Dev secrets, and only when something is wrong with them. The block is the finding: a project whose
   // secrets are in the file they belong in needs no line saying so, and every project that predates
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
@@ -1202,6 +1256,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       ? {
           state: report.origins.state,
           drift: report.origins.drift.map((drift) => ({ ...drift, detail: describeOriginDrift(drift) })),
+        }
+      : null,
+    // Same `null` discipline, and each drift carries both sides of the comparison as well as its own
+    // sentence: a consumer fixing this needs to know what the stanza binds *and* what the declaration
+    // says, and reconstructing either from a fault name is not something a payload should ask for.
+    workflows: report.workflows
+      ? {
+          state: report.workflows.state,
+          drift: report.workflows.drift.map((drift) => ({ ...drift, detail: describeWorkflowDrift(drift) })),
         }
       : null,
     // The path is absolute here, not tilde-abbreviated: `--json` is read by agents and scripts, which need

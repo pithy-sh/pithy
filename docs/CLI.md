@@ -919,9 +919,11 @@ A library capability's Workflows are provisioned: `pithy <capability> provision`
 
 **It writes the Worker's address the same way**, from the same file. A `domains` block names where the Worker answers per environment, and the `custom_domain` route and `vars.BASE_URL` it implies are generated from it — by `pithy init`, by `pithy worker add`, and by this command. That last one is the one that was missing: the first two only ever write the route from an interactive prompt, so a `domains` block added by hand declared an address nothing served, and `pithy doctor` and `pithy deploy` both reported it healthy while the Worker answered on nothing. Doctor names this command when it reports that fault.
 
+**And `pithy doctor` and `pithy deploy` read it back.** Writing was only ever half of it: a declaration nothing reconciles is a cron that never fires, and until the reader existed nothing anywhere noticed. Doctor reports a stanza that does not bind what the app declares, `pithy deploy --env <name>` refuses it, and both name this command (`docs/commands/doctor.md`).
+
 Three rules govern what it writes:
 
-- **The app's entries are replaced, not merged.** A job renamed or dropped leaves. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched.
+- **The app's entries are replaced, not merged.** A job renamed or dropped leaves — including the last one, so an app that declares no Workflows still has its stale bindings and crons taken out. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched.
 - **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler and it starts *every* job that declares a schedule, whatever cron fired — so an expression nothing declares is not an extra job, it is every job running again at a time nobody asked for.
 - **The class stays yours.** Cloudflare resolves `class_name` in the script the binding names, so the `WorkflowEntrypoint` subclass has to be exported from the Worker's `main`. That is five lines written once; the command names the classes it expects.
 

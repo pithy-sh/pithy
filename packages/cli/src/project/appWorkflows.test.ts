@@ -247,8 +247,26 @@ describe("reconcileAppWorkflows", () => {
     const bare = defineCapability({ name: "dashboard", requiredBindings: [] });
     const runs = await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: bare });
 
-    expect(runs).toEqual([]);
+    // Reconciled — the empty declaration is a declaration — and nothing moved, so nothing was written.
+    // No empty `workflows` key, which wrangler would read as one, and no `triggers` block invented.
+    expect(runs.every((run) => !run.changed)).toBe(true);
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(fixture);
+  });
+
+  /**
+   * The last job dropped from `pithy.config.ts`. This used to return before the file was opened, so the
+   * binding and the cron stayed behind with no command that would remove them — and #267's reader would
+   * have reported a fault naming `pithy worker sync`, which was the one thing that could not fix it.
+   */
+  test("dropping the last job takes its binding and its cron out", async () => {
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability(), env: "staging" });
+
+    const bare = defineCapability({ name: "dashboard", requiredBindings: [] });
+    const runs = await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: bare, env: "staging" });
+
+    expect(runs[0]?.changed).toBe(true);
+    expect((await read()).env?.staging?.workflows).toEqual([]);
+    expect((await read()).env?.staging?.triggers?.crons).toEqual([]);
   });
 
   test("refuses when a hand-edited entry already lacks a field wrangler requires", async () => {

@@ -441,6 +441,48 @@ describe("doctorExitCode", () => {
     expect(doctorExitCode(report)).toBe(0);
   });
 
+  /**
+   * #267. The only fault in this report whose whole symptom is that nothing happens: a job declared,
+   * `pithy worker sync` never run, and the cron that would have fired it never written. The block has to
+   * name both sides of the comparison — what is declared and what is bound — because the reader is being
+   * told about a table in a file they believed already matched.
+   */
+  test("non-zero when a stanza does not bind what the app declares, and the block names both sides", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkWorkflows: async () => ({
+          state: "drifted",
+          drift: [
+            {
+              worker: "board",
+              env: "prod",
+              fault: "unsynced-stanza",
+              declared: {
+                workflows: [{ binding: "DIGEST", name: "replay-prod-board-digest", class_name: "DigestWorkflow" }],
+                crons: ["0 4 * * *"],
+              },
+              bound: { workflows: [], crons: [] },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("DIGEST → replay-prod-board-digest");
+    expect(text).toContain("cron 0 4 * * *");
+    expect(text).toContain("env.prod binds nothing");
+    expect(text).toContain("pithy worker sync");
+  });
+
+  /** Nothing was established, so nothing gates — the same standard every other check here is held to. */
+  test("zero when the workflow declaration could not be checked at all", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkWorkflows: async () => ({ state: "could-not-check", drift: [] }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
   test("outside a project, health never fails the exit", async () => {
     const report = await buildDoctorReport(
       baseOptions({

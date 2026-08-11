@@ -85,14 +85,41 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
 }
 
 /** The wrangler slice this module reads and writes. Unknown keys survive untouched — comment-json holds them. */
-interface WorkflowStanza {
+export interface WorkflowStanza {
   workflows?: (AppOwnedWorkflow & { script_name?: string })[];
   triggers?: { crons?: string[] };
 }
 
 /** The whole config: the top-level stanza (wrangler's default environment) plus each named one. */
-interface WorkflowConfig extends WorkflowStanza {
+export interface WorkflowConfig extends WorkflowStanza {
   env?: Record<string, WorkflowStanza | undefined>;
+}
+
+/**
+ * Is this `workflows` entry the app capability's own?
+ *
+ * **One predicate, because the writer and the reader have to mean the same thing by it.** An entry
+ * carrying a `script_name` is a library capability's, written by that capability's provisioner and
+ * pointing at its host Worker. Everything else is same-script, which in this Worker means app-declared —
+ * that is what lets {@link reconcileAppWorkflows} replace the whole set rather than upsert it, and it is
+ * what `project/workflows.ts` reads back to ask whether the stanza binds what the app declares. Two
+ * copies of this rule would be two answers to "whose entry is this?", and drift the check could not see.
+ */
+function isAppOwned(entry: { script_name?: string }): boolean {
+  return entry.script_name === undefined;
+}
+
+/**
+ * The app's own entries in one stanza's `workflows` table — the table {@link reconcileAppWorkflows}
+ * replaces, and the one the doctor and deploy readers compare against the declaration.
+ *
+ * The extra `script_name` field is not carried, because by definition these have none: the shape returned
+ * is exactly {@link planAppWorkflows}'s, so the comparison is between two values of one type.
+ */
+export function appOwnedWorkflows(stanza: WorkflowStanza | undefined): AppOwnedWorkflow[] {
+  return (stanza?.workflows ?? [])
+    .filter(isAppOwned)
+    .map(({ binding, name, class_name }) => ({ binding, name, class_name }));
 }
 
 /** Options for {@link reconcileAppWorkflows}. */
@@ -151,7 +178,7 @@ function stanzaFor(config: WorkflowConfig, env: string): WorkflowStanza {
  * of the app's, so a re-run produces a byte-identical file.
  */
 function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): void {
-  const provisioned = (stanza.workflows ?? []).filter((entry) => entry.script_name !== undefined);
+  const provisioned = (stanza.workflows ?? []).filter((entry) => !isAppOwned(entry));
   const next = [...provisioned, ...plan.workflows];
   if (stanza.workflows) {
     // In place: comment-json keeps an array's comments as symbol-keyed properties on the array object,
@@ -191,10 +218,17 @@ function setCrons(stanza: WorkflowStanza, crons: string[]): void {
  * file is written once, so a stanza wrangler would reject aborts the run rather than leaving half a config
  * behind. An app that declares no Workflows writes nothing at all — including no empty `workflows` key,
  * which wrangler reads as a declaration.
+ *
+ * **An app that declares none is still reconciled**, and that is not the same statement. It used to
+ * return before the file was opened, which made "the declaration is the truth" false in the one case
+ * where it matters most: drop the last job from `pithy.config.ts` and the binding and the cron stayed in
+ * `wrangler.jsonc` forever, with no command that would take them out and — since #267 — a doctor fault
+ * naming a command that could not answer it. The empty declaration is a declaration. What it writes is
+ * still nothing at all where there was nothing: `replaceOwnWorkflows` creates no `workflows` key and
+ * `setCrons` creates no `triggers` block, so a project that never had either is byte-identical after.
  */
 export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOptions): Promise<AppWorkflowRun[]> {
   const { workerDir, project, app, env } = options;
-  if (Object.keys(app.workflows ?? {}).length === 0) return [];
 
   const config = (await readWranglerConfig(workerDir)) as WorkflowConfig;
   const before = stringify(config);
