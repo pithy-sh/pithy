@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../data/discount";
 import type { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import type { ProviderEventInput } from "../projection/event";
@@ -257,6 +258,18 @@ export interface CheckoutSessionInput {
    * mean asking an adopter for a URL the rail then silently discarded.
    */
   cancelUrl?: string;
+  /**
+   * A discount code to apply, passed to the store **unchanged**, or undefined.
+   *
+   * The store calculates the price. Pithy never computes a discounted amount and never checks a code against
+   * anything of its own: the provider is the authority on what is owed, and a second calculation here would
+   * be a second answer to the one question a customer will check against their card statement.
+   *
+   * An invalid or expired code therefore fails at the store, and the rail turns that into
+   * `payments/discount_invalid` naming the code — distinctly from a payment failure, because a customer told
+   * "something went wrong" at checkout concludes their card was declined.
+   */
+  discountCode?: string;
 }
 
 /** What a billing-portal session needs: the store account whose subscription is being managed. */
@@ -302,4 +315,86 @@ export function isCheckoutRail(provider: PaymentsRailProvider): provider is Paym
     typeof (provider as Partial<CheckoutRail>).createCheckoutSession === "function" &&
     typeof (provider as Partial<CheckoutRail>).createPortalSession === "function"
   );
+}
+
+/**
+ * A rail that can *mint* a discount, as distinct from one that can merely apply one.
+ *
+ * **Its own interface, and the separation is load-bearing rather than tidy.** Applying a code must work with
+ * creation unimplemented — an adopter whose codes are minted by hand in a provider dashboard is fully served
+ * by the apply half, and making that half depend on this one would hold it hostage to a surface they never
+ * asked for. So `discountCode` rides on {@link CheckoutSessionInput}, which every checkout rail already
+ * takes, and this is a separate question asked separately.
+ *
+ * It is also the more dangerous half. It writes money-affecting objects into a payment provider through one
+ * shape over two APIs that agree on the concept and disagree on nearly every field, and the failures are
+ * quiet ones that surface on a customer's statement — see `data/discount.ts` for the three that were
+ * designed against. Minting a discount is an administrative act with a cost attached, which is why the route
+ * behind it carries its own scope and its own audit event rather than riding on an existing one.
+ */
+export interface DiscountRail {
+  /**
+   * Create a discount at the store and return what it made.
+   *
+   * Throws `payments/discount_invalid` when the store refuses the terms, with the store's own reason in
+   * `detail`. Nothing here validates the terms a second time — `DiscountTerms` has already refused the
+   * combinations that are wrong on their face, and the store owns the rest.
+   */
+  createDiscount(terms: DiscountTerms, context: RailRequestContext): Promise<CreatedDiscount>;
+  /**
+   * The discount codes this store holds, newest first.
+   *
+   * A management client that can mint a code must be able to see what it minted — otherwise a pane over
+   * them computes *absent* rather than blocked, which no grant repairs (#247). Read from the store rather
+   * than from a table of ours: the store is where a code actually exists, and a local mirror would be a
+   * second answer that drifts the first time somebody uses the dashboard.
+   *
+   * Never reaches a browser. The set of codes an adopter has issued is a commercial fact, and the client
+   * projection draws the same line here it draws for SKUs and the `grants` block.
+   */
+  listDiscounts(context: RailRequestContext): Promise<readonly ListedDiscount[]>;
+}
+
+/** One discount as a store lists it. Deliberately less than {@link CreatedDiscount} — a list is not a receipt. */
+export interface ListedDiscount {
+  /** The code a customer enters. */
+  code: string;
+  /** The store's own id. */
+  providerDiscountId: string;
+  /** How much comes off, rendered for a person — `20%`, `500 usd`. The store's own figures. */
+  amount: string;
+  /** How many times it has been claimed, when the store reports it. */
+  redemptions: number | null;
+}
+
+/**
+ * A rail that can say what a subscription pays now, what it becomes, and when.
+ *
+ * Separate from {@link DiscountRail} because they are separate abilities: a rail that can apply a code an
+ * adopter minted by hand must be able to report the resulting rate, whether or not it can mint one. Separate
+ * from the shared contract because Apple and Google have no equivalent — a store SDK subscription's price
+ * changes are the store's business and it does not publish a "what this becomes" figure.
+ *
+ * **This is the half that stops a bill changing unannounced.** A capability that can apply a discount but
+ * cannot report its end date has shipped the half that creates the surprise: from a customer's seat, a rate
+ * that silently lapses is indistinguishable from a billing error.
+ */
+export interface PricingRail {
+  /**
+   * What this subscription pays now, what it will pay, and when that changes — or `undefined` when the store
+   * has nothing to say about it, which is the same answer `refresh` gives for the same reason.
+   *
+   * Every figure comes from the store. Nothing multiplies a price by a percentage here or anywhere else.
+   */
+  readPricing(purchase: PaymentsPurchase, context: RailRequestContext): Promise<SubscriptionPricing | undefined>;
+}
+
+/** Whether a rail reports pricing. Structural, like the others. */
+export function isPricingRail(provider: PaymentsRailProvider): provider is PaymentsRailProvider & PricingRail {
+  return typeof (provider as Partial<PricingRail>).readPricing === "function";
+}
+
+/** Whether a rail can mint discounts. Structural, so a rail gains the ability without an edit here. */
+export function isDiscountRail(provider: PaymentsRailProvider): provider is PaymentsRailProvider & DiscountRail {
+  return typeof (provider as Partial<DiscountRail>).createDiscount === "function";
 }

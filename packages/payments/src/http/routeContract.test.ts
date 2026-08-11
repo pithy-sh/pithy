@@ -12,6 +12,8 @@ import { PaymentsConfig } from "../config/config";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -85,6 +87,7 @@ describe("payments route contract", () => {
     // a surprise, and it is the only place a route can be counted.
     expect(paths).toEqual([
       "/payments/admin/catalog",
+      "/payments/admin/discounts",
       "/payments/admin/entitlements",
       "/payments/admin/entitlements/:userId",
       "/payments/admin/purchases",
@@ -94,6 +97,7 @@ describe("payments route contract", () => {
       "/payments/entitlements/grant",
       "/payments/entitlements/revoke",
       "/payments/portal",
+      "/payments/pricing",
       "/payments/purchases",
       "/payments/restore",
       "/payments/webhooks/apple",
@@ -220,7 +224,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(7);
+    expect(capability.adminRoutes).toHaveLength(9);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
@@ -234,6 +238,8 @@ describe("the admin surface payments advertises", () => {
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
+      "/billing/admin/discounts",
+      "/billing/admin/discounts",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
     ]);
@@ -250,6 +256,8 @@ describe("the admin surface payments advertises", () => {
       PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      PAYMENTS_DISCOUNT_READ_SCOPE,
+      PAYMENTS_DISCOUNT_CREATE_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
     ]);
@@ -277,7 +285,7 @@ describe("the admin surface payments advertises", () => {
     // are asserted together because either alone permits the mistake.
     const { capability } = composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
-    expect(reads).toHaveLength(5);
+    expect(reads).toHaveLength(6);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });

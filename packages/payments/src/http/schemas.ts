@@ -5,6 +5,7 @@ import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
+import { DiscountCode, DiscountTerms } from "../data/discount";
 import { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
@@ -123,9 +124,39 @@ export const CheckoutRequest = z
       .describe(
         "Which hosted-checkout rail to buy through. Omit it when the product sells on one, which is the common case. A client may name this because a rail is not a price and not a purchaser — it decides who takes the money, not how much or on whose behalf — so a paywall offering both can put two buttons on the page.",
       ),
+    discountCode: DiscountCode.optional().describe(
+      "A discount code to apply, passed to the store unchanged. A client may send this because the store decides what it is worth and whether it is valid — Pithy never computes a discounted amount, so a code here can only ever ask the provider a question it was going to answer anyway.",
+    ),
   })
   .describe("A caller asking to start hosted checkout for one catalog product.");
 export type CheckoutRequest = z.infer<typeof CheckoutRequest>;
+
+/**
+ * The terms of a discount to mint. The one control-plane write that creates an object costing money.
+ *
+ * `DiscountTerms` carries the whole shape and its own cross-field rules — a repeating duration must state
+ * the plan's billing interval, because Stripe counts months and Lemon Squeezy counts periods. The rail is
+ * named here rather than inferred: minting is an administrative act against one store's dashboard, and
+ * guessing which one would put a code where nobody was looking for it.
+ */
+export const AdminDiscountsQuery = z
+  .object({
+    rail: z
+      .enum(["stripe", "lemonSqueezy"])
+      .describe("Which store to list from. Required — a discount exists in one store, and the two do not merge."),
+  })
+  .describe("A management client listing the discount codes one store holds.");
+export type AdminDiscountsQuery = z.infer<typeof AdminDiscountsQuery>;
+
+export const DiscountCreateRequest = z
+  .object({
+    rail: z
+      .enum(["stripe", "lemonSqueezy"])
+      .describe("Which store to mint the discount at. Required — a discount exists in one store's dashboard."),
+    terms: DiscountTerms.describe("The discount's terms, in customer-visible units."),
+  })
+  .describe("A management client minting one discount code.");
+export type DiscountCreateRequest = z.input<typeof DiscountCreateRequest>;
 
 /**
  * Google's webhook body: a Pub/Sub push, not a Play notification.

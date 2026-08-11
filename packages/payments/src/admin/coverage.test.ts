@@ -69,19 +69,31 @@ function collection(routes: readonly AdminRoute[], resource: string): AdminRoute
   );
 }
 
-/** The resource an admin route is about — the last segment that names a noun rather than a verb. */
-function resourceOf(route: AdminRoute): string {
+/**
+ * The resource an admin route is about — the last segment that names a noun rather than a verb.
+ *
+ * A read is `…/entitlements`, where the noun is last. A write takes one of two shapes, and both are in the
+ * table: `…/entitlements/grant` names the verb last because one noun carries two operations, and
+ * `…/discounts` posts to the collection because it carries one. So a write's noun is the last segment when
+ * that is a collection somebody can read, and the segment before it otherwise.
+ *
+ * Deliberately not "whichever segment happens to have a read". The fallback is the *convention* — a write
+ * on a noun nothing reads still resolves to that noun and is still reported, which is the whole point of
+ * the gate.
+ */
+function resourceOf(route: AdminRoute, routes: readonly AdminRoute[] = []): string {
   const segments = route.path.split("/").filter((segment) => segment.length > 0 && !segment.startsWith(":"));
-  // A write is `…/entitlements/grant`: the verb is last and the noun is the segment before it. A read is
-  // `…/entitlements`, where the noun is last. Methods, not names, decide which is which.
-  const index = route.method === "GET" ? segments.length - 1 : segments.length - 2;
-  return segments[index] ?? "";
+  const last = segments[segments.length - 1] ?? "";
+  if (route.method === "GET") return last;
+  // A POST straight at a readable collection is a create on that collection.
+  if (collection(routes, last) !== undefined) return last;
+  return segments[segments.length - 2] ?? last;
 }
 
 describe("payments' control-plane read coverage (#247)", () => {
   test("every resource a management client can write, it can also read", () => {
     const routes = advertised();
-    const written = new Set(routes.filter((route) => route.method !== "GET").map(resourceOf));
+    const written = new Set(routes.filter((route) => route.method !== "GET").map((route) => resourceOf(route, routes)));
     const missing = [...written].filter((resource) => collection(routes, resource) === undefined);
     expect(
       missing,

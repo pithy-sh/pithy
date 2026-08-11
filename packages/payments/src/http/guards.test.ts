@@ -20,6 +20,8 @@ import { describe, expect, test } from "vitest";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -119,7 +121,7 @@ describe("the payments control-plane scopes", () => {
     for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) expect(ControlPlaneScope.parse(scope)).toBe(scope);
   });
 
-  test("the aggregate is exactly the six operations, reads first, in a stable order", () => {
+  test("the aggregate is exactly the eight operations, reads first, in a stable order", () => {
     // What `pithy dashboard connect` offers for payments. A scope that exists and is offered nowhere is a
     // scope an adopter cannot grant, so the list and the route lines are asserted against each other.
     // Reads lead because they are the grant most connections want and the smallest one that makes a
@@ -130,8 +132,10 @@ describe("the payments control-plane scopes", () => {
       PAYMENTS_PURCHASES_READ_SCOPE,
       PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      PAYMENTS_DISCOUNT_READ_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+      PAYMENTS_DISCOUNT_CREATE_SCOPE,
     ]);
   });
 

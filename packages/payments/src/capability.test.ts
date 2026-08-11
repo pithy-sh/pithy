@@ -120,6 +120,7 @@ describe("payments()", () => {
       // The management surface (#247, #300), under `admin/` because the player surface already owns
       // `/billing/entitlements` and `/billing/purchases`.
       "/billing/admin/catalog",
+      "/billing/admin/discounts",
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
       "/billing/admin/purchases",
@@ -129,6 +130,7 @@ describe("payments()", () => {
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
       "/billing/portal",
+      "/billing/pricing",
       "/billing/purchases",
       "/billing/restore",
       "/billing/webhooks/apple",

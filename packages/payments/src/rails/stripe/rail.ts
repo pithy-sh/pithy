@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../../data/discount";
 import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type {
   CheckoutRail,
   CheckoutSessionInput,
+  DiscountRail,
   HostedSession,
+  ListedDiscount,
   PaymentsRailProvider,
   PortalSessionInput,
+  PricingRail,
   RailRequestContext,
   UnboundProviderEvent,
   VerifiedNotification,
@@ -17,7 +21,9 @@ import type {
 } from "../contract";
 import type { StripeHttpFetch } from "./api";
 import { createStripeCheckoutSession } from "./checkout";
+import { createStripeDiscount, listStripeDiscounts } from "./discounts";
 import { createStripePortalSession } from "./portal";
+import { readStripePricing } from "./pricing";
 import { refreshStripeSubscription } from "./refresh";
 import { verifyStripeSession } from "./verify";
 import { parseStripeNotification } from "./webhook";
@@ -50,7 +56,7 @@ export interface StripeRailOptions {
 export function stripeRail(
   credentials: PaymentsStripeCredentials,
   options: StripeRailOptions = {},
-): PaymentsRailProvider & CheckoutRail {
+): PaymentsRailProvider & CheckoutRail & DiscountRail & PricingRail {
   return {
     rail: "stripe",
 
@@ -88,6 +94,21 @@ export function stripeRail(
 
     async createPortalSession(input: PortalSessionInput): Promise<HostedSession> {
       return await createStripePortalSession(input, { credentials, transport: options.transport });
+    },
+
+    async readPricing(
+      purchase: PaymentsPurchase,
+      _context: RailRequestContext,
+    ): Promise<SubscriptionPricing | undefined> {
+      return await readStripePricing(purchase, { credentials, transport: options.transport });
+    },
+
+    async listDiscounts(): Promise<readonly ListedDiscount[]> {
+      return await listStripeDiscounts({ credentials, transport: options.transport });
+    },
+
+    async createDiscount(terms: DiscountTerms): Promise<CreatedDiscount> {
+      return await createStripeDiscount(terms, { credentials, transport: options.transport });
     },
   };
 }

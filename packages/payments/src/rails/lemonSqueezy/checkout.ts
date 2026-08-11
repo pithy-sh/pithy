@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import { PaymentsProviderUnavailableError } from "../../error/errors";
+import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput, HostedSession } from "../contract";
 import { type LemonSqueezyHttpFetch, lemonSqueezyHttpFetch, lemonSqueezyJson } from "./api";
@@ -72,32 +73,39 @@ export async function createLemonSqueezyCheckoutSession(
   const custom: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: input.userId };
   if (options.deployment !== undefined) custom[LEMON_SQUEEZY_CUSTOM_ENV] = options.deployment;
 
-  const created = await lemonSqueezyJson(options.transport ?? lemonSqueezyHttpFetch, "/checkouts", {
-    what: "a checkout",
-    apiKey: options.credentials.apiKey,
-    body: {
-      data: {
-        type: "checkouts",
-        attributes: {
-          checkout_data: {
-            // The authenticated purchaser, echoed back on every webhook this purchase produces.
-            custom,
+  const created = await withDiscountRefusal(input.discountCode, () =>
+    lemonSqueezyJson(options.transport ?? lemonSqueezyHttpFetch, "/checkouts", {
+      what: "a checkout",
+      apiKey: options.credentials.apiKey,
+      body: {
+        data: {
+          type: "checkouts",
+          attributes: {
+            checkout_data: {
+              // The authenticated purchaser, echoed back on every webhook this purchase produces.
+              custom,
+              // The code, handed over exactly as the caller typed it. Lemon Squeezy resolves it and computes
+              // the price; nothing here validates it or multiplies anything. Unlike Stripe there is no id to
+              // look up — the store takes the customer-facing string — so an unusable code is learned from
+              // the store's own refusal, which `lemonSqueezyJson` surfaces below.
+              ...(input.discountCode === undefined ? {} : { discount_code: input.discountCode }),
+            },
+            product_options: {
+              redirect_url: input.successUrl,
+            },
+            checkout_options: {
+              // Lemon Squeezy's own page, unembedded. Pithy owns no payment UI.
+              embed: false,
+            },
           },
-          product_options: {
-            redirect_url: input.successUrl,
+          relationships: {
+            store: { data: { type: "stores", id: options.credentials.storeId } },
+            variant: { data: { type: "variants", id: input.providerProductId } },
           },
-          checkout_options: {
-            // Lemon Squeezy's own page, unembedded. Pithy owns no payment UI.
-            embed: false,
-          },
-        },
-        relationships: {
-          store: { data: { type: "stores", id: options.credentials.storeId } },
-          variant: { data: { type: "variants", id: input.providerProductId } },
         },
       },
-    },
-  });
+    }),
+  );
 
   const parsed = LemonSqueezyCheckout.safeParse(created);
   if (!parsed.success) {
@@ -108,4 +116,39 @@ export async function createLemonSqueezyCheckoutSession(
     });
   }
   return { url: parsed.data.data.attributes.url };
+}
+
+/**
+ * Re-read a refused checkout as a refused *code*, when a code was sent.
+ *
+ * Lemon Squeezy takes the customer-facing string rather than an id, so there is no lookup to learn a bad
+ * code from before the fact — the store's refusal of the whole checkout is the first news of it. Left alone
+ * that surfaces as `payments/rail_not_configured`, which tells a customer this payment method is
+ * unavailable when what actually happened is that their code was not accepted.
+ *
+ * The reclassification is narrow and its reasoning is the same one `api.ts` uses to call a 4xx a
+ * configuration failure: **every other input to this request comes from config, the credential bundle, or a
+ * row we wrote.** The discount code is the only caller-influenced value in it, so when one was sent and the
+ * store refuses on the caller's side of the line, the code is what it refused. A 5xx or a 429 is untouched —
+ * that is the store struggling, not judging — and so is a refusal when no code was sent at all.
+ *
+ * The store's own sentence rides in `detail` for the operator; the customer gets the code back and an action
+ * they can take.
+ */
+async function withDiscountRefusal<T>(code: string | undefined, call: () => Promise<T>): Promise<T> {
+  if (code === undefined) return await call();
+  try {
+    return await call();
+  } catch (cause) {
+    if (cause instanceof PithyError && cause.payload.code === "payments/rail_not_configured") {
+      throw new PaymentsDiscountInvalidError(
+        {
+          message: `"${code}" is not a discount code we can accept.`,
+          detail: `Lemon Squeezy refused a checkout carrying discount code "${code}". ${cause.payload.detail ?? ""}`,
+        },
+        { cause },
+      );
+    }
+    throw cause;
+  }
 }

@@ -425,7 +425,7 @@ export function restorePurchases(
 
 /** Create a hosted Stripe Checkout Session and return where to send the browser. */
 export async function createCheckout(
-  input: { productId: string; rail?: PaymentsHostedRail },
+  input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<string>> {
   const result = await call("/checkout", jsonPost(input), options, isHostedSession);
@@ -472,7 +472,7 @@ async function leaveFor(
  * proration, and this is where that decision is visible.
  */
 export function startCheckout(
-  input: { productId: string; rail?: PaymentsHostedRail },
+  input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsFailure | null> {
   return leaveFor(createCheckout(input, options), options);

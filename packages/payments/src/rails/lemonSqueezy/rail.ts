@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../../data/discount";
 import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type {
   CheckoutRail,
   CheckoutSessionInput,
+  DiscountRail,
   HostedSession,
+  ListedDiscount,
   PaymentsRailProvider,
   PortalSessionInput,
+  PricingRail,
   RailRequestContext,
   UnboundProviderEvent,
   VerifiedNotification,
@@ -17,7 +21,9 @@ import type {
 } from "../contract";
 import type { LemonSqueezyHttpFetch } from "./api";
 import { createLemonSqueezyCheckoutSession } from "./checkout";
+import { createLemonSqueezyDiscount, listLemonSqueezyDiscounts } from "./discounts";
 import { createLemonSqueezyPortalSession } from "./portal";
+import { readLemonSqueezyPricing } from "./pricing";
 import { refreshLemonSqueezyPurchase } from "./refresh";
 import { verifyLemonSqueezyOrder } from "./verify";
 import { parseLemonSqueezyNotification } from "./webhook";
@@ -50,13 +56,20 @@ export interface LemonSqueezyRailOptions {
    * one-off sale or the container a subscription arrived in — the second of which is not its own payment.
    */
   sellsSubscription?: (variantId: string) => boolean;
+  /**
+   * The currency this store prices in, when the project declared one.
+   *
+   * Only used to refuse a fixed discount in another currency before it reaches the store — see
+   * `discounts.ts` for why that refusal has to happen at creation rather than at redemption.
+   */
+  storeCurrency?: string;
 }
 
 /** The Lemon Squeezy rail. Parses webhooks, re-reads purchases, and creates hosted checkouts and portal links. */
 export function lemonSqueezyRail(
   credentials: PaymentsLemonSqueezyCredentials,
   options: LemonSqueezyRailOptions = {},
-): PaymentsRailProvider & CheckoutRail {
+): PaymentsRailProvider & CheckoutRail & DiscountRail & PricingRail {
   return {
     rail: "lemonSqueezy",
 
@@ -95,6 +108,29 @@ export function lemonSqueezyRail(
 
     async createPortalSession(input: PortalSessionInput): Promise<HostedSession> {
       return await createLemonSqueezyPortalSession(input, { credentials, transport: options.transport });
+    },
+
+    async readPricing(
+      purchase: PaymentsPurchase,
+      _context: RailRequestContext,
+    ): Promise<SubscriptionPricing | undefined> {
+      return await readLemonSqueezyPricing(purchase, { credentials, transport: options.transport });
+    },
+
+    async listDiscounts(): Promise<readonly ListedDiscount[]> {
+      return await listLemonSqueezyDiscounts({
+        credentials,
+        storeCurrency: options.storeCurrency,
+        transport: options.transport,
+      });
+    },
+
+    async createDiscount(terms: DiscountTerms): Promise<CreatedDiscount> {
+      return await createLemonSqueezyDiscount(terms, {
+        credentials,
+        storeCurrency: options.storeCurrency,
+        transport: options.transport,
+      });
     },
   };
 }

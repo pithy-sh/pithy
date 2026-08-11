@@ -152,12 +152,15 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `POST /payments/purchases` | Submit a receipt or signed transaction for verification | bearer · session |
 | `GET /payments/entitlements` | The caller's own resolved entitlements | bearer · session |
 | `POST /payments/restore` | Restore Purchases — rebind store history to the caller | bearer · session |
+| `GET /payments/pricing` | What the caller's own subscription pays, and when that changes | bearer · session |
 | `POST /payments/checkout` | Create a hosted checkout session, on Stripe or Lemon Squeezy | bearer · session |
 | `POST /payments/portal` | Create a billing-portal session for the caller's own account | bearer · session |
 | `POST /payments/webhooks/apple` | App Store Server Notifications V2 | signed-webhook |
 | `POST /payments/webhooks/google` | Play Real-time Developer Notifications, via Pub/Sub push | signed-webhook |
 | `POST /payments/webhooks/stripe` | Stripe events | signed-webhook |
 | `POST /payments/webhooks/lemon-squeezy` | Lemon Squeezy events | signed-webhook |
+| `POST /payments/admin/discounts` | Mint a discount code at one store | control-plane: `payments:discounts:create` |
+| `GET /payments/admin/discounts` | The discount codes this project has issued | control-plane: `payments:discounts:read` |
 | `POST /payments/entitlements/grant` | Comp or repair an entitlement | control-plane: `payments:entitlements:grant` |
 | `POST /payments/entitlements/revoke` | Take one back | control-plane: `payments:entitlements:revoke` |
 | `GET /payments/admin/catalog` | What this project sells, and the keys it comps by hand | control-plane: `payments:catalog:read` |

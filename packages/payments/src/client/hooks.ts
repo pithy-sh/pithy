@@ -234,7 +234,7 @@ export interface UseCheckout {
    * `rail` is only needed for a product sold on **both** hosted rails, where the server refuses to choose
    * on the buyer's behalf. A product sold on one needs no argument.
    */
-  start: (productId: string, rail?: PaymentsHostedRail) => Promise<void>;
+  start: (productId: string, options?: { rail?: PaymentsHostedRail; discountCode?: string }) => Promise<void>;
   /** Whether a session is being created. Disable the button on it — a double click is a double session. */
   starting: boolean;
   /** The last refusal, or null. Cleared at the start of every attempt. */
@@ -256,10 +256,13 @@ export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   const live = useLive();
 
   const start = useCallback(
-    async (productId: string, rail?: PaymentsHostedRail) => {
+    async (productId: string, choices?: { rail?: PaymentsHostedRail; discountCode?: string }) => {
       setStarting(true);
       setFailure(null);
-      const refused = await startCheckout({ productId, rail }, latest.current);
+      const refused = await startCheckout(
+        { productId, rail: choices?.rail, discountCode: choices?.discountCode },
+        latest.current,
+      );
       if (!live.current) return;
       setStarting(false);
       if (refused) setFailure(refused);

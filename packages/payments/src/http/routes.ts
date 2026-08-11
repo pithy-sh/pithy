@@ -38,11 +38,19 @@ import { fulfillPurchase } from "../grants/apply";
 import { linkProviderAccount, providerAccountForUser, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
-import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "../rails/contract";
+import {
+  type CheckoutRail,
+  isCheckoutRail,
+  isDiscountRail,
+  isPricingRail,
+  type PaymentsRailProvider,
+} from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -52,23 +60,28 @@ import {
 } from "./guards";
 import type {
   PaymentsAdminCatalogResponse,
+  PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
+  PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
   PaymentsHostedSessionResponse,
+  PaymentsPricingResponse,
   PaymentsPurchaseResponse,
   PaymentsRestoreResponse,
 } from "./responses";
 import {
+  AdminDiscountsQuery,
   AdminEntitlementsQuery,
   AdminPurchasesQuery,
   AdminSubscriptionsQuery,
   AdminUserParam,
   AppleWebhookNotification,
   CheckoutRequest,
+  DiscountCreateRequest,
   EntitlementGrantRequest,
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
@@ -833,6 +846,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           providerAccountId: await accountFor(c, rail, userId),
           successUrl: settings.successUrl,
           cancelUrl: settings.cancelUrl,
+          // Passed to the store unchanged. Pithy never computes a discounted amount and never checks a code
+          // against anything of its own — the provider is the authority on what is owed.
+          discountCode: input.discountCode,
         },
         { now: clock(), deployment: deploymentName(c) },
       );
@@ -845,7 +861,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         sessionId: c.var.auth?.sessionId,
         resourceType: "product",
         resourceId: entry.id,
-        metadata: { rail, productId: entry.id, subscription: entry.product.type === "subscription" },
+        metadata: {
+          rail,
+          productId: entry.id,
+          subscription: entry.product.type === "subscription",
+          // Whether one was used, never which. The trail is long-lived and a code is a commercial fact.
+          discounted: input.discountCode !== undefined,
+        },
       });
       return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
@@ -934,6 +956,155 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * The write is a repair of the read model, not a purchase: null provenance, no purchase row, and the
      * projection stays authoritative for any key the catalog sells. See `entitlement/manual.ts`.
      */
+    /**
+     * AUTHED READ — what the caller's own subscription pays, and when that changes.
+     *
+     * The half that stops a bill changing unannounced. A discount that lapses with nothing having said so
+     * is, from a customer's seat, indistinguishable from a billing error — so a screen offering a
+     * twelve-month rate has to be able to say when the twelve months end.
+     *
+     * The caller's own, always: the subscription is found from the provider-account map keyed on the
+     * authenticated user, and there is no request field naming one. Answers `null` when this caller has no
+     * subscription a rail can price, which is a fact rather than a failure.
+     */
+    app.get(`${base}/pricing`, requireAuth(), async (c) => {
+      const userId = callerId(c);
+      const db = paymentsDatabase(database(c));
+
+      // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
+      // row records a closed period and has no "next".
+      const row = await db
+        .selectFrom(PAYMENTS_PURCHASES_TABLE)
+        .selectAll()
+        .where("userId", "=", userId)
+        .where("type", "=", "subscription")
+        .orderBy("providerEventAt", "desc")
+        .executeTakeFirst();
+      if (row === undefined) return c.json({ pricing: null }, 200);
+
+      const purchase = PaymentsPurchase.parse(row);
+      const provider = resolveRailProvider(purchase.rail, config, await credentials(c), trust);
+      if (!isPricingRail(provider)) return c.json({ pricing: null }, 200);
+
+      const pricing = await provider.readPricing(purchase, { now: clock(), deployment: deploymentName(c) });
+      if (pricing === undefined) return c.json({ pricing: null }, 200);
+
+      return c.json(
+        {
+          pricing: {
+            currency: pricing.currency,
+            currentAmountMinor: pricing.currentAmountMinor,
+            listAmountMinor: pricing.listAmountMinor,
+            discountCode: pricing.discountCode,
+            discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
+          } satisfies PaymentsPricingResponse,
+        },
+        200,
+      );
+    });
+
+    /**
+     * CONTROL PLANE. The discount codes this project has issued.
+     *
+     * Read from the store rather than from a table of ours: the store is where a code actually exists, and a
+     * local mirror would be a second answer that drifts the first time somebody uses the dashboard.
+     *
+     * Its own scope, narrower than minting. A pane that lists what was issued does not need the power to
+     * issue. Never reaches a browser — the set of codes an adopter has issued is a commercial fact, and the
+     * client projection draws the same line here it draws for SKUs.
+     */
+    app.get(
+      `${base}/admin/discounts`,
+      requireControlPlane(PAYMENTS_DISCOUNT_READ_SCOPE),
+      zValidator("query", AdminDiscountsQuery, validationHook),
+      async (c) => {
+        const { rail } = c.req.valid("query");
+        const provider = resolveRailProvider(rail, config, await credentials(c), trust);
+        if (!isDiscountRail(provider)) {
+          throw new PaymentsRailNotConfiguredError({ detail: `The ${provider.rail} rail does not mint discounts.` });
+        }
+
+        const discounts = await provider.listDiscounts({ now: clock(), deployment: deploymentName(c) });
+
+        await c.var.emit({
+          action: PaymentsAuditActions.discountCreated,
+          outcome: "success",
+          actorType: "service",
+          actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+          resourceType: "discount",
+          resourceId: rail,
+          // A count and the rail. Every management read is audited the same way, and never with its rows.
+          metadata: { rail, read: true, count: discounts.length },
+        });
+
+        return c.json({ discounts: [...discounts] } satisfies PaymentsAdminDiscountsResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Mint a discount code at one store.
+     *
+     * **Its own scope**, `payments:discounts:create`, granted separately from the entitlement writes.
+     * Comping somebody an entitlement and creating a code that reduces what everybody holding it pays are
+     * different powers with different blast radii, and a tool that needs one must not acquire the other.
+     *
+     * **The kit provides the verb; the adopter provides the policy.** This creates the object at the store
+     * and answers with what it made. Who may be offered a code, what it is worth, where that offer is
+     * recorded and when it stops being advertised are commercial decisions with a company's pricing behind
+     * them — a capability that guessed at them would be wrong for the second adopter.
+     *
+     * Applying a code does **not** go through here and does not require this scope. An adopter whose codes
+     * are minted by hand in a provider dashboard is fully served by `/checkout`'s `discountCode`.
+     */
+    app.post(
+      `${base}/admin/discounts`,
+      requireControlPlane(PAYMENTS_DISCOUNT_CREATE_SCOPE),
+      zValidator("json", DiscountCreateRequest, validationHook),
+      async (c) => {
+        const input = c.req.valid("json");
+        const provider = resolveRailProvider(input.rail, config, await credentials(c), trust);
+        if (!isDiscountRail(provider)) {
+          // Structural, so a rail that gains the ability needs no edit here and one that never will can
+          // never be asked.
+          throw new PaymentsRailNotConfiguredError({
+            detail: `The ${provider.rail} rail does not mint discounts.`,
+          });
+        }
+
+        const created = await provider.createDiscount(input.terms, { now: clock() });
+
+        await c.var.emit({
+          action: PaymentsAuditActions.discountCreated,
+          outcome: "success",
+          actorType: "service",
+          actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+          resourceType: "discount",
+          resourceId: created.providerDiscountId,
+          // What was minted and how much it is worth — an administrative act with a cost attached, and the
+          // trail is the only record of who decided a customer should pay less. The code itself is named
+          // because a run of mints is what an operator reads this for.
+          metadata: {
+            rail: input.rail,
+            code: created.code,
+            amount:
+              created.terms.amount.kind === "percent"
+                ? `${created.terms.amount.percent}%`
+                : `${created.terms.amount.amountMinor} ${created.terms.amount.currency}`,
+            duration: created.terms.duration.kind,
+          },
+        });
+
+        return c.json(
+          {
+            code: created.code,
+            providerDiscountId: created.providerDiscountId,
+            rail: input.rail,
+          } satisfies PaymentsDiscountResponse,
+          200,
+        );
+      },
+    );
+
     app.post(
       `${base}/entitlements/grant`,
       requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE),

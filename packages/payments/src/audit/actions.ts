@@ -73,6 +73,8 @@ export const PaymentsAuditActions = {
    * never projected. Audited because it is one of exactly two ways an entitlement appears without money
    * moving, and because the actor is support tooling rather than the user who benefits.
    */
+  /** A discount code was minted at a store. An administrative act with a cost attached, so it is recorded. */
+  discountCreated: "payments/discount_created",
   entitlementGranted: "payments/entitlement_granted",
   /** An entitlement was revoked by hand through the control plane. The other of the two, for the same reason. */
   entitlementRevoked: "payments/entitlement_revoked",

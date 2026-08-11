@@ -243,7 +243,7 @@ beforeEach(async () => {
 });
 
 describe("what a management client discovers about payments", () => {
-  test("the manifest names all four reads, at the base path this project actually mounted", async () => {
+  test("the manifest names every read, at the base path this project actually mounted", async () => {
     await connect([MANIFEST_READ_SCOPE]);
     const routes = paymentsRoutes(await manifest());
     expect(routes.filter((route) => route.method === "GET").map((route) => route.path)).toEqual([
@@ -252,6 +252,7 @@ describe("what a management client discovers about payments", () => {
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
+      "/billing/admin/discounts",
     ]);
   });
 
