@@ -257,7 +257,11 @@ const sync = defineCommand({
       // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
       // command is run on a hunch, often, and it has to be obvious when it did nothing.
       if (routes.every((route) => !route.changed) && runs.every((run) => !run.changed)) {
-        const nothing = routes.length === 0 && runs.length === 0;
+        // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
+        // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
+        // job's binding out — so a run per environment saying nothing is exactly the empty case.
+        const nothing =
+          routes.length === 0 && runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
         process.stdout.write(
           nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
         );
@@ -269,8 +273,11 @@ const sync = defineCommand({
         process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
       }
       for (const run of runs) {
+        if (!run.changed) continue;
         const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
-        const bound = run.workflows.map((entry) => entry.binding).join(", ");
+        // `nothing` rather than an empty gap: a run that moved to an empty table took a job's binding
+        // out, and a line reading ": . no cron." says that as badly as it can be said.
+        const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
         process.stdout.write(`${run.env}: ${bound} bound. ${crons}.\n`);
       }
       // Cloudflare resolves class_name in the script the binding names, and that script is this one.

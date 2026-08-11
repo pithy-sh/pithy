@@ -44,6 +44,8 @@ The first half is the address. A `domains` block names where the Worker answers 
 
 The second half writes the app capability's declared Workflows and cron triggers, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, `triggers.crons` is set to exactly the declared schedules, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
 
+**`pithy doctor` and `pithy deploy --env <name>` read that half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
+
 **`rename`** is documented in full at `docs/CLI.md` §6.6, and that section is the authority. In short: a Worker's name is three strings that have to agree — the directory `apps/<name>/`, the deployed script name in `wrangler.jsonc` and `package.json`, and `vars.WORKER`, which is what tells two Workers' audit events apart when they share a database. This command moves all three at once, comment-preserving, holding the new name to the same kebab-case rule `add` holds a new one to and refusing a destination that already exists.
 
 Two things it deliberately leaves alone: the app capability's `name` in `pithy.config.ts`, which is a migration namespace stamped into every applied row, and a script name the adopter chose — only a name carrying the Worker segment is recomputed, so a Worker migrated in as `my-service` keeps its name and the command says so.
@@ -146,7 +148,7 @@ $ pithy worker sync --worker api --json
 | `routes[].pattern` | `string` | The hostname the `custom_domain` route now points at |
 | `routes[].baseUrl` | `string` | What `vars.BASE_URL` now holds: `https://<pattern>` |
 | `routes[].changed` | `boolean` | Whether that stanza moved. `false` on a re-run, and nothing is written |
-| `runs` | `object[]` | One entry per environment reconciled. Empty when the app capability declares no Workflows |
+| `runs` | `object[]` | One entry per environment reconciled. Empty when the Worker declares no `app` capability at all; one entry each, binding nothing, when the app declares no Workflows |
 | `runs[].env` | `string` | The environment reconciled. `dev` names the top-level stanza |
 | `runs[].workflows` | `object[]` | The entries that environment's `workflows` table now declares for the app, verbatim as written |
 | `runs[].workflows[].binding` | `string` | The binding name the Worker env exposes, e.g. `KEY_ROTATION` |

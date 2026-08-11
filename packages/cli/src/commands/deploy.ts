@@ -11,6 +11,7 @@ import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeplo
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -97,6 +98,14 @@ export default defineCommand({
       // are different questions with different fixes; `assertOriginsDeclared` exempts a feature
       // environment itself, which has no declared domain by design.
       if (env) await assertOriginsDeclared(projectDir, env);
+      // And the third half of it, on the same evidence and at the same moment: does this environment's
+      // stanza bind what its Workers' app capabilities declare (#267)? `reconcileAppWorkflows` writes
+      // that table and `pithy worker sync` is its only caller, so an adopter who declared a job and
+      // never ran it shipped a Worker with no `workflows` entry and no `triggers.crons` — the binding
+      // fails on the first request, and the cron simply never fires and says nothing at all. Beside the
+      // origins gate rather than inside it for the same reason that one is beside the binding gate: a
+      // different question with a different fix, and a feature environment is exempt from this one too.
+      if (env) await assertWorkflowsBound(projectDir, env);
 
       const account = await projectCloudflareAccount(projectDir);
       const pending = env ? await pendingFor(projectDir, env, account) : undefined;
