@@ -19,6 +19,35 @@ import { SecretCryptoError } from "../error/errors";
  * (`versionedValue.ts`) — `versions` is the still-valid key set, `currentVersion` the active
  * pointer — plus `lastRotatedAt` beside it as rotation metadata. Stringified-integer version keys,
  * so the keys read is inherently a full-set read (every still-valid version, never current-only).
+ *
+ * ## The secret's name is authenticated, not decorative
+ *
+ * Every seal binds the secret's **stored name** as AES-GCM additional authenticated data. It is not
+ * encrypted; it is bound. Without it a ciphertext is valid under the key alone, so one lifted from
+ * one row and written into another opens cleanly and the envelope has no opinion about whether it
+ * belongs there — every decision about which secret a caller gets then lives in the query above, and
+ * a bug there is a disclosure rather than a failure. With the name bound, a moved ciphertext does
+ * not open, inside the primitive, however that query is later rewritten.
+ *
+ * The stored name is the right thing to bind because it *is* the row's identity: `name` is unique in
+ * `pithy_secrets_system_secrets`, and for a keyspace member it is the whole `<entry>/<key>`
+ * (`keyspace.ts`) — so one tenant's credential does not open under another tenant's key.
+ *
+ * **What is bound must be stable for the life of the ciphertext, and this is.** Nothing renames a
+ * secret: the store offers `put` and `delete`, and a rename is a create under the new name plus a
+ * delete of the old, which re-encrypts through the plaintext. An `UPDATE ... SET name` in raw SQL
+ * would leave a row that never opens again — which is the property, not a regression. Choosing
+ * anything mutable (a display label, an owning tenant that could be reassigned) would make a rename
+ * an unopenable secret; the name cannot be renamed, so it cannot.
+ *
+ * The AAD is prefixed with {@link AAD_CONTEXT} for domain separation: a ciphertext from some future
+ * construction under the same master key will not open here, and vice versa. That prefix is
+ * versioned so a later change to what is bound is a deliberate, visible break.
+ *
+ * **No compatibility path.** Ciphertexts written before the binding existed carry no AAD and do not
+ * open — they fail as `secrets/crypto_failed`, like any other unreadable row. Nothing is published
+ * and no adopter stores production values yet, so accepting an unbound ciphertext "just this once"
+ * would buy nothing and leave the exact hole this closes permanently reachable.
  */
 export const EncryptionConfig = z
   .object({
@@ -43,7 +72,11 @@ export const EncryptionConfig = z
   );
 export type EncryptionConfig = z.output<typeof EncryptionConfig>;
 
-/** One AES-256-GCM envelope: base64 ciphertext, base64 IV, and the key version that produced it. */
+/**
+ * One AES-256-GCM envelope: base64 ciphertext, base64 IV, and the key version that produced it. The
+ * bound name is deliberately not in here — it is the row's own `name` column, supplied by the caller
+ * on the way back in, so a row that has been moved cannot carry its old context with it.
+ */
 export interface EncryptedEnvelope {
   encryptedValue: string;
   iv: string;
@@ -62,6 +95,26 @@ function fromBase64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
 }
 
+/**
+ * The domain-separation prefix on every seal's authenticated data. Versioned: changing what is bound
+ * changes this too, so the break is deliberate and every old ciphertext fails loudly rather than
+ * opening under a rule it was not sealed with.
+ */
+const AAD_CONTEXT = "pithy.secrets.v1:";
+
+/**
+ * The authenticated data for one secret: the domain prefix and the stored name.
+ *
+ * An empty name is refused on both halves. It would bind the prefix alone — every secret sharing one
+ * context is the same as binding nothing, and it would fail open rather than loudly.
+ */
+function additionalData(name: string): Uint8Array {
+  if (name.length === 0) {
+    throw new SecretCryptoError({ detail: "the envelope needs a secret name to bind; an empty name binds nothing" });
+  }
+  return new TextEncoder().encode(`${AAD_CONTEXT}${name}`);
+}
+
 /** Import the AES-GCM key for `version` from the config, or throw if that version is absent. */
 async function importKey(
   config: EncryptionConfig,
@@ -77,38 +130,58 @@ async function importKey(
   return crypto.subtle.importKey("raw", fromBase64(b64), "AES-GCM", false, usage);
 }
 
-/** Encrypt `plaintext` under the config's current key version. The IV is 12 fresh random bytes. */
-export async function encryptValue(config: EncryptionConfig, plaintext: string): Promise<EncryptedEnvelope> {
+/**
+ * Encrypt `plaintext` for the secret stored as `name`, under the config's current key version. The
+ * IV is 12 fresh random bytes; `name` is bound as authenticated data, so the result opens only for
+ * that name.
+ */
+export async function encryptValue(
+  config: EncryptionConfig,
+  name: string,
+  plaintext: string,
+): Promise<EncryptedEnvelope> {
+  const aad = additionalData(name);
   const keyVersion = Number(config.currentVersion);
   const key = await importKey(config, keyVersion, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: aad },
+    key,
+    new TextEncoder().encode(plaintext),
+  );
   return { encryptedValue: toBase64(new Uint8Array(ciphertext)), iv: toBase64(iv), keyVersion };
 }
 
 /**
- * Decrypt an envelope encrypted under `keyVersion`. The version may differ from
+ * Decrypt an envelope sealed for the secret stored as `name`. The key version may differ from
  * `currentVersion` during a rotation window; the matching key must still be in the config.
- * A missing key version or an unreadable ciphertext (tampering, wrong key) throws
- * `secrets/crypto_failed` — never the raw plaintext or key material.
+ *
+ * A missing key version, a tampered ciphertext, the wrong key, or a ciphertext sealed for a
+ * different name all throw `secrets/crypto_failed` — never the raw plaintext or key material. GCM
+ * cannot tell those apart, and separating them for the caller would be an oracle: the `detail` names
+ * the context the decrypt was *attempted under*, which is what an operator needs to see. `name`
+ * reaches logs verbatim there, which is safe because every name is either a registry literal or a
+ * `keyedSecretName` composed from a validated `SecretKey` — no newlines, no control bytes.
  */
 export async function decryptValue(
   config: EncryptionConfig,
-  encryptedValue: string,
-  iv: string,
-  keyVersion: number,
+  name: string,
+  envelope: EncryptedEnvelope,
 ): Promise<string> {
-  const key = await importKey(config, keyVersion, ["decrypt"]);
+  const aad = additionalData(name);
+  const key = await importKey(config, envelope.keyVersion, ["decrypt"]);
   try {
     const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: fromBase64(iv) },
+      { name: "AES-GCM", iv: fromBase64(envelope.iv), additionalData: aad },
       key,
-      fromBase64(encryptedValue),
+      fromBase64(envelope.encryptedValue),
     );
     return new TextDecoder().decode(plaintext);
   } catch (cause) {
     throw new SecretCryptoError(
-      { detail: `AES-GCM decrypt failed under key version ${keyVersion} (bad key or tampered ciphertext)` },
+      {
+        detail: `AES-GCM decrypt failed for secret '${name}' under key version ${envelope.keyVersion}: wrong key, tampered ciphertext, or a ciphertext sealed for a different name`,
+      },
       { cause },
     );
   }
