@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -8,7 +9,7 @@ import { appendVersion, initialVersionedValue, type VersionedValue } from "./cry
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import { defineSecretRegistry } from "./registry";
-import { type KeyedSecretSource, SecretsAccessor, secretsStore } from "./secretsStore";
+import { type KeyedSecretIO, SecretsAccessor, secretsStore } from "./secretsStore";
 
 /** A CF-Secrets-Store-only registry needs no D1, so the env only carries the named bindings. */
 function envWith(bindings: Record<string, unknown>): SecretsStoreEnv {
@@ -265,23 +266,30 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
     return accessor as { getKeyed(name: string, key: string): Promise<unknown> };
   }
 
-  /** A source over stored names, so a test asserts exactly which name a read asked for. */
-  function sourceOver(stored: Record<string, VersionedValue>) {
-    return vi.fn<KeyedSecretSource>(async (name) => stored[name]);
+  /**
+   * A keyed seam over stored names, so a test asserts exactly which name an operation asked for —
+   * and, for a write, exactly what it was asked to store.
+   */
+  function ioOver(stored: Record<string, VersionedValue>) {
+    return {
+      read: vi.fn<KeyedSecretIO["read"]>(async (name) => stored[name]),
+      write: vi.fn<KeyedSecretIO["write"]>(async () => "1"),
+      remove: vi.fn<KeyedSecretIO["remove"]>(async () => {}),
+    };
   }
 
   test("getKeyed resolves one member, composed as <keyspace>/<key>", async () => {
-    const source = sourceOver({
+    const source = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "alpha-key" })),
     });
     const secrets = new SecretsAccessor(keyspace, {}, source);
 
     expect(await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({ privateKey: "alpha-key" });
-    expect(source).toHaveBeenCalledWith("CONNECTION_SIGNING_KEY/conn_a");
+    expect(source.read).toHaveBeenCalledWith("CONNECTION_SIGNING_KEY/conn_a");
   });
 
   test("one tenant's key never resolves another tenant's member", async () => {
-    const source = sourceOver({
+    const source = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "alpha-key" })),
       "CONNECTION_SIGNING_KEY/conn_b": initialVersionedValue(JSON.stringify({ privateKey: "bravo-key" })),
     });
@@ -292,17 +300,17 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("a key carrying the separator is refused before the store is touched", async () => {
-    const source = sourceOver({ "OTHER_KEYSPACE/victim": initialVersionedValue("{}") });
+    const source = ioOver({ "OTHER_KEYSPACE/victim": initialVersionedValue("{}") });
     const secrets = new SecretsAccessor(keyspace, {}, source);
 
     await expect(secrets.getKeyed("CONNECTION_SIGNING_KEY", "../OTHER_KEYSPACE/victim")).rejects.toBeInstanceOf(
       ValidationError,
     );
-    expect(source).not.toHaveBeenCalled();
+    expect(source.read).not.toHaveBeenCalled();
   });
 
   test("an unstored member fails closed, and the refusal never echoes the key", async () => {
-    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+    const secrets = new SecretsAccessor(keyspace, {}, ioOver({}));
 
     const error = await secrets.getKeyed("CONNECTION_SIGNING_KEY", "conn_missing").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SecretNotFoundError);
@@ -310,7 +318,7 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("a member failing its schema throws without echoing the material or the key", async () => {
-    const source = sourceOver({
+    const source = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "SHORT" })),
     });
     const secrets = new SecretsAccessor(keyspace, {}, source);
@@ -324,7 +332,7 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("getKeyedVersions exposes the pointer and every still-valid version of one member", async () => {
-    const source = sourceOver({
+    const source = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": appendVersion(
         initialVersionedValue(JSON.stringify({ privateKey: "old-key-1" })),
         JSON.stringify({ privateKey: "new-key-2" }),
@@ -339,7 +347,7 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("get refuses a keyspace — it has no single value", async () => {
-    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+    const secrets = new SecretsAccessor(keyspace, {}, ioOver({}));
     expect(() => (secrets.get as (name: string) => unknown)("CONNECTION_SIGNING_KEY")).toThrow(InternalError);
   });
 
@@ -351,7 +359,7 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("getKeyed refuses an undeclared keyspace", async () => {
-    const secrets = new SecretsAccessor(keyspace, {}, sourceOver({}));
+    const secrets = new SecretsAccessor(keyspace, {}, ioOver({}));
     await expect(loosely(secrets).getKeyed("NOT_DECLARED", "conn_a")).rejects.toBeInstanceOf(SecretNotFoundError);
   });
 
@@ -361,7 +369,7 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("toJSON still redacts after a member has been read", async () => {
-    const source = sourceOver({
+    const source = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "REDACT_ME_KEY" })),
     });
     const secrets = new SecretsAccessor(keyspace, {}, source);
@@ -374,10 +382,10 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
   });
 
   test("subset keeps the keyspace readable, and rebinds the source when given one", async () => {
-    const stale = sourceOver({
+    const stale = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "stale-key" })),
     });
-    const fresh = sourceOver({
+    const fresh = ioOver({
       "CONNECTION_SIGNING_KEY/conn_a": initialVersionedValue(JSON.stringify({ privateKey: "fresh-key" })),
     });
     const secrets = new SecretsAccessor(keyspace, {}, stale);
@@ -388,6 +396,229 @@ describe("SecretsAccessor — keyed entries (a per-tenant keyspace)", () => {
     expect(await secrets.subset(keyspace, fresh).getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({
       privateKey: "fresh-key",
     });
+  });
+});
+
+describe("SecretsAccessor — writing a keyspace member on the request path", () => {
+  const ConnectionKey = z
+    .object({ privateKey: z.string().min(8).describe("PKCS#8 private key.") })
+    .describe("A customer connection's signing key.");
+
+  const keyspace = defineSecretRegistry({
+    CONNECTION_SIGNING_KEY: {
+      backend: "d1",
+      scope: "environment",
+      rotatable: true,
+      valueType: "json",
+      schema: ConnectionKey,
+      keyed: true,
+    },
+  });
+
+  const fixedKeys = defineSecretRegistry({
+    TENANT_API_KEY: { backend: "d1", scope: "environment", rotatable: false, valueType: "text", keyed: true },
+  });
+
+  const named = defineSecretRegistry({
+    NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+  });
+
+  /** Call a write with a name the types refuse — the runtime guard is what is under test. */
+  function loosely(accessor: object): {
+    putKeyed(name: string, key: string, value: unknown): Promise<unknown>;
+    deleteKeyed(name: string, key: string): Promise<void>;
+  } {
+    return accessor as {
+      putKeyed(name: string, key: string, value: unknown): Promise<unknown>;
+      deleteKeyed(name: string, key: string): Promise<void>;
+    };
+  }
+
+  /** A keyed seam that records every write and settles on `version`. */
+  function writerIO(version = "1") {
+    return {
+      read: vi.fn<KeyedSecretIO["read"]>(async () => undefined),
+      write: vi.fn<KeyedSecretIO["write"]>(async () => version),
+      remove: vi.fn<KeyedSecretIO["remove"]>(async () => {}),
+    };
+  }
+
+  test("putKeyed seals under <keyspace>/<key> and asks for a create", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    const result = await secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "alpha-private-key" });
+
+    expect(result).toEqual({ currentVersion: "1" });
+    expect(io.write).toHaveBeenCalledWith({
+      keyspace: "CONNECTION_SIGNING_KEY",
+      storedName: "CONNECTION_SIGNING_KEY/conn_a",
+      mode: "create",
+      value: JSON.stringify({ privateKey: "alpha-private-key" }),
+      valueType: "json",
+      rotatable: true,
+    });
+  });
+
+  test("replace is the explicit mode — a create never becomes an overwrite by default", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    await secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "alpha-private-key" }, { replace: true });
+
+    expect(io.write).toHaveBeenCalledWith(expect.objectContaining({ mode: "replace" }));
+  });
+
+  test("rotateKeyed appends, and reports the version the member now points at", async () => {
+    const io = writerIO("2");
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    const result = await secrets.rotateKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "bravo-private-key" });
+
+    expect(result).toEqual({ currentVersion: "2" });
+    expect(io.write).toHaveBeenCalledWith(expect.objectContaining({ mode: "rotate" }));
+  });
+
+  test("a keyspace declared rotatable: false is not made to accumulate versions", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(fixedKeys, {}, io);
+
+    await expect(secrets.rotateKeyed("TENANT_API_KEY", "tenant_a", "next-key")).rejects.toBeInstanceOf(InternalError);
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  test("a key carrying the separator is refused before anything is written", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    await expect(
+      secrets.putKeyed("CONNECTION_SIGNING_KEY", "../OTHER_KEYSPACE/victim", { privateKey: "planted-key" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  test("a value failing the keyspace schema is refused, echoing neither the material nor the key", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    const error = await secrets
+      .putKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "SHORT" })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(SecretInvalidValueError);
+    const serialized = JSON.stringify((error as SecretInvalidValueError).payload);
+    expect(serialized).toContain("privateKey:too_small");
+    expect(serialized).not.toContain("SHORT");
+    expect(serialized).not.toContain("conn_a");
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  test("only what the schema declares is sealed — a stray property does not ride along", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    await secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", {
+      privateKey: "alpha-private-key",
+      smuggled: "REDACT_ME",
+    } as never);
+
+    expect(io.write).toHaveBeenCalledWith(
+      expect.objectContaining({ value: JSON.stringify({ privateKey: "alpha-private-key" }) }),
+    );
+  });
+
+  test("a text keyspace handed something that is not a string refuses rather than sealing it", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(fixedKeys, {}, io);
+
+    await expect(loosely(secrets).putKeyed("TENANT_API_KEY", "tenant_a", { key: "x" })).rejects.toBeInstanceOf(
+      SecretInvalidValueError,
+    );
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  test("deleteKeyed removes the composed member", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    await secrets.deleteKeyed("CONNECTION_SIGNING_KEY", "conn_a");
+
+    expect(io.remove).toHaveBeenCalledWith("CONNECTION_SIGNING_KEY/conn_a");
+  });
+
+  test("a write against a named secret, or an undeclared name, is refused", async () => {
+    const namedAccessor = new SecretsAccessor(named, {}, writerIO());
+    await expect(loosely(namedAccessor).putKeyed("NPM_TOKEN", "conn_a", "value")).rejects.toBeInstanceOf(InternalError);
+    await expect(loosely(namedAccessor).deleteKeyed("NOT_DECLARED", "conn_a")).rejects.toBeInstanceOf(
+      SecretNotFoundError,
+    );
+  });
+
+  test("an accessor with no keyed I/O fails closed rather than reporting a write it did not do", async () => {
+    const secrets = new SecretsAccessor(keyspace, {});
+
+    await expect(
+      secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "alpha-private-key" }),
+    ).rejects.toBeInstanceOf(InternalError);
+  });
+
+  test("a write is audited as the tenant's, and the event carries nothing about the value", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+    const emit = vi.fn<AuditEmit>(async () => {});
+
+    await secrets.putKeyed(
+      "CONNECTION_SIGNING_KEY",
+      "conn_a",
+      { privateKey: "REDACT_ME_KEY" },
+      { audit: { emit, actorType: "user", actorId: "usr_1", requestId: "req_9" } },
+    );
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    const event = emit.mock.calls[0]?.[0];
+    expect(event).toMatchObject({
+      action: "secrets/member_written",
+      outcome: "success",
+      actorType: "user",
+      actorId: "usr_1",
+      requestId: "req_9",
+      resourceType: "secret",
+      resourceId: "CONNECTION_SIGNING_KEY/conn_a",
+      tenant: "conn_a",
+      metadata: { keyspace: "CONNECTION_SIGNING_KEY", mode: "create" },
+    });
+    expect(JSON.stringify(event)).not.toContain("REDACT_ME_KEY");
+  });
+
+  test("a refused write is recorded too, and still throws", async () => {
+    const io = writerIO();
+    io.write.mockRejectedValueOnce(new SecretNotFoundError({ detail: "no member" }));
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+    const emit = vi.fn<AuditEmit>(async () => {});
+
+    await expect(
+      secrets.rotateKeyed(
+        "CONNECTION_SIGNING_KEY",
+        "conn_a",
+        { privateKey: "alpha-private-key" },
+        { audit: { emit, actorType: "service" } },
+      ),
+    ).rejects.toBeInstanceOf(SecretNotFoundError);
+
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      action: "secrets/member_rotated",
+      outcome: "failure",
+      severity: "warning",
+    });
+  });
+
+  test("no audit is emitted when the caller supplies no recorder", async () => {
+    const io = writerIO();
+    const secrets = new SecretsAccessor(keyspace, {}, io);
+
+    await expect(
+      secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", { privateKey: "alpha-private-key" }),
+    ).resolves.toEqual({ currentVersion: "1" });
   });
 });
 

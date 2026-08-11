@@ -125,7 +125,7 @@ function declared(registry: SecretRegistry, name: string): SecretRegistryEntry {
   if (entry.keyed) {
     throw new InternalError({
       message: `Secret '${name}' is a keyspace, so it has no single value to seed.`,
-      action: "Write a keyspace member with SystemSecretsStore.put(keyedSecretName(name, key), …).",
+      action: "Write a keyspace member the way the app does: secrets.putKeyed(name, key, value).",
       detail: `secret fixture '${name}' names a keyed entry`,
     });
   }

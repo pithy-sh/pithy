@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuditActorType, AuditOutcome } from "@pithy-sh/core/src/audit/auditEvent";
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type SecretsAuditAction, SecretsAuditActions } from "./audit/actions";
 import {
   currentValue,
   decodeVersionedValue,
@@ -11,7 +14,9 @@ import {
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import { keyedSecretName } from "./keyspace";
+import { type KeyedMemberWrite, type KeyedWriteMode, runKeyedRemove, runKeyedWrite } from "./keyspaceWrite";
 import type { KeyedSecretName, SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
+import { RotationTracker } from "./store/rotationTracker";
 import { SystemSecretsStore } from "./store/systemSecretsStore";
 
 /**
@@ -54,6 +59,13 @@ import { SystemSecretsStore } from "./store/systemSecretsStore";
  * name that does not exist at build time). Members are never cached — one tenant's credential must not
  * sit in an accessor the next request reuses.
  *
+ * **A keyspace is also the one thing this accessor writes.** `putKeyed` / `rotateKeyed` / `deleteKeyed`
+ * seal and store one member inline, on the request, because the application that mints a per-tenant
+ * credential has to know it is stored before it can hand the other half out (`./keyspaceWrite`). A
+ * *named* secret is still written only by the CLI through the manager Workflow, and that stays: an
+ * operator-provisioned value has nobody waiting on the response, and the CLI is the only place holding
+ * the registry that can validate it before it is written.
+ *
  * The master key never leaves the worker, and resolved plaintext is held in `#private` fields so
  * it cannot leak via `JSON.stringify`, structured logging, or object spread.
  */
@@ -74,22 +86,40 @@ interface Resolved {
 }
 
 /**
- * Fetches one keyspace member's stored envelope by its composed `<keyspace>/<key>` name, or
- * `undefined` when nothing is stored under it — which the accessor turns into `secrets/not_found`.
- * A seam, so the accessor's rules are testable without a D1; {@link d1KeyedSource} is the real one.
+ * Everything the accessor does to one keyspace member, by its composed `<keyspace>/<key>` name.
+ *
+ * One seam rather than a read one and a write one, because they are one store and every operation
+ * runs the same way: build it now, do exactly one thing, and let it go. A seam at all so the
+ * accessor's rules — which name a read composes, what a create refuses, which errors never echo a
+ * key — are testable without a D1; {@link d1KeyedIO} is the real one.
  */
-export type KeyedSecretSource = (storedName: string) => Promise<VersionedValue | undefined>;
+export interface KeyedSecretIO {
+  /** One member's stored envelope, or `undefined` when nothing is stored under that name. */
+  read(storedName: string): Promise<VersionedValue | undefined>;
+  /** Seal and store one member; resolves to its current version key once the row is written. */
+  write(write: KeyedMemberWrite): Promise<string>;
+  /** Remove one member and every version of it. A no-op when it is not stored. */
+  remove(storedName: string): Promise<void>;
+}
 
 /**
- * The real keyed source: the per-environment encrypted D1 store, one member per read.
+ * The real keyed I/O: the per-environment encrypted D1 store, one member per operation.
  *
- * The store is built per read rather than once, so it re-resolves the master key — a
+ * The store is built per operation rather than once, so it re-resolves the master key — a
  * `SECRETS_ENCRYPTION_KEYS` rotation is picked up instead of being pinned for the life of a cached
  * accessor. A keyspace has no other home: a Secrets Store binding is declared at build time and a
  * member's name is not — which is the argument that has now been made for every `d1` secret (#153).
  */
-export function d1KeyedSource(env: SecretsStoreEnv): KeyedSecretSource {
-  return async (storedName) => (await SystemSecretsStore.fromEnv(env)).getValue(storedName);
+export function d1KeyedIO(env: SecretsStoreEnv): KeyedSecretIO {
+  const deps = async () => ({
+    store: await SystemSecretsStore.fromEnv(env),
+    tracker: RotationTracker.fromD1(env.SECRETS),
+  });
+  return {
+    read: async (storedName) => (await SystemSecretsStore.fromEnv(env)).getValue(storedName),
+    write: async (write) => runKeyedWrite(await deps(), write),
+    remove: async (storedName) => runKeyedRemove(await deps(), storedName),
+  };
 }
 
 /** Parse a raw stored string into the entry's value type: `text` passes through, `json` is validated. */
@@ -115,6 +145,40 @@ function parseValue(entry: SecretRegistryEntry, name: string, raw: string): unkn
     });
   }
   return result.data;
+}
+
+/**
+ * A caller's value as the string that goes inside the envelope — the inverse of {@link parseValue},
+ * and the write side of the same trust boundary.
+ *
+ * A `json` value is validated against the entry's own schema and re-serialized **from the parsed
+ * data**, never from the object handed in: Zod strips what the schema does not declare, so a stray
+ * extra property is not sealed in to come back out at a read that trusts the envelope. A `text` value
+ * must actually be a string — the types say so, but the one caller this exists for is application code
+ * holding a freshly minted credential, and `String(value)` on the wrong thing seals `[object Object]`
+ * under a name that will be read as a key.
+ *
+ * The refusal carries issue paths and codes only, like the read: a Zod issue can echo the value.
+ */
+function serializeValue(entry: SecretRegistryEntry, name: string, value: unknown): string {
+  if (entry.valueType === "text") {
+    if (typeof value !== "string") {
+      throw new SecretInvalidValueError({
+        message: `Secret '${name}' takes a string value.`,
+        detail: `text secret '${name}' was handed a ${typeof value}`,
+      });
+    }
+    return value;
+  }
+  const result = entry.schema.safeParse(value);
+  if (!result.success) {
+    const summary = result.error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
+    throw new SecretInvalidValueError({
+      message: `Secret '${name}' failed validation.`,
+      detail: `json secret '${name}' failed registry validation on write: ${summary}`,
+    });
+  }
+  return JSON.stringify(result.data);
 }
 
 /** Resolve a decrypted value envelope (a `d1` secret), parsing every version. */
@@ -155,6 +219,65 @@ function resolveInjected(entry: SecretRegistryEntry, name: string, raw: string):
 }
 
 /**
+ * Who wrote a member, and what records it.
+ *
+ * **Writing a credential is an administrative act, so it is audited — but the capability cannot audit
+ * it alone.** `emit` is the request context's recorder (`c.var.emit`), which lives on the request, not
+ * on an accessor cached across them; and the actor is known to the application and to nothing else. An
+ * event this capability emitted by itself would say a per-tenant credential was written and be unable
+ * to say by whom, which is the one thing worth recording. So the shape and the action codes are the
+ * capability's — an adopter does not invent a code for the most sensitive write in the kit — and the
+ * emitter and the principal come from the call.
+ *
+ * Omit it and nothing is recorded. That is a deliberate choice a caller makes, not a default it can
+ * fall into unaware: a write that matters is a write with a call site, and the field is one line.
+ */
+export interface KeyedWriteAudit {
+  /** The request context's recorder, `c.var.emit`. Non-fatal by contract, so it cannot break a write. */
+  emit: AuditEmit;
+  /** What kind of principal is writing — a signed-in operator, a service token, an internal job. */
+  actorType: AuditActorType;
+  /** That principal's stable id, when there is one. */
+  actorId?: string | null;
+  /** The session the write belongs to, tying it to the rest of that session's actions. */
+  sessionId?: string | null;
+  /** The request correlation id, tying the event to one request or trace. */
+  requestId?: string | null;
+}
+
+/** What a member write settled on. */
+export interface KeyedWriteResult {
+  /**
+   * The member's current version key after the write — `"1"` for a create or a replace, the appended
+   * one after a rotation. The pointer `getKeyed` will now resolve, so a caller can record which
+   * version of a tenant's credential it just handed out.
+   */
+  currentVersion: string;
+}
+
+/** Options for {@link SecretsAccessor.putKeyed}. */
+export interface KeyedPutOptions {
+  /**
+   * Discard whatever is stored for this key and write the value as a fresh, single-version member.
+   *
+   * Off by default, and the default is the point. Create-or-replace would make "overwrite this
+   * tenant's signing key, losing the one still in use" a typo away, and the loss is silent and total —
+   * the old key is gone, so every token already signed with it stops verifying and nothing says why.
+   * Adding a key while the old one still works is {@link SecretsAccessor.rotateKeyed}; this is for the
+   * case where the stored value must *not* survive, a leaked credential being the whole of it.
+   */
+  replace?: boolean;
+  /** Record the write in the audit trail. */
+  audit?: KeyedWriteAudit;
+}
+
+/** Options for {@link SecretsAccessor.rotateKeyed} and {@link SecretsAccessor.deleteKeyed}. */
+export interface KeyedWriteOptions {
+  /** Record the write in the audit trail. */
+  audit?: KeyedWriteAudit;
+}
+
+/**
  * The resolved, typed accessor. The named methods are synchronous — every value was materialized by
  * `secretsStore`; the keyed ones are not, because a keyspace member is fetched at the read. Resolved
  * plaintext lives in `#private` fields, and `toJSON` redacts, so a stray `logger.info({ secrets })`
@@ -163,7 +286,7 @@ function resolveInjected(entry: SecretRegistryEntry, name: string, raw: string):
 export class SecretsAccessor<R extends SecretRegistry> {
   readonly #registry: R;
   readonly #resolved: Record<string, Resolved>;
-  readonly #keyedSource: KeyedSecretSource | undefined;
+  readonly #keyed: KeyedSecretIO | undefined;
   readonly #failures: Record<string, Error>;
 
   /**
@@ -174,12 +297,12 @@ export class SecretsAccessor<R extends SecretRegistry> {
   constructor(
     registry: R,
     resolved: Record<string, Resolved>,
-    keyedSource?: KeyedSecretSource,
+    keyed?: KeyedSecretIO,
     failures: Record<string, Error> = {},
   ) {
     this.#registry = registry;
     this.#resolved = resolved;
-    this.#keyedSource = keyedSource;
+    this.#keyed = keyed;
     this.#failures = failures;
   }
 
@@ -218,6 +341,83 @@ export class SecretsAccessor<R extends SecretRegistry> {
   }
 
   /**
+   * Store one member of a declared keyspace — the credential `key` names — sealed through the same
+   * envelope and bound to the same `<keyspace>/<key>` context as every other secret.
+   *
+   * **Create-only by default.** An existing member is refused with `secrets/already_exists`; pass
+   * `{ replace: true }` to discard it. See {@link KeyedPutOptions.replace} for why that is not the
+   * default, and {@link rotateKeyed} for adding a key while the old one still verifies.
+   *
+   * The returned promise resolving is the persistence guarantee — the row is written, sealed under
+   * the current master key, before it settles. That is the whole reason this exists rather than a
+   * Workflow dispatch: a connect flow can only return a public half once the private half is stored,
+   * and "stored, probably, shortly" is a credential the customer discovers is broken later.
+   */
+  async putKeyed<K extends KeyedSecretName<R>>(
+    name: K,
+    key: string,
+    value: SecretValue<R[K]>,
+    options: KeyedPutOptions = {},
+  ): Promise<KeyedWriteResult> {
+    return await this.#writeKeyed(name, key, value, options.replace ? "replace" : "create", options.audit);
+  }
+
+  /**
+   * Add a new current value for one member, keeping every prior version valid — a tenant's key
+   * rotation, on the request path.
+   *
+   * This is the write that makes {@link getKeyedVersions} mean something: a verifier mid-rotation has
+   * to honour the retired key alongside the new one, and nothing else can produce that state. The
+   * keyspace must be declared `rotatable`, which is where that axis stops being forward-looking
+   * metadata — a keyspace that says it does not accumulate versions is not quietly made to.
+   *
+   * **Versions accumulate, and nothing prunes them yet.** Retiring a version after a grace window is
+   * the deferred half of value rotation (`crypto/versionedValue`), so every rotation makes the
+   * member's envelope larger and every read of it decrypts and parses the lot. That is fine for a
+   * credential rotated quarterly and wrong for one rotated hourly. Until pruning lands, a caller with
+   * a fast cadence collapses the member with `putKeyed(..., { replace: true })` once the retired key
+   * is genuinely dead.
+   */
+  async rotateKeyed<K extends KeyedSecretName<R>>(
+    name: K,
+    key: string,
+    value: SecretValue<R[K]>,
+    options: KeyedWriteOptions = {},
+  ): Promise<KeyedWriteResult> {
+    return await this.#writeKeyed(name, key, value, "rotate", options.audit);
+  }
+
+  /**
+   * Remove one member — every version of it, and its rotation history — as one operation.
+   *
+   * A tenant leaves once. Leaving a version behind because a caller looped and stopped early is the
+   * failure this signature exists to make impossible: a member is one row holding one envelope, so
+   * there is no partial state to reach.
+   *
+   * Idempotent, and it never reports whether anything was there. Deleting a member that does not
+   * exist is a retry, not an error — and an error that distinguished the two would answer "does this
+   * tenant have a credential" to anyone who could call it.
+   */
+  async deleteKeyed<K extends KeyedSecretName<R>>(
+    name: K,
+    key: string,
+    options: KeyedWriteOptions = {},
+  ): Promise<void> {
+    // Checked even though nothing here reads the entry: a delete against an undeclared name, or
+    // against a named secret, is the same author error it is on a read and answers the same way.
+    this.#keyspace(name);
+    const io = this.#requireKeyedIO(name);
+    const storedName = keyedSecretName(name, key);
+    try {
+      await io.remove(storedName);
+    } catch (error) {
+      await this.#auditKeyed(options.audit, SecretsAuditActions.memberRemoved, "failure", name, key, storedName);
+      throw error;
+    }
+    await this.#auditKeyed(options.audit, SecretsAuditActions.memberRemoved, "success", name, key, storedName);
+  }
+
+  /**
    * A typed view over a subset of this accessor, restricted to `registry`'s names and sharing the
    * already-resolved values — no re-fetch. Used by the shared per-invocation accessor: the combined
    * registry is resolved once, then each capability gets a precisely-typed accessor over only its own
@@ -228,15 +428,12 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * view a capability gets carries the errors of its own secrets, and cannot be tripped by a
    * neighbour's unset one.
    *
-   * `keyedSource` defaults to this accessor's own. The shared store passes the current invocation's
-   * instead: it hands out views over an accessor cached across requests, and a keyspace read is real
-   * I/O, which must run through the binding of the request making it — not of whichever request
-   * happened to fill the cache.
+   * `keyed` defaults to this accessor's own. The shared store passes the current invocation's
+   * instead: it hands out views over an accessor cached across requests, and a keyspace read or write
+   * is real I/O, which must run through the binding of the request making it — not of whichever
+   * request happened to fill the cache.
    */
-  subset<R2 extends SecretRegistry>(
-    registry: R2,
-    keyedSource: KeyedSecretSource | undefined = this.#keyedSource,
-  ): SecretsAccessor<R2> {
+  subset<R2 extends SecretRegistry>(registry: R2, keyed: KeyedSecretIO | undefined = this.#keyed): SecretsAccessor<R2> {
     const resolved: Record<string, Resolved> = {};
     const failures: Record<string, Error> = {};
     for (const name of Object.keys(registry)) {
@@ -245,7 +442,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
       const failure = this.#failures[name];
       if (failure) failures[name] = failure;
     }
-    return new SecretsAccessor(registry, resolved, keyedSource, failures);
+    return new SecretsAccessor(registry, resolved, keyed, failures);
   }
 
   /**
@@ -257,24 +454,9 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * is caller input identifying one tenant.
    */
   async #loadKeyed(name: string, key: string): Promise<Resolved> {
-    const entry = this.#registry[name];
-    if (!entry) {
-      throw new SecretNotFoundError({ detail: `keyspace '${name}' is not declared in this registry` });
-    }
-    if (!entry.keyed) {
-      throw new InternalError({
-        message: `Secret '${name}' is not a keyspace.`,
-        action: "Read a named secret with get(name), or declare the entry keyed.",
-        detail: `getKeyed called on named secret '${name}'`,
-      });
-    }
-    if (!this.#keyedSource) {
-      throw new InternalError({
-        message: `Secret '${name}' cannot be read here.`,
-        detail: `keyspace '${name}' read from an accessor built without a keyed source`,
-      });
-    }
-    const stored = await this.#keyedSource(keyedSecretName(name, key));
+    const entry = this.#keyspace(name);
+    const io = this.#requireKeyedIO(name);
+    const stored = await io.read(keyedSecretName(name, key));
     if (!stored) {
       throw new SecretNotFoundError({
         message: `Secret '${name}' has no value for that key.`,
@@ -284,6 +466,126 @@ export class SecretsAccessor<R extends SecretRegistry> {
     // Parsed against the keyspace's name, not the member's, so a malformed member says which keyspace
     // it belongs to without putting a tenant identifier in the log.
     return resolveVersioned(entry, name, stored);
+  }
+
+  /**
+   * Seal and store one member. The shared body of `putKeyed` and `rotateKeyed`, because everything
+   * except the mode is identical and the ordering is the part that has to be.
+   *
+   * The order is: prove the keyspace, prove the key, validate the value, *then* touch the store. A
+   * traversing key and a value that fails its schema are both refused before anything is written, and
+   * neither is audited — nothing was attempted against the store, and a rejected key is unvalidated
+   * input that has no business in a trail field that means "tenant".
+   *
+   * Everything from the store attempt onward is audited with its outcome, refusals included. A connect
+   * flow that tried to overwrite a tenant's live signing key and was refused is exactly the line an
+   * operator wants to find later.
+   *
+   * Both callers `return await` this rather than returning it. A guard here refuses before awaiting
+   * anything, so the promise is already rejected when it is handed back, and an adopted one does not
+   * pick up its handler until the next tick — which workerd reports as an unhandled rejection.
+   */
+  async #writeKeyed(
+    name: string,
+    key: string,
+    value: unknown,
+    mode: KeyedWriteMode,
+    audit: KeyedWriteAudit | undefined,
+  ): Promise<KeyedWriteResult> {
+    const entry = this.#keyspace(name);
+    if (mode === "rotate" && !entry.rotatable) {
+      throw new InternalError({
+        message: `Secret '${name}' does not accumulate versions.`,
+        action:
+          "Declare the keyspace rotatable, or replace the member with putKeyed(name, key, value, { replace: true }).",
+        detail: `rotateKeyed called on keyspace '${name}', which is declared rotatable: false`,
+      });
+    }
+    const io = this.#requireKeyedIO(name);
+    const storedName = keyedSecretName(name, key);
+    const serialized = serializeValue(entry, name, value);
+
+    const action = mode === "rotate" ? SecretsAuditActions.memberRotated : SecretsAuditActions.memberWritten;
+    try {
+      const currentVersion = await io.write({
+        keyspace: name,
+        storedName,
+        mode,
+        value: serialized,
+        valueType: entry.valueType,
+        rotatable: entry.rotatable,
+      });
+      await this.#auditKeyed(audit, action, "success", name, key, storedName, mode);
+      return { currentVersion };
+    } catch (error) {
+      await this.#auditKeyed(audit, action, "failure", name, key, storedName, mode);
+      throw error;
+    }
+  }
+
+  /** The declared keyspace `name` names, or the author error that says why it is not one. */
+  #keyspace(name: string): SecretRegistryEntry {
+    const entry = this.#registry[name];
+    if (!entry) {
+      throw new SecretNotFoundError({ detail: `keyspace '${name}' is not declared in this registry` });
+    }
+    if (!entry.keyed) {
+      throw new InternalError({
+        message: `Secret '${name}' is not a keyspace.`,
+        action: "Read a named secret with get(name), or declare the entry keyed.",
+        detail: `a keyspace operation was attempted on named secret '${name}'`,
+      });
+    }
+    return entry;
+  }
+
+  /** The keyed I/O this accessor was built with, or the wiring error that says it has none. */
+  #requireKeyedIO(name: string): KeyedSecretIO {
+    if (!this.#keyed) {
+      throw new InternalError({
+        message: `Secret '${name}' cannot be reached here.`,
+        detail: `keyspace '${name}' used through an accessor built without keyed I/O`,
+      });
+    }
+    return this.#keyed;
+  }
+
+  /**
+   * Record one member write in the audit trail, when the caller supplied a recorder.
+   *
+   * The key is the `tenant` dimension — the field that exists so a trail can be read per customer —
+   * and it is legitimate there precisely because it has already been validated and composed into a
+   * stored name. Nothing about the value is here, and nothing about the value is available to put
+   * here: the accessor holds the plaintext for the length of one seal and never in a field this
+   * method can reach.
+   *
+   * `emit` never throws by contract, so a write is never broken by its own audit.
+   */
+  async #auditKeyed(
+    audit: KeyedWriteAudit | undefined,
+    action: SecretsAuditAction,
+    outcome: AuditOutcome,
+    name: string,
+    key: string,
+    storedName: string,
+    mode?: KeyedWriteMode,
+  ): Promise<void> {
+    if (!audit) return;
+    await audit.emit({
+      action,
+      outcome,
+      // A routine per-tenant credential write is routine. A refused one is notable — it means
+      // something tried to write over a credential that is presumably in use.
+      severity: outcome === "success" ? "info" : "warning",
+      actorType: audit.actorType,
+      actorId: audit.actorId,
+      sessionId: audit.sessionId,
+      requestId: audit.requestId,
+      resourceType: "secret",
+      resourceId: storedName,
+      tenant: key,
+      metadata: mode ? { keyspace: name, mode } : { keyspace: name },
+    });
   }
 
   #require(name: string): Resolved {
@@ -388,7 +690,7 @@ export async function secretsStore<R extends SecretRegistry>(
     }
   }
 
-  return new SecretsAccessor(registry, resolved, d1KeyedSource(env), failures);
+  return new SecretsAccessor(registry, resolved, d1KeyedIO(env), failures);
 }
 
 /**

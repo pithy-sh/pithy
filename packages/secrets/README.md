@@ -16,6 +16,7 @@ Each entry in your `SecretRegistry` declares:
 - **`valueType`** — `text` or `json` (with a Zod schema).
 - **`devValue`** — optional. Set it to `random` when the value is *arbitrary*, and `pithy add <capability>` mints this project's dev value into the dev secrets file (see below). Leave it off when the value must match something outside the project.
 - **`rotateEveryDays`** — optional; how often this secret is expected to be rotated. It is what makes "overdue" a fact the capability states rather than a number a dashboard invented. Independent of `rotatable`: a third-party key no automation will ever rotate is exactly the one whose drift nothing else surfaces.
+- **`keyed`** — optional; declares a *keyspace* rather than a name. One schema, an unbounded set of members whose keys exist only at runtime. See [Keyspaces](#keyspaces--one-credential-per-tenant).
 
 The reader routes off these axes, resolves every secret **locally** (no RPC), and exposes one uniform API: `get(name)` for the current value, `getVersions(name)` for the current pointer plus every still-valid version. `backend` is a **storage** decision, not a read-time one — moving a secret between `d1` and `cf-secrets-store` is a one-line registry edit and every read site stays byte-identical. In local dev the same names resolve from `.dev.vars`; deployed, they resolve from the env's store. The call site is identical.
 
@@ -89,6 +90,36 @@ Each then reads through `sharedSecretsStore(env, managerRegistry)` like every ot
 ### Where the pieces live
 
 The `Capability` contract and the `compose` startup hook live in `@pithy-sh/core` — it carries the `secretRegistry` slice as a structural seam but never interprets it, so `core` keeps no dependency on `@pithy-sh/secrets`. All aggregation, the singleton, the TTL, and resolution live here, in `@pithy-sh/secrets`. Resolved plaintext is held in `#private` fields and `toJSON` redacts, so caching it for the TTL never widens the leakage surface.
+
+## Keyspaces — one credential per tenant
+
+A named entry is one secret with one value. A `keyed: true` entry declares a **keyspace**: one schema, one backend, and an unbounded set of members whose keys only exist at runtime — one signing key per customer connection, one API key per tenant, one webhook secret per workspace. The registry can no more list those names than it can list next month's customers.
+
+A member is stored as `<entry>/<key>` in the same encrypted table as everything else, so at-rest rotation, the audit and teardown keep working with no second storage path. `/` is the one separator and a registry entry may not contain it, so a member can never collide with a declared secret. Every key is validated before it is composed (`SecretKey`), so `../OTHER/victim` is refused at the call rather than resolved at the store.
+
+```ts
+const secrets = await sharedSecretsStore(c.env, registry);
+
+// Mint a credential and store it — inline, on the request.
+await secrets.putKeyed("CONNECTION_SIGNING_KEY", connectionId, { privateJwk }, {
+  audit: { emit: c.var.emit, actorType: "user", actorId: user.id },
+});
+return c.json({ publicJwk });                                   // the private half is already stored
+
+await secrets.rotateKeyed("CONNECTION_SIGNING_KEY", connectionId, { privateJwk: next });  // both valid
+await secrets.getKeyedVersions("CONNECTION_SIGNING_KEY", connectionId);   // verify against either
+await secrets.deleteKeyed("CONNECTION_SIGNING_KEY", connectionId);        // the tenant leaves
+```
+
+**The write is synchronous, in-Worker, on the request path — and it has to be.** Sealing can only happen in a Worker, because the master key is a binding and the CLI does not have it. For a secret an operator provisions, the CLI dispatching the manager Workflow is right: nobody is waiting on the response. For a credential minted *during* a request it is not, and the reason is ordering rather than latency. A connect flow must return the public half in the same response that sealed the private one; returning a public key whose private half is not yet stored hands out a credential that cannot be used, and discovers it later, at the customer. So `putKeyed` resolving **is** the persistence guarantee. The Workflow path is unchanged for named secrets — this adds a form, it does not replace one.
+
+**`putKeyed` creates; it does not overwrite.** An existing member is refused with `secrets/already_exists`. Create-or-replace would make "silently overwrite this tenant's live signing key" a typo away, and the loss is total and quiet: every token already signed with the old key stops verifying and nothing says why. Adding a key while the old one still works is `rotateKeyed`, which appends a version and keeps the prior ones valid — the two-keys-during-rotation window `getKeyedVersions` exists to serve, and the reason a keyspace must be declared `rotatable` to accept one. `putKeyed(..., { replace: true })` is the explicit form for the case where the stored value must *not* survive, a leaked credential being the whole of it.
+
+**`deleteKeyed` removes every version, and the member's rotation history, in one call.** A member is one row holding one envelope, so there is no loop for a caller to write and no version that can outlive the tenant it belonged to. It is idempotent, and it never reports whether anything was there — an error that distinguished the two would answer "does this tenant have a credential" to anyone who could call it.
+
+**At-rest key rotation covers members.** They are ordinary rows in `pithy_secrets_system_secrets`, and the rotation cron re-encrypts rows by key version and nothing else. A separate storage path would have been a set of rows the cron never visits — the ones that quietly cannot be opened once the old key is pruned. Tested against a real store, not assumed.
+
+**A write is an administrative act, so it is audited** — as `secrets/member_written`, `secrets/member_rotated`, `secrets/member_removed`, with the member key as the event's `tenant` and nothing about the value anywhere. The capability owns the action codes so an adopter does not invent one for the kit's most sensitive write; the recorder and the actor come from the call site, because an accessor cached across requests has neither, and an event that cannot say who wrote a credential is missing the one thing worth recording. Pass `audit` and it is recorded; omit it and nothing is.
 
 ## Per-environment manager
 

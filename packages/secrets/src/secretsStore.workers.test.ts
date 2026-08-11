@@ -11,7 +11,6 @@ import { appendVersion, encodeVersionedValue, initialVersionedValue } from "./cr
 import { secretsTables } from "./data/tables";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretNotFoundError } from "./error/errors";
-import { keyedSecretName } from "./keyspace";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { defineSecretRegistry } from "./registry";
 import { secretsStore } from "./secretsStore";
@@ -272,13 +271,9 @@ describe("secretsStore — a keyed entry over the real encrypted store", () => {
     "auth-signing-key": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
   });
 
-  /** Write one keyspace member the way an app does: the composed name, through the same store. */
+  /** Write one keyspace member the way an app does — through the accessor, on the request path. */
   async function putMember(key: string, privateKey: string): Promise<void> {
-    await store().put(
-      keyedSecretName("CONNECTION_SIGNING_KEY", key),
-      initialVersionedValue(JSON.stringify({ privateKey })),
-      "json",
-    );
+    await (await secretsStore(envWith(), registry)).putKeyed("CONNECTION_SIGNING_KEY", key, { privateKey });
   }
 
   test("a member is written and read back through the same encrypted store", async () => {
