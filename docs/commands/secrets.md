@@ -64,7 +64,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | `secrets[].name` | string | The registry key — a secret name, or a keyspace. |
 | `secrets[].description` | string | The entry's routing facts, joined by ` · `: backend (`d1` or `cf-secrets-store`), then scope (`environment` or `global`), then `rotatable` when it is, then `keyspace` when the entry is keyed. |
 
-A `keyspace` marker is the one entry an operator must not try to set: its members are written per key, in-Worker, by the application that mints them.
+A `keyspace` marker is the one entry an operator must not try to set: its members are written per key, in-Worker, by the application that mints them — through `putKeyed` / `rotateKeyed` / `deleteKeyed` on the accessor it already holds. See `@pithy-sh/secrets`' README.
 
 ### `secrets edit`
 
@@ -102,7 +102,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 
 - **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read.
 - **`Secret '<name>' is not declared in the registry.`** Add it to the registry first. Nothing writes a name the registry has never heard of.
-- **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them.
+- **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them, and it writes them with `putKeyed`.
 - **`Secret '<name>' is environment-scoped — choose an environment.`** Pass `--env staging` or `--env prod`.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.
 - **`Cloudflare credentials are missing.`** Run `pithy init` to record the pair, or export it. Raised by every subcommand that reaches Cloudflare — not by `ls`.

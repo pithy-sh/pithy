@@ -23,6 +23,7 @@ export { type SecretsTables, secretsTables } from "./data/tables";
 // A keyspace member's stored name. Exported because the app that mints per-tenant credentials writes
 // them, and composing that name by hand is exactly the mistake `keyedSecretName` exists to prevent.
 export { keyedSecretName, SecretKey } from "./keyspace";
+export type { KeyedWriteMode } from "./keyspaceWrite";
 export {
   defineSecretRegistry,
   type KeyedSecretName,
@@ -37,5 +38,13 @@ export {
 // `SecretsAccessor` is a type here, not the class. Its constructor takes already-resolved plaintext,
 // and an entrypoint that calls itself narrow has no business handing out a way to mint one over
 // arbitrary values. `secretsStore` is how a Worker gets one.
-export { type SecretsAccessor, secretsStore, type VersionedSecret } from "./secretsStore";
+export {
+  type KeyedPutOptions,
+  type KeyedWriteAudit,
+  type KeyedWriteOptions,
+  type KeyedWriteResult,
+  type SecretsAccessor,
+  secretsStore,
+  type VersionedSecret,
+} from "./secretsStore";
 export { DEFAULT_SECRETS_CACHE_TTL_SECONDS, sharedSecretsStore } from "./sharedSecretsStore";

@@ -5,7 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "./env/bindings";
 import type { SecretRegistry, SecretRegistryEntry } from "./registry";
-import { d1KeyedSource, type SecretsAccessor, secretsStore } from "./secretsStore";
+import { d1KeyedIO, type SecretsAccessor, secretsStore } from "./secretsStore";
 
 /**
  * The shared, per-invocation secrets accessor. Within one worker invocation many capabilities each
@@ -139,10 +139,10 @@ export async function sharedSecretsStore<R extends SecretRegistry>(
     }
   }
   const combined = await resolveCombined(env);
-  // The combined accessor is cached across requests; a keyspace read is not cached at all, and runs
-  // real I/O. Bind it to *this* invocation's env so a member is never fetched through the binding of
-  // whichever earlier request happened to fill the cache.
-  return combined.subset(registry, d1KeyedSource(env));
+  // The combined accessor is cached across requests; a keyspace read or write is not cached at all,
+  // and runs real I/O. Bind it to *this* invocation's env so a member is never fetched — or sealed —
+  // through the binding of whichever earlier request happened to fill the cache.
+  return combined.subset(registry, d1KeyedIO(env));
 }
 
 /**

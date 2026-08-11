@@ -7,7 +7,7 @@ import { initialVersionedValue } from "./crypto/versionedValue";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretCryptoError, SecretNotFoundError } from "./error/errors";
 import { defineSecretRegistry, type SecretRegistry } from "./registry";
-import { SecretsAccessor } from "./secretsStore";
+import { type KeyedSecretIO, SecretsAccessor } from "./secretsStore";
 import {
   aggregateSecretRegistries,
   configureSharedSecrets,
@@ -198,20 +198,42 @@ describe("sharedSecretsStore — keyspaces", () => {
     CONNECTION_SIGNING_KEY: { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
   });
 
+  /** A stale keyed seam — the one a previous request's accessor was built with. */
+  const staleIO: KeyedSecretIO = {
+    read: async () => initialVersionedValue("from-a-previous-request"),
+    write: async () => "1",
+    remove: async () => {},
+  };
+
   test("a keyed read uses the calling invocation's env, not the one that filled the cache", async () => {
-    // The cached accessor carries the source built when it was resolved — a previous request's env.
+    // The cached accessor carries the I/O built when it was resolved — a previous request's env.
     // A keyspace read is real I/O, so the shared store rebinds it to this invocation's env; here that
     // means the bare `env` above, whose missing master key surfaces as a crypto fault. Were the stale
-    // source used instead, this would quietly return "from-a-previous-request".
-    const stale = async () => initialVersionedValue("from-a-previous-request");
+    // seam used instead, this would quietly return "from-a-previous-request".
     configureSharedSecrets({
       registry: keyspace,
-      resolve: async () => new SecretsAccessor(keyspace, {}, stale),
+      resolve: async () => new SecretsAccessor(keyspace, {}, staleIO),
       now: () => 0,
     });
 
     const accessor = await sharedSecretsStore(env, keyspace);
 
     await expect(accessor.getKeyed("CONNECTION_SIGNING_KEY", "conn_a")).rejects.toBeInstanceOf(SecretCryptoError);
+  });
+
+  test("a keyed write uses the calling invocation's env too", async () => {
+    // The same argument, and it matters more on a write: a member sealed through a stale master key
+    // is a row nothing in this environment can open, and nothing would say so until a later read.
+    configureSharedSecrets({
+      registry: keyspace,
+      resolve: async () => new SecretsAccessor(keyspace, {}, staleIO),
+      now: () => 0,
+    });
+
+    const accessor = await sharedSecretsStore(env, keyspace);
+
+    await expect(accessor.putKeyed("CONNECTION_SIGNING_KEY", "conn_a", "minted")).rejects.toBeInstanceOf(
+      SecretCryptoError,
+    );
   });
 });
