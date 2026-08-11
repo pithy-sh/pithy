@@ -2,20 +2,27 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
-import { createDatabase } from "@pithy-sh/core/src/data/db";
-import type { Kysely } from "kysely";
+import { MAX_BOUND_PARAMETERS } from "@pithy-sh/core/src/data/boundParameters";
+import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
+import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { CamelCasePlugin, Kysely } from "kysely";
+import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, test } from "vitest";
 import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
-import { type AuthDatabase, authDatabase } from "../data/tables";
+import { type AuthDatabase, type AuthTables, authDatabase } from "../data/tables";
 import { auth_0001_init } from "../migrations/0001_init";
 import {
   findSessionById,
   getUser,
+  getUsers,
   listDeviceRegistry,
   listUserDevices,
   listUserSessions,
   listUsers,
+  MAX_USER_LOOKUP,
+  USER_LOOKUP_FIXED_PARAMETERS,
   userProviders,
   userSessionTokens,
 } from "./users";
@@ -35,6 +42,24 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 
 function db(): AuthDatabase {
   return authDatabase(env.DB);
+}
+
+/**
+ * The same database, recording every statement it issues.
+ *
+ * "One query for twelve people" and "an empty list issues no query" are the whole point of the bulk
+ * read, and neither is visible in a return value — a loop of twelve queries returns the same map. So
+ * the statements are counted, along with how many parameters each bound, which is also what keeps the
+ * cap honest: adding a `where` beside the `in (…)` list shows up here rather than in production.
+ */
+function recordingDb(statements: { sql: string; parameters: number }[]): AuthDatabase {
+  return new Kysely<DatabaseSchema<AuthTables>>({
+    dialect: new D1Dialect({ database: env.DB }),
+    plugins: [new CamelCasePlugin()],
+    log: (event) => {
+      if (event.level === "query") statements.push({ sql: event.query.sql, parameters: event.query.parameters.length });
+    },
+  }) as unknown as AuthDatabase;
 }
 
 /** A user row whose `createdAt` is `NOW` minus `ageMinutes` — so the newest-first order is stated, not implied. */
@@ -220,6 +245,103 @@ describe("getUser and userProviders", () => {
     const providers = await userProviders(db(), "u-1");
     expect(providers).toEqual(["google"]);
     expect(JSON.stringify(providers)).not.toContain("ya29");
+  });
+});
+
+describe("getUsers", () => {
+  test("resolves a list of ids in one query, keyed by id", async () => {
+    // The defect: an adopter holding a membership list did one `getUser` per person. What is asserted
+    // here is the count of statements, because the map alone cannot tell the two implementations apart.
+    await seedUser("u-1", "ada@example.test", 10, "Ada Lovelace");
+    await seedUser("u-2", "grace@example.test", 20, "Grace Hopper");
+    await seedUser("u-3", "kay@example.test", 30, "Kay Antonelli");
+
+    const statements: { sql: string; parameters: number }[] = [];
+    const people = await getUsers(recordingDb(statements), ["u-3", "u-1"]);
+
+    expect([...people.keys()].sort()).toEqual(["u-1", "u-3"]);
+    expect(people.get("u-1")?.name).toBe("Ada Lovelace");
+    expect(people.get("u-3")?.email).toBe("kay@example.test");
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.parameters).toBe(2);
+  });
+
+  test("rows come through the User codec, so a date is a Date and a flag is a boolean", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    const user = (await getUsers(db(), ["u-1"])).get("u-1");
+    expect(user?.createdAt).toBeInstanceOf(Date);
+    expect(user?.createdAt.toISOString()).toBe(new Date(NOW.getTime() - 600_000).toISOString());
+    expect(user?.emailVerified).toBe(true);
+  });
+
+  test("an id with no row is an absence, not an error", async () => {
+    // A membership row can outlive the user it names. The roster has to render that gap rather than
+    // fail the whole screen, so the missing id is simply not in the map.
+    await seedUser("u-1", "ada@example.test", 10);
+    const people = await getUsers(db(), ["u-1", "u-departed"]);
+    expect(people.size).toBe(1);
+    expect(people.has("u-departed")).toBe(false);
+    expect(people.get("u-departed")).toBeUndefined();
+  });
+
+  test("duplicate ids collapse to one entry and one bound parameter", async () => {
+    // Two memberships can name the same person. Binding them twice is a wider statement for no answer.
+    await seedUser("u-1", "ada@example.test", 10);
+    const statements: { sql: string; parameters: number }[] = [];
+    const people = await getUsers(recordingDb(statements), ["u-1", "u-1", "u-1"]);
+    expect(people.size).toBe(1);
+    expect(statements[0]?.parameters).toBe(1);
+  });
+
+  test("an empty list issues no query at all", async () => {
+    const statements: { sql: string; parameters: number }[] = [];
+    const people = await getUsers(recordingDb(statements), []);
+    expect(people.size).toBe(0);
+    expect(statements).toEqual([]);
+  });
+
+  test("a full cap's worth of ids is one statement D1 accepts", async () => {
+    // The cap is only right if the statement it permits actually runs: `createDatabase` refuses a
+    // statement over D1's ceiling, so a cap set one too high would fail here rather than in the docs.
+    await seedUser("u-0", "ada@example.test", 10);
+    const ids = ["u-0", ...Array.from({ length: MAX_USER_LOOKUP - 1 }, (_, i) => `u-missing-${i}`)];
+
+    const statements: { sql: string; parameters: number }[] = [];
+    const people = await getUsers(recordingDb(statements), ids);
+
+    expect(people.size).toBe(1);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.parameters).toBe(MAX_USER_LOOKUP);
+  });
+
+  test("past the cap it refuses, naming the cap, and issues nothing", async () => {
+    // Never a truncation: quietly answering for 100 of somebody's 140 members is a wrong roster
+    // presented as a right one.
+    const ids = Array.from({ length: MAX_USER_LOOKUP + 1 }, (_, i) => `u-${i}`);
+    const statements: { sql: string; parameters: number }[] = [];
+
+    const failure = await getUsers(recordingDb(statements), ids).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.code).toBe("validation/invalid_input");
+    expect((failure as PithyError).message).toContain(String(MAX_USER_LOOKUP));
+    expect(statements).toEqual([]);
+  });
+
+  test("the cap counts distinct ids, because duplicates never reach the statement", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await seedUser("u-2", "grace@example.test", 20);
+    const repeated = Array.from({ length: MAX_USER_LOOKUP * 3 }, (_, i) => (i % 2 === 0 ? "u-1" : "u-2"));
+
+    const people = await getUsers(db(), repeated);
+    expect([...people.keys()].sort()).toEqual(["u-1", "u-2"]);
+  });
+
+  test("the cap admits a whole page of ids, and stays under D1's ceiling", async () => {
+    // Both halves of the number. A caller's ids come from a page of their own, so a cap below
+    // `MAX_PAGE_SIZE` would refuse the largest page the kit itself hands out; and the statement binds
+    // one parameter per id plus `USER_LOOKUP_FIXED_PARAMETERS`, which has to fit what D1 takes.
+    expect(MAX_USER_LOOKUP).toBeGreaterThanOrEqual(MAX_PAGE_SIZE);
+    expect(MAX_USER_LOOKUP + USER_LOOKUP_FIXED_PARAMETERS).toBeLessThanOrEqual(MAX_BOUND_PARAMETERS);
   });
 });
 

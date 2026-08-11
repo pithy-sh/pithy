@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { boundParameterBudget, MAX_BOUND_PARAMETERS } from "@pithy-sh/core/src/data/boundParameters";
 import { decodeCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type SqlBool, sql } from "kysely";
 import { Session, User } from "../data/betterAuth";
 import { Device, type DevicePlatform } from "../data/device";
@@ -144,6 +146,73 @@ export async function listUsers(db: AuthDatabase, options: ListUsersOptions = {}
 export async function getUser(db: AuthDatabase, userId: string): Promise<User | null> {
   const row = await db.selectFrom("pithyAuthUsers").selectAll().where("id", "=", userId).executeTakeFirst();
   return row ? User.parse(row) : null;
+}
+
+/**
+ * What the bulk lookup binds besides the ids themselves: nothing. Named anyway, because it is the number
+ * {@link MAX_USER_LOOKUP} is derived against — adding a `where` here is then an edit to both, next to
+ * each other, rather than a cap nobody re-derived.
+ */
+export const USER_LOOKUP_FIXED_PARAMETERS = 0;
+
+/**
+ * The most ids one {@link getUsers} call may name.
+ *
+ * Two numbers meet at 100 and both matter. D1 accepts `MAX_BOUND_PARAMETERS` in one statement and this
+ * one spends `USER_LOOKUP_FIXED_PARAMETERS` before the first id, so the ceiling is the budget. And a
+ * caller's ids come from a page of *their* rows, which `pageLimit` clamps at `MAX_PAGE_SIZE` — a cap
+ * below that would refuse to resolve the largest page the kit itself hands out, which is the first thing
+ * an adopter would hit.
+ */
+export const MAX_USER_LOOKUP = 100;
+
+/**
+ * The users behind a list of ids, in one query, keyed by id.
+ *
+ * The read an adopter with its own membership or team table needs: it holds ids and has to render names
+ * beside them. Without this the only by-id read is {@link getUser}, so a twelve-person roster is twelve
+ * queries — and the alternatives are worse, since querying `pithy_auth_users` directly is a second
+ * definition of this capability's schema and paging {@link listUsers} to find twelve people scans a
+ * table that grows without bound.
+ *
+ * **A `Map`, not an array.** The caller already has the order — it is holding the id list — and what it
+ * lacks is the lookup. An array makes every caller rebuild this index, and an array in *input order*
+ * would quietly imply that a missing user leaves a hole in it.
+ *
+ * **A missing id is an absence, not an error.** A membership can outlive the user row it names, and the
+ * pane has to render that gap rather than fail the screen. Ids collapse to their distinct set first: two
+ * memberships naming the same person are one lookup, and duplicates cost the statement nothing.
+ *
+ * **Bounded, and a refusal rather than a truncation** — the same rule the sub-lists here follow, for the
+ * same reason. Quietly answering for 100 of somebody's 140 members would be a wrong roster presented as
+ * a right one, so past the cap this throws and names it. An empty list issues no query at all.
+ *
+ * Rows go through the `User` codec, exactly as {@link getUser}'s do, which is both the date conversion
+ * and the projection: the schema names the columns an adopter gets, so nothing this table later gains
+ * arrives here unannounced.
+ */
+export async function getUsers(db: AuthDatabase, userIds: readonly string[]): Promise<Map<string, User>> {
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) return new Map();
+
+  // `Math.min` is a no-op today and a tripwire tomorrow: it is what turns a `where` added above into a
+  // refusal that names the cap, instead of a statement `createDatabase` rejects at bind time.
+  const cap = Math.min(MAX_USER_LOOKUP, boundParameterBudget(USER_LOOKUP_FIXED_PARAMETERS));
+  if (ids.length > cap) {
+    throw new ValidationError({
+      message: `Look up at most ${MAX_USER_LOOKUP} users at a time.`,
+      action: `Resolve the ids in pages of ${MAX_USER_LOOKUP}.`,
+      detail: `getUsers was given ${ids.length} distinct ids, over the cap of ${MAX_USER_LOOKUP}; D1 accepts ${MAX_BOUND_PARAMETERS} bound parameters and this statement spends ${USER_LOOKUP_FIXED_PARAMETERS} of them before the first id.`,
+    });
+  }
+
+  const rows = await db.selectFrom("pithyAuthUsers").selectAll().where("id", "in", ids).execute();
+  const users = new Map<string, User>();
+  for (const row of rows) {
+    const user = User.parse(row);
+    users.set(user.id, user);
+  }
+  return users;
 }
 
 /**
