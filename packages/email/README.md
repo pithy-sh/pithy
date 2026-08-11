@@ -70,6 +70,17 @@ So non-production environments get their full open/click/unsubscribe funnel (tho
 
 **Suppression is global.** `pithy_email_suppressions` lives in a dedicated, durable `EMAIL_SUPPRESSIONS` database — one per account, bound the same in every environment. An address that hard-bounced, complained, or unsubscribed must never be emailed from *any* environment, so this is the one resource shared across all of them. It mirrors the shared-DB pattern `@pithy-sh/secrets` uses for `SECRETS` (where the link-signing key lives).
 
+**The reason decides what it blocks.** The list is keyed by address and holds no memory of which message somebody was refusing, so the send path reads the reason against the template's kind:
+
+| reason | elective mail | transactional mail |
+|---|---|---|
+| `hard_bounce` | block | **block** — the mailbox does not exist. Sending is futile, and hammering dead addresses damages the sending domain for every other adopter on it. |
+| `complaint` | block | **block** — continuing after a spam report is how a domain gets blocked outright. |
+| `manual` | block | **block** — an operator's deliberate act. |
+| `unsubscribe` | block | **send** — an opt-out is a statement about mail somebody chose to receive. A sign-in link is not that. |
+
+Without that last row, one unsubscribe from a weekly digest also withheld the same person's magic link — and passwordless has no password to fall back on, so the account became permanently unreachable with nothing reported at either end. A skipped send is now named, not swallowed: `SendOutcome.suppressionReason` says which reason blocked it, and the job row and event carry it too.
+
 ## Management routes
 
 Silent email failure costs a signup. These are the routes a dashboard reads to notice, mounted under `basePath` (default `/email`, set it in `email({ basePath: "/mail" })` and the manifest follows).
@@ -85,7 +96,7 @@ Every one is `control-plane` and **default-denied**: an M2M admin surface for a 
 | POST | `/email/suppressions` | `email:suppressions:write` |
 | POST | `/email/suppressions/remove` | `email:suppressions:delete` |
 
-Five scopes, not one admin flag, because these fail in five unrelated directions. Reading jobs discloses who you mailed. Retrying one sends real mail to a real person under your domain and DKIM. Reading suppressions discloses, in one list, every address in the project that ever bounced or opted out — across every environment, since that database is global. Adding a suppression is a silent, targeted denial of service: block one address and that person never gets another magic link, and nothing reports an error. Removing one re-opens sending to somebody who reported spam. Scopes match exactly, with no prefix or wildcard rule, so a tool that retries stuck receipts never also holds a suppression write.
+Five scopes, not one admin flag, because these fail in five unrelated directions. Reading jobs discloses who you mailed. Retrying one sends real mail to a real person under your domain and DKIM. Reading suppressions discloses, in one list, every address in the project that ever bounced or opted out — across every environment, since that database is global. Adding a suppression is a targeted denial of service: a `manual` block stops every message to that address, transactional included, so that person never gets another magic link. Removing one re-opens sending to somebody who reported spam. Scopes match exactly, with no prefix or wildcard rule, so a tool that retries stuck receipts never also holds a suppression write.
 
 **The template payload is never projected. Anywhere.** A `magicLink` job's `payload` holds a working sign-in URL and an OTP job's holds the code, so returning it on a read scope would turn the least privileged credential here into account takeover. There is no flag for it.
 
@@ -228,4 +239,8 @@ The one limit is cross-environment async bounces: because Cloudflare binds one i
 
 ## Templates
 
-`magicLink`, `otp`, `welcome`, `securityAlert`, `invite`, `passwordChanged` (transactional); `newsletter` (iterable articles), `leadCapture`, `marketingCampaign` (marketing). Each ships a Zod payload schema — the validated, documented input contract — and a category. Marketing templates always render an unsubscribe link; transactional templates never do. Templates are precompiled Handlebars (no runtime eval in the Worker) and render both HTML and plain text.
+`magicLink`, `otp`, `welcome`, `securityAlert`, `invite`, `passwordChanged`, `supportReply` (transactional); `newsletter` (iterable articles), `leadCapture`, `marketingCampaign`, `testerNudge` (elective). Each ships a Zod payload schema — the validated, documented input contract — plus a `category` and a `kind`. Templates are precompiled Handlebars (no runtime eval in the Worker) and render both HTML and plain text.
+
+**The kind is declared by the template, never passed by a caller.** `transactional` answers something the person just did — a sign-in link, an invitation they are waiting on, a security notice. `elective` is mail somebody chose to receive. Only elective templates render an unsubscribe link, and only they carry `List-Unsubscribe` / `List-Unsubscribe-Post` (RFC 8058 one-click, which the callback route accepts as a POST). Transactional templates carry neither, structurally: there is no argument a call site can pass to put an opt-out on a sign-in link, because `List-Unsubscribe` on a login message publishes a mechanism for disabling authentication — and Gmail's and Yahoo's bulk-sender rules ask for one-click opt-out on *promotional* mail, which this is not.
+
+The two axes are separate on purpose. The category says what a message *is* (and a `marketing` one cannot render at all without an unsubscribe link); the kind says whether it may be *refused*. `testerNudge` is the case that proves they differ — transactional in style, elective in consent, because a testing programme chases one person repeatedly for a fortnight.

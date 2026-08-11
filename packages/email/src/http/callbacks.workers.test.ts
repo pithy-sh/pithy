@@ -177,21 +177,17 @@ function liveToken(claims: TokenClaims): Promise<string> {
  * mints with. The env carries the `SECRETS` database and the master key and nothing else; a `d1`
  * secret is never read from a binding (#153).
  */
-function callbackApp(): (path: string) => Promise<Response> {
+function callbackApp(): (path: string, init?: RequestInit) => Promise<Response> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   registerCallbacks(app);
-  return async (path) =>
-    app.request(
-      path,
-      {},
-      {
-        DB: env.DB,
-        EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS,
-        SECRETS: env.SECRETS,
-        SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
-      },
-    );
+  return async (path, init = {}) =>
+    app.request(path, init, {
+      DB: env.DB,
+      EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS,
+      SECRETS: env.SECRETS,
+      SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
+    });
 }
 
 /** The `code` from a `{ error: <public payload> }` response body. */
@@ -232,6 +228,41 @@ describe("registered callback routes", () => {
       .bind("bye@example.com")
       .first<{ detail: string }>();
     expect(sup?.detail).toHaveLength(200);
+  });
+
+  test("the unsubscribe route answers a one-click POST, with no human ever loading a page", async () => {
+    // Elective mail carries `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, so the mail client
+    // posts to this URL itself. Advertising that header against a GET-only route would be promising an
+    // opt-out that silently does nothing — the failure mode this whole change is about, inverted.
+    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-p", recipient: "click@example.com" });
+    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "List-Unsubscribe=One-Click",
+    });
+
+    expect(res.status).toBe(200);
+    const sup = await env.EMAIL_SUPPRESSIONS.prepare("select reason from pithy_email_suppressions where email = ?")
+      .bind("click@example.com")
+      .first<{ reason: string }>();
+    expect(sup?.reason).toBe("unsubscribe");
+    expect((await eventsFor("job-route-p"))[0]).toMatchObject({ type: "unsubscribe" });
+  });
+
+  test("a client that posts twice is not an error — the write is an upsert", async () => {
+    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-t", recipient: "twice@example.com" });
+    const app = callbackApp();
+    const post = { method: "POST" };
+
+    expect((await app(`${CALLBACK_BASE}/u/${t}`, post)).status).toBe(200);
+    expect((await app(`${CALLBACK_BASE}/u/${t}`, post)).status).toBe(200);
+
+    const count = await env.EMAIL_SUPPRESSIONS.prepare(
+      "select count(*) as n from pithy_email_suppressions where email = ?",
+    )
+      .bind("twice@example.com")
+      .first<{ n: number }>();
+    expect(count?.n).toBe(1);
   });
 
   test("an over-long token is rejected as validation/invalid_input", async () => {

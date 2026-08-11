@@ -33,10 +33,18 @@ import { CallbackTokenParam, UnsubscribeQuery } from "./schemas";
  * | GET    | /_pithy/email/c/:token        | signed token  | param `CallbackTokenParam` |
  * | GET    | /_pithy/email/o/:token        | signed token  | param `CallbackTokenParam` |
  * | GET    | /_pithy/email/u/:token        | signed token  | param `CallbackTokenParam`, query `UnsubscribeQuery` |
+ * | POST   | /_pithy/email/u/:token        | signed token  | param `CallbackTokenParam`, query `UnsubscribeQuery` |
+ *
+ * The unsubscribe route answers POST as well as GET because elective mail carries
+ * `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058) — the mail client posts to the URL
+ * itself, with no human ever loading the page, and Gmail's and Yahoo's bulk-sender rules require that to
+ * work. Same handler: the underlying write is an upsert, so the two methods cannot disagree and a
+ * client that retries costs nothing.
  *
  * The validators bound shape and size only — the signature check stays in the handler, so a well-formed
  * token that is forged or expired is still `email/invalid_token` (400), not `validation/invalid_input`.
- * No route reads a body.
+ * No route reads a body, the one-click POST included: RFC 8058 fixes its body to a constant, so parsing
+ * it could only ever restate what the method and the signed token already say.
  *
  * The per-request handlers take the signing-key version set directly so they are unit-testable without
  * standing up the secrets store; `registerCallbacks` is the thin shell that resolves the keys from the
@@ -135,7 +143,12 @@ export async function handleUnsubscribe(
     { jobId: claims.jobId, recipient, type: "unsubscribe", campaignId: claims.campaignId ?? null, detail },
     now,
   );
-  return new Response("<p>You've been unsubscribed. You won't receive marketing email from us again.</p>", {
+  // The copy states the scope, because the scope is not what "unsubscribe" implies to most people and
+  // getting it wrong in either direction is alarming: somebody who believes this killed their sign-in
+  // link, or somebody who believes it stopped everything and then receives a security notice.
+  const body =
+    "<p>You've been unsubscribed. Messages you ask for — a sign-in link, a security notice — still arrive. Nothing else will.</p>";
+  return new Response(body, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
@@ -164,7 +177,8 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     return handleOpen(db, keys, c.req.valid("param").token, new Date());
   });
 
-  app.get(
+  app.on(
+    ["GET", "POST"],
     `${CALLBACK_BASE}/u/:token`,
     zValidator("param", CallbackTokenParam, validationHook),
     zValidator("query", UnsubscribeQuery, validationHook),

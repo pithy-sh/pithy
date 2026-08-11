@@ -153,7 +153,7 @@ describe("the suppression view", () => {
     expect(suppressionView(row(), NOW).active).toBe(true);
     expect(suppressionView(row({ expiresAt: new Date(NOW.getTime() + 1000) }), NOW).active).toBe(true);
     expect(suppressionView(row({ expiresAt: new Date(NOW.getTime() - 1000) }), NOW).active).toBe(false);
-    // The boundary: `isSuppressed` treats an expiry exactly at `now` as lifted, and this must agree
+    // The boundary: `blockingSuppression` treats an expiry exactly at `now` as lifted, and this must agree
     // with it or an operator is told a block is holding mail that is already going out.
     expect(suppressionView(row({ expiresAt: NOW }), NOW).active).toBe(false);
   });

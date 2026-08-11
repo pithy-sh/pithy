@@ -58,7 +58,7 @@ The address is resolved through one resolver that prefers the Worker's `domains`
 
 `deprovision` deletes every environment's email worker first, because they bind the suppression database, and then deletes the database itself only when `--suppression` is passed. The global opt-out list is preserved by default; losing it is harmful.
 
-`test` renders one template through your project's own configuration — identity, theme, and all — and sends it over the Cloudflare Email Sending REST API. It deploys nothing. A throwaway tracking context is built so that any template renders, including marketing templates that force an unsubscribe link, but open and click tracking are both off and no link is actually tracked: this is a visual and delivery check of your configuration.
+`test` renders one template through your project's own configuration — identity, theme, and all — and sends it over the Cloudflare Email Sending REST API. It deploys nothing. A throwaway tracking context is built so that any template renders, including marketing templates that force an unsubscribe link, but open and click tracking are both off and no link is actually tracked: this is a visual and delivery check of your configuration. A transactional template still renders without an unsubscribe link and without a `List-Unsubscribe` header, tracking context or not — the kind is declared by the template, so there is no context that could add one to a sign-in message.
 
 `provision` and `deprovision` audit what they did, when the project composes `@pithy-sh/audit` and credentials resolve. Auditing is a no-op otherwise.
 
