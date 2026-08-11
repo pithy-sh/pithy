@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { originFor, WorkerDomains } from "@pithy-sh/core/src/naming/domains";
@@ -30,8 +30,8 @@ describe("applyDomains", () => {
     const applied = await applyDomains(dir, DOMAINS);
 
     expect(applied).toEqual([
-      { env: "staging", pattern: "staging.api.example.com", baseUrl: "https://staging.api.example.com" },
-      { env: "prod", pattern: "api.example.com", baseUrl: "https://api.example.com" },
+      { env: "staging", pattern: "staging.api.example.com", baseUrl: "https://staging.api.example.com", changed: true },
+      { env: "prod", pattern: "api.example.com", baseUrl: "https://api.example.com", changed: true },
     ]);
 
     const config = (await read(dir)) as { env: Record<string, { routes: unknown[]; vars: Record<string, string> }> };
@@ -59,6 +59,21 @@ describe("applyDomains", () => {
     const first = await readFile(path.join(dir, "wrangler.jsonc"), "utf8");
     await applyDomains(dir, DOMAINS);
     expect(await readFile(path.join(dir, "wrangler.jsonc"), "utf8")).toBe(first);
+  });
+
+  /**
+   * And it says so. `pithy worker sync` is a command an adopter runs on a hunch, so a second run has to
+   * be visibly a no-op — reported as one, not just written as one (#264).
+   */
+  it("reports the second run as changing nothing, and does not touch the file", async () => {
+    const dir = await worker();
+    await applyDomains(dir, DOMAINS);
+    const stamp = (await stat(path.join(dir, "wrangler.jsonc"))).mtimeMs;
+
+    const again = await applyDomains(dir, DOMAINS);
+    expect(again.every((entry) => entry.changed)).toBe(false);
+    expect(again.map((entry) => entry.changed)).toEqual([false, false]);
+    expect((await stat(path.join(dir, "wrangler.jsonc"))).mtimeMs).toBe(stamp);
   });
 
   it("updates the one custom-domain route when the domain moves, rather than appending another", async () => {

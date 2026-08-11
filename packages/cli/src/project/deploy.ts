@@ -99,8 +99,8 @@ export interface WorkerDeploy {
    * What probing the **declared** domain concluded about the version just shipped.
    *
    * Absent when there was nothing to check: a bare `pithy deploy` with no `--env` has no environment to
-   * resolve a domain for, and a Worker that declares no address has no domain to probe. Present and
-   * `mismatch` is the one case that fails the command — see `isDeployFailure`.
+   * resolve a domain for, and a Worker that declares no address has no domain to probe. `mismatch` and
+   * `unreachable` are the two that fail the command — see `isDeployFailure`.
    */
   verification?: DeployVerification;
   /** The one-line explanation behind `verification`, for the summary and the `--json` row. */
@@ -343,7 +343,9 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
   // serving what was just shipped, and it is the only one that can fail the command.
   if (!deploy.verification || deploy.verification === "verified") return line;
   const note = deploy.verificationDetail ?? "";
-  return deploy.verification === "mismatch" ? `${line}\n  ${red(note)}` : `${line}\n  ${note}`;
+  // Red for the two that fail the command, plain for the two that do not — one rule, `isDeployFailure`,
+  // so the colour and the exit code can never disagree about which is which.
+  return isDeployFailure(deploy.verification) ? `${line}\n  ${red(note)}` : `${line}\n  ${note}`;
 }
 
 /** Whether any Worker's declared address is consistently serving something other than what just shipped. */

@@ -37,14 +37,27 @@
  * one single other version, that is a genuine mismatch. If probes see **more than one** version, the
  * fleet is mixed — a rollout in progress — and the answer is `inconclusive`, said out loud, rather than a
  * failure.
+ *
+ * ## And nothing answering is not "cannot tell"
+ *
+ * Those two were one branch until #264, and the conflation cost the whole check. A probe that received no
+ * response at all and a probe that received a 200 with no `version` field both landed in `inconclusive`,
+ * under a sentence blaming `CF_VERSION_METADATA` — so a Worker deployed with a declared domain and no
+ * route behind it, answering at no address, reported a deploy that "succeeded" and pointed the adopter at
+ * a binding that was already declared.
+ *
+ * They are different facts and they are established differently. *Something answered and could not say
+ * which version it is* is ordinary — an unadopted binding, a `/health` that is not mounted — and stays
+ * `inconclusive`. *Nothing answered* is transport-level: DNS, TLS, a timeout, no route. That is a failed
+ * deploy, and the address that did not answer is the fact worth printing.
  */
 
 /** What a probe concluded. */
 export type DeployVerification =
   | "verified" // the version just shipped answered at the declared domain
   | "mismatch" // something else is consistently answering there
-  | "inconclusive" // a gradual rollout, or the Worker cannot report its version
-  | "unreachable"; // nothing answered
+  | "inconclusive" // a gradual rollout, or the Worker answered without a version
+  | "unreachable"; // nothing answered at all
 
 /** The outcome of verifying one Worker's deploy. */
 export interface VerifyDeployResult {
@@ -95,23 +108,39 @@ const DEFAULT_DELAY_MS = 1000;
 /** Five seconds per probe. A `/health` route that cannot answer in that has answered. */
 const DEFAULT_TIMEOUT_MS = 5000;
 
-/** One probe. Returns the reported version, or null for anything that did not answer with one. */
-async function probe(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<string | null> {
+/**
+ * What one probe learned, and the distinction the whole conclusion turns on.
+ *
+ * `reached` is whether an HTTP response came back at all — any status. A 404 or a 500 is a Worker (or a
+ * Cloudflare error page) at that address saying something, which is a different world from a DNS failure.
+ * `version` is what it reported, when it could.
+ */
+interface Probe {
+  reached: boolean;
+  version: string | null;
+}
+
+/** One probe. Reports whether anything answered, and the version it named. */
+async function probe(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<Probe> {
   try {
     const response = await fetchImpl(`${url.replace(/\/+$/, "")}/health`, {
       method: "GET",
       headers: { accept: "application/json" },
-      // An abort lands in the same `catch` as a DNS or TLS failure, which is right: all three mean this
-      // attempt learned nothing, and the retry loop is what decides whether that is fatal.
+      // An abort lands in the same `catch` as a DNS or TLS failure, which is right: all three mean nothing
+      // answered, and the retry loop is what decides whether that is fatal.
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return null;
-    const body = (await response.json()) as HealthBody;
-    return typeof body.version === "string" && body.version.length > 0 ? body.version : null;
+    // Answered, whatever it said. The body is only read on a 2xx — a 404's body is not JSON worth parsing.
+    if (!response.ok) return { reached: true, version: null };
+    const body = (await response.json().catch(() => ({}))) as HealthBody;
+    return {
+      reached: true,
+      version: typeof body.version === "string" && body.version.length > 0 ? body.version : null,
+    };
   } catch {
     // A DNS failure, a TLS failure, a timeout. Indistinguishable from "not routed yet" on the first
     // attempt, which is exactly why this retries rather than concluding.
-    return null;
+    return { reached: false, version: null };
   }
 }
 
@@ -129,12 +158,12 @@ export async function verifyDeployedVersion(options: VerifyDeployOptions): Promi
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   const observed: string[] = [];
-  let answered = 0;
+  let reached = 0;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const version = await probe(options.url, fetchImpl, timeoutMs);
+    const { reached: answered, version } = await probe(options.url, fetchImpl, timeoutMs);
+    if (answered) reached += 1;
     if (version !== null) {
-      answered += 1;
       if (version === options.expectedVersion) {
         return {
           status: "verified",
@@ -148,15 +177,26 @@ export async function verifyDeployedVersion(options: VerifyDeployOptions): Promi
     if (attempt < attempts) await sleep(delayMs);
   }
 
-  if (answered === 0) {
-    // Either nothing is there, or the Worker answers without a version. Both are "cannot tell", and
-    // neither is evidence the deploy went wrong — a project that has not adopted the
-    // `CF_VERSION_METADATA` binding genuinely cannot say.
+  if (reached === 0) {
+    // Nothing answered — not once, over every attempt. The deploy went somewhere, and it is not here.
+    // The address is the whole diagnostic: a declared domain with no route behind it is what produces
+    // this, and naming a binding instead sends the adopter to the wrong file (#264).
+    return {
+      status: "unreachable",
+      observed,
+      attempts,
+      detail: `Nothing answered at ${options.url} in ${attempts} attempts. Check that a route in this environment serves that host.`,
+    };
+  }
+
+  if (observed.length === 0) {
+    // Something is there and cannot say which version it is. Ordinary: a project that has not adopted the
+    // `CF_VERSION_METADATA` binding genuinely cannot answer, and neither can a Worker with no `/health`.
     return {
       status: "inconclusive",
       observed,
       attempts,
-      detail: `${options.url} did not report a version. Check that it declares CF_VERSION_METADATA.`,
+      detail: `${options.url} answered without a version. Check that it declares CF_VERSION_METADATA.`,
     };
   }
 
@@ -177,9 +217,10 @@ export async function verifyDeployedVersion(options: VerifyDeployOptions): Promi
   };
 }
 
-/** Whether a verification should fail the command. Only a consistent mismatch does. */
+/** Whether a verification should fail the command. A consistent mismatch, and nothing answering at all. */
 export function isDeployFailure(status: DeployVerification): boolean {
   // `inconclusive` is deliberately not a failure: a gradual rollout and an unadopted binding are both
-  // ordinary, and failing a deploy for either would train everyone to ignore the check.
-  return status === "mismatch";
+  // ordinary, and failing a deploy for either would train everyone to ignore the check. `unreachable` is
+  // the opposite of ordinary — the declared address answered nothing, over every attempt (#264).
+  return status === "mismatch" || status === "unreachable";
 }

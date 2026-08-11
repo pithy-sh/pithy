@@ -25,7 +25,7 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 | `--skip-install` | `add` | `false` | Skip the workspace install after scaffolding |
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and raise an actionable error under `--json` |
-| `--env <environment>` | `sync` | every declared one | Reconcile just this environment. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
+| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all five | `false` | One line of machine-readable output |
 
 ## What it does
@@ -38,7 +38,11 @@ One gap, stated rather than hidden: `add` writes the new Worker's `tsconfig.json
 
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database.
 
-**`sync`** writes the app capability's declared Workflows and cron triggers into the Worker's `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, `triggers.crons` is set to exactly the declared schedules, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
+**`sync`** writes what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`. Two halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
+
+The first half is the address. A `domains` block names where the Worker answers per environment, and `sync` writes the `custom_domain` route and the `vars.BASE_URL` it implies. **This is the only non-interactive way to get that route written.** Before it, the route was written by the domain prompt during `pithy init` or `pithy worker add` and nowhere else, so a `domains` block added by hand — the documented way to add an environment — declared an address nothing served: `pithy doctor` reported it healthy, `pithy deploy` shipped it, and the Worker answered on nothing. Doctor now reports that as a missing route and names this command. Running it twice changes nothing and writes nothing.
+
+The second half writes the app capability's declared Workflows and cron triggers, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, `triggers.crons` is set to exactly the declared schedules, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
 
 **`rename`** is documented in full at `docs/CLI.md` §6.6, and that section is the authority. In short: a Worker's name is three strings that have to agree — the directory `apps/<name>/`, the deployed script name in `wrangler.jsonc` and `package.json`, and `vars.WORKER`, which is what tells two Workers' audit events apart when they share a database. This command moves all three at once, comment-preserving, holding the new name to the same kebab-case rule `add` holds a new one to and refusing a destination that already exists.
 
@@ -129,7 +133,7 @@ $ pithy worker rename api board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","worker":"api","deployedAs":"acme-api","runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}]}
+{"command":"worker.sync","worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}]}
 ```
 
 | key | type | meaning |
@@ -137,6 +141,11 @@ $ pithy worker sync --worker api --json
 | `command` | `"worker.sync"` | The subcommand that produced the line |
 | `worker` | `string` | The `apps/` directory. What `--worker` accepts, and what sibling paths are relative to |
 | `deployedAs` | `string` | The deployed script name, from `wrangler.jsonc`. What the Cloudflare dashboard shows |
+| `routes` | `object[]` | One entry per environment the `domains` block declares. Empty when the Worker declares none, or when `--env` names one it does not carry |
+| `routes[].env` | `string` | The environment routed. Never `dev` — local answers on the pinned port |
+| `routes[].pattern` | `string` | The hostname the `custom_domain` route now points at |
+| `routes[].baseUrl` | `string` | What `vars.BASE_URL` now holds: `https://<pattern>` |
+| `routes[].changed` | `boolean` | Whether that stanza moved. `false` on a re-run, and nothing is written |
 | `runs` | `object[]` | One entry per environment reconciled. Empty when the app capability declares no Workflows |
 | `runs[].env` | `string` | The environment reconciled. `dev` names the top-level stanza |
 | `runs[].workflows` | `object[]` | The entries that environment's `workflows` table now declares for the app, verbatim as written |
@@ -187,12 +196,14 @@ Could not read api's wrangler.jsonc.
 Fix the file, then run the rename again — this command edits it.
 ```
 
-**No app capability.** `sync` reconciles the `workflows` map an `app` capability declares, and a Worker without one has nothing to reconcile.
+**Nothing to sync.** `sync` writes what `domains` and an `app` capability declare, and a Worker with neither has nothing to write.
 
 ```
-api has no app capability.
-Declare `app` in the worker's pithy.config.ts. Its `workflows` map is what this reconciles.
+api declares neither domains nor an app capability.
+Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.
 ```
+
+**A `domains` block that is not valid.** Refused with the field named, rather than written into a `routes` entry Cloudflare rejects at deploy.
 
 **An illegal `--env`.** Checked first, before any config is loaded — an illegal environment costs nothing.
 
@@ -253,4 +264,16 @@ Reconcile one environment's Workflow bindings.
 
 ```
 $ pithy worker sync --worker api --env prod
+```
+
+Write the route for a `domains` block added by hand, then run it again.
+
+```
+$ pithy worker sync --worker api
+prod: routed to api.example.com. BASE_URL https://api.example.com.
+Done.
+
+$ pithy worker sync --worker api
+api is already in sync.
+Done.
 ```

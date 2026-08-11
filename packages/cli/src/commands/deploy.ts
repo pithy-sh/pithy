@@ -103,9 +103,10 @@ export default defineCommand({
       const audit = await buildAudit(projectDir, env ?? "dev", account);
       const deploys = await deployProject({ projectDir, account, env, audit });
       // A deploy that shipped but is not the thing answering at the declared address is a failure too,
-      // and it fails the pipeline rather than printing a line nobody reads. Only a *consistent* mismatch
-      // counts — a gradual rollout and a Worker that cannot report its version are both inconclusive,
-      // and failing on either would train everyone to ignore the check.
+      // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
+      // *consistent* mismatch, and nothing answering at all (#264). A gradual rollout and a Worker that
+      // answered without a version are both inconclusive, and failing on either would train everyone to
+      // ignore the check.
       const failed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
 
       if (args.json) {

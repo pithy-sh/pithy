@@ -398,6 +398,49 @@ describe("doctorExitCode", () => {
     expect(doctorExitCode(report)).toBe(1);
   });
 
+  /**
+   * #264. A declared origin with nothing serving it is the one this command's own remedy produced: it
+   * told an adopter to close `workers.dev` beside a domain whose route had never been written, then
+   * reported the result — a Worker reachable at no address — as healthy, exit 0.
+   */
+  test("non-zero when a declared origin has nothing serving it, and the block names the route", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkOrigins: async () => ({
+          state: "drifted",
+          drift: [
+            {
+              worker: "board",
+              env: "prod",
+              fault: "unserved-origin",
+              origin: "https://app.example.com",
+              source: "declaration",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("no route in env.prod serves it");
+    expect(text).toContain("pithy worker sync");
+    // The remedy that caused the fault must not be the remedy printed for it.
+    expect(text).not.toContain('Set "workers_dev": false in env.prod');
+  });
+
+  /** Still the day-one state of every project, and still not a red exit. */
+  test("zero when the only origin fault is an environment with no origin at all", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkOrigins: async () => ({
+          state: "drifted",
+          drift: [{ worker: "board", env: "staging", fault: "no-origin", origin: null }],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
   test("outside a project, health never fails the exit", async () => {
     const report = await buildDoctorReport(
       baseOptions({
