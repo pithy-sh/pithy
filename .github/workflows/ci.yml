@@ -10,16 +10,19 @@ name: CI
 # If `CI` is ever made a required
 # status check (needs branch protection — a public/Pro feature), a docs-only PR would skip the job and
 # report no status; add an always-pass guard job then. Not a concern while the repo is unprotected.
+#
+# **No `push` trigger on `main`.** A merge re-ran the identical tree the pull request had already
+# proved, for eight jobs' worth of billable minutes — and billing counts the sum of job durations, so
+# a run whose tests take fifteen seconds still pays checkout, Bun and install eight times. What the
+# second run genuinely caught is a semantic conflict between two pull requests that each passed alone.
+# That is real, and it is what the nightly below is for: it runs the full matrix against `main` on a
+# schedule, so the class is still caught, once a day instead of once a merge.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".claude/**"
-      - ".vscode/**"
-      - ".husky/**"
-      - ".gitignore"
-      - ".editorconfig"
+  # Nightly, against whatever `main` holds. The one run that is not narrowed by `plan`, because there
+  # is no pull request to narrow against and a skipped package would have no green result to fall back
+  # on.
+  schedule:
+    - cron: "17 4 * * *"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -46,9 +49,9 @@ jobs:
   # packages (the package plus `cli`, which depends on all of them) — 43s of test work against 191s
   # for the full set. A `core` change correctly cascades to all 16, which is the intended contract.
   #
-  # A push to `main` always runs everything. `main` is the baseline every PR narrows against, so it
-  # is the one place a narrowed run would be self-defeating: whatever it skipped would have no
-  # green result to fall back on, and no warm turbo cache for the next PR to restore.
+  # The nightly always runs everything. `main` is the baseline every PR narrows against, so it is the
+  # one place a narrowed run would be self-defeating: whatever it skipped would have no green result
+  # to fall back on, and no warm turbo cache for the next PR to restore.
   plan:
     name: Plan
     runs-on: ubuntu-24.04
@@ -57,6 +60,7 @@ jobs:
       count: ${{ steps.plan.outputs.count }}
       shards: ${{ steps.plan.outputs.shards }}
       dirs: ${{ steps.plan.outputs.dirs }}
+      nodeVersions: ${{ steps.node.outputs.versions }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -68,6 +72,20 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+
+      # Node 24 is forward compatibility, not a gate: `CLAUDE.md` sets a Node 22 LTS floor, so 22 is
+      # what an adopter must work on and 24 is what we would like to keep working. Running both on
+      # every pull request paid a whole extra job for the second answer, every time. The nightly runs
+      # both; a pull request runs the floor.
+      - name: Node versions to check
+        id: node
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'versions=["22"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'versions=["22","24"]' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Plan the test matrix
         id: plan
@@ -313,7 +331,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22", "24"]
+        node: ${{ fromJSON(needs.plan.outputs.nodeVersions) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
