@@ -140,14 +140,49 @@ export const IssuedConnection = z
   .describe("A registered connection and its first public key — everything the adopter's D1 row is built from.");
 export type IssuedConnection = z.infer<typeof IssuedConnection>;
 
-/** A rotation's new public key. Appended to the connection; the key it succeeds is left alone. */
-export const IssuedKey = z
+/**
+ * Where the seam answers on the adopter's Worker — the address a registration has to be sent to.
+ *
+ * Sent from the adopter's own row rather than left to the client's memory of it. The row is the
+ * authority on where their Worker is; a client holding a stale address would otherwise register a key
+ * against whatever now answers there.
+ */
+export const SeamAddress = z
   .object({
-    keyId: z.string().min(1).max(64).describe("The new key's id. Must not already be registered on the connection."),
-    publicKeyJwk: Ed25519PublicJwk.describe("The new public key to trust, once a signed ping has proven it works."),
+    workerUrl: z.url().describe("This environment's Worker URL, as the adopter's own registration records it."),
+    basePath: z
+      .string()
+      .min(1)
+      .describe("Where the seam is mounted on it — `/control-plane` unless the adopter moved the mount."),
   })
-  .describe("The public half of a freshly generated rotation keypair.");
-export type IssuedKey = z.infer<typeof IssuedKey>;
+  .describe("The address of one Worker's control-plane seam, taken from the adopter's own connection row.");
+export type SeamAddress = z.infer<typeof SeamAddress>;
+
+/**
+ * A rotation's new key, **after the adopter's Worker has recorded it**.
+ *
+ * The public JWK is deliberately absent. It used to come back because the CLI wrote the key into the
+ * adopter's D1 itself; the registration now happens at `POST {basePath}/keys`, which writes that row,
+ * so the CLI has nothing to do with the key material and asking for it would be asking for something
+ * to go wrong with.
+ */
+export const RotatedKey = z
+  .object({
+    keyId: z
+      .string()
+      .min(1)
+      .max(64)
+      .describe(
+        "The successor key's id, as the adopter's Worker registered it. Named by the `kid` of every token it signs.",
+      ),
+    validFrom: z.iso
+      .datetime()
+      .describe(
+        "When the Worker opened the new key's window, ISO-8601 — its clock, since its clock is what judges a token.",
+      ),
+  })
+  .describe("A successor key the management client generated and registered through the adopter's own seam.");
+export type RotatedKey = z.infer<typeof RotatedKey>;
 
 /**
  * The result of a signed round-trip against the adopter's Worker. **The CLI cannot make this call
@@ -160,6 +195,12 @@ export const ConnectionHealth = z
       .enum(["connected", "needs_reconnect"])
       .describe(
         "Whether a signed ping reached the Worker and verified. `needs_reconnect` is a live but unusable connection — a moved URL, an unregistered key — never a silent dead link.",
+      ),
+    keyId: z
+      .string()
+      .nullable()
+      .describe(
+        "Which registered key answered, read off the `ping` response's own `keyId`, or null when nothing did. **This is what proves a rotation.** The seam echoes the key that verified the call precisely so a client can tell which one answered rather than infer it from a 200, and the second step of a rotation — prove the successor before expiring what it replaces — is exactly that question. Without it a rotation is reported on the client's account of its own work.",
       ),
     detail: z
       .string()
@@ -212,8 +253,26 @@ export interface DashboardClient {
   pollForConnectToken(deviceCode: string): Promise<ConnectToken | "pending">;
   /** Register a connection for this project and environment, and get its first keypair's public half. */
   createConnection(token: string, request: CreateConnectionRequest): Promise<IssuedConnection>;
-  /** Generate a successor keypair for an existing connection. Appends only — nothing is replaced. */
-  rotateKey(token: string, connectionId: string): Promise<IssuedKey>;
+  /**
+   * Generate a successor keypair and **register it through the adopter's own seam**.
+   *
+   * Two steps, and the second is the one that matters: the client mints the keypair, then calls
+   * `POST {basePath}/keys` on the Worker at `address`, signing that request with the key it is
+   * replacing. Appends only — nothing is expired, and both keys are live when this returns.
+   *
+   * **The CLI cannot make that call itself**, holding no private key, which is the same reason
+   * {@link DashboardClient.verifyConnection} exists. Routing it through the client rather than writing
+   * the key straight into the adopter's D1 is what puts the rotation behind their `keys:rotate` scope
+   * check and into their own audit trail — the safety property at a boundary rather than in a function
+   * a caller has to remember to use (docs/CONTROL-PLANE.md §6).
+   *
+   * A Worker that cannot be reached must fail this call rather than report a key it did not register.
+   * The CLI cannot audit that claim by reading the adopter's row — locally the row is behind a second
+   * runtime's cache, and a check that is only sometimes right is worse than none. What it does instead
+   * is insist on evidence: the `ping` that follows must come back naming *this* key
+   * ({@link ConnectionHealth.keyId}), which no amount of reporting can fake.
+   */
+  rotateKey(token: string, connectionId: string, address: SeamAddress): Promise<RotatedKey>;
   /**
    * Re-point an existing connection at a new address.
    *

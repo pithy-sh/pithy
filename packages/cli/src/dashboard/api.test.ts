@@ -138,17 +138,32 @@ describe("httpDashboardClient — connections", () => {
     });
   });
 
-  test("rotate posts to the connection's rotate route and returns only the public half", async () => {
-    const { fetch, calls } = stubFetch([{ status: 201, body: { keyId: "key_2", publicKeyJwk: JWK } }]);
-    const issued = await httpDashboardClient({ fetch }).rotateKey("ct_1", "conn_1");
-    expect(issued).toEqual({ keyId: "key_2", publicKeyJwk: JWK });
+  test("rotate carries the seam's address, and takes back a key id rather than key material", async () => {
+    const { fetch, calls } = stubFetch([
+      { status: 201, body: { keyId: "key_2", validFrom: "2026-07-30T00:00:00.000Z" } },
+    ]);
+    const rotated = await httpDashboardClient({ fetch }).rotateKey("ct_1", "conn_1", {
+      workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
+    });
+    expect(rotated).toEqual({ keyId: "key_2", validFrom: "2026-07-30T00:00:00.000Z" });
     expect(calls[0]?.url).toBe(`${DEFAULT_DASHBOARD_ORIGIN}/api/cli/connections/conn_1/rotate`);
+    // The address is on the wire because the client has to sign a call to *that* worker, and the
+    // adopter's own row is what says where it is.
+    expect(JSON.parse(calls[0]?.init.body ?? "{}")).toEqual({
+      workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
+    });
   });
 
   test("verify carries the worker URL — the address the management client must reach", async () => {
-    const { fetch, calls } = stubFetch([{ status: 200, body: { status: "needs_reconnect", detail: "404" } }]);
+    const { fetch, calls } = stubFetch([
+      { status: 200, body: { status: "needs_reconnect", keyId: null, detail: "404" } },
+    ]);
     const health = await httpDashboardClient({ fetch }).verifyConnection("ct_1", "conn_1", "https://api.example.com");
-    expect(health).toEqual({ status: "needs_reconnect", detail: "404" });
+    // `keyId` is required and nullable rather than optional: a client that cannot say which key
+    // answered has to say so, because a rotation is proven by that field and by nothing else.
+    expect(health).toEqual({ status: "needs_reconnect", keyId: null, detail: "404" });
     expect(JSON.parse(calls[0]?.init.body ?? "{}")).toEqual({ workerUrl: "https://api.example.com" });
   });
 
@@ -163,7 +178,7 @@ describe("httpDashboardClient — the network boundary", () => {
   test("a malformed response is a PithyError, never a raw ZodError", async () => {
     const { fetch } = stubFetch([{ status: 201, body: { keyId: "key_2" } }]);
     const error = await httpDashboardClient({ fetch })
-      .rotateKey("ct_1", "conn_1")
+      .rotateKey("ct_1", "conn_1", { workerUrl: "https://api.example.com", basePath: "/control-plane" })
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.code).toBe("core/internal");

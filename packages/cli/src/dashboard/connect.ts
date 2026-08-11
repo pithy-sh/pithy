@@ -25,7 +25,14 @@ const DEFAULT_CONTROL_PLANE_BASE_PATH = "/control-plane";
  * injected. The registry is the adopter's D1, the client is the management client, and nothing here
  * touches either directly.
  *
- * Three rules are load-bearing, and each of them is a failure mode this seam exists to prevent.
+ * Four rules are load-bearing, and each of them is a failure mode this seam exists to prevent.
+ *
+ * **A key is added through the seam whenever anything live could sign for one** (#287). The CLI writes
+ * the `keys` column directly only at first connect and in recovery, which are the same case said twice:
+ * no live key, so nothing can sign a `POST {basePath}/keys`, so the route cannot serve it. Everywhere
+ * else the route is the authority — it checks `keys:rotate`, it records the registration in the
+ * adopter's own trail, and it means the CLI needs no D1 write access to rotate. The invariant is
+ * enforced in `registry.ts` rather than trusted to the callers here.
  *
  * **Nothing reports connected until a signed round-trip has succeeded.** A registration that was
  * written but cannot be reached is a dead link, and reporting it as connected is how an operator finds
@@ -263,6 +270,13 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     // Only the address is sent. Scopes stay local, because the adopter's row is the authority on what a
     // connection may do — `assertNoScopeEscalation` refuses a client that claims more than was asked for,
     // so there is nothing to gain by telling it and something to lose by trusting it.
+    //
+    // **And this write stays local while rotation does not** (#287), for a reason worth stating rather
+    // than assuming. An update touches no key: the seam has no route that could serve it, and it should
+    // not. The address is one the Worker never reads — it exists so a *client* can find the Worker — and
+    // the scopes are the grant that Worker enforces, so a route letting a management client change them
+    // would let it widen its own. Both are the adopter's to write, on the adopter's side. A key is the
+    // opposite: the seam owns registering one, and the CLI stopped doing it.
     if (connection.workerUrl !== existing.workerUrl || connection.basePath !== existing.basePath) {
       await client.updateConnection(token, connection.id, {
         workerUrl: connection.workerUrl,
@@ -361,20 +375,58 @@ async function connectOffline(
     });
   }
 
-  if (options.update) {
-    await options.registry.save({
-      ...existing,
-      workerUrl: options.workerUrl ?? existing.workerUrl,
-      // Same as the dashboard update path above — the mount point moves with the URL.
-      basePath: options.basePath ?? existing.basePath,
-      scopes: options.scopes ? [...options.scopes] : existing.scopes,
-      updatedAt: now,
+  // Re-offering a key that is already registered adds nothing, and that is what makes it useful: it is
+  // how an operator with no dashboard re-points an address, since `--update` on this path needs a key
+  // file to identify itself with. Same id, same material, no change to what the connection trusts.
+  const registered = existing.keys.find((key) => key.keyId === offline.keyId);
+  if (registered && registered.publicKey.x !== offline.publicKey.x) {
+    // Same id, different key. Honouring it would swap the material under a name the Worker already
+    // trusts — a trust change disguised as a re-registration, and the loudest possible one to refuse.
+    throw new ConflictError({
+      message: "That key id is already registered with different key material.",
+      action: "Register the new key under a new id, or revoke this one first: pithy dashboard revoke-key.",
+      detail: `keyId ${offline.keyId} is registered on connection ${existing.id} with a different public key`,
     });
   }
-  const connection = await options.registry.appendKey(
-    { keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null },
-    now,
-  );
+
+  // Adding a key while something live could sign for one is the seam's job, not the CLI's (#287). The
+  // registry refuses it either way; refusing here means an `--update` that would have gone first does
+  // not land before the refusal, so the command changes nothing at all.
+  //
+  // There is no offline equivalent of `pithy dashboard rotate`, and there cannot be one: registering
+  // through the seam means signing with the current key, and on this path the private half belongs to
+  // the operator's own client. So the action line hands them the call to make.
+  if (!registered) {
+    const live = activeKeys(existing.keys, now);
+    if (live.length > 0) {
+      throw new ConflictError({
+        message: "That environment already has a live key.",
+        action: `Register the successor through your worker: POST ${existing.workerUrl}${existing.basePath}/keys, signed with ${live[0]?.keyId}.`,
+        detail: `offline registration of ${offline.keyId} refused; connection ${existing.id} has ${live.length} live key(s)`,
+      });
+    }
+  }
+
+  const updated = options.update
+    ? {
+        ...existing,
+        workerUrl: options.workerUrl ?? existing.workerUrl,
+        // Same as the dashboard update path above — the mount point moves with the URL.
+        basePath: options.basePath ?? existing.basePath,
+        scopes: options.scopes ? [...options.scopes] : existing.scopes,
+        updatedAt: now,
+      }
+    : existing;
+  if (options.update) await options.registry.save(updated);
+
+  // Nothing live, so nothing could have signed a registration: this is the recovery case, and the CLI
+  // is the only thing that can put a key back. The same exemption as first connect, for the same reason.
+  const connection = registered
+    ? updated
+    : await options.registry.appendKey(
+        { keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null },
+        now,
+      );
   return report(connection, { keyId: offline.keyId, updated: options.update === true, health: null });
 }
 
@@ -409,7 +461,27 @@ export interface RotateReport {
 }
 
 /**
- * Append a successor key and prove it.
+ * Rotate through the adopter's own seam, and prove the result.
+ *
+ * **The CLI does not write the key.** It asks the management client to call
+ * `POST {basePath}/keys` on the Worker, signed with the key being replaced, and that route writes the
+ * adopter's row (#287). Three things follow only from going that way: the connection's `keys:rotate`
+ * grant is actually checked, the adopter's audit trail records a key registered on their own side, and
+ * the CLI needs no D1 write access to rotate. A direct write reached the same column with none of them.
+ *
+ * **A Worker that cannot be reached fails the rotation and changes nothing.** That is the difference
+ * the ordering buys: the registration either lands in their D1 or does not happen, where writing
+ * locally and pinging afterwards left the two sides disagreeing whenever the ping failed.
+ *
+ * **The rotation is reported proven only when the ping came back naming the new key.** The client
+ * reports a key id; the Worker's own `ping` says which key actually verified a call, and those are
+ * different claims. Anything less is the CLI repeating a management client's account of its own work.
+ *
+ * That check was first written as a re-read of the adopter's row, and the end-to-end run is what
+ * refuted it: locally the CLI's D1 handle and the Worker's are two runtimes, so a registration the
+ * Worker had just committed was invisible to a reader that had already opened the file — a correct
+ * rotation failing on a stale read, in the one environment everybody tries first. The row is still the
+ * authority; the CLI's view of it, mid-command, is not evidence.
  *
  * **The old key is deliberately left live.** Expiry is `POST /control-plane/keys/:keyId/expire`, and it
  * is the management client's call to make once it has proven the successor from its own
@@ -427,24 +499,46 @@ export async function rotateDashboardKey(options: RotateDashboardKeyOptions): Pr
     });
   }
 
+  // Nothing live is not a rotation problem, it is a lockout already happened. The seam would refuse the
+  // registration — there is no key to sign it with — so say the true thing here rather than surface a
+  // 401 from a route the operator did not know was being called.
+  const previousKeyIds = activeKeys(connection.keys, now).map((key) => key.keyId);
+  if (previousKeyIds.length === 0) {
+    throw new ConflictError({
+      message: "This connection has no live key, so nothing can sign a rotation.",
+      action: `Register a new one: pithy dashboard connect --env ${options.environment}.`,
+      detail: `connection ${connection.id} has no key live at ${now.toISOString()}`,
+    });
+  }
+
   const authorize = options.authorize ?? ((target: DashboardClient) => authorizeDashboard(target));
   const token = await authorize(options.client);
 
-  const previousKeyIds = activeKeys(connection.keys, now).map((key) => key.keyId);
-  const issued = await options.client.rotateKey(token, connection.id);
-  const updated = await options.registry.appendKey(
-    { keyId: issued.keyId, publicKey: issued.publicKeyJwk, validFrom: now, validUntil: null, revokedAt: null },
-    now,
-  );
+  const rotated = await options.client.rotateKey(token, connection.id, {
+    // From the adopter's row, not from the client's memory of it. The row is the authority on where
+    // their Worker is, and a client registering a key at a stale address registers it with a stranger.
+    workerUrl: connection.workerUrl,
+    basePath: connection.basePath,
+  });
 
-  const health = await probe(options.client, token, updated);
+  // Step two of the rotation: prove the successor. A ping that answered with the key it replaces
+  // proves the connection, not the key — and it is the key the next step would expire the old one on
+  // the strength of, so it is reported unproven rather than connected.
+  const health = await probe(options.client, token, connection);
+  const answered = health.status === "connected" && health.keyId === rotated.keyId;
+  const detail = answered
+    ? health.detail
+    : health.status === "connected"
+      ? `The ping was answered by ${health.keyId ?? "no key"}, not by ${rotated.keyId}.`
+      : health.detail;
+
   return {
     environment: options.environment,
-    connectionId: updated.id,
-    keyId: issued.keyId,
+    connectionId: connection.id,
+    keyId: rotated.keyId,
     previousKeyIds,
-    status: health.status,
-    ...(health.detail === undefined ? {} : { detail: health.detail }),
+    status: answered ? "connected" : "needs_reconnect",
+    ...(detail === undefined ? {} : { detail }),
   };
 }
 
@@ -637,6 +731,8 @@ async function settle(check: () => Promise<ConnectionHealth>): Promise<Connectio
     // useful thing to show — but it is never swallowed silently: it lands in `detail`.
     return {
       status: "needs_reconnect",
+      // Nothing answered, so no key did.
+      keyId: null,
       detail: error instanceof PithyError ? error.payload.message : messageOf(error),
     };
   }

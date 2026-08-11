@@ -70,7 +70,7 @@ pithy dashboard connect --env prod
 2. You approve in the browser. The CLI polls and receives a short-lived connect token.
 3. The CLI requests a connection for this project, environment, the scopes you chose, and **the seam's address on this Worker** — its URL and its base path.
 4. The dashboard generates an Ed25519 keypair, keeps the private half, and returns `{ connectionId, keyId, publicKeyJwk, issuer }`.
-5. The CLI writes the registration into **your D1**.
+5. The CLI writes the registration into **your D1**. This is the one key the CLI ever writes — see §15.
 6. **Nothing reports connected until a signed `ping` round-trip succeeds** against your Worker.
 
 ### The address, and which Worker it belongs to
@@ -93,6 +93,8 @@ Sibling Workers are not separately addressable, and that is deliberate: the data
 
 The seam is MIT and is not gated by anything. `--public-key <file>` registers a key you generated yourself, with no dashboard involved, so you can write your own management client and use every route on this page.
 
+Rotating without one is your own call to make, literally: `POST /control-plane/keys` signed with the key you are replacing, exactly as §6 describes. `connect --public-key` registers a *first* key and refuses a successor while one is live, naming that call — it has no private half to sign with, and doing it for you would take the registration out of your own audit trail.
+
 The contract that client is held to is a module you can import: `@pithy-sh/cli/src/dashboard/contract` carries the six calls, the six response shapes, and the hosted origin. It reaches for no timer, no `fetch`, and nothing from node, so it compiles in a Worker as readily as in a build script — implement `DashboardClient` against it and let the compiler tell you what you owe, rather than copying the field sets into a test that can drift.
 
 ---
@@ -114,6 +116,14 @@ The Worker refuses an expiry that names an unproven successor, and refuses one t
 **Your infrastructure stays passive.** Storing a new key is one D1 write in a route handler. There is no Workflow to run and no cron to schedule on your side. The durable retrying orchestration that drives rotation across many Workers is the management client's problem, and it lives in their infrastructure.
 
 **Rotation is a scope.** A client that was never granted `keys:rotate` cannot rotate, whatever it intends — better than a toggle somebody has to be trusted to honour.
+
+### Who makes the calls
+
+All three are made by the management client, because all three are signed and only it holds a private key. `pithy dashboard rotate` asks — it sends the seam's address from your own registration row, the client generates the successor and registers it at step 1, and the CLI reports what happened. **The CLI never writes a rotation into your D1** (§15).
+
+That is why the second step is not decoration. The CLI reports a rotation as proven only when the `ping` comes back naming the *new* key, which is what that route's `keyId` echo is for. A ping answered by the key being replaced proves the connection and not the successor — and the successor is what the third step would retire the old key on the strength of.
+
+An unreachable Worker fails the rotation and changes nothing on either side. Nothing is written anywhere until your Worker has accepted the registration, so there is no state in which your row and the client disagree about which keys exist.
 
 ---
 
@@ -359,3 +369,23 @@ pithy dashboard status --env production
 ```
 
 Connection is **project-wide, per environment — never per Worker.** Workers share a resource by declaring the same binding name, so one user record lives in one D1 that several Workers touch. A per-Worker credential would produce views where a user is visible in one pane and absent from another.
+
+### Which of these go through the seam
+
+Registering a key is your Worker's own decision to make. `POST /control-plane/keys` is where that decision is made: it checks the connection's `keys:rotate` grant, it is signed with the key being replaced, and it writes the registration into your audit trail. A CLI writing that column directly is not a second implementation of the rule — both paths share the same lifecycle code — but a second **authority** over it, which means the rule holds for whoever remembers to route through it.
+
+So one rule, stated as a property rather than a list:
+
+> **The CLI adds a key to your connection only when no live key exists to sign for one through the seam.**
+
+| Command | Where the write happens | Why |
+|---|---|---|
+| `connect` (first, or starting over) | The CLI, into your D1 | No key exists, so nothing can sign a registration — and your Worker may not be deployed at all. **The one exemption.** |
+| `connect --public-key` (first) | The CLI, into your D1 | The same case with no dashboard in it. |
+| `connect --public-key` (a successor) | Refused | A live key exists, so the seam can serve it. The CLI cannot: the private half is yours. It prints the call to make. |
+| `connect --update` | The CLI, into your D1 | Adds no key. It re-points an address your Worker never reads, and changes a grant only you may change — a route letting a client widen its own grant is the thing scopes exist to prevent. The client is told the new address first, and the row is written only if that succeeded. |
+| `rotate` | **The seam**, `POST /control-plane/keys` | A live key exists to sign with, so the registration is your Worker's to accept, audit, and scope-check. |
+| expiry | **The seam**, `POST /control-plane/keys/:keyId/expire` | Never the CLI's at all, and never was: it belongs to the client that proved the successor from its own infrastructure (§6). |
+| `revoke-key`, `disconnect` | The CLI, into your D1 | Revocation *removes* trust, and revocation that needed our cooperation would not be revocation (§7). |
+
+Exactly one operation is exempt, and it is exempt because the seam cannot serve it rather than because it is convenient: a connection with nothing live has nothing to sign a registration with. Requiring a running Worker to register the key that lets anyone talk to it is a chicken-and-egg with no exit. That same sentence covers recovery — a connection whose every key you revoked is back to having nothing that can sign, and `connect` is the way out.

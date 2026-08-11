@@ -3,7 +3,9 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection, RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import { ControlPlaneKeyConflictError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
@@ -21,20 +23,41 @@ const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJ
 const NOW = new Date("2026-07-30T00:00:00.000Z");
 const CONNECTION_ID = "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31";
 
-/** An in-memory registry — the D1 half is proven in registry.test.ts against a real database. */
+/**
+ * An in-memory registry — the D1 half is proven in registry.test.ts against a real database.
+ *
+ * It mirrors the real gate (#287): a key may be added only while nothing live could have signed for one
+ * at the seam. A permissive fake would let this file prove behaviour the actual registry refuses.
+ *
+ * `seamRegister` is the *worker's* write, not the CLI's — what `POST {basePath}/keys` does to this row
+ * when a management client calls it. Nothing in `connect.ts` may reach it; a test plays the worker.
+ */
 function fakeRegistry(initial: ControlPlaneConnection | null = null): ConnectionRegistry & {
   current: () => ControlPlaneConnection | null;
+  seamRegister: (key: RegisteredKey) => void;
 } {
   let row = initial;
   return {
     read: async () => row,
     save: async (connection) => {
+      if (row && row.id === connection.id && JSON.stringify(row.keys) !== JSON.stringify(connection.keys)) {
+        if (activeKeys(row.keys, connection.updatedAt).length > 0) {
+          throw new ControlPlaneKeyConflictError({ detail: "save rewrote the keys of a connection with a live key" });
+        }
+      }
       row = connection;
     },
     appendKey: async (key, now) => {
       if (!row) throw new Error("appendKey called with nothing registered");
+      if (activeKeys(row.keys, now).length > 0) {
+        throw new ControlPlaneKeyConflictError({ detail: "appendKey while a key is live" });
+      }
       row = { ...row, keys: [...row.keys, key], updatedAt: now };
       return row;
+    },
+    seamRegister: (key) => {
+      if (!row) throw new Error("the worker cannot register a key on a connection that does not exist");
+      row = { ...row, keys: [...row.keys, key] };
     },
     revokeKey: async (keyId, now) => {
       if (!row) throw new Error("revokeKey called with nothing registered");
@@ -75,8 +98,8 @@ function fakeClient(overrides: Partial<DashboardClient> = {}): DashboardClient {
       issuer: "https://app.pithy.sh",
       scopes: ["manifest:read", "keys:rotate"],
     }),
-    rotateKey: async () => ({ keyId: "key_2", publicKeyJwk: JWK }),
-    verifyConnection: async () => ({ status: "connected" }) as ConnectionHealth,
+    rotateKey: async () => ({ keyId: "key_2", validFrom: NOW.toISOString() }),
+    verifyConnection: async () => ({ status: "connected", keyId: "key_1" }) as ConnectionHealth,
     deleteConnection: async () => {},
     ...overrides,
   };
@@ -192,7 +215,7 @@ describe("connectDashboard — the dashboard path", () => {
   test("a failed ping reports needs_reconnect — never a silent success", async () => {
     const registry = fakeRegistry();
     const client = fakeClient({
-      verifyConnection: async () => ({ status: "needs_reconnect", detail: "404 from the worker" }),
+      verifyConnection: async () => ({ status: "needs_reconnect", keyId: null, detail: "404 from the worker" }),
     });
 
     const report = await connectDashboard({ ...base, registry, client });
@@ -567,8 +590,69 @@ describe("connectDashboard — the offline path", () => {
     expect(row?.keys).toEqual([key("own_1", NOW)]);
   });
 
-  test("appends to an existing connection rather than replacing it", async () => {
+  test("refuses to add a key while one is live, and names the call to make instead", async () => {
     const registry = fakeRegistry(existing());
+
+    const error = await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      workerUrl: "https://moved.example.com",
+      update: true,
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh" },
+    }).catch((caught: unknown) => caught);
+
+    expect((error as PithyError).payload.code).toBe("core/conflict");
+    expect((error as PithyError).payload.action).toContain("/control-plane/keys");
+    // Refused before anything was written: the `--update` did not land ahead of the refusal.
+    expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1"]);
+    expect(registry.current()?.workerUrl).toBe("https://api.example.com");
+  });
+
+  test("re-offering the registered key re-points the address without touching what is trusted", async () => {
+    const registry = fakeRegistry(existing());
+
+    const report = await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      workerUrl: "https://moved.example.com",
+      update: true,
+      publicKey: { keyId: "key_1", publicKey: JWK, issuer: "https://app.pithy.sh" },
+    });
+
+    expect(report.updated).toBe(true);
+    expect(registry.current()?.workerUrl).toBe("https://moved.example.com");
+    expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1"]);
+  });
+
+  test("the same key id with different material is a conflict, never a swap under a trusted name", async () => {
+    const registry = fakeRegistry(existing());
+
+    const error = await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: {
+        keyId: "key_1",
+        publicKey: { ...JWK, x: "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ" },
+        issuer: "https://app.pithy.sh",
+      },
+    }).catch((caught: unknown) => caught);
+
+    expect((error as PithyError).payload.code).toBe("core/conflict");
+    expect(registry.current()?.keys[0]?.publicKey.x).toBe(JWK.x);
+  });
+
+  test("appends when nothing is live, because then nothing could have signed a registration", async () => {
+    const revoked = existing();
+    const registry = fakeRegistry({
+      ...revoked,
+      keys: [{ ...(revoked.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }],
+    });
 
     const report = await connectDashboard({
       ...base,
@@ -580,8 +664,6 @@ describe("connectDashboard — the offline path", () => {
 
     expect(report.connectionId).toBe(CONNECTION_ID);
     expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1", "own_2"]);
-    // Appending never closes the window on the key that is already working.
-    expect(registry.current()?.keys[0]?.validUntil).toBeNull();
   });
 
   test("a different issuer on an existing connection is a conflict, not a silent overwrite", async () => {
@@ -600,13 +682,34 @@ describe("connectDashboard — the offline path", () => {
 });
 
 describe("rotateDashboardKey", () => {
-  test("appends the new key, proves it, and never expires the old one", async () => {
-    const registry = fakeRegistry(existing());
-    const client = fakeClient();
+  /**
+   * A client that does what a real one must: register the successor at the adopter's worker, whose
+   * route writes their row. The CLI writes nothing here, so `seamRegister` is how the key arrives.
+   */
+  function rotatingClient(
+    registry: ReturnType<typeof fakeRegistry>,
+    overrides: Partial<DashboardClient> = {},
+  ): DashboardClient {
+    return fakeClient({
+      rotateKey: async (_token, _connectionId, address) => {
+        seen.push(address);
+        registry.seamRegister(key("key_2", NOW));
+        return { keyId: "key_2", validFrom: NOW.toISOString() };
+      },
+      // A correct client proves the successor by signing the ping with it, so that is the key the
+      // worker echoes back. Step two of the rotation, in the one shape that is evidence of it.
+      verifyConnection: async () => ({ status: "connected", keyId: "key_2" }),
+      ...overrides,
+    });
+  }
+  const seen: { workerUrl: string; basePath: string }[] = [];
+
+  test("registers through the seam, sends the row's own address, and never expires the old key", async () => {
+    const registry = fakeRegistry(existing({ basePath: "/admin" }));
 
     const report = await rotateDashboardKey({
       registry,
-      client,
+      client: rotatingClient(registry),
       environment: "prod",
       authorize: async () => "ct_1",
       now: () => NOW,
@@ -615,6 +718,9 @@ describe("rotateDashboardKey", () => {
     expect(report.keyId).toBe("key_2");
     expect(report.status).toBe("connected");
     expect(report.previousKeyIds).toEqual(["key_1"]);
+    // The address comes off the adopter's row, mount point included — a client registering at the
+    // default `/control-plane` on a worker that moved would be registering with whatever answers there.
+    expect(seen.at(-1)).toEqual({ workerUrl: "https://api.example.com", basePath: "/admin" });
     const keys = registry.current()?.keys ?? [];
     expect(keys.map((k) => k.keyId)).toEqual(["key_1", "key_2"]);
     // The whole safety property: two live keys is the normal state after a rotation.
@@ -623,7 +729,9 @@ describe("rotateDashboardKey", () => {
 
   test("a rotation whose new key does not verify reports needs_reconnect and still leaves the old key live", async () => {
     const registry = fakeRegistry(existing());
-    const client = fakeClient({ verifyConnection: async () => ({ status: "needs_reconnect", detail: "401" }) });
+    const client = rotatingClient(registry, {
+      verifyConnection: async () => ({ status: "needs_reconnect", keyId: null, detail: "401" }),
+    });
 
     const report = await rotateDashboardKey({
       registry,
@@ -635,6 +743,71 @@ describe("rotateDashboardKey", () => {
 
     expect(report.status).toBe("needs_reconnect");
     expect(registry.current()?.keys[0]?.validUntil).toBeNull();
+  });
+
+  test("an unreachable worker fails the rotation and changes nothing", async () => {
+    const registry = fakeRegistry(existing());
+    // What a client must do when the registration call does not complete: fail, having written nothing.
+    const client = fakeClient({
+      rotateKey: async () => {
+        throw new PithyError({ code: "core/internal", status: 500, message: "Couldn't reach the worker." });
+      },
+    });
+
+    const error = await rotateDashboardKey({
+      registry,
+      client,
+      environment: "prod",
+      authorize: async () => "ct_1",
+      now: () => NOW,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1"]);
+    expect(registry.current()?.updatedAt).toEqual(existing().updatedAt);
+  });
+
+  test("a ping answered by the old key is not proof of the new one", async () => {
+    const registry = fakeRegistry(existing());
+    // The client's own account says connected, and it is telling the truth about the connection —
+    // just not about the key. Reporting that as a rotation is how the expiry that follows it locks
+    // an adopter out.
+    const client = rotatingClient(registry, {
+      verifyConnection: async () => ({ status: "connected", keyId: "key_1" }),
+    });
+
+    const report = await rotateDashboardKey({
+      registry,
+      client,
+      environment: "prod",
+      authorize: async () => "ct_1",
+      now: () => NOW,
+    });
+
+    expect(report.status).toBe("needs_reconnect");
+    expect(report.detail).toContain("answered by key_1");
+  });
+
+  test("a connection with nothing live is a reconnect, not a rotation", async () => {
+    const stale = existing();
+    const registry = fakeRegistry({
+      ...stale,
+      keys: [{ ...(stale.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }],
+    });
+    const rotate = vi.fn<DashboardClient["rotateKey"]>();
+
+    const error = await rotateDashboardKey({
+      registry,
+      client: fakeClient({ rotateKey: rotate }),
+      environment: "prod",
+      authorize: async () => "ct_1",
+      now: () => NOW,
+    }).catch((caught: unknown) => caught);
+
+    expect((error as PithyError).payload.code).toBe("core/conflict");
+    expect((error as PithyError).payload.action).toContain("pithy dashboard connect");
+    // Nothing could sign the registration, so the client is never asked to attempt one.
+    expect(rotate).not.toHaveBeenCalled();
   });
 
   test("rotating an unconnected environment says so", async () => {
@@ -734,7 +907,7 @@ describe("dashboardStatus", () => {
       registry,
       environment: "prod",
       now: () => NOW,
-      verify: async () => ({ status: "needs_reconnect", detail: "connection refused" }),
+      verify: async () => ({ status: "needs_reconnect", keyId: null, detail: "connection refused" }),
     });
     expect(report.status).toBe("needs_reconnect");
     expect(report.detail).toBe("connection refused");

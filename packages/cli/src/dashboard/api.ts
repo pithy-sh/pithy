@@ -10,7 +10,7 @@ import {
   DEFAULT_DASHBOARD_ORIGIN,
   DeviceAuthorization,
   IssuedConnection,
-  IssuedKey,
+  RotatedKey,
 } from "./contract";
 
 /**
@@ -271,10 +271,18 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
     createConnection: (token, body) =>
       request({ method: "POST", path: "/api/cli/connections", token, body }, IssuedConnection),
 
-    rotateKey: (token, connectionId) =>
+    // The address goes up with the request. The client is being asked to sign a call to the adopter's
+    // Worker, and the adopter's own row is the authority on where that Worker is — not the client's
+    // memory of where it was at connect.
+    rotateKey: (token, connectionId, address) =>
       request(
-        { method: "POST", path: `/api/cli/connections/${encodeURIComponent(connectionId)}/rotate`, token },
-        IssuedKey,
+        {
+          method: "POST",
+          path: `/api/cli/connections/${encodeURIComponent(connectionId)}/rotate`,
+          token,
+          body: address,
+        },
+        RotatedKey,
       ),
 
     async updateConnection(token, connectionId, body) {
