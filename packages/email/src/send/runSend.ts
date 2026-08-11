@@ -6,10 +6,10 @@ import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { Updateable } from "kysely";
-import { EmailJob } from "../data/emailJob";
+import { EmailJob, SPENT_PAYLOAD } from "../data/emailJob";
 import type { EmailJobStatus, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase, EmailTables } from "../data/tables";
-import { type RenderTracking, renderEmail, templateKind } from "../templates/engine";
+import { type RenderTracking, redactsPayloadOnDelivery, renderEmail, templateKind } from "../templates/engine";
 import type { EmailTheme } from "../templates/theme";
 import { classifySendError } from "./errorMapping";
 import { recordEvent } from "./events";
@@ -25,6 +25,15 @@ import { blockingSuppression, suppress } from "./suppression";
  * **Whether a suppression applies depends on the message.** The kind comes from the template, not from
  * the job row and not from a caller, so a magic link is transactional by declaration and an unrelated
  * unsubscribe cannot swallow it.
+ *
+ * **A delivered job's inputs are dropped here, and "delivered" is the only place they can be.** The
+ * payload of a magic link *is* the sign-in link, so a row that keeps it after the message is out is a
+ * second, permanent copy of a live credential in a table nobody thinks of as holding secrets — which is
+ * what made an adopter's digested invitation token worth nothing the moment it was mailed. The line is
+ * `sent`, and every other outcome keeps its payload on purpose: `failed` can be retried, `suppressed`
+ * can be unblocked, and a payload dropped before the last attempt is a message that cannot be resent —
+ * a worse failure than the one being fixed. `sent` is the one status a retry is *already* refused for,
+ * because the mail has gone to a real person, so nothing here can ever need those inputs again.
  */
 
 /** The current signing key plus the valid version set, for minting tracking/unsubscribe links. */
@@ -97,6 +106,17 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   if (job.status === "cancelled") return { jobId, status: "cancelled", skipped: true };
 
   const recipient = normalizeAddress(job.toAddress);
+
+  // A job whose inputs were dropped cannot be re-rendered. Unreachable today — only a `sent` job is
+  // redacted and `sent` short-circuits two lines up — and it is here because the invariant is worth
+  // more executable than commented. It fails terminally rather than throwing: a throw would retry, and
+  // every attempt would render the same empty payload. What it prevents is the worse outcome, which is
+  // a real person receiving a magic-link email with no link in it.
+  if (job.payloadRedactedAt) {
+    await patchJob(deps, jobId, { status: "failed", error: "payload dropped after delivery" });
+    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: "payload already redacted" }, deps.now);
+    return { jobId, status: "failed" };
+  }
 
   // The template's own declaration, not `job.category` and not anything the enqueuing call site chose.
   // Deriving it here means a template whose kind is corrected in a later release corrects the jobs
@@ -172,11 +192,16 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
 
   try {
     const result = await deps.sender.send(message);
+    // The status and the redaction are one write. Two statements would leave a window in which the row
+    // says `sent` and still holds the link, and the window would be exactly as long as whatever went
+    // wrong between them.
+    const spent = redactsPayloadOnDelivery(job.template);
     await patchJob(deps, jobId, {
       status: "sent",
       sentAt: SQLiteDate.encode(deps.now),
       messageId: result.messageId ?? null,
       error: null,
+      ...(spent ? { payload: SPENT_PAYLOAD, payloadRedactedAt: SQLiteDate.encode(deps.now) } : {}),
     });
     await recordEvent(deps.db, { jobId, recipient, type: "sent", campaignId: job.campaignId }, deps.now);
 

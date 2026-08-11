@@ -81,6 +81,27 @@ So non-production environments get their full open/click/unsubscribe funnel (tho
 
 Without that last row, one unsubscribe from a weekly digest also withheld the same person's magic link — and passwordless has no password to fall back on, so the account became permanently unreachable with nothing reported at either end. A skipped send is now named, not swallowed: `SendOutcome.suppressionReason` says which reason blocked it, and the job row and event carry it too.
 
+## A delivered job stops holding its inputs
+
+`pithy_email_jobs.payload` is the caller's template variables, written verbatim so the send Workflow can render without the caller present. For a newsletter that is a send log. For a magic link it is **the sign-in link**, for an OTP it is the code, and for an invitation it is the token — a second, permanent copy of a live credential in a table nobody thinks of as holding secrets. An adopter storing invitation tokens as digests then mailed the plaintext into this table, and the digest bought nothing.
+
+So a delivered job's payload is emptied and stamped with `payloadRedactedAt`, in the same write that marks it `sent`.
+
+**"Spent" means after the last attempt this job will ever make, not after the first.** A payload dropped too early is a message that cannot be resent, which is a worse failure than the one being fixed. `sent` is the only status that qualifies, and every other outcome keeps its inputs on purpose:
+
+| status | payload | why |
+|---|---|---|
+| `sent` | **dropped** | The message is out. It is also the one status a retry is already refused for — retrying a delivered job is a duplicate email to a real person — so nothing can ever need those inputs again. |
+| `failed` | kept | `POST /email/jobs/:id/retry` exists for exactly this row, and it re-renders from the payload. |
+| `suppressed` / `bounced` | kept | Nothing was delivered. A manual block can be lifted. |
+| `pending` / `scheduled` / `sending` | kept | The send has not happened yet. |
+
+**It is the default for transactional templates, and the line is the category rather than the kind.** The kind answers "may this be refused"; this question is "are these inputs a one-time credential". `testerNudge` is the template that proves they are different axes — it is *elective*, because somebody may say stop chasing me, and its CTA is an opt-in URL that authenticates a tester. Keying on the kind would have left exactly that one live. A marketing payload is copy authored for a batch, carries no per-recipient credential, and answers the real question "what did those forty thousand people receive", so `newsletter` and `marketingCampaign` keep theirs. There is no per-template override: no template needs one today, and an escape hatch nobody uses is where the bug comes back.
+
+**What is kept is what an operator asks.** Was this sent — `status`, `sentAt`, and a `sent` event. To whom — `toAddress`. What was it — `template`, `category`, and the rendered `subject`. Did it arrive — `messageId`, plus the `open`/`click`/`bounce`/`complaint` events tied to it. The log has lasting value; the inputs are what carried the risk. One boundary worth naming: the stored subject is rendered *from* the payload, so a template that put a credential in its subject line would keep it. None does, and none should — a subject is a summary, and it is the one part of a message that shows up in a notification on a locked screen.
+
+Nothing about this is visible through the management routes, because the payload was never projected there in the first place.
+
 ## Management routes
 
 Silent email failure costs a signup. These are the routes a dashboard reads to notice, mounted under `basePath` (default `/email`, set it in `email({ basePath: "/mail" })` and the manifest follows).

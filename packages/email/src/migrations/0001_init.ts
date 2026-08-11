@@ -25,6 +25,11 @@ export const email_0001_init: Migration = {
       .addColumn("template", "text", (c) => c.notNull())
       .addColumn("category", "text", (c) => c.notNull())
       .addColumn("payload", "text", (c) => c.notNull())
+      // Null while the job still holds its inputs; stamped when they are dropped. A separate column
+      // rather than an inference off `payload = '{}'`, because a job enqueued with no variables and a
+      // job whose variables were spent are different facts and an operator reading a blank render needs
+      // to tell them apart.
+      .addColumn("payloadRedactedAt", "integer")
       .addColumn("status", "text", (c) => c.notNull())
       .addColumn("mode", "text", (c) => c.notNull())
       .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))

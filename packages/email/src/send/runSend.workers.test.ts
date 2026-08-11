@@ -3,7 +3,9 @@
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
+import { SPENT_PAYLOAD } from "../data/emailJob";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
+import { retryJob } from "../jobs/retry";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
 import { defaultTheme, type EmailTheme } from "../templates/theme";
@@ -343,6 +345,207 @@ describe("runSend", () => {
       .bind("u@example.com")
       .first<{ n: number }>();
     expect(sup?.n).toBe(1);
+  });
+
+  /**
+   * A delivered job holds no live credential — the property, on the kit's own mail, against real D1.
+   *
+   * `enqueueEmail` writes the caller's payload into the row verbatim and nothing ever deleted a job, so
+   * every link the kit has ever mailed stayed in plaintext for the life of the table. An adopter
+   * storing an invitation token as a digest then mailed the plaintext into this table, and the digest
+   * bought nothing. The fix has one hard constraint — a payload dropped before the last attempt is a
+   * message that cannot be resent — so these tests are as much about what is *kept* as what is dropped.
+   */
+  describe("a delivered job's inputs are spent", () => {
+    const TOKEN = "eyJhbGciOiJIUzI1NiJ9.super-secret-sign-in-token";
+    const magicLinkUrl = `https://acme.test/sign-in?token=${TOKEN}`;
+
+    /** Every column of a job row, as text, so a token surviving anywhere in it is a failure. */
+    async function wholeRow(jobId: string): Promise<string> {
+      const row = await env.DB.prepare("select * from pithy_email_jobs where id = ?").bind(jobId).first();
+      return JSON.stringify(row);
+    }
+
+    test("a delivered magic-link job holds no token", async () => {
+      const jobId = await enqueue({
+        to: "ada@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      // Enqueued, it does — the send Workflow renders from this row, so there is nowhere else for the
+      // link to live in the meantime.
+      expect(await wholeRow(jobId)).toContain(TOKEN);
+
+      const { sender, sent } = fakeSender(() => ({ messageId: "msg-signin" }));
+      const outcome = await runSend(sendDeps(sender), jobId);
+
+      // The person got the working link…
+      expect(outcome.status).toBe("sent");
+      expect(sent[0]?.text).toContain(magicLinkUrl);
+      // …and the database kept no copy of it, in any column.
+      expect(await wholeRow(jobId)).not.toContain(TOKEN);
+      expect(await wholeRow(jobId)).not.toContain("sign-in?token");
+    });
+
+    test("what an operator needs survives: was this sent, to whom, when, did it arrive", async () => {
+      const jobId = await enqueue({
+        to: "ada@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      const { sender } = fakeSender(() => ({ messageId: "msg-signin" }));
+      await runSend(sendDeps(sender), jobId);
+
+      const row = await env.DB.prepare(
+        "select to_address, subject, status, sent_at, message_id, payload, payload_redacted_at from pithy_email_jobs where id = ?",
+      )
+        .bind(jobId)
+        .first<Record<string, unknown>>();
+      expect(row).toEqual({
+        to_address: "ada@example.com",
+        subject: "Your sign-in link",
+        status: "sent",
+        sent_at: now.getTime(),
+        message_id: "msg-signin",
+        // Emptied, and stamped. The stamp is what distinguishes a job whose variables were spent from
+        // one enqueued with none — an operator reading a blank render needs to tell those apart.
+        payload: SPENT_PAYLOAD,
+        payload_redacted_at: now.getTime(),
+      });
+      const event = await env.DB.prepare("select type from pithy_email_events where job_id = ?")
+        .bind(jobId)
+        .first<{ type: string }>();
+      expect(event?.type).toBe("sent");
+    });
+
+    test("a payload survives a retryable failure, because another attempt is coming", async () => {
+      // "Spent" means after the last attempt this job will ever make, not after the first. A payload
+      // dropped here is a message that cannot be resent — a worse failure than the one being fixed.
+      const jobId = await enqueue({
+        to: "ada@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      let fail = true;
+      const { sender, sent } = fakeSender(() => {
+        if (fail) throw { code: "E_DELIVERY_FAILED", message: "smtp 451" };
+        return { messageId: "msg-eventually" };
+      });
+      const deps = sendDeps(sender, { maxAttempts: 3 });
+
+      await expect(runSend(deps, jobId)).rejects.toMatchObject({ payload: { code: "email/send_failed" } });
+      expect(await wholeRow(jobId)).toContain(TOKEN);
+
+      fail = false;
+      expect((await runSend(deps, jobId)).status).toBe("sent");
+      // The second attempt rendered the real link, which is the whole proof: the inputs were still there.
+      expect(sent[0]?.text).toContain(magicLinkUrl);
+      expect(await wholeRow(jobId)).not.toContain(TOKEN);
+    });
+
+    test("a terminally failed job keeps its payload, and an operator's retry still sends the real link", async () => {
+      const jobId = await enqueue({
+        to: "ada@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      let fail = true;
+      const { sender, sent } = fakeSender(() => {
+        if (fail) throw { code: "E_DELIVERY_FAILED", message: "smtp 451" };
+        return { messageId: "msg-retried" };
+      });
+      const deps = sendDeps(sender, { maxAttempts: 1 });
+
+      expect((await runSend(deps, jobId)).status).toBe("failed");
+      expect(await wholeRow(jobId)).toContain(TOKEN);
+
+      // `POST /email/jobs/:id/retry` — the operator-facing path, which only exists for a failed job and
+      // is exactly why a failed job may not be redacted.
+      fail = false;
+      await retryJob(
+        { db: emailDatabase(env.DB), suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS), now },
+        jobId,
+      );
+      expect((await runSend(deps, jobId)).status).toBe("sent");
+      expect(sent.at(-1)?.text).toContain(magicLinkUrl);
+      expect(await wholeRow(jobId)).not.toContain(TOKEN);
+    });
+
+    test("a suppressed job keeps its payload — the message never went out, and the block can be lifted", async () => {
+      await suppress(
+        emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+        { email: "blocked@example.com", reason: "manual" },
+        now,
+      );
+      const jobId = await enqueue({
+        to: "blocked@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      const { sender } = fakeSender(() => ({ messageId: "never" }));
+
+      expect((await runSend(sendDeps(sender), jobId)).status).toBe("suppressed");
+      expect(await wholeRow(jobId)).toContain(TOKEN);
+    });
+
+    test("a marketing job keeps its payload, which is the copy and not a credential", async () => {
+      // The deliberate exception, and the line is the category rather than the kind: a marketing
+      // payload is copy authored for a batch, and "what did those forty thousand people receive" is a
+      // real question. Every transactional template's payload is one person's one-time input.
+      const jobId = await enqueue({
+        to: "u@example.com",
+        template: "marketingCampaign",
+        payload: { subject: "Hi", heading: "H", body: "Body copy.", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+      });
+      const { sender } = fakeSender(() => ({ messageId: "msg-campaign" }));
+
+      expect((await runSend(sendDeps(sender), jobId)).status).toBe("sent");
+      const row = await env.DB.prepare("select payload, payload_redacted_at from pithy_email_jobs where id = ?")
+        .bind(jobId)
+        .first<{ payload: string; payload_redacted_at: number | null }>();
+      expect(row?.payload).toContain("Body copy.");
+      expect(row?.payload_redacted_at).toBeNull();
+    });
+
+    test("the elective template whose payload does authenticate somebody is redacted anyway", async () => {
+      // `testerNudge` is the template that proves consent and credential-bearing are different axes. It
+      // is elective — somebody may say stop chasing me — and its CTA is an opt-in URL that authenticates
+      // a tester. Keying redaction on the kind would have left exactly this one live.
+      const optIn = "https://acme.test/testers/opt-in/tester-token-9f2";
+      const jobId = await enqueue({
+        to: "tester@example.com",
+        template: "testerNudge",
+        payload: { subject: "One step left", heading: "Confirm", paragraphs: ["Please confirm."], ctaUrl: optIn },
+      });
+      const { sender } = fakeSender(() => ({ messageId: "msg-nudge" }));
+
+      expect((await runSend(sendDeps(sender), jobId)).status).toBe("sent");
+      expect(await wholeRow(jobId)).not.toContain("tester-token-9f2");
+    });
+
+    test("a job that somehow lost its payload fails terminally instead of mailing an empty message", async () => {
+      // Unreachable today: only a `sent` job is redacted, and `sent` short-circuits before this. The
+      // guard is here because the invariant is worth more executable than commented — and because the
+      // failure it prevents is a real person receiving a magic-link email with no link in it.
+      const jobId = await enqueue({
+        to: "ada@example.com",
+        template: "magicLink",
+        payload: { url: magicLinkUrl, expiresMinutes: 15 },
+      });
+      await env.DB.prepare("update pithy_email_jobs set payload = ?, payload_redacted_at = ? where id = ?")
+        .bind(SPENT_PAYLOAD, now.getTime(), jobId)
+        .run();
+      const { sender, sent } = fakeSender(() => ({ messageId: "should-not-send" }));
+
+      const outcome = await runSend(sendDeps(sender), jobId);
+
+      expect(outcome.status).toBe("failed");
+      expect(sent).toHaveLength(0);
+      const row = await env.DB.prepare("select error from pithy_email_jobs where id = ?")
+        .bind(jobId)
+        .first<{ error: string }>();
+      expect(row?.error).toBe("payload dropped after delivery");
+    });
   });
 
   test("a marketing job cannot send without a signing key", async () => {
