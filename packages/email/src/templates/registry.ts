@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import type { TemplateCategory } from "../data/enums";
+import type { EmailKind, TemplateCategory } from "../data/enums";
 import type { ContentWidth } from "./theme";
 
 /**
  * The template set. The **typed input contract is the real deliverable**: each template declares a Zod
- * payload schema — its documented, validated variable set — plus a `category` that drives unsubscribe
- * enforcement and tracking defaults. Visual polish is explicitly secondary. Bodies are Handlebars
+ * payload schema — its documented, validated variable set — plus a `category` that drives tracking
+ * defaults and a `kind` that decides whether the message can be refused. Visual polish is explicitly
+ * secondary. Bodies are Handlebars
  * (`{{var}}`, `{{#each}}`, `{{#if}}`) and include the shared `{{> emailHead}}` / `{{> emailFoot}}`
  * partials, so every template inherits the light/dark theme and the Gmail-safe shell; `links` names the
  * URL locations the engine rewrites for click tracking.
@@ -23,12 +24,23 @@ export interface LinkSpec {
   label: string;
 }
 
-/** One template: its id, category, payload schema, Handlebars sources, and trackable link locations. */
+/** One template: its id, category, kind, payload schema, Handlebars sources, and trackable link locations. */
 export interface EmailTemplate {
   /** The template id used to enqueue and render (e.g. `magicLink`). */
   id: string;
-  /** The category — `transactional` never carries an unsubscribe link; `marketing` always must. */
+  /** What the message is — drives tracking defaults, and makes an unsubscribe link mandatory for `marketing`. */
   category: TemplateCategory;
+  /**
+   * Whether a recipient may refuse this message.
+   *
+   * **Required, and declared here rather than passed at the call site.** If "is this transactional" were
+   * an argument, a caller could get it wrong, and the failure mode is an account nobody can reach: a
+   * magic link sent as elective is a magic link an unrelated unsubscribe silently swallows. Templates
+   * are this capability's own — an adopter cannot register one — so declaring the kind on the template
+   * makes the wrong thing impossible to write rather than merely discouraged. There is no default, for
+   * the same reason: a forgotten field must be a type error, not a silent lockout.
+   */
+  kind: EmailKind;
   /** The body width this template renders at — a property of the email type, not the brand theme. */
   width: ContentWidth;
   /** The Zod payload schema — the validated, documented input-variable contract. */
@@ -242,6 +254,10 @@ export const templates: Record<string, EmailTemplate> = {
   magicLink: {
     id: "magicLink",
     category: "transactional",
+    // The kind that matters most in this file. Passwordless is the kit's sign-in and there is no
+    // password to fall back to, so an unsubscribe that reached this template would not withhold a
+    // preference — it would make the account permanently unreachable, silently, from both ends.
+    kind: "transactional",
     width: "narrow",
     payload: MagicLinkPayload,
     subject: "Your sign-in link",
@@ -254,6 +270,7 @@ export const templates: Record<string, EmailTemplate> = {
   otp: {
     id: "otp",
     category: "transactional",
+    kind: "transactional",
     width: "narrow",
     payload: OtpPayload,
     subject: "Your verification code",
@@ -266,6 +283,7 @@ export const templates: Record<string, EmailTemplate> = {
   welcome: {
     id: "welcome",
     category: "transactional",
+    kind: "transactional",
     width: "narrow",
     payload: WelcomePayload,
     subject: "Welcome to {{theme.appName}}",
@@ -278,6 +296,7 @@ export const templates: Record<string, EmailTemplate> = {
   securityAlert: {
     id: "securityAlert",
     category: "transactional",
+    kind: "transactional",
     width: "narrow",
     payload: SecurityAlertPayload,
     subject: "Security alert: {{event}}",
@@ -290,6 +309,7 @@ export const templates: Record<string, EmailTemplate> = {
   invite: {
     id: "invite",
     category: "transactional",
+    kind: "transactional",
     width: "narrow",
     payload: InvitePayload,
     subject: "{{inviterName}} invited you to {{organizationName}}",
@@ -302,6 +322,12 @@ export const templates: Record<string, EmailTemplate> = {
   testerNudge: {
     id: "testerNudge",
     category: "transactional",
+    // Elective, though the category is transactional — the two axes genuinely disagree here and this is
+    // the template that proves they are separate. A testing programme chases one person repeatedly over
+    // a fortnight, so somebody who said "stop emailing me" means this mail, and it is the mail an
+    // unsubscribe must stop. Nothing is locked by withholding it: a tester who never confirms simply
+    // lapses, which is already a state the cohort handles.
+    kind: "elective",
     width: "narrow",
     payload: TesterNudgePayload,
     subject: "{{subject}}",
@@ -314,6 +340,7 @@ export const templates: Record<string, EmailTemplate> = {
   passwordChanged: {
     id: "passwordChanged",
     category: "transactional",
+    kind: "transactional",
     width: "narrow",
     payload: PasswordChangedPayload,
     subject: "Your password was changed",
@@ -326,6 +353,7 @@ export const templates: Record<string, EmailTemplate> = {
   supportReply: {
     id: "supportReply",
     category: "transactional",
+    kind: "transactional",
     // Wide: a support reply is prose, frequently quoting the customer back at themselves, and the
     // narrow shell is sized for a button and a sentence.
     width: "wide",
@@ -345,6 +373,7 @@ export const templates: Record<string, EmailTemplate> = {
   newsletter: {
     id: "newsletter",
     category: "marketing",
+    kind: "elective",
     width: "wide",
     payload: NewsletterPayload,
     subject: "{{subject}}",
@@ -357,6 +386,11 @@ export const templates: Record<string, EmailTemplate> = {
   leadCapture: {
     id: "leadCapture",
     category: "transactional",
+    // A lead magnet is list-building wearing a receipt's clothes, so it is elective even though the
+    // delivery answers something the person just did. Refusing it costs them a download they can get
+    // another way; sending it to somebody who opted out is exactly the mail they refused, and the
+    // complaint that follows is charged to the adopter's sending domain.
+    kind: "elective",
     width: "narrow",
     payload: LeadCapturePayload,
     subject: "Your download: {{assetName}}",
@@ -369,6 +403,7 @@ export const templates: Record<string, EmailTemplate> = {
   marketingCampaign: {
     id: "marketingCampaign",
     category: "marketing",
+    kind: "elective",
     width: "narrow",
     payload: MarketingCampaignPayload,
     subject: "{{subject}}",

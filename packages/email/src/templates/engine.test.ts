@@ -142,6 +142,55 @@ describe("tracking", () => {
     });
   });
 
+  test("no transactional template can be rendered with an unsubscribe link", async () => {
+    // The class of bug, not one instance of it. Every transactional template is rendered with a full
+    // signing context — the state in which the engine *can* mint an opt-out — and none may come back
+    // carrying one. A future template that declares the wrong kind fails here rather than in somebody's
+    // inbox, and the only inbox where it would show is the one holding their sign-in link.
+    const offenders: string[] = [];
+    for (const def of Object.values(templates)) {
+      if (def.kind !== "transactional") continue;
+      const payload = validPayloads[def.id];
+      if (!payload) throw new Error(`no sample payload for '${def.id}' — the sweep would skip it silently`);
+      const result = await renderEmail(def.id, payload, theme, { ...tracking });
+      if (result.unsubscribeUrl !== undefined) offenders.push(`${def.id}: reported an unsubscribe URL`);
+      for (const [part, body] of [
+        ["html", result.html],
+        ["text", result.text],
+      ] as const) {
+        if (body.includes(`${CALLBACK_BASE}/u/`)) offenders.push(`${def.id}: ${part} carries an unsubscribe callback`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("an elective template reports the unsubscribe URL it rendered", async () => {
+    // Reported, not merely rendered: the send path builds `List-Unsubscribe` from this, so a header that
+    // promises an opt-out can only exist where the body actually offers one.
+    const result = await renderEmail("newsletter", validPayloads.newsletter, theme, { ...tracking });
+    expect(result.unsubscribeUrl).toMatch(/\/_pithy\/email\/u\//);
+    expect(result.html).toContain(result.unsubscribeUrl);
+  });
+
+  test("the kinds are what they are meant to be, template by template", () => {
+    // A pin, because `kind` is one word in a literal and flipping it is a one-character edit whose blast
+    // radius is somebody's account. Changing this list should take a sentence explaining why.
+    const kinds = Object.fromEntries(Object.values(templates).map((def) => [def.id, def.kind]));
+    expect(kinds).toEqual({
+      magicLink: "transactional",
+      otp: "transactional",
+      welcome: "transactional",
+      securityAlert: "transactional",
+      invite: "transactional",
+      passwordChanged: "transactional",
+      supportReply: "transactional",
+      testerNudge: "elective",
+      leadCapture: "elective",
+      newsletter: "elective",
+      marketingCampaign: "elective",
+    });
+  });
+
   test("each newsletter article link is rewritten independently", async () => {
     const result = await renderEmail("newsletter", validPayloads.newsletter, theme, { ...tracking });
     const clicks = [...result.html.matchAll(/\/_pithy\/email\/c\/([A-Za-z0-9_.-]+)/g)];

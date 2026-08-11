@@ -10,7 +10,7 @@ import { defaultTheme, type EmailTheme } from "../templates/theme";
 import { enqueueEmail } from "./enqueue";
 import { runSend, type SendDeps } from "./runSend";
 import type { EmailMessage, EmailSender, EmailSendResult } from "./sender";
-import { suppress } from "./suppression";
+import { blockingSuppression, suppress } from "./suppression";
 
 const theme: EmailTheme = { ...defaultTheme, appName: "Acme", footerAddress: "1 Market St" };
 
@@ -144,15 +144,148 @@ describe("runSend", () => {
     });
     await suppress(
       emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
-      { email: "blocked@example.com", reason: "unsubscribe" },
+      { email: "blocked@example.com", reason: "hard_bounce" },
       now,
     );
     const { sender, sent } = fakeSender(() => ({ messageId: "should-not-send" }));
 
     const outcome = await runSend(sendDeps(sender), jobId);
 
-    expect(outcome).toMatchObject({ status: "suppressed", skipped: true });
+    expect(outcome).toMatchObject({ status: "suppressed", skipped: true, suppressionReason: "hard_bounce" });
     expect(sent).toHaveLength(0);
+  });
+
+  test("a skipped send names the reason on the row and the event, not just the fact", async () => {
+    // The half of this bug that made it invisible. The caller saw an outcome that was not a failure and
+    // the person saw an empty inbox, so neither end had anything to look at. "Suppressed" alone still
+    // does not tell an operator whether to fix a typo, apologise, or leave it alone.
+    const jobId = await enqueue({
+      to: "gone@example.com",
+      template: "welcome",
+      payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+    });
+    await suppress(
+      emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+      { email: "gone@example.com", reason: "complaint" },
+      now,
+    );
+    const { sender } = fakeSender(() => ({ messageId: "should-not-send" }));
+
+    const outcome = await runSend(sendDeps(sender), jobId);
+
+    expect(outcome.suppressionReason).toBe("complaint");
+    const row = await env.DB.prepare("select status, error from pithy_email_jobs where id = ?")
+      .bind(jobId)
+      .first<{ status: string; error: string }>();
+    expect(row).toEqual({ status: "suppressed", error: "recipient suppressed: complaint" });
+    const event = await env.DB.prepare("select type, detail from pithy_email_events where job_id = ?")
+      .bind(jobId)
+      .first<{ type: string; detail: string }>();
+    expect(event).toEqual({ type: "suppressed", detail: "complaint" });
+  });
+
+  /**
+   * The suppression matrix, end to end through a real D1 row.
+   *
+   * Bounce and complaint are facts about a mailbox and block everything. An unsubscribe is a statement
+   * about mail somebody chose to receive, so it blocks elective mail and nothing else — the list is
+   * keyed by address and holds no memory of which message was refused, and without this distinction a
+   * digest opt-out silently withheld the same person's sign-in link.
+   */
+  describe("the suppression reason decides what it blocks", () => {
+    const magicLink = {
+      template: "magicLink",
+      payload: { url: "https://acme.test/s", expiresMinutes: 15 },
+    } as const;
+    const newsletter = {
+      template: "newsletter",
+      payload: { subject: "N", intro: "i", articles: [] },
+    } as const;
+
+    const cases = [
+      { reason: "hard_bounce", message: magicLink, label: "transactional", blocked: true },
+      { reason: "complaint", message: magicLink, label: "transactional", blocked: true },
+      { reason: "manual", message: magicLink, label: "transactional", blocked: true },
+      { reason: "unsubscribe", message: magicLink, label: "transactional", blocked: false },
+      { reason: "hard_bounce", message: newsletter, label: "elective", blocked: true },
+      { reason: "complaint", message: newsletter, label: "elective", blocked: true },
+      { reason: "manual", message: newsletter, label: "elective", blocked: true },
+      { reason: "unsubscribe", message: newsletter, label: "elective", blocked: true },
+    ] as const;
+
+    for (const { reason, message, label, blocked } of cases) {
+      test(`${reason} ${blocked ? "blocks" : "does not block"} ${label} mail`, async () => {
+        const jobId = await enqueue({ to: "person@example.com", ...message }, `${reason}-${label}`);
+        await suppress(emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS), { email: "person@example.com", reason }, now);
+        const { sender, sent } = fakeSender(() => ({ messageId: "msg" }));
+
+        const outcome = await runSend(sendDeps(sender), jobId);
+
+        expect(outcome.status).toBe(blocked ? "suppressed" : "sent");
+        expect(sent).toHaveLength(blocked ? 0 : 1);
+      });
+    }
+  });
+
+  test("an unsubscribed address still receives its magic link", async () => {
+    // The case this whole change exists for, and the one that was broken and silent. Passwordless is the
+    // kit's sign-in and there is no password to fall back on, so an unsubscribe — from a newsletter, a
+    // digest, anything — used to make the account permanently unreachable with nothing reported anywhere.
+    const suppressionDb = emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS);
+    await suppress(suppressionDb, { email: "ada@example.com", reason: "unsubscribe", detail: "weekly digest" }, now);
+
+    const jobId = await enqueue({
+      to: "ada@example.com",
+      template: "magicLink",
+      payload: { url: "https://acme.test/sign-in?token=abc", expiresMinutes: 15 },
+    });
+    const { sender, sent } = fakeSender(() => ({ messageId: "msg-signin" }));
+
+    const outcome = await runSend(sendDeps(sender), jobId);
+
+    expect(outcome).toMatchObject({ status: "sent", messageId: "msg-signin" });
+    expect(sent[0]?.to).toBe("ada@example.com");
+    // The link itself, not merely a delivered envelope — this is what the person clicks to get in.
+    expect(sent[0]?.text).toContain("https://acme.test/sign-in?token=abc");
+    // And the opt-out stands for everything it was ever about.
+    expect(await blockingSuppression(suppressionDb, "ada@example.com", now, "elective")).toBe("unsubscribe");
+  });
+
+  test("a sign-in link carries no List-Unsubscribe header and no opt-out link", async () => {
+    // `List-Unsubscribe` on a login message publishes a mechanism for disabling authentication, and some
+    // clients surface it as prominently as the body. Gmail's and Yahoo's rules ask for one-click opt-out
+    // on *promotional* mail; this is not that.
+    const jobId = await enqueue({
+      to: "u@example.com",
+      template: "magicLink",
+      payload: { url: "https://acme.test/s", expiresMinutes: 15 },
+    });
+    const { sender, sent } = fakeSender(() => ({ messageId: "msg" }));
+
+    await runSend(sendDeps(sender), jobId);
+
+    expect(sent[0]?.headers?.["List-Unsubscribe"]).toBeUndefined();
+    expect(sent[0]?.headers?.["List-Unsubscribe-Post"]).toBeUndefined();
+    expect(sent[0]?.html).not.toContain("/_pithy/email/u/");
+    expect(sent[0]?.text).not.toContain("/_pithy/email/u/");
+  });
+
+  test("elective mail carries the one-click unsubscribe headers, matching the link in the body", async () => {
+    const jobId = await enqueue({
+      to: "u@example.com",
+      template: "newsletter",
+      payload: { subject: "N", intro: "Hello", articles: [] },
+    });
+    const { sender, sent } = fakeSender(() => ({ messageId: "msg" }));
+
+    await runSend(sendDeps(sender), jobId);
+
+    const header = sent[0]?.headers?.["List-Unsubscribe"];
+    expect(header).toMatch(/^<https:\/\/api\.acme\.test\/_pithy\/email\/u\/.+>$/);
+    expect(sent[0]?.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+    // The header is built from the URL the render actually produced, so the two can never disagree
+    // about whether this message can be opted out of.
+    expect(sent[0]?.html).toContain(header?.slice(1, -1));
   });
 
   test("a retryable failure throws until maxAttempts, then marks the job failed", async () => {

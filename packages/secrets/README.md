@@ -24,6 +24,10 @@ You almost never call the low-level reader directly — read through the **share
 
 Every `d1` secret is stored the same way — a `{ currentVersion, versions }` envelope sealed in one AES-256-GCM envelope (the same shape as the master-key config). A new secret is one version; a value rotation (deferred) appends the next and repoints `currentVersion`. Storing consistently is how adding a value-rotator later becomes append-a-version, not reshape.
 
+**The secret's stored name is sealed in as authenticated data.** It is not encrypted, it is *bound*: a ciphertext lifted from one row and written into another does not open, because the name the decryptor supplies no longer matches the one sealed with it. That includes a keyspace member, whose bound name is the whole `<entry>/<key>` — one tenant's credential does not open under another tenant's key. Which secret a caller gets stops being a property of the query alone, and a bug up there becomes a clean `secrets/crypto_failed` rather than a disclosure.
+
+The name is safe to bind because nothing renames a secret. A rename is a `put` under the new name and a `delete` of the old, which re-seals through the plaintext. `UPDATE ... SET name` in raw SQL leaves a row nothing can open — that is the property working, not a bug.
+
 ## Shared per-invocation accessor
 
 Within one worker invocation, many capabilities each read secrets. Resolving them independently means a Secrets Store round-trip per call site, and a *repeated* round-trip when two capabilities share a secret. The shared accessor (`sharedSecretsStore`) resolves the **combined** registry — every capability's slice merged — exactly once per invocation, caches the result for a short TTL, and hands each call site a precisely-typed view over only its own slice.

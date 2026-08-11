@@ -8,7 +8,8 @@ import type { EmailJob } from "../data/emailJob";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailSuppressedError } from "../error/errors";
 import type { SendWorkflowBinding } from "../send/enqueue";
-import { isSuppressed } from "../send/suppression";
+import { blockingSuppression } from "../send/suppression";
+import { templateKind } from "../templates/engine";
 import { getJob } from "./read";
 
 /**
@@ -100,11 +101,15 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
   }
 
   const recipient = normalizeAddress(existing.toAddress);
-  if (await isSuppressed(deps.suppressionDb, recipient, deps.now)) {
+  // Asked the same way `runSend` asks it, kind included. An operator retrying a failed magic link to
+  // somebody who unsubscribed from a newsletter must not be told the address is unreachable — the send
+  // would go through, so refusing it here would be this capability inventing a block of its own.
+  const blocked = await blockingSuppression(deps.suppressionDb, recipient, deps.now, templateKind(existing.template));
+  if (blocked) {
     throw new EmailSuppressedError({
-      message: "That recipient is on the suppression list, so this job cannot be retried.",
+      message: `That recipient is on the suppression list (${blocked}), so this job cannot be retried.`,
       action: "Remove the address from the suppression list first, if that is what you mean to do.",
-      detail: `recipient of email job '${jobId}' is suppressed`,
+      detail: `recipient of email job '${jobId}' is suppressed: ${blocked}`,
     });
   }
 
