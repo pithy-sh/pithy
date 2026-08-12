@@ -17,7 +17,7 @@ pithy payments reconcile [--env <environment>] [--user <id>] [--rail <rail>] [--
 |---|---|---|---|
 | `--env <environment>` | `reconcile` | `staging` | Which deployed environment to run the pass in. `staging` or `prod` — `dev` is local-only and is refused by name |
 | `--user <id>` | `reconcile` | every user | Reconcile one user's purchases. The support path: the same steps the cron runs, narrowed |
-| `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, or `stripe`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
+| `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, or `lemonSqueezy`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
 | `--dry-run` | `reconcile` | `false` | Report the drift and write nothing |
 | `--json` | both | `false` | One line of machine-readable output |
 
@@ -27,7 +27,7 @@ pithy payments reconcile [--env <environment>] [--user <id>] [--rail <rail>] [--
 
 `pithy add payments` writes bindings and touches no Cloudflare account. `provision` stands up the one thing those bindings point at: the prebuilt reconcile Worker that hosts the nightly pass. For each of `staging` and `prod` it checks the account once up front, deploys the Worker, and then writes that environment's `workflows` binding into the app's `wrangler.jsonc`. The binding cannot be written by `add` — wrangler requires a `name` and a `class_name` on every entry, and the deployed name is per environment (`<project>-<env>-payments-reconcile`), so `add` emits none and this completes it.
 
-**No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key, and Stripe's key pair are downloaded by a human from three consoles; nothing can mint them. They go in through `pithy secrets set payments-provider-credentials`, and this command deploys the Worker that reads them. A `provision` run before the secrets are set still succeeds — the first pass is what reports the missing rail.
+**No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key, Stripe's key pair, and Lemon Squeezy's API key and signing secret are taken by a human from four consoles; nothing can mint them. They go in through `pithy secrets set payments-provider-credentials`, and this command deploys the Worker that reads them. A `provision` run before the secrets are set still succeeds — the first pass is what reports the missing rail.
 
 `reconcile` runs that same pass on demand and waits for its report. It dispatches the deployed Workflow, polls until it reaches a terminal state, and prints what it found. Reconciliation is the repair path, never the primary one: a rising `drifted` count means webhooks are not arriving, which is the signal the command exists to surface.
 

@@ -41,6 +41,9 @@ export const payments_0001_purchases: Migration = {
       .addColumn("providerProductId", "text", (c) => c.notNull())
       .addColumn("type", "text", (c) => c.notNull())
       .addColumn("status", "text", (c) => c.notNull())
+      // Defaulted in SQL as well as in the Zod object: three of the four rails never mention it, and a
+      // row written by one of them must not depend on the writer remembering to set it.
+      .addColumn("role", "text", (c) => c.notNull().defaultTo("charge"))
       .addColumn("environment", "text", (c) => c.notNull())
       .addColumn("purchasedAt", "integer", (c) => c.notNull())
       .addColumn("expiresAt", "integer")
@@ -60,6 +63,9 @@ export const payments_0001_purchases: Migration = {
       .addCheckConstraint("pithyPaymentsPurchasesEnvironment", sql`environment in ('production', 'sandbox')`)
       // Amounts are integer minor units, never floats, and never negative.
       .addCheckConstraint("pithyPaymentsPurchasesAmount", sql`amount_minor is null or amount_minor >= 0`)
+      // A `state` row never fulfills a `grants` clause, so a typo here would credit a ledger for a
+      // subscription's standing. Constrained at the database for the same reason `environment` is.
+      .addCheckConstraint("pithyPaymentsPurchasesRole", sql`role in ('charge', 'state')`)
       .execute();
 
     // The owner read: a user's purchases, newest first.

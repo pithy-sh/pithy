@@ -17,10 +17,15 @@
  * and the server's same-origin check covers CSRF. Bearer is the mobile path — supported by the same
  * routes, documented rather than scaffolded.
  *
- * **Nothing here throws.** An unreachable Worker, an HTML error page from a proxy, a 500 — each becomes
- * an empty value or a renderable failure. For an entitlement read that means "not entitled", which is
- * the safe direction: the server's `requireEntitlement()` is the security boundary, and this exists only
- * so a user is sent to the paywall instead of shown a 403.
+ * **Nothing here throws, and nothing here hides a failure either.** An unreachable Worker, an HTML error
+ * page from a proxy, a 500 — each becomes a renderable {@link PaymentsFailure} on a `PaymentsResult`, and
+ * every reader answers one. Failing shut is a decision for a caller to make and to write down: a route
+ * guard does `result.ok && result.value.some(…)`, a screen that names the plan reports the failure
+ * instead. A reader that collapsed the two would make the choice for callers that must not have it made
+ * for them, which is what `api.test.ts` now holds the module to.
+ *
+ * The server's `requireEntitlement()` is still the security boundary. Nothing on this side of the wire
+ * protects a feature; it only decides what a screen shows.
  *
  * **No absolute URL literals, and no schema library.** Paths are relative, so the calls follow whatever
  * origin the bundle is served from. Answers are narrowed by hand-written `is…(value: unknown): value is T`
@@ -48,7 +53,17 @@ export const CHECKOUT_SESSION_PARAM = "session";
  * graph does not belong. `api.test.ts` pins each of these against the schema it mirrors, so the
  * duplication cannot drift.
  */
-export type PaymentsClientRail = "apple" | "google" | "stripe";
+export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy";
+
+/**
+ * The rails that create a hosted checkout a browser can be sent to.
+ *
+ * A strict subset of {@link PaymentsClientRail}: Apple and Google purchases happen inside a store SDK, so
+ * there is no page to send anyone to. Nameable from a browser because a rail decides *who takes the money*,
+ * not how much or on whose behalf — a paywall for a product sold on both can put two buttons on the page,
+ * and a product sold on one needs no field at all.
+ */
+export type PaymentsHostedRail = "stripe" | "lemonSqueezy";
 
 /** What kind of thing a product is, as a browser reads it. */
 export type PaymentsClientProductType = "consumable" | "non_consumable" | "subscription";
@@ -225,7 +240,7 @@ function isMember<T extends string>(value: unknown, members: readonly T[]): valu
   return typeof value === "string" && (members as readonly string[]).includes(value);
 }
 
-const RAILS: readonly PaymentsClientRail[] = ["apple", "google", "stripe"];
+const RAILS: readonly PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy"];
 const PRODUCT_TYPES: readonly PaymentsClientProductType[] = ["consumable", "non_consumable", "subscription"];
 const STATUSES: readonly PaymentsClientStatus[] = [
   "active",
@@ -363,12 +378,22 @@ function isRestoreBody(value: unknown): value is { purchases: PurchaseView[]; en
 /**
  * The caller's own entitlements. Always the caller's — the id comes from the session, never from here.
  *
- * Empty on every failure, and that is the design rather than a shortcut. A paywall that cannot reach the
- * Worker must show the paywall; the server check is what actually protects the feature.
+ * **A failure is not an empty list**, and the distinction is the whole point of the return type. Failing
+ * shut is still the right default for a *lock*, because a lock is a refusal and the caller can carry an
+ * escape route on it. It is wrong for a caller that **names** the plan: free is the floor of every ladder,
+ * carrying no entitlement key and matching unconditionally, so `[]` is a positive assertion that this
+ * customer is on the cheapest tier. A screen rendering that from a failed read tells an Enterprise
+ * customer they are on Free and offers to sell them what they already pay for.
+ *
+ * So the failure `call` already built travels out intact, and a caller that wants fail-shut writes
+ * `result.ok ? result.value : []` — one line, and it reads as the decision it is rather than as the
+ * absence of one. {@link useEntitlement} does exactly that; {@link useSubscription} reports the failure.
  */
-export async function getEntitlements(options?: PaymentsClientOptions): Promise<readonly EntitlementView[]> {
+export async function getEntitlements(
+  options?: PaymentsClientOptions,
+): Promise<PaymentsResult<readonly EntitlementView[]>> {
   const result = await call("/entitlements", {}, options, isEntitlementsBody);
-  return result.ok ? result.value.entitlements : [];
+  return result.ok ? { ok: true, value: result.value.entitlements } : result;
 }
 
 /**
@@ -400,7 +425,7 @@ export function restorePurchases(
 
 /** Create a hosted Stripe Checkout Session and return where to send the browser. */
 export async function createCheckout(
-  input: { productId: string },
+  input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<string>> {
   const result = await call("/checkout", jsonPost(input), options, isHostedSession);
@@ -447,7 +472,7 @@ async function leaveFor(
  * proration, and this is where that decision is visible.
  */
 export function startCheckout(
-  input: { productId: string },
+  input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsFailure | null> {
   return leaveFor(createCheckout(input, options), options);

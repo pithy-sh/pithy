@@ -106,13 +106,16 @@ const MAPS = actionMaps(SOURCES);
  * a known gap in it is a gate nobody lands. So the gap is written down, by name, with somewhere to read
  * why, and anything that is not on this list fails.
  *
- * The gate found this one on its first run, which is the whole argument for it: it is a payments change
- * with its own rails to cover, not a line to add here, and #294 was not the place to make it. Fixing
- * #296 deletes this entry, and the empty object is the state to get back to.
+ * **It is empty now, and that is the state to keep it in.** The gate found exactly one orphan on its first
+ * run — `PaymentsAuditActions.webhookUnverified` — which was the whole argument for the gate: a declared
+ * code with no producer is invisible until something looks. Fixing #296 emitted it and deleted the entry.
+ *
+ * An addition here is a deliberate act with an issue number attached, not a way past a red build.
  */
 const KNOWN_ORPHANS: Record<string, string> = {
-  "PaymentsAuditActions.webhookUnverified":
-    "#296 — a notification failing its authenticity check throws 401 from `webhookGuard` and records nothing, so the one payments event that is about an attacker is the one with no row.",
+  // Empty, and this is the state to keep it in. `PaymentsAuditActions.webhookUnverified` was the one entry
+  // — the gate found it on its first run — and #296 emitted it from `webhookGuard`, so the exception came
+  // out with the fix, exactly as this comment said it would.
 };
 
 describe("every declared audit action code is emitted by something", () => {

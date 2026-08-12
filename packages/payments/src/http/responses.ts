@@ -103,6 +103,71 @@ export const PaymentsEntitlementResponse = z
 export type PaymentsEntitlementResponse = z.output<typeof PaymentsEntitlementResponse>;
 
 /**
+ * What the caller's own subscription pays now, what it becomes, and when.
+ *
+ * A **bearer** response, not a management one: this is a customer reading their own bill. Dates cross as
+ * ISO-8601 strings like everything else here, and every amount is the store's own figure — nothing in this
+ * package multiplies a price by a percentage.
+ */
+export const PaymentsPricingResponse = z
+  .object({
+    currency: z.string().nullable().describe("The currency both amounts are in, or null."),
+    currentAmountMinor: z.number().int().nullable().describe("What the next invoice comes to under any discount."),
+    listAmountMinor: z.number().int().nullable().describe("What it comes to once the discount ends."),
+    discountCode: z.string().nullable().describe("The code in force, or null at list price."),
+    discountEndsAt: z
+      .string()
+      .nullable()
+      .describe(
+        "When the rate changes, ISO-8601, or null — which is either no discount or one that runs forever. Read it beside `discountCode` to tell which.",
+      ),
+  })
+  .describe("What this subscriber pays, what they will pay, and when that changes.");
+export type PaymentsPricingResponse = z.output<typeof PaymentsPricingResponse>;
+
+/**
+ * The discount codes one store holds.
+ *
+ * A management shape, never a client one: what an adopter has issued is a commercial fact, and the client
+ * projection draws the same line here it draws for SKUs and the `grants` block.
+ */
+export const PaymentsAdminDiscountsResponse = z
+  .object({
+    discounts: z
+      .array(
+        z.object({
+          code: z.string().min(1).describe("The code a customer enters."),
+          providerDiscountId: z.string().min(1).describe("The store's own id, for finding it in the dashboard."),
+          amount: z.string().describe("How much comes off, rendered for a person — the store's own figures."),
+          redemptions: z.number().int().nullable().describe("How many times it has been claimed, when the store says."),
+        }),
+      )
+      .describe("The codes, as the store lists them."),
+  })
+  .describe("Every discount code one store holds for this project.");
+export type PaymentsAdminDiscountsResponse = z.output<typeof PaymentsAdminDiscountsResponse>;
+
+/**
+ * A discount as the store minted it.
+ *
+ * The **code** is the point — an adopter mints one per applicant and has to be told what it is — and the
+ * provider id is what finds it in that store's dashboard afterwards. The terms are echoed back as this
+ * package models them rather than as the store recorded them, so a client can show what it asked for
+ * without learning either provider's vocabulary.
+ *
+ * Nothing here is a list. A management client learns the code it just created and no other, because the set
+ * of codes an adopter has issued is a commercial fact and not one this route publishes.
+ */
+export const PaymentsDiscountResponse = z
+  .object({
+    code: z.string().min(1).describe("The code a customer enters, whether supplied or store-generated."),
+    providerDiscountId: z.string().min(1).describe("The store's own id, for finding it in the dashboard."),
+    rail: z.enum(["stripe", "lemonSqueezy"]).describe("Which store now holds it."),
+  })
+  .describe("One discount code, as the store minted it.");
+export type PaymentsDiscountResponse = z.output<typeof PaymentsDiscountResponse>;
+
+/**
  * ## The management read surface
  *
  * Everything below answers a **control-plane** route, so it is read by a dashboard across a trust

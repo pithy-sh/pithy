@@ -237,3 +237,29 @@ export class PaymentsEntitlementRequiredError extends PithyError {
     );
   }
 }
+
+/**
+ * A discount code the store would not accept — unknown, expired, exhausted, or not valid for what is being
+ * bought.
+ *
+ * **400 and its own code, never a generic checkout failure.** A customer told "something went wrong" at
+ * checkout concludes their card was declined and stops trying; one told their code was not accepted removes
+ * the code and buys. The two are a different sentence on the screen and a different outcome for the sale.
+ *
+ * The code is echoed in `message` because the caller sent it and it is what they need to correct. The
+ * store's own reason rides in `detail`, which the HTTP codec strips.
+ */
+export class PaymentsDiscountInvalidError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/discount_invalid",
+        status: 400,
+        message: args.message ?? "That discount code was not accepted.",
+        action: args.action ?? "Check the code, or continue without one.",
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}

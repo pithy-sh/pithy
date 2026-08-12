@@ -18,8 +18,11 @@ export const session = "required";
 // be one Pithy could not fix for you; one that calls the hooks upgrades with a minor release.
 
 /** What a product can do on the web. Apple and Google purchases happen inside a store SDK, not a browser. */
-function purchasable(product: { stripePriceId: string | null }): boolean {
-  return paymentsConfig.rails.stripe && product.stripePriceId !== null;
+function purchasable(product: { stripePriceId: string | null; lemonSqueezyVariantId: string | null }): boolean {
+  return (
+    (paymentsConfig.rails.stripe && product.stripePriceId !== null) ||
+    (paymentsConfig.rails.lemonSqueezy && product.lemonSqueezyVariantId !== null)
+  );
 }
 
 export default function Paywall() {
@@ -30,6 +33,11 @@ export default function Paywall() {
   // Coming back from hosted Checkout, the success URL carries the session id. Posting it projects the
   // purchase at once, so the entitlement shows now rather than whenever the webhook lands. The webhook is
   // still authoritative and still arrives; dropping this call would only cost the buyer a few seconds.
+  //
+  // Stripe only, and by construction rather than by a check: no other rail substitutes a session id into
+  // the return URL, so `returned` is null coming back from one. A Lemon Squeezy buyer waits for the
+  // webhook — that rail has no receipt a client could submit, because its order ids are sequential
+  // integers and any authenticated caller could claim an order by counting.
   useEffect(() => {
     if (returned) void purchase.submit("stripe", returned);
     // The session id is read once, into state, so this runs once per return rather than once per render —

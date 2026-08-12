@@ -28,9 +28,13 @@ export const paymentsClient = { basePath: paymentsConfig.basePath };
  * `true` when payments is not composed, which is the same direction the session guard takes when there is
  * no auth: a guard that arrives with a capability must not lock a screen when the capability is gone. The
  * server is what protects the feature.
+ *
+ * A read that fails answers `false` — this is a route guard, so it is a lock, and a lock fails shut. The
+ * choice is written here rather than inherited from the reader: a caller that *named* the visitor's plan
+ * would need the opposite, and `getEntitlements` hands both callers the same honest answer.
  */
 export async function holdsEntitlement(key: string): Promise<boolean> {
   if (!paymentsConfig.enabled) return true;
   const held = await getEntitlements(paymentsClient);
-  return held.some((entitlement) => entitlement.key === key && entitlement.granted);
+  return held.ok && held.value.some((entitlement) => entitlement.key === key && entitlement.granted);
 }

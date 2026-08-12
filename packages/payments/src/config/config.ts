@@ -54,6 +54,12 @@ export const PaymentsRailToggles = z
       .describe(
         "Whether Stripe purchases are accepted, through hosted Checkout and the Billing Portal. Pithy never owns payment UI, SCA, tax, or proration.",
       ),
+    lemonSqueezy: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether Lemon Squeezy purchases are accepted, through hosted checkout and the customer portal. Lemon Squeezy is the merchant of record: it handles global sales tax, EU VAT, invoicing and dunning, and it issues refunds on its own. Credentials come from the secrets store, never config.",
+      ),
   })
   .describe("Which payment rails this project accepts. A rail that is off refuses its routes and its webhook.");
 export type PaymentsRailToggles = z.infer<typeof PaymentsRailToggles>;
@@ -99,6 +105,37 @@ export const PaymentsStripeProduct = z
   })
   .describe("How this product is priced in Stripe. Omit the block to ship without the Stripe rail.");
 export type PaymentsStripeProduct = z.infer<typeof PaymentsStripeProduct>;
+
+export const PaymentsLemonSqueezyProduct = z
+  .object({
+    variantId: z
+      .string()
+      .min(1)
+      .max(MAX_SKU_LENGTH)
+      .describe(
+        "The Lemon Squeezy variant id — `123456`. A variant is Lemon Squeezy's price-equivalent, so this sits exactly where Stripe's `priceId` does. Publishable by design: it is what a hosted checkout names.",
+      ),
+  })
+  .describe("How this product is sold through Lemon Squeezy. Omit the block to ship without that rail.");
+export type PaymentsLemonSqueezyProduct = z.infer<typeof PaymentsLemonSqueezyProduct>;
+
+export const PaymentsLemonSqueezySettings = z
+  .object({
+    successUrl: ReturnUrl.describe(
+      "Where hosted checkout returns a buyer who paid. Unlike Stripe there is no session token to substitute — a Lemon Squeezy purchase is only ever heard about through its webhook, so this page shows a pending state rather than posting a receipt.",
+    ),
+    storeCurrency: z
+      .string()
+      .regex(CURRENCY_CODE_PATTERN, "A currency code is lowercase, digits, and dashes.")
+      .optional()
+      .describe(
+        "The currency this Lemon Squeezy store sells in, lowercase ISO 4217 — `usd`. Optional, and the only thing it does is let a fixed-amount discount in another currency be refused when it is created rather than when a customer redeems it. Lemon Squeezy accepts the mismatched object and fails at redemption, so without this the error arrives at the buyer instead of at you.",
+      ),
+  })
+  .describe(
+    "Where Lemon Squeezy's hosted checkout sends a browser back to. Config, not request input: a client that could name a return URL could send a paying customer to a page it controls. Build it on `PUBLIC_ORIGIN` and never on a literal. One URL, where Stripe takes three, and both absences are the store's rather than an omission here: Lemon Squeezy's checkout has no cancel destination — a buyer who backs out closes the tab or uses the back button — and its customer portal is a signed, expiring link with nowhere to return to.",
+  );
+export type PaymentsLemonSqueezySettings = z.infer<typeof PaymentsLemonSqueezySettings>;
 
 export const PaymentsStripeSettings = z
   .object({
@@ -156,6 +193,9 @@ export const PaymentsProduct = z
     apple: PaymentsAppleProduct.optional().describe("The Apple listing, if this product ships on the App Store."),
     google: PaymentsGoogleProduct.optional().describe("The Google listing, if this product ships on Google Play."),
     stripe: PaymentsStripeProduct.optional().describe("The Stripe price, if this product is sold through Stripe."),
+    lemonSqueezy: PaymentsLemonSqueezyProduct.optional().describe(
+      "The Lemon Squeezy variant, if this product is sold through Lemon Squeezy.",
+    ),
     grants: PaymentsGrants.optional().describe(
       "What this purchase fulfills beyond its entitlements. Opt-in per product; a subscription's grant fires once per billing period, since each renewal is a distinct provider transaction.",
     ),
@@ -171,7 +211,7 @@ export type PaymentsProduct = z.infer<typeof PaymentsProduct>;
 
 export const PaymentsConfig = z
   .object({
-    rails: PaymentsRailToggles.default({ apple: false, google: false, stripe: false }).describe(
+    rails: PaymentsRailToggles.default({ apple: false, google: false, stripe: false, lemonSqueezy: false }).describe(
       "Which stores this project sells through. Every rail is off until named.",
     ),
     products: z
@@ -188,6 +228,9 @@ export const PaymentsConfig = z
       ),
     stripe: PaymentsStripeSettings.optional().describe(
       "Where Stripe's hosted Checkout and Billing Portal return the browser. Required when the Stripe rail is on — the two routes cannot create a session without them.",
+    ),
+    lemonSqueezy: PaymentsLemonSqueezySettings.optional().describe(
+      "Where Lemon Squeezy's hosted checkout returns the browser. Required when that rail is on — the checkout route cannot create a session without it.",
     ),
     basePath: z
       .string()
@@ -228,6 +271,28 @@ export const PaymentsConfig = z
       });
     }
 
+    // The same pair for Lemon Squeezy, and for the same reason. Only two URLs, not three: that rail's
+    // customer portal is a signed expiring link with nowhere to return to.
+    if (config.rails.lemonSqueezy && config.lemonSqueezy === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["lemonSqueezy"],
+        message:
+          "The Lemon Squeezy rail is on, so `lemonSqueezy` must declare a `successUrl`. Hosted checkout has nowhere to return a browser without it.",
+      });
+    }
+
+    if (!config.rails.lemonSqueezy && config.lemonSqueezy !== undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["lemonSqueezy"],
+        message:
+          "`lemonSqueezy` declares a return URL, but `rails.lemonSqueezy` is off. Enable the rail, or drop the block.",
+      });
+    }
+
     for (const [id, product] of entries) {
       // A SKU for a rail the project turned off can never be bought, and the webhook that would carry it
       // is refused. Silently ignoring the block would leave a catalog that reads as selling something it
@@ -250,7 +315,7 @@ export const PaymentsConfig = z
           code: "custom",
           input: ctx.value,
           path: ["products", id],
-          message: `Product "${id}" declares no rail. Give it an \`apple\`, \`google\`, or \`stripe\` block — nothing could buy it otherwise.`,
+          message: `Product "${id}" declares no rail. Give it an \`apple\`, \`google\`, \`stripe\`, or \`lemonSqueezy\` block — nothing could buy it otherwise.`,
         });
       }
 
@@ -334,8 +399,16 @@ export interface PaymentsCatalogEntry {
 
 /** The provider SKU this product is listed under on `rail`, or undefined when it does not ship there. */
 export function providerProductId(product: PaymentsProduct, rail: PaymentsRail): string | undefined {
-  if (rail === "stripe") return product.stripe?.priceId;
-  return rail === "apple" ? product.apple?.productId : product.google?.productId;
+  switch (rail) {
+    case "stripe":
+      return product.stripe?.priceId;
+    case "lemonSqueezy":
+      return product.lemonSqueezy?.variantId;
+    case "apple":
+      return product.apple?.productId;
+    case "google":
+      return product.google?.productId;
+  }
 }
 
 /** The product with this logical id, or undefined. Ids come from config, so an unknown one is a 404. */

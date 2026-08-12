@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsConfig } from "../config/config";
-import { railEnabled } from "../config/config";
+import { productForProviderSku, railEnabled } from "../config/config";
 import type { PaymentsRail } from "../data/rail";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
 import { type PaymentsProviderCredentials, railCredentials } from "../secret/registry";
@@ -12,6 +12,8 @@ import type { PaymentsRailProvider } from "./contract";
 import type { GoogleHttpFetch } from "./google/http";
 import type { GoogleJwk } from "./google/oidc";
 import { googleRail } from "./google/rail";
+import type { LemonSqueezyHttpFetch } from "./lemonSqueezy/api";
+import { lemonSqueezyRail } from "./lemonSqueezy/rail";
 import type { StripeHttpFetch } from "./stripe/api";
 import { stripeRail } from "./stripe/rail";
 
@@ -64,10 +66,16 @@ export interface RailTrustOptions {
   googleAccessToken?: string;
   /** The HTTP transport the Stripe rail reaches Stripe's API through. Defaults to `fetch`. */
   stripeTransport?: StripeHttpFetch;
+  /** The HTTP transport the Lemon Squeezy rail reaches its API through. Defaults to `fetch`. */
+  lemonSqueezyTransport?: LemonSqueezyHttpFetch;
 }
 
 /** Build a rail provider from the credential bundle. Each factory takes only its own rail's block. */
-type RailFactory = (credentials: PaymentsProviderCredentials, trust: RailTrustOptions) => PaymentsRailProvider;
+type RailFactory = (
+  credentials: PaymentsProviderCredentials,
+  trust: RailTrustOptions,
+  config: PaymentsConfig,
+) => PaymentsRailProvider;
 
 /**
  * Every rail this build implements. A rail arrives as one entry here plus its module; an entry with no module
@@ -89,6 +97,19 @@ const RAIL_FACTORIES: Partial<Record<PaymentsRail, RailFactory>> = {
     }),
   stripe: (credentials, trust) =>
     stripeRail(railCredentials(credentials, "stripe"), { transport: trust.stripeTransport }),
+  lemonSqueezy: (credentials, trust, config) =>
+    lemonSqueezyRail(railCredentials(credentials, "lemonSqueezy"), {
+      transport: trust.lemonSqueezyTransport,
+      // The catalog answers what the store's order object cannot: whether this variant is a subscription.
+      // A Lemon Squeezy variant is one or the other and never both, so the product's declared type is the
+      // whole answer — see `orderNotification` for why the rail must not guess it.
+      sellsSubscription: (variantId) =>
+        productForProviderSku(config, "lemonSqueezy", variantId)?.product.type === "subscription",
+      // Without this the fixed-amount currency guard in `discounts.ts` never runs: it is written to skip
+      // the check when the store's currency is unknown, and nothing was ever telling it. The catalog knows
+      // — a `grants` clause names the currency a product's economy is denominated in.
+      storeCurrency: config.lemonSqueezy?.storeCurrency,
+    }),
 };
 
 /** The rails this build can serve at all, whatever a project's config says. */
@@ -119,5 +140,5 @@ export function resolveRailProvider(
       detail: `This build of @pithy-sh/payments implements ${implementedRails().join(", ")}, not ${rail}.`,
     });
   }
-  return factory(credentials, trust);
+  return factory(credentials, trust, config);
 }

@@ -68,6 +68,24 @@ import type { MiddlewareHandler } from "hono";
  * projected. The more dangerous of the two: a connection holding this can give any account anything the
  * catalog sells.
  */
+/**
+ * Minting a discount — an administrative act with a cost attached, and its own scope for that reason.
+ *
+ * Deliberately not covered by, and not covering, the entitlement grants. Comping somebody an entitlement and
+ * creating a code that reduces what everybody who holds it pays are different powers with different blast
+ * radii, and a tool that needs one must not acquire the other. `scopeCovers` matches exactly.
+ */
+export const PAYMENTS_DISCOUNT_CREATE_SCOPE: ControlPlaneScope = "payments:discounts:create";
+
+/**
+ * Reading the codes this project has issued.
+ *
+ * Separate from creating one, and strictly narrower: a pane that lists what was minted does not need the
+ * power to mint. The read exists because the write does — a management client that can create a code and
+ * never see it leaves a pane computing *absent* rather than blocked, which no grant repairs (#247).
+ */
+export const PAYMENTS_DISCOUNT_READ_SCOPE: ControlPlaneScope = "payments:discounts:read";
+
 export const PAYMENTS_ENTITLEMENT_GRANT_SCOPE: ControlPlaneScope = "payments:entitlements:grant";
 
 /**
@@ -134,8 +152,10 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
 ];
 
 /**
@@ -191,6 +211,18 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       summary:
         "Everything one account is entitled to, resolved now. The answer to “why can this person not use what they paid for”.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/discounts`,
+      scope: PAYMENTS_DISCOUNT_READ_SCOPE,
+      summary: "The discount codes this project has issued, read from the store that holds them.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/discounts`,
+      scope: PAYMENTS_DISCOUNT_CREATE_SCOPE,
+      summary: "Mint a discount code at one store, from terms stated in the units a customer experiences.",
     },
     {
       method: "POST",

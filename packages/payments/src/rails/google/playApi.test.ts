@@ -504,6 +504,7 @@ describe("refreshPlayPurchase", () => {
       id: "33333333-3333-4333-8333-333333333333",
       userId: "ada",
       rail: "google",
+      role: "charge",
       providerTransactionId: "GPA.3300-1234-5678-90123",
       productId: "pro_monthly",
       providerProductId: "pro_monthly",

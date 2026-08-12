@@ -387,7 +387,17 @@ describe("the React 19 stub", () => {
     // The capability's own test is the real gate; this is the second half of it, on the consuming side —
     // an ambient declaration naming a secret is a scaffold inviting somebody to project one.
     const ambient = BOTH["client-env.d.ts"] ?? "";
-    for (const shape of ["issuerId", "privateKey", "serviceAccount", "webhookSecret", "secretKey"]) {
+    // One entry per rail's credential block, Lemon Squeezy's included: its API key is account-wide and its
+    // store id is account identity, so neither belongs anywhere a browser can read.
+    for (const shape of [
+      "issuerId",
+      "privateKey",
+      "serviceAccount",
+      "webhookSecret",
+      "secretKey",
+      "apiKey",
+      "storeId",
+    ]) {
       expect(ambient, shape).not.toContain(shape);
     }
   });

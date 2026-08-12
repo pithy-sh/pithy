@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { PaymentsProviderUnavailableError } from "../../error/errors";
+import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput, HostedSession } from "../contract";
 import { type StripeFormObject, type StripeHttpFetch, stripeHttpFetch, stripeJson } from "./api";
@@ -62,6 +62,11 @@ export async function createStripeCheckoutSession(
   input: CheckoutSessionInput,
   options: StripeCheckoutOptions,
 ): Promise<HostedSession> {
+  // Resolved before the session is created, so an unusable code is refused as a *code* rather than
+  // surfacing later as a failed checkout. See {@link resolvePromotionCode}.
+  const promotionCodeId =
+    input.discountCode === undefined ? undefined : await resolvePromotionCode(input.discountCode, options);
+
   const reference = { [STRIPE_METADATA_ACCOUNT_REFERENCE]: input.userId };
   const metadata = { ...reference, [STRIPE_METADATA_PRICE]: input.providerProductId };
 
@@ -80,6 +85,15 @@ export async function createStripeCheckoutSession(
     // Each is legal only in its own mode, so they are mutually exclusive rather than both set.
     subscription_data: input.subscription ? { metadata: reference } : undefined,
     payment_intent_data: input.subscription ? undefined : { metadata },
+    // The code, handed over exactly as the caller typed it. Stripe resolves it to a promotion code and
+    // computes the price; nothing here validates it, looks it up, or multiplies anything — the provider is
+    // the authority on what is owed, and a second calculation would be a second answer to the one question a
+    // customer checks against their statement.
+    //
+    // `allow_promotion_codes` is deliberately NOT set alongside it: Stripe refuses a session carrying both,
+    // and the two are different products anyway — one applies a code this project chose, the other puts a
+    // box on Stripe's page for the customer to fill in.
+    discounts: promotionCodeId === undefined ? undefined : [{ promotion_code: promotionCodeId }],
   };
 
   const created = await stripeJson(options.transport ?? stripeHttpFetch, "/checkout/sessions", {
@@ -103,3 +117,40 @@ export function hostedSession(created: unknown, what: string): HostedSession {
   }
   return { url: parsed.data.url };
 }
+
+/**
+ * Turn the code a customer typed into the promotion code id Stripe's session wants.
+ *
+ * Stripe's `discounts[].promotion_code` takes a `promo_…` id, not the customer-facing string, so this lookup
+ * is unavoidable. It is also where the code's validity is learned, and learning it *here* is what makes the
+ * refusal a good one: an unknown, expired or exhausted code is refused before a session exists, as
+ * `payments/discount_invalid` naming the code, rather than becoming a checkout that fails in front of the
+ * customer with nothing to say but that something went wrong.
+ *
+ * `active: true` is part of the query rather than a check afterwards, so an expired or exhausted code simply
+ * does not come back. Stripe decides what active means — Pithy does not read `expires_at` or count
+ * redemptions itself, for the same reason it does not compute the discounted price.
+ */
+async function resolvePromotionCode(code: string, options: StripeCheckoutOptions): Promise<string> {
+  const found = await stripeJson(options.transport ?? stripeHttpFetch, "/promotion_codes", {
+    what: `the discount code ${code}`,
+    secretKey: options.credentials.secretKey,
+    query: { code, active: true, limit: 1 },
+  });
+
+  const parsed = StripePromotionCodes.safeParse(found);
+  const promotion = parsed.success ? parsed.data.data[0] : undefined;
+  if (promotion === undefined) {
+    throw new PaymentsDiscountInvalidError({
+      message: `"${code}" is not a discount code we can accept.`,
+      detail: `Stripe has no active promotion code matching "${code}" — unknown, expired, or fully redeemed.`,
+    });
+  }
+  return promotion.id;
+}
+
+/** Stripe's promotion-code list, narrowed to the id a session needs. */
+const StripePromotionCodes = z
+  .object({ data: z.array(z.object({ id: z.string().min(1) }).loose()) })
+  .loose()
+  .describe("A Stripe promotion-code list response.");

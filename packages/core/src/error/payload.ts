@@ -1036,6 +1036,18 @@ const PaymentsClawbackFailedPublic = z
   })
   .describe("A refund could not be clawed back from a spent balance (409).");
 
+const PaymentsDiscountInvalidPublic = z
+  .object({
+    code: z
+      .literal("payments/discount_invalid")
+      .describe(
+        "A discount code the store would not accept — unknown, expired, exhausted, or not valid for what is being bought. Its own code rather than a generic checkout failure, because a customer told 'something went wrong' concludes their card was declined and stops trying, where one told their code was not accepted removes it and buys.",
+      ),
+    status: z.literal(400).describe("Bad Request — the store refused the code, not the payment."),
+    ...publicFields,
+  })
+  .describe("A discount code the store would not accept (400).");
+
 const PaymentsEntitlementNotInCatalogPublic = z
   .object({
     code: z
@@ -1401,6 +1413,7 @@ export const KitPublicErrorPayload = z
     PaymentsProviderUnavailablePublic,
     PaymentsEntitlementRequiredPublic,
     PaymentsClawbackFailedPublic,
+    PaymentsDiscountInvalidPublic,
     PaymentsEntitlementNotInCatalogPublic,
     ControlPlaneNotConnectedPublic,
     ControlPlaneInvalidCredentialPublic,
@@ -1662,6 +1675,10 @@ const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(det
 const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(detailField).describe(
   PaymentsClawbackFailedPublic.description ?? "",
 );
+const PaymentsDiscountInvalid = PaymentsDiscountInvalidPublic.extend(detailField).describe(
+  PaymentsDiscountInvalidPublic.description ?? "",
+);
+
 const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.extend(detailField).describe(
   PaymentsEntitlementNotInCatalogPublic.description ?? "",
 );
@@ -1825,6 +1842,7 @@ export const KitErrorPayload = z
     PaymentsProviderUnavailable,
     PaymentsEntitlementRequired,
     PaymentsClawbackFailed,
+    PaymentsDiscountInvalid,
     PaymentsEntitlementNotInCatalog,
     ControlPlaneNotConnected,
     ControlPlaneInvalidCredential,

@@ -4,9 +4,10 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
-import { InternalError, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -19,6 +20,7 @@ import {
   type PaymentsConfig,
   type PaymentsStripeSettings,
   providerProductId,
+  railEnabled,
   resolveProduct,
 } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
@@ -36,11 +38,19 @@ import { fulfillPurchase } from "../grants/apply";
 import { linkProviderAccount, providerAccountForUser, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
-import { type CheckoutRail, isCheckoutRail, type PaymentsRailProvider } from "../rails/contract";
+import {
+  type CheckoutRail,
+  isCheckoutRail,
+  isDiscountRail,
+  isPricingRail,
+  type PaymentsRailProvider,
+} from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
@@ -50,26 +60,32 @@ import {
 } from "./guards";
 import type {
   PaymentsAdminCatalogResponse,
+  PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
+  PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
   PaymentsHostedSessionResponse,
+  PaymentsPricingResponse,
   PaymentsPurchaseResponse,
   PaymentsRestoreResponse,
 } from "./responses";
 import {
+  AdminDiscountsQuery,
   AdminEntitlementsQuery,
   AdminPurchasesQuery,
   AdminSubscriptionsQuery,
   AdminUserParam,
   AppleWebhookNotification,
   CheckoutRequest,
+  DiscountCreateRequest,
   EntitlementGrantRequest,
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
+  LemonSqueezyWebhookNotification,
   PurchaseSubmission,
   RestoreRequest,
   StripeWebhookNotification,
@@ -198,6 +214,20 @@ function deploymentEnvironment(c: Context<PithyHonoEnv>): PurchaseEnvironment {
 }
 
 /**
+ * This deployment's `ENVIRONMENT` var, verbatim, or undefined.
+ *
+ * Deliberately *not* {@link deploymentEnvironment}'s two-valued answer. A rail sharing one store across
+ * every environment — Lemon Squeezy, whose test mode is a flag on an object rather than a separate store —
+ * fences its webhooks on this, and `dev` and `staging` both evaluate to `sandbox`, so fencing on that would
+ * separate neither. The two are different questions: one asks whether real money moved, this asks which
+ * deployment is speaking.
+ */
+function deploymentName(c: Context<PithyHonoEnv>): string | undefined {
+  const value = (c.env as Record<string, unknown>).ENVIRONMENT;
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
  * The caller's own id. `requireAuth()` has run on every route that calls this, so a null `auth` is a wiring
  * mistake rather than an unauthenticated request — hence `InternalError`, not a 401.
  */
@@ -297,9 +327,90 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     return config.stripe;
   }
 
-  /** The Stripe rail, narrowed to the interface that creates hosted sessions. */
-  async function checkoutRail(c: Context<PithyHonoEnv>): Promise<PaymentsRailProvider & CheckoutRail> {
-    const provider = resolveRailProvider("stripe", config, await credentials(c), trust);
+  /**
+   * Where a hosted checkout returns the browser, for whichever rail is taking the money.
+   *
+   * Each rail carries its own pair, because each returns to a different page: a Stripe success URL holds a
+   * `{CHECKOUT_SESSION_ID}` token the return page posts back, and a Lemon Squeezy one cannot — that rail has
+   * no submittable receipt, so its page shows a pending state and waits for the webhook.
+   */
+  function returnUrls(rail: PaymentsRail): { successUrl: string; cancelUrl?: string } {
+    if (rail === "lemonSqueezy") {
+      if (config.lemonSqueezy === undefined) {
+        throw new PaymentsRailNotConfiguredError({
+          detail: "The lemonSqueezy rail is off in this project's config, so there are no hosted flows to start.",
+        });
+      }
+      // No cancel URL: that store's checkout has no cancel destination to send one to.
+      return { successUrl: config.lemonSqueezy.successUrl };
+    }
+    const settings = stripeSettings();
+    return { successUrl: settings.successUrl, cancelUrl: settings.cancelUrl };
+  }
+
+  /**
+   * The rails that create hosted sessions, in the order a product's blocks are considered.
+   *
+   * Order matters only when a product sells on both and the caller named neither — and in that case the
+   * request is refused rather than resolved by this order, so nothing here is a silent policy. It exists to
+   * make the refusal's message deterministic.
+   */
+  const CHECKOUT_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy"];
+
+  /**
+   * Which hosted-checkout rail this request is for.
+   *
+   * A product declares its rails by carrying their blocks, so the candidates are the checkout-capable rails
+   * this project has enabled *and* this product is listed on. One candidate is the common case and needs no
+   * request field. Two, with the caller naming neither, is refused: picking one would decide who takes a
+   * customer's money on their behalf, and an adopter selling on two rails means to offer the choice.
+   */
+  function checkoutRailFor(entry: PaymentsCatalogEntry, requested: PaymentsRail | undefined): PaymentsRail {
+    const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+
+    // No hosted-checkout rail at all. That is a fact about the deployment rather than about the product —
+    // a mobile-only project sells through Apple and Google and has no browser flow to start — so it is the
+    // rail refusal, and it costs no credential read and no round-trip to give.
+    if (enabled.length === 0) {
+      throw new PaymentsRailNotConfiguredError({
+        detail:
+          "No hosted-checkout rail is on in this project's config, so there are no hosted flows to start. Enable `rails.stripe` or `rails.lemonSqueezy`.",
+      });
+    }
+
+    const candidates = enabled.filter((rail) => providerProductId(entry.product, rail) !== undefined);
+
+    if (requested !== undefined) {
+      if (candidates.includes(requested)) return requested;
+      // Named a rail this product is not sold on, or one this project has turned off. A 404 on the product
+      // rather than the rail: naming which of the two it was would describe the deployment to a stranger.
+      throw new PaymentsProductNotFoundError({
+        detail: `Product "${entry.id}" cannot be bought through ${requested} here — the rail is off, or the product declares no ${requested} block.`,
+      });
+    }
+
+    const [only, ...rest] = candidates;
+    if (only === undefined) {
+      throw new PaymentsProductNotFoundError({
+        detail: `Product "${entry.id}" declares no enabled hosted-checkout rail, so it cannot be bought through this route.`,
+      });
+    }
+    if (rest.length > 0) {
+      throw new ValidationError({
+        message: "Choose how to pay.",
+        action: `Send \`rail\` as one of: ${candidates.join(", ")}.`,
+        detail: `Product "${entry.id}" is sold through ${candidates.join(" and ")}, and the request named neither.`,
+      });
+    }
+    return only;
+  }
+
+  /** One rail, narrowed to the interface that creates hosted sessions. */
+  async function checkoutRail(
+    c: Context<PithyHonoEnv>,
+    rail: PaymentsRail,
+  ): Promise<PaymentsRailProvider & CheckoutRail> {
+    const provider = resolveRailProvider(rail, config, await credentials(c), trust);
     if (!isCheckoutRail(provider)) {
       // Structural rather than a name check, so a future rail that initiates purchases needs no edit here and one
       // that does not can never be asked.
@@ -681,6 +792,26 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     );
 
     /**
+     * SIGNED WEBHOOK — Lemon Squeezy. A bare HMAC in `X-Signature`, over the exact received bytes, which the
+     * guard has checked before this validator ever parses the body.
+     *
+     * **No timestamp, so no freshness window**, and that is a true fact about the scheme rather than an omission
+     * here — `rails/lemonSqueezy/signature.ts` says so in its type by taking no clock. Replay protection is
+     * entirely the guard's `UNIQUE (rail, providerEventId)` insert, and the projection's monotonic rule behind
+     * it.
+     *
+     * The same handler again. This is where every Lemon Squeezy purchase enters the system, because that rail
+     * has no client-submission path at all: its order ids are sequential integers, so no submitted receipt
+     * could be trusted.
+     */
+    app.post(
+      `${base}/webhooks/lemon-squeezy`,
+      requireSignedWebhook("lemonSqueezy", { config, now: clock, trust }),
+      zValidator("json", LemonSqueezyWebhookNotification, validationHook),
+      webhookHandler("lemonSqueezy"),
+    );
+
+    /**
      * AUTHED WRITE — Stripe only. Create a hosted Checkout Session and hand back where to send the browser.
      *
      * Everything that decides what is bought and where the buyer is returned to comes from config or from the
@@ -690,32 +821,36 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * to a page it controls; one that could name a purchaser could attach its purchase to another account.
      */
     app.post(`${base}/checkout`, requireAuth(), zValidator("json", CheckoutRequest, validationHook), async (c) => {
-      const settings = stripeSettings();
       const input = c.req.valid("json");
       const entry = product(config, input.productId);
-      const priceId = providerProductId(entry.product, "stripe");
-      if (priceId === undefined) {
-        // In the catalog, but not sold here. A 404 on the product rather than on the rail: Stripe is available,
-        // this product simply is not one of the things it sells.
+      const rail = checkoutRailFor(entry, input.rail);
+      const settings = returnUrls(rail);
+      const sku = providerProductId(entry.product, rail);
+      if (sku === undefined) {
+        // In the catalog, but not sold here. A 404 on the product rather than on the rail: the rail is
+        // available, this product simply is not one of the things it sells.
         throw new PaymentsProductNotFoundError({
-          detail: `Product "${entry.id}" declares no stripe price, so it cannot be bought through hosted Checkout.`,
+          detail: `Product "${entry.id}" declares no ${rail} SKU, so it cannot be bought through hosted checkout.`,
         });
       }
 
       const userId = callerId(c);
-      const provider = await checkoutRail(c);
+      const provider = await checkoutRail(c, rail);
       const session = await provider.createCheckoutSession(
         {
-          providerProductId: priceId,
+          providerProductId: sku,
           subscription: entry.product.type === "subscription",
           userId,
-          // Reuse the buyer's existing Stripe customer, so one buyer keeps one account and their billing portal
+          // Reuse the buyer's existing store customer, so one buyer keeps one account and their billing portal
           // shows every purchase rather than only the last one's.
-          providerAccountId: await accountFor(c, "stripe", userId),
+          providerAccountId: await accountFor(c, rail, userId),
           successUrl: settings.successUrl,
           cancelUrl: settings.cancelUrl,
+          // Passed to the store unchanged. Pithy never computes a discounted amount and never checks a code
+          // against anything of its own — the provider is the authority on what is owed.
+          discountCode: input.discountCode,
         },
-        { now: clock() },
+        { now: clock(), deployment: deploymentName(c) },
       );
 
       await c.var.emit({
@@ -726,7 +861,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         sessionId: c.var.auth?.sessionId,
         resourceType: "product",
         resourceId: entry.id,
-        metadata: { rail: "stripe", productId: entry.id, subscription: entry.product.type === "subscription" },
+        metadata: {
+          rail,
+          productId: entry.id,
+          subscription: entry.product.type === "subscription",
+          // Whether one was used, never which. The trail is long-lived and a code is a commercial fact.
+          discounted: input.discountCode !== undefined,
+        },
       });
       return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
@@ -739,23 +880,52 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * any signed-in caller could open a session against somebody else's billing history and cancel it.
      */
     app.post(`${base}/portal`, requireAuth(), async (c) => {
-      const settings = stripeSettings();
       const userId = callerId(c);
-      const providerAccountId = await accountFor(c, "stripe", userId);
-      if (providerAccountId === null) {
-        // Nothing has ever been bought through Stripe by this caller, so there is no billing to manage. Not a
-        // payments-domain refusal: the rail is configured and working, the resource simply does not exist.
-        throw new NotFoundError({
-          message: "No billing account yet.",
-          action: "Buy a subscription first, then manage it here.",
-          detail: `No stripe provider account is linked to ${userId}.`,
+
+      // Which rail this caller actually bought on, found by asking the account map rather than by taking it
+      // from the request. Still no body: the caller names neither the customer nor the rail, so there is
+      // nothing here anyone could point at somebody else's billing.
+      const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+      // No hosted rail at all is a fact about the deployment, not about this caller — a mobile-only project
+      // has no billing portal to open. Same refusal `/checkout` gives, rather than a 404 that reads as "you
+      // have no account" to somebody who could never have had one.
+      if (enabled.length === 0) {
+        throw new PaymentsRailNotConfiguredError({
+          detail:
+            "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe` or `rails.lemonSqueezy`.",
         });
       }
 
-      const provider = await checkoutRail(c);
+      let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
+      for (const rail of enabled) {
+        const providerAccountId = await accountFor(c, rail, userId);
+        if (providerAccountId !== null) {
+          found = { rail, providerAccountId };
+          break;
+        }
+      }
+
+      if (found === undefined) {
+        // Nothing has ever been bought through a hosted rail by this caller, so there is no billing to
+        // manage. Not a payments-domain refusal: the rail is configured and working, the resource simply
+        // does not exist.
+        throw new NotFoundError({
+          message: "No billing account yet.",
+          action: "Buy a subscription first, then manage it here.",
+          detail: `No hosted-rail provider account is linked to ${userId}.`,
+        });
+      }
+
+      const provider = await checkoutRail(c, found.rail);
       const session = await provider.createPortalSession(
-        { providerAccountId, returnUrl: settings.portalReturnUrl },
-        { now: clock() },
+        {
+          providerAccountId: found.providerAccountId,
+          // Undefined for a rail whose portal takes no return parameter — Lemon Squeezy's is a signed,
+          // expiring link with nowhere to go back to. The contract admits that rather than have the rail
+          // silently drop a URL an adopter configured.
+          returnUrl: found.rail === "stripe" ? stripeSettings().portalReturnUrl : undefined,
+        },
+        { now: clock(), deployment: deploymentName(c) },
       );
 
       await c.var.emit({
@@ -765,8 +935,8 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         actorId: userId,
         sessionId: c.var.auth?.sessionId,
         resourceType: "provider_account",
-        resourceId: providerAccountId,
-        metadata: { rail: "stripe" },
+        resourceId: found.providerAccountId,
+        metadata: { rail: found.rail },
       });
       return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
     });
@@ -786,6 +956,159 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * The write is a repair of the read model, not a purchase: null provenance, no purchase row, and the
      * projection stays authoritative for any key the catalog sells. See `entitlement/manual.ts`.
      */
+    /**
+     * AUTHED READ — what the caller's own subscription pays, and when that changes.
+     *
+     * The half that stops a bill changing unannounced. A discount that lapses with nothing having said so
+     * is, from a customer's seat, indistinguishable from a billing error — so a screen offering a
+     * twelve-month rate has to be able to say when the twelve months end.
+     *
+     * The caller's own, always: the subscription is found from the provider-account map keyed on the
+     * authenticated user, and there is no request field naming one. Answers `null` when this caller has no
+     * subscription a rail can price, which is a fact rather than a failure.
+     */
+    app.get(`${base}/pricing`, requireAuth(), async (c) => {
+      const userId = callerId(c);
+      const db = paymentsDatabase(database(c));
+
+      // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
+      // row records a closed period and has no "next".
+      const rows = await db
+        .selectFrom(PAYMENTS_PURCHASES_TABLE)
+        .selectAll()
+        .where("userId", "=", userId)
+        .where("type", "=", "subscription")
+        .orderBy("providerEventAt", "desc")
+        .execute();
+      // The row that carries the subscription's *standing*, preferred over any receipt.
+      //
+      // On Lemon Squeezy a subscriber's newest rows are `charge` receipts — one per invoice — and a receipt
+      // names a closed period no rail can price. Taking the newest of any role therefore returned null for
+      // every LS subscriber while looking like it had worked. Every other rail writes `charge` for
+      // everything and has no `state` row, so the fallback is what serves them.
+      const row = rows.find((candidate) => candidate.role === "state") ?? rows[0];
+      if (row === undefined) return c.json({ pricing: null }, 200);
+
+      const purchase = PaymentsPurchase.parse(row);
+      const provider = resolveRailProvider(purchase.rail, config, await credentials(c), trust);
+      if (!isPricingRail(provider)) return c.json({ pricing: null }, 200);
+
+      const pricing = await provider.readPricing(purchase, { now: clock(), deployment: deploymentName(c) });
+      if (pricing === undefined) return c.json({ pricing: null }, 200);
+
+      return c.json(
+        {
+          pricing: {
+            currency: pricing.currency,
+            currentAmountMinor: pricing.currentAmountMinor,
+            listAmountMinor: pricing.listAmountMinor,
+            discountCode: pricing.discountCode,
+            discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
+          } satisfies PaymentsPricingResponse,
+        },
+        200,
+      );
+    });
+
+    /**
+     * CONTROL PLANE. The discount codes this project has issued.
+     *
+     * Read from the store rather than from a table of ours: the store is where a code actually exists, and a
+     * local mirror would be a second answer that drifts the first time somebody uses the dashboard.
+     *
+     * Its own scope, narrower than minting. A pane that lists what was issued does not need the power to
+     * issue. Never reaches a browser — the set of codes an adopter has issued is a commercial fact, and the
+     * client projection draws the same line here it draws for SKUs.
+     */
+    app.get(
+      `${base}/admin/discounts`,
+      requireControlPlane(PAYMENTS_DISCOUNT_READ_SCOPE),
+      zValidator("query", AdminDiscountsQuery, validationHook),
+      async (c) => {
+        const { rail } = c.req.valid("query");
+        const provider = resolveRailProvider(rail, config, await credentials(c), trust);
+        if (!isDiscountRail(provider)) {
+          throw new PaymentsRailNotConfiguredError({ detail: `The ${provider.rail} rail does not mint discounts.` });
+        }
+
+        const discounts = await provider.listDiscounts({ now: clock(), deployment: deploymentName(c) });
+
+        // Through `recordRead`, like every other management read: its own action, the caller's `sub` as the
+        // actor, and a count rather than the rows.
+        await recordRead(c, PaymentsAuditActions.discountsRead, rail, { rail, count: discounts.length });
+
+        return c.json({ discounts: [...discounts] } satisfies PaymentsAdminDiscountsResponse, 200);
+      },
+    );
+
+    /**
+     * CONTROL PLANE. Mint a discount code at one store.
+     *
+     * **Its own scope**, `payments:discounts:create`, granted separately from the entitlement writes.
+     * Comping somebody an entitlement and creating a code that reduces what everybody holding it pays are
+     * different powers with different blast radii, and a tool that needs one must not acquire the other.
+     *
+     * **The kit provides the verb; the adopter provides the policy.** This creates the object at the store
+     * and answers with what it made. Who may be offered a code, what it is worth, where that offer is
+     * recorded and when it stops being advertised are commercial decisions with a company's pricing behind
+     * them — a capability that guessed at them would be wrong for the second adopter.
+     *
+     * Applying a code does **not** go through here and does not require this scope. An adopter whose codes
+     * are minted by hand in a provider dashboard is fully served by `/checkout`'s `discountCode`.
+     */
+    app.post(
+      `${base}/admin/discounts`,
+      requireControlPlane(PAYMENTS_DISCOUNT_CREATE_SCOPE),
+      zValidator("json", DiscountCreateRequest, validationHook),
+      async (c) => {
+        const input = c.req.valid("json");
+        const provider = resolveRailProvider(input.rail, config, await credentials(c), trust);
+        if (!isDiscountRail(provider)) {
+          // Structural, so a rail that gains the ability needs no edit here and one that never will can
+          // never be asked.
+          throw new PaymentsRailNotConfiguredError({
+            detail: `The ${provider.rail} rail does not mint discounts.`,
+          });
+        }
+
+        const created = await provider.createDiscount(input.terms, { now: clock() });
+
+        const who = controlPlaneCaller(c);
+        await c.var.emit({
+          action: PaymentsAuditActions.discountCreated,
+          outcome: "success",
+          // The token's `sub`, so the trail names which person at the dashboard minted it rather than merely
+          // "the dashboard" — one connection is normally shared by everybody using that console.
+          actorType: "control-plane",
+          actorId: who.subject,
+          resourceType: "discount",
+          resourceId: created.providerDiscountId,
+          // What was minted and what it is worth, and the **store's id** rather than the code itself. The
+          // code is a live bearer value: anyone who can read the trail could redeem it, and an audit trail
+          // is queryable, long-lived, and read by more people than can mint. The id finds it in the
+          // dashboard, which is where somebody entitled to see the code already is.
+          metadata: {
+            rail: input.rail,
+            connectionId: who.connectionId,
+            amount:
+              created.terms.amount.kind === "percent"
+                ? `${created.terms.amount.percent}%`
+                : `${created.terms.amount.amountMinor} ${created.terms.amount.currency}`,
+            duration: created.terms.duration.kind,
+          },
+        });
+
+        return c.json(
+          {
+            code: created.code,
+            providerDiscountId: created.providerDiscountId,
+            rail: input.rail,
+          } satisfies PaymentsDiscountResponse,
+          200,
+        );
+      },
+    );
+
     app.post(
       `${base}/entitlements/grant`,
       requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE),
@@ -797,6 +1120,34 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         // constrains a string, it is never built from a configured key set. `EntitlementKey` has already
         // said the key is well-formed; this says it means something.
         if (!grantable.has(input.entitlement)) {
+          // The refusal is the outcome worth recording here, and it was the only one not recorded. A
+          // credential scoped only to grant can otherwise enumerate this project's entitlement vocabulary
+          // one key at a time — 400 for a miss, 200 for a hit — and leave the customer nothing to read
+          // afterwards. One refusal is a typo; a run of them against one connection is somebody mapping
+          // what a project sells.
+          //
+          // `safeEmit` for the same reason the webhook guard uses it: the 400 is already decided, and an
+          // audit write that threw would answer 500 for a failing store and 400 for a healthy one.
+          await safeEmit(
+            c.var.emit,
+            {
+              action: PaymentsAuditActions.entitlementGranted,
+              outcome: "denied",
+              severity: "warning",
+              actorType: "service",
+              actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+              resourceType: "entitlement",
+              resourceId: input.entitlement,
+              // The route and the submitted key, and nothing else the caller supplied. The key is safe to
+              // record — `EntitlementKey` has already bounded it to `^[a-z][a-z0-9_]*$` at 64 characters —
+              // and it is the only field that makes a run of refusals legible. Never the catalogue: the
+              // defined set goes in `detail`, which the codec strips, and must not be copied into a
+              // queryable, long-lived trail.
+              metadata: { route: "entitlements/grant", entitlement: input.entitlement },
+            },
+            c.var.log,
+          );
+
           throw new PaymentsEntitlementNotInCatalogError({
             message: `No entitlement "${input.entitlement}" is defined here.`,
             // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's
@@ -1050,6 +1401,21 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           reason,
           severity: "warning",
         });
+      }
+
+      // A second event the same notification implied — the subscription's standing, where the one above was a
+      // charge. Only Lemon Squeezy sends one, and only on a refund: the invoice row goes `refunded` so the
+      // ledger claws back, and this stops the subscription granting, because the buyer has their money back.
+      //
+      // Projected with the same owner, and outside the catch above on purpose: it is the half that revokes
+      // access, so a failure must reach the store as a non-2xx and be redelivered rather than be acknowledged
+      // as handled. Never fulfilled — a `state` row refuses both credit and clawback by role.
+      if (notification.stateEvent) {
+        await projectPurchase(
+          d1,
+          { ...notification.stateEvent, userId },
+          { config, environment: deploymentEnvironment(c), now },
+        );
       }
 
       // Fulfillment sits outside that catch, and the asymmetry is deliberate. Every refusal the catch answers

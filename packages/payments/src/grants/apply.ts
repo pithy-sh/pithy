@@ -112,8 +112,18 @@ export function ledgerGrantFor(config: PaymentsConfig, productId: string): Payme
   return config.products[productId]?.grants?.ledger;
 }
 
-/** Whether this purchase's charge stands, and so whether what it bought should be credited. */
-export function purchaseIsPaid(purchase: Pick<PaymentsPurchase, "status">): boolean {
+/**
+ * Whether this purchase's charge stands, and so whether what it bought should be credited.
+ *
+ * **A `state` row is never paid, whatever its status says**, and the check is on `role` before it is on
+ * `status` because the two answer different questions. `status` asks what became of a charge; a
+ * subscription's standing is not a charge, so the question does not apply to it and an honest `active`
+ * would otherwise read as money that arrived. Lemon Squeezy is the only rail that writes such a row —
+ * its subscription webhooks carry no charge at all — and without this line every LS subscriber would be
+ * credited once for the subscription on top of once per invoice. See {@link PurchaseRole}.
+ */
+export function purchaseIsPaid(purchase: Pick<PaymentsPurchase, "status" | "role">): boolean {
+  if (purchase.role === "state") return false;
   return !UNPAID_STATUSES.has(purchase.status);
 }
 

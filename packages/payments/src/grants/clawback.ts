@@ -86,6 +86,12 @@ export async function clawbackGrants(
   const { purchase } = projection;
   const product = options.config.products[purchase.productId];
   const grant = ledgerGrantFor(options.config, purchase.productId);
+  // `role` first, and for the mirror of the reason `purchaseIsPaid` checks it first: a `state` row records a
+  // subscription's standing rather than a charge, so it never credited and there is nothing to take back.
+  // Debiting one would take currency the buyer was never given — the same row's `revoked` status is what a
+  // refund correctly writes there, so without this line every clawback-enabled Lemon Squeezy product would
+  // debit twice for one refund.
+  if (purchase.role === "state") return [];
   if (grant === undefined || product?.clawback !== true || !REVERSED_STATUSES.has(purchase.status)) return [];
 
   const ref = clawbackRef(purchase.id, grant.currency);

@@ -137,6 +137,35 @@ describe("useEntitlement", () => {
     expect(held.current).toMatchObject({ entitled: false, loading: false });
   });
 
+  test("a failed read is reported as its own state, not as an unheld key", async () => {
+    // A lock may fail shut — `entitled` stays false — but it must still say it could not ask. A screen
+    // that renders "you don't have Pro" and one that renders "we couldn't check" are different screens.
+    const dead: PaymentsFetch = () => Promise.reject(new Error("offline"));
+    const held = await render(() => useEntitlement("pro", { fetch: dead }));
+    await settle();
+    expect(held.current.entitled).toBe(false);
+    expect(held.current.readFailure?.code).toBe("client/unreachable");
+  });
+
+  test("a customer who holds nothing is not a failed read", async () => {
+    const held = await render(() => useEntitlement("pro", { fetch: queue([[200, NOTHING]]) }));
+    await settle();
+    expect(held.current).toMatchObject({ entitled: false, loading: false, readFailure: null });
+  });
+
+  test("a read that recovers clears the failure it reported", async () => {
+    const fetcher = queue([
+      [500, {}],
+      [200, PRO],
+    ]);
+    const held = await render(() => useEntitlement("pro", { fetch: fetcher }));
+    await settle();
+    expect(held.current.readFailure).not.toBeNull();
+    act(() => held.current.refresh());
+    await settle();
+    expect(held.current).toMatchObject({ entitled: true, readFailure: null });
+  });
+
   test("refresh re-reads, which is how a screen updates after a purchase completes", async () => {
     const fetcher = queue([
       [200, NOTHING],
@@ -354,6 +383,40 @@ describe("useSubscription", () => {
     await settle();
     act(() => held.current.manageStore("apple"));
     expect(visited).toEqual([STORE_SUBSCRIPTION_URLS.apple]);
+  });
+
+  test("a failed read is its own state, and never an empty entitlement list", async () => {
+    // #302's motivating bug: a rail that names the visitor's plan rendered `Free` with an `Upgrade`
+    // button for an Enterprise customer, because a 500 and "holds nothing" were the same value.
+    const held = await render(() => useSubscription({ fetch: queue([[500, {}]]) }));
+    await settle();
+    expect(held.current.loading).toBe(false);
+    expect(held.current.entitlements).toEqual([]);
+    expect(held.current.subscribed).toBe(false);
+    expect(held.current.readFailure).not.toBeNull();
+  });
+
+  test("a read failure and an action refusal are separate fields", async () => {
+    // `failure` is the last thing the subscriber *asked for* and was refused. `readFailure` is the state
+    // of the entitlements read. Collapsing them would let a stale portal error mask a broken read.
+    const fetcher = queue([
+      [200, PRO],
+      [404, { error: { code: "core/not_found", status: 404, message: "No billing account yet." } }],
+    ]);
+    const held = await render(() => useSubscription({ fetch: fetcher }));
+    await settle();
+    expect(held.current.readFailure).toBeNull();
+    await act(async () => {
+      await held.current.manage();
+    });
+    expect(held.current.failure?.message).toBe("No billing account yet.");
+    expect(held.current.readFailure).toBeNull();
+  });
+
+  test("a customer who genuinely holds nothing reports no read failure", async () => {
+    const held = await render(() => useSubscription({ fetch: queue([[200, NOTHING]]) }));
+    await settle();
+    expect(held.current).toMatchObject({ entitlements: [], subscribed: false, readFailure: null });
   });
 
   test("a caller with no billing account gets the server's message, not a blank redirect", async () => {

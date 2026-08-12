@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -30,10 +30,10 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * thing those bindings point at: the prebuilt reconcile worker that hosts the nightly pass, per environment.
  *
  * **No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key,
- * and Stripe's key pair are downloaded by a human from three consoles — nothing can mint them. They go in
- * through `pithy secrets set` under `payments-provider-credentials`, and this command deploys the worker that
- * reads them. A provision run before the secrets are set still succeeds; the first pass is what reports the
- * missing rail.
+ * Stripe's key pair, and Lemon Squeezy's API key and webhook secret are downloaded by a human from four
+ * consoles — nothing can mint them. They go in through `pithy secrets set` under
+ * `payments-provider-credentials`, and this command deploys the worker that reads them. A provision run
+ * before the secrets are set still succeeds; the first pass is what reports the missing rail.
  *
  * `reconcile` runs the same pass on demand, in a deployed environment, and waits for its report. It is the
  * support tool the issue names — "my subscription isn't showing up" is answered by `--user`, through exactly
@@ -234,7 +234,10 @@ const reconcile = defineCommand({
   args: {
     env: { ...envArg("Target environment"), default: "staging" },
     user: { type: "string", description: "Reconcile one user's purchases only — the support path" },
-    rail: { type: "string", description: "Reconcile one rail only: apple, google, or stripe" },
+    // Every rail is named, in the spelling the parse accepts — `lemonSqueezy`, camelCase, the same
+    // identifier the config and the credential bundle key on. A help line that lists three of four rails
+    // is why somebody types the fourth as a guess.
+    rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, or lemonSqueezy" },
     "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -256,11 +259,23 @@ const reconcile = defineCommand({
 
       // Parsed here rather than sent raw: a mistyped rail is a message in this terminal instead of a Workflow
       // instance that starts, fails a step, and burns its retry budget where nobody is watching.
-      const params = PaymentsReconcileParams.parse({
+      //
+      // **Mapped, not thrown raw.** "A message in this terminal" means the house two-line refusal, and a
+      // bare `ZodError` is a stack trace — `--rail lemon-squeezy` is exactly the typo that used to earn
+      // one. The rails are not listed again here: Zod's own message names the accepted set, so the list
+      // stays in one place and gains the next rail on the day the schema does.
+      const parsed = PaymentsReconcileParams.safeParse({
         ...(args.user === undefined ? {} : { userId: args.user }),
         ...(args.rail === undefined ? {} : { rail: args.rail }),
         ...(args["dry-run"] ? { dryRun: true } : {}),
       });
+      if (!parsed.success) {
+        throw fromZodError(parsed.error, {
+          message: parsed.error.issues.map((issue) => issue.message).join(" "),
+          action: "Spell --rail the way pithy.config.ts spells it, or drop it to reconcile every rail.",
+        });
+      }
+      const params = parsed.data;
 
       const report = (await provisioner.reconcile(env, params)) as {
         scanned?: number;

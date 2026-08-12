@@ -41,6 +41,7 @@ describe("PaymentsPurchase codec round-trip", () => {
     id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
     userId: "u1",
     rail: "apple",
+    role: "charge",
     providerTransactionId: "2000000123456789",
     productId: "pro_monthly",
     providerProductId: "com.acme.pro.monthly",

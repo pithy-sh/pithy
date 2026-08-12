@@ -99,6 +99,7 @@ function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
     id: "11111111-1111-4111-8111-111111111111",
     userId: "ada",
     rail: "apple",
+    role: "charge",
     providerTransactionId: "2000000731004811",
     productId: "pro_monthly",
     providerProductId: "com.acme.pro.monthly",

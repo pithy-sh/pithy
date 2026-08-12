@@ -34,6 +34,7 @@ Then set up the stores. That is the part nobody can do for you, and it has its o
 - [Apple in-app purchase](docs/apple-iap.md)
 - [Google Play Billing](docs/google-play-billing.md)
 - [Stripe](docs/stripe.md)
+- [Lemon Squeezy](docs/lemon-squeezy.md) — the merchant of record, which owns the tax registration you would otherwise own
 
 ## Configure
 
@@ -151,13 +152,24 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `POST /payments/purchases` | Submit a receipt or signed transaction for verification | bearer · session |
 | `GET /payments/entitlements` | The caller's own resolved entitlements | bearer · session |
 | `POST /payments/restore` | Restore Purchases — rebind store history to the caller | bearer · session |
-| `POST /payments/checkout` | Stripe only. Create a hosted Checkout Session | bearer · session |
-| `POST /payments/portal` | Stripe only. Create a Billing Portal session | bearer · session |
+| `GET /payments/pricing` | What the caller's own subscription pays, and when that changes | bearer · session |
+| `POST /payments/checkout` | Create a hosted checkout session, on Stripe or Lemon Squeezy | bearer · session |
+| `POST /payments/portal` | Create a billing-portal session for the caller's own account | bearer · session |
 | `POST /payments/webhooks/apple` | App Store Server Notifications V2 | signed-webhook |
 | `POST /payments/webhooks/google` | Play Real-time Developer Notifications, via Pub/Sub push | signed-webhook |
 | `POST /payments/webhooks/stripe` | Stripe events | signed-webhook |
-| `POST /payments/entitlements/grant` | Comp or repair an entitlement | control-plane |
-| `POST /payments/entitlements/revoke` | Take one back | control-plane |
+| `POST /payments/webhooks/lemon-squeezy` | Lemon Squeezy events | signed-webhook |
+| `POST /payments/admin/discounts` | Mint a discount code at one store | control-plane: `payments:discounts:create` |
+| `GET /payments/admin/discounts` | The discount codes this project has issued | control-plane: `payments:discounts:read` |
+| `POST /payments/entitlements/grant` | Comp or repair an entitlement | control-plane: `payments:entitlements:grant` |
+| `POST /payments/entitlements/revoke` | Take one back | control-plane: `payments:entitlements:revoke` |
+| `GET /payments/admin/catalog` | What this project sells, and the keys it comps by hand | control-plane: `payments:catalog:read` |
+| `GET /payments/admin/purchases` | The purchase log, paged | control-plane: `payments:purchases:read` |
+| `GET /payments/admin/subscriptions` | The purchases that renew | control-plane: `payments:subscriptions:read` |
+| `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/entitlements/:userId` | One account's entitlements | control-plane: `payments:entitlements:read` |
+
+**Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgement call.
 
 **No `public` routes.** Every caller is either an authenticated user acting on their own purchases or a machine proving authenticity. Turnstile has nothing to gate here.
 
@@ -249,7 +261,7 @@ const { entitled, loading } = useEntitlement("pro");
 const { start, starting, failure } = useCheckout();
 ```
 
-Four of them — `useEntitlement`, `useSubscription`, `useCheckout`, `usePurchase` — over a framework-free `src/client/api.ts` that a non-React client can call directly. **Nothing here throws**: a read that fails reads as "not entitled", because the server's `requireEntitlement()` is the boundary and failing closed in a browser costs nothing.
+Four of them — `useEntitlement`, `useSubscription`, `useCheckout`, `usePurchase` — over a framework-free `src/client/api.ts` that a non-React client can call directly. **Nothing here throws, and nothing hides a failure either**: every reader answers a `PaymentsResult`, so an unreachable Worker is distinguishable from a customer who holds nothing. Failing shut is the caller's decision to write down — `useEntitlement` locks and reports `readFailure`; `useSubscription`, which names the plan, reports the failure rather than rendering an empty list as the free tier. The server's `requireEntitlement()` is still the boundary.
 
 `react` is an **optional** peer dependency and neither client module is exported from `src/index.ts`. That is what keeps React out of a Worker bundle that composes payments; both are reached by their own deep path.
 

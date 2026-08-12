@@ -159,6 +159,7 @@ export async function projectPurchase(
     providerProductId: event.providerProductId,
     type: entry.product.type,
     status: event.status,
+    role: event.role,
     environment: event.environment,
     purchasedAt: event.purchasedAt,
     expiresAt: event.expiresAt,
