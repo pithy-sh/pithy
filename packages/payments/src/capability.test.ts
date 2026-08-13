@@ -7,6 +7,7 @@ import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { Hono } from "hono";
@@ -282,10 +283,17 @@ describe("pithy.manifest.json — declared secrets", () => {
  *
  * This suite is named in issue #79's definition of done, and it has three halves. An **exact-key lock**,
  * because a projection grows by someone adding a key and the review that would have caught it is this
- * test. A **negative sweep** over the serialized result seeded with every credential shape the three
- * rails deal in, so a future edit that reached for a secret fails here rather than in a bundle. And one
- * **positive assertion**, because a projection that leaked nothing by projecting nothing would pass a
- * negative sweep perfectly.
+ * test. A **positive invariant** over the serialized result — every leaf is one of the facts a browser
+ * may know, and every key is one written out by hand — so a future edit that reached for a secret fails
+ * here rather than in a bundle. And a **vacuity check**, because a projection that leaked nothing by
+ * projecting nothing would pass either of those perfectly.
+ *
+ * The middle half used to be a list of credential shapes that must not appear: a Stripe live key, a
+ * webhook secret, an Apple issuer id, a Google service-account document. It was replaced rather than
+ * extended. A negative list is complete only against the values somebody thought of, and a projection
+ * widens by gaining a *field* — the event no value list can observe. Those shapes are all still refused,
+ * strictly: none of them is a product id, a kind, a display name, an entitlement key, a hosted-checkout
+ * identifier, a rail flag or a base path, so any of them crossing is a leaf the sweep reports.
  */
 const CLIENT_CATALOG = {
   rails: { apple: true, google: true, stripe: true },
@@ -299,8 +307,11 @@ const CLIENT_CATALOG = {
       type: "subscription" as const,
       name: "Pro",
       entitlements: ["pro"],
+      // The store SKUs are deliberately unlike the product id. They were `pro_monthly` and `coin_pack`,
+      // which are also the ids — so no sweep could tell an Apple or Play SKU that crossed from a product
+      // id that was meant to, and the two most obvious forbidden values were invisible to any check.
       apple: { productId: "com.acme.pro.monthly" },
-      google: { productId: "pro_monthly" },
+      google: { productId: "acme.pro.monthly.v1" },
       stripe: { priceId: "price_1Abc" },
     },
     remove_ads: {
@@ -312,26 +323,42 @@ const CLIENT_CATALOG = {
     coin_pack: {
       type: "consumable" as const,
       name: "Coin pack",
-      grants: { ledger: { currency: "coins", amount: 100 } },
-      google: { productId: "coin_pack" },
+      // A currency code and an amount describe the economy, so neither crosses. The amount is the
+      // numeric sentinel and `clawback` the boolean one — a flag is the cheapest way to widen a
+      // projection, and `true` is a value the leaf half can never police on its own.
+      grants: { ledger: { currency: "coins", amount: 4242 } },
+      clawback: true,
+      google: { productId: "acme.coin.pack.v1" },
     },
   },
 };
 
 /**
- * Every credential shape the three rails carry, and the binding name the data lives behind.
+ * Every key the client projection may carry, at any depth. Fifteen: the envelope's five, the four rail
+ * flags, and a product's six.
  *
- * None of these can reach the projection today, and that is the point worth stating: they live in the
- * secrets store, so the closure resolving the projection cannot see them even if it tried. The sweep
- * guards the future — the edit that adds `credentials` "just for the sitekey", or reaches for `env`.
+ * **Written out, never `Object.keys(...)` of the projection or its type.** A gate that reads its own
+ * subject cannot fail when the subject changes — deriving the permitted set from the thing being policed
+ * widens the permission in the same commit that widens the projection, and the test whose whole job is
+ * to catch that passes. Adding a key to a browser bundle means editing this line, deliberately, beside
+ * the sentence saying why it is short.
  */
-const NEVER_IN_A_BUNDLE = [
-  "sk_live_51NxAcmeSecretKeyValueHere",
-  "whsec_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c",
-  "57246542-96fe-1a63-e053-0824d011072a",
-  '{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----"}',
-  "-----BEGIN PRIVATE KEY-----",
-  "DB",
+const PUBLISHED_CLIENT_KEYS = [
+  "enabled",
+  "environment",
+  "rails",
+  "basePath",
+  "products",
+  "apple",
+  "google",
+  "stripe",
+  "lemonSqueezy",
+  "id",
+  "type",
+  "entitlements",
+  "name",
+  "stripePriceId",
+  "lemonSqueezyVariantId",
 ];
 
 describe("payments().client — virtual:pithy/payments", () => {
@@ -351,9 +378,56 @@ describe("payments().client — virtual:pithy/payments", () => {
     }
   });
 
-  test("no credential-shaped value crosses it", () => {
-    const serialized = JSON.stringify(projection);
-    for (const secret of NEVER_IN_A_BUNDLE) expect(serialized, secret).not.toContain(secret);
+  test("nothing but what a browser may know crosses it, whatever a field is called", () => {
+    // The invariant, stated rather than enumerated. Two halves, because either alone permits the mistake:
+    // a value the catalog carries must not appear under *any* key, and a key must be one of the fifteen
+    // named by hand — the second is what stops a field arriving with a value from somewhere else, and it
+    // is the only half that can police a boolean or a null.
+    //
+    // Serialized and re-parsed on purpose: `JSON.stringify` is how this reaches a bundle, so what the
+    // sweep walks is exactly what an adopter's users receive.
+    const inlined: unknown = JSON.parse(JSON.stringify(projection));
+
+    const published: (string | number | boolean | null)[] = [
+      // The envelope: composed, which environment it was built for, and where the routes are.
+      true,
+      false,
+      null,
+      "prod",
+      "/payments",
+    ];
+    for (const [id, product] of Object.entries(CLIENT_CATALOG.products)) {
+      published.push(id, product.type, product.name);
+      for (const key of "entitlements" in product ? product.entitlements : []) published.push(key);
+      // The one hosted-checkout identifier a browser legitimately names: a Stripe price id is what a
+      // Checkout Session is opened with. The store SKUs above are not, and that is the whole line.
+      if ("stripe" in product) published.push(product.stripe.priceId);
+    }
+    const escaped = unpublishedIn(inlined, { leaves: published, keys: PUBLISHED_CLIENT_KEYS });
+    expect(
+      escaped,
+      `These reached an adopter's users and are not a product's id, kind, display name, entitlement key or hosted-checkout id:\n  ${escaped.join("\n  ")}`,
+    ).toEqual([]);
+  });
+
+  test("the catalog really carries everything the sweep is meant to refuse", () => {
+    // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold the
+    // store SKUs, a ledger currency and amount, three return URLs and a flag, or that test proves nothing.
+    const serialized = JSON.stringify(CLIENT_CATALOG);
+    for (const withheld of [
+      "com.acme.pro.monthly",
+      "acme.pro.monthly.v1",
+      "com.acme.removeads",
+      "acme.coin.pack.v1",
+      "coins",
+      "4242",
+      "https://acme.example/pricing",
+      // A boolean the catalog carries and the bundle must not. The leaf half is blind to this whole JSON
+      // type by construction, so the catalog holds one and the key half has something to be measured by.
+      '"clawback":true',
+    ]) {
+      expect(serialized, withheld).toContain(withheld);
+    }
   });
 
   test("what is meant to cross does cross — a sweep over nothing would pass perfectly", () => {
@@ -364,21 +438,8 @@ describe("payments().client — virtual:pithy/payments", () => {
     expect(serialized).toContain("Remove ads");
     expect(serialized).toContain("ads_removed");
     expect(serialized).toContain("/payments");
-  });
-
-  test("the grants block never crosses — a currency code and an amount describe the economy", () => {
-    const serialized = JSON.stringify(projection);
-    expect(serialized).not.toContain("grants");
-    expect(serialized).not.toContain("coins");
-    expect(serialized).not.toContain("amount");
-    // The product itself still renders; only what it fulfils behind the scenes is withheld.
+    // The product a browser must still be able to show, whose economics it must not learn.
     expect(serialized).toContain("Coin pack");
-  });
-
-  test("a product's own store SKUs stay server-side; only the Stripe price is publishable", () => {
-    const serialized = JSON.stringify(projection);
-    expect(serialized).not.toContain("com.acme.pro.monthly");
-    expect(serialized).not.toContain("com.acme.removeads");
   });
 
   test("null, never undefined — the projection is inlined with JSON.stringify", () => {
