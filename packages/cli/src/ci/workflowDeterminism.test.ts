@@ -253,8 +253,6 @@ describe("the rule, proved against fixtures before it is trusted against the tre
 const KNOWN: readonly string[] = [
   // pithy-sh/pithy#327 — and `now` is also the scheduler's heartbeat. Read the issue before fixing.
   "packages/email/src/workflows/worker.ts:82 EmailSendWorkflow.run (via buildSendDeps) — new Date()",
-  // pithy-sh/pithy#329
-  "packages/secrets/src/rotation/atRestKeyRotation.ts:72 runAtRestKeyRotation (via runAtRestKeyRotation) — new Date()",
   // pithy-sh/pithy#328 — the day key, so a pass crossing midnight splits across two days.
   "packages/testers/src/workflows/worker.ts:62 TestersDailyWorkflow.run (via TestersDailyWorkflow.run) — new Date()",
 ];

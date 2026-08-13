@@ -39,6 +39,12 @@ export interface AtRestRotationOptions {
   batchSize?: number;
   maxBatches?: number;
   rotatedBy?: string;
+  /**
+   * The clock, for a test that wants a fixed one.
+   *
+   * Read **inside** the `pass-instant` step rather than beside it, so journalling this value did not
+   * close the seam: an injected clock is still what gets read and still what gets journalled.
+   */
   now?: Date;
 }
 
@@ -69,8 +75,28 @@ export async function runAtRestKeyRotation(
 ): Promise<AtRestRotationResult> {
   const batchSize = options.batchSize ?? 100;
   const maxBatches = options.maxBatches ?? 50;
-  const now = options.now ?? new Date();
   const rotatedBy = options.rotatedBy ?? "cron";
+
+  /**
+   * The pass instant, journalled (pithy-sh/pithy#329).
+   *
+   * A Workflow re-executes this body from the top on a resume and serves every completed step from the
+   * journal, so a clock read beside this line answers differently on every attempt. It is the instant
+   * written as `lastRotatedAt`, and a pass interrupted at midnight and resumed at six dated the key it
+   * rotated by the resume — a rotation history that cannot be reconciled against the work it names.
+   *
+   * **This one is a stamp and nothing else, and that was checked rather than assumed.** `lastRotatedAt`
+   * has one reader, `isRotationDue`, which asks a cadence question in days on a cron that starts nothing
+   * while an instance is live; the rotation row's `startedAt`/`completedAt` are written by
+   * `RotationTracker` inside its own steps and read only for display. So freezing this instant strands no
+   * running work. The sibling case in the email worker looked equally plain and was not — there `now` is
+   * the scheduler's heartbeat too, and freezing it lets a live batch be re-driven as stuck.
+   *
+   * Epoch milliseconds rather than a `Date`, because a journal round-trips JSON: a `Date` would come back
+   * a string on the resume and an object on the first pass.
+   */
+  const nowMs: number = await step.do("pass-instant", async () => (options.now ?? new Date()).getTime());
+  const now = new Date(nowMs);
 
   const rotationId = await step.do("start", () => deps.tracker.startRotation(AT_REST_ROTATION_NAME, "cron", rotatedBy));
 
