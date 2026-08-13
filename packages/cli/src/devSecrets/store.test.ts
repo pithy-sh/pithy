@@ -274,3 +274,79 @@ describe("a stated master key that will not read", () => {
     }
   });
 });
+
+/**
+ * **The same defect as #323, one branch over (#325).** `stated.unreadable` was read only when no key was
+ * found at all, so a file that states a master key which will not read, beside an older home that holds
+ * one, dropped the file's sentence and opened under the older key without a word.
+ *
+ * That is not a cosmetic loss. The dev secrets file is what the Worker's `.dev.vars` is generated from,
+ * so a seed under the older key encrypts rows the running Worker cannot decrypt — and the report says
+ * nothing, because the store came back ready.
+ *
+ * **The file is authoritative when it makes a claim, and only then.** A project with no name has no file
+ * and states nothing, so the older homes are still read for it. That is the line the two tests below draw
+ * from either side.
+ */
+describe("a stated master key that will not read, beside an older home that holds one (#325)", () => {
+  /** A valid dev master key in the project root `.dev.vars` — the oldest home, still read. */
+  async function withOlderKey(): Promise<void> {
+    await writeFile(
+      join(dir, ".dev.vars"),
+      `${MASTER_KEY_BINDING}=${JSON.stringify(await initialMasterKeyConfig())}\n`,
+    );
+  }
+
+  async function statedInFile(value: unknown): Promise<string> {
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    const file = devSecretsFile("replay", paths());
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(file, JSON.stringify({ [MASTER_KEY_BINDING]: value }), { mode: 0o600 });
+    return file;
+  }
+
+  test("the store refuses, and says which file states the key that will not read", async () => {
+    await withSecretsBinding();
+    await migrateLocalSecrets();
+    await withOlderKey();
+    const file = await statedInFile({ currentVersion: "1", versions: { "1": "a2V5LW1hdGVyaWFs" } });
+
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    await handle.dispose();
+
+    expect(handle.ready).toBe(false);
+    expect(handle.ready === false && handle.reason).toContain(file);
+    expect(handle.ready === false && handle.reason).toContain(MASTER_KEY_BINDING);
+    expect(handle.ready === false && handle.reason).not.toContain("a2V5LW1hdGVyaWFs");
+  });
+
+  test("a file that is there and will not parse refuses the same way — it states something too", async () => {
+    await withSecretsBinding();
+    await migrateLocalSecrets();
+    await withOlderKey();
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    const file = devSecretsFile("replay", paths());
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(file, "{ this is not JSONC", { mode: 0o600 });
+
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    await handle.dispose();
+
+    expect(handle.ready).toBe(false);
+    expect(handle.ready === false && handle.reason).toContain(file);
+  });
+
+  test("a project with no name states nothing, so the older home is still read and the store opens", async () => {
+    await withSecretsBinding();
+    await migrateLocalSecrets();
+    await withOlderKey();
+    await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
+
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    try {
+      expect(handle.ready).toBe(true);
+    } finally {
+      await handle.dispose();
+    }
+  });
+});

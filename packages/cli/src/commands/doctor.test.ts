@@ -1771,3 +1771,92 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
     expect(quiet.devSecrets).toBeNull();
   });
 });
+
+/**
+ * Every fault the human report shows, in `--json` (#325).
+ *
+ * `unreadable` became the loader's sentence in #323 and the projection passed it through unchanged, so a
+ * CI script gating on `unreadable === true` stopped firing and read a broken secrets file as healthy — a
+ * non-empty string is not `false`, it is merely not `true`. `malformed` and `bootstrapMissing` were never
+ * projected at all, and `malformed` is the one that flips the exit.
+ */
+describe("--json carries every dev-secrets fault the text block prints (#325)", () => {
+  const faulty = () =>
+    harness.healthyOptions({
+      checkDevSecrets: async () => ({
+        path: "/home/u/.config/pithy/acme/secrets.jsonc",
+        misplaced: [],
+        missing: [],
+        bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"],
+        malformed: [{ name: "auth-google-credentials", reason: "auth-google-credentials is not the shape it needs." }],
+        undeclared: [],
+        mode: null,
+        unreadable: null,
+        unresolvable: [],
+      }),
+    });
+
+  test("a malformed value is in the payload, and so is the bootstrap key nobody minted", async () => {
+    const json = renderDoctorJson(await buildDoctorReport(faulty())) as {
+      devSecrets: { malformed: { name: string; reason: string }[]; bootstrapMissing: string[]; healthy: boolean };
+    };
+
+    expect(json.devSecrets.malformed.map((one) => one.name)).toEqual(["auth-google-credentials"]);
+    expect(json.devSecrets.malformed[0]?.reason).toContain("not the shape it needs");
+    expect(json.devSecrets.bootstrapMissing).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+  });
+
+  /**
+   * The one field a script can gate on without knowing which faults exist. `unreadable === true` was that
+   * field and stopped being it silently; this one is computed from `devSecretsHealthy`, the same function
+   * the text renderer draws the fault line from, so the two cannot come to two answers.
+   */
+  test("`healthy` answers the whole question, and agrees with what the text report says", async () => {
+    const broken = await buildDoctorReport(faulty());
+    const brokenJson = renderDoctorJson(broken) as { devSecrets: { healthy: boolean } };
+    expect(brokenJson.devSecrets.healthy).toBe(false);
+    expect(renderDoctorText(broken, "/home/u")).toContain("Dev secrets:");
+
+    const fine = await buildDoctorReport(
+      harness.healthyOptions({
+        checkDevSecrets: async () => ({
+          path: "/home/u/.config/pithy/acme/secrets.jsonc",
+          misplaced: [],
+          missing: [],
+          bootstrapMissing: [],
+          malformed: [],
+          undeclared: [],
+          mode: null,
+          unreadable: null,
+          unresolvable: [],
+        }),
+      }),
+    );
+    expect((renderDoctorJson(fine) as { devSecrets: { healthy: boolean } }).devSecrets.healthy).toBe(true);
+    expect(renderDoctorText(fine, "/home/u")).not.toContain("Dev secrets:");
+  });
+
+  /** A file that will not parse: the sentence is carried, and it is truthy, so a `if (…unreadable)` gate fires. */
+  test("an unreadable file carries its sentence and reads as a fault", async () => {
+    const json = renderDoctorJson(
+      await buildDoctorReport(
+        harness.healthyOptions({
+          checkDevSecrets: async () => ({
+            path: "/home/u/.config/pithy/acme/secrets.jsonc",
+            misplaced: [],
+            missing: [],
+            bootstrapMissing: [],
+            malformed: [],
+            undeclared: [],
+            mode: null,
+            unreadable: "secrets.jsonc is not valid JSONC at line 3.",
+            unresolvable: [],
+          }),
+        }),
+      ),
+    ) as { devSecrets: { unreadable: string | null; healthy: boolean } };
+
+    expect(json.devSecrets.unreadable).toContain("line 3");
+    expect(json.devSecrets.healthy).toBe(false);
+  });
+});
