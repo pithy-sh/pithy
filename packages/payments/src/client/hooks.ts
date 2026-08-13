@@ -17,10 +17,20 @@ import {
   startCheckout,
   submitPurchase,
 } from "./api";
+import {
+  loadPaddle,
+  type PaddleJs,
+  type PaddleOptions,
+  type PaddlePriceQuery,
+  type PaddleSetup,
+  type PricePreview,
+  previewPrices,
+  priceQueryKey,
+} from "./paddle";
 
 /**
- * The headless client surface: four hooks a paywall, a subscription screen, and a route guard are built
- * out of.
+ * The headless client surface: six hooks a paywall, a pricing page, a subscription screen, and a route
+ * guard are built out of.
  *
  * **They live here rather than in a scaffolded `.tsx` on purpose.** `pithy ui add` writes a file once and
  * may never rewrite it, which is the right ownership rule and is exactly why a frozen paywall ages badly:
@@ -358,4 +368,128 @@ export function usePurchase(options?: PaymentsClientOptions): UsePurchase {
   );
 
   return { submit, restore, purchase, entitlements, busy, failure };
+}
+
+/** What {@link usePaddle} gives a screen that has to talk to Paddle.js directly. */
+export interface UsePaddle {
+  /** The initialized Paddle.js, or null while it loads and after it fails. */
+  paddle: PaddleJs | null;
+  /** Whether the load is in flight. False forever when there is no Paddle rail to load. */
+  loading: boolean;
+  /** Why it could not load, or null. */
+  failure: PaymentsFailure | null;
+}
+
+/**
+ * Paddle.js, loaded once per page.
+ *
+ * `setup` takes null so a screen never has to guard a hook: `paymentsConfig.paddle` is null when the
+ * rail is off, and passing that through reads as "nothing to load" rather than as a failure. A pricing
+ * page for a project that does not sell through Paddle renders its own empty state; it does not show an
+ * error about a provider it never asked for.
+ *
+ * Loading is the module's job, not this hook's — mounting two components that both call it produces one
+ * script and one `Initialize`, because {@link loadPaddle} remembers the page's one load. This is the
+ * React-shaped view of it: a state a screen can render.
+ */
+export function usePaddle(setup: PaddleSetup | null, options?: PaddleOptions): UsePaddle {
+  const [paddle, setPaddle] = useState<PaddleJs | null>(null);
+  const [loading, setLoading] = useState(setup !== null);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const live = useLive();
+  // The two fields, not the object: a screen writing `usePaddle(paymentsConfig.paddle)` passes a stable
+  // reference today, and one writing an object literal must not restart the load every render.
+  const clientToken = setup?.clientToken;
+  const environment = setup?.environment;
+
+  useEffect(() => {
+    if (clientToken === undefined || environment === undefined) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void loadPaddle({ clientToken, environment }, latest.current).then((result) => {
+      if (!live.current) return;
+      setPaddle(result.ok ? result.value : null);
+      setFailure(result.ok ? null : result.failure);
+      setLoading(false);
+    });
+  }, [clientToken, environment, latest, live]);
+
+  return { paddle, loading, failure };
+}
+
+/** What {@link usePricePreview} gives a pricing screen. */
+export interface UsePricePreview {
+  /**
+   * What Paddle quoted this visitor, or null.
+   *
+   * Null while the first quote is in flight and null after a failure — **never a fallback figure.** A
+   * hardcoded price behind a failed lookup is the exact defect this hook exists to remove: it is wrong
+   * in every country whose tax convention differs from the one it was written in, and it is wrong
+   * silently. A page with no price and an honest sentence is worse than a right price and better than a
+   * wrong one.
+   */
+  preview: PricePreview | null;
+  /** Whether a quote is in flight. True on the first render, so a screen can hold the space. */
+  loading: boolean;
+  /** Why the last quote could not be made, or null. */
+  failure: PaymentsFailure | null;
+  /** Ask again. */
+  refresh: () => void;
+}
+
+/**
+ * What this visitor pays, read from Paddle for this visitor.
+ *
+ * **No price string appears in any screen this kit ships.** That is the whole contract. The figures come
+ * from Paddle, rendered by Paddle for the visitor's country — which is the only way one page can quote
+ * $5.44 in New York, $5.75 in Chicago, $5.00 in Berlin including €0.80 of VAT, and ¥725 in Tokyo without
+ * a table of tax rates aging in somebody's repository.
+ *
+ * `query` may be written inline. The effect depends on {@link priceQueryKey} rather than on the object,
+ * so an object literal re-created on every render re-quotes when the request changed and not before.
+ *
+ * A failure clears the previous quote rather than leaving it. The other hooks here keep their last good
+ * value on a refusal, and this one deliberately does not: a re-quote happens because the *request*
+ * changed, so the value it would be keeping is a price for something else.
+ */
+export function usePricePreview(
+  setup: PaddleSetup | null,
+  query: PaddlePriceQuery,
+  options?: PaddleOptions,
+): UsePricePreview {
+  const [preview, setPreview] = useState<PricePreview | null>(null);
+  const [loading, setLoading] = useState(setup !== null);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const latestQuery = useLatest(query);
+  const live = useLive();
+  const clientToken = setup?.clientToken;
+  const environment = setup?.environment;
+  const queryKey = priceQueryKey(query);
+
+  // `queryKey` is a dependency the body never reads, and that is the design. It is what makes "the request
+  // changed" a value React can compare — the query itself is an object literal rebuilt every render, and
+  // depending on that would quote forever. Reading the key back inside would mean parsing it, which is how
+  // a serialization becomes a second source of truth for the thing it serializes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: queryKey stands in for the query, deliberately.
+  const refresh = useCallback(() => {
+    if (clientToken === undefined || environment === undefined) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void previewPrices({ clientToken, environment }, latestQuery.current, latest.current).then((result) => {
+      if (!live.current) return;
+      setPreview(result.ok ? result.value : null);
+      setFailure(result.ok ? null : result.failure);
+      setLoading(false);
+    });
+  }, [clientToken, environment, queryKey, latest, latestQuery, live]);
+
+  useEffect(refresh, [refresh]);
+
+  return { preview, loading, failure, refresh };
 }

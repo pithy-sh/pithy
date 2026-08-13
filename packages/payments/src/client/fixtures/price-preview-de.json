@@ -1,0 +1,54 @@
+{
+  "customerId": null,
+  "addressId": null,
+  "businessId": null,
+  "currencyCode": "USD",
+  "address": { "postalCode": "10115", "countryCode": "DE" },
+  "customerIpAddress": null,
+  "discountId": null,
+  "details": {
+    "lineItems": [
+      {
+        "price": {
+          "id": "pri_01kzvyz9e21z9vbhd7xqq3csyh",
+          "description": "Solo, monthly. $5/month.",
+          "type": "standard",
+          "name": "Monthly",
+          "productId": "pro_01kzvyz95263x6amf3w4cgbqh4",
+          "billingCycle": { "interval": "month", "frequency": 1 },
+          "trialPeriod": null,
+          "taxMode": "location",
+          "unitPrice": { "amount": "500", "currencyCode": "USD" },
+          "unitPriceOverrides": [],
+          "customData": { "tier": "solo" },
+          "quantity": { "minimum": 1, "maximum": 1 },
+          "status": "active",
+          "createdAt": "2026-08-12T21:45:05.730177Z",
+          "updatedAt": "2026-08-12T21:45:05.730178Z",
+          "importMeta": null
+        },
+        "quantity": 1,
+        "taxRate": "0.19",
+        "unitTotals": { "subtotal": "420", "discount": "0", "tax": "80", "total": "500" },
+        "formattedUnitTotals": { "subtotal": "$4.20", "discount": "$0.00", "tax": "$0.80", "total": "$5.00" },
+        "totals": { "subtotal": "420", "discount": "0", "tax": "80", "total": "500" },
+        "formattedTotals": { "subtotal": "$4.20", "discount": "$0.00", "tax": "$0.80", "total": "$5.00" },
+        "product": {
+          "id": "pro_01kzvyz95263x6amf3w4cgbqh4",
+          "name": "Solo",
+          "description": "One person, working from a browser rather than a terminal.",
+          "type": "standard",
+          "taxCategory": "saas",
+          "imageUrl": null,
+          "customData": { "tier": "solo" },
+          "status": "active",
+          "importMeta": null,
+          "createdAt": "2026-08-12T21:45:05.442Z",
+          "updatedAt": "2026-08-12T21:45:05.442Z"
+        },
+        "discounts": []
+      }
+    ]
+  },
+  "availablePaymentMethods": ["card", "paypal", "apple_pay"]
+}

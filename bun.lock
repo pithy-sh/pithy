@@ -311,6 +311,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@hono/zod-validator": "^0.9.0",
+        "@paddle/paddle-js": "^1.6.4",
         "@pithy-sh/core": "workspace:*",
         "@pithy-sh/secrets": "workspace:*",
         "hono": "^4.12.0",
@@ -928,6 +929,8 @@
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.41.1", "", {}, "sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.133.0", "", {}, "sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA=="],
+
+    "@paddle/paddle-js": ["@paddle/paddle-js@1.6.4", "", {}, "sha512-ncfnS6I8mCX6krZ3Sgz2iAYivGmhdI81yt9mT6prtPj4Ipd9J3M12LCJRUFL4FB7BYeeuV04c33RSEnbZUBCaA=="],
 
     "@pithy-sh/audit": ["@pithy-sh/audit@workspace:packages/audit"],
 

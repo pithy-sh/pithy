@@ -6,7 +6,16 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type PaymentsFetch, type PaymentsRequestInit, STORE_SUBSCRIPTION_URLS } from "./api";
-import { useCheckout, useEntitlement, usePurchase, useSubscription } from "./hooks";
+import { US_NEW_YORK } from "./fixtures/pricePreview";
+import { useCheckout, useEntitlement, usePaddle, usePricePreview, usePurchase, useSubscription } from "./hooks";
+import {
+  PADDLE_UNAVAILABLE,
+  type PaddleInitializer,
+  type PaddleJs,
+  type PaddlePriceQuery,
+  type PaddleRegistry,
+  type PaddleSetup,
+} from "./paddle";
 
 /**
  * The hooks are rendered for real — mounted into a document, effects run, state observed — rather than
@@ -82,8 +91,19 @@ afterEach(() => {
  * this resolves the first read has already landed — the only way to observe the initial state a paywall
  * renders on its first frame is to have recorded it.
  */
-async function render<T>(hook: () => T): Promise<{ current: T; history: T[] }> {
-  const handle: { current: T; history: T[] } = { current: undefined as T, history: [] };
+async function render<T>(hook: () => T): Promise<{ current: T; history: T[]; rerender: () => Promise<void> }> {
+  const handle = {
+    current: undefined as T,
+    history: [] as T[],
+    // Re-rendering the same component is how "an inline options object does not restart the effect"
+    // becomes observable: the hook is called again with a freshly built argument, exactly as it is in a
+    // screen that re-renders for any other reason.
+    rerender: async () => {
+      await act(async () => {
+        root.render(createElement(Probe));
+      });
+    },
+  };
   function Probe(): null {
     handle.current = hook();
     handle.history.push(handle.current);
@@ -432,5 +452,185 @@ describe("useSubscription", () => {
     });
     expect(visited).toEqual([]);
     expect(held.current.failure?.message).toBe("No billing account yet.");
+  });
+});
+
+/**
+ * The Paddle half.
+ *
+ * Every test here injects its own initializer and its own registry. Nothing reaches Paddle's CDN, and no
+ * test can leave a loaded Paddle behind for the next — which is what makes "one initialization per page"
+ * testable at all rather than an accident of ordering.
+ */
+
+/** A sandbox setup. Shaped like Paddle's own publishable token, and obviously not a real one. */
+const PADDLE: PaddleSetup = { clientToken: "test_pithyNotARealClientToken", environment: "sandbox" };
+
+/** A Paddle.js that answers `PricePreview` with a recorded sandbox response, and counts its calls. */
+function stubPaddle(answer: unknown): PaddleJs & { previews: PaddlePriceQuery[] } {
+  const previews: PaddlePriceQuery[] = [];
+  return {
+    Initialized: true,
+    Environment: { set: () => undefined },
+    PricePreview(query: PaddlePriceQuery) {
+      previews.push(query);
+      return Promise.resolve(answer);
+    },
+    previews,
+  };
+}
+
+/**
+ * An initializer that records every load and answers with a fixed outcome.
+ *
+ * `loads` is an array rather than a counter because a counter has to be read through a live reference,
+ * and `Object.assign` copies a getter's *value*. The first version of this helper did exactly that and
+ * every load count in this file read zero — including the assertions that were meant to prove a load had
+ * not happened. An array is mutated in place, so there is nothing to snapshot wrongly.
+ */
+function stubInitializer(outcome: PaddleJs | undefined | Error): PaddleInitializer & { loads: string[] } {
+  const loads: string[] = [];
+  const initialize = (options: { token: string }) => {
+    loads.push(options.token);
+    if (outcome instanceof Error) return Promise.reject(outcome);
+    return Promise.resolve(outcome);
+  };
+  return Object.assign(initialize, { loads });
+}
+
+/** A fresh page for one test. */
+function paddlePage(): PaddleRegistry {
+  return {};
+}
+
+describe("usePaddle", () => {
+  test("loads Paddle.js and hands it over", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() => usePaddle(PADDLE, { initialize: stubInitializer(paddle), registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ paddle, loading: false, failure: null });
+  });
+
+  test("no Paddle rail is nothing to load, not a failure", async () => {
+    // `paymentsConfig.paddle` is null when the rail is off. A pricing page for a project that does not
+    // sell through Paddle renders its own empty state; it does not show an error about a provider it
+    // never asked for. A hook that took no null would force a conditional hook call on the screen.
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const held = await render(() => usePaddle(null, { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ paddle: null, loading: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+  });
+
+  test("a blocked script is a renderable failure and never a thrown error", async () => {
+    const held = await render(() =>
+      usePaddle(PADDLE, { initialize: stubInitializer(new Error("blocked")), registry: paddlePage() }),
+    );
+    await settle();
+    expect(held.current).toEqual({ paddle: null, loading: false, failure: PADDLE_UNAVAILABLE });
+  });
+});
+
+describe("usePricePreview", () => {
+  /** The query every test asks, written inline the way a screen writes it. */
+  function query(): PaddlePriceQuery {
+    return {
+      items: [{ priceId: "pri_01kzvyz9e21z9vbhd7xqq3csyh", quantity: 1 }],
+      address: { countryCode: "US", postalCode: "10001" },
+    };
+  }
+
+  test("the first frame is loading with no price — a screen holds the space rather than showing a wrong one", async () => {
+    // Never a placeholder figure, and never a blank. A price that arrives a beat late is better than one
+    // that corrects itself in front of the buyer.
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+        registry: paddlePage(),
+      }),
+    );
+    expect(held.history[0]).toMatchObject({ preview: null, loading: true, failure: null });
+  });
+
+  test("the price that lands is the one Paddle quoted for this visitor", async () => {
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+        registry: paddlePage(),
+      }),
+    );
+    await settle();
+    expect(held.current.loading).toBe(false);
+    expect(held.current.preview?.lines[0]?.formattedUnitTotals.total).toBe("$5.44");
+    expect(held.current.preview?.lines[0]?.taxTreatment).toBe("added");
+  });
+
+  test("a query written inline does not re-quote on every render", async () => {
+    // The defect this designs out: `{ items: [...] }` is a new object each render, and an effect
+    // depending on it fetches forever. The effect depends on what was asked, not on the object.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), { initialize: stubInitializer(paddle), registry: paddlePage() }),
+    );
+    await settle();
+    await held.rerender();
+    await held.rerender();
+    await settle();
+    expect(paddle.previews).toHaveLength(1);
+  });
+
+  test("a changed request does re-quote", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const registry = paddlePage();
+    const initialize = stubInitializer(paddle);
+    let postalCode = "10001";
+    const held = await render(() =>
+      usePricePreview(
+        PADDLE,
+        { items: [{ priceId: "pri_1", quantity: 1 }], address: { countryCode: "US", postalCode } },
+        { initialize, registry },
+      ),
+    );
+    await settle();
+    postalCode = "60602";
+    await held.rerender();
+    await settle();
+    expect(paddle.previews.map((asked) => asked.address?.postalCode)).toEqual(["10001", "60602"]);
+    // One page, one Paddle. Re-quoting is not re-initializing.
+    expect(initialize.loads).toEqual([PADDLE.clientToken]);
+  });
+
+  test("a failure clears the price and says why — no fallback figure, ever", async () => {
+    // Falling back to a hardcoded number reintroduces the whole defect: it is wrong in every country
+    // whose convention differs from the one it was written in, and it is wrong silently.
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(new Error("blocked")),
+        registry: paddlePage(),
+      }),
+    );
+    await settle();
+    expect(held.current).toMatchObject({ preview: null, loading: false, failure: PADDLE_UNAVAILABLE });
+  });
+
+  test("no Paddle rail quotes nothing, without loading and without failing", async () => {
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const held = await render(() => usePricePreview(null, query(), { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toMatchObject({ preview: null, loading: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+  });
+
+  test("refresh asks again", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), { initialize: stubInitializer(paddle), registry: paddlePage() }),
+    );
+    await settle();
+    await act(async () => {
+      held.current.refresh();
+    });
+    await settle();
+    expect(paddle.previews).toHaveLength(2);
   });
 });

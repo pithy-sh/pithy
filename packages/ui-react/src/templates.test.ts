@@ -74,12 +74,61 @@ describe("the React template library", () => {
     expect(new Set(declared).size).toBe(declared.length);
   });
 
-  test("the payments group is the two screens and the bridge, and nothing from auth", () => {
+  test("the payments group is the three screens and the bridge, and nothing from auth", () => {
     expect([...TEMPLATE_GROUPS.payments]).toEqual([
       "src/payments.tsx",
       "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/pricing.tsx",
       "src/routes/pithy/subscription.tsx",
     ]);
+  });
+
+  /**
+   * A currency symbol against a digit. No false positive is possible, so it runs over every template.
+   */
+  const CURRENCY = /[$£€¥]\s?\d/;
+
+  /**
+   * A bare two-decimal figure. Runs over the payments screens only — `d="M12 .297c-6.63…"` in an SVG
+   * icon is full of them, and an auth screen has no money to quote. Scoping it is what lets the pattern
+   * stay strict enough to catch `5.00` written without a symbol at all.
+   */
+  const BARE_AMOUNT = /\b\d+\.\d{2}\b/;
+
+  /** Every line of a template that could render, with comment text removed. Prose is not a price. */
+  async function renderableLines(path: string): Promise<{ line: number; code: string; source: string }[]> {
+    const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
+    return text.split("\n").map((source, index) => ({
+      line: index + 1,
+      code: source.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, ""),
+      source,
+    }));
+  }
+
+  test("no screen this library ships writes a price down", async () => {
+    // The acceptance criterion for localized pricing, as a gate on the text rather than a rule in a
+    // docblock. A figure in a template is wrong in every country whose tax convention differs from the
+    // one it was written in, and a scaffolded file is one Pithy cannot fix afterwards. Every price a
+    // Pithy screen renders comes from Paddle, for that visitor.
+    const payments: readonly string[] = TEMPLATE_GROUPS.payments;
+    const offences: string[] = [];
+    for (const path of declaredPaths()) {
+      for (const { line, code, source } of await renderableLines(path)) {
+        const hit = CURRENCY.test(code) || (payments.includes(path) && BARE_AMOUNT.test(code));
+        if (hit) offences.push(`${path}:${line} ${source.trim()}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  test("the price sweep finds one when there is one to find", () => {
+    // Otherwise the test above passes on patterns that match nothing at all, over a list that may be
+    // empty, and says the same thing either way.
+    expect(CURRENCY.test("<strong>$5.00</strong>")).toBe(true);
+    expect(CURRENCY.test("<strong>¥725</strong>")).toBe(true);
+    expect(BARE_AMOUNT.test("const price = 5.00;")).toBe(true);
+    expect(CURRENCY.test("<strong>{summary.headline}</strong>")).toBe(false);
+    expect(TEMPLATE_GROUPS.payments.length).toBeGreaterThan(3);
   });
 
   test("the home screen has both variants, and they land at the same target", () => {
