@@ -1,5 +1,30 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  // **Every root script that reports a verdict passes `--continue`, and this is where the reason lives**
+  // because `package.json` is strict JSON and cannot hold one (#333).
+  //
+  // Turbo's default is `--continue=never`: the first failing package cancels the rest. Combined with one
+  // intermittently failing package that is not a bug — it is a trap. During the Paddle wave a run came
+  // back naming the known `@pithy-sh/storage` timeout, which reads as "one known flake, everything else
+  // green." `@pithy-sh/payments:test` had never run. It held all 6,415 insertions of that wave, and
+  // nothing in the output said so. **The absence of a result was read as a pass**, which is the gate
+  // failure this repository keeps finding from new directions.
+  //
+  // Reproduced here before it was changed: with one planted failing test, `bun run test` printed
+  // `Tasks: 0 successful, 22 total` and `Failed: @pithy-sh/testers#test`. Twenty-one packages produced no
+  // result and none of them was named. A reader who recognised the one name learned nothing whatever
+  // about the other twenty-one, and had no way to tell that from learning they passed.
+  //
+  // `always` for `test`, `test:*` and `typecheck`: those tasks declare no `dependsOn`, so every package
+  // can run regardless of what failed, and after the change every package has a result.
+  //
+  // `dependencies-successful` for `build`, because `build` does declare `^build`. A package cannot be
+  // built on top of an upstream that did not build, and `always` would bury the one real failure under a
+  // wall of derived ones. Cancelled-for-cause is a different thing from silently skipped, and the count
+  // still shows it: `successful + failed < total` is the signal, and the failure named is the cause.
+  //
+  // A developer who wants the old fail-fast behaviour has it a flag away — `--continue=never` on the
+  // turbo command. The default belongs to the reader of a verdict, not to the shortest run.
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

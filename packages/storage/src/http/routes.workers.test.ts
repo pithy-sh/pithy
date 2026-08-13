@@ -808,7 +808,22 @@ describe("quota", () => {
     expect(await usedBytes(db, ADA)).toBe(0);
   });
 
-  test("two completions racing on one owner cannot both bank their overshoot", async () => {
+  /**
+   * This test is not slow. It is *dilated*, and the number says which (#333).
+   *
+   * Measured on an idle 8-core machine, three runs: **698ms, 771ms, 816ms** — a seventh of the default
+   * cap. With the rest of the repository's suites running beside it: **2222ms**, and in the run that
+   * opened #333 it crossed 5000ms and failed. Its own work did not change. What changed was how much of
+   * a machine it had: it drives two multipart uploads of 18 MiB each through one workerd, and workerd
+   * gets whatever CPU is left when a dozen other suites have each spawned one.
+   *
+   * That is the opposite diagnosis from the sweep test's, and it is why raising both numbers without
+   * measuring first would have been guessing. There is nothing here to make faster. 15000ms is the point
+   * at which a failure means the code changed rather than the machine was busy.
+   */
+  const CONTENDED = { timeout: 15_000 };
+
+  test("two completions racing on one owner cannot both bank their overshoot", CONTENDED, async () => {
     // The settlement race. Both uploads reserved 11 MiB and both PUT 18 MiB, so each has a 7 MiB
     // overshoot to settle against a 30 MiB quota. Sequentially the second is refused: 29 MiB is held
     // and 7 more does not fit. A check that ran ahead of the write lets both read the same 22 MiB
