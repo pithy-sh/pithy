@@ -57,7 +57,12 @@ export async function runSendBatch(deps: SendBatchDeps, step: SendBatchStep, job
    */
   const passStartedAtMs: number = await step.do("pass-instant", async () => deps.heartbeatAt().getTime());
   const sendDeps: SendDeps = { ...deps, passStartedAt: new Date(passStartedAtMs) };
-  for (const [index, jobId] of jobIds.entries()) {
+  // Counted rather than walked with `jobIds.entries()`, which the determinism gate refuses: a nullary
+  // call on a parameter is how a driver reaches a seam, and that walk cannot tell this array of data
+  // from an injected clock. `slice` below takes an argument, so it was never in question. The counter
+  // says the same thing and asks the gate to make no exception — see `cli/src/ci/workflowDrivers.ts`.
+  let index = 0;
+  for (const jobId of jobIds) {
     /**
      * The jobs behind this one — claimed, `sending`, not yet started (pithy-sh/pithy#340).
      *
@@ -66,6 +71,7 @@ export async function runSendBatch(deps: SendBatchDeps, step: SendBatchStep, job
      * own queue re-driven out from under it. See {@link renewClaim}.
      */
     const tail = jobIds.slice(index + 1);
+    index += 1;
     await step.do(`send-${jobId}`, async () => {
       // Inside the step, not around it, and deliberately not a step of its own. A step's *result* is
       // journalled, its body is not — so this runs on every attempt of this job and never comes back
