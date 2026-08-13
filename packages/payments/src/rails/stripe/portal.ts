@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { HostedSession, PortalSessionInput } from "../contract";
+import type { PortalHandoff, PortalSessionInput } from "../contract";
 import { stripeHttpFetch, stripeJson } from "./api";
 import { hostedSession, type StripeCheckoutOptions } from "./checkout";
 
@@ -27,7 +27,7 @@ import { hostedSession, type StripeCheckoutOptions } from "./checkout";
 export async function createStripePortalSession(
   input: PortalSessionInput,
   options: StripeCheckoutOptions,
-): Promise<HostedSession> {
+): Promise<PortalHandoff> {
   const created = await stripeJson(options.transport ?? stripeHttpFetch, "/billing_portal/sessions", {
     what: "a Billing Portal session",
     secretKey: options.credentials.secretKey,

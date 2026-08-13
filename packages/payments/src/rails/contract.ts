@@ -288,25 +288,100 @@ export interface PortalSessionInput {
    * running that rail alone is never asked for a URL nothing will use.
    */
   returnUrl?: string;
-}
-
-/** A hosted page the client is sent to. Pithy never owns payment UI, SCA, tax, or proration. */
-export interface HostedSession {
-  /** The absolute URL to send the browser to. */
-  url: string;
+  /**
+   * The store's own subscription ids this caller owns, for a store that mints per-subscription deep links.
+   *
+   * **Resolved by the route from the caller's own purchase rows, never from a request body.** `/portal`
+   * takes no body at all, and that is the request contract that makes the whole surface safe: a field here
+   * naming a subscription would let any signed-in caller ask for authenticated cancel links to somebody
+   * else's — the exact vulnerability {@link providerAccountId} coming from the account map exists to close.
+   *
+   * Undefined for the rails whose portal is one page for the whole account.
+   */
+  subscriptionIds?: readonly string[];
 }
 
 /**
- * The rails that *initiate* a purchase rather than merely hearing about one — Stripe, in v1.
+ * How a browser is handed to a store's payment page. Pithy never owns payment UI, SCA, tax, or proration.
+ *
+ * **A union, because one store has no URL to give.** Stripe and Lemon Squeezy both mint a hosted page and
+ * answer with its address, and for eleven months that was the whole shape — `{ url }`. Paddle's overlay and
+ * inline modes never leave the adopter's page: the server creates a transaction, and the browser opens it
+ * with Paddle.js against a publishable client token. There is no address to send anyone to, so a `{ url }`
+ * return could only be filled with a lie or with an empty string.
+ *
+ * `redirect` is what the two older rails return, unchanged in every field. The widening costs them nothing,
+ * and a screen that only ever handled a redirect keeps working by narrowing on `kind` — which is a compile
+ * error where it is missing rather than a runtime surprise.
+ */
+export type CheckoutHandoff =
+  | {
+      /** A hosted page the browser is sent to. */
+      kind: "redirect";
+      /** The absolute URL to send the browser to. */
+      url: string;
+    }
+  | {
+      /** A transaction the browser opens with Paddle.js, over the adopter's own page. */
+      kind: "paddle";
+      /** The transaction the server created — `txn_…`. What `Paddle.Checkout.open` is given. */
+      transactionId: string;
+      /**
+       * The publishable client token Paddle.js initializes with — `live_…` or `test_…`.
+       *
+       * Publishable by design, exactly as a Stripe price id is: it is what a browser needs to open a
+       * checkout, and nothing about verification depends on its secrecy. The API key and the webhook
+       * signing secret are secrets and never appear here.
+       */
+      clientToken: string;
+      /** Which Paddle environment the token belongs to. `Paddle.Environment.set` takes it verbatim. */
+      environment: "sandbox" | "production";
+      /** Whether the checkout opens over the page or inside a container the screen provides. */
+      displayMode: "overlay" | "inline";
+    };
+
+/** One subscription's authenticated portal deep links, as a store hands them back. */
+export interface PortalSubscriptionLinks {
+  /** The store's own subscription id — `sub_…`. */
+  subscriptionId: string;
+  /** Where this subscription is cancelled. */
+  cancel: string;
+  /** Where this subscription's payment method is changed. */
+  updatePaymentMethod: string;
+}
+
+/**
+ * A billing portal, as a store returns it.
+ *
+ * `url` is the overview page every rail has. `subscriptions` is the part only Paddle offers: authenticated
+ * deep links straight to one subscription's cancel and update-payment-method screens, so a subscription
+ * screen can render per-subscription actions rather than one "Manage billing" button.
+ *
+ * **Every URL here is a bearer credential for that customer's billing, and Paddle's is good for 24 hours.**
+ * Its overview link carries a `pga_` JWT whose `iat` and `exp` are 86400 seconds apart, with scopes
+ * covering `customer.subscription.update`, `customer.customer.update` and `customer.transaction.create` —
+ * verified against a live sandbox session, and materially different from the "single-use, short-lived" the
+ * issue described. So: never cached, never persisted, never logged, and never a redirect target something
+ * else could read out of a `Referer`.
+ */
+export interface PortalHandoff {
+  /** The portal's overview page for this customer. */
+  url: string;
+  /** Per-subscription deep links, when the store offers them. Absent on the rails that do not. */
+  subscriptions?: readonly PortalSubscriptionLinks[];
+}
+
+/**
+ * The rails that *initiate* a purchase rather than merely hearing about one — Stripe, Lemon Squeezy, Paddle.
  *
  * Deliberately separate from {@link PaymentsRailProvider}: see the module doc. A rail implements both
  * interfaces or only the first, and the route that needs a checkout session narrows to this one.
  */
 export interface CheckoutRail {
-  /** Create a hosted checkout session for one product. */
-  createCheckoutSession(input: CheckoutSessionInput, context: RailRequestContext): Promise<HostedSession>;
-  /** Create a hosted billing-portal session, where a subscriber manages or cancels. */
-  createPortalSession(input: PortalSessionInput, context: RailRequestContext): Promise<HostedSession>;
+  /** Create a checkout for one product, and say how the browser reaches it. */
+  createCheckoutSession(input: CheckoutSessionInput, context: RailRequestContext): Promise<CheckoutHandoff>;
+  /** Create a billing-portal session, where a subscriber manages or cancels. */
+  createPortalSession(input: PortalSessionInput, context: RailRequestContext): Promise<PortalHandoff>;
 }
 
 /** Whether a rail provider also initiates purchases. The one narrowing `/checkout` and `/portal` need. */

@@ -5,7 +5,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
-import type { CheckoutSessionInput, HostedSession } from "../contract";
+import type { CheckoutHandoff, CheckoutSessionInput } from "../contract";
 import { type LemonSqueezyHttpFetch, lemonSqueezyHttpFetch, lemonSqueezyJson } from "./api";
 import {
   accountReferenceProof,
@@ -74,7 +74,7 @@ const LemonSqueezyCheckout = z
 export async function createLemonSqueezyCheckoutSession(
   input: CheckoutSessionInput,
   options: LemonSqueezyCheckoutOptions,
-): Promise<HostedSession> {
+): Promise<CheckoutHandoff> {
   const custom: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: input.userId };
   if (options.deployment !== undefined) {
     custom[LEMON_SQUEEZY_CUSTOM_ENV] = options.deployment;
@@ -130,7 +130,7 @@ export async function createLemonSqueezyCheckoutSession(
       detail: "Lemon Squeezy created a checkout with no URL to redirect to.",
     });
   }
-  return { url: parsed.data.data.attributes.url };
+  return { kind: "redirect", url: parsed.data.data.attributes.url };
 }
 
 /**

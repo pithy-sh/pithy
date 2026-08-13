@@ -14,10 +14,11 @@ import {
   PaymentsAdminPurchaseView,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
+  PaymentsCheckoutHandoffResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
   PaymentsEntitlementView,
-  PaymentsHostedSessionResponse,
+  PaymentsPortalHandoffResponse,
   PaymentsPurchaseResponse,
   PaymentsPurchaseView,
   PaymentsRestoreResponse,
@@ -76,7 +77,19 @@ describe("payments response schemas", () => {
     accepts(PaymentsPurchaseResponse, { purchase: PURCHASE, entitlements: [ENTITLEMENT] });
     accepts(PaymentsEntitlementsResponse, { entitlements: [] });
     accepts(PaymentsRestoreResponse, { purchases: [PURCHASE], entitlements: [ENTITLEMENT] });
-    accepts(PaymentsHostedSessionResponse, { url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+    accepts(PaymentsCheckoutHandoffResponse, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+    accepts(PaymentsCheckoutHandoffResponse, {
+      kind: "paddle",
+      transactionId: "txn_01hv8wptq8987qeep44cyrewp9",
+      clientToken: "test_1234567890abcdef",
+      environment: "sandbox",
+      displayMode: "overlay",
+    });
+    accepts(PaymentsPortalHandoffResponse, { url: "https://sandbox-customer-portal.paddle.com/cpl_01" });
+    accepts(PaymentsPortalHandoffResponse, {
+      url: "https://sandbox-customer-portal.paddle.com/cpl_01",
+      subscriptions: [{ subscriptionId: "sub_01", cancel: "https://…/cancel", updatePaymentMethod: "https://…/pay" }],
+    });
     accepts(PaymentsEntitlementResponse, { entitlement: ENTITLEMENT });
     // A revoke returns the state it produced rather than nothing, so the false case is part of the
     // contract and not an afterthought.

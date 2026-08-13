@@ -67,10 +67,11 @@ import type {
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
+  PaymentsCheckoutHandoffResponse,
   PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
-  PaymentsHostedSessionResponse,
+  PaymentsPortalHandoffResponse,
   PaymentsPricingResponse,
   PaymentsPurchaseResponse,
   PaymentsRestoreResponse,
@@ -869,7 +870,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
       const userId = callerId(c);
       const provider = await checkoutRail(c, rail);
-      const session = await provider.createCheckoutSession(
+      const handoff = await provider.createCheckoutSession(
         {
           providerProductId: sku,
           subscription: entry.product.type === "subscription",
@@ -902,7 +903,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           discounted: input.discountCode !== undefined,
         },
       });
-      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
+      // The handoff, verbatim. A `redirect` carries a URL; a `paddle` handoff carries the transaction the
+      // browser opens in place, because that rail's overlay and inline modes never leave this page.
+      return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
     });
 
     /**
@@ -971,7 +974,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         resourceId: found.providerAccountId,
         metadata: { rail: found.rail },
       });
-      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
+      return c.json(
+        {
+          url: session.url,
+          ...(session.subscriptions === undefined ? {} : { subscriptions: [...session.subscriptions] }),
+        } satisfies PaymentsPortalHandoffResponse,
+        200,
+      );
     });
 
     /**

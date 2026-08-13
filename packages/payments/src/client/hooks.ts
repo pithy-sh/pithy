@@ -7,6 +7,7 @@ import {
   getEntitlements,
   openBillingPortal,
   openStoreSubscriptions,
+  type PaddleCheckoutHandoff,
   type PaymentsClientOptions,
   type PaymentsClientRail,
   type PaymentsFailure,
@@ -227,18 +228,25 @@ export function useSubscription(options?: PaymentsClientOptions): UseSubscriptio
 
 /** What {@link useCheckout} gives a paywall's buy button. */
 export interface UseCheckout {
-  /** Create a Checkout Session for a catalog product and hand the browser to Stripe. */
   /**
-   * Start hosted checkout for a product.
+   * Start checkout for a product.
    *
-   * `rail` is only needed for a product sold on **both** hosted rails, where the server refuses to choose
-   * on the buyer's behalf. A product sold on one needs no argument.
+   * `rail` is only needed for a product sold on **more than one** hosted rail, where the server refuses to
+   * choose on the buyer's behalf. A product sold on one needs no argument.
    */
   start: (productId: string, options?: { rail?: PaymentsHostedRail; discountCode?: string }) => Promise<void>;
   /** Whether a session is being created. Disable the button on it — a double click is a double session. */
   starting: boolean;
   /** The last refusal, or null. Cleared at the start of every attempt. */
   failure: PaymentsFailure | null;
+  /**
+   * The handoff to open with Paddle.js, or null — set only on a rail with nowhere to navigate to.
+   *
+   * Null on a redirect rail, because the browser has already left and there is nothing for a screen to
+   * hold. A screen composing Paddle watches this and opens the checkout; a screen that never composes it
+   * reads null forever and renders exactly as it did before this field existed.
+   */
+  handoff: PaddleCheckoutHandoff | null;
 }
 
 /**
@@ -252,6 +260,7 @@ export interface UseCheckout {
 export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   const [starting, setStarting] = useState(false);
   const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const [handoff, setHandoff] = useState<PaddleCheckoutHandoff | null>(null);
   const latest = useLatest(options);
   const live = useLive();
 
@@ -259,18 +268,23 @@ export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
     async (productId: string, choices?: { rail?: PaymentsHostedRail; discountCode?: string }) => {
       setStarting(true);
       setFailure(null);
-      const refused = await startCheckout(
+      setHandoff(null);
+      const outcome = await startCheckout(
         { productId, rail: choices?.rail, discountCode: choices?.discountCode },
         latest.current,
       );
       if (!live.current) return;
       setStarting(false);
-      if (refused) setFailure(refused);
+      // Exhaustive on `kind` rather than truthiness. `left` is the browser already going; `paddle` is the
+      // one outcome a screen must act on; `refused` is the only one that is a failure. Reading any of the
+      // three as another is how a buyer ends up on a page whose button did nothing.
+      if (outcome.kind === "refused") setFailure(outcome.failure);
+      else if (outcome.kind === "paddle") setHandoff(outcome.handoff);
     },
     [latest, live],
   );
 
-  return { start, starting, failure };
+  return { start, starting, failure, handoff };
 }
 
 /** What {@link usePurchase} gives the screen that submits receipts. */

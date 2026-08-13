@@ -292,54 +292,121 @@ describe("restorePurchases", () => {
   });
 });
 
+const PADDLE_HANDOFF = {
+  kind: "paddle",
+  transactionId: "txn_01hv8wptq8987qeep44cyrewp9",
+  clientToken: "test_1234567890abcdef",
+  environment: "sandbox",
+  displayMode: "overlay",
+} as const;
+
 describe("createCheckout and createPortal", () => {
-  test("return the hosted URL the server minted", async () => {
-    const checkout = stubFetch(200, { url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+  test("return the handoff the server minted", async () => {
+    const checkout = stubFetch(200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_test_1" });
     const created = await createCheckout({ productId: "pro_monthly" }, { fetch: checkout });
-    expect(created).toEqual({ ok: true, value: "https://checkout.stripe.com/c/pay/cs_test_1" });
+    expect(created).toEqual({
+      ok: true,
+      value: { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_test_1" },
+    });
     expect(checkout.calls[0]?.url).toBe("/payments/checkout");
     expect(checkout.calls[0]?.init?.body).toBe(JSON.stringify({ productId: "pro_monthly" }));
 
     const portal = stubFetch(200, { url: "https://billing.stripe.com/p/session/1" });
     expect(await createPortal({ fetch: portal })).toEqual({
       ok: true,
-      value: "https://billing.stripe.com/p/session/1",
+      value: { url: "https://billing.stripe.com/p/session/1" },
     });
     // No body at all: there is exactly one billing account this caller may manage, and the server picks it.
     expect(portal.calls[0]?.init?.body).toBeUndefined();
   });
 
-  test("refuse a URL whose scheme is not http(s) — the client navigates to this value", async () => {
+  test("return a paddle handoff whole, because there is nothing to navigate to", async () => {
+    const fetcher = stubFetch(200, PADDLE_HANDOFF);
+    const created = await createCheckout({ productId: "pro_monthly" }, { fetch: fetcher });
+    expect(created).toEqual({ ok: true, value: PADDLE_HANDOFF });
+  });
+
+  test("refuse a redirect URL whose scheme is not http(s) — the client navigates to this value", async () => {
     // `location.assign("javascript:…")` executes in this page. The same guard the sign-in screen makes
     // on a social redirect, made here because this is where the value is read.
     for (const url of ["javascript:alert(1)", "data:text/html,<script>", "/relative", "", 7]) {
-      const result = await createCheckout({ productId: "pro_monthly" }, { fetch: stubFetch(200, { url }) });
+      const body = { kind: "redirect", url };
+      const result = await createCheckout({ productId: "pro_monthly" }, { fetch: stubFetch(200, body) });
       expect(result.ok, String(url)).toBe(false);
     }
+  });
+
+  test("refuse a paddle handoff whose environment or display mode is not one this build knows", async () => {
+    // Not pedantry: `environment` chooses which Paddle account `Paddle.Environment.set` points the
+    // browser at, and a value this client cannot read means a server it does not understand. Opening a
+    // checkout on a guess is opening one against the wrong account.
+    const broken: Record<string, unknown>[] = [
+      { ...PADDLE_HANDOFF, environment: "staging" },
+      { ...PADDLE_HANDOFF, displayMode: "hosted" },
+      { ...PADDLE_HANDOFF, transactionId: "" },
+      { ...PADDLE_HANDOFF, clientToken: 7 },
+    ];
+    for (const body of broken) {
+      const result = await createCheckout({ productId: "pro_monthly" }, { fetch: stubFetch(200, body) });
+      expect(result.ok, JSON.stringify(body)).toBe(false);
+    }
+    // Anti-vacuity: the untouched handoff passes, so the four above fail on the field each one changed.
+    const intact = await createCheckout({ productId: "pro_monthly" }, { fetch: stubFetch(200, { ...PADDLE_HANDOFF }) });
+    expect(intact.ok).toBe(true);
+  });
+
+  test("refuse a portal deep link whose scheme is not http(s)", async () => {
+    const body = {
+      url: "https://sandbox-customer-portal.paddle.com/cpl_01",
+      subscriptions: [
+        { subscriptionId: "sub_01", cancel: "javascript:alert(1)", updatePaymentMethod: "https://portal/pay" },
+      ],
+    };
+    expect((await createPortal({ fetch: stubFetch(200, body) })).ok).toBe(false);
+
+    const fine = {
+      ...body,
+      subscriptions: [
+        { subscriptionId: "sub_01", cancel: "https://portal/cancel", updatePaymentMethod: "https://portal/pay" },
+      ],
+    };
+    expect((await createPortal({ fetch: stubFetch(200, fine) })).ok).toBe(true);
   });
 });
 
 describe("startCheckout and openBillingPortal", () => {
   test("navigate to the hosted page, and report nothing because there is nothing left to render", async () => {
     const visited: string[] = [];
-    const failure = await startCheckout(
+    const outcome = await startCheckout(
       { productId: "pro_monthly" },
       {
-        fetch: stubFetch(200, { url: "https://checkout.stripe.com/c/pay/cs_test_1" }),
+        fetch: stubFetch(200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_test_1" }),
         navigate: (url) => visited.push(url),
       },
     );
-    expect(failure).toBeNull();
+    expect(outcome).toEqual({ kind: "left" });
     expect(visited).toEqual(["https://checkout.stripe.com/c/pay/cs_test_1"]);
+  });
+
+  test("hand a paddle handoff back rather than navigating, because there is nowhere to go", async () => {
+    const visited: string[] = [];
+    const outcome = await startCheckout(
+      { productId: "pro_monthly" },
+      { fetch: stubFetch(200, PADDLE_HANDOFF), navigate: (url) => visited.push(url) },
+    );
+    expect(outcome).toEqual({ kind: "paddle", handoff: PADDLE_HANDOFF });
+    // The failure this shape exists to stop: a screen told "left" for a rail that never leaves, and a
+    // buyer looking at a paywall whose button did nothing.
+    expect(visited).toEqual([]);
   });
 
   test("never navigate when the session could not be created", async () => {
     const visited: string[] = [];
-    const failure = await startCheckout(
+    const outcome = await startCheckout(
       { productId: "nope" },
       { fetch: stubFetch(404, REFUSAL), navigate: (url) => visited.push(url) },
     );
-    expect(failure?.code).toBe("payments/product_not_found");
+    expect(outcome.kind === "refused" && outcome.failure.code).toBe("payments/product_not_found");
     expect(visited).toEqual([]);
   });
 
@@ -358,11 +425,11 @@ describe("startCheckout and openBillingPortal", () => {
   });
 
   test("with no navigator available it reports rather than throwing", async () => {
-    const failure = await startCheckout(
+    const outcome = await startCheckout(
       { productId: "pro_monthly" },
-      { fetch: stubFetch(200, { url: "https://checkout.stripe.com/c/pay/1" }), global: {} },
+      { fetch: stubFetch(200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/1" }), global: {} },
     );
-    expect(failure?.code).toBe("client/no_browser");
+    expect(outcome.kind === "refused" && outcome.failure.code).toBe("client/no_browser");
   });
 });
 

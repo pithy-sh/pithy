@@ -1851,7 +1851,8 @@ describe("POST /payments/checkout", () => {
       body: { productId: "pro_monthly" },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ url: CHECKOUT_SESSION.url });
+    // The `redirect` member, named on the wire. A screen narrows on `kind` rather than assuming a URL is there.
+    expect(await response.json()).toEqual({ kind: "redirect", url: CHECKOUT_SESSION.url });
     expect(actions()).toEqual(["payments/checkout_started:success"]);
   });
 

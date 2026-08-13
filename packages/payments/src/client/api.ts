@@ -63,7 +63,69 @@ export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy";
  * not how much or on whose behalf — a paywall for a product sold on both can put two buttons on the page,
  * and a product sold on one needs no field at all.
  */
-export type PaymentsHostedRail = "stripe" | "lemonSqueezy";
+export type PaymentsHostedRail = "stripe" | "lemonSqueezy" | "paddle";
+
+/** Which Paddle account a handoff belongs to. `Paddle.Environment.set` takes it verbatim. */
+export type PaymentsPaddleEnvironment = "sandbox" | "production";
+
+/** Whether a Paddle checkout opens over the page or inside a container the screen provides. */
+export type PaymentsPaddleDisplayMode = "overlay" | "inline";
+
+/** The runtime mirrors of the two unions above, for the guards. */
+const PADDLE_ENVIRONMENTS: readonly PaymentsPaddleEnvironment[] = ["sandbox", "production"];
+const PADDLE_DISPLAY_MODES: readonly PaymentsPaddleDisplayMode[] = ["overlay", "inline"];
+
+/**
+ * How the browser reaches checkout — a page to go to, or a transaction to open in place.
+ *
+ * A union rather than `{ url }`, because one rail has no URL to give: Paddle's overlay and inline modes
+ * never leave this page. A screen narrows on `kind`, which is a compile error where it is missing rather
+ * than a runtime navigation to an empty string.
+ */
+export type PaymentsCheckoutHandoff = { kind: "redirect"; url: string } | PaddleCheckoutHandoff;
+
+/**
+ * The handoff a Paddle checkout returns: a transaction, and what a browser needs to open it.
+ *
+ * Named rather than inlined because a screen holds one — `useCheckout` exposes it, and a `Paddle.Checkout
+ * .open` call site needs a type to write against.
+ */
+export interface PaddleCheckoutHandoff {
+  /** Discriminates this from a redirect. */
+  kind: "paddle";
+  /** The transaction the server created — `txn_…`. */
+  transactionId: string;
+  /** Paddle's publishable client token, which is designed to reach a browser. */
+  clientToken: string;
+  /** Which Paddle account the token belongs to. */
+  environment: PaymentsPaddleEnvironment;
+  /** Whether the checkout opens over the page or inside a container. */
+  displayMode: PaymentsPaddleDisplayMode;
+}
+
+/** One subscription's authenticated portal deep links. */
+export interface PaymentsPortalSubscription {
+  /** The store's own subscription id. */
+  subscriptionId: string;
+  /** Where this subscription is cancelled. */
+  cancel: string;
+  /** Where this subscription's payment method is changed. */
+  updatePaymentMethod: string;
+}
+
+/**
+ * The caller's billing portal: an overview page, and any per-subscription deep links the store minted.
+ *
+ * **Every URL here is a bearer credential for that customer's billing.** Paddle's overview link carries a
+ * token good for 24 hours with scopes covering subscription updates and transaction creation, so a screen
+ * navigates to one and never stores it, logs it, or puts it in a query string something else will read.
+ */
+export interface PaymentsPortalHandoff {
+  /** The portal's overview page. */
+  url: string;
+  /** Per-subscription deep links, for the store that offers them. */
+  subscriptions?: readonly PaymentsPortalSubscription[];
+}
 
 /** What kind of thing a product is, as a browser reads it. */
 export type PaymentsClientProductType = "consumable" | "non_consumable" | "subscription";
@@ -288,20 +350,63 @@ function isArrayOf<T>(value: unknown, guard: (item: unknown) => item is T): valu
 }
 
 /**
- * Whether a value is a hosted-session answer, with a URL this client may navigate to.
+ * Whether a string is a URL this client may navigate to.
  *
- * The scheme check is the point. This URL is handed straight to `location.assign`, and
+ * The scheme check is the point. Such a URL is handed straight to `location.assign`, and
  * `javascript:` there executes in the current page — the same guard the scaffolded sign-in screen makes
  * on a social redirect, made here because here is where the value is read.
  */
-function isHostedSession(value: unknown): value is { url: string } {
-  if (!isRecord(value) || typeof value.url !== "string") return false;
+function isNavigable(value: unknown): value is string {
+  if (typeof value !== "string") return false;
   try {
-    const { protocol } = new URL(value.url);
+    const { protocol } = new URL(value);
     return protocol === "https:" || protocol === "http:";
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a value is a checkout handoff this client can act on.
+ *
+ * Two shapes, and each is checked for what acting on it would do. A `redirect` is navigated to, so its
+ * URL goes through {@link isNavigable}. A `paddle` handoff is passed to `Paddle.Checkout.open`, so every
+ * field it carries has to be a string of the right kind — an environment or a display mode this client
+ * does not know is a server it does not understand, and guessing would open a checkout in the wrong
+ * Paddle account.
+ */
+function isCheckoutHandoff(value: unknown): value is PaymentsCheckoutHandoff {
+  if (!isRecord(value)) return false;
+  if (value.kind === "redirect") return isNavigable(value.url);
+  if (value.kind !== "paddle") return false;
+  return (
+    isNonEmpty(value.transactionId) &&
+    isNonEmpty(value.clientToken) &&
+    isMember(value.environment, PADDLE_ENVIRONMENTS) &&
+    isMember(value.displayMode, PADDLE_DISPLAY_MODES)
+  );
+}
+
+/** Whether a value is a portal handoff: an overview page, and any per-subscription deep links. */
+function isPortalHandoff(value: unknown): value is PaymentsPortalHandoff {
+  if (!isRecord(value) || !isNavigable(value.url)) return false;
+  if (value.subscriptions === undefined) return true;
+  return isArrayOf(value.subscriptions, isPortalSubscription);
+}
+
+/** Whether a value is one subscription's deep links. Every URL is navigated to, so every URL is checked. */
+function isPortalSubscription(value: unknown): value is PaymentsPortalSubscription {
+  return (
+    isRecord(value) &&
+    isNonEmpty(value.subscriptionId) &&
+    isNavigable(value.cancel) &&
+    isNavigable(value.updatePaymentMethod)
+  );
+}
+
+/** A non-empty string. */
+function isNonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
 }
 
 /** The globals to use — the injected ones, else the real ones. */
@@ -423,13 +528,12 @@ export function restorePurchases(
   return call("/restore", jsonPost(input), options, isRestoreBody);
 }
 
-/** Create a hosted Stripe Checkout Session and return where to send the browser. */
-export async function createCheckout(
+/** Create a checkout for a product, and say how the browser reaches it. */
+export function createCheckout(
   input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
-): Promise<PaymentsResult<string>> {
-  const result = await call("/checkout", jsonPost(input), options, isHostedSession);
-  return result.ok ? { ok: true, value: result.value.url } : result;
+): Promise<PaymentsResult<PaymentsCheckoutHandoff>> {
+  return call("/checkout", jsonPost(input), options, isCheckoutHandoff);
 }
 
 /**
@@ -439,9 +543,8 @@ export async function createCheckout(
  * the server resolves it from the provider-account map. A `customer` field here would be the whole
  * vulnerability.
  */
-export async function createPortal(options?: PaymentsClientOptions): Promise<PaymentsResult<string>> {
-  const result = await call("/portal", { method: "POST" }, options, isHostedSession);
-  return result.ok ? { ok: true, value: result.value.url } : result;
+export function createPortal(options?: PaymentsClientOptions): Promise<PaymentsResult<PaymentsPortalHandoff>> {
+  return call("/portal", { method: "POST" }, options, isPortalHandoff);
 }
 
 /** How to leave the page, from the injected navigator or the browser's own. */
@@ -451,36 +554,53 @@ function navigator(options: PaymentsClientOptions | undefined): Navigate | undef
   return location?.assign ? (url) => location.assign?.(url) : undefined;
 }
 
-/** Create a hosted session, then go there. Null means the browser left; anything else is a failure to render. */
-async function leaveFor(
-  create: Promise<PaymentsResult<string>>,
-  options: PaymentsClientOptions | undefined,
-): Promise<PaymentsFailure | null> {
-  const result = await create;
-  if (!result.ok) return result.failure;
+/** Go to a URL a guard has already vetted. Null means the browser left; anything else is a failure. */
+function leaveFor(url: string, options: PaymentsClientOptions | undefined): PaymentsFailure | null {
   const go = navigator(options);
   if (!go) return PAYMENTS_NO_BROWSER;
-  go(result.value);
+  go(url);
   return null;
 }
 
 /**
- * Buy a product: create the Checkout Session and hand the browser to Stripe.
+ * What starting a checkout did. Three outcomes, and a screen must tell them apart.
  *
- * Hosted Checkout needs no SDK script and no client-side key — the server mints a session and answers
- * with a URL, and a full page load is the whole integration. Pithy never owns payment UI, SCA, tax, or
- * proration, and this is where that decision is visible.
+ * `left` is a redirect rail: the browser is already going, and there is nothing to render. `paddle` is a
+ * rail with nowhere to go — the screen opens the handoff with Paddle.js, over its own page. `refused` is
+ * a failure worth showing.
+ *
+ * Deliberately not `PaymentsFailure | null` any more. That shape could only say "went" or "did not", and
+ * a Paddle handoff is neither: collapsing it into `null` would leave a buyer on a paywall whose button
+ * silently did nothing.
  */
-export function startCheckout(
+export type PaymentsCheckoutStart =
+  | { kind: "left" }
+  | { kind: "paddle"; handoff: PaddleCheckoutHandoff }
+  | { kind: "refused"; failure: PaymentsFailure };
+
+/**
+ * Buy a product: create the checkout, and either hand the browser over or hand the caller the handoff.
+ *
+ * A redirect rail needs no SDK script and no client-side key — the server mints a session and answers
+ * with a URL, and a full page load is the whole integration. Paddle's overlay and inline modes need
+ * Paddle.js and the publishable token the server returned, and opening it is the screen's job because
+ * that is where the container lives. Pithy never owns payment UI, SCA, tax, or proration either way.
+ */
+export async function startCheckout(
   input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
-): Promise<PaymentsFailure | null> {
-  return leaveFor(createCheckout(input, options), options);
+): Promise<PaymentsCheckoutStart> {
+  const result = await createCheckout(input, options);
+  if (!result.ok) return { kind: "refused", failure: result.failure };
+  if (result.value.kind === "paddle") return { kind: "paddle", handoff: result.value };
+  const refused = leaveFor(result.value.url, options);
+  return refused === null ? { kind: "left" } : { kind: "refused", failure: refused };
 }
 
-/** Open the Billing Portal — where a subscriber changes a card, or cancels, under Stripe's own rules. */
-export function openBillingPortal(options?: PaymentsClientOptions): Promise<PaymentsFailure | null> {
-  return leaveFor(createPortal(options), options);
+/** Open the billing portal — where a subscriber changes a card, or cancels, under the store's own rules. */
+export async function openBillingPortal(options?: PaymentsClientOptions): Promise<PaymentsFailure | null> {
+  const result = await createPortal(options);
+  return result.ok ? leaveFor(result.value.url, options) : result.failure;
 }
 
 /**

@@ -124,14 +124,17 @@ describe("isCheckoutRail", () => {
     const initiator: PaymentsRailProvider & CheckoutRail = {
       ...listener,
       rail: "stripe",
-      createCheckoutSession: async () => ({ url: "https://checkout.example/session" }),
+      createCheckoutSession: async () => ({ kind: "redirect" as const, url: "https://checkout.example/session" }),
       createPortalSession: async () => ({ url: "https://billing.example/session" }),
     };
     expect(isCheckoutRail(initiator)).toBe(true);
   });
 
   test("half an implementation is not a checkout rail", () => {
-    const half = { ...listener, createCheckoutSession: async () => ({ url: "x" }) } as PaymentsRailProvider;
+    const half = {
+      ...listener,
+      createCheckoutSession: async () => ({ kind: "redirect" as const, url: "x" }),
+    } as PaymentsRailProvider;
     expect(isCheckoutRail(half)).toBe(false);
   });
 });

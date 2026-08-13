@@ -82,13 +82,69 @@ export const PaymentsRestoreResponse = z
   .describe("What a Restore Purchases run projected, and what the caller now holds.");
 export type PaymentsRestoreResponse = z.output<typeof PaymentsRestoreResponse>;
 
-/** `POST {base}/checkout` and `POST {base}/portal` — the hosted Stripe flows. */
-export const PaymentsHostedSessionResponse = z
+/**
+ * `POST {base}/checkout` — how the browser reaches the store's payment page.
+ *
+ * A discriminated union rather than `{ url }`, because one rail has no URL to give. Stripe and Lemon
+ * Squeezy mint a hosted page and answer with its address; Paddle's overlay and inline modes never leave
+ * the adopter's page, so the server answers with the transaction the browser opens with Paddle.js and the
+ * publishable token it initializes against. A `url` filled with an empty string would be a field a screen
+ * navigates to.
+ *
+ * **Nothing secret crosses.** The client token is publishable exactly as a Stripe price id is. The API
+ * key, the webhook signing secret and the resolved discount id are all server-side and none of them is
+ * expressible here.
+ */
+export const PaymentsCheckoutHandoffResponse = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("redirect").describe("A hosted page the browser is sent to."),
+        url: z
+          .string()
+          .describe("Where to send the browser. The store's own page; it expires on the store's schedule."),
+      })
+      .describe("A redirect handoff — Stripe's hosted Checkout, Lemon Squeezy's hosted checkout."),
+    z
+      .object({
+        kind: z.literal("paddle").describe("A transaction the browser opens over this page with Paddle.js."),
+        transactionId: z.string().describe("The transaction the server created — `txn_…`."),
+        clientToken: z.string().describe("Paddle's publishable client token, which is designed to reach a browser."),
+        environment: z
+          .enum(["sandbox", "production"])
+          .describe("Which Paddle environment the token belongs to. `Paddle.Environment.set` takes it verbatim."),
+        displayMode: z
+          .enum(["overlay", "inline"])
+          .describe("Whether the checkout opens over the page or inside a container the screen provides."),
+      })
+      .describe("A Paddle.js handoff — nothing to navigate to, because the checkout opens in place."),
+  ])
+  .describe("How the buyer reaches checkout: a page to go to, or a transaction to open in place.");
+export type PaymentsCheckoutHandoffResponse = z.output<typeof PaymentsCheckoutHandoffResponse>;
+
+/**
+ * `POST {base}/portal` — the caller's own billing portal.
+ *
+ * `subscriptions` is present only for a store that mints per-subscription deep links, which is Paddle
+ * alone. Every URL in this response is a bearer credential for that customer's billing — Paddle's is good
+ * for 24 hours — so nothing here is cached, persisted, or logged.
+ */
+export const PaymentsPortalHandoffResponse = z
   .object({
-    url: z.string().describe("Where to send the browser. Stripe's own hosted page; it expires on Stripe's schedule."),
+    url: z.string().describe("The portal's overview page for this customer."),
+    subscriptions: z
+      .array(
+        z.object({
+          subscriptionId: z.string().describe("The store's own subscription id."),
+          cancel: z.string().describe("Where this subscription is cancelled."),
+          updatePaymentMethod: z.string().describe("Where this subscription's payment method is changed."),
+        }),
+      )
+      .optional()
+      .describe("Per-subscription deep links, for the store that offers them. Absent on the rails that do not."),
   })
-  .describe("Where to send the buyer for a hosted Stripe flow.");
-export type PaymentsHostedSessionResponse = z.output<typeof PaymentsHostedSessionResponse>;
+  .describe("Where the caller manages their own billing, and the per-subscription actions the store offers.");
+export type PaymentsPortalHandoffResponse = z.output<typeof PaymentsPortalHandoffResponse>;
 
 /**
  * `POST {base}/entitlements/grant` and `POST {base}/entitlements/revoke` — the two control-plane routes.

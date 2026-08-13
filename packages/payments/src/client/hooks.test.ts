@@ -228,7 +228,7 @@ describe("useEntitlement", () => {
 describe("useCheckout", () => {
   test("creates the session and hands the browser to the hosted page", async () => {
     const visited: string[] = [];
-    const fetcher = queue([[200, { url: "https://checkout.stripe.com/c/pay/cs_1" }]]);
+    const fetcher = queue([[200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_1" }]]);
     const held = await render(() => useCheckout({ fetch: fetcher, navigate: (url) => visited.push(url) }));
 
     expect(held.current.starting).toBe(false);
@@ -258,7 +258,7 @@ describe("useCheckout", () => {
     const visited: string[] = [];
     const fetcher = queue([
       [404, REFUSAL],
-      [200, { url: "https://checkout.stripe.com/c/pay/cs_2" }],
+      [200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_2" }],
     ]);
     const held = await render(() => useCheckout({ fetch: fetcher, navigate: (url) => visited.push(url) }));
     await act(async () => {

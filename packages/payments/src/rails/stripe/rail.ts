@@ -5,12 +5,13 @@ import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../../
 import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type {
+  CheckoutHandoff,
   CheckoutRail,
   CheckoutSessionInput,
   DiscountRail,
-  HostedSession,
   ListedDiscount,
   PaymentsRailProvider,
+  PortalHandoff,
   PortalSessionInput,
   PricingRail,
   RailRequestContext,
@@ -88,11 +89,11 @@ export function stripeRail(
       });
     },
 
-    async createCheckoutSession(input: CheckoutSessionInput): Promise<HostedSession> {
+    async createCheckoutSession(input: CheckoutSessionInput): Promise<CheckoutHandoff> {
       return await createStripeCheckoutSession(input, { credentials, transport: options.transport });
     },
 
-    async createPortalSession(input: PortalSessionInput): Promise<HostedSession> {
+    async createPortalSession(input: PortalSessionInput): Promise<PortalHandoff> {
       return await createStripePortalSession(input, { credentials, transport: options.transport });
     },
 
