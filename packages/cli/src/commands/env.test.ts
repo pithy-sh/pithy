@@ -238,6 +238,8 @@ describe("renderEnvInventory — per worker", () => {
       // `local`, not `not provisioned`. There is no remote `dash-dev-db` and there is not supposed to
       // be one — Miniflare serves this binding from its own declaration (#320).
       "    SESSIONS (kv)  local",
+      // And the half `local` does not cover, once, under the stanza it is a property of.
+      "    Miniflare needs no id. A bare pithy deploy ships this stanza, and nothing gates it on one.",
       "  staging  https://staging.example.com",
       "    worker  pithy-app-staging",
       // The same binding, absent in both. Only the deployed one is an action item.
@@ -273,5 +275,87 @@ describe("renderEnvInventory — per worker", () => {
     const out = renderEnvInventory(inv, "dev");
     expect(out).toContain("api  apps/api\n  No environment named dev.");
     expect(out).toContain("  dev  local");
+  });
+});
+
+/**
+ * **`local` is a true word about Miniflare and a misleading one about deployment.**
+ *
+ * The top-level stanza is the local environment *and* the stanza a bare `pithy deploy` ships:
+ * `wrangler deploy` with no `--env`, and the one deploy path with no `assertEnvironmentProvisioned`
+ * in front of it. #320 was right that an id-less binding there is not a deficiency for `pithy dev`; the
+ * word it chose then stood as the whole answer, and an operator reading `pithy env` before a deploy
+ * concluded there was nothing to provision.
+ *
+ * So the stanza says the other half itself, once, where it is a property of the stanza rather than of
+ * each binding — and only where it is a fact. A local stanza whose bindings all carry ids has nothing
+ * ungated about it, and a deployed environment already reads `not provisioned`, which is the action
+ * item. A note printed under every environment would be the wallpaper this whole family avoids.
+ */
+const UNGATED = "A bare pithy deploy ships this stanza, and nothing gates it on one.";
+
+/** One worker, one environment, built to order. */
+function oneEnvironment(local: boolean, resources: WorkerEnvironments["environments"][number]["resources"]) {
+  return inventory({
+    workers: [
+      {
+        worker: "api",
+        dir: "apps/api",
+        environments: [
+          {
+            name: local ? "dev" : "prod",
+            local,
+            scriptName: "api",
+            baseUrl: local ? "local" : "https://api.example.com",
+            workerDashboardUrl: null,
+            resources,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+const ABSENT = { kind: "kv", binding: "SESSIONS", id: null, provisioned: false, dashboardUrl: null } as const;
+const PRESENT = { kind: "kv", binding: "SESSIONS", id: "ns-1", provisioned: true, dashboardUrl: null } as const;
+
+describe("the local stanza is also the one a bare deploy ships", () => {
+  test("an id-less binding reads local, and the stanza names what local does not cover", async () => {
+    const { renderEnvInventory } = await loadEnv({ NO_COLOR: "1" });
+    const out = renderEnvInventory(oneEnvironment(true, [ABSENT]));
+    // #320's fix stands: the binding itself is still not an action item.
+    expect(out).toContain("SESSIONS (kv)  local");
+    expect(out).not.toContain("not provisioned");
+    // And the half it does not cover is now on the page rather than in the reader's head.
+    expect(out).toContain(UNGATED);
+  });
+
+  test("a local stanza whose bindings all carry ids says nothing", async () => {
+    const { renderEnvInventory } = await loadEnv({ NO_COLOR: "1" });
+    expect(renderEnvInventory(oneEnvironment(true, [PRESENT]))).not.toContain(UNGATED);
+  });
+
+  test("a local stanza declaring no binding at all says nothing", async () => {
+    const { renderEnvInventory } = await loadEnv({ NO_COLOR: "1" });
+    expect(renderEnvInventory(oneEnvironment(true, []))).not.toContain(UNGATED);
+  });
+
+  test("a deployed environment never carries it — `not provisioned` is already the action item", async () => {
+    const { renderEnvInventory } = await loadEnv({ NO_COLOR: "1" });
+    const out = renderEnvInventory(oneEnvironment(false, [ABSENT]));
+    expect(out).toContain("SESSIONS (kv)  not provisioned");
+    expect(out).not.toContain(UNGATED);
+  });
+
+  test("it belongs to the stanza, so a stanza with three absent bindings says it once", async () => {
+    const { renderEnvInventory } = await loadEnv({ NO_COLOR: "1" });
+    const out = renderEnvInventory(
+      oneEnvironment(true, [
+        { kind: "d1", binding: "DB", id: null, provisioned: false, dashboardUrl: null },
+        ABSENT,
+        { kind: "r2", binding: "MEDIA", id: null, provisioned: false, dashboardUrl: null },
+      ]),
+    );
+    expect(out.split("\n").filter((line) => line.includes(UNGATED))).toHaveLength(1);
   });
 });
