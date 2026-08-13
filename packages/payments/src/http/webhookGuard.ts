@@ -13,7 +13,7 @@ import { PaymentsAuditActions } from "../audit/actions";
 import type { PaymentsConfig } from "../config/config";
 import type { PaymentsRail } from "../data/rail";
 import { PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
-import { PaymentsWebhookEvent } from "../data/webhookEvent";
+import { isWebhookEventFinished, PaymentsWebhookEvent, webhookEventState } from "../data/webhookEvent";
 import { PaymentsWebhookUnverifiedError } from "../error/errors";
 import type { VerifiedNotification } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
@@ -38,10 +38,17 @@ import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/reg
  * ## Why it persists before it hands off
  *
  * Every provider delivers at-least-once and retries, so a redelivery is expected rather than exceptional. The
- * row goes in first, keyed `UNIQUE (rail, providerEventId)`, and a delivery that has already been processed
- * short-circuits with 200 instead of running again. Two things follow from that. A retry storm costs one
- * insert instead of a projection. And "why didn't this renew" becomes answerable: `receivedAt` says whether
- * the notification arrived at all, `processedAt` whether it was projected, and `error` why not.
+ * row goes in first, keyed `UNIQUE (rail, providerEventId)`, and a delivery that has already been **finished
+ * with** short-circuits with 200 instead of running again. Two things follow from that. A retry storm costs
+ * one insert instead of a projection. And "why didn't this renew" becomes answerable: `receivedAt` says
+ * whether the notification arrived at all, `processedAt` whether it was finished with, `abandonedAt` whether
+ * a repair pass gave up on it, and `error` why.
+ *
+ * **Finished, not seen.** The distinction is the whole of #337 and it is worth the sentence. A delivery that
+ * arrived and failed to project must be reprocessed by the next one — that is the only repair path this
+ * package has, because a provider's retry and an operator's replay both reuse the original event id. So the
+ * short-circuit reads {@link isWebhookEventFinished}, and only a row nothing is left to do with is answered
+ * as a duplicate.
  *
  * A forgery is never persisted. Verification comes first, so the table holds only notifications the store
  * actually sent — otherwise anyone could fill it.
@@ -233,7 +240,7 @@ export function requireSignedWebhook(
 
     const stored = await db
       .selectFrom(PAYMENTS_WEBHOOK_EVENTS_TABLE)
-      .select(["id", "processedAt"])
+      .select(["id", "processedAt", "abandonedAt", "error"])
       .where("rail", "=", rail)
       .where("providerEventId", "=", notification.providerEventId)
       .executeTakeFirst();
@@ -243,9 +250,14 @@ export function requireSignedWebhook(
       });
     }
 
-    // Already handled. 200 rather than an error: the store did nothing wrong, and answering non-2xx would make
-    // it retry a delivery that has already taken effect.
-    if (stored.processedAt !== null) {
+    // Already **finished** — not merely already seen. 200 rather than an error: the store did nothing wrong,
+    // and answering non-2xx would make it retry a delivery that has already taken effect.
+    //
+    // A delivery that arrived and failed, and one a repair pass abandoned, both fall through to the handler
+    // and are processed again. That is the point of #337: those are the two rows whose purchase has *not*
+    // been projected, and short-circuiting them made a redelivery — and a manual replay, which reuses the
+    // provider's event id — the one thing that could never repair them.
+    if (isWebhookEventFinished(webhookEventState(stored))) {
       return c.json({ received: true, duplicate: true }, 200);
     }
 
@@ -255,10 +267,29 @@ export function requireSignedWebhook(
 }
 
 /**
- * Mark a recorded notification processed, or record why it was not.
+ * Mark a recorded notification finished, or record why it is not.
  *
- * A genuine D1 failure here propagates rather than being swallowed, and that is the right direction: the store
- * would answer to a 5xx by retrying, the projection is idempotent, and an unmarked row would otherwise leave a
+ * **`error` is the discriminant, and it decides whether `processedAt` is written at all.** No error means the
+ * delivery is done with — projected, or a type that deliberately projects nothing — so the timestamp goes on
+ * and the guard will answer the next redelivery as a duplicate. An error means it arrived and did not
+ * project, so `processedAt` stays null and the row stays reprocessable.
+ *
+ * The presence of the reason *is* the state, rather than a second field agreeing with it. A separate
+ * `finished: boolean` beside `error` would be one more pair that can disagree, and a row saying "finished,
+ * and here is why it failed" is exactly the contradiction #337 was.
+ *
+ * That reverses what this function did before. Setting the timestamp beside the error read as "the
+ * notification *was* handled" — but the guard short-circuits on that column, so it also meant a failed
+ * delivery could never be repaired: the provider's retry was answered 200, a manual replay reuses the same
+ * event id and was answered 200, and the Paddle sweep reads freshness off the same column and skipped it.
+ * Nothing in this package repaired a failed delivery, on any rail.
+ *
+ * **`abandonedAt` is never touched here.** It belongs to the repair pass that wrote it, and a webhook that
+ * projects one of those rows sets `processedAt` — which wins, so the event reads finished while the row
+ * still records that a sweep once gave up on it.
+ *
+ * A genuine D1 failure propagates rather than being swallowed, and that is the right direction: the store
+ * would answer a 5xx by retrying, the projection is idempotent, and an unmarked row would otherwise leave a
  * notification looking permanently unprocessed.
  */
 export async function completeWebhook(
@@ -271,9 +302,7 @@ export async function completeWebhook(
     db
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
       .set({
-        // `processedAt` is set even when there was an error: the notification *was* handled, and the pairing
-        // of a timestamp with an error is what distinguishes "tried and could not" from "never arrived".
-        processedAt: outcome.at.getTime(),
+        processedAt: outcome.error === undefined ? outcome.at.getTime() : null,
         error: outcome.error ?? null,
         // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
       } as any)

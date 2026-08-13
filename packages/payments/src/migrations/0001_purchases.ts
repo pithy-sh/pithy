@@ -150,7 +150,21 @@ export const payments_0001_purchases: Migration = {
       .addColumn("providerEventId", "text", (c) => c.notNull())
       .addColumn("payload", "text", (c) => c.notNull())
       .addColumn("receivedAt", "integer", (c) => c.notNull())
+      // When this delivery was **finished with** — projected, or deliberately nothing to project. The one
+      // column the webhook guard short-circuits on, so it says "we have finished this" and never "we have
+      // seen this". Three writers once disagreed about that and two of them stopped purchases from ever
+      // being projected (#337).
       .addColumn("processedAt", "integer")
+      // When a repair pass gave up on this event so its stream could advance.
+      //
+      // **A second timestamp rather than a status column, and beside `processedAt` rather than replacing
+      // it.** Abandoning is the sweep's decision about its own progress; finishing is a fact about the
+      // purchase. Collapsing them into one column is what #337 was. A `status` enum would have made the
+      // writers exhaustive and left every reader free to spell out its own predicate — which is where the
+      // defect actually lived — so the state is derived in `data/webhookEvent.ts` and asked for by name,
+      // and the storage stays timestamps: they answer *when*, which is what this table is read for, and
+      // they cannot contradict each other the way an enum can contradict the timestamp beside it.
+      .addColumn("abandonedAt", "integer")
       .addColumn("error", "text")
       // How many times a repair pass has tried this event and failed.
       //
@@ -172,7 +186,10 @@ export const payments_0001_purchases: Migration = {
       .addUniqueConstraint("pithyPaymentsWebhookEventsIdx", ["rail", "providerEventId"])
       .execute();
 
-    // The "why didn't this renew" read: unprocessed or errored deliveries, oldest first.
+    // The "why didn't this renew" read: everything not yet finished with, oldest first — pending, failed,
+    // and abandoned alike, because all three are deliveries whose purchase has not been projected. That
+    // an abandoned event appears here is deliberate: it is exactly the row an operator has to be able to
+    // find, and `abandonedAt` beside it says which of the three it is.
     await db.schema
       .createIndex("pithyPaymentsWebhookEventsPendingIdx")
       .on("pithyPaymentsWebhookEvents")

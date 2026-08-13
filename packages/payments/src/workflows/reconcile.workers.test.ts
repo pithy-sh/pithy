@@ -1144,7 +1144,7 @@ describe("the Paddle events sweep, inside a pass", () => {
     ignored: 4,
     duplicate: 6,
     failed: 0,
-    quarantined: 0,
+    quarantined: [],
     cursor: "evt_01jz0000000000000000swept",
     gap: null,
   };
