@@ -5,6 +5,34 @@
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],
   "migrationNamespace": "media",
+  "secrets": [
+    {
+      "name": "media-storage-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+      },
+      "rotation": {
+        "kind": "provider",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/"
+      }
+    },
+    {
+      "name": "media-r2-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/r2/api/tokens/"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/r2/api/tokens/"
+      }
+    }
+  ],
   "whenToEnable": "Store, track, and enrich media — images (R2 or Cloudflare Images), video (R2 or Cloudflare Stream), audio and documents (R2). Uploads use direct-upload URLs, so bytes never proxy through your Worker. Opt in per type to AI alt text, transcription, and text extraction. Records live in D1 by default (derived text is queryable) or KV — but duplicate detection always uses D1, so the DB binding is required in both modes. R2 presigning runs through @pithy-sh/storage's ObjectStore seam pointed at MEDIA_BUCKET, so media owns no bucket mechanics and none of storage's tables or routes come with it. Storage credentials are read through @pithy-sh/secrets, so the secrets capability is required; the routes need an identity, so add auth too.",
   "scaffold": [
     "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the CF API token and R2 credentials are stored and read through @pithy-sh/secrets.",

@@ -145,29 +145,39 @@ describe("pithy.manifest.json", () => {
     JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
   );
 
+  /**
+   * Everything this package declares for itself, and the reason the gate below spans two registries.
+   *
+   * `@pithy-sh/secrets` ships two: the capability's — an adopter's entries plus the master key merged in
+   * — and the manager Worker's. Only the first was ever held to the manifest, so the manager's Cloudflare
+   * token declared both axes correctly and reached no client: a gate over one of two registries is a gate
+   * with a blind half, and the half it could not see is the one holding a live account credential.
+   *
+   * The adopter's own entries are excluded by passing an empty registry, not by filtering: what an
+   * adopter declares is theirs and belongs in no manifest of ours.
+   */
+  const ownEntries: [string, SecretRegistryEntry][] = [
+    ...Object.entries(secrets({ registry: {} }).secretRegistry),
+    ...Object.entries(managerRegistry),
+  ];
+
   test("declares the master key as minted, structured, and locally replaced", () => {
     // The correction #322 was built on, carried through to a client. A dashboard reading this sees a
     // secret the kit makes — not one to go and get from somewhere — and it sees that without being told
     // what an `EncryptionConfig` is.
-    expect(manifest.secrets).toEqual([
-      {
-        name: MASTER_KEY_BINDING,
-        origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
-        rotation: { kind: "local" },
-      },
-    ]);
+    expect(manifest.secrets.find((secret) => secret.name === MASTER_KEY_BINDING)).toEqual({
+      name: MASTER_KEY_BINDING,
+      origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+      rotation: { kind: "local" },
+    });
   });
 
-  test("every entry of its own registry is in the manifest, with where it comes from and how it is replaced", () => {
-    // The capability's own, which is why the registry is empty: an adopter's entries are theirs to
-    // declare or not, and `defineSecretRegistry` asks only that they state both axes or neither.
-    //
+  test("every entry of both its registries is in the manifest, with where it comes from and how it is replaced", () => {
     // Stated as the invariant, not as a filtered comparison. The filtered version could not fail for the
     // one case it existed to catch: an entry declaring neither axis is dropped from the expected list and
     // is absent from the manifest, so it vanishes from both sides and the comparison passes.
-    const entries: [string, SecretRegistryEntry][] = Object.entries(secrets({ registry: {} }).secretRegistry);
-    expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
-    for (const [name, entry] of entries) {
+    expect(manifest.secrets.map((secret) => secret.name)).toEqual(ownEntries.map(([name]) => name));
+    for (const [name, entry] of ownEntries) {
       expect(entry.origin, `${name} declares no origin`).toBeDefined();
       expect(entry.rotation, `${name} declares no rotation`).toBeDefined();
       expect(manifest.secrets.find((secret) => secret.name === name)).toEqual({

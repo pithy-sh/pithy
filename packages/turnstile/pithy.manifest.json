@@ -4,6 +4,21 @@
   "requiredBindings": [],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],
+  "secrets": [
+    {
+      "name": "turnstile-secret-keys",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/turnstile/get-started/"
+      },
+      "rotation": {
+        "kind": "provider",
+        "issuer": "cloudflare",
+        "documentation": "https://developers.cloudflare.com/api/resources/turnstile/subresources/widgets/methods/rotate_secret/"
+      }
+    }
+  ],
   "whenToEnable": "Stop bots at credential-entry and form-submit points without asking real users to prove themselves. Stacks a Cloudflare Turnstile humanity check on any route — magic-link and OTP login, signup, lead capture, contact. dev and staging wire Cloudflare's test keys automatically; only `prod` provisions a real widget. The widget secret is stored and read through @pithy-sh/secrets, so the secrets capability is required.",
   "scaffold": [
     "Edit `turnstile({ ... })` in pithy.config.ts: declare the widget mode(s) you use (`visible` for pages where the challenge should be seen, like login; `invisible` for silent forms) and the `protect` map (action → mode). `login` is gated by the visible widget by default. Social/OAuth login is never gated.",

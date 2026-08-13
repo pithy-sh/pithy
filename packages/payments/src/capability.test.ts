@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { ledger } from "@pithy-sh/ledger/src/capability";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { isPaymentsCapability, PAYMENTS_MIGRATION_ORDER, payments } from "./capability";
@@ -21,6 +24,7 @@ import {
   PaymentsVerificationFailedError,
   PaymentsWebhookUnverifiedError,
 } from "./error/errors";
+import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsWorkflows } from "./workflows/specs";
 
 const CATALOG = {
@@ -227,6 +231,48 @@ describe("payments()", () => {
         },
       }),
     ).toThrow();
+  });
+});
+
+describe("pithy.manifest.json — declared secrets", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  test("every registry entry is in the manifest, and says where it comes from and how it is replaced", () => {
+    // The gate this capability had none of. `pithy doctor`, `pithy secrets ls` and a management
+    // dashboard read the manifest without executing this package, so a declaration the manifest omits
+    // is a declaration nothing downstream can act on — and a secret declaring neither axis renders as
+    // *nothing is known* rather than *nothing can help*.
+    //
+    // Stated as the invariant, never as a filtered comparison. Building the expected list from the
+    // entries that declare both axes and comparing it to the manifest cannot fail for the one case it
+    // exists to catch: an entry declaring neither is dropped from both sides at once and the comparison
+    // passes green. That is the shape #324 replaced in auth and email; here there was nothing at all.
+    const entries: [string, SecretRegistryEntry][] = Object.entries(paymentsSecretsRegistry);
+    expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
+    for (const [name, entry] of entries) {
+      expect(entry.origin, `${name} declares no origin`).toBeDefined();
+      expect(entry.rotation, `${name} declares no rotation`).toBeDefined();
+      expect(manifest.secrets.find((secret) => secret.name === name)).toEqual({
+        name,
+        origin: entry.origin,
+        rotation: entry.rotation,
+      });
+    }
+  });
+
+  test("names what each rail's block needs, because one bundle has four issuers and one issuer field", () => {
+    // The honest floor for a bundle. `issuer` holds one value and this secret is assembled from up to
+    // four consoles, so the field is `other` and the page named is the one that lists all four.
+    const declared = manifest.secrets.find((secret) => secret.name === PAYMENTS_PROVIDER_SECRET);
+    expect(declared?.origin.kind).toBe("obtained");
+    expect(declared?.rotation.kind).toBe("manual");
+    expect(declared?.origin.kind === "obtained" && declared.origin.documentation).toMatch(/^https:\/\//);
+  });
+
+  test("mints nothing — a generated Stripe key authenticates against nothing", () => {
+    expect(manifest.devSecrets).toEqual([]);
   });
 });
 

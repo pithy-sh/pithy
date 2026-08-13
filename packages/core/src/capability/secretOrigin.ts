@@ -43,18 +43,15 @@ export const SecretIssuer = z
 export type SecretIssuer = z.output<typeof SecretIssuer>;
 
 /**
- * The issuer, everywhere it appears, with its one degradation rule attached.
+ * The issuer **as a field**, with its one degradation rule attached.
  *
  * **An unrecognised issuer degrades to `other` rather than failing.** A manifest is read from
  * `node_modules`, so it can be newer than the client reading it — and a client that threw on an issuer
  * it had not been built against would blank a pane over a name it did not need to understand. `other`
  * is the honest answer: *somebody issues this, and I cannot help you with them.*
  *
- * **This const is the rule, and `issuedBy` is only a description on it.** The rule was first written as
- * a helper for the four field sites, and `needs` — which is *keyed* by issuer — was the fifth site, so
- * it restated the enum bare and rejected what every field beside it accepted. One unknown issuer failed
- * the whole manifest. A rule stated at five sites is a rule four of them will eventually miss, so it is
- * stated once and both shapes read it: a key is an issuer, and degrades like one.
+ * A field holds one value, so rewriting it destroys nothing. {@link IssuerKey} is the same name in the
+ * one position where that is false.
  */
 const IssuerName = SecretIssuer.catch("other");
 
@@ -62,6 +59,35 @@ const IssuerName = SecretIssuer.catch("other");
 function issuedBy(description: string): z.ZodType<SecretIssuer, unknown> {
   return IssuerName.describe(description);
 }
+
+/** The characters an issuer's name may hold, where that name is a record key rendered into a heading. */
+const ISSUER_KEY = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+
+/**
+ * The issuer **as a record key**, where the field's degradation rule would destroy data.
+ *
+ * **A key cannot degrade the way a field does, and the attempt to share one rule between them was the
+ * defect.** `SecretIssuer.catch("other")` rewrites what it parses. On a field that is a rename; on a key
+ * it is a *merge*, and the merge is silent. Keyed by the field's rule, `{ vercel: ["a"], netlify: ["b"] }`
+ * parsed to `{ other: ["b"] }` — vercel's requirement gone, the parse successful, nothing anywhere
+ * reporting it. Requirements lost without a word are worse than a manifest that refuses to parse, because
+ * a refusal is at least visible.
+ *
+ * So a key keeps the name it was written with. What a client loses by that is nothing it had: a reader
+ * that branches on the closed set runs `SecretIssuer.safeParse(key)` at the point of use and falls back to
+ * `other` for rendering, which is the same answer the schema used to force on it — except that the scopes
+ * are still there beside it, and a second unknown issuer is still a second entry.
+ *
+ * A preserved key reaches a rendered command and a rendered heading unchanged, so it is held to the shape
+ * of a name. That constraint is not a degradation path: an issuer a client has never heard of is still
+ * spelled like an issuer, and anything that is not is hostile data rather than a newer manifest.
+ */
+const IssuerKey = z
+  .string()
+  .regex(ISSUER_KEY)
+  .describe(
+    "An issuer, as the key of a record. Preserved exactly as written — unlike the field, which degrades to `other` — because two unrecognised issuers rewritten to one key overwrite each other's requirements with no error. A client that only knows the closed set narrows this with `SecretIssuer.safeParse` where it renders.",
+  );
 
 /** The characters a secret name may hold. Excludes `/`, which separates a keyspace from a member key. */
 const SECRET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -131,9 +157,9 @@ export const SecretOrigin = z
         ),
       issuer: issuedBy("Whose console or API issues it."),
       needs: z
-        .partialRecord(IssuerName, z.array(z.string().regex(HELPER_NEED)))
+        .partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))
         .describe(
-          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key degrades to `other` exactly as the field does — a key is an issuer.",
+          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently.",
         ),
       documentation: documentedAt(
         "Where the command's arguments come from, for an operator who would rather check them by hand.",

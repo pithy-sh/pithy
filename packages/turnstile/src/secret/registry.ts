@@ -43,6 +43,21 @@ export type TurnstileSecrets = z.infer<typeof TurnstileSecrets>;
  */
 export const TURNSTILE_SECRET_NAME = "turnstile-secret-keys";
 
+/**
+ * Where a widget's secret key comes from, and where it is replaced.
+ *
+ * `obtained`: a widget is created in Cloudflare's dashboard and the secret key is handed over with the
+ * sitekey. Nothing can mint one — the value only verifies because Cloudflare already knows it, which is
+ * equally why the test keys dev and staging wire are a published pair rather than a generated one.
+ *
+ * `provider`: Cloudflare's API rotates a widget's secret and returns the new value, so this secret can
+ * genuinely replace itself. That is also why `rotatable` is true: a rotation leaves tokens minted under
+ * the old secret in flight, and both versions have to verify until they drain.
+ */
+const TURNSTILE_WIDGETS_PAGE = "https://developers.cloudflare.com/turnstile/get-started/";
+const TURNSTILE_ROTATE_SECRET =
+  "https://developers.cloudflare.com/api/resources/turnstile/subresources/widgets/methods/rotate_secret/";
+
 /** The minimal registry the turnstile middleware reads its secret through (mirrors email's signing-key registry). */
 export const turnstileSecretsRegistry = defineSecretRegistry({
   [TURNSTILE_SECRET_NAME]: {
@@ -51,6 +66,8 @@ export const turnstileSecretsRegistry = defineSecretRegistry({
     rotatable: true,
     valueType: "json",
     schema: TurnstileSecrets,
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: TURNSTILE_WIDGETS_PAGE },
+    rotation: { kind: "provider", issuer: "cloudflare", documentation: TURNSTILE_ROTATE_SECRET },
   },
 });
 

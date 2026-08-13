@@ -84,10 +84,11 @@ describe("SecretOrigin", () => {
     expect(SecretOrigin.safeParse({ kind: "conjured" }).success).toBe(false);
   });
 
-  test("an unrecognised issuer degrades where it is a key, not only where it is a field", () => {
-    // The rule's own docstring says it is declared once so no site misses it. `needs` is keyed by
-    // issuer, and a key is an issuer. Without the same degradation one unknown issuer fails the whole
-    // manifest — every secret of every capability in it, over a name the reader did not need.
+  test("an unrecognised issuer keeps its own key — the field degrades, the key cannot", () => {
+    // A key is *not* a field. `SecretIssuer.catch("other")` rewrites what it parses, which is harmless
+    // on a field and destructive on a key: the rewritten key lands on `other`, and whatever `other`
+    // already held is overwritten with no error anywhere. So the key is preserved verbatim and the
+    // reader decides at render time whether it recognises the name.
     const parsed = SecretOrigin.parse({
       kind: "helped",
       issuer: "vercel",
@@ -96,8 +97,44 @@ describe("SecretOrigin", () => {
     expect(parsed).toEqual({
       kind: "helped",
       issuer: "other",
-      needs: { other: ["deployments:write"] },
+      needs: { vercel: ["deployments:write"] },
     });
+  });
+
+  test("two unrecognised issuers keep both sets of scopes — nothing collapses onto `other`", () => {
+    // The measured harm. Keyed by `SecretIssuer.catch("other")` this parsed to `{ other: ["b"] }`:
+    // vercel's requirement was gone, and the parse succeeded, so nothing reported it. Requirements
+    // silently lost are worse than a manifest that refuses to parse, because a refusal is visible.
+    const parsed = SecretOrigin.parse({
+      kind: "helped",
+      issuer: "vercel",
+      needs: { vercel: ["deployments:write"], netlify: ["sites:write"], other: ["read"] },
+    });
+    expect(parsed).toEqual({
+      kind: "helped",
+      issuer: "other",
+      needs: { vercel: ["deployments:write"], netlify: ["sites:write"], other: ["read"] },
+    });
+  });
+
+  test("a known issuer's key survives an unknown one beside it", () => {
+    const parsed = SecretOrigin.parse({
+      kind: "helped",
+      issuer: "cloudflare",
+      needs: { cloudflare: ["secrets:read"], vercel: ["deployments:write"] },
+    });
+    expect(parsed).toMatchObject({ needs: { cloudflare: ["secrets:read"], vercel: ["deployments:write"] } });
+  });
+
+  test("a key that is not shaped like an issuer name is refused", () => {
+    // The key is preserved rather than rewritten, so it reaches a rendered command and a rendered
+    // heading unchanged. That is the trade: it keeps its own scopes, and it is held to a name.
+    for (const key of ["needs a space", "$(id)", "vercel;rm -rf /"]) {
+      expect(
+        SecretOrigin.safeParse({ kind: "helped", issuer: "cloudflare", needs: { [key]: ["x"] } }).success,
+        key,
+      ).toBe(false);
+    }
   });
 
   test("an unrecognised issuer degrades to `other` rather than failing", () => {
