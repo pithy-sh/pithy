@@ -14,6 +14,8 @@ import type { GoogleJwk } from "./google/oidc";
 import { googleRail } from "./google/rail";
 import type { LemonSqueezyHttpFetch } from "./lemonSqueezy/api";
 import { lemonSqueezyRail } from "./lemonSqueezy/rail";
+import type { PaddleHttpFetch } from "./paddle/api";
+import { paddleRail } from "./paddle/rail";
 import type { StripeHttpFetch } from "./stripe/api";
 import { stripeRail } from "./stripe/rail";
 
@@ -68,6 +70,8 @@ export interface RailTrustOptions {
   stripeTransport?: StripeHttpFetch;
   /** The HTTP transport the Lemon Squeezy rail reaches its API through. Defaults to `fetch`. */
   lemonSqueezyTransport?: LemonSqueezyHttpFetch;
+  /** The HTTP transport the Paddle rail reaches its API through. Defaults to `fetch`. */
+  paddleTransport?: PaddleHttpFetch;
 }
 
 /** Build a rail provider from the credential bundle. Each factory takes only its own rail's block. */
@@ -110,6 +114,26 @@ const RAIL_FACTORIES: Partial<Record<PaymentsRail, RailFactory>> = {
       // — a `grants` clause names the currency a product's economy is denominated in.
       storeCurrency: config.lemonSqueezy?.storeCurrency,
     }),
+  paddle: (credentials, trust, config) => {
+    // Config is checked before this runs — `resolveRailProvider` refuses a disabled rail, and
+    // `PaymentsConfig` refuses to parse with the rail on and the block absent — so this is the
+    // "enabled, parsed, and somehow still absent" case rather than an adopter's missing three lines.
+    const settings = config.paddle;
+    if (settings === undefined) {
+      throw new PaymentsRailNotConfiguredError({
+        detail:
+          "The paddle rail is on with no `paddle` settings block. Declare `clientToken`, `environment`, and `successUrl`.",
+      });
+    }
+    return paddleRail(railCredentials(credentials, "paddle"), {
+      environment: settings.environment,
+      clientToken: settings.clientToken,
+      checkout: settings.checkout,
+      freshnessSeconds: settings.webhookFreshnessSeconds,
+      storeCurrency: settings.storeCurrency,
+      transport: trust.paddleTransport,
+    });
+  },
 };
 
 /** The rails this build can serve at all, whatever a project's config says. */

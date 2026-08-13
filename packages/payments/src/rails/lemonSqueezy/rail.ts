@@ -5,12 +5,13 @@ import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../../
 import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type {
+  CheckoutHandoff,
   CheckoutRail,
   CheckoutSessionInput,
   DiscountRail,
-  HostedSession,
   ListedDiscount,
   PaymentsRailProvider,
+  PortalHandoff,
   PortalSessionInput,
   PricingRail,
   RailRequestContext,
@@ -98,7 +99,7 @@ export function lemonSqueezyRail(
       });
     },
 
-    async createCheckoutSession(input: CheckoutSessionInput, context: RailRequestContext): Promise<HostedSession> {
+    async createCheckoutSession(input: CheckoutSessionInput, context: RailRequestContext): Promise<CheckoutHandoff> {
       return await createLemonSqueezyCheckoutSession(input, {
         credentials,
         deployment: context.deployment,
@@ -106,7 +107,7 @@ export function lemonSqueezyRail(
       });
     },
 
-    async createPortalSession(input: PortalSessionInput): Promise<HostedSession> {
+    async createPortalSession(input: PortalSessionInput): Promise<PortalHandoff> {
       return await createLemonSqueezyPortalSession(input, { credentials, transport: options.transport });
     },
 

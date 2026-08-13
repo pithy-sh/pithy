@@ -58,6 +58,9 @@ import rtdnVoided from "../rails/google/fixtures/rtdn-voided-purchase.json" with
 import type { GoogleHttpFetch } from "../rails/google/http";
 import { GOOGLE_JWKS_URL, resetGoogleJwksCache } from "../rails/google/oidc";
 import { GOOGLE_TOKEN_URL } from "../rails/google/playApi";
+import type { PaddleHttpFetch } from "../rails/paddle/api";
+import { accountReferenceProof } from "../rails/paddle/objects";
+import { signPaddleBody } from "../rails/paddle/signature";
 import type { StripeHttpFetch } from "../rails/stripe/api";
 import chargeRefunded from "../rails/stripe/fixtures/event-charge-refunded.json" with { type: "json" };
 import stripeInvoicePaid from "../rails/stripe/fixtures/event-invoice-paid.json" with { type: "json" };
@@ -95,6 +98,7 @@ const TABLES = [
   "pithy_payments_provider_accounts",
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
+  "pithy_payments_sync_cursors",
 ];
 
 /**
@@ -146,6 +150,13 @@ const CATALOG: PaymentsConfigInput = {
   },
 };
 
+const PADDLE_TEST_API_KEY = "pdl_sdbx_apikey_01hv8wptq8987qeep44cyrewp9_suiteonly";
+const PADDLE_TEST_WEBHOOK_SECRET = "pdl_ntfset_01hv8wptq8987qeep44cyrewp9_suiteonly";
+const PADDLE_PRICE = "pri_01kzvyz9e21z9vbhd7xqq3csyh";
+const PADDLE_CUSTOMER = "ctm_01hv8wptq8987qeep44cyrewp9";
+const PADDLE_SUBSCRIPTION = "sub_01hv8wptq8987qeep44cyrewp9";
+const PADDLE_TRANSACTION = "txn_01hv8wptq8987qeep44cyrewp9";
+
 const CREDENTIALS = {
   apple: {
     bundleId: BUNDLE_ID,
@@ -162,6 +173,10 @@ const CREDENTIALS = {
   stripe: {
     secretKey: STRIPE_TEST_SECRET_KEY,
     webhookSecret: STRIPE_TEST_WEBHOOK_SECRET,
+  },
+  paddle: {
+    apiKey: PADDLE_TEST_API_KEY,
+    webhookSecret: PADDLE_TEST_WEBHOOK_SECRET,
   },
 };
 
@@ -267,6 +282,7 @@ beforeEach(async () => {
   await ledger_0001_accounts.up(migrationDb);
   emitted = [];
   stripeCalls = [];
+  paddleCalls = [];
   // Google's published keys are cached per isolate, which is right in a Worker and wrong across tests.
   resetGoogleJwksCache();
   // The routes read credentials through the shared per-invocation accessor, so it is configured with payments'
@@ -303,6 +319,8 @@ interface AppOptions {
   play?: { subscription?: unknown; product?: unknown; status?: number };
   /** What Stripe's API answers. Absent bodies are 404s; `status` makes every call fail with that code. */
   stripe?: { checkout?: unknown; portal?: unknown; session?: unknown; status?: number };
+  /** What Paddle's API answers, by path fragment. Absent bodies are 404s. */
+  paddle?: { transaction?: unknown; portal?: unknown; discounts?: unknown; status?: number };
   /**
    * The control-plane seam. Absent means composed with both payments scopes granted; a shorter list narrows
    * the grant; **`null` means the seam is not composed at all** — a Worker that never added `controlplane()`,
@@ -313,6 +331,9 @@ interface AppOptions {
 
 /** Every call the Stripe rail made, so a test can assert what left the Worker and not only what came back. */
 let stripeCalls: StripeRecordedCall[];
+
+/** Every call the Paddle rail made, for the same reason. */
+let paddleCalls: { url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }[];
 
 /**
  * A Stripe transport that answers the three endpoints hosted checkout needs.
@@ -360,6 +381,28 @@ function googleTransport(options: AppOptions): GoogleHttpFetch {
   };
 }
 
+/**
+ * A Paddle transport that answers the endpoints this suite reaches.
+ *
+ * Nothing is signed on this side — Paddle's API is reached with the bearer key. The webhook direction is
+ * where real cryptography runs, and every delivery below carries a genuine HMAC over its own bytes.
+ */
+function paddleTransport(options: AppOptions): PaddleHttpFetch {
+  return async (url, init) => {
+    paddleCalls.push({ url, init });
+    if (options.paddle?.status !== undefined) {
+      return { ok: false, status: options.paddle.status, text: async () => "{}" };
+    }
+    const body = url.includes("/portal-sessions")
+      ? options.paddle?.portal
+      : url.includes("/discounts")
+        ? options.paddle?.discounts
+        : options.paddle?.transaction;
+    if (body === undefined) return { ok: false, status: 404, text: async () => "{}" };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: body }) };
+  };
+}
+
 function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {}) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
@@ -386,6 +429,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
       ...(options.trustedGoogle === false ? {} : { googleTrustedKeys: [googleKey.jwk] }),
       googleTransport: googleTransport(options),
       stripeTransport: stripeTransport(options),
+      paddleTransport: paddleTransport(options),
     },
   })(app);
   return app;
@@ -1851,7 +1895,8 @@ describe("POST /payments/checkout", () => {
       body: { productId: "pro_monthly" },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ url: CHECKOUT_SESSION.url });
+    // The `redirect` member, named on the wire. A screen narrows on `kind` rather than assuming a URL is there.
+    expect(await response.json()).toEqual({ kind: "redirect", url: CHECKOUT_SESSION.url });
     expect(actions()).toEqual(["payments/checkout_started:success"]);
   });
 
@@ -2705,5 +2750,347 @@ describe("the exported response schemas against the live routes", () => {
       PaymentsEntitlementsResponse,
       await request(app, "GET", "/payments/entitlements", { user: "grace" }),
     );
+  });
+});
+
+/**
+ * Paddle, end to end through the real routes: a genuine HMAC over the exact bytes, the real guard, the real
+ * projection writer, and the real D1.
+ *
+ * The two properties this section exists for are the two the issue says carry the most weight.
+ * **Authenticity** — a forged `Paddle-Signature` is refused and nothing is persisted. **Idempotency** —
+ * Paddle retries sixty times over three days live, so the same event delivered twice must project once.
+ * Both are proved by constructing the case rather than by asserting the code would handle it.
+ */
+const PADDLE_CATALOG: PaymentsConfigInput = {
+  rails: { paddle: true },
+  paddle: {
+    clientToken: "test_1234567890abcdefghij",
+    // `production`, because every request below runs with `ENVIRONMENT=prod` and the projection writer
+    // refuses a sandbox transaction in a production deployment. The sandbox direction gets its own case.
+    environment: "production",
+    checkout: "overlay",
+    successUrl: "https://acme.example/thanks",
+  },
+  products: {
+    pro_monthly: {
+      type: "subscription",
+      name: "Pro",
+      entitlements: ["pro"],
+      paddle: { priceId: PADDLE_PRICE },
+    },
+  },
+};
+
+/** The `custom_data` a checkout this deployment created would carry, proof and all. */
+async function paddleStamp(userId: string, deployment: string): Promise<Record<string, string>> {
+  return {
+    pithy_user: userId,
+    pithy_env: deployment,
+    pithy_ref_proof: await accountReferenceProof(userId, deployment, PADDLE_TEST_WEBHOOK_SECRET),
+  };
+}
+
+/** One `subscription.activated`, stamped for this deployment. */
+async function paddleSubscriptionEvent(
+  overrides: { eventId?: string; status?: string; deployment?: string; custom?: Record<string, unknown> } = {},
+) {
+  return {
+    event_id: overrides.eventId ?? "evt_01hv8wptq8987qeep44cyrewp9",
+    event_type: "subscription.activated",
+    occurred_at: "2026-08-12T09:00:00.000000Z",
+    data: {
+      id: PADDLE_SUBSCRIPTION,
+      status: overrides.status ?? "active",
+      customer_id: PADDLE_CUSTOMER,
+      items: [{ price: { id: PADDLE_PRICE }, status: "active" }],
+      current_billing_period: { starts_at: "2026-08-12T09:00:00Z", ends_at: "2026-09-12T09:00:00Z" },
+      custom_data: overrides.custom ?? (await paddleStamp("ada", overrides.deployment ?? "prod")),
+      created_at: "2026-08-12T09:00:00Z",
+      updated_at: "2026-08-12T09:00:00Z",
+    },
+  };
+}
+
+/** Deliver one Paddle event, signed the way Paddle signs it unless a case bends the header. */
+async function paddleHook(
+  app: Hono<PithyHonoEnv>,
+  event: unknown,
+  options: RequestOptions & { header?: string | null; signedAt?: Date; secret?: string } = {},
+) {
+  const body = options.raw ?? JSON.stringify(event);
+  const seconds = Math.floor((options.signedAt ?? NOW).getTime() / 1000);
+  const header =
+    options.header === undefined
+      ? `ts=${seconds};h1=${await signPaddleBody(seconds, body, options.secret ?? PADDLE_TEST_WEBHOOK_SECRET)}`
+      : options.header;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (header !== null) headers["paddle-signature"] = header;
+  await provision(options.credentials);
+  const bindings: Record<string, unknown> = {
+    ...env,
+    ENVIRONMENT: options.environment === undefined ? "prod" : options.environment,
+  };
+  return app.request("http://x/payments/webhooks/paddle", { method: "POST", headers, body }, bindings);
+}
+
+/** Every recorded webhook row, which is what proves a forgery was never persisted. */
+const webhookRows = () => db().selectFrom("pithyPaymentsWebhookEvents").selectAll().orderBy("receivedAt").execute();
+
+describe("POST /payments/webhooks/paddle", () => {
+  const app = () => makeApp(PADDLE_CATALOG);
+
+  test("a signed subscription event projects, and binds the customer to the user in one delivery", async () => {
+    const response = await paddleHook(app(), await paddleSubscriptionEvent());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+    const rows = await purchases();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      rail: "paddle",
+      userId: "ada",
+      productId: "pro_monthly",
+      status: "active",
+      // The account, not a payload field: Paddle Billing has no `mode` on a transaction, so a
+      // deployment writes rows for the account its credentials point at and cannot write any other.
+      environment: "production",
+      // The subscription is both the state row's key and its own family head.
+      providerTransactionId: PADDLE_SUBSCRIPTION,
+      originalTransactionId: PADDLE_SUBSCRIPTION,
+      role: "state",
+    });
+    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
+    expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: PADDLE_CUSTOMER, userId: "ada" });
+  });
+
+  test("the same event delivered twice projects once — Paddle retries sixty times over three days", async () => {
+    // The idempotency proof, built rather than asserted. Both deliveries are genuine: same bytes, same
+    // signature, same `evt_…`, exactly as a Paddle retry sends them.
+    const instance = app();
+    const event = await paddleSubscriptionEvent();
+
+    const first = await paddleHook(instance, event);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+    const second = await paddleHook(instance, event);
+    // 200, not an error: the store did nothing wrong, and a non-2xx would make it retry a delivery that has
+    // already taken effect.
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ received: true, duplicate: true });
+
+    // One purchase row, one entitlement row, one webhook row. The second delivery granted nothing extra and
+    // wrote nothing extra — which is the whole claim, and it is checked against the database rather than
+    // against a returned flag.
+    expect(await purchases()).toHaveLength(1);
+    expect(await entitlements()).toHaveLength(1);
+    expect(await webhookRows()).toHaveLength(1);
+  });
+
+  test("a forged signature is refused and nothing is persisted", async () => {
+    // Constructed, not described: a real timestamp, Paddle's real format, and a signature an attacker made
+    // up. The header parses; the MAC does not match.
+    const seconds = Math.floor(NOW.getTime() / 1000);
+    const response = await paddleHook(app(), await paddleSubscriptionEvent(), {
+      header: `ts=${seconds};h1=${"a".repeat(64)}`,
+    });
+    expect(response.status).toBe(401);
+    expect((await response.json<{ error: { code: string } }>()).error.code).toBe("payments/webhook_unverified");
+
+    // The table holds only notifications Paddle actually sent — otherwise anyone could fill it.
+    expect(await webhookRows()).toHaveLength(0);
+    expect(await purchases()).toHaveLength(0);
+    expect(actions()).toEqual(["payments/webhook_unverified:denied"]);
+  });
+
+  test("a signature minted under another destination's secret is refused", async () => {
+    // The realistic forgery: an attacker holding *a* Paddle signing secret, just not this destination's.
+    const response = await paddleHook(app(), await paddleSubscriptionEvent(), {
+      secret: "pdl_ntfset_01someone_elses_destination",
+    });
+    expect(response.status).toBe(401);
+    expect(await webhookRows()).toHaveLength(0);
+  });
+
+  test("an authentic delivery whose body was edited after signing is refused", async () => {
+    const event = await paddleSubscriptionEvent();
+    const body = JSON.stringify(event);
+    const seconds = Math.floor(NOW.getTime() / 1000);
+    const header = `ts=${seconds};h1=${await signPaddleBody(seconds, body, PADDLE_TEST_WEBHOOK_SECRET)}`;
+    // The signature is Paddle's own — over the *original* bytes. The body is not.
+    const tampered = body.replace('"status":"active"', '"status":"canceled"');
+    expect(tampered).not.toBe(body);
+    const response = await paddleHook(app(), undefined, { header, raw: tampered });
+    expect(response.status).toBe(401);
+    expect(await webhookRows()).toHaveLength(0);
+  });
+
+  test("a delivery outside the freshness window is refused", async () => {
+    const response = await paddleHook(app(), await paddleSubscriptionEvent(), {
+      signedAt: new Date(NOW.getTime() - 400_000),
+    });
+    expect(response.status).toBe(401);
+    expect(await webhookRows()).toHaveLength(0);
+  });
+
+  test("an event stamped for another environment is recorded, projects nothing, and returns 200", async () => {
+    // The shared-sandbox case, which is the *normal* one here: `dev` is not publicly routable, so a dev
+    // buyer's webhooks land at staging. No row, no entitlement, no audit warning, and a 200 — a warning
+    // would fire on most deliveries and train an operator to ignore the channel.
+    const response = await paddleHook(app(), await paddleSubscriptionEvent({ deployment: "dev" }), {
+      environment: "staging",
+    });
+    expect(response.status).toBe(200);
+    expect(await purchases()).toHaveLength(0);
+    expect(await entitlements()).toHaveLength(0);
+    // Authentic, so it *is* recorded — that is what makes the gap repairable from the trail.
+    expect(await webhookRows()).toHaveLength(1);
+    // Recorded on the trail as an ordinary receipt, and **never as a warning**: on a shared sandbox this
+    // fires on most deliveries, and a channel that cries wolf on most deliveries is one an operator learns
+    // to ignore. The webhook row's `error` column is null too — nothing went wrong.
+    expect(actions()).toEqual(["payments/webhook_received:success"]);
+    expect(emitted.map((event) => event.severity ?? "info")).toEqual(["info"]);
+    expect((await webhookRows())[0]?.error).toBeNull();
+  });
+
+  test("a sandbox transaction never grants a production entitlement", async () => {
+    // The account decides the environment, so a sandbox-configured rail cannot write a production row —
+    // and this deployment is production. The delivery is authentic and is recorded; nothing is granted.
+    const sandbox = makeApp({
+      ...PADDLE_CATALOG,
+      paddle: { ...PADDLE_CATALOG.paddle, environment: "sandbox" } as typeof PADDLE_CATALOG.paddle,
+    });
+    const response = await paddleHook(sandbox, await paddleSubscriptionEvent());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, projected: false });
+    expect(await purchases()).toHaveLength(0);
+    expect(await entitlements()).toHaveLength(0);
+    expect(await webhookRows()).toHaveLength(1);
+  });
+
+  test("an unstamped `custom_data` binds nobody, but is not fenced out", async () => {
+    // A transaction created by hand in the Paddle dashboard carries no stamp. Fencing on absence would
+    // silently drop real sales, so it projects — and binds nobody, because there is nothing to bind to.
+    const response = await paddleHook(app(), await paddleSubscriptionEvent({ custom: {} }));
+    expect(response.status).toBe(200);
+    expect(await webhookRows()).toHaveLength(1);
+    // Unbound: no provider-account link was written from an unproven reference.
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toHaveLength(0);
+  });
+
+  test("a stamped reference with a forged proof binds nobody", async () => {
+    // The attack the MAC exists to stop. `Paddle.Checkout.open` accepts `customData` beside an `items[]`
+    // array with only the publishable client token, so a stranger can write `pithy_user` and `pithy_env`
+    // — both key names are exported constants and the environment is one of three. What they cannot write
+    // is a MAC keyed on this destination's signing secret.
+    const forged = await paddleHook(
+      app(),
+      await paddleSubscriptionEvent({
+        custom: { pithy_user: "mallory", pithy_env: "prod", pithy_ref_proof: "00".repeat(32) },
+      }),
+    );
+    expect(forged.status).toBe(200);
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toHaveLength(0);
+
+    // Anti-vacuity: the same event with a *real* proof does bind, so the case above fails on the proof and
+    // not on some other refusal upstream of it.
+    const genuine = await paddleHook(makeApp(PADDLE_CATALOG), await paddleSubscriptionEvent({ eventId: "evt_02" }));
+    expect(genuine.status).toBe(200);
+    const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ userId: "ada" });
+  });
+
+  test("an event type this build has never seen is authentic, recorded, and projects nothing", async () => {
+    // Paddle would redeliver a non-2xx for three days, so a type shipped after this package must not throw.
+    const response = await paddleHook(app(), {
+      event_id: "evt_01future",
+      event_type: "subscription.quantum_entangled",
+      occurred_at: "2026-08-12T09:00:00Z",
+      data: { id: "sub_01", status: "active" },
+    });
+    expect(response.status).toBe(200);
+    expect(await webhookRows()).toHaveLength(1);
+    expect(await purchases()).toHaveLength(0);
+  });
+});
+
+describe("POST /payments/purchases — Paddle", () => {
+  /** The transaction Paddle answers a read with, stamped for a given user and deployment. */
+  async function transaction(userId: string, deployment = "prod") {
+    return {
+      id: PADDLE_TRANSACTION,
+      status: "completed",
+      customer_id: PADDLE_CUSTOMER,
+      subscription_id: null,
+      items: [{ price: { id: PADDLE_PRICE } }],
+      details: { totals: { grand_total: "999", currency_code: "USD" } },
+      custom_data: {
+        pithy_user: userId,
+        pithy_env: deployment,
+        pithy_ref_proof: await accountReferenceProof(userId, deployment, PADDLE_TEST_WEBHOOK_SECRET),
+      },
+      created_at: NOW.toISOString(),
+    };
+  }
+
+  /** A one-off catalog, so a submitted transaction resolves to a product. */
+  const ONE_OFF: PaymentsConfigInput = {
+    ...PADDLE_CATALOG,
+    products: {
+      pro_monthly: {
+        type: "non_consumable",
+        name: "Pro",
+        entitlements: ["pro"],
+        paddle: { priceId: PADDLE_PRICE },
+      },
+    },
+  };
+
+  test("a submitted txn_… reaches the database — which is what makes a dev purchase work at all", async () => {
+    // `dev` is not publicly routable, so a dev checkout's webhooks land at staging and the dev deployment
+    // never hears about its own purchase. This is the path that repairs that, and it is why `verify` is
+    // not optional on this rail the way it is on Lemon Squeezy.
+    //
+    // It also pins a seam that was silently missing: `verify` is handed the deployment alongside the
+    // clock, because the ownership proof is keyed on it. A rail handed no deployment can prove nothing and
+    // refuses every submission — which looked exactly like a working rail until somebody submitted one.
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction("ada") } });
+    const response = await request(app, "POST", "/payments/purchases", {
+      user: "ada",
+      body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+    });
+    expect(response.status).toBe(200);
+
+    const rows = await purchases();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", providerTransactionId: PADDLE_TRANSACTION });
+    expect((await entitlements())[0]).toMatchObject({ entitlement: "pro", active: 1 });
+  });
+
+  test("a submission whose proven stamp names somebody else is refused before it projects", async () => {
+    // The id is a pointer; the stamp is the authorization. A caller holding a `txn_…` that is not theirs
+    // learns nothing and writes nothing.
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction("ada") } });
+    const response = await request(app, "POST", "/payments/purchases", {
+      user: "mallory",
+      body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+    });
+    expect(response.status).not.toBe(200);
+    expect(await purchases()).toHaveLength(0);
+  });
+
+  test("a transaction carrying an unproven stamp is refused, however plausible it looks", async () => {
+    // What `Paddle.Checkout.open` lets a browser write: the two values, and not the MAC.
+    const forged = { ...(await transaction("mallory")), custom_data: { pithy_user: "mallory", pithy_env: "prod" } };
+    const app = makeApp(ONE_OFF, { paddle: { transaction: forged } });
+    const response = await request(app, "POST", "/payments/purchases", {
+      user: "mallory",
+      body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+    });
+    expect(response.status).not.toBe(200);
+    expect(await purchases()).toHaveLength(0);
   });
 });

@@ -47,6 +47,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_payments_provider_accounts");
   await env.DB.exec("DROP TABLE IF EXISTS pithy_payments_webhook_events");
   await env.DB.exec("DROP TABLE IF EXISTS pithy_payments_reconcile_runs");
+  await env.DB.exec("DROP TABLE IF EXISTS pithy_payments_sync_cursors");
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 

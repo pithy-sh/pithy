@@ -5,8 +5,8 @@ import { type Kysely, sql } from "kysely";
 import type { Migration } from "kysely/migration";
 
 /**
- * Payments' five tables: the purchase projection, the materialized entitlement read model, the
- * provider-identity map, the raw webhook log, and the reconciliation run log.
+ * Payments' six tables: the purchase projection, the materialized entitlement read model, the
+ * provider-identity map, the raw webhook log, the reconciliation run log, and the sync cursors.
  *
  * camelCase identifiers; `CamelCasePlugin` snake-cases them in the DDL. `down` is the tested inverse.
  *
@@ -153,7 +153,7 @@ export const payments_0001_purchases: Migration = {
       .addColumn("processedAt", "integer")
       .addColumn("error", "text")
       .addColumn("createdAt", "integer", (c) => c.notNull())
-      // All three providers deliver at-least-once and retry, so a redelivery is expected and must be
+      // Every provider delivers at-least-once and retries, so a redelivery is expected and must be
       // recognized rather than reprocessed.
       .addUniqueConstraint("pithyPaymentsWebhookEventsIdx", ["rail", "providerEventId"])
       .execute();
@@ -204,8 +204,30 @@ export const payments_0001_purchases: Migration = {
       .on("pithyPaymentsReconcileRuns")
       .columns(["startedAt", "id"])
       .execute();
+
+    // Where a resumable sweep left off. One row per `(rail, name)`, because a rail may sweep more than
+    // one stream and a name is what tells them apart.
+    //
+    // This is **not** a copy of a provider's data and is not a cache of one: it is a single opaque
+    // pointer into somebody else's stream, which is the minimum state a resumable read can have. The
+    // alternative to storing it is re-reading ninety days of events on every run.
+    await db.schema
+      .createTable("pithyPaymentsSyncCursors")
+      .addColumn("id", "text", (c) => c.primaryKey())
+      .addColumn("rail", "text", (c) => c.notNull())
+      .addColumn("name", "text", (c) => c.notNull())
+      // The provider's own resume token — Paddle's `evt_…`. Nullable, because a cursor that has never
+      // advanced is a real state: it means "start at the oldest event this provider still retains".
+      .addColumn("cursor", "text")
+      .addColumn("updatedAt", "integer", (c) => c.notNull())
+      .addColumn("createdAt", "integer", (c) => c.notNull())
+      // One cursor per stream. Two rows for one stream would let two runs each believe they were
+      // authoritative, and the sweep would silently skip whatever fell between them.
+      .addUniqueConstraint("pithyPaymentsSyncCursorsIdx", ["rail", "name"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropTable("pithyPaymentsSyncCursors").execute();
     await db.schema.dropIndex("pithyPaymentsReconcileRunsStartedIdx").execute();
     await db.schema.dropTable("pithyPaymentsReconcileRuns").execute();
     await db.schema.dropIndex("pithyPaymentsWebhookEventsPendingIdx").execute();

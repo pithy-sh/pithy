@@ -43,13 +43,19 @@ declare module "virtual:pithy/payments" {
         /** The environment this bundle was built for. */
         environment: string;
         /** Which rails this project sells through. Apple and Google are display-only on the web. */
-        rails: { apple: boolean; google: boolean; stripe: boolean; lemonSqueezy: boolean };
+        rails: { apple: boolean; google: boolean; stripe: boolean; lemonSqueezy: boolean; paddle: boolean };
+        /**
+         * What Paddle.js needs to initialize, or null when the rail is off. The client token is
+         * publishable by design — it is what a browser opens a checkout with — and the API key and the
+         * webhook signing secret are neither here nor expressible here.
+         */
+        paddle: { clientToken: string; environment: "sandbox" | "production"; checkout: string } | null;
         /** Where the payments routes mount, e.g. `/payments`. */
         basePath: string;
         /**
-         * The catalog, browser-safe. Stripe price ids are publishable by design — a Checkout Session
-         * names one. Apple's and Google's SKUs, and anything a purchase fulfils beyond its
-         * entitlements, stay server-side.
+         * The catalog, browser-safe. A web rail's price id is publishable by design — a checkout names
+         * one. Apple's and Google's SKUs, and anything a purchase fulfils beyond its entitlements, stay
+         * server-side.
          */
         products: {
           /** The logical product id — what `/payments/checkout` is asked for. */
@@ -60,10 +66,19 @@ declare module "virtual:pithy/payments" {
           entitlements: string[];
           /** The display name a paywall renders. */
           name: string;
-          /** The Stripe price, or null for a product this project does not sell through Stripe. */
-          stripePriceId: string | null;
-          /** The Lemon Squeezy variant, or null for a product this project does not sell through it. */
-          lemonSqueezyVariantId: string | null;
+          /**
+           * This product's SKU on each web rail, or null where it is not sold. Keyed by rail rather
+           * than one field per rail, so a screen asks `skus[rail]` and a new rail cannot leave a
+           * `purchasable()` check silently out of date.
+           */
+          skus: {
+            /** The Stripe price id. */
+            stripe: string | null;
+            /** The Lemon Squeezy variant id. */
+            lemonSqueezy: string | null;
+            /** The Paddle price id. */
+            paddle: string | null;
+          };
         }[];
       };
   export default config;

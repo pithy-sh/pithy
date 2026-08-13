@@ -65,6 +65,7 @@ const TABLES = [
   "pithy_payments_provider_accounts",
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
+  "pithy_payments_sync_cursors",
 ];
 
 beforeEach(async () => {

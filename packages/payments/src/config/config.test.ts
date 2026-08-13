@@ -76,7 +76,7 @@ describe("the catalog's pieces are typeable as written", () => {
     const stripe: PaymentsStripeSettingsInput = STRIPE_RETURN_URLS;
 
     const config = PaymentsConfig.parse({ rails, products, stripe } satisfies PaymentsConfigInput);
-    expect(config.rails).toEqual({ apple: false, google: false, stripe: true, lemonSqueezy: false });
+    expect(config.rails).toEqual({ apple: false, google: false, stripe: true, lemonSqueezy: false, paddle: false });
     expect(config.products.pro_monthly?.clawback).toBe(false);
     expect(config.products.team_monthly?.entitlements).toEqual(["team"]);
   });
@@ -91,7 +91,13 @@ describe("PaymentsConfig defaults", () => {
 
   test("every rail is off until named, so an empty catalog composes without claiming a store", () => {
     const config = PaymentsConfig.parse({ products: {} });
-    expect(config.rails).toEqual({ apple: false, google: false, stripe: false, lemonSqueezy: false });
+    expect(config.rails).toEqual({
+      apple: false,
+      google: false,
+      stripe: false,
+      lemonSqueezy: false,
+      paddle: false,
+    });
     expect(config.products).toEqual({});
   });
 

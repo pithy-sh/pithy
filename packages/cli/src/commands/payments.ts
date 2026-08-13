@@ -237,7 +237,7 @@ const reconcile = defineCommand({
     // Every rail is named, in the spelling the parse accepts — `lemonSqueezy`, camelCase, the same
     // identifier the config and the credential bundle key on. A help line that lists three of four rails
     // is why somebody types the fourth as a guess.
-    rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, or lemonSqueezy" },
+    rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, lemonSqueezy, or paddle" },
     "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },

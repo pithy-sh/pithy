@@ -60,6 +60,12 @@ export const PaymentsRailToggles = z
       .describe(
         "Whether Lemon Squeezy purchases are accepted, through hosted checkout and the customer portal. Lemon Squeezy is the merchant of record: it handles global sales tax, EU VAT, invoicing and dunning, and it issues refunds on its own. Credentials come from the secrets store, never config.",
       ),
+    paddle: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether Paddle purchases are accepted, through an overlay, an inline frame, or Paddle's hosted page. Paddle is the merchant of record: it handles global sales tax, EU VAT, invoicing and dunning, and it issues refunds on its own. The API key and the webhook secret come from the secrets store; the publishable client token is config, because it is designed to reach a browser.",
+      ),
   })
   .describe("Which payment rails this project accepts. A rail that is off refuses its routes and its webhook.");
 export type PaymentsRailToggles = z.infer<typeof PaymentsRailToggles>;
@@ -137,6 +143,66 @@ export const PaymentsLemonSqueezySettings = z
   );
 export type PaymentsLemonSqueezySettings = z.infer<typeof PaymentsLemonSqueezySettings>;
 
+export const PaymentsPaddleProduct = z
+  .object({
+    priceId: z
+      .string()
+      .min(1)
+      .max(MAX_SKU_LENGTH)
+      .describe(
+        "The Paddle Price id — `pri_01hv8w…`. Publishable by design: it is what a transaction and `Paddle.Checkout.open` both name, so it may reach a browser.",
+      ),
+  })
+  .describe("How this product is priced in Paddle. Omit the block to ship without the Paddle rail.");
+export type PaymentsPaddleProduct = z.infer<typeof PaymentsPaddleProduct>;
+
+export const PaymentsPaddleSettings = z
+  .strictObject({
+    checkout: z
+      .enum(["overlay", "inline", "hosted"])
+      .default("overlay")
+      .describe(
+        "How checkout is presented. `overlay` opens Paddle.js over your own page; `inline` renders it in a container the screen provides; `hosted` redirects to Paddle's own page and **requires a default payment link set in the Paddle dashboard** — without one Paddle refuses to create the transaction at all, account-wide, so `pithy doctor` asks before a buyer finds out.",
+      ),
+    clientToken: z
+      .string()
+      .min(1)
+      .describe(
+        "Paddle's publishable client token — `live_…` or `test_…`. Config and not a secret, the same call `stripe.priceId` gets and for the same reason: it is designed to reach a browser, and putting it behind the secrets store would suggest verification depended on its secrecy. The API key and the webhook signing secret are secrets and are not here.",
+      ),
+    environment: z
+      .enum(["sandbox", "production"])
+      .describe(
+        "Which Paddle account this project sells through. Paddle Billing partitions sandbox from live by account — separate host, separate key, separate notification destinations — so this decides both the API host and every purchase's recorded environment. There is no `mode` field on a Paddle payload that could contradict it.",
+      ),
+    successUrl: ReturnUrl.describe(
+      "Where a buyer lands after paying. Used as `settings.successUrl` for Paddle.js and as the redirect target in `hosted` mode. Build it on `PUBLIC_ORIGIN`, never on a literal.",
+    ),
+    cancelUrl: ReturnUrl.optional().describe(
+      "Where a buyer who backs out lands, in `hosted` mode. Optional, because an overlay a buyer closes leaves them exactly where they were.",
+    ),
+    webhookFreshnessSeconds: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "How many seconds either side of now a delivery's `ts` may be dated. Omitted uses 300, deliberately not the 5 Paddle's own SDKs use: replay protection here is the webhook table's `UNIQUE (rail, providerEventId)`, which is absolute, and a five-second window adds nothing to that while turning ordinary clock skew into a dropped renewal.",
+      ),
+    storeCurrency: z
+      .string()
+      .regex(CURRENCY_CODE_PATTERN, "A currency code is lowercase, digits, and dashes.")
+      .optional()
+      .describe(
+        "The currency this Paddle catalog prices in, lowercase ISO 4217 — `usd`. Optional, and the only thing it does is let a fixed-amount discount in another currency be refused when it is created rather than when a customer redeems it. Paddle accepts the mismatched object and fails at redemption, so without this the error arrives at the buyer instead of at you.",
+      ),
+  })
+  .describe(
+    "How this project sells through Paddle. `strictObject`, and that is what refuses `portalReturnUrl`: Paddle's customer portal takes no return parameter, so accepting one and dropping it would leave a URL an adopter wrote and believed in that nothing ever reads — a lie in a file they trust.",
+  );
+export type PaymentsPaddleSettings = z.infer<typeof PaymentsPaddleSettings>;
+export type PaymentsPaddleSettingsInput = z.input<typeof PaymentsPaddleSettings>;
+
 export const PaymentsStripeSettings = z
   .object({
     successUrl: ReturnUrl.describe(
@@ -196,6 +262,7 @@ export const PaymentsProduct = z
     lemonSqueezy: PaymentsLemonSqueezyProduct.optional().describe(
       "The Lemon Squeezy variant, if this product is sold through Lemon Squeezy.",
     ),
+    paddle: PaymentsPaddleProduct.optional().describe("The Paddle price, if this product is sold through Paddle."),
     grants: PaymentsGrants.optional().describe(
       "What this purchase fulfills beyond its entitlements. Opt-in per product; a subscription's grant fires once per billing period, since each renewal is a distinct provider transaction.",
     ),
@@ -211,9 +278,13 @@ export type PaymentsProduct = z.infer<typeof PaymentsProduct>;
 
 export const PaymentsConfig = z
   .object({
-    rails: PaymentsRailToggles.default({ apple: false, google: false, stripe: false, lemonSqueezy: false }).describe(
-      "Which stores this project sells through. Every rail is off until named.",
-    ),
+    rails: PaymentsRailToggles.default({
+      apple: false,
+      google: false,
+      stripe: false,
+      lemonSqueezy: false,
+      paddle: false,
+    }).describe("Which stores this project sells through. Every rail is off until named."),
     products: z
       .record(z.string(), PaymentsProduct)
       .default({})
@@ -231,6 +302,9 @@ export const PaymentsConfig = z
     ),
     lemonSqueezy: PaymentsLemonSqueezySettings.optional().describe(
       "Where Lemon Squeezy's hosted checkout returns the browser. Required when that rail is on — the checkout route cannot create a session without it.",
+    ),
+    paddle: PaymentsPaddleSettings.optional().describe(
+      "How this project sells through Paddle: the account, the publishable client token, the checkout mode, and where a buyer lands. Required when the Paddle rail is on — the rail cannot initialize Paddle.js or create a transaction without it.",
     ),
     basePath: z
       .string()
@@ -293,6 +367,27 @@ export const PaymentsConfig = z
       });
     }
 
+    // The same pair for Paddle. The client token and the account are not return URLs — they are what a
+    // browser needs to open a checkout at all — so the rail cannot start one without this block either.
+    if (config.rails.paddle && config.paddle === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["paddle"],
+        message:
+          "The Paddle rail is on, so `paddle` must declare `clientToken`, `environment`, and `successUrl`. Paddle.js cannot initialize and no transaction can be created without them.",
+      });
+    }
+
+    if (!config.rails.paddle && config.paddle !== undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["paddle"],
+        message: "`paddle` declares settings, but `rails.paddle` is off. Enable the rail, or drop the block.",
+      });
+    }
+
     for (const [id, product] of entries) {
       // A SKU for a rail the project turned off can never be bought, and the webhook that would carry it
       // is refused. Silently ignoring the block would leave a catalog that reads as selling something it
@@ -315,7 +410,7 @@ export const PaymentsConfig = z
           code: "custom",
           input: ctx.value,
           path: ["products", id],
-          message: `Product "${id}" declares no rail. Give it an \`apple\`, \`google\`, \`stripe\`, or \`lemonSqueezy\` block — nothing could buy it otherwise.`,
+          message: `Product "${id}" declares no rail. Give it an \`apple\`, \`google\`, \`stripe\`, \`lemonSqueezy\`, or \`paddle\` block — nothing could buy it otherwise.`,
         });
       }
 
@@ -349,6 +444,27 @@ export const PaymentsConfig = z
     // The same string on two different rails is fine — the rails are separate namespaces.
     for (const rail of PAYMENTS_RAILS) {
       const owners = new Map<string, string[]>();
+      // The same pair for Paddle. The client token and the account are not return URLs — they are what a
+      // browser needs to open a checkout at all — so the rail cannot start one without this block either.
+      if (config.rails.paddle && config.paddle === undefined) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["paddle"],
+          message:
+            "The Paddle rail is on, so `paddle` must declare `clientToken`, `environment`, and `successUrl`. Paddle.js cannot initialize and no transaction can be created without them.",
+        });
+      }
+
+      if (!config.rails.paddle && config.paddle !== undefined) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["paddle"],
+          message: "`paddle` declares settings, but `rails.paddle` is off. Enable the rail, or drop the block.",
+        });
+      }
+
       for (const [id, product] of entries) {
         const sku = providerProductId(product, rail);
         if (sku === undefined) continue;
@@ -404,6 +520,8 @@ export function providerProductId(product: PaymentsProduct, rail: PaymentsRail):
       return product.stripe?.priceId;
     case "lemonSqueezy":
       return product.lemonSqueezy?.variantId;
+    case "paddle":
+      return product.paddle?.priceId;
     case "apple":
       return product.apple?.productId;
     case "google":

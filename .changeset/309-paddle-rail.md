@@ -1,0 +1,25 @@
+---
+"@pithy-sh/payments": minor
+"@pithy-sh/ui-react": minor
+"@pithy-sh/cli": minor
+---
+
+Sell through Paddle. A fifth payments rail — overlay, inline or hosted checkout, coupon codes, signed webhooks, a customer portal with per-subscription deep links, and a nightly events sweep — resolving to the same entitlements as Apple, Google, Stripe and Lemon Squeezy, with the merchant of record handling your tax.
+
+`rails.paddle` turns it on, a product carries `paddle: { priceId }`, a `paddle` settings block declares the account and the publishable client token, and the credential bundle gains an optional `paddle` block with `apiKey` and `webhookSecret`. `POST /payments/webhooks/paddle` takes the deliveries.
+
+**`CheckoutRail` no longer returns `HostedSession { url }`.** Paddle's overlay and inline checkouts never leave the adopter's page, so there is no address to return — only an empty string, or a lie. `CheckoutHandoff` is a union: `{ kind: "redirect", url }` is what Stripe and Lemon Squeezy return, unchanged in every field, and `{ kind: "paddle", transactionId, clientToken, environment, displayMode }` is what a browser opens with Paddle.js. `PortalHandoff` widens the same way, so a subscription screen can render one subscription's cancel and update-payment-method links rather than one "Manage billing" button. On the client, `startCheckout` answers three outcomes instead of two: told "left" for a rail that never leaves, a paywall's button silently does nothing.
+
+The client projection is now keyed by rail — `products[].skus.{stripe,lemonSqueezy,paddle}` — plus a `paddle` block carrying the three facts Paddle.js needs to initialize. A screen asks `skus[rail]`, which cannot fall out of date when a rail is added.
+
+**Signature verification is this rail's own, and the reason is two characters.** Paddle sends `Paddle-Signature: ts=…;h1=…` and signs `${ts}:${body}`; core's `signed-webhook` splits on `,` and joins with `.`. Neither is a parameter there, deliberately. The freshness window defaults to **300 seconds, not the 5 Paddle's SDKs use**: replay protection rests on `UNIQUE (rail, providerEventId)` over `evt_…`, which is absolute, and a five-second window converts ordinary clock skew into a dropped renewal. `paddle.webhookFreshnessSeconds` sets it.
+
+**Ownership travels with a proof, not just a stamp.** `Paddle.Checkout.open` accepts `customData` beside an `items[]` array with nothing but the publishable client token, so a browser can write `custom_data.pithy_user`. The rail honours a stamped reference only when an HMAC over `(environment, user)` — keyed with the notification destination's secret, and domain-separated from the body signature — verifies beside it. Unlike Lemon Squeezy this rail does implement `verify`: a submitted `txn_…` is a pointer, and the proven stamp is the authorization, which is what makes a `dev` purchase reach the database when its webhooks land at `staging`.
+
+A subscription writes two rows, as on Lemon Squeezy: a `role = 'state'` row keyed on `sub_…` carrying access, and a `role = 'charge'` row per `txn_…` carrying the money. A subscription's transaction is born `expired` — a closed, paid billing period — so it credits a `grants` clause and never outlives a cancellation. A one-off transaction is `active` and never expires.
+
+`pithy_payments_sync_cursors` is new, and it is the whole state the events sweep keeps: one opaque resume token per stream, no customer, no amount, no event body. The sweep walks `GET /events?order_by=id[ASC]` filtered to the event types the map acts on — the filter is in the query, because the account-wide stream carries `client_token.created` whose token Paddle does not redact — and projects each event through the same map a webhook uses, writing through the same webhook-events table so a swept event already delivered is a no-op. Its cursor advances only past events fully projected, and a cursor older than Paddle's 90-day retention reports a gap rather than restarting from the beginning. This is the repair `refresh` cannot make: a purchase with no local row is invisible to `refresh` forever.
+
+Three places the API disagreed with the design and the API won. There is no `data.mode` field distinguishing sandbox from live — Paddle Billing partitions by account, so `paddle.environment` decides it. `transactions.create` refuses **account-wide** until a default payment link is set in the dashboard, not only in hosted mode, so `pithy doctor` asks first. And the portal's links are 24-hour bearer tokens carrying subscription-update and transaction-create scopes, not the single-use links they were described as — never cached, never persisted, never logged.
+
+Paddle enforces `^[a-zA-Z0-9]{1,32}$` on a discount code where this package's `DiscountCode` is wider. The shared schema is unchanged — narrowing it would refuse codes the Stripe and Lemon Squeezy rails accept today — so the Paddle rail refuses what it cannot mint and names the two characters, because Paddle's own refusal is the string `"Invalid request."` with no field named.

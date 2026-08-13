@@ -140,12 +140,14 @@ export {
   mintAppleApiToken,
 } from "./rails/apple/serverApi";
 export {
+  type CheckoutHandoff,
   type CheckoutRail,
   type CheckoutSessionInput,
-  type HostedSession,
   isCheckoutRail,
   type PaymentsRailProvider,
+  type PortalHandoff,
   type PortalSessionInput,
+  type PortalSubscriptionLinks,
   type RailRequestContext,
   type UnboundProviderEvent,
   type VerifiedNotification,

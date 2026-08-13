@@ -100,8 +100,9 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
  * The list is short and each entry earns its place. **Enabled rails**, so a paywall can show an Apple-only
  * product as owned-elsewhere rather than offering a buy button nothing on the web can honour. **The base
  * path**, because the client calls these routes. And **per product** its id, type, entitlement keys,
- * display name, and Stripe price id — a price id is publishable by design, since it is the thing a
- * Checkout Session names and Stripe's own hosted page shows it back to the buyer.
+ * display name, and its SKU on each web rail — a price id is publishable by design, since it is the thing
+ * a checkout names and the store's own page shows back to the buyer. Plus, for Paddle, the three facts
+ * Paddle.js needs to initialize: the publishable client token, the account, and the display mode.
  *
  * **Nothing else can cross, and not merely by discipline.** Apple's issuer id and key, Google's
  * service-account credentials, and Stripe's secret and webhook signing keys live in the secrets store
@@ -124,10 +125,16 @@ function clientProjection(config: PaymentsConfig, environment: string): ClientPr
     type: product.type,
     entitlements: [...product.entitlements],
     name: product.name,
-    stripePriceId: product.stripe?.priceId ?? null,
-    // A variant id is publishable for the same reason a Stripe price id is: it is what a hosted checkout
-    // names, so it may reach a browser. The API key and the signing secret never do.
-    lemonSqueezyVariantId: product.lemonSqueezy?.variantId ?? null,
+    // **Keyed by rail, not one field per rail.** Two flat fields were already one too many, and a third
+    // would have made `purchasable()` a growing chain of `&&`s that a fourth rail silently falls out of.
+    // A screen now asks `skus[rail]`, which is the same question it was already asking and cannot go
+    // stale when a rail is added. Every id here is publishable by design: each is what a checkout names,
+    // so each may reach a browser. The API keys and the signing secrets never do.
+    skus: {
+      stripe: product.stripe?.priceId ?? null,
+      lemonSqueezy: product.lemonSqueezy?.variantId ?? null,
+      paddle: product.paddle?.priceId ?? null,
+    },
   }));
   if (products.length === 0) return { enabled: false };
 
@@ -139,8 +146,20 @@ function clientProjection(config: PaymentsConfig, environment: string): ClientPr
       google: config.rails.google,
       stripe: config.rails.stripe,
       lemonSqueezy: config.rails.lemonSqueezy,
+      paddle: config.rails.paddle,
     },
     basePath: config.basePath,
+    // The three facts Paddle.js needs to initialize, and no more. The client token is publishable — it is
+    // designed to reach a browser — and the checkout mode decides whether a screen renders a container.
+    // Null when the rail is off, so a screen branches on one value rather than on three absences.
+    paddle:
+      config.paddle === undefined
+        ? null
+        : {
+            clientToken: config.paddle.clientToken,
+            environment: config.paddle.environment,
+            checkout: config.paddle.checkout,
+          },
     // Catalog order, not sorted: the order an adopter wrote their products in is the order a paywall
     // should list them, and it is stable for a given config either way.
     products,

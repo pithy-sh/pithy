@@ -3,6 +3,7 @@
 
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
+import { PAYMENTS_RAILS } from "../data/rail";
 import { PAYMENTS_CAPABILITY, PaymentsReconcileParams, paymentsWorkflowRegistry, paymentsWorkflows } from "./specs";
 
 describe("payments workflow specs", () => {
@@ -75,6 +76,15 @@ describe("payments workflow specs", () => {
   });
 
   test("a rail nobody implements is refused at dispatch", () => {
-    expect(PaymentsReconcileParams.safeParse({ rail: "paddle" }).success).toBe(false);
+    // `paddle` used to be the example and is now a rail, so the gate needed names nobody has claimed.
+    // Kept rather than deleted: these params are dispatched from a CLI flag, and `--rail lemon-squeezy`
+    // is exactly the typo this refuses before a Workflow instance exists to fail inside.
+    expect(PaymentsReconcileParams.safeParse({ rail: "amazon" }).success).toBe(false);
+    expect(PaymentsReconcileParams.safeParse({ rail: "lemon-squeezy" }).success).toBe(false);
+    // Anti-vacuity: every rail this build implements *is* accepted, so the two above fail on the name
+    // rather than on the field being refused outright.
+    for (const rail of PAYMENTS_RAILS) {
+      expect(PaymentsReconcileParams.safeParse({ rail }).success, rail).toBe(true);
+    }
   });
 });

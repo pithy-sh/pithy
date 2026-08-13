@@ -379,7 +379,12 @@ describe("the React 19 stub", () => {
       expect(ambient).toContain("{ enabled: false }");
       expect(ambient).toContain("otpLength: number;");
       expect(ambient).toContain("signUpEnabled: boolean;");
-      expect(ambient).toContain("stripePriceId: string | null;");
+      // Keyed by rail, so a screen asks `skus[rail]` and a fifth rail cannot leave a `purchasable()`
+      // check silently out of date. All three web rails are named, and the Paddle block beside them.
+      expect(ambient).toContain("stripe: string | null;");
+      expect(ambient).toContain("lemonSqueezy: string | null;");
+      expect(ambient).toContain("paddle: string | null;");
+      expect(ambient).toContain('environment: "sandbox" | "production"');
     }
   });
 

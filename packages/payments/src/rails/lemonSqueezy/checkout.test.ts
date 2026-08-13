@@ -60,7 +60,8 @@ describe("createLemonSqueezyCheckoutSession", () => {
   test("returns the hosted page to send the browser to", async () => {
     const transport = stub();
     const session = await createLemonSqueezyCheckoutSession(INPUT, { credentials: CREDENTIALS, transport });
-    expect(session.url).toBe("https://acme.lemonsqueezy.com/buy/abc");
+    // The `redirect` member, named. A rail with a hosted page says so, so a screen narrows rather than guesses.
+    expect(session).toEqual({ kind: "redirect", url: "https://acme.lemonsqueezy.com/buy/abc" });
     expect(transport.calls[0]?.url).toContain("/checkouts");
   });
 

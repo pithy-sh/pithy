@@ -17,12 +17,12 @@ export const session = "required";
 // file is written once and never rewritten, and store rules change. A purchase flow copied into here would
 // be one Pithy could not fix for you; one that calls the hooks upgrades with a minor release.
 
-/** What a product can do on the web. Apple and Google purchases happen inside a store SDK, not a browser. */
-function purchasable(product: { stripePriceId: string | null; lemonSqueezyVariantId: string | null }): boolean {
-  return (
-    (paymentsConfig.rails.stripe && product.stripePriceId !== null) ||
-    (paymentsConfig.rails.lemonSqueezy && product.lemonSqueezyVariantId !== null)
-  );
+/** The rails that sell in a browser. Apple and Google purchases happen inside a store SDK, not here. */
+const WEB_RAILS = ["stripe", "lemonSqueezy", "paddle"] as const;
+
+/** What a product can do on the web: any enabled web rail this product is actually listed on. */
+function purchasable(product: { skus: Record<(typeof WEB_RAILS)[number], string | null> }): boolean {
+  return WEB_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
 }
 
 export default function Paywall() {

@@ -59,7 +59,7 @@ async function refusal(promise: Promise<unknown>): Promise<PithyError> {
 describe("createStripeCheckoutSession", () => {
   test("returns the hosted URL Stripe answered with", async () => {
     const { session, url } = await create();
-    expect(session.url).toBe("https://checkout.stripe.com/c/pay/cs_test_pithyPro");
+    expect(session).toEqual({ kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_test_pithyPro" });
     expect(url).toBe("https://api.stripe.com/v1/checkout/sessions");
   });
 

@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
-import type { CheckoutSessionInput, HostedSession } from "../contract";
+import type { CheckoutHandoff, CheckoutSessionInput } from "../contract";
 import { type StripeFormObject, type StripeHttpFetch, stripeHttpFetch, stripeJson } from "./api";
 import { STRIPE_METADATA_ACCOUNT_REFERENCE, STRIPE_METADATA_PRICE } from "./objects";
 
@@ -61,7 +61,7 @@ const StripeHostedSession = z
 export async function createStripeCheckoutSession(
   input: CheckoutSessionInput,
   options: StripeCheckoutOptions,
-): Promise<HostedSession> {
+): Promise<CheckoutHandoff> {
   // Resolved before the session is created, so an unusable code is refused as a *code* rather than
   // surfacing later as a failed checkout. See {@link resolvePromotionCode}.
   const promotionCodeId =
@@ -106,7 +106,7 @@ export async function createStripeCheckoutSession(
 }
 
 /** Read a created session's URL, or refuse. Shared with the Billing Portal, which answers the same shape. */
-export function hostedSession(created: unknown, what: string): HostedSession {
+export function hostedSession(created: unknown, what: string): CheckoutHandoff & { kind: "redirect" } {
   const parsed = StripeHostedSession.safeParse(created);
   if (!parsed.success) {
     // Stripe created something and did not tell us where to send the browser. Nothing here can recover from that,
@@ -115,7 +115,7 @@ export function hostedSession(created: unknown, what: string): HostedSession {
       detail: `Stripe created ${what} with no URL to redirect to.`,
     });
   }
-  return { url: parsed.data.url };
+  return { kind: "redirect", url: parsed.data.url };
 }
 
 /**

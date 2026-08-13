@@ -67,10 +67,11 @@ import type {
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
+  PaymentsCheckoutHandoffResponse,
   PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
-  PaymentsHostedSessionResponse,
+  PaymentsPortalHandoffResponse,
   PaymentsPricingResponse,
   PaymentsPurchaseResponse,
   PaymentsRestoreResponse,
@@ -89,6 +90,7 @@ import {
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
   LemonSqueezyWebhookNotification,
+  PaddleWebhookNotification,
   PurchaseSubmission,
   RestoreRequest,
   StripeWebhookNotification,
@@ -346,6 +348,16 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
    * no submittable receipt, so its page shows a pending state and waits for the webhook.
    */
   function returnUrls(rail: PaymentsRail): { successUrl: string; cancelUrl?: string } {
+    if (rail === "paddle") {
+      if (config.paddle === undefined) {
+        throw new PaymentsRailNotConfiguredError({
+          detail: "The paddle rail is off in this project's config, so there are no checkout flows to start.",
+        });
+      }
+      // The cancel URL is optional here and required for Stripe, and the asymmetry is the store's: an
+      // overlay a buyer closes leaves them exactly where they were, with nowhere to be sent.
+      return { successUrl: config.paddle.successUrl, cancelUrl: config.paddle.cancelUrl };
+    }
     if (rail === "lemonSqueezy") {
       if (config.lemonSqueezy === undefined) {
         throw new PaymentsRailNotConfiguredError({
@@ -366,7 +378,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
    * request is refused rather than resolved by this order, so nothing here is a silent policy. It exists to
    * make the refusal's message deterministic.
    */
-  const CHECKOUT_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy"];
+  const CHECKOUT_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy", "paddle"];
 
   /**
    * Which hosted-checkout rail this request is for.
@@ -385,7 +397,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     if (enabled.length === 0) {
       throw new PaymentsRailNotConfiguredError({
         detail:
-          "No hosted-checkout rail is on in this project's config, so there are no hosted flows to start. Enable `rails.stripe` or `rails.lemonSqueezy`.",
+          "No hosted-checkout rail is on in this project's config, so there are no hosted flows to start. Enable `rails.stripe`, `rails.lemonSqueezy`, or `rails.paddle`.",
       });
     }
 
@@ -432,6 +444,35 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     return provider;
   }
 
+  /**
+   * The store's own subscription ids this caller holds on a rail — the family keys of their own rows.
+   *
+   * Read from the projection rather than from the store, and always for the authenticated caller. What it
+   * feeds is a portal request for authenticated cancel links, so the set has to be exactly what this user
+   * owns: a wider one would mint somebody else's cancel button, and there is no request field that could
+   * widen it.
+   *
+   * `originalTransactionId` rather than `providerTransactionId`, because a subscription's money rows name
+   * the family there and the state row names itself there too — so one column answers for both.
+   */
+  async function ownSubscriptionIds(
+    c: Context<PithyHonoEnv>,
+    rail: PaymentsRail,
+    userId: string,
+  ): Promise<readonly string[]> {
+    const rows = await paymentsDatabase(database(c))
+      .selectFrom(PAYMENTS_PURCHASES_TABLE)
+      .select(["originalTransactionId"])
+      .where("userId", "=", userId)
+      .where("rail", "=", rail)
+      .where("type", "=", "subscription")
+      .orderBy("providerEventAt", "desc")
+      .execute();
+    const ids = new Set<string>();
+    for (const row of rows) if (typeof row.originalTransactionId === "string") ids.add(row.originalTransactionId);
+    return [...ids];
+  }
+
   /** The caller's store account on a rail, or null. What keeps one buyer to one Stripe customer. */
   async function accountFor(c: Context<PithyHonoEnv>, rail: PaymentsRail, userId: string): Promise<string | null> {
     return (await providerAccountForUser(paymentsDatabase(database(c)), rail, userId)) ?? null;
@@ -442,7 +483,11 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     const now = clock();
     const d1 = database(c);
     const provider = resolveRailProvider(rail, config, await credentials(c), trust);
-    const verified = await provider.verify(receipt, { now });
+    // **The deployment travels with the clock**, and on one rail it is load-bearing rather than incidental.
+    // Paddle's `verify` honours a submitted transaction's ownership stamp only when a MAC keyed on this
+    // deployment's own secret verifies beside it — and the environment is *inside* that MAC's message, so a
+    // rail handed no deployment can prove nothing and refuses every submission. The other rails ignore it.
+    const verified = await provider.verify(receipt, { now, deployment: deploymentName(c) });
     const userId = callerId(c);
 
     // A purchase this deployment initiated names its own purchaser, and a submission from anyone else is refused
@@ -845,6 +890,28 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     );
 
     /**
+     * SIGNED WEBHOOK — Paddle. `Paddle-Signature: ts=…;h1=…`, an HMAC-SHA256 over `${ts}:${exact received
+     * bytes}`, which the guard has checked inside the freshness window before this validator ever parses the
+     * body.
+     *
+     * **A different scheme from Stripe's, and a second verifier rather than a widened core primitive.** Core's
+     * `signed-webhook` splits its header on `,` and joins its signed payload with `.`; Paddle uses `;` and
+     * `:`. Neither is a parameter there, deliberately — `rails/paddle/signature.ts` says why at length, and
+     * says it out loud because a verifier that "fits an existing shape" it does not fit is a verifier that
+     * returns without comparing anything.
+     *
+     * The same handler again. Paddle purchases enter through here and through `/purchases`: unlike Lemon
+     * Squeezy this rail has a submittable receipt, because a `txn_…` checked against a *proven* ownership
+     * stamp is safe where an unguessable order id is not.
+     */
+    app.post(
+      `${base}/webhooks/paddle`,
+      requireSignedWebhook("paddle", { config, now: clock, trust }),
+      zValidator("json", PaddleWebhookNotification, validationHook),
+      webhookHandler("paddle"),
+    );
+
+    /**
      * AUTHED WRITE — Stripe only. Create a hosted Checkout Session and hand back where to send the browser.
      *
      * Everything that decides what is bought and where the buyer is returned to comes from config or from the
@@ -869,7 +936,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
       const userId = callerId(c);
       const provider = await checkoutRail(c, rail);
-      const session = await provider.createCheckoutSession(
+      const handoff = await provider.createCheckoutSession(
         {
           providerProductId: sku,
           subscription: entry.product.type === "subscription",
@@ -902,7 +969,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           discounted: input.discountCode !== undefined,
         },
       });
-      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
+      // The handoff, verbatim. A `redirect` carries a URL; a `paddle` handoff carries the transaction the
+      // browser opens in place, because that rail's overlay and inline modes never leave this page.
+      return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
     });
 
     /**
@@ -925,7 +994,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       if (enabled.length === 0) {
         throw new PaymentsRailNotConfiguredError({
           detail:
-            "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe` or `rails.lemonSqueezy`.",
+            "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe`, `rails.lemonSqueezy`, or `rails.paddle`.",
         });
       }
 
@@ -954,9 +1023,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         {
           providerAccountId: found.providerAccountId,
           // Undefined for a rail whose portal takes no return parameter — Lemon Squeezy's is a signed,
-          // expiring link with nowhere to go back to. The contract admits that rather than have the rail
-          // silently drop a URL an adopter configured.
+          // expiring link with nowhere to go back to, and Paddle's takes none at all. The contract admits
+          // that rather than have the rail silently drop a URL an adopter configured.
           returnUrl: found.rail === "stripe" ? stripeSettings().portalReturnUrl : undefined,
+          // **From the caller's own rows, never from a body.** A store that mints per-subscription deep
+          // links mints authenticated ones, so naming a subscription is naming somebody's cancel button.
+          // There is still no request field: the route reads what this caller owns.
+          subscriptionIds: await ownSubscriptionIds(c, found.rail, userId),
         },
         { now: clock(), deployment: deploymentName(c) },
       );
@@ -971,7 +1044,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         resourceId: found.providerAccountId,
         metadata: { rail: found.rail },
       });
-      return c.json({ url: session.url } satisfies PaymentsHostedSessionResponse, 200);
+      return c.json(
+        {
+          url: session.url,
+          ...(session.subscriptions === undefined ? {} : { subscriptions: [...session.subscriptions] }),
+        } satisfies PaymentsPortalHandoffResponse,
+        200,
+      );
     });
 
     /**

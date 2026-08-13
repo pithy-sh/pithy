@@ -9,6 +9,7 @@ import { PaymentsEntitlement } from "./entitlement";
 import { PaymentsProviderAccount } from "./providerAccount";
 import { PaymentsPurchase } from "./purchase";
 import { PaymentsReconcileRun } from "./reconcileRun";
+import { PaymentsSyncCursor } from "./syncCursor";
 import { PaymentsWebhookEvent } from "./webhookEvent";
 
 /** The projection of provider truth. `CamelCasePlugin` snake-cases it to `pithy_payments_purchases`. */
@@ -21,8 +22,10 @@ export const PAYMENTS_PROVIDER_ACCOUNTS_TABLE = "pithyPaymentsProviderAccounts";
 export const PAYMENTS_WEBHOOK_EVENTS_TABLE = "pithyPaymentsWebhookEvents";
 /** One row per reconciliation pass — the tally, kept. → `pithy_payments_reconcile_runs`. */
 export const PAYMENTS_RECONCILE_RUNS_TABLE = "pithyPaymentsReconcileRuns";
+/** Where a resumable sweep of a provider's stream left off. → `pithy_payments_sync_cursors`. */
+export const PAYMENTS_SYNC_CURSORS_TABLE = "pithyPaymentsSyncCursors";
 
-/** The payments tables map. All five are always present — none is behind a config flag. */
+/** The payments tables map. All six are always present — none is behind a config flag. */
 export function paymentsTables(): Record<string, z.ZodObject> {
   return {
     [PAYMENTS_PURCHASES_TABLE]: PaymentsPurchase,
@@ -30,6 +33,7 @@ export function paymentsTables(): Record<string, z.ZodObject> {
     [PAYMENTS_PROVIDER_ACCOUNTS_TABLE]: PaymentsProviderAccount,
     [PAYMENTS_WEBHOOK_EVENTS_TABLE]: PaymentsWebhookEvent,
     [PAYMENTS_RECONCILE_RUNS_TABLE]: PaymentsReconcileRun,
+    [PAYMENTS_SYNC_CURSORS_TABLE]: PaymentsSyncCursor,
   };
 }
 
@@ -40,6 +44,7 @@ export type PaymentsTables = {
   [PAYMENTS_PROVIDER_ACCOUNTS_TABLE]: typeof PaymentsProviderAccount;
   [PAYMENTS_WEBHOOK_EVENTS_TABLE]: typeof PaymentsWebhookEvent;
   [PAYMENTS_RECONCILE_RUNS_TABLE]: typeof PaymentsReconcileRun;
+  [PAYMENTS_SYNC_CURSORS_TABLE]: typeof PaymentsSyncCursor;
 };
 export type PaymentsDatabase = Kysely<DatabaseSchema<PaymentsTables>>;
 
@@ -51,5 +56,6 @@ export function paymentsDatabase(d1: D1Database): PaymentsDatabase {
     [PAYMENTS_PROVIDER_ACCOUNTS_TABLE]: PaymentsProviderAccount,
     [PAYMENTS_WEBHOOK_EVENTS_TABLE]: PaymentsWebhookEvent,
     [PAYMENTS_RECONCILE_RUNS_TABLE]: PaymentsReconcileRun,
+    [PAYMENTS_SYNC_CURSORS_TABLE]: PaymentsSyncCursor,
   }) as unknown as PaymentsDatabase;
 }

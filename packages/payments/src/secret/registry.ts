@@ -9,7 +9,7 @@ import { PaymentsRailNotConfiguredError } from "../error/errors";
 /**
  * The one secret payments reads, and the shape of it.
  *
- * **One entry, three optional rails.** Every rail's credentials live inside a single JSON secret rather than
+ * **One entry, five optional rails.** Every rail's credentials live inside a single JSON secret rather than
  * one secret per rail, and that is a storage decision worth stating: adding a rail then never reshapes
  * storage, never adds a binding to a `wrangler.jsonc`, and never needs a migration of the secrets store. It
  * is the arrangement `@pithy-sh/turnstile` uses for its per-mode widget keys, for the same reason — one
@@ -50,14 +50,14 @@ export const PAYMENTS_PROVIDER_SECRET = "payments-provider-credentials";
 /**
  * Where a human goes for these credentials, and where the same human replaces them.
  *
- * **Four consoles, one `issuer` field.** Apple's `.p8`, Google's service-account key, Stripe's key pair
- * and Lemon Squeezy's API key are each taken by hand from a different company's console, and they share
- * one secret because they share one storage decision (see above) — not because they share an issuer. The
- * axis holds a single name, so the honest one is `other`: *somebody issues this, and it is not one
+ * **Five consoles, one `issuer` field.** Apple's `.p8`, Google's service-account key, Stripe's key pair,
+ * Lemon Squeezy's API key and Paddle's are each taken by hand from a different company's console, and they
+ * share one secret because they share one storage decision (see above) — not because they share an issuer.
+ * The axis holds a single name, so the honest one is `other`: *somebody issues this, and it is not one
  * somebody.* Naming any single rail would be wrong for every deployment that does not sell through it.
  *
- * So the link is the one page that names all four rather than a rail's settings page. The point of the
- * field is to end a search; a link to Stripe ends a quarter of this one. The day this bundle is split per
+ * So the link is the one page that names all five rather than a rail's settings page. The point of the
+ * field is to end a search; a link to Stripe ends a fifth of this one. The day this bundle is split per
  * rail — or `SecretOrigin` grows an issuer per entry — each half names its own console and this constant
  * goes.
  */
@@ -161,6 +161,26 @@ export const PaymentsLemonSqueezyCredentials = z
   .describe("Lemon Squeezy's credentials: the API key, the webhook signing secret, and the store's identity.");
 export type PaymentsLemonSqueezyCredentials = z.infer<typeof PaymentsLemonSqueezyCredentials>;
 
+export const PaymentsPaddleCredentials = z
+  .strictObject({
+    apiKey: z
+      .string()
+      .min(1)
+      .describe(
+        "The Paddle API key — `pdl_live_apikey_…` or `pdl_sdbx_apikey_…`. Creates transactions and discounts, reads subscriptions and the event stream, and mints customer-portal sessions. It needs `customer_portal_session.write`, or Paddle returns a portal session with no authenticated URLs and the buyer lands on a sign-in page.",
+      ),
+    webhookSecret: z
+      .string()
+      .min(1)
+      .describe(
+        "The notification destination's signing secret — `pdl_ntfset_…`. What the `Paddle-Signature` HMAC-SHA256 over `ts:body` is checked against, and the key the checkout's ownership proof is domain-separated under.",
+      ),
+  })
+  .describe(
+    "Paddle's credentials: the API key, and the notification destination's signing secret. The client token is not here — it is publishable by design and lives in config, because putting it behind the secrets store would suggest verification depended on its secrecy.",
+  );
+export type PaymentsPaddleCredentials = z.infer<typeof PaymentsPaddleCredentials>;
+
 export const PaymentsProviderCredentials = z
   .strictObject({
     apple: PaymentsAppleCredentials.optional().describe("Apple's credentials, when the Apple rail is enabled."),
@@ -169,6 +189,7 @@ export const PaymentsProviderCredentials = z
     lemonSqueezy: PaymentsLemonSqueezyCredentials.optional().describe(
       "Lemon Squeezy's credentials, when that rail is enabled.",
     ),
+    paddle: PaymentsPaddleCredentials.optional().describe("Paddle's credentials, when the Paddle rail is enabled."),
   })
   .describe(
     "Every enabled rail's credentials, in one secret. A rail's block is present in full or absent entirely — adding a rail never reshapes storage.",

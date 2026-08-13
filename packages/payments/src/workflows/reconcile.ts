@@ -14,6 +14,7 @@ import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { fulfillPurchase } from "../grants/apply";
 import type { PurchaseProjection } from "../projection/writer";
 import { projectPurchase } from "../projection/writer";
+import type { PaddleSweepReport } from "./paddleSweep";
 import type { ReconcileRailAccess } from "./railAccess";
 import { DEFAULT_EXPIRING_WITHIN_SECONDS, DEFAULT_STALE_AFTER_SECONDS, type PaymentsReconcileParams } from "./specs";
 
@@ -119,6 +120,18 @@ export interface ReconcileDeps {
    * the webhook already applied is a no-op rather than a double.
    */
   fulfill?: (projection: PurchaseProjection) => Promise<unknown>;
+  /**
+   * The Paddle events sweep, or undefined to skip it.
+   *
+   * Injected rather than built here, because it needs Paddle's credentials and its own transport and this
+   * module deliberately knows nothing about any single rail — `railAccess` is the seam every other rail is
+   * reached through, and the sweep is not a rail method. The Workflow worker supplies it.
+   *
+   * Undefined on a project that does not sell through Paddle, which is why the step below is skipped
+   * entirely rather than run and reported as empty: an empty tally for a rail nobody uses reads as a rail
+   * that found nothing, which is a different statement.
+   */
+  sweepPaddle?: () => Promise<PaddleSweepReport>;
 }
 
 /** What one purchase's reconciliation did. */
@@ -171,6 +184,14 @@ export interface ReconcileReport {
   superseded: number;
   /** Purchases no store could be asked about. */
   skipped: number;
+  /**
+   * What the Paddle events sweep found, or undefined when it did not run.
+   *
+   * Undefined rather than a zeroed tally, and the difference is a statement: a rail nobody sells through
+   * did not sweep, where a rail that swept and found nothing is a healthy integration. Collapsing the two
+   * would make "the webhooks are fine" indistinguishable from "we never looked".
+   */
+  swept?: PaddleSweepReport;
   /** Purchases a store refused to answer for. */
   failed: number;
   /** Whether the run stopped at its page cap with more of the catalog unexamined. */
@@ -395,6 +416,17 @@ async function emitDrift(
  * row already matching and writes nothing — so a retried Workflow step, a manual trigger after a cron, and a
  * nervous operator running it twice all reach the same place.
  */
+/** What a sweep that could not run reports. Never written to a report — see `ReconcileReport.swept`. */
+const EMPTY_SWEEP: PaddleSweepReport = {
+  read: 0,
+  projected: 0,
+  ignored: 0,
+  duplicate: 0,
+  failed: 0,
+  cursor: null,
+  gap: null,
+};
+
 export async function reconcilePayments(
   deps: ReconcileDeps,
   step: ReconcileStep,
@@ -450,6 +482,41 @@ export async function reconcilePayments(
     truncated: false,
     dryRun,
   };
+
+  /**
+   * The Paddle events sweep, before the pages — the repair `refresh` cannot make.
+   *
+   * `refresh` re-reads rows this deployment already holds, so a purchase whose webhook was never delivered
+   * and which no client submitted is invisible to it forever. Paddle publishes an account-wide event
+   * stream, so it can be found; no other rail here can do this.
+   *
+   * **First, so what it discovers is then reconciled by the same run.** A subscription the sweep projects
+   * is a row the pages below will consider, which is one pass rather than two.
+   *
+   * Its own `step.do`, so a transient fault retries the sweep rather than losing a whole run's pages. It
+   * is skipped entirely when the pass was narrowed to another rail — `--rail stripe` means Stripe.
+   */
+  if (deps.sweepPaddle && (params.rail === undefined || params.rail === "paddle")) {
+    const swept: PaddleSweepReport = await step.do(
+      "sweep-paddle",
+      async () => (await deps.sweepPaddle?.()) ?? EMPTY_SWEEP,
+    );
+    report.swept = swept;
+    if (swept.gap !== null) {
+      // A cursor past Paddle's ninety-day retention. Reported on the trail rather than repaired: restarting
+      // from the beginning would re-project three months, and staying silent would leave the gap forever.
+      await (deps.emit ?? noopEmit)({
+        action: PaymentsAuditActions.purchaseReconciled,
+        outcome: "failure",
+        severity: "warning",
+        actorType: "service",
+        actorId: "paddle",
+        // The gap's own sentence, which names the window and the cursor. Nothing a sender wrote: this
+        // string is composed here, from our own cursor and our own constant.
+        metadata: { rail: "paddle", runId, reason: "sweep_gap", detail: swept.gap },
+      });
+    }
+  }
 
   let cursor: string | null = null;
   let page = 0;

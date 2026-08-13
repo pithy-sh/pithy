@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
-import type { HostedSession, PortalSessionInput } from "../contract";
+import type { PortalHandoff, PortalSessionInput } from "../contract";
 import { type LemonSqueezyHttpFetch, lemonSqueezyHttpFetch, lemonSqueezyJson } from "./api";
 
 /**
@@ -63,7 +63,7 @@ const LemonSqueezyCustomer = z.object({
 export async function createLemonSqueezyPortalSession(
   input: PortalSessionInput,
   options: LemonSqueezyPortalOptions,
-): Promise<HostedSession> {
+): Promise<PortalHandoff> {
   const customer = await lemonSqueezyJson(
     options.transport ?? lemonSqueezyHttpFetch,
     `/customers/${encodeURIComponent(input.providerAccountId)}`,
