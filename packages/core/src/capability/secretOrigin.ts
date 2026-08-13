@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { manifestRecord } from "./manifestRecord";
 
 /**
  * How a secret's value comes to exist, and how it is replaced.
@@ -156,11 +157,9 @@ export const SecretOrigin = z
           "The kit cannot produce it, but knows enough to compose the command that does — a Cloudflare API token, whose permission groups an operator should not have to look up.",
         ),
       issuer: issuedBy("Whose console or API issues it."),
-      needs: z
-        .partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))
-        .describe(
-          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently.",
-        ),
+      needs: manifestRecord(z.partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))).describe(
+        "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently. Wrapped in `manifestRecord` so the key rule is given every key the manifest wrote, including the one a parse would otherwise drop before the rule ran.",
+      ),
       documentation: documentedAt(
         "Where the command's arguments come from, for an operator who would rather check them by hand.",
       ).optional(),
