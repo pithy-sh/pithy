@@ -35,6 +35,7 @@ Then set up the stores. That is the part nobody can do for you, and it has its o
 - [Google Play Billing](docs/google-play-billing.md)
 - [Stripe](docs/stripe.md)
 - [Lemon Squeezy](docs/lemon-squeezy.md) — the merchant of record, which owns the tax registration you would otherwise own
+- [Paddle](docs/paddle.md) — the other merchant of record, and the only rail with an overlay, an inline frame, and an events sweep
 
 ## Configure
 
@@ -153,12 +154,13 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `GET /payments/entitlements` | The caller's own resolved entitlements | bearer · session |
 | `POST /payments/restore` | Restore Purchases — rebind store history to the caller | bearer · session |
 | `GET /payments/pricing` | What the caller's own subscription pays, and when that changes | bearer · session |
-| `POST /payments/checkout` | Create a hosted checkout session, on Stripe or Lemon Squeezy | bearer · session |
+| `POST /payments/checkout` | Create a checkout, on Stripe, Lemon Squeezy or Paddle | bearer · session |
 | `POST /payments/portal` | Create a billing-portal session for the caller's own account | bearer · session |
 | `POST /payments/webhooks/apple` | App Store Server Notifications V2 | signed-webhook |
 | `POST /payments/webhooks/google` | Play Real-time Developer Notifications, via Pub/Sub push | signed-webhook |
 | `POST /payments/webhooks/stripe` | Stripe events | signed-webhook |
 | `POST /payments/webhooks/lemon-squeezy` | Lemon Squeezy events | signed-webhook |
+| `POST /payments/webhooks/paddle` | Paddle events | signed-webhook |
 | `POST /payments/admin/discounts` | Mint a discount code at one store | control-plane: `payments:discounts:create` |
 | `GET /payments/admin/discounts` | The discount codes this project has issued | control-plane: `payments:discounts:read` |
 | `POST /payments/entitlements/grant` | Comp or repair an entitlement | control-plane: `payments:entitlements:grant` |
