@@ -86,6 +86,7 @@
         "picocolors": "^1.1.1",
       },
       "devDependencies": {
+        "@babel/parser": "^7.29.7",
         "@cloudflare/workers-types": "^5.20260729.1",
         "@pithy-sh/audit": "workspace:*",
         "@pithy-sh/auth": "workspace:*",

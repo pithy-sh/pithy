@@ -331,11 +331,11 @@ describe("reconcilePayments", () => {
       pageSize: 2,
     });
     // Zero-padded so a journal read by a human sorts the way the pages ran.
-    // `mint-run-id` first: the id is journalled so a replay reads back the one the pages were repaired
-    // under, rather than minting a second (#328).
+    // `start-run` first: the id and the clock are journalled together, so a replay reads back the ones the
+    // pages were repaired under rather than minting a second id (#328) on a newer clock (#331).
     // `record-run` last, always: the run record is written after the pages so a row can never claim a
     // finish time the pass had not reached (#316).
-    expect(names).toEqual(["mint-run-id", "page-000001", "page-000002", "record-run"]);
+    expect(names).toEqual(["start-run", "page-000001", "page-000002", "record-run"]);
   });
 
   test("stops at the page cap and says so, rather than running until it is killed", async () => {
@@ -1075,5 +1075,50 @@ describe("reconcilePayments — a replayed run", () => {
 
     // Three, not five: the two completed pages came back from the journal and asked nothing.
     expect(asked).toHaveLength(3);
+  });
+
+  /**
+   * The clock, journalled — the same rule as the id, one field over (#331).
+   *
+   * `now` is the pass's comparison instant *and* the instant it writes as `startedAt`, and it was read in the
+   * driver body. A body re-executes on resume, so a run interrupted at nine and resumed at three recorded a
+   * `startedAt` of three — six hours after the repairs the run's own id is stamped on. The runs table exists to
+   * answer "when did this pass run and what did it fix", and the answer was a row claiming to have begun after
+   * its own work.
+   */
+  test("the run began when the pass began, not when it resumed", async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await seed({ providerTransactionId: `txn-${index}`, originalTransactionId: `orig-${index}` });
+    }
+    // A clock that moves across the interruption. Six hours is an ordinary Workflow retry backoff, not a
+    // pathological one — the defect needs no unusual outage to appear.
+    let clock = T0;
+    const runDeps = deps(
+      { apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "canceled" })) },
+      { now: () => new Date(clock) },
+    );
+
+    const journal = new Map<string, unknown>();
+    await expect(
+      reconcilePayments(runDeps, journalledStep(journal, "page-000002"), { pageSize: 1 }),
+    ).rejects.toBeInstanceOf(Interrupted);
+    clock = T0 + 6 * 3600 * SECOND;
+    const report = await reconcilePayments(runDeps, journalledStep(journal), { pageSize: 1 });
+
+    const run = await env.DB.prepare("select started_at, finished_at from pithy_payments_reconcile_runs where id = ?")
+      .bind(report.runId)
+      .first<{ started_at: number; finished_at: number }>();
+
+    // The instant the pass began, not the instant it came back.
+    expect(run?.started_at).toBe(T0);
+    // And the property that matters, stated over the work rather than over a constant: no row this run
+    // repaired was written before the run says it started.
+    const { results } = await env.DB.prepare("select updated_at from pithy_payments_purchases").all<{
+      updated_at: number;
+    }>();
+    const earliestRepair = Math.min(...results.map((row) => row.updated_at));
+    expect(run?.started_at).toBeLessThanOrEqual(earliestRepair);
+    // `finishedAt` is the opposite rule, and it still holds: it is read when the run ends, so it moves.
+    expect(run?.finished_at).toBe(T0 + 6 * 3600 * SECOND);
   });
 });

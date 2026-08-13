@@ -69,10 +69,18 @@ export async function runAtRestKeyRotation(
 ): Promise<AtRestRotationResult> {
   const batchSize = options.batchSize ?? 100;
   const maxBatches = options.maxBatches ?? 50;
-  const now = options.now ?? new Date();
   const rotatedBy = options.rotatedBy ?? "cron";
 
   const rotationId = await step.do("start", () => deps.tracker.startRotation(AT_REST_ROTATION_NAME, "cron", rotatedBy));
+  /**
+   * The rotation's clock, journalled — read in a step, read back from the step on resume.
+   *
+   * This body re-executes from the top when the run resumes, so an unjournalled read would stamp the new key
+   * version with whenever the retry happened rather than when the rotation began. A caller who supplies
+   * `options.now` gets theirs; the step is what makes either answer survive a replay (#331).
+   */
+  const nowMs: number = await step.do("rotation-clock", async () => (options.now ?? new Date()).getTime());
+  const now = new Date(nowMs);
 
   try {
     const newConfig = await step.do("generate-key", () => mergeNextKey(deps.config, now));

@@ -400,34 +400,43 @@ export async function reconcilePayments(
   step: ReconcileStep,
   params: PaymentsReconcileParams = {},
 ): Promise<ReconcileReport> {
-  // Read once, outside the loop, so every page of one run shares one set of cutoffs and one event time. A
-  // replay recomputes it against the newer clock, which is right: the pages that already ran return from the
-  // journal untouched, and the ones that have not should be judged against now rather than against yesterday.
-  const now = deps.now();
-  const cutoffs = {
-    expiring: new Date(now.getTime() + (params.expiringWithinSeconds ?? DEFAULT_EXPIRING_WITHIN_SECONDS) * 1000),
-    stale: new Date(now.getTime() - (params.staleAfterSeconds ?? DEFAULT_STALE_AFTER_SECONDS) * 1000),
-  };
   const limit = params.pageSize ?? DEFAULT_PAGE_SIZE;
   const maxPages = params.maxPages ?? DEFAULT_MAX_PAGES;
   const dryRun = params.dryRun === true;
 
   /**
-   * The run's id: minted before the first page, because every repair this pass audits names it — an id
-   * assigned at the end could not be on the events the run is the summary of.
+   * The run's identity and its clock, minted **once, in one journalled step**, and read back from the step's
+   * return value.
    *
-   * **Its own step, and that is the whole point.** A Workflow does not resume inside the step it died in; it
-   * re-executes this body from the top and serves every completed step from the journal. A mint sitting in the
-   * body would therefore answer differently on a resume, and the run record written at the end would name an
-   * id that none of the repairs before the interruption carry — the runs table's only join, broken by exactly
-   * the replay it exists to survive. Inside a step the value is journalled, so the resume reads back the id
-   * the earlier pages were repaired under.
+   * **Why a step.** A Workflow does not resume inside the step it died in; it re-executes this body from the
+   * top and serves every completed step from the journal. So anything the body *computes* answers differently
+   * on a resume, while everything the journal holds does not — and a run's id and its start instant are both
+   * things every page behind the interruption has already been written under.
    *
-   * This is the same rule as the step names two paragraphs up, applied to a value rather than to a name. The
-   * cutoffs above are deliberately *not* under it: recomputing them against a newer clock is right, and they
-   * are nothing's identity.
+   * The id was moved here first (#328): a second mint made the run record name an id no repair carried, which
+   * broke the runs table's only join. The clock was left in the body one release longer, and it was the same
+   * defect one field over (#331) — `startedAt` was recomputed on resume, so a run interrupted at nine and
+   * resumed at three claimed to have begun six hours *after* the repairs it names. A pass's start instant is
+   * not "when this attempt got going"; it is when the pass got going.
+   *
+   * It is also the comparison instant every page judges against, and journalling it is right there too: the
+   * pages already run were selected and dated against it, and a resume that widened the windows underneath
+   * them would make one pass two different queries.
+   *
+   * Epoch milliseconds rather than a `Date`, because a journal round-trips JSON and a `Date` would come back
+   * a string on the resume and an object on the first pass — a difference that shows up as a type error six
+   * frames away rather than here.
    */
-  const runId = await step.do("mint-run-id", async () => (deps.newId ?? (() => crypto.randomUUID()))());
+  const context: { runId: string; nowMs: number } = await step.do("start-run", async () => ({
+    runId: (deps.newId ?? (() => crypto.randomUUID()))(),
+    nowMs: deps.now().getTime(),
+  }));
+  const runId = context.runId;
+  const now = new Date(context.nowMs);
+  const cutoffs = {
+    expiring: new Date(now.getTime() + (params.expiringWithinSeconds ?? DEFAULT_EXPIRING_WITHIN_SECONDS) * 1000),
+    stale: new Date(now.getTime() - (params.staleAfterSeconds ?? DEFAULT_STALE_AFTER_SECONDS) * 1000),
+  };
 
   const report: ReconcileReport = {
     runId,
