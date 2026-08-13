@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { PaymentsProductType } from "../config/config";
 import { PurchaseEnvironment } from "../data/purchase";
-import { PAYMENTS_RAILS } from "../data/rail";
+import { PAYMENTS_HOSTED_RAILS as HOSTED_RAILS_ON_THE_SERVER, PAYMENTS_RAILS } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
 import {
   CHECKOUT_SESSION_PARAM,
@@ -17,6 +17,7 @@ import {
   openBillingPortal,
   openStoreSubscriptions,
   PAYMENTS_BASE_PATH,
+  PAYMENTS_HOSTED_RAILS,
   type PaymentsClientEnvironment,
   type PaymentsClientProductType,
   type PaymentsClientRail,
@@ -87,6 +88,23 @@ describe("the client's literal unions match the schemas they mirror", () => {
     expect([...PAYMENTS_RAILS].sort()).toEqual([...rails].sort());
   });
 
+  /**
+   * The hosted subset, pinned across the program boundary rather than against a literal in this file.
+   *
+   * Both sides are hand-written — one in `../data/rail.ts` for the Worker, one in `api.ts` for the
+   * browser, because the browser's program must not pull Zod and core's codecs in to learn three
+   * strings. Comparing them to each other is the only comparison that catches a rail added to one and
+   * not the other; comparing either to a third literal typed here would only catch a rail added to
+   * neither, which is the case nobody has.
+   */
+  test("hosted rails, across the two programs that each declare them", () => {
+    expect([...PAYMENTS_HOSTED_RAILS].sort()).toEqual([...HOSTED_RAILS_ON_THE_SERVER].sort());
+    // Hosted is a subset of the whole union, and a proper one: Apple and Google sell inside a store SDK.
+    expect(PAYMENTS_HOSTED_RAILS.every((rail) => (PAYMENTS_RAILS as readonly string[]).includes(rail))).toBe(true);
+    expect(PAYMENTS_HOSTED_RAILS.length).toBeGreaterThan(0);
+    expect(PAYMENTS_HOSTED_RAILS.length).toBeLessThan(PAYMENTS_RAILS.length);
+  });
+
   test("product types", () => {
     const types: PaymentsClientProductType[] = ["consumable", "non_consumable", "subscription"];
     expect([...PaymentsProductType.options].sort()).toEqual([...types].sort());
@@ -117,6 +135,21 @@ describe("the guards", () => {
   test("accept the shapes the routes actually return", () => {
     expect(isEntitlementView({ key: "pro", granted: true, expiresAt: null })).toBe(true);
     expect(isPurchaseView(PURCHASE)).toBe(true);
+  });
+
+  /**
+   * Every rail in the union, through the guard, one at a time.
+   *
+   * The type `PaymentsClientRail` had a drift guard; the runtime set the guard actually compares against
+   * did not, and Paddle fell out of it — a real Paddle purchase read back as unreadable while the type
+   * test stayed green. Asserting on the exported behaviour rather than on the internal array is what
+   * makes this hold: the set is private, and the only thing that matters about it is what it accepts.
+   */
+  test("accept a purchase on every rail — a rail missing from the set reads as unreadable", () => {
+    expect(PAYMENTS_RAILS.length).toBe(5);
+    for (const rail of PAYMENTS_RAILS) {
+      expect(isPurchaseView({ ...PURCHASE, rail }), `a ${rail} purchase must be readable`).toBe(true);
+    }
   });
 
   test("refuse a missing field, a wrong type, and a value that is not an object at all", () => {

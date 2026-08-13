@@ -65,6 +65,21 @@ export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy" 
  */
 export type PaymentsHostedRail = "stripe" | "lemonSqueezy" | "paddle";
 
+/**
+ * The runtime mirror of {@link PaymentsHostedRail} — and the one list a screen gates a billing button on.
+ *
+ * Exported rather than private, because the screens need it. A scaffolded subscription page shows
+ * "Manage billing" when any hosted rail is on, and a scaffolded paywall offers to sell on any hosted
+ * rail a product is listed on: both are the same question, and both were open-coding the answer. A rail
+ * added to the package now reaches a template that was copied into an adopter's repo a year ago,
+ * because the template imports this rather than repeating it.
+ *
+ * Selling and portal-minting are one list, not two that agree — `CheckoutRail` declares both methods
+ * together, so a rail cannot have one without the other. `../data/rail.ts` carries the argument in full,
+ * and `providers.test.ts` holds this list to the rails that actually implement the interface.
+ */
+export const PAYMENTS_HOSTED_RAILS: readonly PaymentsHostedRail[] = ["stripe", "lemonSqueezy", "paddle"];
+
 /** Which Paddle account a handoff belongs to. `Paddle.Environment.set` takes it verbatim. */
 export type PaymentsPaddleEnvironment = "sandbox" | "production";
 
@@ -302,7 +317,7 @@ function isMember<T extends string>(value: unknown, members: readonly T[]): valu
   return typeof value === "string" && (members as readonly string[]).includes(value);
 }
 
-const RAILS: readonly PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy"];
+const RAILS: readonly PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy", "paddle"];
 const PRODUCT_TYPES: readonly PaymentsClientProductType[] = ["consumable", "non_consumable", "subscription"];
 const STATUSES: readonly PaymentsClientStatus[] = [
   "active",

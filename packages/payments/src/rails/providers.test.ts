@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
-import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
+import { PAYMENTS_HOSTED_RAILS, PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
 import { PaymentsProviderCredentials } from "../secret/registry";
 import { isCheckoutRail } from "./contract";
@@ -26,6 +26,15 @@ const CREDENTIALS = PaymentsProviderCredentials.parse({
     secretKey: "sk_test_pithyTestKeyNotARealOne00",
     webhookSecret: "whsec_pithyTestSigningSecretNotARealOne00",
   },
+  lemonSqueezy: {
+    apiKey: "lsq_pithyTestKeyNotARealOne00",
+    webhookSecret: "lsqSigningSecretNotARealOne00",
+    storeId: "42",
+  },
+  paddle: {
+    apiKey: "pithyTestApiKeyNotARealOne00",
+    webhookSecret: "pdl_ntfset_pithyTestNotARealOne00",
+  },
 });
 
 const config = (rails: Record<string, boolean>) =>
@@ -40,6 +49,16 @@ const config = (rails: Record<string, boolean>) =>
           },
         }
       : {}),
+    ...(rails.lemonSqueezy ? { lemonSqueezy: { successUrl: "https://acme.example/thanks" } } : {}),
+    ...(rails.paddle
+      ? {
+          paddle: {
+            clientToken: "test_pithyClientTokenNotARealOne",
+            environment: "sandbox",
+            successUrl: "https://acme.example/thanks",
+          },
+        }
+      : {}),
     products: {
       pro_monthly: {
         type: "subscription",
@@ -48,6 +67,8 @@ const config = (rails: Record<string, boolean>) =>
         ...(rails.apple ? { apple: { productId: "com.acme.pro.monthly" } } : {}),
         ...(rails.google ? { google: { productId: "pro_monthly" } } : {}),
         ...(rails.stripe ? { stripe: { priceId: "price_1Abc" } } : {}),
+        ...(rails.lemonSqueezy ? { lemonSqueezy: { variantId: "123456" } } : {}),
+        ...(rails.paddle ? { paddle: { priceId: "pri_01hv8wPithyTestNotAReal" } } : {}),
       },
     },
   });
@@ -59,10 +80,35 @@ describe("resolveRailProvider", () => {
     expect(resolveRailProvider("stripe", config({ stripe: true }), CREDENTIALS).rail).toBe("stripe");
   });
 
-  test("only Stripe initiates purchases, and the narrowing /checkout depends on says so", () => {
-    // The asymmetry the contract refuses to paper over: Apple and Google hear about purchases, Stripe makes them.
-    // `/checkout` and `/portal` narrow on this, so it is the assertion that keeps those routes honest.
-    expect(isCheckoutRail(resolveRailProvider("stripe", config({ stripe: true }), CREDENTIALS))).toBe(true);
+  /**
+   * `PAYMENTS_HOSTED_RAILS` against the rails that actually implement {@link isCheckoutRail}.
+   *
+   * The list is written by hand — it has to be, because a browser screen reads it and cannot construct a
+   * rail provider to find out. What makes it more than a restatement is the other side of this
+   * comparison: every rail in the enum is *built* here, from real credentials and a real config, and
+   * asked at runtime whether it carries `createCheckoutSession` and `createPortalSession`. A rail added
+   * to the enum with a checkout module and not to the list fails here, and so does the reverse.
+   *
+   * It is also the gate on the question #336 asked: are "sells in a browser" and "mints a portal we can
+   * link to" the same set? They are, and not by coincidence — `CheckoutRail` declares both methods, so a
+   * rail cannot have one without the other. The day that stops being true, the interface splits, this
+   * comparison goes red, and *that* is when a second name is earned.
+   */
+  test("the hosted-rail list is exactly the rails that implement CheckoutRail", () => {
+    const initiating = PAYMENTS_RAILS.filter((rail) =>
+      isCheckoutRail(resolveRailProvider(rail, config({ [rail]: true }), CREDENTIALS)),
+    );
+    expect([...initiating].sort()).toEqual([...PAYMENTS_HOSTED_RAILS].sort());
+    // A floor, so a `PAYMENTS_RAILS` that stopped enumerating cannot make two empty lists agree.
+    expect(PAYMENTS_RAILS.length).toBe(5);
+    expect(initiating.length).toBeGreaterThan(0);
+    expect(initiating.length).toBeLessThan(PAYMENTS_RAILS.length);
+  });
+
+  test("the store rails hear about purchases and do not make them", () => {
+    // The asymmetry the contract refuses to paper over: a purchase inside StoreKit or Play Billing has
+    // already happened by the time the server sees a receipt, so there is no session to create and no
+    // portal to mint. `/checkout` and `/portal` narrow on this.
     expect(isCheckoutRail(resolveRailProvider("apple", config({ apple: true }), CREDENTIALS))).toBe(false);
     expect(isCheckoutRail(resolveRailProvider("google", config({ google: true }), CREDENTIALS))).toBe(false);
   });

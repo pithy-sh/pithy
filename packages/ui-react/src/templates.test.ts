@@ -155,4 +155,45 @@ describe("the React template library", () => {
       expect(tokens, `${path} uses an unsubstituted token`).toEqual([]);
     }
   });
+
+  /**
+   * No screen writes out the set of hosted rails.
+   *
+   * #336 three times over: a screen that gates on "any rail that sells in a browser" and answers it by
+   * naming the rails it remembers. Each copy was correct the day it was written and one rail short a
+   * release later, and the third was added directly beneath a comment describing the second.
+   *
+   * The rule is narrow because the defect is: **naming one hosted rail is a screen about that rail**
+   * — `pricing.tsx` is Paddle's, because PricePreview is Paddle's API — and naming two is a set someone
+   * typed from memory. Sets come from `PAYMENTS_HOSTED_RAILS`, which the package exports and a copied
+   * template keeps importing. Apple and Google are exempt by not being on this list at all: they are
+   * named one at a time on purpose, each with its own sentence, and neither is ever part of a set.
+   */
+  test("no scaffolded screen writes out the set of hosted rails", async () => {
+    // The names, in this file rather than imported. Importing them from the package would make this a
+    // sweep for whatever the package currently says, and the thing being checked is that a screen does
+    // not repeat the package — a rule that read its own subject would go quiet exactly when a rail is
+    // added, which is the one moment it exists for.
+    const HOSTED = ["stripe", "lemonSqueezy", "paddle"];
+    const screens = declaredPaths().filter((path) => path.startsWith("src/routes/pithy/"));
+    let named = 0;
+
+    for (const path of screens) {
+      const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
+      // `rails.paddle`, `paymentsConfig.rails.stripe` — a rail read by name. `rails[rail]` is not a
+      // name, which is the whole point: it is a lookup against a list somebody else maintains.
+      const byName = new Set([...text.matchAll(/\brails\.([A-Za-z]+)\b/g)].map((match) => match[1] ?? ""));
+      const hosted = HOSTED.filter((rail) => byName.has(rail));
+      if (hosted.length > 0) named += 1;
+      expect(
+        hosted.length,
+        `${path} names ${hosted.join(" and ")} by hand — a set of hosted rails is PAYMENTS_HOSTED_RAILS`,
+      ).toBeLessThan(2);
+    }
+
+    // A floor under both halves. Without it a broken glob sweeps nothing and passes, and a regex that
+    // matched nothing would say the same thing as a tree with no defect in it.
+    expect(screens.length).toBeGreaterThanOrEqual(5);
+    expect(named, "no screen reads a rail by name at all — the pattern has stopped matching").toBeGreaterThan(0);
+  });
 });
