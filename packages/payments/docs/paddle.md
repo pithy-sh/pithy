@@ -84,8 +84,11 @@ It needs, at minimum:
 | `discount.read` | resolving a code at checkout |
 | `discount.write` | minting a code, if you use that half |
 | `notification.read` | the events sweep |
+| `adjustment.read` | telling a full refund from a partial one |
 
 **`customer_portal_session.write` is the one to check twice.** Without it Paddle returns a portal session with no authenticated URLs and your subscriber lands on a sign-in page instead of their billing.
+
+**`adjustment.read` is required, and only for refunds.** An adjustment says how much came off and never what the original was, so the only way to tell a full refund from a partial one is to read the transaction with `include=adjustments` and sum them. Paddle's permissions reference is explicit that an `include` demands read permission on the entity included, and answers `forbidden` (403) without it — so a key missing this does not quietly return a shorter response, it refuses the read. Only the refund path asks for that include: checkout, verification and reconciliation read a transaction without it and work on `transaction.read` alone. A refusal from the refund path names `adjustment.read` in its detail, so you are not left guessing which of the permissions above is missing.
 
 ## 6. Create the notification destination
 

@@ -162,8 +162,11 @@ describe("sweepPaddleEvents", () => {
       status: "refunded",
       role: "charge",
     });
-    // The read genuinely happened, against the transaction the adjustment named.
-    expect(transport.calls.some((call) => call.url.includes(`/transactions/${TXN}`))).toBe(true);
+    // The read genuinely happened, against the transaction the adjustment named — and it is the read that
+    // asks for the adjustments array, which is the read that needs `adjustment.read` on the key.
+    const read = transport.calls.find((call) => call.url.includes(`/transactions/${TXN}`));
+    expect(read).toBeDefined();
+    expect(read?.url).toContain("include=adjustments");
   });
 
   test("two partial adjustments summing to the whole transaction revoke, swept exactly as delivered", async () => {
@@ -200,6 +203,62 @@ describe("sweepPaddleEvents", () => {
     const page = await sweepPaddleEvents({ ...OPTIONS, transport });
     expect(page.events[0]?.notification?.event).toMatchObject({ status: "refunded" });
     expect(page.events[0]?.notification?.note ?? null).toBeNull();
+  });
+
+  test("one unreadable transaction costs its own event, not the page it arrived on", async () => {
+    // The reader runs inside this function, which parses **every** event before returning, and the sweep
+    // calls it outside the try/catch that guards projection. So a throw from the second event's
+    // transaction read discarded the first event too — an event that had read perfectly and was ahead of
+    // the failure in the stream, which is exactly the event the sweep exists to find.
+    const transport = (async (url: string) => {
+      if (url.includes("/transactions/")) return { ok: false, status: 503, text: async () => "{}" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: [
+              await activated("evt_good"),
+              {
+                event_id: "evt_unreadable",
+                event_type: "adjustment.created",
+                occurred_at: "2026-08-12T12:00:00Z",
+                data: {
+                  id: "adj_01",
+                  action: "refund",
+                  status: "approved",
+                  transaction_id: TXN,
+                  totals: { total: "999" },
+                  created_at: "2026-08-12T12:00:00Z",
+                },
+              },
+              await activated("evt_behind"),
+            ],
+            meta: METADATA,
+          }),
+      };
+    }) as PaddleHttpFetch;
+
+    const page = await sweepPaddleEvents({ ...OPTIONS, transport });
+    expect(page.events.map((swept) => swept.eventId)).toEqual(["evt_good", "evt_unreadable", "evt_behind"]);
+
+    // The healthy event ahead of the failure kept its projection.
+    expect(page.events[0]?.notification?.event).toMatchObject({ providerTransactionId: SUB });
+    expect(page.events[0]?.failure).toBeNull();
+
+    // The failure is attributed to the one event that caused it, with the cause the caller needs to write
+    // a reason and the body it needs to write a row.
+    const failed = page.events[1];
+    expect(failed?.notification).toBeNull();
+    const failure = failed?.failure ?? null;
+    expect(failure).not.toBeNull();
+    const cause = failure === null ? null : (failure.cause as PithyError);
+    expect(cause?.payload.code).toBe("payments/provider_unavailable");
+    expect(failure === null ? null : failure.payload).toMatchObject({ event_id: "evt_unreadable" });
+
+    // And the event behind it was still read, so the caller decides what to do about the gap rather than
+    // this function deciding by throwing.
+    expect(page.events[2]?.failure).toBeNull();
   });
 
   test("resumes after a cursor, and advances only to the last event it read", async () => {

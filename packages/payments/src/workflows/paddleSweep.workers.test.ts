@@ -11,7 +11,7 @@ import { payments_0001_purchases } from "../migrations/0001_purchases";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "../rails/paddle/api";
 import { accountReferenceProof } from "../rails/paddle/objects";
 import type { PaymentsPaddleCredentials } from "../secret/registry";
-import { sweepPaddle } from "./paddleSweep";
+import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "./paddleSweep";
 
 /**
  * The sweep against real D1, because every claim it makes is a claim about rows.
@@ -135,6 +135,36 @@ function streamAndTransaction(page: unknown[], txn: unknown): PaddleHttpFetch & 
   }) as PaddleHttpFetch & { urls: string[] };
   transport.urls = urls;
   return transport;
+}
+
+/**
+ * A transport that honours `after=`, so consecutive sweeps see the stream the way Paddle serves it.
+ *
+ * The fixed-page {@link stream} is right for a single run. A case that sweeps three times to watch an
+ * attempt count climb needs the second run to resume where the first stopped, and a stub that ignores the
+ * cursor would hand it the whole stream again — which is the one thing the assertion is about.
+ *
+ * `/transactions/` is answered by `transaction`, or refused when it is null. That is how a permanently
+ * unreadable event is planted without stubbing anything inside the sweep.
+ */
+function streamFrom(events: { event_id: string }[], transaction: unknown | null = null): PaddleHttpFetch {
+  return (async (url: string, _init?: PaddleHttpRequest) => {
+    if (url.includes("/transactions/")) {
+      if (transaction === null) return { ok: false, status: 503, text: async () => "{}" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: transaction, meta: { pagination: { has_more: false } } }),
+      };
+    }
+    const after = new URL(url).searchParams.get("after");
+    const from = after === null ? 0 : events.findIndex((event) => event.event_id === after) + 1;
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: events.slice(from), meta: { pagination: { has_more: false } } }),
+    };
+  }) as PaddleHttpFetch;
 }
 
 /** One approved `refund` adjustment against {@link TXN}, for whatever fraction a case gives it. */
@@ -461,6 +491,126 @@ describe("sweepPaddle", () => {
     expect(JSON.stringify(rows)).not.toContain(TOKEN);
     // And the cursor is past it, so the stream is not stuck behind an event nothing will ever record.
     expect((await cursors())[0]?.cursor).toBe("evt_after");
+  });
+
+  test("a permanently unprojectable event is quarantined after a bounded number of attempts, and the stream moves on", async () => {
+    // The defect the previous fix created by mirroring the one it removed. Leaving `processedAt` null so a
+    // failure is retried is right for a *transient* fault. For a permanent one — a malformed event, a
+    // deleted transaction, a shape Paddle changed — it halts the cursor in front of that event forever,
+    // and then every purchase behind it is the one nothing ever finds. Neither "always skip" nor "always
+    // halt" is the answer; a bounded number of attempts, then quarantine, is.
+    const unsellable = await activated("evt_02", "sub_02");
+    (unsellable.data as { items: { price: { id: string } }[] }).items = [{ price: { id: "pri_not_in_catalog" } }];
+    const events = [await activated("evt_01"), unsellable, await activated("evt_03", "sub_03")];
+
+    // Every attempt but the last: the cursor halts in front of the failure, exactly as before.
+    for (let attempt = 1; attempt < PADDLE_SWEEP_MAX_ATTEMPTS; attempt += 1) {
+      const report = await sweepPaddle(deps(streamFrom(events)));
+      expect(report.quarantined, `attempt ${attempt}`).toBe(0);
+      expect((await cursors())[0]?.cursor, `attempt ${attempt}`).toBe("evt_01");
+      const row = (await webhookRows()).find((each) => each.providerEventId === "evt_02");
+      expect(row?.processedAt, `attempt ${attempt}`).toBeNull();
+      expect(row?.attempts, `attempt ${attempt}`).toBe(attempt);
+      // Anti-vacuity: `evt_03` really is behind the failure and really is being withheld by it.
+      expect((await purchases()).map((each) => each.providerTransactionId)).toEqual([SUB]);
+    }
+
+    // The attempt that gives up on it. The cursor advances past the event, and the event behind it — the
+    // purchase that was hostage to a fault no retry was ever going to clear — finally projects.
+    const last = await sweepPaddle(deps(streamFrom(events)));
+    expect(last).toMatchObject({ failed: 1, quarantined: 1, projected: 1 });
+    expect((await cursors())[0]?.cursor).toBe("evt_03");
+    expect((await purchases()).map((each) => each.providerTransactionId).sort()).toEqual([SUB, "sub_03"]);
+
+    // Quarantined, not dropped. The row says so in words, carries its attempt count, and is `processedAt`
+    // so the next sweep walks past it rather than starting the count again.
+    const quarantined = (await webhookRows()).find((each) => each.providerEventId === "evt_02");
+    expect(quarantined?.processedAt).not.toBeNull();
+    expect(quarantined?.attempts).toBe(PADDLE_SWEEP_MAX_ATTEMPTS);
+    expect(quarantined?.error).toContain("quarantined");
+    expect(quarantined?.error).toContain(String(PADDLE_SWEEP_MAX_ATTEMPTS));
+    // And the reason the attempts failed is still in it — a row nobody can diagnose is dropped with extra
+    // steps.
+    expect(quarantined?.error).toContain("payments/");
+
+    // The next sweep neither retries it nor re-quarantines it: it is behind the cursor and handled.
+    const after = await sweepPaddle(deps(streamFrom(events)));
+    expect(after).toMatchObject({ read: 0, failed: 0, quarantined: 0 });
+  });
+
+  test("the attempt bound is small enough that a stall is measured in days, not months", async () => {
+    // The sweep runs on a daily cron, so an attempt is a day. A bound of one would be "always skip" — the
+    // defect this replaced. A bound in the hundreds would be "always halt" wearing a counter.
+    expect(PADDLE_SWEEP_MAX_ATTEMPTS).toBeGreaterThan(1);
+    expect(PADDLE_SWEEP_MAX_ATTEMPTS).toBeLessThanOrEqual(7);
+  });
+
+  test("a fault that clears before the bound is projected, not quarantined", async () => {
+    // The mirror, and the reason the bound is not one. A transient fault must still be repaired by the
+    // retry — quarantining a purchase that a second attempt would have found is the original defect back.
+    const unsellable = await activated("evt_02", "sub_02");
+    (unsellable.data as { items: { price: { id: string } }[] }).items = [{ price: { id: "pri_not_in_catalog" } }];
+
+    const first = await sweepPaddle(deps(streamFrom([await activated("evt_01"), unsellable])));
+    expect(first).toMatchObject({ failed: 1, quarantined: 0 });
+
+    // Whatever it was is now fixed — a price added to the catalog, a D1 fault gone.
+    const second = await sweepPaddle(
+      deps(streamFrom([await activated("evt_01"), await activated("evt_02", "sub_02")])),
+    );
+    expect(second).toMatchObject({ projected: 1, failed: 0, quarantined: 0 });
+
+    const row = (await webhookRows()).find((each) => each.providerEventId === "evt_02");
+    expect(row?.processedAt).not.toBeNull();
+    // Completed rather than quarantined: no error text, and the count left where it stopped climbing.
+    expect(row?.error).toBeNull();
+    expect(row?.attempts).toBe(1);
+  });
+
+  test("one unreadable transaction costs its own event, not the healthy events on its page", async () => {
+    // The reader runs inside `sweepPaddleEvents`, which parses every event on the page before returning,
+    // and the sweep calls it *outside* the try/catch that guards projection. So one 503 on a transaction
+    // read threw away the whole page — including the events ahead of it that had read perfectly.
+    const events = [
+      await activated("evt_01"),
+      {
+        event_id: "evt_02",
+        event_type: "adjustment.created",
+        occurred_at: "2026-08-12T12:00:00Z",
+        data: refund("adj_01", "4950"),
+      },
+      await activated("evt_03", "sub_03"),
+    ];
+
+    const report = await sweepPaddle(deps(streamFrom(events)));
+    // The healthy event ahead of the failure was projected and its cursor written.
+    expect(report).toMatchObject({ projected: 1, failed: 1, quarantined: 0 });
+    expect((await cursors())[0]?.cursor).toBe("evt_01");
+    expect((await purchases()).map((each) => each.providerTransactionId)).toEqual([SUB]);
+
+    // The unreadable event has a row, a reason, and a first attempt against it.
+    const failed = (await webhookRows()).find((each) => each.providerEventId === "evt_02");
+    expect(failed?.processedAt).toBeNull();
+    expect(failed?.error).toContain("payments/provider_unavailable");
+    expect(failed?.attempts).toBe(1);
+  });
+
+  test("a delivery the guard recorded with an error is a duplicate to the sweep, not a repair", async () => {
+    // The module doc claimed this sweep was "the only repair for a delivery that arrived and failed". It
+    // is not, and this is the proof rather than the assertion. `completeWebhook` sets `processedAt` even
+    // when it writes an error; the sweep reads freshness off that same column, so the row it was supposed
+    // to repair is the one it skips. Reported as its own finding — `webhookGuard.ts` is pre-existing
+    // across all four rails and is not touched here.
+    await env.DB.prepare(
+      "INSERT INTO pithy_payments_webhook_events (id, rail, provider_event_id, payload, received_at, processed_at, error, created_at) VALUES (?, 'paddle', 'evt_01', '{}', ?, ?, ?, ?)",
+    )
+      .bind("delivered-and-failed", NOW.getTime(), NOW.getTime(), "projection blew up", NOW.getTime())
+      .run();
+
+    const report = await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+    expect(report).toMatchObject({ read: 1, projected: 0, duplicate: 1, failed: 0 });
+    // Nothing repaired. The purchase the failed delivery was carrying still has no row.
+    expect(await purchases()).toHaveLength(0);
   });
 
   test("walks more than one page, and stops when Paddle says there is no more", async () => {
