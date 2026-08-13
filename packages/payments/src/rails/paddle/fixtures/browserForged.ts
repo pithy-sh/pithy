@@ -41,6 +41,11 @@ export const BROWSER_ITEMS_FORGERY: Record<string, unknown> = {
  * **This is the measurement that settles the issue's open question.** Choosing `transactionId` over
  * `items[]` is still right — it fixes the price and the buyer, which a page must never name — but it buys
  * nothing at all for `custom_data`. The stamp is protected by the MAC and by nothing else, on either form.
+ *
+ * **And the overwrite lands on open, not on payment.** A second probe opened a checkout for a `draft`
+ * transaction and closed it without paying; the transaction's `custom_data` had already been replaced. So
+ * the stamp on any pending transaction is writable by anyone who knows its id — which is one more reason
+ * the field is a claim to be proved rather than a record to be read.
  */
 export const BROWSER_OVERWROTE_SERVER_STAMP: Record<string, unknown> = {
   pithy_env: "prod",

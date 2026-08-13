@@ -154,7 +154,7 @@ The third is the only one that means anything, and here is why. `custom_data` is
 - `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` completes with no server involved at any point, and Paddle stores the page's object verbatim.
 - `Paddle.Checkout.open({ transactionId, customData: {…} })` **replaces** the `custom_data` your server wrote when it created that transaction. Same id, `origin` still `api`, owner now whoever the page said. It is not refused and it does not throw.
 
-So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package and the environment is one of three values — and creating the transaction server-side does not protect them.
+The overwrite lands when the checkout is **opened**, not when it is paid: a transaction left in `draft` had its `custom_data` replaced by a checkout nobody completed. So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package and the environment is one of three values — and creating the transaction server-side does not protect them.
 
 What they cannot write is a MAC keyed on your notification destination's secret. So the rail honours a stamped reference only when the proof verifies, and refuses it otherwise. A delivery with no stamp at all — a transaction you created by hand in the dashboard — is not fenced out; it simply binds nobody.
 
