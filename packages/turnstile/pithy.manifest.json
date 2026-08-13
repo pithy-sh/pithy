@@ -10,7 +10,7 @@
       "origin": {
         "kind": "obtained",
         "issuer": "cloudflare",
-        "documentation": "https://developers.cloudflare.com/turnstile/get-started/"
+        "documentation": "https://developers.cloudflare.com/turnstile/get-started/widget-management/dashboard/"
       },
       "rotation": {
         "kind": "provider",
