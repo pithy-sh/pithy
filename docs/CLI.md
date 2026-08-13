@@ -618,9 +618,15 @@ Help is **citty's**, not ours. `pithy --help` and every `<command> --help` are r
 
 The two transcripts below are captured from the real binary and pinned by `packages/cli/src/binDocs.test.ts`. Reword a description in `main.ts`, add a command, or add a flag, and that test fails until this section is recaptured. `v<version>` stands in for the installed version — the one part of the output that varies.
 
+**A command that names no action is asking what it can do, and being answered is a success.** One rule, at every level: bare `pithy` prints the command list and exits 0, and so does a group with no subcommand — `pithy secrets`, `pithy worker`, all thirteen. Nothing is printed after the help, because the list *is* the answer to the missing command; repeating it as a complaint is the CLI arguing with a user it has just served. Exit 0 is what makes `pithy && next` and a bare invocation in a CI step work, and it is what keeps `bun run pithy` from adding `error: script "pithy" exited with code 1` under a successful help screen.
+
+A name that is **not** a command is a different thing. `pithy nonsense` is a mistake, not a question: it names what was not recognised, shows the help, and exits non-zero.
+
+The rule lives in `packages/cli/src/dispatch.ts`, once, and is applied before citty parses — citty throws `E_NO_COMMAND` for the root and for every group, and `runMain` catches every such error into usage plus the message plus `process.exit(1)`. A group added later inherits the rule with nothing to remember.
+
 ### 4.1 Top-level help
 
-`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help.
+`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help. Bare `pithy` prints this same screen and exits 0.
 
 ```
 $ pithy --help
@@ -875,7 +881,17 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 
 **Both capability commands report the manifests they could not read.** An installed `@pithy-sh/*` package whose `pithy.manifest.json` will not parse is a capability that vanishes from every plan, and a run that reconciled happily around the hole reported nothing at all. `pithy upgrade` prints the faults above the Workers, once, because manifests resolve from the project root and no Worker owns one; `pithy add --list` names them on stderr after the catalog, since a package it cannot read is one it cannot tell you is installed. Reported, never refused: one broken package must not cost an adopter the other fifteen entries. Neither command can fix it — the file belongs to somebody else's package.
 
-`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
+**What `upgrade` reports is what it wrote.** The count comes back off the writer, one entry per binding actually appended to a stanza, and a binding the writer could not compose an entry for is **named, with the reason**, rather than folded into a count:
+
+```
+board:
+  payments: added 1 config key.
+  payments: PAYMENTS_RECONCILE (workflow) not written for dev — PAYMENTS_RECONCILE declares no job.
+```
+
+That line is the difference between `upgrade` and `doctor` agreeing and not. Reporting the *plan* instead is what made `upgrade` say "added 3 bindings" over a `wrangler.jsonc` it had left untouched, while `doctor` — run seconds later, against the same tree, through the same plan builder — correctly still called them missing.
+
+`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
 
 `pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
 

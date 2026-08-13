@@ -5,6 +5,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
 import type { z } from "zod";
 import { MediaConfig, type MediaConfigInput } from "./config/config";
@@ -95,11 +96,7 @@ export function media(options: MediaOptions = {}): MediaCapability {
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing. Each is
     // optional: the bindings exist only once `pithy media provision` has deployed the media worker, and
     // an unprovisioned project must still boot and serve every non-enrichment route.
-    ...Object.values(mediaWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(mediaWorkflows),
   ];
 
   const capability = defineCapability({

@@ -7,6 +7,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
@@ -140,11 +141,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     { type: "r2", name: "SUPPORT_BUCKET", optional: true },
     // The classification Workflow the inbound handler dispatches to, derived from the spec rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing.
-    ...Object.values(supportWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(supportWorkflows),
   ];
 
   const capability = defineCapability({

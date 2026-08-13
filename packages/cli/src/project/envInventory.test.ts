@@ -349,3 +349,83 @@ describe("buildEnvInventory reads the account the project names", () => {
     expect(inv.accountId).toBe("acct-leed");
   });
 });
+
+/**
+ * **Nothing a local environment reports is an action item.**
+ *
+ * The invariant, stated over the whole rendered report rather than over the three bindings the report
+ * happened to name. `pithy env` said `SECRETS (d1) not provisioned`, `DB (d1) not provisioned`,
+ * `EMAIL_SUPPRESSIONS (d1) not provisioned` for a dev environment that was running, migrated and
+ * seeded — three deficiencies it did not have, one line under its own `dev  local` (#320).
+ *
+ * The fact was right. There is no remote `dash-dev-db`, and there is not supposed to be one: Miniflare
+ * serves D1 from the binding declaration, with state under `.wrangler/state/v3/d1`. The command
+ * evaluated an environment against a standard it had just said did not apply — and the cost is that an
+ * operator learns to skim past red in the one command they read against production.
+ *
+ * **The disagreement with `doctor` was entirely on this side.** `doctor` reported the same tree healthy
+ * because it never evaluates provisioning at all — its `bindings` check reads a reconcile plan's
+ * `missingBindings`, which is about whether a Worker *declares* what a capability requires, not about
+ * whether a Cloudflare resource exists behind it. So there is nothing to relax in `doctor`; there was a
+ * standard to stop applying here.
+ *
+ * End to end on purpose: the report is built by the real builder from a real `wrangler.jsonc` and
+ * rendered by the real renderer. A fixture asserting the flag would prove the flag, not the output.
+ */
+describe("a local environment is not judged against a standard that cannot apply to it", () => {
+  /**
+   * The vocabulary that reads as something to go and do. Held as a list here — the one place in this
+   * file where a list is right — because it is the *output's* contract with an operator, and the check
+   * is that none of it reaches a local environment's lines.
+   */
+  const ACTION_ITEMS = ["not provisioned", "missing", "absent", "run pithy"];
+
+  test("a working local environment's every line is a statement, and the deployed one still acts", async () => {
+    await writeWrangler({
+      name: "dash-board",
+      d1_databases: [
+        { binding: "DB", database_name: "dash-dev-db" },
+        { binding: "SECRETS", database_name: "dash-dev-secrets" },
+        { binding: "EMAIL_SUPPRESSIONS", database_name: "dash-dev-suppressions" },
+      ],
+      env: {
+        prod: {
+          name: "dash-board-prod",
+          d1_databases: [{ binding: "DB", database_name: "dash-prod-db" }],
+        },
+      },
+    });
+    const { renderLines } = await import("../commands/env");
+    const inventory = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
+    const lines = renderLines(inventory);
+
+    // Split the report at the deployed environment's own line, so each half is asserted against its
+    // own standard rather than the whole thing against the weaker of the two.
+    const prodAt = lines.findIndex((line) => line.trimStart().startsWith("prod "));
+    expect(prodAt).toBeGreaterThan(0);
+    const local = lines.slice(0, prodAt);
+    const deployed = lines.slice(prodAt);
+
+    // The local half names all three bindings — otherwise this passes by rendering nothing.
+    for (const binding of ["DB", "SECRETS", "EMAIL_SUPPRESSIONS"]) {
+      expect(local.join("\n")).toContain(binding);
+    }
+    for (const line of local) {
+      for (const phrase of ACTION_ITEMS) expect(`local: ${line.toLowerCase()}`).not.toContain(phrase);
+    }
+
+    // And the real action item survives. A fix that silenced both would have cost `pithy env` the only
+    // thing it is read for.
+    expect(deployed.join("\n")).toContain("not provisioned");
+  });
+
+  test("localness is a property of the report, not a guess about the name", async () => {
+    await writeWrangler({ name: "api", env: { staging: { name: "api-staging" }, prod: { name: "api-prod" } } });
+    const environments = await environmentsOf();
+    expect(environments.map((environment) => [environment.name, environment.local])).toEqual([
+      ["dev", true],
+      ["staging", false],
+      ["prod", false],
+    ]);
+  });
+});

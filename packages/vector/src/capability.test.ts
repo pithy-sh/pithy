@@ -29,7 +29,15 @@ describe("vector()", () => {
       { type: "d1", name: "DB", optional: false },
       // Optional: the vector worker exists only after `pithy vector provision`, and an unprovisioned
       // project must still boot and serve every search route.
-      { type: "workflow", name: "VECTOR_REPROCESS", optional: true },
+      // `job` and `className` ride through from the spec: without them the CLI has no deployed name and
+      // no `class_name`, so it declines the `workflows` entry and says nothing (#318).
+      {
+        type: "workflow",
+        name: "VECTOR_REPROCESS",
+        job: "reprocess",
+        className: "VectorReprocessWorkflow",
+        optional: true,
+      },
     ]);
   });
 

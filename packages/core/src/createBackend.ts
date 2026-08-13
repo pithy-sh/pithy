@@ -21,6 +21,7 @@ import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 import { workerVersion } from "./worker/identity";
+import { registeredWorkflowBinding } from "./workflow/bindings";
 import { buildWorkflowDispatcher, type WorkflowDispatcher } from "./workflow/dispatch";
 import { composeWorkflows } from "./workflow/register";
 
@@ -154,9 +155,7 @@ export function createBackend<
     ...all.flatMap((cap) => cap.requiredBindings),
     ...Object.values(databases).map((db) => BindingSpec.parse({ type: "d1", name: db.binding })),
     ...Object.values(namespaces).map((ns) => BindingSpec.parse({ type: "kv", name: ns.binding })),
-    ...Object.values(workflows).map((entry) =>
-      BindingSpec.parse({ type: "workflow", name: entry.spec.binding, optional: entry.spec.optional ?? false }),
-    ),
+    ...Object.values(workflows).map((entry) => BindingSpec.parse(registeredWorkflowBinding(entry))),
   ]);
 
   // Build internally against the loose base env (db/kv are `unknown`, so `c.set` accepts the merged

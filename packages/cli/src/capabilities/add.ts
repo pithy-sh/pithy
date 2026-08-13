@@ -198,8 +198,8 @@ function appendBindings(stanza: WranglerStanza, manifest: CapabilityManifest, sc
     // in the tree ever reads, and re-add it the moment an adopter deleted it. `createBackend` reads the
     // same flag to decide whether a missing binding is fatal at assembly.
     if (binding.optional) continue;
-    const name = appendBinding(stanza, binding, scope);
-    if (name) proposed.push(name);
+    const write = appendBinding(stanza, binding, scope);
+    if (write.outcome === "written" && write.proposed) proposed.push(write.proposed);
   }
   return proposed;
 }

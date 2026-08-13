@@ -69,6 +69,18 @@ export const MissingBinding = z
   .describe("A required binding absent from one environment's wrangler.jsonc stanza.");
 export type MissingBinding = z.infer<typeof MissingBinding>;
 
+/** A binding an apply was asked to write and could not, with the reason the writer gave. */
+export const SkippedBinding = MissingBinding.extend({
+  reason: z
+    .string()
+    .describe(
+      "Why the entry could not be composed, in an operator's words — the field the spec did not state, or the name that could not be derived.",
+    ),
+}).describe(
+  "A required binding `pithy upgrade` could not write. Named rather than counted: reporting the plan instead of the write is what made `upgrade` claim five bindings it had declined, while `doctor` correctly still called them missing (#318).",
+);
+export type SkippedBinding = z.infer<typeof SkippedBinding>;
+
 /** A capability config option present in the manifest but not yet written into its pithy.config.ts call. */
 export const MissingConfigKey = z
   .object({
@@ -550,11 +562,22 @@ function appendBindings(
   manifest: CapabilityManifest,
   scope: BindingScope,
   composed: Capability | undefined,
-): void {
+): { written: MissingBinding[]; skipped: SkippedBinding[] } {
+  const written: MissingBinding[] = [];
+  const skipped: SkippedBinding[] = [];
   // Same source of truth as the plan — see `effectiveBindings`. Writing from the manifest here while the
   // plan reported from the composed instance would make `upgrade` decline to write the binding it had
   // just told the adopter was missing.
-  for (const binding of effectiveBindings(manifest, composed)) appendBinding(stanza, binding, scope);
+  for (const binding of effectiveBindings(manifest, composed)) {
+    const write = appendBinding(stanza, binding, scope);
+    // `present` and `unsupported` are neither: the first is idempotency (the plan already excluded it),
+    // the second a kind with no array to be missing from, which `computeMissingBindings` skips too.
+    if (write.outcome === "written") written.push({ env: scope.env, name: binding.name, type: binding.type });
+    if (write.outcome === "skipped") {
+      skipped.push({ env: scope.env, name: binding.name, type: binding.type, reason: write.reason });
+    }
+  }
+  return { written, skipped };
 }
 
 /**
@@ -666,8 +689,17 @@ export interface ApplyReconcilePlanOptions {
 export interface CapabilityApplied {
   /** The capability's short name. */
   name: string;
-  /** The bindings added to wrangler.jsonc for this capability. */
+  /**
+   * The bindings added to wrangler.jsonc for this capability — **read back off the writer**, one entry
+   * per environment actually written.
+   *
+   * This used to be `cap.missingBindings`: the plan, copied across verbatim the moment the apply loop
+   * touched the capability at all. So a binding the writer declined was counted as added, by a command
+   * whose whole job is to be believed about what it just changed (#318).
+   */
   addedBindings: MissingBinding[];
+  /** The bindings this capability needed that the writer could not compose, each with its reason. */
+  skippedBindings: SkippedBinding[];
   /** The config option keys inserted into this capability's pithy.config.ts registration. */
   addedConfigKeys: string[];
 }
@@ -704,8 +736,8 @@ async function applyBindings(
   plan: ReconcilePlan,
   project: string | undefined,
   capabilities: readonly Capability[],
-): Promise<Map<string, MissingBinding[]>> {
-  const added = new Map<string, MissingBinding[]>();
+): Promise<Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>> {
+  const added = new Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>();
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
   if (caps.length === 0) return added;
 
@@ -719,17 +751,23 @@ async function applyBindings(
     if (!manifest) continue; // installed manifest vanished — nothing to wire
     // Each stanza is written for the environment it *is*, so the name it proposes has that environment
     // in it. `envStanzas` already pairs them on the read side; the write side uses the same pairing.
+    const written: MissingBinding[] = [];
+    const skipped: SkippedBinding[] = [];
     for (const { env, stanza } of stanzas) {
-      appendBindings(
+      const result = appendBindings(
         stanza,
         manifest,
         { ...(project === undefined ? {} : { project }), env, capability: manifest.name },
         composedByName.get(cap.name),
       );
+      written.push(...result.written);
+      skipped.push(...result.skipped);
     }
     appendDurableObjectMigrations(config, manifest.requiredBindings);
-    added.set(cap.name, cap.missingBindings);
-    touched = true;
+    added.set(cap.name, { written, skipped });
+    // Only a real write dirties the file. A capability whose every binding was declined leaves
+    // `wrangler.jsonc` byte-identical, and rewriting it would be a diff saying nothing happened.
+    if (written.length > 0) touched = true;
   }
   if (touched) await writeWranglerConfig(workerDir, config);
   return added;
@@ -806,10 +844,17 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
 
   const perCapability: CapabilityApplied[] = [];
   for (const cap of plan.perCapability) {
-    const bindings = addedBindings.get(cap.name) ?? [];
+    const bindings = addedBindings.get(cap.name) ?? { written: [], skipped: [] };
     const keys = addedConfigKeys.get(cap.name) ?? [];
-    if (bindings.length === 0 && keys.length === 0) continue;
-    perCapability.push({ name: cap.name, addedBindings: bindings, addedConfigKeys: keys });
+    // A capability that wrote nothing but skipped something still belongs in the report — that is the
+    // whole point of naming a skip. Silence here is the shape #318 was reported about.
+    if (bindings.written.length === 0 && bindings.skipped.length === 0 && keys.length === 0) continue;
+    perCapability.push({
+      name: cap.name,
+      addedBindings: bindings.written,
+      skippedBindings: bindings.skipped,
+      addedConfigKeys: keys,
+    });
   }
 
   let migrated = false;

@@ -27,12 +27,36 @@ const KIND_LABEL: Record<EnvResource["kind"], string> = {
 };
 
 /**
- * Render an id-carrying value: dim "not provisioned" when it does not exist, a clickable link when
+ * What an unprovisioned binding reads as in a **deployed** environment: an action item, and the reason
+ * `pithy env` is read before and after provisioning.
+ */
+const NOT_PROVISIONED = "not provisioned";
+
+/**
+ * What an unprovisioned binding reads as in a **local** environment: a statement, not an action item.
+ *
+ * **A check that cannot fail meaningfully for an environment should not be run against it.** There is
+ * no remote `dash-dev-db` and there is not supposed to be one — Miniflare serves D1 from the binding
+ * declaration, with state under `.wrangler/state/v3/d1`, and `pithy dev` works precisely because no
+ * Cloudflare resource is involved. Reporting three such bindings as deficiencies taught an operator to
+ * skim past red in the one command they read against production (#320).
+ *
+ * Deliberately not the same string as the deployed one. Sharing it is what made the real action item
+ * weaker.
+ */
+const LOCAL = "local";
+
+/**
+ * Render an id-carrying value: the resource's state when it has no id, a clickable link when
  * hyperlinks render and a dashboard URL exists, the plain id + printed URL as the fallback, or the
  * bare id when there is no URL (no account id, or an unlinkable kind).
+ *
+ * `local` is the environment's own answer, carried on the report rather than guessed from its name — a
+ * local environment that *does* name a real id still shows it, because pointing dev at a remote
+ * database is a thing an adopter may do and the id is the true and useful thing to print.
  */
-function renderValue(id: string | null, provisioned: boolean, url: string | null): string {
-  if (!provisioned) return dim("not provisioned");
+function renderValue(id: string | null, provisioned: boolean, url: string | null, local: boolean): string {
+  if (!provisioned) return dim(local ? LOCAL : NOT_PROVISIONED);
   const text = id ?? "";
   if (!url) return text;
   if (supportsHyperlinks()) return link(url, text);
@@ -45,6 +69,11 @@ function renderValue(id: string | null, provisioned: boolean, url: string | null
  * each environment's bindings. A Worker with no matching environment is reported as such, not omitted.
  */
 export function renderEnvInventory(inventory: EnvInventory, filter?: string): string {
+  return renderLines(inventory, filter).join("\n").concat("\n");
+}
+
+/** The rendered lines, before they are joined — the seam a gate reads so it can assert per line. */
+export function renderLines(inventory: EnvInventory, filter?: string): string[] {
   const lines: string[] = [];
   if (!inventory.accountId) lines.push(dim("No CLOUDFLARE_ACCOUNT_ID. Dashboard links omitted."));
 
@@ -62,16 +91,18 @@ export function renderEnvInventory(inventory: EnvInventory, filter?: string): st
     for (const environment of environments) {
       lines.push(`  ${environment.name}  ${dim(environment.baseUrl ?? "no url")}`);
       if (environment.scriptName) {
-        lines.push(`    worker  ${renderValue(environment.scriptName, true, environment.workerDashboardUrl)}`);
+        lines.push(
+          `    worker  ${renderValue(environment.scriptName, true, environment.workerDashboardUrl, environment.local)}`,
+        );
       }
       for (const resource of environment.resources) {
         lines.push(
-          `    ${resource.binding} (${KIND_LABEL[resource.kind]})  ${renderValue(resource.id, resource.provisioned, resource.dashboardUrl)}`,
+          `    ${resource.binding} (${KIND_LABEL[resource.kind]})  ${renderValue(resource.id, resource.provisioned, resource.dashboardUrl, environment.local)}`,
         );
       }
     }
   }
-  return `${lines.join("\n")}\n`;
+  return lines;
 }
 
 export default defineCommand({

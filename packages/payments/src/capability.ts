@@ -11,6 +11,7 @@ import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
 import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
@@ -188,11 +189,7 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
     // declaration, so a binding rename cannot leave the two disagreeing. `optional` because the binding
     // exists only once `pithy payments provision` has deployed the host, and an unprovisioned project must
     // still verify receipts, accept webhooks, and resolve entitlements.
-    ...Object.values(paymentsWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(paymentsWorkflows),
   ];
 
   const capability = defineCapability({

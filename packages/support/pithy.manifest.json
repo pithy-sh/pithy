@@ -4,7 +4,13 @@
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
     { "type": "r2", "name": "SUPPORT_BUCKET", "optional": true },
-    { "type": "workflow", "name": "SUPPORT_CLASSIFY", "optional": true }
+    {
+      "type": "workflow",
+      "name": "SUPPORT_CLASSIFY",
+      "job": "classify",
+      "className": "SupportClassifyWorkflow",
+      "optional": true
+    }
   ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["controlplane", "email", "auth", "payments", "audit", "storage"],
