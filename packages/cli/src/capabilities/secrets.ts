@@ -5,7 +5,11 @@ import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
 import { type AuditResult, auditSecrets, passesPromoteGate } from "@pithy-sh/secrets/src/cli/audit";
-import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import {
+  dispatchSecretWrite,
+  environmentsWrittenBeforeFailure,
+  type SecretDispatcher,
+} from "@pithy-sh/secrets/src/cli/dispatch";
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import { parseKeyedSecretName } from "@pithy-sh/secrets/src/keyspace";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -49,8 +53,15 @@ export interface SecretWriteCommand {
   name: string;
   /** The raw value for create/update (omitted for delete) — validated client-side here. */
   value?: string;
-  /** The operator-requested environment (used for an `environment`-scoped secret). */
-  env: ManagedEnvironment;
+  /**
+   * The environment the operator named with `--env`, or `undefined` when they named none.
+   *
+   * **Not defaulted, and that is load-bearing.** A missing `--env` on a `global` secret used to be
+   * resolved to the canonical environment before this was called, which made *narrow this write to
+   * staging* and *say nothing* indistinguishable by the time anything could refuse either.
+   * `secretWriteTargets` refuses on exactly that difference, so the absence has to reach it.
+   */
+  env: ManagedEnvironment | undefined;
   /**
    * Every environment the project declares, from the root `pithy.config.ts` (#241) — the set a `global`
    * secret fans out across, and the one the canonical CF-Secrets-Store write is chosen from.
@@ -129,13 +140,17 @@ export async function runSecretWrite(
     });
     return targets;
   } catch (error) {
+    // **The environments it reached before it failed, not none of them.** This recorded the name alone,
+    // so a `global` fan-out that half-completed left a trail saying a write failed and nothing saying
+    // which environments now hold the new value — for `pithy secrets rm`, which environments no longer
+    // hold a live key. A refusal reaches this with an empty list, which is true: nothing was sent.
     await audit({
       action,
       outcome: "failure",
       severity: "warning",
       resourceType: "secret",
       resourceId: command.name,
-      metadata: { name: command.name },
+      metadata: { name: command.name, environments: environmentsWrittenBeforeFailure(error) },
     });
     throw error;
   }

@@ -5,10 +5,12 @@ import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyErro
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { bindingValue } from "@pithy-sh/secrets/src/bindingValue";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
+import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
+import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { type ManagedEnvironment, resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { MintStoreSecret } from "../provision/secretBindings";
 
@@ -126,30 +128,21 @@ export function mintReportLines(minted: readonly MintedSecret[]): string[] {
  * delivery loop, so the throw took it with it: the operator was told nothing was created, arrived at
  * the next run's refusal, and had no record of what the previous run had done.
  *
- * So it is attached to the error rather than replacing it. The failure an operator has to read is
- * unchanged — same class, same payload, same `instanceof` — and the run can still say what it wrote.
- * A symbol and not a payload field, because the payload is what the HTTP codec encodes and what
- * `--json` prints as `{ error }`; the report is the command's own output, on its own stream.
- * Non-enumerable, so nothing serializing an error picks it up by accident.
+ * The mechanism is `partialWriteReport`'s, not this module's. `dispatchSecretWrite` needed the same
+ * thing for the same reason (#325), and a second copy of *how a report survives a throw* is the shape
+ * this repository has produced four times over. What stays here is the payload: what a mint run
+ * created, which is not what a dispatch run reports.
  */
-const MINT_REPORT = Symbol.for("pithy.cli.mintReport");
-
-/** Attach the report to whatever ended the run, and hand the same thing back to be rethrown. */
-function carryMintReport<T>(error: T, minted: MintedSecret[]): T {
-  if (typeof error === "object" && error !== null) {
-    Object.defineProperty(error, MINT_REPORT, { value: minted, enumerable: false, configurable: true });
-  }
-  return error;
-}
+const mintReport = partialWriteReport<MintedSecret[]>("pithy.cli.mintReport", (value): value is MintedSecret[] =>
+  Array.isArray(value),
+);
 
 /**
  * What a failed {@link mintDeclaredSecrets} run created before it failed, in registry order. Empty when
  * the thrown thing carries no report — which is the honest answer for a throw from anywhere else.
  */
 export function mintedBeforeFailure(error: unknown): MintedSecret[] {
-  if (typeof error !== "object" || error === null) return [];
-  const carried = (error as Record<symbol, unknown>)[MINT_REPORT];
-  return Array.isArray(carried) ? (carried as MintedSecret[]) : [];
+  return mintReport.read(error) ?? [];
 }
 
 /**
@@ -227,13 +220,18 @@ export async function mintDeclaredSecrets(options: {
     for (const name of Object.keys(options.registry).sort()) {
       const entry = options.registry[name];
       if (!isManagerMinted(entry)) continue;
-      // `requested` is unread for a `global` d1 secret (see `resolveWriteTargets`, which answers with the
-      // whole declaration) but has to be a real environment. For an `environment` secret each declared one
-      // is its own target, resolved separately so the routing rule stays in one place.
+      // Through the one rule (`secretWriteTargets`), the same one `dispatchSecretWrite` asks, so where a
+      // minted value lands cannot disagree with where `pithy secrets create` puts the same secret.
+      //
+      // A `global` secret names **no** environment: it is not narrowed, and the rule refuses a narrowed
+      // global write. This used to pass `declared[0]` as a placeholder the routing table ignored — a
+      // value invented to satisfy a signature, which is precisely the difference the rule now turns on.
+      // An `environment` secret resolves each declared environment as its own target.
+      const facts = { name, backend: entry.backend, scope: entry.scope, mode: "create" as const, declared };
       const targets =
         entry.scope === "global"
-          ? resolveWriteTargets(entry.backend, entry.scope, declared[0] as ManagedEnvironment, declared)
-          : declared.flatMap((env) => resolveWriteTargets(entry.backend, entry.scope, env, declared));
+          ? secretWriteTargets({ ...facts, requested: undefined })
+          : declared.flatMap((env) => secretWriteTargets({ ...facts, requested: env }));
 
       const absent: ManagedEnvironment[] = [];
       const present: ManagedEnvironment[] = [];
@@ -301,7 +299,7 @@ export async function mintDeclaredSecrets(options: {
   } catch (error) {
     // Carried, never replaced: the refusal or the fault is what the operator has to read, and what this
     // run wrote is what makes the remedy in it safe to perform.
-    throw carryMintReport(error, minted);
+    throw mintReport.carry(error, minted);
   }
   return minted;
 }
