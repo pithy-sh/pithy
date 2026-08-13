@@ -331,6 +331,7 @@ const PADDLE_HANDOFF = {
   clientToken: "test_1234567890abcdef",
   environment: "sandbox",
   displayMode: "overlay",
+  successUrl: "https://acme.example/thanks",
 } as const;
 
 describe("createCheckout and createPortal", () => {
@@ -378,6 +379,11 @@ describe("createCheckout and createPortal", () => {
       { ...PADDLE_HANDOFF, displayMode: "hosted" },
       { ...PADDLE_HANDOFF, transactionId: "" },
       { ...PADDLE_HANDOFF, clientToken: 7 },
+      // The success URL is navigated to with a completed purchase behind it, so it gets the scheme check
+      // a redirect handoff's URL gets. `javascript:` there runs in this page.
+      { ...PADDLE_HANDOFF, successUrl: "javascript:alert(1)" },
+      { ...PADDLE_HANDOFF, successUrl: "/relative" },
+      { ...PADDLE_HANDOFF, successUrl: undefined },
     ];
     for (const body of broken) {
       const result = await createCheckout({ productId: "pro_monthly" }, { fetch: stubFetch(200, body) });

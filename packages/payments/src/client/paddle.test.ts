@@ -57,6 +57,15 @@ function stubPaddle(answer: unknown | (() => Promise<unknown>)): PaddleJs & { pr
       previews.push(query);
       return typeof answer === "function" ? (answer as () => Promise<unknown>)() : Promise.resolve(answer);
     },
+    // Never called from this file. Opening a checkout lives in `checkout.test.ts`, where a stub records
+    // what it was handed; here it exists because `PaddleJs` requires it, and a throw would be a louder
+    // failure than a silent no-op if that ever stopped being true.
+    Checkout: {
+      open: () => {
+        throw new Error("no test in paddle.test.ts opens a checkout");
+      },
+      close: () => undefined,
+    },
     previews,
   };
 }
@@ -500,9 +509,12 @@ describe("the browser half holds no credential but the publishable one", () => {
 
   test("the sweep reads the whole directory — a broken path must fail loudly, not vacuously pass", async () => {
     const files = await clientFiles();
-    expect(files.length).toBeGreaterThanOrEqual(9);
+    expect(files.length).toBeGreaterThanOrEqual(11);
     expect(files.map((file) => file.path).filter((path) => path.endsWith("paddle.ts"))).toHaveLength(1);
-    expect(files.reduce((total, file) => total + file.text.length, 0)).toBeGreaterThan(80_000);
+    // The module that opens a checkout is the one holding the token in its hand, so a sweep that missed
+    // it would be the sweep missing the file it most needs to read.
+    expect(files.map((file) => file.path).filter((path) => path.endsWith("checkout.ts"))).toHaveLength(1);
+    expect(files.reduce((total, file) => total + file.text.length, 0)).toBeGreaterThan(150_000);
   });
 
   /**

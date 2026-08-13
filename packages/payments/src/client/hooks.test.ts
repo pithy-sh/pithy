@@ -6,10 +6,20 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type PaymentsFetch, type PaymentsRequestInit, STORE_SUBSCRIPTION_URLS } from "./api";
+import { PADDLE_FRAME_HEIGHT, PADDLE_FRAME_STYLE, PADDLE_NO_CONTAINER } from "./checkout";
 import { US_NEW_YORK } from "./fixtures/pricePreview";
-import { useCheckout, useEntitlement, usePaddle, usePricePreview, usePurchase, useSubscription } from "./hooks";
+import {
+  useCheckout,
+  useEntitlement,
+  usePaddle,
+  usePaddleCheckout,
+  usePricePreview,
+  usePurchase,
+  useSubscription,
+} from "./hooks";
 import {
   PADDLE_UNAVAILABLE,
+  type PaddleCheckoutOpen,
   type PaddleInitializer,
   type PaddleJs,
   type PaddlePriceQuery,
@@ -466,9 +476,15 @@ describe("useSubscription", () => {
 /** A sandbox setup. Shaped like Paddle's own publishable token, and obviously not a real one. */
 const PADDLE: PaddleSetup = { clientToken: "test_pithyNotARealClientToken", environment: "sandbox" };
 
-/** A Paddle.js that answers `PricePreview` with a recorded sandbox response, and counts its calls. */
-function stubPaddle(answer: unknown): PaddleJs & { previews: PaddlePriceQuery[] } {
+/**
+ * A Paddle.js that answers `PricePreview` with a recorded sandbox response, and records every checkout.
+ *
+ * `opened` is an array for the reason `loads` below is: it is read through the object after the fact, and
+ * anything that snapshots a number instead of mutating a live one reads zero forever.
+ */
+function stubPaddle(answer: unknown): PaddleJs & { previews: PaddlePriceQuery[]; opened: PaddleCheckoutOpen[] } {
   const previews: PaddlePriceQuery[] = [];
+  const opened: PaddleCheckoutOpen[] = [];
   return {
     Initialized: true,
     Environment: { set: () => undefined },
@@ -476,7 +492,14 @@ function stubPaddle(answer: unknown): PaddleJs & { previews: PaddlePriceQuery[] 
       previews.push(query);
       return Promise.resolve(answer);
     },
+    Checkout: {
+      open(options: PaddleCheckoutOpen) {
+        opened.push(options);
+      },
+      close: () => undefined,
+    },
     previews,
+    opened,
   };
 }
 
@@ -632,5 +655,185 @@ describe("usePricePreview", () => {
     });
     await settle();
     expect(paddle.previews).toHaveLength(2);
+  });
+});
+
+/**
+ * The checkout that opens over the page rather than sending the buyer away.
+ *
+ * The last test in this block is the one worth reading. Inline checkout renders into an element found by
+ * class name at the instant `Paddle.Checkout.open` is called, and that instant has to be *after* React
+ * has committed the render that revealed it. That ordering cannot be asserted about a function — it only
+ * exists in a mounted component — so it is proved by mounting one and letting Paddle look for a real
+ * element in a real document.
+ */
+const HANDOFF = {
+  kind: "paddle" as const,
+  transactionId: "txn_01hv8wptq8987qeep44cyrewp9",
+  clientToken: PADDLE.clientToken,
+  environment: "sandbox" as const,
+  displayMode: "overlay" as const,
+  successUrl: "https://example.test/welcome",
+};
+
+/** The class a scaffolded screen gives its inline container. */
+const FRAME = "pithy-checkout";
+
+describe("usePaddleCheckout", () => {
+  test("no handoff opens nothing, and is not a failure", async () => {
+    // The state every screen is in until someone clicks Buy, and the state a screen on a project with no
+    // Paddle rail is in forever.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const initialize = stubInitializer(paddle);
+    const held = await render(() => usePaddleCheckout(null, { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+    expect(paddle.opened).toEqual([]);
+  });
+
+  test("a handoff is opened once, and a re-render does not open a second checkout over it", async () => {
+    // A second overlay over the first is not twice as open. Every render calls this hook again, so the
+    // effect has to key on the transaction rather than on the object it arrived in.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const registry = paddlePage();
+    const initialize = stubInitializer(paddle);
+    const held = await render(() => usePaddleCheckout(HANDOFF, { initialize, registry, frameTarget: FRAME }));
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    await held.rerender();
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+  });
+
+  test("the transaction, the mode and the success URL all come off the handoff", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    await render(() =>
+      usePaddleCheckout(HANDOFF, { initialize: stubInitializer(paddle), registry: paddlePage(), frameTarget: FRAME }),
+    );
+    await settle();
+    expect(paddle.opened[0]).toEqual({
+      transactionId: HANDOFF.transactionId,
+      settings: { displayMode: "overlay", successUrl: HANDOFF.successUrl },
+    });
+  });
+
+  test("a refusal is a rendered message, not a throw out of an effect", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePaddleCheckout(
+        { ...HANDOFF, displayMode: "inline" },
+        { initialize: stubInitializer(paddle), registry: paddlePage(), frameTarget: "nothing-renders-this" },
+      ),
+    );
+    await settle();
+    expect(held.current).toEqual({ inline: true, opening: false, failure: PADDLE_NO_CONTAINER });
+    expect(paddle.opened).toEqual([]);
+  });
+
+  test("`inline` is the handoff's mode, so a screen renders its container from the same fact", async () => {
+    // Not the screen's own guess at what the project configured. `paddle.checkout` is server-side config
+    // resolved into the handoff, and a project switching modes must not also have to edit a screen.
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const overlay = await render(() =>
+      usePaddleCheckout(HANDOFF, { initialize, registry: paddlePage(), frameTarget: FRAME }),
+    );
+    expect(overlay.current.inline).toBe(false);
+    const inline = await render(() =>
+      usePaddleCheckout(
+        { ...HANDOFF, displayMode: "inline" },
+        {
+          initialize,
+          registry: paddlePage(),
+          frameTarget: FRAME,
+        },
+      ),
+    );
+    expect(inline.current.inline).toBe(true);
+  });
+});
+
+describe("a screen composing both hooks", () => {
+  /** What the screen last rendered with, so a test can drive it and then read it. */
+  interface Seen {
+    start: (productId: string) => Promise<void>;
+    failure: unknown;
+    inline: boolean;
+  }
+
+  /**
+   * The scaffolded screen's shape, in miniature: a buy button, and a container rendered from `inline`.
+   *
+   * Deliberately not passed a `document` seam. The point is that Paddle looks in the real one, at the
+   * moment the effect runs, and finds an element React has actually committed.
+   */
+  function mount(fetcher: PaymentsFetch, paddle: PaddleJs) {
+    const seen = { current: undefined as Seen | undefined };
+    const initialize = stubInitializer(paddle);
+    const registry = paddlePage();
+    function Screen() {
+      const checkout = useCheckout({ fetch: fetcher });
+      const opened = usePaddleCheckout(checkout.handoff, { initialize, registry, frameTarget: FRAME });
+      seen.current = { start: checkout.start, failure: opened.failure ?? checkout.failure, inline: opened.inline };
+      return opened.inline ? createElement("div", { className: FRAME }) : null;
+    }
+    return { seen, render: () => act(async () => root.render(createElement(Screen))) };
+  }
+
+  test("inline finds the container the same render put on the page", async () => {
+    // The ordering gate. Opening the checkout from the click handler instead of from an effect would run
+    // it before React committed the container, Paddle would find no element with the class, and it would
+    // render into nothing — silently, which is why this is worth a mounted component to prove.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, { ...HANDOFF, displayMode: "inline" }]]), paddle);
+    await screen.render();
+    expect(container.querySelector(`.${FRAME}`)).toBeNull();
+
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+
+    expect(screen.seen.current?.inline).toBe(true);
+    expect(container.querySelector(`.${FRAME}`)).not.toBeNull();
+    expect(screen.seen.current?.failure).toBeNull();
+    expect(paddle.opened).toEqual([
+      {
+        transactionId: HANDOFF.transactionId,
+        settings: {
+          displayMode: "inline",
+          successUrl: HANDOFF.successUrl,
+          frameTarget: FRAME,
+          frameStyle: PADDLE_FRAME_STYLE,
+          frameInitialHeight: PADDLE_FRAME_HEIGHT,
+        },
+      },
+    ]);
+  });
+
+  test("overlay renders no container and still opens", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, HANDOFF]]), paddle);
+    await screen.render();
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+    expect(container.querySelector(`.${FRAME}`)).toBeNull();
+    expect(paddle.opened).toHaveLength(1);
+    expect(screen.seen.current?.failure).toBeNull();
+  });
+
+  test("a redirect rail opens no Paddle at all — the script is never fetched", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_1" }]]), paddle);
+    await screen.render();
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+    expect(paddle.opened).toEqual([]);
+    expect(screen.seen.current?.inline).toBe(false);
   });
 });

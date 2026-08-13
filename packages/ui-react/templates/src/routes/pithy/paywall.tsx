@@ -3,7 +3,7 @@ import {
   type PaymentsHostedRail,
   returnedCheckoutSession,
 } from "@pithy-sh/payments/src/client/api";
-import { useCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
+import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
 import { useEffect, useState } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
@@ -34,8 +34,20 @@ function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> 
   return PAYMENTS_HOSTED_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
 }
 
+/**
+ * The class Paddle renders an inline checkout into.
+ *
+ * A class name, not an id — that is Paddle's `frameTarget` contract. The container is rendered only when
+ * the handoff asks for it, from `paddle.checkout` in your config: switch that to `inline` and the form
+ * appears here instead of over the page, with no edit to this file. Style `.pithy-checkout` to place it.
+ */
+const CHECKOUT_FRAME = "pithy-checkout";
+
 export default function Paywall() {
   const checkout = useCheckout(paymentsClient);
+  // Paddle's overlay and inline modes never leave this page, so the handoff has to be opened here. Every
+  // other hosted rail has already navigated away by the time `start` resolves and this reads null.
+  const opened = usePaddleCheckout(checkout.handoff, { frameTarget: CHECKOUT_FRAME });
   const purchase = usePurchase(paymentsClient);
   const [returned] = useState(() => returnedCheckoutSession());
 
@@ -83,6 +95,7 @@ export default function Paywall() {
 
       {purchase.failure && <p className="muted">{purchase.failure.message}</p>}
       {checkout.failure && <p className="muted">{checkout.failure.message}</p>}
+      {opened.failure && <p className="muted">{opened.failure.message}</p>}
 
       <div className="stack">
         {paymentsConfig.products.map((product) => (
@@ -102,6 +115,11 @@ export default function Paywall() {
           </div>
         ))}
       </div>
+
+      {/* Rendered from the handoff rather than from a guess at your config, and rendered *before* the
+          checkout opens: Paddle looks this element up by class name at that moment, and finds nothing if
+          the render revealing it has not committed yet. That ordering is `usePaddleCheckout`'s job. */}
+      {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">
         <Link className="muted" to="/subscription">

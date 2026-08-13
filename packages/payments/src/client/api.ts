@@ -116,6 +116,16 @@ export interface PaddleCheckoutHandoff {
   environment: PaymentsPaddleEnvironment;
   /** Whether the checkout opens over the page or inside a container. */
   displayMode: PaymentsPaddleDisplayMode;
+  /**
+   * Where a buyer who paid is sent, from `config.paddle.successUrl`.
+   *
+   * **On the handoff rather than in the screen's hands, and that is the same rule the redirect rails
+   * follow.** `settings.successUrl` is a URL the browser is sent to with a completed purchase behind it;
+   * a screen that could name it could send a paying customer to a page it controls. So it comes from the
+   * server, on the response, exactly as a Stripe session's return URLs do — and it is checked here as a
+   * navigable URL before anything hands it to Paddle.
+   */
+  successUrl: string;
 }
 
 /** One subscription's authenticated portal deep links. */
@@ -398,7 +408,10 @@ function isCheckoutHandoff(value: unknown): value is PaymentsCheckoutHandoff {
     isNonEmpty(value.transactionId) &&
     isNonEmpty(value.clientToken) &&
     isMember(value.environment, PADDLE_ENVIRONMENTS) &&
-    isMember(value.displayMode, PADDLE_DISPLAY_MODES)
+    isMember(value.displayMode, PADDLE_DISPLAY_MODES) &&
+    // The same check a redirect's URL gets, and for the same reason: Paddle sends the browser here when
+    // the card clears, so `javascript:` in it would run in this page with a purchase behind it.
+    isNavigable(value.successUrl)
   );
 }
 

@@ -86,11 +86,26 @@ describe("createPaddleCheckoutSession", () => {
       clientToken: "test_1234567890abcdefghij",
       environment: "sandbox",
       displayMode: "overlay",
+      // From config, and it has to cross: Paddle.js takes it as `settings.successUrl` at the moment the
+      // overlay opens, which is in the browser. Config said of this field that it was "used as
+      // `settings.successUrl` for Paddle.js" while nothing passed it, so in two of the three modes the
+      // adopter's return page was unreachable.
+      successUrl: INPUT.successUrl,
     });
 
     const inline = stub({ "/transactions": CREATED });
     const second = await createPaddleCheckoutSession(INPUT, options({ transport: inline, checkout: "inline" }));
-    expect(second).toMatchObject({ kind: "paddle", displayMode: "inline" });
+    expect(second).toMatchObject({ kind: "paddle", displayMode: "inline", successUrl: INPUT.successUrl });
+  });
+
+  test("the success URL is the one the route resolved from config, not one derived here", async () => {
+    // Two different URLs through the same rail. A hardcoded one, or one built from the transaction, would
+    // pass the case above and fail this — and would be a paying customer landing on the wrong page, or on
+    // production's page from staging.
+    const transport = stub({ "/transactions": CREATED });
+    const elsewhere = { ...INPUT, successUrl: "https://staging.acme.example/welcome?x=1" };
+    const handoff = await createPaddleCheckoutSession(elsewhere, options({ transport }));
+    expect(handoff).toMatchObject({ successUrl: "https://staging.acme.example/welcome?x=1" });
   });
 
   test("hosted returns the redirect member, so Stripe and Lemon Squeezy's shape is unchanged", async () => {

@@ -1,4 +1,4 @@
-import { useCheckout, usePricePreview } from "@pithy-sh/payments/src/client/hooks";
+import { useCheckout, usePaddleCheckout, usePricePreview } from "@pithy-sh/payments/src/client/hooks";
 import { priceSummary } from "@pithy-sh/payments/src/client/paddle";
 import { paddleSetup, paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
@@ -36,6 +36,15 @@ const ITEMS = PADDLE_PRODUCTS.map((product) => ({ priceId: product.priceId, quan
  */
 const SETUP = ITEMS.length > 0 ? paddleSetup : null;
 
+/**
+ * The class Paddle renders an inline checkout into.
+ *
+ * A class name, not an id — that is Paddle's `frameTarget` contract. Whether it is used at all comes from
+ * `paddle.checkout` in your config, through the handoff: switch that to `inline` and the card form appears
+ * under the prices instead of over them, with no edit to this file. Style `.pithy-checkout` to place it.
+ */
+const CHECKOUT_FRAME = "pithy-checkout";
+
 /** How often a price bills, in words. Null for a one-off, which needs no suffix. */
 function every(cycle: { interval: string; frequency: number } | null): string | null {
   if (cycle === null) return null;
@@ -47,6 +56,9 @@ export default function Pricing() {
   // passes `address` or `customerId` here; a marketing page does not know better.
   const quoted = usePricePreview(SETUP, { items: ITEMS });
   const checkout = useCheckout(paymentsClient);
+  // The checkout opens over this page or inside it — it never navigates away, which is the whole reason
+  // this rail has a pricing screen with a buy button on it rather than a link to somebody else's page.
+  const opened = usePaddleCheckout(checkout.handoff, { frameTarget: CHECKOUT_FRAME });
 
   if (PADDLE_PRODUCTS.length === 0) {
     return (
@@ -71,6 +83,7 @@ export default function Pricing() {
           quotes again on its own page. */}
       {quoted.failure && <p className="muted">{quoted.failure.message}</p>}
       {checkout.failure && <p className="muted">{checkout.failure.message}</p>}
+      {opened.failure && <p className="muted">{opened.failure.message}</p>}
 
       <div className="stack">
         {PADDLE_PRODUCTS.map((product) => {
@@ -103,6 +116,11 @@ export default function Pricing() {
           );
         })}
       </div>
+
+      {/* Rendered from the handoff, and rendered before the checkout opens: Paddle finds this element by
+          class name at the moment it opens, so the render revealing it has to commit first. That ordering
+          is `usePaddleCheckout`'s job, which is why the open lives in a hook and not in the click. */}
+      {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">
         <Link className="muted" to="/subscription">

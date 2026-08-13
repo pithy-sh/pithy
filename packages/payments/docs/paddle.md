@@ -149,7 +149,12 @@ Paddle re-signs each retry with a fresh `ts`, so the window does not silently re
 }
 ```
 
-The third is the only one that means anything, and here is why. `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` is a first-class supported call needing nothing but the publishable client token — the token this rail ships to every browser that loads your paywall. So a stranger can write `pithy_user` and `pithy_env`: the key names are exported constants in an open-source package and the environment is one of three values.
+The third is the only one that means anything, and here is why. `custom_data` is **client-writable**, on both forms of `Paddle.Checkout.open`, needing nothing but the publishable client token — the token this rail ships to every browser that loads your paywall. Both of these were driven against the live sandbox and paid with a test card:
+
+- `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` completes with no server involved at any point, and Paddle stores the page's object verbatim.
+- `Paddle.Checkout.open({ transactionId, customData: {…} })` **replaces** the `custom_data` your server wrote when it created that transaction. Same id, `origin` still `api`, owner now whoever the page said. It is not refused and it does not throw.
+
+So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package and the environment is one of three values — and creating the transaction server-side does not protect them.
 
 What they cannot write is a MAC keyed on your notification destination's secret. So the rail honours a stamped reference only when the proof verifies, and refuses it otherwise. A delivery with no stamp at all — a transaction you created by hand in the dashboard — is not fenced out; it simply binds nobody.
 
@@ -233,11 +238,33 @@ Both states are specified, because both are on screen for someone.
 
 The Japanese row above was fetched twice minutes apart and returned ¥797 then ¥798. Paddle's FX rate moves. Nothing should assert an exact converted figure against a live account, and nothing should cache one.
 
-## 12. Testing checkout against a payment link in dev
+## 12. Overlay and inline checkout
+
+`paddle.checkout` in `pithy.config.ts` decides which of three the buyer sees, and the server puts the answer on the handoff so a screen never guesses:
+
+| Mode | What happens |
+|---|---|
+| `overlay` | A modal over your page. The default, and no layout decisions. |
+| `inline` | An iframe rendered into an element of yours. Looks like part of the app. |
+| `hosted` | A redirect to Paddle's own page. Needs a default payment link on the account. |
+
+`POST /payments/checkout` answers `{ kind: "paddle", transactionId, clientToken, environment, displayMode, successUrl }` in the first two, and the ordinary `{ kind: "redirect", url }` in the third. Nothing on that response is secret: the client token is publishable exactly as a Stripe price id is, and the API key and the signing secret are not expressible on it.
+
+The screens are wired for you. `useCheckout().handoff` carries it, `usePaddleCheckout(handoff, { frameTarget })` opens it, and the scaffolded `paywall.tsx` and `pricing.tsx` render the container from `opened.inline` — so switching `overlay` to `inline` in your config needs no edit to a scaffolded file.
+
+**Inline needs a container, and the container has to exist first.** `frameTarget` is a **class name**, not an id and not a selector. The open happens in an effect rather than in the click handler, because Paddle looks the element up at the instant it opens and React has to have committed the render that revealed it. Get that ordering wrong and Paddle throws `TypeError: Cannot read properties of undefined (reading 'appendChild')` out of your click handler — measured, not guessed. `openPaddleCheckout` checks for the element first and answers `client/paddle_no_container` instead, because a named refusal with an action beats somebody else's stack trace.
+
+The frame is styled `width: 100%; min-width: 312px; background-color: transparent; border: none;` at 450px by default. The `min-width` is Paddle's requirement rather than taste: below it the footer naming Paddle as merchant of record is cut off.
+
+**The success path is a navigation.** `paddle.successUrl` is passed as `settings.successUrl`, so a buyer who pays leaves for your page in every mode — the same page the redirect rails return to, so your return screen is one screen. It travels on the handoff from config and never from the request, for the reason every return URL in this capability does: a client that could name one could send a paying customer to a page it controls.
+
+**What the browser is allowed to open.** A transaction id, and settings. Never `items[]`, which would let the page choose what is being sold and to whom; never `customData`, which the server has already written. The type in `src/client/paddle.ts` cannot express either.
+
+## 13. Testing checkout against a payment link in dev
 
 The sandbox account's default payment link is normalised by Paddle to `https://`. `wrangler dev` serves plain HTTP on 8787, so a Paddle-generated **hosted** payment link will not connect in dev unless you run `pithy dev` with `--local-protocol=https`. Overlay and inline never route through that link and are unaffected.
 
-## 13. Discounts
+## 14. Discounts
 
 Both halves work. Applying a code needs nothing but `discount.read`, so codes you mint by hand in the dashboard are fully served.
 
@@ -252,7 +279,7 @@ Two things Paddle does differently:
 
 `redeemableUntil` maps to `expires_at`, which stops **redemption**: after it the code cannot be claimed, and anyone already holding the discount keeps their rate for its full duration.
 
-## 14. The customer portal
+## 15. The customer portal
 
 `POST /payments/portal` takes **no body at all**. There is exactly one Paddle customer this caller may manage, resolved from the provider-account map, and the subscriptions asked about are read from that caller's own rows. A field naming either would let any signed-in caller mint authenticated cancel links against somebody else's subscription.
 
@@ -262,7 +289,7 @@ The response carries the overview page plus, per subscription, a cancel link and
 
 There is **no `portalReturnUrl`**. Paddle's portal takes no return parameter, so `paddle.portalReturnUrl` is refused by config rather than accepted and dropped — a return URL you wrote that nothing reads is a lie in a file you trust.
 
-## 15. Reconciliation, and the sweep only this rail can do
+## 16. Reconciliation, and the sweep only this rail can do
 
 `pithy payments reconcile --rail paddle` runs the nightly pass on demand. It does two things.
 

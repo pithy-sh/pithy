@@ -116,6 +116,11 @@ export const PaymentsCheckoutHandoffResponse = z
         displayMode: z
           .enum(["overlay", "inline"])
           .describe("Whether the checkout opens over the page or inside a container the screen provides."),
+        successUrl: z
+          .string()
+          .describe(
+            "Where a buyer who paid is sent, from `config.paddle.successUrl`. Paddle.js takes it as `settings.successUrl` when the checkout opens, which is why it crosses here rather than staying on the server — and why it comes from config rather than from the request that asked for the checkout.",
+          ),
       })
       .describe("A Paddle.js handoff — nothing to navigate to, because the checkout opens in place."),
   ])

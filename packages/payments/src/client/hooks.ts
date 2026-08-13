@@ -17,6 +17,7 @@ import {
   startCheckout,
   submitPurchase,
 } from "./api";
+import { openPaddleCheckout, type PaddleCheckoutOptions } from "./checkout";
 import {
   loadPaddle,
   type PaddleJs,
@@ -253,19 +254,23 @@ export interface UseCheckout {
    * The handoff to open with Paddle.js, or null — set only on a rail with nowhere to navigate to.
    *
    * Null on a redirect rail, because the browser has already left and there is nothing for a screen to
-   * hold. A screen composing Paddle watches this and opens the checkout; a screen that never composes it
-   * reads null forever and renders exactly as it did before this field existed.
+   * hold. Pass it to {@link usePaddleCheckout}, which opens it; a screen that never composes Paddle reads
+   * null forever and renders exactly as it did before this field existed.
    */
   handoff: PaddleCheckoutHandoff | null;
 }
 
 /**
- * The web purchase path, which is Stripe's alone.
+ * The web purchase path: start a checkout, and go wherever that rail goes.
  *
  * Apple and Google purchases happen inside a store SDK before any server hears of them, so there is no
  * session for Pithy to create and no browser flow to start — a web paywall lists those products, it does
- * not sell them. Hosted Checkout needs no SDK script and no publishable key in the page: the server mints
- * a session, this navigates to it, and Stripe owns everything in between.
+ * not sell them. Stripe's and Lemon Squeezy's hosted checkouts need no SDK script and no publishable key
+ * in the page: the server mints a session, this navigates to it, and the store owns everything in between.
+ *
+ * Paddle is the one that does not leave. This hook does the same work for it — the server call, the
+ * refusal — and stops at the handoff, because opening it belongs where the container is. That is
+ * {@link usePaddleCheckout}.
  */
 export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   const [starting, setStarting] = useState(false);
@@ -295,6 +300,65 @@ export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   );
 
   return { start, starting, failure, handoff };
+}
+
+/** What {@link usePaddleCheckout} gives the screen that composes Paddle. */
+export interface UsePaddleCheckout {
+  /**
+   * Whether this handoff needs a container on the page.
+   *
+   * Read it to render one, and render it unconditionally beside the button rather than deciding for
+   * yourself: the mode is `paddle.checkout` in the project's config, resolved by the server, so a project
+   * that switches from `overlay` to `inline` must not also have to edit a screen it was given a year ago.
+   */
+  inline: boolean;
+  /** Whether the checkout is being opened — the script may still be loading. */
+  opening: boolean;
+  /** Why it could not be opened, or null. */
+  failure: PaymentsFailure | null;
+}
+
+/**
+ * Open the handoff {@link useCheckout} produced, with Paddle.js, over this page or inside it.
+ *
+ * **In an effect, and that is the whole reason this is a hook rather than a line in a click handler.**
+ * Inline checkout renders into an element the screen provides, and Paddle finds it by class name at the
+ * moment `open` is called: called from the handler that starts the checkout, the container React is about
+ * to render does not exist yet, and Paddle renders into nothing and reports nothing. An effect runs after
+ * the commit that revealed it. Getting that ordering wrong produces a button that appears to do nothing,
+ * which is the failure mode hardest to notice in review and easiest to notice in production.
+ *
+ * One open per handoff. `start` mints a new transaction on every attempt, so the transaction id is what a
+ * fresh attempt looks like; a re-render with the same handoff must not open a second checkout over the
+ * first.
+ */
+export function usePaddleCheckout(
+  handoff: PaddleCheckoutHandoff | null,
+  options?: PaddleCheckoutOptions,
+): UsePaddleCheckout {
+  const [opening, setOpening] = useState(false);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const latestHandoff = useLatest(handoff);
+  const live = useLive();
+  const transactionId = handoff?.transactionId;
+
+  // `transactionId` stands in for the handoff, the way `priceQueryKey` stands in for a query: the object
+  // is rebuilt by `useCheckout` on every attempt and identity would be a fine dependency today, but a
+  // screen that builds one inline would then reopen the checkout on every render.
+  useEffect(() => {
+    const current = latestHandoff.current;
+    if (transactionId === undefined || current === null) return;
+    setOpening(true);
+    setFailure(null);
+    void openPaddleCheckout(current, latest.current).then((refused) => {
+      if (!live.current) return;
+      setOpening(false);
+      setFailure(refused);
+    });
+  }, [transactionId, latest, latestHandoff, live]);
+
+  return { inline: handoff?.displayMode === "inline", opening, failure };
 }
 
 /** What {@link usePurchase} gives the screen that submits receipts. */

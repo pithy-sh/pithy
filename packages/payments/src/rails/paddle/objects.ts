@@ -45,11 +45,18 @@ import type { UnboundProviderEvent } from "../contract";
  * another environment is the normal case here, not an anomaly, and it projects nothing and returns 200.
  *
  * The issue argues the stamp needs no proof, because "`Paddle.Checkout.open` refuses `customData`
- * alongside `transactionId`, and the server always creates the transaction." That constraint is real and
- * it applies only to the `transactionId` form. Paddle's own documentation shows
- * `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` as a first-class call
- * needing nothing but the publishable client token — the token this rail itself ships to every browser
- * that loads a paywall. So `custom_data.pithy_user` is a string a browser can write, and binding
+ * alongside `transactionId`, and the server always creates the transaction." **That constraint does not
+ * exist.** Two things were measured against the live sandbox on 2026-08-13, both from a page holding
+ * nothing but the publishable client token this rail ships to every browser that loads a paywall:
+ *
+ * - `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` opens and completes with
+ *   no server involved at all, and Paddle stores the page's `custom_data` verbatim.
+ * - `Paddle.Checkout.open({ transactionId, customData: {…} })` does not throw, is not refused, and
+ *   **replaces** the `custom_data` the server wrote when the transaction was created. Same transaction id,
+ *   `origin` still `"api"`, owner now whoever the page said.
+ *
+ * Both recordings are in `fixtures/browserForged.ts` and `objects.test.ts` gates on them. So
+ * `custom_data.pithy_user` is a string a browser can write on either form of the call, and binding
  * ownership on it would let anyone attach a purchase to any account, permanently, because
  * `linkProviderAccount` never rebinds and the first pairing wins.
  *
@@ -67,9 +74,10 @@ export const PADDLE_CUSTOM_ENV = "pithy_env";
 /**
  * The `custom_data` key carrying the proof that **this deployment's server** wrote the two above.
  *
- * Without it the other two prove nothing: `Paddle.Checkout.open` accepts `customData` beside an `items[]`
- * array with only the publishable client token, both key names are exported constants in an open-source
- * package, and the environment value is one of three. Requiring them asks an attacker to guess nothing.
+ * Without it the other two prove nothing: `Paddle.Checkout.open` accepts `customData` with only the
+ * publishable client token — beside an `items[]` array *and* beside a `transactionId`, where it overwrites
+ * what the server wrote — both key names are exported constants in an open-source package, and the
+ * environment value is one of three. Requiring them asks an attacker to guess nothing.
  *
  * A MAC is the only part a stranger cannot produce.
  */
@@ -491,11 +499,13 @@ export function fencedOut(custom: Record<string, unknown> | null | undefined, de
  * server wrote and the store returned unchanged" — the route writes the provider-account link from it, and
  * `linkProviderAccount` never rebinds, so the first pairing is permanent.
  *
- * `Paddle.Checkout.open` accepts `customData` beside an `items[]` array of price ids with nothing but the
- * publishable client token, so `custom_data` on its own is **not** evidence our server wrote anything: a
- * stranger can put any string in it and permanently bind their Paddle customer to an account they chose.
- * The env stamp does not save it either — the key names are exported constants in an open-source package
- * and the value is one of three.
+ * `Paddle.Checkout.open` accepts `customData` with nothing but the publishable client token, and it does
+ * so on both forms of the call — beside an `items[]` array of price ids, and beside a `transactionId`,
+ * where the page's object replaces the one the server wrote. So `custom_data` on its own is **not**
+ * evidence our server wrote anything, and it is not evidence even when our server did: a stranger can put
+ * any string in it and permanently bind their Paddle customer to an account they chose. The env stamp does
+ * not save it either — the key names are exported constants in an open-source package and the value is one
+ * of three.
  *
  * A deployment that does not know its own `ENVIRONMENT` trusts no reference at all. That is the safe
  * direction: the cost is a purchase that lands unbound and is repairable from the trail, where the other

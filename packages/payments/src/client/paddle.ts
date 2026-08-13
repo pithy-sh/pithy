@@ -6,6 +6,7 @@ import {
   PAYMENTS_NO_BROWSER,
   PAYMENTS_UNREADABLE,
   type PaymentsFailure,
+  type PaymentsPaddleDisplayMode,
   type PaymentsPaddleEnvironment,
   type PaymentsResult,
 } from "./api";
@@ -131,6 +132,60 @@ export interface PaddleJs {
   Environment: { set(environment: PaymentsPaddleEnvironment): void };
   /** Prices for this visitor. The camelCase mirror of the server's `pricing-preview` endpoint. */
   PricePreview(params: PaddlePriceQuery): Promise<unknown>;
+  /** The overlay and the inline frame. See {@link PaddleCheckoutOpen} for what this kit may hand it. */
+  Checkout: {
+    /** Open a checkout. Synchronous and returns nothing — a refusal arrives as a throw or not at all. */
+    open(options: PaddleCheckoutOpen): void;
+    /** Close whatever is open. Nothing happens when nothing is. */
+    close(): void;
+  };
+}
+
+/**
+ * How one checkout is presented. Paddle takes the same settings at `Initialize` and here.
+ *
+ * **Here, deliberately.** The loader is one per page and these are per checkout: the display mode comes
+ * off a handoff the server minted, and the container class is the screen's, so a page with a paywall and
+ * a pricing panel must be able to open two checkouts differently without re-initializing Paddle — which
+ * it cannot do, because `Initialize` runs once. Paddle's own documentation says `frameTarget` goes in
+ * `Paddle.Initialize()`; its `Checkout.open` reference then passes exactly these fields per call, and the
+ * live sandbox honours them on both forms. Where the two disagree, the measurement wins.
+ */
+export interface PaddleCheckoutSettings {
+  /** Over the page, or inside the element {@link PaddleCheckoutSettings.frameTarget} names. */
+  displayMode?: PaymentsPaddleDisplayMode;
+  /** The **class name** — not an id, not a selector — of the element an inline checkout renders into. */
+  frameTarget?: string;
+  /** Styles for that element. Paddle needs `min-width` at 312px or the merchant-of-record footer is cut off. */
+  frameStyle?: string;
+  /** Its height in pixels on load, before the frame resizes itself. Paddle recommends 450. */
+  frameInitialHeight?: number;
+  /** Where a buyer who paid is sent. From the server, never from a screen — see {@link PaddleCheckoutOpen}. */
+  successUrl?: string;
+}
+
+/**
+ * What this kit is willing to open a checkout for: a transaction, and how to show it.
+ *
+ * **`items` and `customData` are absent, and their absence is deliberate in two different ways.**
+ *
+ * `items[]` is what makes Paddle pleasant — no server call, a checkout in one click — and it is also a
+ * checkout whose price and whose buyer are chosen by the page. This capability takes both from the
+ * catalogue entry a product id resolves to, everywhere else, so that a client cannot buy Pro for the price
+ * of a coin pack. A transaction the server minted is that same rule, kept here.
+ *
+ * `customData` is the harder one, because leaving it out does **not** make the stamp safe. Measured live:
+ * Paddle accepts `customData` beside a `transactionId` and overwrites the `custom_data` the server wrote
+ * on that transaction. So omitting it here is hygiene — this kit has nothing to say through that field
+ * that it has not already said on the server — and the thing that actually protects ownership is the MAC
+ * in `../rails/paddle/objects.ts`. A reader who takes this type as the security boundary would be reading
+ * it wrongly, which is why it says so.
+ */
+export interface PaddleCheckoutOpen {
+  /** The transaction the server created — `txn_…`. The only thing a checkout here is ever opened for. */
+  transactionId: string;
+  /** How to present it. */
+  settings?: PaddleCheckoutSettings;
 }
 
 /**

@@ -196,4 +196,42 @@ describe("the React template library", () => {
     expect(screens.length).toBeGreaterThanOrEqual(5);
     expect(named, "no screen reads a rail by name at all — the pattern has stopped matching").toBeGreaterThan(0);
   });
+
+  /**
+   * A screen that starts a checkout finishes it.
+   *
+   * #335, as a rule rather than as two remembered edits. `useCheckout` returns a `handoff` on the one
+   * rail with nowhere to navigate to, and a screen that ignores it renders a Buy button that creates a
+   * transaction, charges nobody, and does nothing visible — the failure mode hardest to notice, because
+   * every other rail on the same button works. Both screens that sell had exactly that shape until this
+   * issue, and the third screen someone adds would inherit it by copying either of them.
+   *
+   * A sweep over every screen that calls `useCheckout`, not a list of the two that do today.
+   */
+  test("every screen that starts a checkout also opens the one that does not navigate away", async () => {
+    const screens = declaredPaths().filter((path) => path.startsWith("src/routes/pithy/"));
+    const selling: string[] = [];
+
+    for (const path of screens) {
+      const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
+      if (!text.includes("useCheckout(")) continue;
+      selling.push(path);
+      expect(text, `${path} starts a checkout and never opens the Paddle handoff`).toContain("usePaddleCheckout(");
+      // Inline checkout renders into an element found by class name. A screen that passes a frameTarget
+      // and never renders one is a checkout drawn into nothing — silently, and only on the projects
+      // configured for inline, which is the last place a defect gets found.
+      const frameTarget = /frameTarget:\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(text);
+      expect(frameTarget, `${path} opens a checkout without naming a container`).not.toBeNull();
+      const container = frameTarget?.[1] ?? "";
+      expect(text, `${path} names ${container} as its frame target and never renders it`).toContain(
+        `className={${container}}`,
+      );
+    }
+
+    // Floors. A glob that swept nothing, or a screen set where nothing sells, would assert nothing here.
+    expect(screens.length).toBeGreaterThanOrEqual(5);
+    expect(selling.length, "no scaffolded screen starts a checkout — the marker has stopped matching").toBeGreaterThan(
+      1,
+    );
+  });
 });

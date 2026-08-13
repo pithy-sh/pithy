@@ -84,6 +84,7 @@ describe("payments response schemas", () => {
       clientToken: "test_1234567890abcdef",
       environment: "sandbox",
       displayMode: "overlay",
+      successUrl: "https://acme.example/thanks",
     });
     accepts(PaymentsPortalHandoffResponse, { url: "https://sandbox-customer-portal.paddle.com/cpl_01" });
     accepts(PaymentsPortalHandoffResponse, {

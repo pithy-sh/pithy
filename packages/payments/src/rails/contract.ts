@@ -338,6 +338,14 @@ export type CheckoutHandoff =
       environment: "sandbox" | "production";
       /** Whether the checkout opens over the page or inside a container the screen provides. */
       displayMode: "overlay" | "inline";
+      /**
+       * Where a buyer who paid is sent, from `config.paddle.successUrl`.
+       *
+       * On the handoff because Paddle.js takes it as `settings.successUrl` at the moment the checkout is
+       * opened, and that moment is in the browser. It still comes from config and never from a request:
+       * a client that could name a return URL could send a paying customer to a page it controls.
+       */
+      successUrl: string;
     };
 
 /** One subscription's authenticated portal deep links, as a store hands them back. */

@@ -132,6 +132,12 @@ export async function createPaddleCheckoutSession(
       clientToken: options.clientToken,
       environment: options.environment,
       displayMode: options.checkout,
+      // `config.paddle.successUrl` says of itself that it is "used as `settings.successUrl` for
+      // Paddle.js", and until this line nothing passed it — the overlay closed onto the page the buyer
+      // started from and the adopter's return screen was unreachable in two of the three modes. It
+      // travels on the handoff rather than being read in the browser for the reason every other return
+      // URL is config: a client that could name one could send a paying customer to a page it controls.
+      successUrl: input.successUrl,
     };
   }
 
