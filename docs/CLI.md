@@ -618,9 +618,15 @@ Help is **citty's**, not ours. `pithy --help` and every `<command> --help` are r
 
 The two transcripts below are captured from the real binary and pinned by `packages/cli/src/binDocs.test.ts`. Reword a description in `main.ts`, add a command, or add a flag, and that test fails until this section is recaptured. `v<version>` stands in for the installed version — the one part of the output that varies.
 
+**A command that names no action is asking what it can do, and being answered is a success.** One rule, at every level: bare `pithy` prints the command list and exits 0, and so does a group with no subcommand — `pithy secrets`, `pithy worker`, all thirteen. Nothing is printed after the help, because the list *is* the answer to the missing command; repeating it as a complaint is the CLI arguing with a user it has just served. Exit 0 is what makes `pithy && next` and a bare invocation in a CI step work, and it is what keeps `bun run pithy` from adding `error: script "pithy" exited with code 1` under a successful help screen.
+
+A name that is **not** a command is a different thing. `pithy nonsense` is a mistake, not a question: it names what was not recognised, shows the help, and exits non-zero.
+
+The rule lives in `packages/cli/src/dispatch.ts`, once, and is applied before citty parses — citty throws `E_NO_COMMAND` for the root and for every group, and `runMain` catches every such error into usage plus the message plus `process.exit(1)`. A group added later inherits the rule with nothing to remember.
+
 ### 4.1 Top-level help
 
-`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help.
+`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help. Bare `pithy` prints this same screen and exits 0.
 
 ```
 $ pithy --help

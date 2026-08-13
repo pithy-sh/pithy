@@ -52,9 +52,23 @@ if (wantsVersion(argv)) {
     process.exit(0);
   }
 
-  const { runMain } = await import("citty");
+  const { runMain, showUsage } = await import("citty");
   const { main } = await import("./main");
-  await runMain(main);
+  const { usageTarget } = await import("./dispatch");
+
+  /**
+   * A command that names no action is asking what it can do, so it is answered and the run succeeds.
+   *
+   * Before citty, because citty cannot be told otherwise: `runCommand` throws `E_NO_COMMAND` for the
+   * root and for every group, and `runMain` catches it into usage + the message + `process.exit(1)`.
+   * So bare `pithy` printed a complete command list and then said `No command specified.` under it,
+   * exiting non-zero — which fails `pithy && next`, fails a CI step, and under `bun run` adds a line
+   * naming a script rather than anything the user did (#319). `pithy nonsense` still reaches citty and
+   * is still refused: an unrecognised name is a mistake, not a question. See `dispatch.ts`.
+   */
+  const usage = await usageTarget(main, argv);
+  if (usage) await showUsage(usage.cmd, usage.parent);
+  else await runMain(main);
 }
 
 /**
