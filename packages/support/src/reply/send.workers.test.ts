@@ -33,7 +33,7 @@ const BODY = "Refunded. Sorry about the double charge.";
 const db = supportDatabase(env.DB);
 
 /** What the fake `enqueue` was handed. */
-type EnqueueInput = Parameters<ReplyDeps["enqueue"]>[0];
+type EnqueueInput = Parameters<NonNullable<ReplyDeps["enqueue"]>>[0];
 
 /** Build an app-database provider for the tables migration. */
 function provider(): MigrationProvider {
@@ -112,7 +112,9 @@ async function seedMessage(seed: {
         subject: "Double charge",
         textBody: "I was charged twice",
         htmlBody: null,
-        emailJobId: null,
+        // An outbound mail row carries the job it was enqueued as, and the schema refuses one that
+        // does not — the row is only written once the send was accepted.
+        emailJobId: seed.direction === "outbound" ? "job-seed" : null,
         rawKey: null,
         rawBytes: null,
         receivedAt: at,
@@ -123,7 +125,14 @@ async function seedMessage(seed: {
 }
 
 /** The reply harness: real tables, a recording `enqueue`, and a recording audit sink. */
-function harness(options: { enqueue?: ReplyDeps["enqueue"]; config?: SupportConfigInput } = {}): {
+function harness(
+  options: {
+    enqueue?: ReplyDeps["enqueue"];
+    config?: SupportConfigInput;
+    /** Leave `enqueue` off entirely — a project that composed support and not email. */
+    noEmailCapability?: boolean;
+  } = {},
+): {
   deps: ReplyDeps;
   sent: EnqueueInput[];
   events: AuditEventInput[];
@@ -131,18 +140,17 @@ function harness(options: { enqueue?: ReplyDeps["enqueue"]; config?: SupportConf
   const sent: EnqueueInput[] = [];
   const events: AuditEventInput[] = [];
   let counter = 0;
+  const recording: NonNullable<ReplyDeps["enqueue"]> = async (input) => {
+    sent.push(input);
+    return { jobId: "job-1" };
+  };
   return {
     sent,
     events,
     deps: {
       db,
       config: SupportConfig.parse(options.config ?? { inboundAddresses: [INBOX] }),
-      enqueue:
-        options.enqueue ??
-        (async (input) => {
-          sent.push(input);
-          return { jobId: "job-1" };
-        }),
+      enqueue: options.noEmailCapability ? undefined : (options.enqueue ?? recording),
       fts: false,
       emit: async (event) => {
         events.push(event);
@@ -375,7 +383,7 @@ describe("answering a thread that started in the app", () => {
     // Threaded against the id minted for the submission — without it her answer opens a second thread
     // and the conversation fragments into one message per reply.
     expect(sent[0]?.inReplyTo).toBe("<app-1@help.example.com>");
-    expect(result.jobId).toBe("job-1");
+    expect(result).toEqual({ channel: "email", messageId: "out-1", jobId: "job-1" });
   });
 
   test("the outbound row is `email`, whatever the thread started as", async () => {
@@ -389,21 +397,6 @@ describe("answering a thread that started in the app", () => {
     expect(rows[0]?.channel).toBe("email");
   });
 
-  test("with no address anywhere the reply is refused rather than sent from a guess", async () => {
-    // Only reachable on an app thread: a project collecting in-app feedback with no mail configured.
-    // A reply the customer cannot answer looks like the conversation continued, which is worse than a
-    // refusal an operator can read.
-    await seedAppThread(null);
-    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
-    const { deps, sent } = harness({ config: {} });
-
-    await expect(sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
-      payload: { code: "support/reply_failed" },
-    });
-    expect(sent).toEqual([]);
-    expect(await outbound()).toEqual([]);
-  });
-
   test("a configured reply-to answers a mail-less project's app thread", async () => {
     await seedAppThread(null);
     await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
@@ -411,5 +404,169 @@ describe("answering a thread that started in the app", () => {
 
     await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
     expect(sent[0]?.replyTo).toBe(INBOX);
+  });
+
+  /**
+   * Delivering the answer in the app instead of mailing it.
+   *
+   * The read-back this rests on is `readOwnThread`, and that it returns outbound rows is asserted in
+   * `store/threads.workers.test.ts` rather than assumed here.
+   */
+  describe("in-app delivery", () => {
+    test("with no address anywhere the answer is stored instead of refused", async () => {
+      // The deployment the whole change exists for: a project collecting in-app feedback that never
+      // turned on Email Routing, because doing so takes over the zone's MX. There is nobody to mail
+      // and somebody who can still read the answer.
+      await seedAppThread(null);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+      const { deps, sent } = harness({ config: {} });
+
+      const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+      expect(result).toEqual({ channel: "app", messageId: "out-1" });
+      expect(sent).toEqual([]);
+      const rows = await outbound();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.textBody).toBe(BODY);
+    });
+
+    test("with no email capability composed at all the answer is still stored", async () => {
+      // `pithy add support` without `pithy add email`. There is no `enqueue` bound to the request, and
+      // the reply route used to refuse before anything that knew whether mail was needed had looked.
+      await seedAppThread(INBOX);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+      const { deps } = harness({ noEmailCapability: true });
+
+      const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+      expect(result).toEqual({ channel: "app", messageId: "out-1" });
+      expect(await outbound()).toHaveLength(1);
+    });
+
+    test("an adopter can choose it on a project whose mail works perfectly well", async () => {
+      // The reason this is a setting and not a fallback. The dashboard's mail is not impossible, it is
+      // merely wrong for this — and a fallback conditioned on impossibility is unreachable by exactly
+      // the adopter who wants it most.
+      await seedAppThread(INBOX);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "app-1@help.example.com" });
+      const { deps, sent } = harness({ config: { inboundAddresses: [INBOX], reply: { deliverInApp: true } } });
+
+      const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+      expect(result).toEqual({ channel: "app", messageId: "out-1" });
+      expect(sent).toEqual([]);
+    });
+
+    test("the stored answer carries no job id and no envelope", async () => {
+      await seedAppThread(INBOX);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+      const { deps } = harness({ config: { inboundAddresses: [INBOX], reply: { deliverInApp: true } } });
+
+      await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+      const rows = await outbound();
+      // `channel` is the delivery: `app` says the person reads it in the app, and it is what makes the
+      // null job id readable instead of ambiguous.
+      expect(rows[0]?.channel).toBe("app");
+      expect(rows[0]?.emailJobId).toBeNull();
+      // No send happened, so there is no envelope. Writing the deployment's own address here would
+      // claim one that did not.
+      expect(rows[0]?.fromAddress).toBeNull();
+      expect(rows[0]?.toAddress).toBeNull();
+    });
+
+    test("the thread counters and the audit event land exactly as they do for mail", async () => {
+      await seedAppThread(null);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+      const { deps, events } = harness({ config: {} });
+
+      await sendReply(deps, { threadId: "t1", body: BODY, viewer: "grace@ops" });
+
+      const thread = SupportThread.parse(
+        await db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().where("id", "=", "t1").executeTakeFirstOrThrow(),
+      );
+      // An answered thread has to move to the top of the inbox whether or not mail was involved.
+      expect(thread.messageCount).toBe(2);
+      expect(thread.lastMessageAt.getTime()).toBe(NOW);
+      // The same action, the same actor, the same resource. Only the send differs — so the trail
+      // records the channel, which is the one fact a job id would have carried.
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        action: "support/reply_sent",
+        outcome: "success",
+        actorType: "control-plane",
+        actorId: "grace@ops",
+        resourceType: "support_thread",
+        resourceId: "t1",
+        metadata: { channel: "app" },
+      });
+      expect(events[0]?.metadata).not.toHaveProperty("jobId");
+      expect(JSON.stringify(events[0]?.metadata)).not.toContain("Sorry");
+    });
+
+    test("an app thread with a deliverable address and no setting still goes out by mail", async () => {
+      // The default is unchanged. In-app delivery is opted into or fallen back to, never drifted into.
+      await seedAppThread(INBOX);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "app-1@help.example.com" });
+      const { deps, sent } = harness();
+
+      const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+      expect(result).toEqual({ channel: "email", messageId: "out-1", jobId: "job-1" });
+      expect(sent).toHaveLength(1);
+      expect((await outbound())[0]?.channel).toBe("email");
+    });
+
+    test("replies switched off still refuse, whatever the delivery would have been", async () => {
+      // `reply.enabled: false` is an adopter saying the inbox is read-only. It is not a mail setting,
+      // and a second delivery path must not become a way around it.
+      await seedAppThread(null);
+      await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: null });
+      const { deps, events } = harness({ config: { reply: { enabled: false, deliverInApp: true } } });
+
+      await expect(sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
+        payload: { code: "support/reply_failed" },
+      });
+      expect(await outbound()).toEqual([]);
+      expect(events).toEqual([]);
+    });
+  });
+});
+
+describe("an email thread never takes the in-app path", () => {
+  test("with no resolvable reply address it refuses, even with deliverInApp on", async () => {
+    // A mail thread's sender has no read-back — there is no session, only an address — so an answer
+    // stored for them is one nobody will ever see. A missing reply address here stays the
+    // misconfiguration it has always been, and the setting does not reach it.
+    await db.updateTable(SUPPORT_THREADS_TABLE).set({ inboxAddress: null }).where("id", "=", "t1").execute();
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "first@mail.example.com" });
+    const { deps, sent, events } = harness({ config: { reply: { deliverInApp: true } } });
+
+    await expect(sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
+      payload: { code: "support/reply_failed" },
+    });
+    expect(sent).toEqual([]);
+    expect(await outbound()).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  test("with no email capability composed it refuses rather than storing an unreadable answer", async () => {
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "first@mail.example.com" });
+    const { deps } = harness({ noEmailCapability: true, config: { reply: { deliverInApp: true } } });
+
+    await expect(sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" })).rejects.toMatchObject({
+      payload: { code: "support/reply_failed" },
+    });
+    expect(await outbound()).toEqual([]);
+  });
+
+  test("deliverInApp does not divert a mail thread that can be mailed", async () => {
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "first@mail.example.com" });
+    const { deps, sent } = harness({ config: { inboundAddresses: [INBOX], reply: { deliverInApp: true } } });
+
+    const result = await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+    expect(result).toEqual({ channel: "email", messageId: "out-1", jobId: "job-1" });
+    expect(sent).toHaveLength(1);
   });
 });

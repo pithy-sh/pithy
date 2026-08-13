@@ -142,7 +142,9 @@ async function seedMessage(seed: {
         subject: "Charged twice",
         textBody: "I was charged twice and I want it back",
         htmlBody: null,
-        emailJobId: null,
+        // An outbound mail row carries the job it was enqueued as, and the schema refuses one that
+        // does not — the row is only written once the send was accepted.
+        emailJobId: (seed.direction ?? "inbound") === "outbound" ? "job-seed" : null,
         rawKey: null,
         rawBytes: null,
         receivedAt: at,

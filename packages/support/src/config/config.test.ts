@@ -68,6 +68,9 @@ describe("SupportConfig defaults", () => {
     expect(reply.enabled).toBe(true);
     expect(reply.replyToAddress).toBeUndefined();
     expect(reply.snippets).toEqual({});
+    // In-app delivery is chosen or fallen back to, never drifted into: a project whose mail works
+    // keeps mailing its answers until somebody says otherwise.
+    expect(reply.deliverInApp).toBe(false);
   });
 
   test("FTS5 is off by default — an FTS5 table anywhere in a D1 database breaks `wrangler d1 export`", () => {

@@ -110,7 +110,10 @@ export const support_0001_threads: Migration = {
       .addColumn("mimeMessageId", "text")
       .addColumn("mimeInReplyTo", "text")
       .addColumn("mimeReferences", "text")
-      .addColumn("fromAddress", "text", (c) => c.notNull())
+      // Nullable, unlike the thread's: an answer delivered in the app left no envelope, so there is
+      // no address it came from. It stays in the volume-guard index below, which counts inbound mail
+      // and so never meets a null.
+      .addColumn("fromAddress", "text")
       .addColumn("fromName", "text")
       // Nullable for the same reason `pithy_support_threads.inbox_address` is: an app submission has
       // no envelope recipient. It stays in the unique index below — SQLite treats two NULLs as

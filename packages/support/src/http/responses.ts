@@ -109,12 +109,17 @@ export const SupportMessageView = z
     id: z.string().describe("The message's UUID — Pithy's id, not the sender's."),
     direction: SupportMessageDirection.describe("`inbound` from the customer, `outbound` from this Worker."),
     channel: SupportChannel.describe(
-      "How this message travelled. A reply to an `app` thread is `email`, because that is where the person will read it.",
+      "How this message travelled, which on an outbound row says how the answer was delivered: `email` means it went out, `app` means it is waiting for the submitter to read it and no mail was sent.",
     ),
     context: SupportSubmissionContext.nullable().describe(
       "The bounded context an app submission carried — screen, build, platform, environment, locale. Null on every mail-path message.",
     ),
-    fromAddress: z.string().describe("The sender's address, lowercased."),
+    fromAddress: z
+      .string()
+      .nullable()
+      .describe(
+        "The address this message was sent from, lowercased. Null on an answer delivered in the app, which left no envelope.",
+      ),
     fromName: z.string().nullable().describe("The sender's display name, or null. Untrusted text."),
     toAddress: z
       .string()
@@ -128,7 +133,12 @@ export const SupportMessageView = z
       .describe(
         "The sanitised HTML body, or null. Sanitised at ingest; the raw original stays in R2 and is never served.",
       ),
-    emailJobId: z.string().nullable().describe("The email job an outbound message was sent as, or null."),
+    emailJobId: z
+      .string()
+      .nullable()
+      .describe(
+        "The email job this message was enqueued as. Present exactly when `direction` is `outbound` and `channel` is `email`; read `channel` to ask whether an answer went out, never the absence of this.",
+      ),
     receivedAt: z.iso.datetime().describe("When the message arrived or was sent, ISO-8601."),
   })
   .describe("One message in a conversation, with the threading internals dropped.");
@@ -239,13 +249,35 @@ export type SupportThreadResponse = z.output<typeof SupportThreadResponse>;
 export const SupportArchiveResponse = SupportThreadView.describe("The conversation, as the archive left it.");
 export type SupportArchiveResponse = z.output<typeof SupportArchiveResponse>;
 
-/** `POST {base}/threads/:id/reply`. */
+/**
+ * `POST {base}/threads/:id/reply`.
+ *
+ * **A union on `channel`, not an object with an optional `jobId`.** A reply either left by mail or was
+ * stored for the submitter to read in the app, and those are different promises about when somebody
+ * sees the answer. An optional field is exactly what lets a console render "sent" over both of them,
+ * so the two arms are structurally different and a client has to branch to read either one.
+ */
 export const SupportReplySentResponse = z
-  .object({
-    messageId: z.string().describe("The outbound message row this reply created."),
-    jobId: z.string().describe("The email job it was enqueued as. The send itself is a Workflow's job."),
-  })
-  .describe("The reply that was queued, by message and by mail job.");
+  .discriminatedUnion("channel", [
+    z
+      .object({
+        channel: z.literal("email").describe("The reply was handed to the durable send path. It is on its way."),
+        messageId: z.string().describe("The outbound message row this reply created."),
+        jobId: z.string().describe("The email job it was enqueued as. The send itself is a Workflow's job."),
+      })
+      .describe("A reply that was queued for sending, by message and by mail job."),
+    z
+      .object({
+        channel: z
+          .literal("app")
+          .describe(
+            "The reply was stored, and no mail was sent. The submitter reads it next time they open the conversation — which means nobody has told them yet, and telling them is the application's call.",
+          ),
+        messageId: z.string().describe("The outbound message row this reply created."),
+      })
+      .describe("A reply that is waiting in the app. There is no mail job, because there was no send."),
+  ])
+  .describe("The reply that was filed, and which of the two ways it reaches the customer.");
 export type SupportReplySentResponse = z.output<typeof SupportReplySentResponse>;
 
 /** `POST {base}/threads/:id/reclassify`. */

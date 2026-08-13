@@ -495,6 +495,49 @@ describe("the submitter's read-back", () => {
     });
   });
 
+  test("the answers to them are in the read-back, in order, marked outbound", async () => {
+    // **The property the whole in-app reply path rests on.** `readOwnThread` scopes on the thread's
+    // owner and channel and deliberately not on `direction`, so an answer stored rather than mailed is
+    // returned to the person waiting for it. Nothing else pins this: a later projection tightening the
+    // read for an unrelated reason would make every stored reply invisible, with no test failing and
+    // no error anywhere — the reply would simply stop existing as far as its reader is concerned.
+    await seedAppThread("mine", "user-ada", T0 + 100);
+    await seedMessage({ id: "asked", threadId: "mine", subject: "Export", body: "does nothing", receivedAt: T0 });
+    await db
+      .insertInto(SUPPORT_MESSAGES_TABLE)
+      .values(
+        SupportMessage.encode({
+          id: "answered",
+          threadId: "mine",
+          direction: "outbound",
+          // Stored, not mailed — the row `sendReply` writes when it delivers in the app.
+          channel: "app",
+          submittedByUserId: null,
+          context: null,
+          mimeMessageId: null,
+          mimeInReplyTo: null,
+          mimeReferences: null,
+          fromAddress: null,
+          fromName: null,
+          toAddress: null,
+          subject: "Re: Export",
+          textBody: "Fixed in 2.4.2.",
+          htmlBody: null,
+          emailJobId: null,
+          rawKey: null,
+          rawBytes: null,
+          receivedAt: new Date(T0 + 100),
+          createdAt: new Date(T0 + 100),
+        }),
+      )
+      .execute();
+
+    const detail = await readOwnThread(db, "mine", "user-ada");
+    expect(detail.messages.map((message) => message.id)).toEqual(["asked", "answered"]);
+    expect(detail.messages.map((message) => message.direction)).toEqual(["inbound", "outbound"]);
+    expect(detail.messages[1]?.textBody).toBe("Fixed in 2.4.2.");
+  });
+
   test("somebody else's thread is indistinguishable from one that does not exist", async () => {
     // A 403 would confirm the id names a real conversation, and on an inbox of other people's
     // correspondence that confirmation is itself the disclosure.

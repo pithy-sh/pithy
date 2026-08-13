@@ -93,7 +93,7 @@ export const SupportMessage = z
     threadId: z.string().describe("The `pithy_support_threads.id` this message belongs to."),
     direction: SupportMessageDirection.describe("Which way this message travelled."),
     channel: SupportChannel.describe(
-      "How this message travelled. Per message rather than only per thread, because the two genuinely differ: a reply to an `app` thread is `email` — it leaves through the same durable send path as every other reply, because email is where the person will read it.",
+      "How this message travelled, which on an outbound row is **how the answer was delivered**: `email` means it was handed to `@pithy-sh/email`'s durable send path, `app` means it was stored for the submitter to read in the app and no mail was sent. Per message rather than only per thread, because the two genuinely differ — one `app` thread can hold an answer that was mailed and an answer that was not, and those are different promises about when somebody will read them.",
     ),
     submittedByUserId: z
       .string()
@@ -123,7 +123,12 @@ export const SupportMessage = z
       .describe(
         "The `References` chain as a JSON column. Threading falls back to it when `In-Reply-To` names nothing we hold, which is what keeps a conversation together across a client that rewrites the subject.",
       ),
-    fromAddress: z.string().describe("The sender's address, lowercased."),
+    fromAddress: z
+      .string()
+      .nullish()
+      .describe(
+        "The address this message was sent from, lowercased. **Null only on an answer delivered in the app**, which left no envelope — there is no address a reply that was never mailed came from, and putting the deployment's own address there would claim a send that did not happen. Never null on anything that travelled by mail.",
+      ),
     fromName: z.string().nullish().describe("The sender's display name. Untrusted text; render it escaped."),
     toAddress: z
       .string()
@@ -147,7 +152,7 @@ export const SupportMessage = z
       .string()
       .nullish()
       .describe(
-        "The `pithy_email_jobs.id` an outbound reply was enqueued as, so a dashboard can show whether it actually sent. Null on every inbound message. It is the *job* id rather than the sent `Message-ID` deliberately: Cloudflare assigns the real id at send time and never tells the enqueuer, so a column claiming to hold it would be null exactly when somebody needed it.",
+        "The `pithy_email_jobs.id` this message was enqueued as. **Present exactly when `direction` is `outbound` and `channel` is `email`**, and null everywhere else — it is the join to the job, never the way to ask whether an answer went out. That question is `channel`'s, because a null here would otherwise mean both 'this arrived' and 'this was delivered in the app', and a client would have to consult `direction` to tell them apart. It is the *job* id rather than the sent `Message-ID` deliberately: Cloudflare assigns the real id at send time and never tells the enqueuer, so a column claiming to hold it would be null exactly when somebody needed it.",
       ),
     rawKey: z
       .string()
@@ -161,5 +166,25 @@ export const SupportMessage = z
     ),
     createdAt: SQLiteDate.describe("When the message row was written."),
   })
-  .describe("One message in `pithy_support_messages` — the derived rendering of mail whose raw form lives in R2.");
+  .describe("One message in `pithy_support_messages` — the derived rendering of mail whose raw form lives in R2.")
+  // **The invariant, stated once, where every producer already passes.** `emailJobId` is the join to
+  // `pithy_email_jobs` and nothing else: it is present exactly when this message travelled by mail on
+  // the way out. Written at a call site instead, this rule would hold until the second writer — and
+  // there are already five (ingest, submission, the reply path, the seeds, the tests). Enforced here
+  // it also runs on the way *back* out of D1, so a row that reached the table by any other route
+  // cannot be handed to a projection that would render it as sent.
+  .check((ctx) => {
+    const row = ctx.value;
+    const mailed = row.direction === "outbound" && row.channel === "email";
+    const hasJob = row.emailJobId !== null && row.emailJobId !== undefined;
+    if (hasJob === mailed) return;
+    ctx.issues.push({
+      code: "custom",
+      input: ctx.value,
+      path: ["emailJobId"],
+      message: mailed
+        ? "An outbound `email` message must carry the `emailJobId` it was enqueued as. The row is written after the enqueue is accepted, so one without a job id is a reply nothing was ever asked to send."
+        : "Only an outbound `email` message carries an `emailJobId`. An answer delivered in the app was never enqueued, and an inbound message was never sent — a job id on either makes the column mean something other than the job it names.",
+    });
+  });
 export type SupportMessage = z.output<typeof SupportMessage>;

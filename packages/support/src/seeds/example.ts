@@ -245,8 +245,8 @@ export const supportExampleSeed: SeedSet = defineSeed({
         id: ACCESS_REPLY_ID,
         threadId: ACCESS_THREAD_ID,
         direction: "outbound",
-        // `email`, on every thread: a reply leaves through the same durable send path whatever the
-        // question arrived on, because email is where the person will read it.
+        // How this answer was delivered: it went out through the durable send path, so it carries the
+        // job id below. An answer stored for the app instead would be `app` and carry none.
         channel: "email",
         submittedByUserId: null,
         context: null,
