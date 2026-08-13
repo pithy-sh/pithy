@@ -3014,6 +3014,59 @@ describe("POST /payments/webhooks/paddle", () => {
     expect(links[0]).toMatchObject({ userId: "ada" });
   });
 
+  test("a credential-bearing delivery is recorded as its envelope, and the token never reaches D1", async () => {
+    // The webhook half of the control the sweep proves at `paddleSweep.workers.test.ts`. On the sweep a
+    // query filter at least *asks* Paddle for the types this build acts on. Here there is no filter at all:
+    // the subscribed-event list is set in Paddle's dashboard by a human, and a destination on `*` delivers
+    // `client_token.created` to this route. The allowlist is the only thing between a live client token and
+    // a table an operator greps, an export copies and a backup keeps.
+    const TOKEN = "test_c0ffee0000000000000planted";
+    const event = {
+      event_id: "evt_01token",
+      event_type: "client_token.created",
+      occurred_at: "2026-08-12T09:00:00Z",
+      // Paddle redacts an api key's `key`. It does not redact a client token's `token`.
+      data: { id: "ctkn_01", name: "Website", token: TOKEN, status: "active" },
+      // `PaddleEvent` is `.loose()`, so anything else rides in too. A key this build cannot name is a key
+      // it cannot vouch for, and one of these is hiding the same token a second time.
+      notification_id: "ntf_01",
+      smuggled: { token: TOKEN },
+    };
+    // Anti-vacuity on the fixture: the bytes Paddle signed really do carry the token, so the search below
+    // has something to find rather than an empty haystack.
+    expect(JSON.stringify(event)).toContain(TOKEN);
+
+    const response = await paddleHook(app(), event);
+    // Authentic, so 200. A non-2xx would have Paddle redeliver it for three days.
+    expect(response.status).toBe(200);
+
+    const rows = await webhookRows();
+    // Recorded — the row is what makes `UNIQUE (rail, providerEventId)` recognize a redelivery — and
+    // recorded as the envelope alone.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.providerEventId).toBe("evt_01token");
+    expect(JSON.parse(String(rows[0]?.payload))).toEqual({
+      event_id: "evt_01token",
+      event_type: "client_token.created",
+      occurred_at: "2026-08-12T09:00:00Z",
+    });
+    // The claim as a grep, an export and a backup see it: the whole table, serialised.
+    expect(JSON.stringify(rows)).not.toContain(TOKEN);
+    expect(await purchases()).toHaveLength(0);
+  });
+
+  test("an acted-on delivery is still recorded whole, so the redaction is the allowlist and not an empty table", async () => {
+    // Anti-vacuity for the case above. Without this, "no token in `pithy_payments_webhook_events`" would
+    // hold on a build that wrote no payload at all — a different defect, and not a fix.
+    const response = await paddleHook(app(), await paddleSubscriptionEvent());
+    expect(response.status).toBe(200);
+    const rows = await webhookRows();
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(String(rows[0]?.payload)) as { data?: { id?: string } };
+    // The body survives, because it is this event's replay source.
+    expect(payload.data?.id).toBe(PADDLE_SUBSCRIPTION);
+  });
+
   test("an event type this build has never seen is authentic, recorded, and projects nothing", async () => {
     // Paddle would redeliver a non-2xx for three days, so a type shipped after this package must not throw.
     const response = await paddleHook(app(), {
@@ -3103,6 +3156,77 @@ describe("POST /payments/purchases — Paddle", () => {
     });
     expect(response.status).not.toBe(200);
     expect(await purchases()).toHaveLength(0);
+  });
+
+  /** The same transaction, stamped for `userId` with whatever proof a case wants beside it. */
+  async function stamped(userId: string, proof: string) {
+    return {
+      ...(await transaction(userId)),
+      custom_data: { pithy_user: userId, pithy_env: "prod", pithy_ref_proof: proof },
+    };
+  }
+
+  test("a stamp whose MAC does not verify is refused, and the same stamp proven is accepted", async () => {
+    // `/payments/purchases` is the one route where the attacker supplies both the id and the stamp, and
+    // `accountReferenceOf` ends `proofMatches(…) ? reference : null` — that ternary is the whole
+    // authorization for this path. The case above only reaches the *absence* branch: a stamp with no
+    // `pithy_ref_proof` key at all is refused two `if`s earlier, and the comparison never runs.
+    //
+    // So every forgery here carries a present, well-formed proof, and every one names **mallory** while
+    // mallory is the caller — which takes the route's own caller-vs-reference refusal off the board. Only
+    // the MAC can refuse these, and each is constructed rather than described.
+    const genuine = await accountReferenceProof("mallory", "prod", PADDLE_TEST_WEBHOOK_SECRET);
+
+    const forgeries: Record<string, string> = {
+      // The realistic one: an attacker holding *a* Paddle signing secret, just not this destination's.
+      "minted under another destination's secret": await accountReferenceProof(
+        "mallory",
+        "prod",
+        "pdl_ntfset_01someone_elses_destination",
+      ),
+      // A proof this deployment really did mint — for staging. The environment is inside the MAC's message
+      // rather than beside it, so it cannot be replayed here by editing `pithy_env` next to it.
+      "this deployment's own proof, minted for staging": await accountReferenceProof(
+        "mallory",
+        "staging",
+        PADDLE_TEST_WEBHOOK_SECRET,
+      ),
+      // A genuine proof lifted off somebody else's stamp. The reference is inside the message too, so a
+      // proof cannot be moved from the user it was minted for to the user submitting it.
+      "a genuine proof for another reference": await accountReferenceProof("ada", "prod", PADDLE_TEST_WEBHOOK_SECRET),
+      // The nearest miss there is: the right proof with one hex digit changed.
+      "the genuine proof, one digit off": `${genuine.slice(0, -1)}${genuine.endsWith("0") ? "1" : "0"}`,
+      // Well-formed hex of exactly the right length that nobody minted.
+      "sixty-four zeroes": "00".repeat(32),
+      // Not hex at all, so the decode refuses before the compare — and refuses rather than throwing a 500.
+      "the right length, and not hex": "z".repeat(64),
+    };
+
+    for (const [name, proof] of Object.entries(forgeries)) {
+      const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped("mallory", proof) } });
+      const response = await request(app, "POST", "/payments/purchases", {
+        user: "mallory",
+        body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+      });
+      expect(response.status, name).not.toBe(200);
+      expect(await errorCode(response), name).toBe("payments/verification_failed");
+      expect(await purchases(), name).toHaveLength(0);
+      expect(await entitlements(), name).toHaveLength(0);
+      // And no binding. `linkProviderAccount` never rebinds, so one honoured forgery would squat this
+      // Paddle customer against mallory permanently and there would be nothing to undo it with.
+      expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute(), name).toHaveLength(0);
+    }
+
+    // Anti-vacuity, and the point of the whole case: change the proof and nothing else, and it projects.
+    // So the six refusals above are the MAC failing — not the catalogue, not the caller, not the id.
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped("mallory", genuine) } });
+    const accepted = await request(app, "POST", "/payments/purchases", {
+      user: "mallory",
+      body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+    });
+    expect(accepted.status).toBe(200);
+    expect((await purchases())[0]).toMatchObject({ userId: "mallory", providerTransactionId: PADDLE_TRANSACTION });
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toHaveLength(1);
   });
 });
 

@@ -7,6 +7,7 @@ import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { VerifiedNotification } from "../contract";
 import { PADDLE_SWEPT_EVENT_TYPES } from "./events";
 import { accountReferenceProof, type PaddleEvent, type PaddleTransaction } from "./objects";
+import { PADDLE_RECORDED_EVENT_TYPES } from "./recorded";
 import { readPaddleEvent } from "./webhook";
 
 /**
@@ -406,6 +407,80 @@ describe("everything else", () => {
     expect(notification.event).toBeNull();
     expect(notification.providerEventId).toBe("evt_01");
     expect(notification.payload).toMatchObject({ event_type: type });
+  });
+});
+
+/**
+ * What the map hands the recorder, which is a different claim from what `recordedPayload` returns.
+ *
+ * `recorded.test.ts` proves the allowlist. Nothing proved the map *uses* it: `nothing()` is the shared
+ * answer for "authentic, and no state to project", and it is the one line every unlisted type passes
+ * through on its way to `pithy_payments_webhook_events`. Restoring `payload: { ...event }` there left the
+ * whole package green, because every gate on this file asserted the payload with `toMatchObject`.
+ */
+describe("the payload the map hands the recorder", () => {
+  /** Paddle does not redact a client token's `token`. This is the value that must not survive. */
+  const TOKEN = "test_c0ffee0000000000000planted";
+
+  /** One event with a credential in its body, in two places, plus the `.loose()` keys that carry it. */
+  function credentialBearing(type: string): PaddleEvent {
+    return {
+      event_id: "evt_01",
+      event_type: type,
+      occurred_at: OCCURRED,
+      data: { id: "ctkn_01", name: "Website", token: TOKEN, status: "active" },
+      notification_id: "ntf_01",
+      smuggled: { token: TOKEN },
+    } as unknown as PaddleEvent;
+  }
+
+  test("a client token event comes back as its envelope, and the token is nowhere in it", async () => {
+    // Anti-vacuity first: the event genuinely carries the token, so the search has something to find.
+    expect(JSON.stringify(credentialBearing("client_token.created"))).toContain(TOKEN);
+
+    const notification = await read(credentialBearing("client_token.created"));
+    expect(notification.event).toBeNull();
+    expect(JSON.stringify(notification.payload)).not.toContain(TOKEN);
+    // `toEqual`, not `toMatchObject`. A subset match is satisfied by a payload carrying the body as well,
+    // which is the exact defect this exists to catch.
+    expect(notification.payload).toEqual({
+      event_id: "evt_01",
+      event_type: "client_token.created",
+      occurred_at: OCCURRED,
+    });
+  });
+
+  test("every published type this map does not act on comes back as an envelope", async () => {
+    // The population is Paddle's own catalogue, transcribed above from the API reference. A candidate list
+    // built from this package's own sets could only rediscover them.
+    const unlisted = PADDLE_PUBLISHED_EVENT_TYPES.filter((type) => !PADDLE_RECORDED_EVENT_TYPES.has(type));
+    // Anti-vacuity against the real catalogue rather than against zero: an allowlist grown toward `*` would
+    // empty this list, and an empty list is a loop that cannot fail.
+    expect(PADDLE_PUBLISHED_EVENT_TYPES.length).toBeGreaterThanOrEqual(55);
+    expect(unlisted.length).toBeGreaterThanOrEqual(30);
+    for (const type of ["client_token.created", "client_token.updated", "api_key.created"]) {
+      expect(unlisted, type).toContain(type);
+    }
+
+    for (const type of unlisted) {
+      const notification = await read(credentialBearing(type));
+      expect(JSON.stringify(notification.payload), type).not.toContain(TOKEN);
+      expect(notification.payload, type).toEqual({
+        event_id: "evt_01",
+        event_type: type,
+        occurred_at: OCCURRED,
+      });
+    }
+  });
+
+  test("an acted-on type that projects nothing is still handed over whole", async () => {
+    // The other direction, and why the decision belongs to the allowlist rather than to the call site.
+    // `transaction.created` projects nothing — it is a transaction that has taken no money — and it is a
+    // type this build acts on, so its body is a replay source and has to survive. A `nothing()` that
+    // redacted everything would pass the two cases above and drop this.
+    const notification = await read(event("transaction.created", await transaction()));
+    expect(notification.event).toBeNull();
+    expect((notification.payload as { data?: { id?: string } }).data?.id).toBe(TXN);
   });
 });
 
