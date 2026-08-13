@@ -59,7 +59,22 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
     const params = TestersDailyParams.parse(event.payload ?? {});
     const config = TestersConfig.parse(this.env.TESTERS_CONFIG ? JSON.parse(this.env.TESTERS_CONFIG) : {});
     const db = testersDatabase(this.env.DB);
-    const now = new Date();
+
+    /**
+     * The pass's clock, journalled — read once, in a step, and read back from the step on every resume.
+     *
+     * A Workflow re-executes this body from the top when it resumes and serves every completed step from the
+     * journal, so a `new Date()` here answers differently on the second attempt. That is not a cosmetic
+     * difference for this pass: `now` decides the day key every snapshot is written under, and a run that
+     * began at 23:50 and resumed after midnight would write the cohorts it had already done under yesterday
+     * and the rest under today — one pass, two days, and a darkness histogram that cannot be recomputed
+     * after the fact. Journalled, every cohort of one pass shares the instant the pass began (#331).
+     *
+     * Epoch milliseconds, not a `Date`: the journal round-trips JSON, so a `Date` returns as a string on the
+     * resume and an object on the first attempt.
+     */
+    const nowMs: number = await step.do("start-pass", async () => Date.now());
+    const now = new Date(nowMs);
 
     // A run has no request, so there is no `c.var.log` to inherit: the Workflow builds its own and binds
     // the instance onto it. That id is what the dashboard and `wrangler workflows` key on, so binding it
@@ -72,7 +87,9 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
       env: this.env.ENVIRONMENT ?? "unknown",
     });
 
-    const enqueue: EnqueueNudge | undefined = params.skipNudges ? undefined : await buildEnqueue(this.env);
+    // The pass's own instant, not a second read: a nudge is queued as part of the day this pass is running,
+    // so it is dated by the pass rather than by whenever the resume got round to it.
+    const enqueue: EnqueueNudge | undefined = params.skipNudges ? undefined : await buildEnqueue(this.env, now);
     const linkForKind = params.skipNudges ? undefined : linkFor(config);
 
     const deps = {
@@ -126,7 +143,7 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
  * tracking a roster it imported — and the pass should still advance state and write its snapshot rather
  * than fail on a dependency it does not strictly need.
  */
-async function buildEnqueue(env: TestersWorkerEnv): Promise<EnqueueNudge | undefined> {
+async function buildEnqueue(env: TestersWorkerEnv, now: Date): Promise<EnqueueNudge | undefined> {
   // No sending identity means no send. Falling back to a plausible-looking default address would mail
   // the adopter's testers from a domain their DKIM does not cover, which is worse than sending nothing:
   // it trains the recipients' providers to treat the real domain as spam.
@@ -147,7 +164,7 @@ async function buildEnqueue(env: TestersWorkerEnv): Promise<EnqueueNudge | undef
           fromName,
           theme,
           sender: env.EMAIL_SENDER,
-          now: new Date(),
+          now,
           newId: () => crypto.randomUUID(),
         },
         input,
