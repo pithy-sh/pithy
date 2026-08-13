@@ -6,6 +6,74 @@
   "optionalCapabilities": ["turnstile", "audit"],
   "migrationNamespace": "auth",
   "devSecrets": [{ "name": "auth-session-secret", "devValue": "random" }],
+  "secrets": [
+    {
+      "name": "auth-session-secret",
+      "origin": {
+        "kind": "minted",
+        "recipe": {
+          "kind": "random",
+          "bytes": 32,
+          "encoding": "base64url"
+        }
+      },
+      "rotation": {
+        "kind": "local"
+      }
+    },
+    {
+      "name": "auth-google-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "google",
+        "documentation": "https://console.cloud.google.com/apis/credentials"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "google",
+        "documentation": "https://console.cloud.google.com/apis/credentials"
+      }
+    },
+    {
+      "name": "auth-apple-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "apple",
+        "documentation": "https://developer.apple.com/account/resources/authkeys/list"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "apple",
+        "documentation": "https://developer.apple.com/account/resources/authkeys/list"
+      }
+    },
+    {
+      "name": "auth-facebook-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "facebook",
+        "documentation": "https://developers.facebook.com/apps/"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "facebook",
+        "documentation": "https://developers.facebook.com/apps/"
+      }
+    },
+    {
+      "name": "auth-github-credentials",
+      "origin": {
+        "kind": "obtained",
+        "issuer": "github",
+        "documentation": "https://github.com/settings/developers"
+      },
+      "rotation": {
+        "kind": "manual",
+        "issuer": "github",
+        "documentation": "https://github.com/settings/developers"
+      }
+    }
+  ],
   "whenToEnable": "Sign-in for your app — passwordless, mobile and web both first-class. Magic link, email OTP, and social sign-in with Google, Apple, Facebook, and GitHub. A successful sign-in mints a long-lived refresh session and short-lived JWT access tokens that verify locally with no database hit. It fills core's identity seams, so every other capability just calls `requireAuth()`. This is the keystone capability; add it first.",
   "scaffold": [
     "Create the session signing secret: `pithy secrets create auth-session-secret`.",

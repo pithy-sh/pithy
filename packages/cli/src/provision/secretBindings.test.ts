@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { secrets } from "@pithy-sh/secrets/src/capability";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { secretsStoreBindings, workerSecretRegistry } from "./secretBindings";
 
@@ -144,5 +144,117 @@ describe("secretsStoreBindings", () => {
    */
   test("a Worker composing no secrets capability has no registry and no bindings", () => {
     expect(workerSecretRegistry([])).toBeNull();
+  });
+});
+
+/**
+ * **Provisioning mints what the registry says may be minted (#321).**
+ *
+ * `devValue` is a fact about the *value* — nothing outside the project has to agree with it — and that
+ * is as true of production as it is of dev. The declaration existed; only dev read it. These pin that
+ * every environment reads it, and that nothing else moved.
+ */
+describe("secretsStoreBindings — minting", () => {
+  /** The same registry, with the two arbitrary-valued secrets declaring themselves mintable. */
+  /** Somebody else issued this one. No declaration, and provisioning must not invent a value. */
+  const supplied: SecretRegistryEntry = {
+    backend: "cf-secrets-store",
+    scope: "global",
+    rotatable: false,
+    valueType: "text",
+  };
+  const mintable: SecretRegistry = {
+    ...registry,
+    CONNECTION_KEY_ENCRYPTION_KEY: {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: true,
+      valueType: "text",
+      devValue: "random",
+    },
+    RELEASE_INGEST_SECRET: {
+      backend: "cf-secrets-store",
+      scope: "global",
+      rotatable: false,
+      valueType: "text",
+      devValue: "random",
+    },
+    STRIPE_SECRET_KEY: supplied,
+  };
+  const none = async () => false;
+
+  test("creates a declared-but-absent mintable secret and binds it", async () => {
+    const minted: string[] = [];
+    const result = await secretsStoreBindings({
+      registry: mintable,
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: none,
+      mint: async (target) => {
+        minted.push(target.secretName);
+      },
+    });
+
+    expect(minted).toEqual(["replay-staging-connection-key-encryption-key", "replay-global-release-ingest-secret"]);
+    expect(result.minted).toEqual(["CONNECTION_KEY_ENCRYPTION_KEY", "RELEASE_INGEST_SECRET"]);
+    expect(result.bound.map((entry) => entry.binding)).toEqual([
+      "CONNECTION_KEY_ENCRYPTION_KEY",
+      "RELEASE_INGEST_SECRET",
+    ]);
+  });
+
+  /**
+   * The one invariant with a blast radius. Replacing a key-encryption key orphans every value sealed
+   * under it, so a secret that is already there is never touched — a re-run mints nothing.
+   */
+  test("never mints a secret that already exists", async () => {
+    const minted: string[] = [];
+    const result = await secretsStoreBindings({
+      registry: mintable,
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: all,
+      mint: async (target) => {
+        minted.push(target.secretName);
+      },
+    });
+
+    expect(minted).toEqual([]);
+    expect(result.minted).toEqual([]);
+    expect(result.bound).toHaveLength(3);
+  });
+
+  /**
+   * A generated value there authenticates against nothing. Provisioning stops, names it, and leaves it
+   * for the human who can actually get it.
+   */
+  test("never mints a secret that declares no value of its own", async () => {
+    const minted: string[] = [];
+    const result = await secretsStoreBindings({
+      registry: { STRIPE_SECRET_KEY: supplied },
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: none,
+      mint: async (target) => {
+        minted.push(target.secretName);
+      },
+    });
+
+    expect(minted).toEqual([]);
+    expect(result.minted).toEqual([]);
+    expect(result.missing).toEqual(["STRIPE_SECRET_KEY"]);
+  });
+
+  /** No minter, no minting: a caller with no store credentials reports exactly what it did before. */
+  test("without a minter, a mintable secret is still reported missing", async () => {
+    const result = await secretsStoreBindings({
+      registry: mintable,
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: none,
+    });
+
+    expect(result.minted).toEqual([]);
+    expect(result.missing).toEqual(["CONNECTION_KEY_ENCRYPTION_KEY", "RELEASE_INGEST_SECRET", "STRIPE_SECRET_KEY"]);
   });
 });

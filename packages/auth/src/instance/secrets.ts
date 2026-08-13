@@ -97,6 +97,19 @@ export const GithubOAuthCredentials = z
   .describe("A GitHub OAuth credential pair (`clientId` + `clientSecret`) for one environment.");
 export type GithubOAuthCredentials = z.infer<typeof GithubOAuthCredentials>;
 
+/**
+ * Where a human goes for each OAuth credential pair, and where the same human rotates it.
+ *
+ * **The settings page, not the product homepage.** The point is to end a search, not to start one — and
+ * these four are the case with no command and no possible one, so the link is the entire remedy the kit
+ * can offer. Named constants because origin and rotation are the same page for all four, and two copies
+ * of a URL is one that goes stale.
+ */
+const GOOGLE_CREDENTIALS_PAGE = "https://console.cloud.google.com/apis/credentials";
+const APPLE_KEYS_PAGE = "https://developer.apple.com/account/resources/authkeys/list";
+const FACEBOOK_APPS_PAGE = "https://developers.facebook.com/apps/";
+const GITHUB_OAUTH_APPS_PAGE = "https://github.com/settings/developers";
+
 export const authSecretsRegistry = defineSecretRegistry({
   // `devValue` is the whole difference between an app that runs after `pithy add auth` and one that
   // signs nobody in: this secret is not a required binding, so nothing names it until the first
@@ -107,13 +120,22 @@ export const authSecretsRegistry = defineSecretRegistry({
     rotatable: true,
     valueType: "text",
     devValue: "random",
+    // `project` is the issuer, which is the whole reason this one is different: nobody outside validates
+    // a session signature, so the kit both makes it and replaces it.
+    origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+    rotation: { kind: "local" },
   },
+  // The four below are `obtained` and rotate `manual`, and each names the page rather than the product.
+  // An adopter searching Google's console for which of four credential types "client secret" means is the
+  // gap this closes — and nothing will ever mint one, so saying where is the whole of what the kit can do.
   [AUTH_GOOGLE_CREDENTIALS]: {
     backend: "d1",
     scope: "environment",
     rotatable: false,
     valueType: "json",
     schema: GoogleOAuthCredentials,
+    origin: { kind: "obtained", issuer: "google", documentation: GOOGLE_CREDENTIALS_PAGE },
+    rotation: { kind: "manual", issuer: "google", documentation: GOOGLE_CREDENTIALS_PAGE },
   },
   [AUTH_APPLE_CREDENTIALS]: {
     backend: "d1",
@@ -121,6 +143,8 @@ export const authSecretsRegistry = defineSecretRegistry({
     rotatable: true,
     valueType: "json",
     schema: AppleOAuthCredentials,
+    origin: { kind: "obtained", issuer: "apple", documentation: APPLE_KEYS_PAGE },
+    rotation: { kind: "manual", issuer: "apple", documentation: APPLE_KEYS_PAGE },
   },
   [AUTH_FACEBOOK_CREDENTIALS]: {
     backend: "d1",
@@ -128,6 +152,8 @@ export const authSecretsRegistry = defineSecretRegistry({
     rotatable: false,
     valueType: "json",
     schema: FacebookOAuthCredentials,
+    origin: { kind: "obtained", issuer: "facebook", documentation: FACEBOOK_APPS_PAGE },
+    rotation: { kind: "manual", issuer: "facebook", documentation: FACEBOOK_APPS_PAGE },
   },
   [AUTH_GITHUB_CREDENTIALS]: {
     backend: "d1",
@@ -135,6 +161,8 @@ export const authSecretsRegistry = defineSecretRegistry({
     rotatable: false,
     valueType: "json",
     schema: GithubOAuthCredentials,
+    origin: { kind: "obtained", issuer: "github", documentation: GITHUB_OAUTH_APPS_PAGE },
+    rotation: { kind: "manual", issuer: "github", documentation: GITHUB_OAUTH_APPS_PAGE },
   },
 });
 

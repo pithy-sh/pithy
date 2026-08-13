@@ -14,7 +14,14 @@ import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { type AuthCapability, type AuthConfigInput, auth, isAuthCapability } from "./capability";
-import { AUTH_SESSION_SECRET, authSecretsRegistry } from "./instance/secrets";
+import {
+  AUTH_APPLE_CREDENTIALS,
+  AUTH_FACEBOOK_CREDENTIALS,
+  AUTH_GITHUB_CREDENTIALS,
+  AUTH_GOOGLE_CREDENTIALS,
+  AUTH_SESSION_SECRET,
+  authSecretsRegistry,
+} from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 
 function build(overrides: Partial<AuthConfigInput> = {}): AuthCapability {
@@ -268,6 +275,30 @@ describe("pithy.manifest.json", () => {
       .filter(([, entry]) => entry.devValue)
       .map(([name, entry]) => ({ name, devValue: entry.devValue }));
     expect(manifest.devSecrets).toEqual(declared);
+  });
+
+  test("its secrets are exactly the registry entries that declare both axes", () => {
+    const entries: [string, SecretRegistryEntry][] = Object.entries(authSecretsRegistry);
+    const declared = entries
+      .filter(([, entry]) => entry.origin && entry.rotation)
+      .map(([name, entry]) => ({ name, origin: entry.origin, rotation: entry.rotation }));
+    expect(manifest.secrets).toEqual(declared);
+  });
+
+  test("says where a human gets each OAuth pair, and where the same human rotates it", () => {
+    // The honest floor. Nothing will ever mint a Google client secret, so the whole of what the kit can
+    // do is name the page — and a client reading this renders a link instead of a bare "not set".
+    const obtained = manifest.secrets.filter((secret) => secret.origin.kind === "obtained");
+    expect(obtained.map((secret) => secret.name)).toEqual([
+      AUTH_GOOGLE_CREDENTIALS,
+      AUTH_APPLE_CREDENTIALS,
+      AUTH_FACEBOOK_CREDENTIALS,
+      AUTH_GITHUB_CREDENTIALS,
+    ]);
+    for (const secret of obtained) {
+      expect(secret.rotation.kind).toBe("manual");
+      expect(secret.origin.kind === "obtained" && secret.origin.documentation).toMatch(/^https:\/\//);
+    }
   });
 
   test("mints only the session secret — the four OAuth pairs are registered with a provider", () => {

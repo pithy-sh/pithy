@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
+import { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
@@ -77,13 +78,21 @@ interface SecretRegistryEntryBase {
    */
   rotateEveryDays?: number;
   /**
-   * How this secret's **dev** value may be minted, when it may be minted at all.
+   * How this secret's value may be minted, when it may be minted at all.
    *
    * Set it when the value is *arbitrary* — a session signing key, a link signing key: any random
    * string works, because nothing outside the project has to agree with it. Leave it off when the
    * value must match something that already exists — an OAuth app's client secret, a Stripe key, a
    * storage credential. A generated value there authenticates against nothing, and hides the real gap
    * behind one that looks filled in.
+   *
+   * **The name says dev; the property does not (#321).** *Nothing outside the project has to agree with
+   * this* is a fact about the value, and it is as true of production as of a laptop: a session signing
+   * key is arbitrary in prod for exactly the reason it is arbitrary in dev, because no third party
+   * validates it. For four releases only local dev read this field, so provisioning a deployed
+   * environment stopped to ask a human to run `pithy secrets create` on values with no human decision in
+   * them. Every environment reads it now. Ask {@link isMintableSecret} rather than the field, so the day
+   * the name is corrected there is one site to correct.
    *
    * The declaration lives here, with the capability that owns the secret, so `pithy add` never carries
    * a list of names that drifts as capabilities are added. It is mirrored into the capability's
@@ -123,6 +132,36 @@ interface SecretRegistryEntryBase {
    * bind). See {@link defineSecretRegistry}.
    */
   bootstrap?: boolean;
+  /**
+   * How this value comes to exist — minted by the kit, composable into a command, or a human in
+   * somebody else's console. See {@link SecretOrigin}.
+   *
+   * **Declared with {@link rotation} or not at all**, enforced at define time. An origin alone renders as
+   * a whole answer — *obtained from GitHub*, and nothing about what to do when it is ninety days old — and
+   * the operator most in need of the second half is the one who reads only the first.
+   *
+   * **It does not replace {@link devValue} yet, and it may not contradict it.** `origin.kind: "minted"`
+   * with `recipe.kind: "random"` is exactly the `devValue` case, and `defineSecretRegistry` refuses either
+   * without the other, so the two cannot drift while both exist. When `devValue` goes, {@link
+   * isMintableSecret} becomes a read of this field and no caller changes.
+   */
+  origin?: SecretOrigin;
+  /**
+   * How this value is replaced. See {@link SecretRotation}.
+   *
+   * **A separate axis from {@link origin}, because neither follows from the other.** A GitLab token is
+   * `obtained` — a human made the first one — and rotates by `provider`, since the API authenticates with
+   * the token being replaced and returns its successor. An OAuth client secret is also `obtained` and
+   * rotates only by `manual`. One field cannot say both.
+   *
+   * **It does not derive {@link rotatable}, and must not.** They answer different questions, and two
+   * secrets in this repository prove it: `SECRETS_ENCRYPTION_KEYS` is `rotation: "local"` and
+   * `rotatable: false`, because it rotates on the `versions` map inside its own `EncryptionConfig` rather
+   * than on a second value envelope; `payments-provider-credentials` is `rotatable: true` and rotates only
+   * by a human in Stripe's console. `rotatable` is about how a value is *stored* while it changes; this is
+   * about who changes it.
+   */
+  rotation?: SecretRotation;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -178,6 +217,76 @@ export type KeyedSecretName<R extends SecretRegistry> = {
   [K in keyof R]: R[K] extends { keyed: true } ? K : never;
 }[keyof R] &
   string;
+
+/**
+ * **May this secret's value be minted?** The one question every creator asks, in every environment.
+ *
+ * Two kinds of secret, and the difference is the whole of it. A *supplied* secret was issued elsewhere —
+ * an OAuth client secret, a payment rail's key — and only the person holding it can provide one; a
+ * creator must stop and say so. A *generated* secret is random bytes nobody chooses, and stopping to ask
+ * a human to ask a tool to generate them is a round trip and nothing else.
+ *
+ * The answer is {@link SecretRegistryEntryBase.devValue}, read through here rather than directly: the
+ * field is named for the environment that happened to read it first, the property is not, and one
+ * predicate is what keeps the two from being confused again. A keyspace is refused a second time — the
+ * define-time check already refuses the pair, and this stays true of a registry assembled by hand.
+ */
+export function isMintableSecret(entry: SecretRegistryEntry): boolean {
+  return entry.devValue !== undefined && !entry.keyed;
+}
+
+/**
+ * Check one entry's `origin` and `rotation` — that each is well-formed, that they agree with each other,
+ * and that neither contradicts what the entry already says about itself.
+ *
+ * **Every rule here exists because the alternative is a client rendering a confident wrong thing.** A
+ * declaration is read by `pithy doctor`, by `pithy secrets ls`, and by a management dashboard, none of
+ * which can tell a mistake from a fact. So the mistakes are refused where the author is.
+ */
+function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): void {
+  // Declared together or not at all. See `SecretRegistryEntryBase.origin`.
+  if ((entry.origin === undefined) !== (entry.rotation === undefined)) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" declares one of origin and rotation — declare both or neither.`,
+    });
+  }
+  if (entry.origin === undefined || entry.rotation === undefined) return;
+  const origin = SecretOrigin.safeParse(entry.origin);
+  if (!origin.success) {
+    throw new InternalError({ message: `secret registry: entry "${name}" has an invalid origin.` });
+  }
+  const rotation = SecretRotation.safeParse(entry.rotation);
+  if (!rotation.success) {
+    throw new InternalError({ message: `secret registry: entry "${name}" has an invalid rotation.` });
+  }
+  // What the kit can make, the kit can make again — and nothing else can be replaced without its issuer.
+  // So `minted` and `local` imply each other, and a pair that disagrees is one of the two being wrong.
+  const minted = origin.data.kind === "minted";
+  if (minted !== (rotation.data.kind === "local")) {
+    throw new InternalError({
+      message: minted
+        ? `secret registry: entry "${name}" is minted, so its rotation is local — the kit can make another.`
+        : `secret registry: entry "${name}" is not minted, so its rotation cannot be local — only its issuer can replace it.`,
+    });
+  }
+  // One axis, not two fields that can disagree. `devValue` is the random-mint case and nothing else: the
+  // master key is minted too, and no random string is an `EncryptionConfig`.
+  const randomlyMinted = minted && origin.data.kind === "minted" && origin.data.recipe.kind === "random";
+  if (randomlyMinted !== (entry.devValue !== undefined)) {
+    throw new InternalError({
+      message: randomlyMinted
+        ? `secret registry: entry "${name}" is minted from a random value, so it must declare devValue.`
+        : `secret registry: entry "${name}" declares devValue but its origin is not a random mint.`,
+    });
+  }
+  // A structured mint produces a structure. The `random`/`text` half of this is enforced with `devValue`
+  // above; this is its mirror, and without it a json entry could claim a mint that cannot satisfy its schema.
+  if (origin.data.kind === "minted" && origin.data.recipe.kind !== "random" && entry.valueType !== "json") {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" mints a structured value, so it must be a json entry.`,
+    });
+  }
+}
 
 /**
  * Author a registry. Validates each entry's enum axes, that `rotatable` is a boolean, and that
@@ -244,6 +353,7 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
         });
       }
     }
+    validateSecretDeclaration(name, entry);
     if (entry.bootstrap !== undefined) {
       if (typeof entry.bootstrap !== "boolean") {
         throw new InternalError({

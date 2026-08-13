@@ -25,5 +25,29 @@ import { defineSecretRegistry } from "../registry";
  * deploy and provision — see `provision/provisionSecrets` for that boundary.)
  */
 export const managerRegistry = defineSecretRegistry({
-  CLOUDFLARE_API_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },
+  CLOUDFLARE_API_TOKEN: {
+    backend: "cf-secrets-store",
+    scope: "global",
+    rotatable: true,
+    valueType: "text",
+    // `helped` to create, `provider` to rotate — the case a single axis cannot express, and the reason
+    // #322 has two. We cannot mint a Cloudflare token: that needs credentials for their account, which
+    // this product must never hold. We can say exactly what one needs, so nothing downstream keeps its
+    // own table of permission groups — `needs.cloudflare` is `secretsTokenProfile.permissions`, and
+    // `capability.test.ts` holds the two to each other rather than trusting this copy.
+    origin: {
+      kind: "helped",
+      issuer: "cloudflare",
+      needs: { cloudflare: ["secrets:read", "secrets:write"] },
+      documentation: "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
+    },
+    // Cloudflare rolls a token and returns the new value, so this one can replace itself. Declared per
+    // secret and never per issuer: some Cloudflare secrets roll and some do not, and `issuer` says
+    // nothing about which.
+    rotation: {
+      kind: "provider",
+      issuer: "cloudflare",
+      documentation: "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/",
+    },
+  },
 });
