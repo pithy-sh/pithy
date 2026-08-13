@@ -46,7 +46,8 @@ function sendDeps(sender: EmailSender, overrides: Partial<SendDeps> = {}): SendD
     signing,
     linkTtlDays: 90,
     maxAttempts: 3,
-    now,
+    passStartedAt: now,
+    heartbeatAt: () => now,
     ...overrides,
   };
 }

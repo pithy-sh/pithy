@@ -105,3 +105,88 @@ describe("runAtRestKeyRotation", () => {
     expect((await latestRotation()).status).toBe("failed");
   });
 });
+
+/**
+ * Replay (pithy-sh/pithy#329).
+ *
+ * A Workflow does not resume inside the step it died in. It re-executes this delegate from the top and
+ * serves every completed step from the journal, so anything the body computes outside a step is computed
+ * again on the newer clock. `now` is the instant this rotation writes as `lastRotatedAt` — the field the
+ * cron's cadence check reads back — and it was read in the body.
+ *
+ * **Confirmed, not assumed, that it carries no liveness meaning.** The only reader of `lastRotatedAt` is
+ * `isRotationDue`, a cadence question asked in days by a cron that starts nothing while an instance is
+ * running; the rotation row's own `startedAt`/`completedAt` are written by `RotationTracker` inside its
+ * steps and read by `admin/status` for display. Nothing re-drives this pass off a timestamp, so freezing
+ * the instant strands no live work — which is exactly what it would do in the email scheduler.
+ */
+describe("runAtRestKeyRotation — a replayed pass", () => {
+  /** The interruption a resumed Workflow is the recovery from. Not a `PithyError`: this is the platform. */
+  class Interrupted extends Error {}
+
+  /**
+   * The Workflow journal, structurally: a completed step returns what it returned the first time, and a
+   * step never reached runs. `interruptBefore` kills the pass just before a named step, once, so a second
+   * call over the same journal is a genuine resume rather than a re-invocation of one callback.
+   */
+  function journalledStep(journal: Map<string, unknown>, interruptBefore?: string): StepRunner {
+    const runner = {
+      armed: interruptBefore !== undefined,
+      async do<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        if (journal.has(name)) return journal.get(name) as T;
+        if (runner.armed && name === interruptBefore) {
+          runner.armed = false;
+          throw new Interrupted(`the pass died before ${name}`);
+        }
+        const result = await fn();
+        journal.set(name, result);
+        return result;
+      },
+    };
+    return runner;
+  }
+
+  const PASS_STARTED = new Date("2026-02-01T00:00:00.000Z");
+  /** Six hours on. An ordinary Workflow backoff, not a pathological outage. */
+  const RESUMED = new Date("2026-02-01T06:00:00.000Z");
+
+  test("records the instant the pass began, not the instant it resumed", async () => {
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+    const writer = new StubWriter();
+    const deps = { db: db(), config: v1, configWriter: writer, tracker: RotationTracker.fromD1(env.SECRETS) };
+    const journal = new Map<string, unknown>();
+
+    // Dies before the key is generated — the only window in which the body's clock still decides anything,
+    // because `generate-key` journals `lastRotatedAt` along with the key once it completes.
+    await expect(
+      runAtRestKeyRotation(deps, journalledStep(journal, "generate-key"), { now: PASS_STARTED }),
+    ).rejects.toBeInstanceOf(Interrupted);
+    expect(writer.writes).toEqual([]);
+
+    // The body re-executes on the newer clock. That is the platform, not the test being clever.
+    await runAtRestKeyRotation(deps, journalledStep(journal), { now: RESUMED });
+
+    const merged = JSON.parse(writer.writes[0] ?? "{}") as EncryptionConfig;
+    expect(merged.lastRotatedAt).toBe(PASS_STARTED.toISOString());
+  });
+
+  test("and one rotation row, opened before the interruption, carries the whole pass", async () => {
+    // The pass instant would be worth nothing on a row the resume replaced: a history joined on the
+    // rotation this pass opened is the thing the instant is dated against.
+    const writer = new StubWriter();
+    const deps = { db: db(), config: v1, configWriter: writer, tracker: RotationTracker.fromD1(env.SECRETS) };
+    const journal = new Map<string, unknown>();
+
+    await expect(
+      runAtRestKeyRotation(deps, journalledStep(journal, "generate-key"), { now: PASS_STARTED }),
+    ).rejects.toBeInstanceOf(Interrupted);
+    await runAtRestKeyRotation(deps, journalledStep(journal), { now: RESUMED });
+
+    const { results } = await env.SECRETS.prepare("select id, status from pithy_secrets_rotations").all<{
+      id: number;
+      status: string;
+    }>();
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("success");
+  });
+});

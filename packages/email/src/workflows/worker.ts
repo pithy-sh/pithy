@@ -8,10 +8,10 @@ import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore
 import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import type { SendWorkflowBinding } from "../send/enqueue";
-import { runSend, type SendDeps } from "../send/runSend";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
 import { runScheduler, type SchedulerDeps } from "./scheduler";
+import { runSendBatch, type SendBatchDeps } from "./sendBatch";
 
 /**
  * The prebuilt email worker. `pithy add email` deploys one per environment (`pithy-email-staging`,
@@ -66,7 +66,7 @@ function buildTheme(env: EmailWorkerEnv): EmailTheme {
 }
 
 /** Assemble the send dependencies, resolving the current signing key from the secrets store. */
-async function buildSendDeps(env: EmailWorkerEnv): Promise<SendDeps> {
+async function buildSendDeps(env: EmailWorkerEnv): Promise<SendBatchDeps> {
   const keys = await resolveSigningKeys(env);
   const key = keys.versions[keys.currentVersion];
   return {
@@ -79,7 +79,7 @@ async function buildSendDeps(env: EmailWorkerEnv): Promise<SendDeps> {
     linkTtlDays: Number(env.LINK_TTL_DAYS ?? 90),
     maxAttempts: Number(env.MAX_ATTEMPTS ?? 5),
     environment: env.ENVIRONMENT,
-    now: new Date(),
+    heartbeatAt: () => new Date(),
   };
 }
 
@@ -101,12 +101,7 @@ function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
 /** Sends a batch of jobs durably. Started for immediate sends and by the scheduler's fan-out. */
 export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobIds: string[] }> {
   override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<void> {
-    const deps = await buildSendDeps(this.env);
-    // One step per job: each is independently retried/backed-off by the Workflow runtime, and a
-    // single bad recipient never blocks the rest of the batch.
-    for (const jobId of event.payload.jobIds) {
-      await step.do(`send-${jobId}`, () => runSend(deps, jobId).then(() => {}));
-    }
+    await runSendBatch(await buildSendDeps(this.env), step, event.payload.jobIds);
   }
 }
 
