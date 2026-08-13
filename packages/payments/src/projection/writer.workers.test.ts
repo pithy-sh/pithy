@@ -648,7 +648,11 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
   test("a support comp of a key the catalog never sold survives the repair", async () => {
     // The hold is the whole point: `founder` has no purchase behind it and never will, and it is not the
     // projection's to clear. The repair above must not become a way to erase every manual grant.
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "founder" }, { now: new Date(T0) });
+    //
+    // `founder` is grantable because the adopter declared it, which is the only way a key nothing sells can
+    // be comped since the catalog check moved to the write (#305).
+    const comping = PaymentsConfig.parse({ ...CONFIG, manualEntitlements: ["founder"] });
+    await grantEntitlement(env.DB, comping, { userId: "ada", entitlement: "founder" }, { now: new Date(T0) });
     await project(event());
 
     expect(await entitlementRows()).toEqual([

@@ -4,8 +4,10 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { grantableEntitlements, type PaymentsConfig } from "../config/config";
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PAYMENTS_ENTITLEMENTS_TABLE, paymentsDatabase } from "../data/tables";
+import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
 
 /**
  * Manual entitlement writes — the support surface behind `POST /payments/entitlements/grant` and `/revoke`.
@@ -24,19 +26,27 @@ import { PAYMENTS_ENTITLEMENTS_TABLE, paymentsDatabase } from "../data/tables";
  * So a grant sets `manual`, and the projection skips a row carrying it. Both shapes work and both last:
  * comping a key the catalog does not sell (`founder`) and comping one it does (`pro`).
  *
- * ## The function takes any key; the route does not
+ * ## The catalog check is here, at the write
  *
- * {@link grantEntitlement} writes whatever key it is handed. That is the mechanism, and the hold against
- * the projection is the whole of what it decides — the catalog is not its input and never was.
- * `POST /payments/entitlements/grant` is narrower: it refuses a key this project does not define, with
+ * {@link grantEntitlement} refuses a key this project does not define, with
  * `payments/entitlement_not_in_catalog`, a 400 naming the key (#300). An operator who meant `pro` and
  * typed `pr` used to get a 200, a row, and a customer who stayed locked out, invisible on both sides.
  *
- * Which is why comping a key nothing sells is now **declared** rather than achieved by nobody checking:
+ * That check first landed in `POST /payments/entitlements/grant`, and lived there alone (#305). A rule at a
+ * call site has a second call site eventually: an adopter's own handler, a later route in this package, the
+ * reconciliation workflow — each one a path to the row write with the rule removed. So the check moved to
+ * the thing being called. The route no longer decides; it reports.
+ *
+ * The shape that makes that unbypassable is a **split**: `writeEntitlement` below asks nothing and is not
+ * exported, and the exported grant takes a {@link PaymentsConfig} it cannot be called without. A caller
+ * cannot reach the unchecked half from outside this module, and the type says why.
+ *
+ * Comping a key nothing sells is therefore **declared** rather than achieved by nobody checking:
  * `manualEntitlements` in `pithy.config.ts` is where an adopter names the keys they comp but do not sell,
- * and those keys are grantable and are published on the catalog read beside the products. Only grants are
- * constrained. A revoke is not, or dropping a product from the catalog would be irreversible for every
- * account still holding its key.
+ * and those keys are grantable and are published on the catalog read beside the products. The check reads
+ * `grantableEntitlements`, so that escape travels with it. Only grants are constrained. A revoke is not, or
+ * dropping a product from the catalog would be irreversible for every account still holding its key — which
+ * is why {@link revokeEntitlement} takes no config, and must never grow one.
  *
  * A **revoke clears the hold** rather than setting it, which is the deliberate asymmetry. It means a revoke
  * is the exact inverse of a grant — it takes the row back out of a human's hands — and it means a revoke
@@ -71,18 +81,36 @@ export interface ManualEntitlementOptions {
 /**
  * Grant an entitlement by hand, and hold it against the projection. Idempotent; overwrites whatever the
  * projection last derived for this key, and survives every later purchase event for it.
+ *
+ * Refuses a key this project does not define — no product grants it and `manualEntitlements` does not
+ * declare it — before any row is written. The config is a parameter rather than a closure because a grant
+ * without one is the defect: see the module doc.
  */
-export function grantEntitlement(
+export async function grantEntitlement(
   d1: D1Database,
+  config: PaymentsConfig,
   input: ManualEntitlementInput,
   options: ManualEntitlementOptions = {},
 ): Promise<PaymentsEntitlement> {
+  const grantable = grantableEntitlements(config);
+  if (!grantable.has(input.entitlement)) {
+    throw new PaymentsEntitlementNotInCatalogError({
+      message: `No entitlement "${input.entitlement}" is defined here.`,
+      // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's logs gets
+      // the near miss spelled out; the caller learns only which key it sent, because what this project sells
+      // is a separate disclosure behind `payments:catalog:read`.
+      detail: `No product grants "${input.entitlement}" and \`manualEntitlements\` does not declare it. Defined: ${[...grantable].sort().join(", ") || "nothing"}.`,
+    });
+  }
   return writeEntitlement(d1, input, true, options);
 }
 
 /**
  * Revoke an entitlement by hand and release the hold. Idempotent, and records the decision even where there
  * was nothing to clear. A key the purchases still support is re-derived on the next event — see the module doc.
+ *
+ * **Takes no config, deliberately.** A revoke of a key the catalog has since dropped must stay legal, or a
+ * catalog edit becomes irreversible for every account still holding it. The missing parameter is the rule.
  */
 export function revokeEntitlement(
   d1: D1Database,

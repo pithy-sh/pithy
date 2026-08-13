@@ -746,7 +746,7 @@ describe("GET /payments/admin/entitlements", () => {
     // The question the grant and revoke writes made unanswerable on their own: a console could comp an
     // entitlement and never see that it had. `manual` and `source` are what close that loop.
     await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
-    await grantEntitlement(env.DB, { userId: "grace", entitlement: "pro", expiresAt: null }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "grace", entitlement: "pro", expiresAt: null }, { now: NOW });
 
     const body = PaymentsAdminEntitlementsResponse.parse(
       await (

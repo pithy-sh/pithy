@@ -3,10 +3,12 @@
 
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
 import { paymentsDatabase } from "../data/tables";
+import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import type { ProviderEventInput } from "../projection/event";
 import { resolveEntitlements } from "../projection/resolve";
@@ -19,6 +21,10 @@ import { grantEntitlement, revokeEntitlement } from "./manual";
  * These are the only writes to the read model that no purchase produced, which is why the interaction with
  * the projection is pinned here rather than left to be discovered: a manual write is a repair of the read
  * model, and the purchase record stays authoritative for any key the catalog grants.
+ *
+ * The catalog check is exercised here, at the write, because that is where it now lives (#305). Every grant
+ * in this file passes a config for the same reason a grant in production does: the key has to mean something
+ * before a row claims it does.
  */
 
 const SECOND = 1000;
@@ -36,6 +42,16 @@ const CONFIG = PaymentsConfig.parse({
       apple: { productId: "com.acme.pro.monthly" },
     },
   },
+});
+
+/**
+ * The same catalog, with a key the adopter comps but does not sell. `beta_access` is granted nowhere in
+ * `products`, so it exists only because `manualEntitlements` declares it — which is the escape hatch, and the
+ * thing that has to keep working now that the check sits at the write.
+ */
+const COMPED = PaymentsConfig.parse({
+  ...CONFIG,
+  manualEntitlements: ["beta_access", "founder"],
 });
 
 const TABLES = [
@@ -79,7 +95,7 @@ async function rowCount(): Promise<number> {
 
 describe("grantEntitlement", () => {
   test("writes a granting row for a user who has bought nothing", async () => {
-    const granted = await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    const granted = await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
 
     expect(granted.entitlement).toBe("pro");
     expect(granted.active).toBe(true);
@@ -93,6 +109,7 @@ describe("grantEntitlement", () => {
     const until = new Date(T0 + 30 * DAY);
     const granted = await grantEntitlement(
       env.DB,
+      CONFIG,
       { userId: "ada", entitlement: "pro", expiresAt: until },
       {
         now: NOW,
@@ -103,13 +120,18 @@ describe("grantEntitlement", () => {
   });
 
   test("a lapsed comp stops granting on the read path, with no write", async () => {
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro", expiresAt: new Date(T0 + DAY) }, { now: NOW });
+    await grantEntitlement(
+      env.DB,
+      CONFIG,
+      { userId: "ada", entitlement: "pro", expiresAt: new Date(T0 + DAY) },
+      { now: NOW },
+    );
     expect((await read("ada", new Date(T0 + 2 * DAY)))[0]?.active).toBe(false);
   });
 
   test("is idempotent — granting twice leaves one row", async () => {
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
     expect(await rowCount()).toBe(1);
   });
 
@@ -117,7 +139,7 @@ describe("grantEntitlement", () => {
     await project(event({ status: "expired" }));
     expect((await read("ada"))[0]?.active).toBe(false);
 
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
     const [entitlement] = await read("ada");
     expect(entitlement?.active).toBe(true);
     expect(entitlement?.source).toBeNull();
@@ -125,7 +147,71 @@ describe("grantEntitlement", () => {
   });
 });
 
+/**
+ * The catalog check, exercised through the writer rather than through a route (#305).
+ *
+ * The route is not in this file and never enters it. That is the whole point: before #305 the rule lived in
+ * the handler, so an adopter's own handler, a later route in this package, or a workflow could write a comp
+ * for `pr` and nothing would say no.
+ */
+describe("the catalog check on a grant", () => {
+  async function refusal(config: typeof CONFIG, key: string): Promise<unknown> {
+    return await grantEntitlement(env.DB, config, { userId: "ada", entitlement: key }, { now: NOW }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+  }
+
+  test("refuses a key no product grants and nothing declared", async () => {
+    const error = await refusal(CONFIG, "pr");
+    expect(error).toBeInstanceOf(PaymentsEntitlementNotInCatalogError);
+    expect((error as PithyError).payload.code).toBe("payments/entitlement_not_in_catalog");
+  });
+
+  test("writes no row when it refuses", async () => {
+    // A refusal that still wrote would be the defect wearing an error message.
+    await refusal(CONFIG, "pr");
+    expect(await rowCount()).toBe(0);
+  });
+
+  test("names the key the caller sent and never the set", async () => {
+    // The set is a disclosure behind `payments:catalog:read`. It goes in `detail`, which the HTTP codec strips.
+    const error = (await refusal(CONFIG, "pr")) as PithyError;
+    expect(error.payload.message).toContain("pr");
+    expect(error.payload.message).not.toContain("pro,");
+    expect(error.payload.detail).toContain("pro");
+  });
+
+  test("grants a key a product sells", async () => {
+    const granted = await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    expect(granted.active).toBe(true);
+  });
+
+  test("grants a key the adopter declared in `manualEntitlements` and no product sells", async () => {
+    // The escape hatch travels with the check. If it did not, comping `founder` would have become impossible
+    // at the moment the check moved — and comping a key nothing sells is the case comps exist for.
+    const granted = await grantEntitlement(env.DB, COMPED, { userId: "ada", entitlement: "founder" }, { now: NOW });
+    expect(granted.active).toBe(true);
+    expect((await read("ada"))[0]?.key).toBe("founder");
+  });
+
+  test("refuses everything when the project defines nothing", async () => {
+    // Empty is a real answer, not a bypass: a project with no products and no declarations has no vocabulary
+    // to grant in, so every grant against it is refused.
+    const error = await refusal(PaymentsConfig.parse({}), "pro");
+    expect(error).toBeInstanceOf(PaymentsEntitlementNotInCatalogError);
+  });
+});
+
 describe("revokeEntitlement", () => {
+  test("takes no config, and a key the catalog has since dropped is still revocable", async () => {
+    // The asymmetry #300 asserted and #305 must not undo. If a revoke were checked too, dropping a product
+    // from the catalog would be irreversible for every account still holding its key.
+    const revoked = await revokeEntitlement(env.DB, { userId: "ada", entitlement: "legacy_tier" }, { now: NOW });
+    expect(revoked.active).toBe(false);
+    expect(revoked.entitlement).toBe("legacy_tier");
+  });
+
   test("clears a purchase-derived grant immediately", async () => {
     await project();
     expect((await read("ada"))[0]?.active).toBe(true);
@@ -153,7 +239,7 @@ describe("revokeEntitlement", () => {
 
 describe("a manual write against the projection", () => {
   test("survives a projection that does not touch the same key", async () => {
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "beta_access" }, { now: NOW });
+    await grantEntitlement(env.DB, COMPED, { userId: "ada", entitlement: "beta_access" }, { now: NOW });
     await project();
     const keys = (await read("ada")).filter((entitlement) => entitlement.active).map((e) => e.key);
     expect(keys.sort()).toEqual(["beta_access", "pro"]);
@@ -164,7 +250,7 @@ describe("a manual write against the projection", () => {
     // very next purchase event for that key: the derivation found no purchase behind the comp and did its job.
     // A support comp that silently evaporates on the user's next renewal is worse than no comp, because
     // nobody would notice.
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
     await project(event({ status: "refunded", providerEventAt: new Date(T0 + SECOND) }));
     const row = (await read("ada"))[0];
     expect(row?.active).toBe(true);
@@ -174,7 +260,7 @@ describe("a manual write against the projection", () => {
   test("a revoke releases the hold, so the purchases decide the key again", async () => {
     // The deliberate asymmetry: a grant takes a key into a human's hands, a revoke hands it back. It is what
     // keeps a revoke from becoming a permanent block on a user who later pays.
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "ada", entitlement: "pro" }, { now: NOW });
     await revokeEntitlement(env.DB, { userId: "ada", entitlement: "pro" }, { now: NOW });
     expect((await read("ada"))[0]?.active).toBe(false);
 
@@ -187,7 +273,7 @@ describe("a manual write against the projection", () => {
     // `sourcePurchaseId` is null on a comp and also null on a row nothing grants, so the two are
     // indistinguishable without a column of its own — which is why `manual` is one.
     await project();
-    await grantEntitlement(env.DB, { userId: "ada", entitlement: "beta_access" }, { now: NOW });
+    await grantEntitlement(env.DB, COMPED, { userId: "ada", entitlement: "beta_access" }, { now: NOW });
     const rows = await env.DB.prepare(
       "SELECT entitlement, manual FROM pithy_payments_entitlements WHERE user_id = ? ORDER BY entitlement",
     )
