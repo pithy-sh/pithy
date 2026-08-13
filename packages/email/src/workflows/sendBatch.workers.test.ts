@@ -79,7 +79,12 @@ function batchDeps(sender: EmailSender, clock: () => Date, overrides: Partial<Se
  */
 class Interrupted extends Error {}
 
-function journalledStep(journal: Map<string, unknown>, interruptBefore?: string): SendBatchStep {
+function journalledStep(
+  journal: Map<string, unknown>,
+  interruptBefore?: string,
+  /** Runs just before a step that is about to execute — where a test watches the world mid-batch. */
+  before?: (name: string) => Promise<void>,
+): SendBatchStep {
   const runner = {
     armed: interruptBefore !== undefined,
     async do<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -88,6 +93,7 @@ function journalledStep(journal: Map<string, unknown>, interruptBefore?: string)
         runner.armed = false;
         throw new Interrupted(`the batch died before ${name}`);
       }
+      await before?.(name);
       const result = await fn();
       journal.set(name, result);
       return result;
@@ -274,5 +280,135 @@ describe("runSendBatch — the heartbeat", () => {
     await claim(jobId, PASS_STARTED);
 
     expect(await tick(new Date(RESUMED.getTime() + MINUTE_MS))).toEqual([[jobId]]);
+  });
+});
+
+/**
+ * The tail (pithy-sh/pithy#340).
+ *
+ * #327 made the *head* of a batch honest: the job in a step is patched on the heartbeat clock, so a
+ * batch that resumes late is not read as stranded. It said nothing about the jobs **behind** it.
+ *
+ * `runScheduler` claims a whole batch up front — every id stamped with the one instant of the claim —
+ * and only then dispatches one Workflow for it. The batch then walks that list one job at a time. So
+ * every job it has not reached yet carries the claim instant, and nothing writes to those rows until
+ * the batch arrives. A batch that takes longer to walk than `stuckMs` therefore has its own unreached
+ * jobs re-driven out from under it, and a second send Workflow starts against them while the first is
+ * still coming. Both drivers reach the job. Both send.
+ *
+ * That is the same outcome #327 exists to prevent, from a direction its fix did not cover — and it does
+ * not need a resume, a crash, or a slow job to happen. It needs a queue.
+ *
+ * The fix is not a longer `stuckMs`: a timeout tuned to outrun a queue loses whenever the queue grows.
+ * Liveness is a property of the **batch**, not of a row, so the batch says so — it renews the claim on
+ * every job it still holds at the top of each send step. `updatedAt` then means what the scheduler has
+ * always read it as meaning: work happened on this job's batch, recently.
+ */
+describe("runSendBatch — the tail", () => {
+  /** Five claimed jobs, in order, all stamped with the one instant of the claim. */
+  async function claimedBatch(count: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 1; i <= count; i += 1) ids.push(await enqueue(`user-${i}@example.com`, `job-${i}`));
+    for (const id of ids) await claim(id, PASS_STARTED);
+    return ids;
+  }
+
+  test("a batch still working through its queue is not re-driven at the far end of it", async () => {
+    const ids = await claimedBatch(5);
+    const last = ids[4] as string;
+
+    // Six minutes a job. Nothing pathological — no crash, no resume, no backoff. By the time the batch
+    // reaches its last job it has been running twenty-four minutes, and `stuckMs` is fifteen.
+    let clock = PASS_STARTED;
+    const { sender, sent } = fakeSender(() => {
+      clock = new Date(clock.getTime() + 6 * MINUTE_MS);
+      return { messageId: "msg" };
+    });
+    const deps = batchDeps(sender, () => clock);
+
+    // The scheduler ticks in the gap before the last job's step — the moment the defect is visible,
+    // with the batch demonstrably alive and that job claimed, `sending`, and not yet started.
+    const dispatched: string[][] = [];
+    const step = journalledStep(new Map<string, unknown>(), undefined, async (name) => {
+      if (name === `send-${last}`) dispatched.push(...(await tick(clock)));
+    });
+
+    await runSendBatch(deps, step, ids);
+
+    // The criterion, stated as the thing that must not happen: no second send Workflow against a job
+    // this batch is on its way to.
+    expect(dispatched).toEqual([]);
+    // And the reason: the batch renewed the claim on what it still held. Twenty-four minutes in, the
+    // untouched last job was six minutes old, not twenty-four.
+    expect(sent).toHaveLength(5);
+  });
+
+  test("and a job the batch has finished is left alone, not held open by the renewal", async () => {
+    // The renewal covers what the batch still holds and nothing else. A finished job kept fresh would
+    // be a lie in the other direction — a `sending` row that never ages is a row the safety net can
+    // never recover — so the first job's stamp must be the instant it was sent.
+    const ids = await claimedBatch(3);
+    let clock = PASS_STARTED;
+    const { sender } = fakeSender(() => {
+      clock = new Date(clock.getTime() + 6 * MINUTE_MS);
+      return { messageId: "msg" };
+    });
+
+    await runSendBatch(
+      batchDeps(sender, () => clock),
+      journalledStep(new Map<string, unknown>()),
+      ids,
+    );
+
+    expect((await jobRow(ids[0] as string)).updated_at).toBe(PASS_STARTED.getTime() + 6 * MINUTE_MS);
+    expect((await jobRow(ids[1] as string)).updated_at).toBe(PASS_STARTED.getTime() + 12 * MINUTE_MS);
+  });
+
+  test("and a retry of the job in flight renews the tail too", async () => {
+    // Where #327 and #340 cross. A step that fails retryably backs off and re-executes its *body*; its
+    // result was never journalled, so nothing about it is served back. The renewal has to live in that
+    // body, because a backoff is precisely the long gap in which a tail goes stale — and a renewal
+    // written as a step of its own would be journalled on the first attempt and skipped on every retry
+    // after it, which passes every test above and restores the defect on the path most likely to hit it.
+    const ids = await claimedBatch(3);
+    let attempts = 0;
+    const { sender } = fakeSender(() => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("upstream hiccup");
+      return { messageId: "msg" };
+    });
+    let clock = PASS_STARTED;
+    const deps = batchDeps(sender, () => clock);
+    const journal = new Map<string, unknown>();
+
+    await expect(runSendBatch(deps, journalledStep(journal), ids)).rejects.toBeDefined();
+
+    // The Workflow backs off twenty minutes and re-executes. The tail has not been touched since the
+    // claim, and both of its jobs are `sending`.
+    clock = RESUMED;
+    const dispatched: string[][] = [];
+    const step = journalledStep(journal, undefined, async (name) => {
+      if (name === `send-${ids[1]}`) dispatched.push(...(await tick(new Date(clock.getTime() + MINUTE_MS))));
+    });
+    await runSendBatch(deps, step, ids);
+
+    expect(dispatched).toEqual([]);
+    expect(journal.get("pass-instant")).toBe(PASS_STARTED.getTime());
+  });
+
+  test("and a batch that dies part-way leaves its tail recoverable", async () => {
+    // The vacuity check. A renewal that stamped the tail once and generously would satisfy the test
+    // above and quietly delete the safety net: a dispatch that dies mid-queue must still have its
+    // unreached jobs re-driven, or those emails are never sent at all.
+    const ids = await claimedBatch(5);
+    const { sender } = fakeSender(() => ({ messageId: "msg" }));
+    const deps = batchDeps(sender, () => PASS_STARTED);
+
+    await expect(
+      runSendBatch(deps, journalledStep(new Map<string, unknown>(), `send-${ids[2]}`), ids),
+    ).rejects.toBeInstanceOf(Interrupted);
+
+    // Nothing runs for twenty minutes. The three jobs it never reached are genuinely stranded.
+    expect(await tick(new Date(PASS_STARTED.getTime() + 20 * MINUTE_MS))).toEqual([ids.slice(2)]);
   });
 });

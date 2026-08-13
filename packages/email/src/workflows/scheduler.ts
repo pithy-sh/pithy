@@ -24,7 +24,17 @@ export interface SchedulerDeps {
   now: Date;
   /** How stale (ms) a `pending` immediate job must be before the safety net re-drives it. */
   graceMs: number;
-  /** How stale (ms) a `sending` job must be before it is treated as stranded and re-driven. */
+  /**
+   * How stale (ms) a `sending` job must be before it is treated as stranded and re-driven.
+   *
+   * **It measures the batch, not the row.** A batch is claimed whole and walked one job at a time, so a
+   * job's own writes say nothing until the batch reaches it; `runSendBatch` renews the claim on every
+   * job it still holds at each step, which is what makes `updatedAt` a statement about the driver rather
+   * than about one row (pithy-sh/pithy#340). Past this, no step of that batch has started — it is dead.
+   *
+   * So this is not a knob for outrunning a long queue. Widening it to cover one would be a race with a
+   * slower horse, and the queue gets longer.
+   */
   stuckMs: number;
   /**
    * Jobs per dispatched batch — one send Workflow each. From `SCHEDULER_BATCH_SIZE`.
