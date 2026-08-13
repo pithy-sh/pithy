@@ -109,7 +109,11 @@ export default function Pricing() {
               ) : (
                 <p className="muted">We couldn't get a price. You'll see it at checkout.</p>
               )}
-              <button type="button" disabled={checkout.starting} onClick={() => void checkout.start(product.id)}>
+              <button
+                type="button"
+                disabled={checkout.starting || opened.opening}
+                onClick={() => void checkout.start(product.id)}
+              >
                 Buy {product.name}
               </button>
             </div>

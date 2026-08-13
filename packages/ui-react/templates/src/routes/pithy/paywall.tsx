@@ -104,7 +104,11 @@ export default function Paywall() {
               <strong>{product.name}</strong>
             </p>
             {purchasable(product) ? (
-              <button type="button" disabled={checkout.starting} onClick={() => void checkout.start(product.id)}>
+              <button
+                type="button"
+                disabled={checkout.starting || opened.opening}
+                onClick={() => void checkout.start(product.id)}
+              >
                 Buy {product.name}
               </button>
             ) : (
