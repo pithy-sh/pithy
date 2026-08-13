@@ -13,12 +13,12 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "turbo run build",
-    "test": "turbo run test --concurrency=50%",
-    "test:node": "turbo run test:node",
-    "test:workers": "turbo run test:workers --concurrency=50%",
-    "test:integration": "turbo run test:integration --concurrency=50%",
-    "typecheck": "turbo run typecheck",
+    "build": "turbo run build --continue=dependencies-successful",
+    "test": "turbo run test --concurrency=50% --continue=always",
+    "test:node": "turbo run test:node --continue=always",
+    "test:workers": "turbo run test:workers --concurrency=50% --continue=always",
+    "test:integration": "turbo run test:integration --concurrency=50% --continue=always",
+    "typecheck": "turbo run typecheck --continue=always",
     "lint": "biome check .",
     "format": "biome format --write .",
     "clean": "turbo run clean",

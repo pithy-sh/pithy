@@ -6,6 +6,7 @@ import { ValidationError } from "../error/pithyError";
 import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
 import { DevSecret } from "./devSecret";
+import { manifestRecord } from "./manifestRecord";
 import { DeclaredSecret } from "./secretOrigin";
 
 /**
@@ -91,7 +92,7 @@ export const ConfigOptionValue: z.ZodType<ConfigOptionValue> = z
       PrintableNumber,
       z.boolean(),
       z.array(ConfigOptionValue),
-      z.record(PrintableString, ConfigOptionValue),
+      manifestRecord(z.record(PrintableString, ConfigOptionValue)),
     ]),
   )
   .describe("An option's rendered value: a JSON scalar, or a minimal worked example the adopter replaces.");

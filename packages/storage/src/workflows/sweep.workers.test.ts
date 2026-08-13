@@ -336,7 +336,29 @@ describe("D1's bound-parameter cap", () => {
    */
   const CANDIDATES = 150;
 
-  test("a page past the cap is chunked, and the claimed sets union before anything is deleted", async () => {
+  /**
+   * This test is genuinely slow, and the number says so rather than hiding it (#333).
+   *
+   * Measured on an idle 8-core machine, three runs: **3317ms, 3483ms, 3789ms**. With the rest of the
+   * repository's suites running beside it: **4053ms**. In the run that opened #333 it reported 5468ms and
+   * failed. Nothing regressed — the default 5000ms was never a cap this test's own work fitted under. It
+   * puts 150 objects into R2 and inserts 150 rows into D1 before the sweep it measures even starts, and
+   * 150 is not padding: D1 binds at most 100 parameters, so a page under that number proves nothing about
+   * chunking at all.
+   *
+   * **Serial setup is the fast path, which was measured rather than assumed.** Replacing the `put` loop
+   * with `Promise.all` — the obvious optimisation — made it *slower*: 5392ms, 5588ms, 6190ms across three
+   * idle runs, failing every time. 150 concurrent writes contend inside one workerd more than they
+   * overlap. The loop stays.
+   *
+   * So the cost is real, it cannot be bought down, and the honest move is to state it. 15000ms is roughly
+   * four times the idle cost: enough that contention never decides the outcome, tight enough that work
+   * which doubled would still fail here. If this test starts reporting eight seconds on an idle machine,
+   * that is a regression and these numbers are what to compare it against.
+   */
+  const SLOW = { timeout: 15_000 };
+
+  test("a page past the cap is chunked, and the claimed sets union before anything is deleted", SLOW, async () => {
     const bound: number[] = [];
     const recording = recordingDatabase(bound);
 

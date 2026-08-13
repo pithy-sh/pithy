@@ -137,6 +137,25 @@ describe("SecretOrigin", () => {
     }
   });
 
+  test("a `__proto__` key is refused, not dropped", () => {
+    // The key check never reached it. Zod skips `__proto__` before running the key schema — it has to,
+    // or the assignment would replace the prototype of the object it builds into — so the entry left the
+    // parse with no issue attached and no key in the result. `{ __proto__: [...] }` parsed successfully
+    // to `{}`. That is data loss no reader can detect, which is the one outcome this field's key rule
+    // exists to prevent.
+    const needs = JSON.parse('{"cloudflare":["secrets:read"],"__proto__":["deployments:write"]}') as unknown;
+    const result = SecretOrigin.safeParse({ kind: "helped", issuer: "cloudflare", needs });
+    expect(result.success).toBe(false);
+  });
+
+  test("a `__proto__` key takes its scopes down with it, which is what makes the silence expensive", () => {
+    // Not a duplicate of the test above. That one asserts the parse refuses; this one names what a
+    // successful parse would have thrown away — the requirement, not just the key.
+    const needs = JSON.parse('{"__proto__":["deployments:write"]}') as unknown;
+    const result = SecretOrigin.safeParse({ kind: "helped", issuer: "cloudflare", needs });
+    expect(result.success ? Object.keys(result.data) : "refused").toBe("refused");
+  });
+
   test("an unrecognised issuer degrades to `other` rather than failing", () => {
     // A capability added tomorrow names an issuer a client built today has never heard of. The client
     // renders it as documented-only and keeps working; it does not blank the pane.
