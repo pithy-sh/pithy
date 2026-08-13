@@ -38,6 +38,7 @@ import {
   PaymentsAdminPurchasesResponse,
   PaymentsAdminPurchaseView,
   PaymentsAdminReconcileRunsResponse,
+  PaymentsAdminReconcileRunView,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
 } from "./responses";
@@ -1011,38 +1012,26 @@ describe("the reads never widen into the player surface, and never write", () =>
  * **The disclosure assertion is a positive invariant, never a list of forbidden strings.** A negative sweep
  * is a list somebody has to keep, and the field that leaks is the one nobody thought to forbid. So the claim
  * is stated the other way round, in two halves that are each insufficient alone: *every key in the response
- * is one of the fifteen written out below*, and *every leaf is one of the facts the run itself recorded* —
- * its own id, its two timestamps, its rail, its environment, one of its counts, or a boolean.
+ * is one written out below*, and *every leaf is one of the facts the run itself recorded* — its own id, its
+ * two timestamps, its rail, its environment, one of its counts, or a boolean.
  *
  * The rows the pass ran over carry a sentinel payload (`purchase()` above writes one), so a projection that
  * reached anything of a store's would have a value with nowhere to belong.
+ *
+ * **Two things about the sweep were wrong when this shipped, and #328 fixed both.**
+ *
+ * It ran over `PaymentsAdminReconcileRunsResponse.parse(body)`. **Zod strips unknown keys**, so the copy it
+ * examined had already had any undeclared field removed: both halves of the invariant were computed against
+ * a document the widening could not appear in, and the gate was structurally incapable of failing for its
+ * own reason. It reads the raw body now, and the planted case below proves the difference rather than
+ * asserting it. The catalog and purchase sweeps above always read `raw` — this one alone did not.
+ *
+ * And the walkers were a private pair here, added in the same wave in which `@pithy-sh/core`'s
+ * {@link unpublishedIn} was extracted precisely because four hand-rolled copies existed and one was blind
+ * to booleans and nulls. A fifth copy in the file the consolidation had just cleaned. There is one producer
+ * now, and its blindness is planted against on every run in `packages/core/src/projection/published.test.ts`.
  */
 describe("the reconciliation run log", () => {
-  /** Anything a JSON document holds that is not an object or an array. */
-  type RunLeaf = string | number | boolean | null;
-
-  /**
-   * Every leaf in a JSON document, wherever it sits. Every leaf type, and the branch this cannot name
-   * throws rather than returning nothing — a silent exemption granted by a fallthrough is the defect.
-   */
-  function leaves(value: unknown): RunLeaf[] {
-    if (Array.isArray(value)) return value.flatMap(leaves);
-    if (value !== null && typeof value === "object") return Object.values(value).flatMap(leaves);
-    if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      return [value];
-    }
-    throw new Error(`The runs response held a ${typeof value}, which this sweep cannot compare.`);
-  }
-
-  /** Every object key in a JSON document, wherever it sits. */
-  function keys(value: unknown): string[] {
-    if (Array.isArray(value)) return value.flatMap(keys);
-    if (value !== null && typeof value === "object") {
-      return Object.entries(value).flatMap(([key, nested]) => [key, ...keys(nested)]);
-    }
-    return [];
-  }
-
   /**
    * Every key this response is permitted to carry. Written out by hand, never read off
    * `PaymentsAdminReconcileRunView.shape` — a gate derived from what it polices cannot fail when what it
@@ -1086,14 +1075,20 @@ describe("the reconciliation run log", () => {
     },
   };
 
-  async function readRuns(query = ""): Promise<PaymentsAdminReconcileRunsResponse> {
+  /** The body exactly as it left the Worker. What a client receives is what a disclosure gate is about. */
+  async function readRunsRaw(query = ""): Promise<unknown> {
     const response = await call(
       makeApp([PAYMENTS_RECONCILE_READ_SCOPE]),
       `/payments/admin/reconcile-runs${query}`,
       PAYMENTS_RECONCILE_READ_SCOPE,
     );
     expect(response.status).toBe(200);
-    return PaymentsAdminReconcileRunsResponse.parse(await response.json());
+    return await response.json();
+  }
+
+  /** The same body, through the schema — for the tests that are about the contract rather than disclosure. */
+  async function readRuns(query = ""): Promise<PaymentsAdminReconcileRunsResponse> {
+    return PaymentsAdminReconcileRunsResponse.parse(await readRunsRaw(query));
   }
 
   test("returns the passes this deployment has run, newest first", async () => {
@@ -1126,40 +1121,81 @@ describe("the reconciliation run log", () => {
     expect((await readRuns("?environment=sandbox")).runs.map((run) => run.id)).toEqual(["sandbox-run"]);
   });
 
-  test("every key in the response is one of the fifteen this surface publishes", async () => {
+  /** Every fact one `RUN` legitimately discloses, plus the envelope's own null end-of-page. */
+  function publishedFactsOf(run: typeof RUN): (string | number | boolean | null)[] {
+    return [
+      run.id,
+      run.startedAt.toISOString(),
+      run.finishedAt.toISOString(),
+      run.environment,
+      ...(run.rail === null ? [] : [run.rail]),
+      ...Object.values(run.report),
+      // The envelope's own ends: a first page resumes nowhere.
+      null,
+    ];
+  }
+
+  test("nothing but the published facts can cross it, whatever a field is called", async () => {
+    // Both halves at once, over the **raw** body. It ran over the parsed one until #328: Zod strips unknown
+    // keys, so an undeclared field was removed from the document before either half looked at it, and the
+    // gate could not fail for the reason it exists. The test below plants exactly that.
+    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
     await recordReconcileRun(env.DB, RUN, { now: NOW });
-    const body = await readRuns();
-    const undeclared = [...new Set(keys(body))].filter((key) => !PERMITTED_KEYS.includes(key));
+    const raw = await readRunsRaw();
+
+    const escaped = unpublishedIn(raw, { leaves: publishedFactsOf(RUN), keys: PERMITTED_KEYS });
     expect(
-      undeclared,
-      `The reconciliation run response carries keys this surface does not publish: ${undeclared.join(", ")}`,
+      escaped,
+      `These crossed the reconciliation read and are neither a key it publishes nor a fact the run recorded:\n  ${escaped.join("\n  ")}`,
     ).toEqual([]);
   });
 
-  test("every leaf is a fact the run itself recorded — an id, a time, an enum, a count, or a boolean", async () => {
-    // The positive half. Stated over the values rather than over the names, because a field renamed into
-    // something innocuous still carries whatever it carries.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
+  test("the sweep reads the body the Worker sent, not one a schema has already sanitised", async () => {
+    // The defect, planted. `PaymentsAdminReconcileRunsResponse.parse` drops an unknown key, so a sweep over
+    // its output examines a document the offending field has already been removed from — a gate reading a
+    // copy of its own subject, cleaned. Both directions are asserted here: the sweep sees the widening, and
+    // the parse is shown to be what hid it.
     await recordReconcileRun(env.DB, RUN, { now: NOW });
-    const body = await readRuns();
+    const raw = (await readRunsRaw()) as { runs: Record<string, unknown>[] };
 
-    const published = new Set<RunLeaf>([
-      RUN.id,
-      RUN.startedAt.toISOString(),
-      RUN.finishedAt.toISOString(),
-      RUN.environment,
-      RUN.rail,
-      ...Object.values(RUN.report),
-      // The envelope's own ends: a first page resumes nowhere.
-      null,
+    // A projection widens by gaining a field. This is the cheapest possible one, carrying a store's payload.
+    const widened = { ...raw, runs: raw.runs.map((run) => ({ ...run, providerPayload: "s3cret-from-the-store" })) };
+    const escaped = unpublishedIn(widened, { leaves: publishedFactsOf(RUN), keys: PERMITTED_KEYS });
+    expect(escaped).toEqual([
+      'key "providerPayload" at runs[0].providerPayload',
+      'value "s3cret-from-the-store" at runs[0].providerPayload',
     ]);
-    const crossed = leaves(body).filter((leaf) => !published.has(leaf));
-    expect(
-      crossed,
-      `These values crossed the reconciliation read and are not facts the run recorded: ${crossed.map(String).join(", ")}`,
-    ).toEqual([]);
-    // Anti-vacuous: a sweep that found no leaves would pass the assertion above for the wrong reason.
-    expect(leaves(body).length).toBeGreaterThan(10);
+
+    // And through the schema it is simply gone, which is why the sweep must never be handed that copy.
+    const sanitised = PaymentsAdminReconcileRunsResponse.parse(widened);
+    expect(unpublishedIn(sanitised, { leaves: publishedFactsOf(RUN), keys: PERMITTED_KEYS })).toEqual([]);
+  });
+
+  test("the sweep is running against a run that really carries all of it", async () => {
+    // A gate over nothing passes perfectly. The row the assertion above reads must genuinely hold the id,
+    // both timestamps, the rail, the environment and all nine counts — twelve leaves at minimum, on one run.
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    const raw = (await readRunsRaw()) as { runs: Record<string, unknown>[] };
+    expect(raw.runs).toHaveLength(1);
+    // Every value the permit list names is genuinely in the body, so no entry on it is slack that would
+    // silently absolve a future field carrying the same value.
+    const serialized = JSON.stringify(raw.runs[0]);
+    for (const fact of publishedFactsOf(RUN)) {
+      if (fact === null) continue;
+      expect(
+        serialized,
+        `The run row does not carry ${JSON.stringify(fact)}, so permitting it proves nothing.`,
+      ).toContain(String(fact));
+    }
+  });
+
+  test("the response schema declares nothing the hand-written key list does not name", () => {
+    // The other place a widening fails, and the earlier one: on the schema edit, before any view fills the
+    // new field. The list polices the schema; the schema never polices itself.
+    const declared = ["runs", "nextCursor", ...Object.keys(PaymentsAdminReconcileRunView.shape)];
+    expect(declared.filter((key) => !PERMITTED_KEYS.includes(key))).toEqual([]);
+    // And in the other direction, so a field removed from the schema leaves no permission behind it.
+    expect(PERMITTED_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });
 
   test("a connection without the scope is refused, not handed the log", async () => {
