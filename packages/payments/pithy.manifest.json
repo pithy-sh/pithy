@@ -20,12 +20,12 @@
       "origin": {
         "kind": "obtained",
         "issuer": "other",
-        "documentation": "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md"
+        "documentation": "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md#where-each-rails-credentials-come-from"
       },
       "rotation": {
         "kind": "manual",
         "issuer": "other",
-        "documentation": "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md"
+        "documentation": "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md#where-each-rails-credentials-come-from"
       }
     }
   ],

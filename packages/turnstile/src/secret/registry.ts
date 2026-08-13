@@ -54,7 +54,11 @@ export const TURNSTILE_SECRET_NAME = "turnstile-secret-keys";
  * genuinely replace itself. That is also why `rotatable` is true: a rotation leaves tokens minted under
  * the old secret in flight, and both versions have to verify until they drain.
  */
-const TURNSTILE_WIDGETS_PAGE = "https://developers.cloudflare.com/turnstile/get-started/";
+// The dashboard page, not `turnstile/get-started/`. That one is a hub: it offers three implementation
+// methods and names no console, so an operator holding an expired secret key spends the click choosing
+// between links. This one carries the dashboard URL, `Add widget`, and "copy your sitekey and secret key".
+// #332 — `documentation` says "the specific settings page, not a product homepage", and a hub is a homepage.
+const TURNSTILE_WIDGETS_PAGE = "https://developers.cloudflare.com/turnstile/get-started/widget-management/dashboard/";
 const TURNSTILE_ROTATE_SECRET =
   "https://developers.cloudflare.com/api/resources/turnstile/subresources/widgets/methods/rotate_secret/";
 

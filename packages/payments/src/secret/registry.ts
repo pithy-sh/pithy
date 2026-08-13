@@ -48,6 +48,34 @@ import { PaymentsRailNotConfiguredError } from "../error/errors";
 export const PAYMENTS_PROVIDER_SECRET = "payments-provider-credentials";
 
 /**
+ * The console each rail's credentials are taken from, and taken from again ninety days later.
+ *
+ * **This is the honest answer, and it does not fit in `documentation`.** That field holds one required
+ * URL; this secret spans five issuers, and every one of them publishes its own page. There is no sixth
+ * page that names all five, because no company documents a competitor's console. A single string can
+ * therefore be true of at most one rail out of five, and the entry has to say something for all of them.
+ *
+ * So the entry points at ours, `PAYMENTS_CREDENTIALS_PAGE`, whose only job is to carry this table to an
+ * operator who arrived by clicking. The table is the destination; the page is the redirect. That is one
+ * hop more than the field promises — `SecretOrigin` restricting `documentation` to a single URL is the
+ * reason, and #332 is where the shape is argued.
+ *
+ * Not a rail's marketing page and not a "how to integrate" guide: the deep link to the settings screen
+ * that shows the key, so an operator lands on the thing they came to copy.
+ */
+export const PAYMENTS_RAIL_CONSOLES: Readonly<Record<PaymentsRail, string>> = {
+  // Users and Access → Integrations → App Store Connect API. The `.p8` downloads exactly once here, and
+  // the key id and issuer id are both on this screen.
+  apple: "https://appstoreconnect.apple.com/access/integrations/api",
+  // The service account and its JSON key. Play Console grants that account access; the key is minted here.
+  google: "https://console.cloud.google.com/iam-admin/serviceaccounts",
+  // The secret key. The webhook signing secret is per endpoint, one screen across in Developers → Webhooks.
+  stripe: "https://dashboard.stripe.com/apikeys",
+  lemonSqueezy: "https://app.lemonsqueezy.com/settings/api",
+  paddle: "https://vendors.paddle.com/authentication-v2",
+};
+
+/**
  * Where a human goes for these credentials, and where the same human replaces them.
  *
  * **Five consoles, one `issuer` field.** Apple's `.p8`, Google's service-account key, Stripe's key pair,
@@ -56,12 +84,16 @@ export const PAYMENTS_PROVIDER_SECRET = "payments-provider-credentials";
  * The axis holds a single name, so the honest one is `other`: *somebody issues this, and it is not one
  * somebody.* Naming any single rail would be wrong for every deployment that does not sell through it.
  *
- * So the link is the one page that names all five rather than a rail's settings page. The point of the
- * field is to end a search; a link to Stripe ends a fifth of this one. The day this bundle is split per
- * rail — or `SecretOrigin` grows an issuer per entry — each half names its own console and this constant
- * goes.
+ * So the link is the one page that names all five rather than a rail's settings page. It has to *name*
+ * them: this constant pointed at the same document before #332 and the document listed no console at all,
+ * which cost the click and returned the reader to the search they started with. The section is fixed by
+ * name, and `registry.test.ts` reads the file off disk and fails if a rail's console is not in it.
+ *
+ * The day this bundle is split per rail — or `SecretOrigin` grows a destination per issuer — each half
+ * names its own console and this constant goes.
  */
-const PAYMENTS_CREDENTIALS_PAGE = "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md";
+export const PAYMENTS_CREDENTIALS_PAGE =
+  "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md#where-each-rails-credentials-come-from";
 
 export const PaymentsAppleCredentials = z
   .strictObject({
@@ -224,6 +256,9 @@ export const paymentsSecretsRegistry = defineSecretRegistry({
  * A rail enabled in `pithy.config.ts` whose credentials were never provisioned is a 404, not a 500: from the
  * caller's side that payment method genuinely is not available here, and telling a client which of config or
  * provisioning is missing tells it about our deployment. `detail` carries the distinction for the operator.
+ *
+ * `action` carries the console. Which rail is missing is known here, so the one page out of five that
+ * answers "where do I get one" is known here too — and this is the moment the question is being asked.
  */
 export function railCredentials<R extends PaymentsRail>(
   credentials: PaymentsProviderCredentials,
@@ -233,6 +268,7 @@ export function railCredentials<R extends PaymentsRail>(
   if (!block) {
     throw new PaymentsRailNotConfiguredError({
       detail: `The ${rail} rail has no credentials in "${PAYMENTS_PROVIDER_SECRET}" for this environment. Run \`pithy secrets set\` for it.`,
+      action: `Take the ${rail} credentials from ${PAYMENTS_RAIL_CONSOLES[rail]} and set them with \`pithy secrets set ${PAYMENTS_PROVIDER_SECRET}\`.`,
     });
   }
   return block as NonNullable<PaymentsProviderCredentials[R]>;

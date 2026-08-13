@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
+import { PAYMENTS_RAILS } from "../data/rail";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
 import {
+  PAYMENTS_CREDENTIALS_PAGE,
   PAYMENTS_PROVIDER_SECRET,
+  PAYMENTS_RAIL_CONSOLES,
   PaymentsProviderCredentials,
   paymentsSecretsRegistry,
   railCredentials,
@@ -49,6 +54,55 @@ describe("paymentsSecretsRegistry", () => {
     if (!entry) throw new Error("the registry entry must exist");
     expect(resolveWriteTargets(entry.backend, entry.scope, "staging", DEFAULT_ENVIRONMENTS)).toEqual(["staging"]);
     expect(resolveWriteTargets(entry.backend, entry.scope, "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
+  });
+});
+
+/**
+ * The page `documentation` names, read off disk from the URL itself — so a value edited to point
+ * somewhere else fails here rather than passing against a path this test happened to hardcode.
+ */
+function documentationPage(url: string): { path: string; body: string; fragment: string } {
+  const [base, fragment = ""] = url.split("#");
+  const relative = base?.split("/blob/main/")[1];
+  if (!relative) throw new Error(`${url} is not a path inside this repository`);
+  const path = fileURLToPath(new URL(`../../../../${relative}`, import.meta.url));
+  return { path, body: readFileSync(path, "utf8"), fragment };
+}
+
+/** GitHub's heading-anchor slug: lowercased, punctuation dropped, spaces hyphenated. */
+function slug(heading: string): string {
+  return heading
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\- ]+/g, "")
+    .replace(/ /g, "-");
+}
+
+describe("credential documentation", () => {
+  test("every rail names a console, and no two rails share one", () => {
+    // The rails come from `data/rail.ts`, the consoles from the registry. A sixth rail added there and
+    // forgotten here fails on this line — which is the run before an operator is handed a link to
+    // somebody else's console. Distinct hosts is the whole reason one URL cannot serve the entry.
+    expect(Object.keys(PAYMENTS_RAIL_CONSOLES).sort()).toEqual([...PAYMENTS_RAILS].sort());
+    const hosts = Object.values(PAYMENTS_RAIL_CONSOLES).map((url) => new URL(url).host);
+    expect(new Set(hosts).size).toBe(PAYMENTS_RAILS.length);
+  });
+
+  test("the page `documentation` points at names every one of those consoles", () => {
+    // #332, exactly: the entry claimed one page named all of them, and the page named none. An operator
+    // holding a ninety-day-old credential clicked, read, and was back where they started.
+    const { body, path } = documentationPage(PAYMENTS_CREDENTIALS_PAGE);
+    for (const rail of PAYMENTS_RAILS) {
+      expect(body, `${rail}'s console is missing from ${path}`).toContain(PAYMENTS_RAIL_CONSOLES[rail]);
+    }
+  });
+
+  test("the link's fragment is a heading that page actually has", () => {
+    // A fragment GitHub cannot resolve silently lands at the top of a long page, which is the same
+    // wasted click by another route.
+    const { body, fragment } = documentationPage(PAYMENTS_CREDENTIALS_PAGE);
+    const headings = [...body.matchAll(/^#{1,6} (.+)$/gm)].map((match) => slug(match[1] ?? ""));
+    expect(headings).toContain(fragment);
   });
 });
 
@@ -114,6 +168,20 @@ describe("railCredentials", () => {
       // The operator is told which of config and provisioning is missing; the client is told neither.
       expect(thrown.payload.detail).toContain(PAYMENTS_PROVIDER_SECRET);
       expect(thrown.payload.message).not.toContain(PAYMENTS_PROVIDER_SECRET);
+    }
+  });
+
+  test("the refusal names the console the missing rail's credentials come from", () => {
+    // `action` is the operator's copy of the answer, and it needs no network and no rendered anchor.
+    // The rail is known here, so the one console out of five that applies is known too.
+    expect.assertions(2);
+    const credentials = PaymentsProviderCredentials.parse({ apple: APPLE });
+    try {
+      railCredentials(credentials, "paddle");
+    } catch (error) {
+      const { action } = (error as PaymentsRailNotConfiguredError).payload;
+      expect(action).toContain(PAYMENTS_RAIL_CONSOLES.paddle);
+      expect(action).not.toContain(PAYMENTS_RAIL_CONSOLES.stripe);
     }
   });
 
