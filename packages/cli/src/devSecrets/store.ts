@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { type DevSecretsStore, devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
@@ -112,12 +113,16 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
   // and still does until `pithy add secrets` adopts it. Reading only the current one would make every
   // project that has not upgraded unopenable — and this is the master key, so an "absent" answer is not a
   // fresh start: it is every secret already encrypted under it becoming unreadable.
+  const stated = await statedMasterKey(options.projectDir, options.paths ?? {});
   const masterKey =
-    (await statedMasterKey(options.projectDir, options.paths ?? {})) ||
+    stated.value ||
     (await readBootstrapVars(options.projectDir, options.paths ?? {}))[MASTER_KEY_BINDING] ||
     parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""))[MASTER_KEY_BINDING];
   if (!masterKey) {
-    return { ready: false, reason: `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`, ...noop };
+    // The file's own sentence when it had one, and only then the absent one. "Not recorded" is a claim
+    // about the file, and it may only be made when the file makes no claim (#323).
+    const reason = stated.unreadable ?? `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`;
+    return { ready: false, reason, ...noop };
   }
 
   const persistPath = localDevStorePath(options.projectDir);
@@ -157,22 +162,51 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
 }
 
 /**
- * The master key as the dev secrets file states it, materialised exactly as a Worker's binding receives
- * it — `undefined` when the project has no name, no file, or no key in it.
+ * What the dev secrets file says about the master key. Exactly one of the three is set.
+ *
+ * **The type is the fix (#323).** A `string | undefined` had one slot for two answers — "the file states
+ * nothing" and "the file states something that will not read" — so a bare `catch {}` collapsed them, and
+ * a present-but-malformed key printed `No SECRETS_ENCRYPTION_KEYS recorded. Run pithy add secrets.` That
+ * sentence is false about a key that is there, and the command it names then does nothing, because
+ * `ensureDevMasterKey` finds a key already present and returns. Two investigations died in that gap.
+ */
+interface StatedMasterKey {
+  /** The key, materialised exactly as a Worker's binding receives it. Absent when the file has none. */
+  readonly value?: string;
+  /** Why the file could not answer — the thrown error's own sentence. Absent when it answered. */
+  readonly unreadable?: string;
+}
+
+/**
+ * The master key as the dev secrets file states it, or the sentence saying why it could not be read.
  *
  * Through {@link devVarsForRegistry} and {@link masterKeyRegistryEntry} rather than by reaching into the
  * envelope here: the entry is what says the value is an `EncryptionConfig` and that its binding carries
  * the value rather than the envelope, and a second reading of that in this file is how the seeder and the
  * store come to disagree about what the key is.
+ *
+ * **Nothing new is written here.** Every reader below already throws a `PithyError` naming the secret,
+ * the file, and the fix — `requireProjectName`, `readDevSecretsSource`, `loadDevSecrets`,
+ * `storedSecretValue`. The defect was never a missing message; it was a `catch` that threw four of them
+ * away. So this carries each one out verbatim, and a fifth reader gets its sentence for free.
  */
-async function statedMasterKey(projectDir: string, paths: StatePathOptions): Promise<string | undefined> {
+async function statedMasterKey(projectDir: string, paths: StatePathOptions): Promise<StatedMasterKey> {
+  // Resolved separately from the read, because a path that does not resolve is a different claim: the
+  // project has no name, so it has no secrets file, so nothing was ever recorded in one.
+  let path: string;
   try {
-    const path = await resolveDevSecretsFile(projectDir, paths);
+    path = await resolveDevSecretsFile(projectDir, paths);
+  } catch (error) {
+    return { unreadable: `No ${MASTER_KEY_BINDING} recorded: ${sentenceOf(error)}` };
+  }
+
+  try {
     const file = await readDevSecrets(path);
-    return devVarsForRegistry(file, { [MASTER_KEY_BINDING]: masterKeyRegistryEntry }, path)[MASTER_KEY_BINDING];
-  } catch {
-    // A nameless project, an unreadable file, or a value that does not validate as a master key. Each
-    // falls through to the older homes below, and each is named by `pithy seed` and `pithy doctor`.
-    return undefined;
+    const value = devVarsForRegistry(file, { [MASTER_KEY_BINDING]: masterKeyRegistryEntry }, path)[MASTER_KEY_BINDING];
+    // An absent key in a readable file is the one state `No … recorded` is true of, so it is the one
+    // state that says nothing here and lets the caller's own sentence stand.
+    return value === undefined ? {} : { value };
+  } catch (error) {
+    return { unreadable: sentenceOf(error) };
   }
 }

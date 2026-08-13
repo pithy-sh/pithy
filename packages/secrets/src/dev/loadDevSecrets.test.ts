@@ -136,6 +136,39 @@ describe("loadDevSecrets — every value is a full envelope", () => {
     expect(result.message).toContain("toString");
   });
 
+  test("a value written bare is rejected as the envelope it is not, naming what it carries (#323)", () => {
+    // The exact corruption #323 was diagnosed from: `SECRETS_ENCRYPTION_KEYS`' own `EncryptionConfig`
+    // promoted to the top. It is the one payload that is structurally a *superset* of an envelope, so
+    // a parser that strips unknown keys accepts it, drops `lastRotatedAt`, and leaves a base64 string
+    // where a nested object belongs — a failure that then surfaces three frames later talking about
+    // version "1", in a message naming neither this file nor this secret.
+    const result = payload(() =>
+      loadDevSecrets(
+        `{ "SECRETS_ENCRYPTION_KEYS": { "currentVersion": "1", "versions": { "1": "a2V5" }, "lastRotatedAt": "2026-08-06T16:21:53.830Z" } }`,
+      ),
+    );
+
+    expect(result.code).toBe("validation/invalid_input");
+    expect(result.message).toContain("SECRETS_ENCRYPTION_KEYS");
+    expect(result.message).toContain("lastRotatedAt");
+  });
+
+  test("any key beside currentVersion and versions is refused — the rule is the shape, not the key", () => {
+    const result = payload(() =>
+      loadDevSecrets(`{ "a-b": { "currentVersion": "1", "versions": { "1": "v" }, "note": "mine" } }`),
+    );
+
+    expect(result.message).toContain("a-b");
+    expect(result.message).toContain("note");
+  });
+
+  test("what was found never includes what was in it", () => {
+    const result = payload(() => loadDevSecrets(`{ "a-b": { "currentVersion": "1", "versions": "s3cr3t-material" } }`));
+
+    expect(result.message).toContain("a-b");
+    expect(JSON.stringify(result)).not.toContain("s3cr3t-material");
+  });
+
   test("a multi-version envelope keeps every version and the pointer", () => {
     const source = `{ "a-b": { "currentVersion": "2", "versions": { "1": "old", "2": "new" } } }`;
 

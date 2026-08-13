@@ -240,3 +240,19 @@ export function fromZodError(error: z.ZodError, args: ErrorArgs = {}): Validatio
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * One caught error as one sentence for a human: its {@link messageOf}, then its `action` when it has
+ * one. For a caller that has to *report* a failure rather than re-throw it — a CLI check that must keep
+ * running, a diagnostic that collects several.
+ *
+ * **Both halves, because they answer different questions**: the message says what is wrong and where,
+ * the action says what to do about it. A reporter that keeps only the message drops the fix.
+ *
+ * **Never `detail`.** That is throw-site context, deliberately stripped at the HTTP boundary, and a
+ * string built here is printed to a terminal and pasted into issues. Same rule, one line up.
+ */
+export function sentenceOf(error: unknown): string {
+  const action = error instanceof PithyError ? error.payload.action : undefined;
+  return action ? `${messageOf(error)} ${action}` : messageOf(error);
+}

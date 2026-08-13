@@ -3,7 +3,7 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
-import { DEV_SECRETS_FILE, DevSecretEnvelope, DevSecretsFile } from "./devSecretsFile";
+import { DEV_SECRETS_FILE, DevSecretEnvelope, DevSecretsFile, describeNotEnvelope } from "./devSecretsFile";
 
 /**
  * The dev secrets file boundary. Text in, a validated {@link DevSecretsFile} out — and every way
@@ -108,10 +108,14 @@ function position(cause: unknown): string {
 function readEnvelope(path: string, name: string, value: unknown): DevSecretEnvelope {
   const result = DevSecretEnvelope.safeParse(value);
   if (!result.success) {
+    // What was found, not merely that it was wrong (#323). "Is not a versioned envelope" is true of a
+    // string, of a bare `EncryptionConfig`, and of a typo — three different edits, and the adopter is
+    // looking at the file. {@link describeNotEnvelope} names keys and types and never a value.
+    const found = describeNotEnvelope(value, result.error);
     throw new ValidationError({
-      message: `Secret '${name}' in ${path} is not a versioned envelope.`,
+      message: `Secret '${name}' in ${path} is not a versioned envelope: ${found}.`,
       action: `Write it as ${ENVELOPE_SHAPE}. Every value is a full envelope, so a JSON secret's own object is never mistaken for one.`,
-      detail: `dev secrets file '${path}': '${name}' is not a { currentVersion, versions } envelope`,
+      detail: `dev secrets file '${path}': '${name}' is not a { currentVersion, versions } envelope: ${found}`,
     });
   }
 

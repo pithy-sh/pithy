@@ -1728,9 +1728,10 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
         misplaced: [],
         missing: [],
         bootstrapMissing: [],
+        malformed: [],
         undeclared: [],
         mode: null,
-        unreadable: false,
+        unreadable: null,
         unresolvable: broken,
       }),
     });
