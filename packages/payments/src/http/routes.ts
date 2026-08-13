@@ -12,7 +12,7 @@ import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, Hono } from "hono";
-import { listEntitlements, listPurchases, listSubscriptions, readEntitlements } from "../admin/read";
+import { listEntitlements, listPurchases, listReconcileRuns, listSubscriptions, readEntitlements } from "../admin/read";
 import { type PaymentsAuditAction, PaymentsAuditActions } from "../audit/actions";
 import {
   type PaymentsCatalogEntry,
@@ -55,6 +55,7 @@ import {
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   requireAuth,
 } from "./guards";
@@ -63,6 +64,7 @@ import type {
   PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
+  PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
   PaymentsDiscountResponse,
@@ -77,6 +79,7 @@ import {
   AdminDiscountsQuery,
   AdminEntitlementsQuery,
   AdminPurchasesQuery,
+  AdminReconcileRunsQuery,
   AdminSubscriptionsQuery,
   AdminUserParam,
   AppleWebhookNotification,
@@ -90,7 +93,14 @@ import {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./schemas";
-import { adminCatalogView, adminEntitlementView, adminPurchaseView, entitlementView, purchaseView } from "./view";
+import {
+  adminCatalogView,
+  adminEntitlementView,
+  adminPurchaseView,
+  adminReconcileRunView,
+  entitlementView,
+  purchaseView,
+} from "./view";
 import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhookGuard";
 
 /**
@@ -112,6 +122,7 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   GET  /payments/admin/subscriptions          → the purchases that renew       (control-plane: payments:subscriptions:read)  query: AdminSubscriptionsQuery
  *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
  *   GET  /payments/admin/entitlements/:userId   → one account's entitlements     (control-plane: payments:entitlements:read)   param: AdminUserParam
+ *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)     query: AdminReconcileRunsQuery
  *
  * **The reads exist because the writes did.** Payments shipped `entitlements/grant` and
  * `entitlements/revoke` with no read beside them, so a management client could comp an entitlement and take
@@ -647,6 +658,38 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             userId,
             entitlements: rows.map((row) => adminEntitlementView(row, now)),
           } satisfies PaymentsAdminUserEntitlementsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. What reconciliation has done — the passes this deployment has run, newest first.
+     *
+     * The compensating control for a delivery mechanism that is known to fail leaves a trace, so an adopter
+     * can tell a healthy integration from one whose cron stopped firing. An empty page is a real answer and
+     * the loudest one this route gives.
+     *
+     * Its own scope: a run names no account, no transaction and no amount, so a health monitor can be granted
+     * exactly this without acquiring the purchase log.
+     */
+    app.get(
+      `${base}/admin/reconcile-runs`,
+      requireControlPlane(PAYMENTS_RECONCILE_READ_SCOPE),
+      zValidator("query", AdminReconcileRunsQuery, validationHook),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listReconcileRuns(database(c), query);
+        await recordRead(c, PaymentsAuditActions.reconcileRunsRead, null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: { rail: query.rail ?? null, environment: query.environment ?? null },
+        });
+        return c.json(
+          {
+            runs: page.items.map(adminReconcileRunView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminReconcileRunsResponse,
           200,
         );
       },

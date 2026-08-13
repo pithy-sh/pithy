@@ -128,6 +128,7 @@ describe("payments()", () => {
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
       "/billing/admin/purchases",
+      "/billing/admin/reconcile-runs",
       "/billing/admin/subscriptions",
       "/billing/checkout",
       "/billing/entitlements",
@@ -150,6 +151,7 @@ describe("payments()", () => {
       "pithyPaymentsEntitlements",
       "pithyPaymentsProviderAccounts",
       "pithyPaymentsPurchases",
+      "pithyPaymentsReconcileRuns",
       "pithyPaymentsWebhookEvents",
     ]);
     // CamelCasePlugin snake-cases each to `pithy_payments_*`; the prefix is what keeps them out of an

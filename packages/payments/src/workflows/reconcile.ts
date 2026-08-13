@@ -8,6 +8,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { PaymentsAuditActions } from "../audit/actions";
 import type { PaymentsConfig } from "../config/config";
 import { PaymentsPurchase, type PurchaseEnvironment } from "../data/purchase";
+import { recordReconcileRun } from "../data/reconcileRun";
 import type { PurchaseStatus } from "../data/status";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { fulfillPurchase } from "../grants/apply";
@@ -98,6 +99,8 @@ export interface ReconcileDeps {
   railAccess(now: Date): ReconcileRailAccess;
   /** The clock. */
   now(): Date;
+  /** The run id minter, injected so a test is deterministic. Defaults to `crypto.randomUUID`. */
+  newId?: () => string;
   /**
    * The audit seam. Drift is emitted through it, because repeated drift on one rail is the signal that the
    * webhook path is broken and a tally in a log line is not something anybody queries. Defaults to core's
@@ -143,6 +146,11 @@ interface PageResult {
 
 /** The tally a run reports. */
 export interface ReconcileReport {
+  /**
+   * The run's id — the row this pass wrote to `pithy_payments_reconcile_runs`, and the value every repair it
+   * audited carries as `runId`. Minted before the first page so the events can name it.
+   */
+  runId: string;
   /** Pages read — one durable step each. */
   pages: number;
   /** Purchases examined. */
@@ -236,6 +244,7 @@ async function readPage(
  */
 async function reconcileOne(
   deps: ReconcileDeps,
+  runId: string,
   access: ReconcileRailAccess,
   purchase: PaymentsPurchase,
   now: Date,
@@ -321,7 +330,7 @@ async function reconcileOne(
   if (!drifted(before, after)) return "unchanged";
 
   // The audit first, so the repair is on the trail whatever fulfillment does next.
-  await emitDrift(deps, purchase, before, after);
+  await emitDrift(deps, runId, purchase, before, after);
 
   /**
    * Fulfillment, on drift only.
@@ -351,6 +360,7 @@ async function reconcileOne(
 /** Record a repaired disagreement. The one audit event that is about this deployment rather than a caller. */
 async function emitDrift(
   deps: ReconcileDeps,
+  runId: string,
   purchase: PaymentsPurchase,
   before: ProjectedState,
   after: ProjectedState,
@@ -367,6 +377,10 @@ async function emitDrift(
     // Identifiers and states only. Never the refreshed payload: the trail is long-lived and queryable, and a
     // store's purchase payload is a bearer artifact.
     metadata: {
+      // The pointer, and the reason the run record holds no repairs of its own: a repair is recorded here,
+      // once, and the run names the tally over the set of events carrying its id. Copying the repairs into
+      // the runs table would be a second audit trail with different access rules.
+      runId,
       rail: purchase.rail,
       productId: purchase.productId,
       from: before.status,
@@ -398,7 +412,12 @@ export async function reconcilePayments(
   const maxPages = params.maxPages ?? DEFAULT_MAX_PAGES;
   const dryRun = params.dryRun === true;
 
+  // Minted before the first page, because every repair this pass audits names it — a run id assigned at the
+  // end could not be on the events the run is the summary of.
+  const runId = (deps.newId ?? (() => crypto.randomUUID()))();
+
   const report: ReconcileReport = {
+    runId,
     pages: 0,
     scanned: 0,
     unchanged: 0,
@@ -443,7 +462,7 @@ export async function reconcilePayments(
         failed: 0,
       };
       for (const purchase of rows) {
-        tally[await reconcileOne(deps, access, purchase, now, dryRun)] += 1;
+        tally[await reconcileOne(deps, runId, access, purchase, now, dryRun)] += 1;
       }
 
       return {
@@ -471,6 +490,41 @@ export async function reconcilePayments(
       break;
     }
   }
+
+  /**
+   * The run, kept.
+   *
+   * **A run that repaired nothing is written too**, and that is the load-bearing half: *"it ran and found
+   * nothing"* is the answer to *"is this integration healthy"*, and a table holding only the exceptional
+   * passes makes silence ambiguous with a cron that stopped firing — which is the failure the table exists
+   * to make visible.
+   *
+   * Its own `step.do`, so a D1 hiccup retries the write rather than losing the record of a pass that did
+   * real work. The writer is idempotent on the run's id, so a replayed step lands on the row it already
+   * wrote instead of counting one pass twice. It is the last step and never the first: a row claiming a
+   * finish time before the pass had one would be a lie the health read would then repeat.
+   *
+   * `finishedAt` is read from the clock again rather than reused from `now`, because `now` is the pass's
+   * comparison instant and a run over ten thousand purchases is not instantaneous.
+   */
+  await step.do("record-run", async () => {
+    await recordReconcileRun(
+      deps.d1,
+      {
+        id: runId,
+        startedAt: now,
+        finishedAt: deps.now(),
+        environment: deps.environment,
+        // Null is the scheduled behaviour — every enabled rail. A value means somebody narrowed the pass.
+        rail: params.rail ?? null,
+        report,
+      },
+      { now: deps.now() },
+    );
+    // Steps journal their return value; this one has nothing worth replaying, and returning the row would
+    // put a whole record into the journal for no reader.
+    return null;
+  });
 
   return report;
 }

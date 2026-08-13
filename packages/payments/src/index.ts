@@ -49,11 +49,18 @@ export { minorUnitDigits, minorUnitsFromScaled } from "./data/money";
 export { PaymentsProviderAccount } from "./data/providerAccount";
 export { PaymentsPurchase, PurchaseEnvironment } from "./data/purchase";
 export { PAYMENTS_RAILS, PaymentsRail } from "./data/rail";
+export {
+  PaymentsReconcileRun,
+  RECONCILE_RUN_RETENTION_DAYS,
+  type ReconcileRunInput,
+  recordReconcileRun,
+} from "./data/reconcileRun";
 export { ACCESS_GRANTING_STATUSES, grantingStatuses, PurchaseStatus, statusGrantsAccess } from "./data/status";
 export {
   PAYMENTS_ENTITLEMENTS_TABLE,
   PAYMENTS_PROVIDER_ACCOUNTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
+  PAYMENTS_RECONCILE_RUNS_TABLE,
   PAYMENTS_WEBHOOK_EVENTS_TABLE,
   type PaymentsDatabase,
   paymentsDatabase,

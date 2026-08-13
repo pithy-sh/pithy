@@ -18,6 +18,7 @@ import {
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./guards";
 import { registerPaymentsRoutes } from "./routes";
@@ -91,6 +92,7 @@ describe("payments route contract", () => {
       "/payments/admin/entitlements",
       "/payments/admin/entitlements/:userId",
       "/payments/admin/purchases",
+      "/payments/admin/reconcile-runs",
       "/payments/admin/subscriptions",
       "/payments/checkout",
       "/payments/entitlements",
@@ -224,7 +226,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(9);
+    expect(capability.adminRoutes).toHaveLength(10);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
@@ -240,6 +242,7 @@ describe("the admin surface payments advertises", () => {
       "/billing/admin/entitlements/:userId",
       "/billing/admin/discounts",
       "/billing/admin/discounts",
+      "/billing/admin/reconcile-runs",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
     ]);
@@ -258,6 +261,7 @@ describe("the admin surface payments advertises", () => {
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       PAYMENTS_DISCOUNT_READ_SCOPE,
       PAYMENTS_DISCOUNT_CREATE_SCOPE,
+      PAYMENTS_RECONCILE_READ_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
     ]);
@@ -285,7 +289,7 @@ describe("the admin surface payments advertises", () => {
     // are asserted together because either alone permits the mistake.
     const { capability } = composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
-    expect(reads).toHaveLength(6);
+    expect(reads).toHaveLength(7);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
   });
 });

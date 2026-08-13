@@ -354,6 +354,60 @@ export const PaymentsAdminEntitlementView = z
   .describe("One entitlement as a management client sees it: whose it is, whether it grants, and why.");
 export type PaymentsAdminEntitlementView = z.output<typeof PaymentsAdminEntitlementView>;
 
+/**
+ * One reconciliation pass, as a management client sees it.
+ *
+ * **The positive invariant this response is held to: every field is a count, a timestamp, an enum, or this
+ * run's own id.** Not "no payload field" — a list of forbidden names is a list somebody has to keep, and the
+ * field that leaks is the one nobody thought to forbid. There is no field here whose value comes from a
+ * store, because the run record has no column one could be written into.
+ *
+ * It names no account and no transaction either, which is why it sits behind its own scope: reading whether
+ * the nightly repair is firing is not reading anybody's commerce.
+ */
+export const PaymentsAdminReconcileRunView = z
+  .object({
+    id: z.string().describe("The run's id. The same value every repair this pass audited carries as `runId`."),
+    startedAt: z.iso.datetime().describe("When the pass began, ISO-8601."),
+    finishedAt: z.iso.datetime().describe("When it finished, ISO-8601."),
+    environment: PurchaseEnvironment.describe("The store environment the host was deployed to."),
+    rail: PaymentsRail.nullable().describe(
+      "The store this pass was narrowed to, or null for every enabled rail. Null is the scheduled behaviour.",
+    ),
+    pages: z.number().int().describe("Durable steps read — one page of purchases each."),
+    scanned: z.number().int().describe("Purchases examined."),
+    unchanged: z.number().int().describe("Purchases whose stored state already matched the store's."),
+    drifted: z
+      .number()
+      .int()
+      .describe(
+        "Purchases whose stored state disagreed. The number an operator watches: a rising one means webhooks are being lost.",
+      ),
+    superseded: z.number().int().describe("Old periods a later transaction replaced, settled on this pass."),
+    skipped: z.number().int().describe("Purchases no store could be asked about."),
+    failed: z.number().int().describe("Purchases a store refused to answer for."),
+    truncated: z
+      .boolean()
+      .describe("Whether the pass stopped at its page cap. True means the tally is a floor rather than a total."),
+    dryRun: z.boolean().describe("Whether the pass only reported. A dry run's `drifted` is a finding, not a fix."),
+  })
+  .describe("One reconciliation pass: when it ran, what it was narrowed to, and its tally. Counts and times only.");
+export type PaymentsAdminReconcileRunView = z.output<typeof PaymentsAdminReconcileRunView>;
+
+/**
+ * `GET {base}/admin/reconcile-runs`.
+ *
+ * An empty page is a real answer and a loud one: reconciliation has never run here, which for a project that
+ * has provisioned the Workflow is the failure the read exists to surface.
+ */
+export const PaymentsAdminReconcileRunsResponse = z
+  .object({
+    runs: z.array(PaymentsAdminReconcileRunView).describe("The page, most recently started first."),
+    nextCursor: NextCursor,
+  })
+  .describe("A page of the reconciliation run log.");
+export type PaymentsAdminReconcileRunsResponse = z.output<typeof PaymentsAdminReconcileRunsResponse>;
+
 /** `GET {base}/admin/purchases`. */
 export const PaymentsAdminPurchasesResponse = z
   .object({

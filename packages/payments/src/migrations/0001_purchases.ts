@@ -5,8 +5,8 @@ import { type Kysely, sql } from "kysely";
 import type { Migration } from "kysely/migration";
 
 /**
- * Payments' four tables: the purchase projection, the materialized entitlement read model, the
- * provider-identity map, and the raw webhook log.
+ * Payments' five tables: the purchase projection, the materialized entitlement read model, the
+ * provider-identity map, the raw webhook log, and the reconciliation run log.
  *
  * camelCase identifiers; `CamelCasePlugin` snake-cases them in the DDL. `down` is the tested inverse.
  *
@@ -164,8 +164,50 @@ export const payments_0001_purchases: Migration = {
       .on("pithyPaymentsWebhookEvents")
       .columns(["processedAt", "receivedAt"])
       .execute();
+
+    // One row per reconciliation pass. Counts, timestamps and enums — there is deliberately no column a
+    // provider payload could be written into, which is a stronger control than never selecting one.
+    await db.schema
+      .createTable("pithyPaymentsReconcileRuns")
+      .addColumn("id", "text", (c) => c.primaryKey())
+      .addColumn("startedAt", "integer", (c) => c.notNull())
+      .addColumn("finishedAt", "integer", (c) => c.notNull())
+      .addColumn("environment", "text", (c) => c.notNull())
+      // Null is the scheduled behaviour — every enabled rail. A value means somebody narrowed the pass.
+      .addColumn("rail", "text")
+      .addColumn("pages", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("scanned", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("unchanged", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("drifted", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("superseded", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("skipped", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("failed", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("truncated", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("dryRun", "integer", (c) => c.notNull().defaultTo(0))
+      .addColumn("createdAt", "integer", (c) => c.notNull())
+      // Same rule the purchases table states: a sandbox pass and a production pass are facts about
+      // different money, and the database is where that is constrained rather than trusted.
+      .addCheckConstraint("pithyPaymentsReconcileRunsEnvironment", sql`environment in ('production', 'sandbox')`)
+      .addCheckConstraint("pithyPaymentsReconcileRunsTruncated", sql`truncated in (0, 1)`)
+      .addCheckConstraint("pithyPaymentsReconcileRunsDryRun", sql`dry_run in (0, 1)`)
+      // A tally cannot be negative, and a run that reported one is a bug in the pass rather than a fact.
+      .addCheckConstraint(
+        "pithyPaymentsReconcileRunsCounts",
+        sql`pages >= 0 and scanned >= 0 and unchanged >= 0 and drifted >= 0 and superseded >= 0 and skipped >= 0 and failed >= 0`,
+      )
+      .execute();
+
+    // The runs listing: `GET {base}/admin/reconcile-runs`, newest first, and the retention prune's own
+    // range delete. Both read `startedAt` leading; the id is the keyset tiebreak, as everywhere else here.
+    await db.schema
+      .createIndex("pithyPaymentsReconcileRunsStartedIdx")
+      .on("pithyPaymentsReconcileRuns")
+      .columns(["startedAt", "id"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyPaymentsReconcileRunsStartedIdx").execute();
+    await db.schema.dropTable("pithyPaymentsReconcileRuns").execute();
     await db.schema.dropIndex("pithyPaymentsWebhookEventsPendingIdx").execute();
     await db.schema.dropTable("pithyPaymentsWebhookEvents").execute();
     await db.schema.dropTable("pithyPaymentsProviderAccounts").execute();

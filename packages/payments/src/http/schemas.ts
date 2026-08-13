@@ -377,6 +377,20 @@ export const AdminEntitlementsQuery = z
   .describe("The entitlement query: what to narrow it to, and where to resume.");
 export type AdminEntitlementsQuery = z.output<typeof AdminEntitlementsQuery>;
 
+export const AdminReconcileRunsQuery = z
+  .object({
+    rail: PaymentsRail.optional().describe(
+      "Restrict to the passes narrowed to one store. A scheduled pass runs against every rail and carries no rail, so this never matches one.",
+    ),
+    environment: PurchaseEnvironment.optional().describe(
+      "Restrict to one store environment — the sandbox host and the production host each keep their own passes.",
+    ),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .describe("The reconciliation-run query: what to narrow it to, and where to resume.");
+export type AdminReconcileRunsQuery = z.output<typeof AdminReconcileRunsQuery>;
+
 export const AdminUserParam = z
   .object({
     userId: UserId.describe(

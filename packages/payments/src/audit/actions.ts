@@ -118,6 +118,15 @@ export const PaymentsAuditActions = {
    * else — which is also the only fact about it worth asking after.
    */
   catalogRead: "payments/catalog_read",
+  /**
+   * A management client read the reconciliation run log.
+   *
+   * Audited like every other management read, and the rule has no exception for the one that touches no
+   * account: the customer's ability to reconstruct what a dashboard did with the access they granted is the
+   * point, not the sensitivity of the rows. Counts and filters only — the runs themselves are already a
+   * queryable table, and copying them into the trail would make a second one.
+   */
+  reconcileRunsRead: "payments/reconcile_runs_read",
 } as const;
 
 /** One of the payments audit action codes. */

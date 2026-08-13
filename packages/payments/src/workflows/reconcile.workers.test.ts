@@ -64,6 +64,7 @@ const TABLES = [
   "pithy_payments_entitlements",
   "pithy_payments_provider_accounts",
   "pithy_payments_webhook_events",
+  "pithy_payments_reconcile_runs",
 ];
 
 beforeEach(async () => {
@@ -330,7 +331,9 @@ describe("reconcilePayments", () => {
       pageSize: 2,
     });
     // Zero-padded so a journal read by a human sorts the way the pages ran.
-    expect(names).toEqual(["page-000001", "page-000002"]);
+    // `record-run` last, always: the run record is written after the pages so a row can never claim a
+    // finish time the pass had not reached (#316).
+    expect(names).toEqual(["page-000001", "page-000002", "record-run"]);
   });
 
   test("stops at the page cap and says so, rather than running until it is killed", async () => {
@@ -825,5 +828,117 @@ describe("reconcilePayments — the default fulfillment path", () => {
     // A webhook that also delivered this renewal would have credited against the same ref, and the ledger's
     // UNIQUE (ref) is what makes the second attempt free rather than a double payout.
     expect((await balance()).balance).toBe(100);
+  });
+});
+
+/**
+ * The run record (#316) — the pass, kept where somebody can query it.
+ *
+ * Reconciliation is the compensating control for a delivery mechanism that is known to fail, and before this
+ * it left nothing behind but log lines: *"has it been running"* had no answer, and *"what did it fix last
+ * month"* had none at all. A nightly job that is silent and a nightly job that has stopped look identical,
+ * which is what these tests are about.
+ */
+describe("the run record", () => {
+  async function runs(): Promise<Record<string, unknown>[]> {
+    const { results } = await env.DB.prepare(
+      "select * from pithy_payments_reconcile_runs order by started_at desc",
+    ).all<Record<string, unknown>>();
+    return results;
+  }
+
+  test("a pass that repaired something records its tally", async () => {
+    const purchase = await seed();
+    const report = await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "expired" })) }),
+      syncStep,
+    );
+
+    const [row] = await runs();
+    expect(row?.id).toBe(report.runId);
+    expect(row?.scanned).toBe(1);
+    expect(row?.drifted).toBe(1);
+    expect(row?.failed).toBe(0);
+    expect(row?.environment).toBe("production");
+    // Null is the scheduled behaviour: this pass named no rail, so it was about every enabled one.
+    expect(row?.rail).toBeNull();
+    expect(row?.started_at).toBe(T0);
+    expect(purchase.id).toBeDefined();
+  });
+
+  test("a pass that found nothing is recorded too, so silence is not ambiguous", async () => {
+    // The load-bearing half. Storing only the passes that repaired something makes "no rows" mean either
+    // "healthy" or "the cron stopped firing", and those are the two answers an operator must tell apart.
+    const report = await reconcilePayments(deps({}), syncStep);
+    const [row] = await runs();
+    expect(await runs()).toHaveLength(1);
+    expect(row?.id).toBe(report.runId);
+    expect(row?.scanned).toBe(0);
+    expect(row?.drifted).toBe(0);
+  });
+
+  test("a pass narrowed to one rail records which one", async () => {
+    await seed();
+    await reconcilePayments(deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row)) }), syncStep, {
+      rail: "apple",
+    });
+    expect((await runs())[0]?.rail).toBe("apple");
+  });
+
+  test("a dry run says so, so its `drifted` reads as a finding rather than a fix", async () => {
+    await seed();
+    await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "expired" })) }),
+      syncStep,
+      { dryRun: true },
+    );
+    const [row] = await runs();
+    expect(row?.dry_run).toBe(1);
+    expect(row?.drifted).toBe(1);
+  });
+
+  test("every repair the pass audited names the run, so the run points at the trail rather than copying it", async () => {
+    // AC: the audit trail is not duplicated. The runs table holds the tally; the repairs stay in the trail,
+    // once, and `runId` is the join. A run record carrying its repairs would be a second audit trail with
+    // different access rules — the mistake `admin/coverage.ts` refuses on the webhook log.
+    await seed();
+    const emitted: AuditEventInput[] = [];
+    const report = await reconcilePayments(
+      deps(
+        { apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "expired" })) },
+        {
+          emit: async (event) => {
+            emitted.push(event);
+          },
+        },
+      ),
+      syncStep,
+    );
+
+    const repairs = emitted.filter((event) => event.action === "payments/purchase_reconciled");
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]?.metadata?.runId).toBe(report.runId);
+    // And the run holds no copy of them: the row's columns are counts, times and enums.
+    const [row] = await runs();
+    expect(Object.keys(row ?? {}).some((column) => /repair|purchase|payload/.test(column))).toBe(false);
+  });
+
+  test("a replayed step lands on the row it already wrote rather than counting one pass twice", async () => {
+    // A Workflow step that wrote the row and then failed to journal its result replays the whole body.
+    await seed();
+    const replayingStep: ReconcileStep = {
+      do: async (name, callback) => {
+        const first = await callback();
+        return name === "record-run" ? await callback() : first;
+      },
+    };
+    await reconcilePayments(deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row)) }), replayingStep);
+    expect(await runs()).toHaveLength(1);
+  });
+
+  test("the record is written last, after every page — a run never claims a finish it had not reached", async () => {
+    const names: string[] = [];
+    await reconcilePayments(deps({}), namingStep(names), {});
+    expect(names[names.length - 1]).toBe("record-run");
   });
 });

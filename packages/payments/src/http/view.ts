@@ -4,11 +4,13 @@
 import type { PaymentsPurchaseRecord } from "../admin/read";
 import type { PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
+import type { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PurchaseProjection } from "../projection/writer";
 import type {
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementView,
   PaymentsAdminPurchaseView,
+  PaymentsAdminReconcileRunView,
   PaymentsEntitlementView,
   PaymentsPurchaseView,
 } from "./responses";
@@ -146,5 +148,32 @@ export function adminEntitlementView(row: PaymentsEntitlement, now: Date): Payme
     expiresAt: row.expiresAt?.toISOString() ?? null,
     manual: row.manual,
     source: row.sourcePurchaseId,
+  };
+}
+
+/**
+ * Project one reconciliation run for a management client.
+ *
+ * The row's columns verbatim, with the dates as ISO strings and `createdAt` left behind — when the row was
+ * *written* is bookkeeping, and `finishedAt` already answers the only version of that question an operator
+ * asks. Nothing is withheld beyond it, because there is nothing to withhold: the table has no column a
+ * store's response could reach.
+ */
+export function adminReconcileRunView(run: PaymentsReconcileRun): PaymentsAdminReconcileRunView {
+  return {
+    id: run.id,
+    startedAt: run.startedAt.toISOString(),
+    finishedAt: run.finishedAt.toISOString(),
+    environment: run.environment,
+    rail: run.rail,
+    pages: run.pages,
+    scanned: run.scanned,
+    unchanged: run.unchanged,
+    drifted: run.drifted,
+    superseded: run.superseded,
+    skipped: run.skipped,
+    failed: run.failed,
+    truncated: run.truncated,
+    dryRun: run.dryRun,
   };
 }

@@ -9,6 +9,7 @@ import {
   PAYMENTS_ENTITLEMENTS_TABLE,
   PAYMENTS_PROVIDER_ACCOUNTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
+  PAYMENTS_RECONCILE_RUNS_TABLE,
   PAYMENTS_WEBHOOK_EVENTS_TABLE,
   paymentsTables,
 } from "./tables";
@@ -24,13 +25,14 @@ describe("table prefixing (CLAUDE.md §Data layer)", () => {
     }
   });
 
-  it("names the four tables the migration creates", () => {
+  it("names the five tables the migration creates", () => {
     expect(Object.keys(paymentsTables()).sort()).toEqual(
       [
         PAYMENTS_PURCHASES_TABLE,
         PAYMENTS_ENTITLEMENTS_TABLE,
         PAYMENTS_PROVIDER_ACCOUNTS_TABLE,
         PAYMENTS_WEBHOOK_EVENTS_TABLE,
+        PAYMENTS_RECONCILE_RUNS_TABLE,
       ].sort(),
     );
   });
