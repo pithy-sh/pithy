@@ -412,9 +412,22 @@ export async function reconcilePayments(
   const maxPages = params.maxPages ?? DEFAULT_MAX_PAGES;
   const dryRun = params.dryRun === true;
 
-  // Minted before the first page, because every repair this pass audits names it — a run id assigned at the
-  // end could not be on the events the run is the summary of.
-  const runId = (deps.newId ?? (() => crypto.randomUUID()))();
+  /**
+   * The run's id: minted before the first page, because every repair this pass audits names it — an id
+   * assigned at the end could not be on the events the run is the summary of.
+   *
+   * **Its own step, and that is the whole point.** A Workflow does not resume inside the step it died in; it
+   * re-executes this body from the top and serves every completed step from the journal. A mint sitting in the
+   * body would therefore answer differently on a resume, and the run record written at the end would name an
+   * id that none of the repairs before the interruption carry — the runs table's only join, broken by exactly
+   * the replay it exists to survive. Inside a step the value is journalled, so the resume reads back the id
+   * the earlier pages were repaired under.
+   *
+   * This is the same rule as the step names two paragraphs up, applied to a value rather than to a name. The
+   * cutoffs above are deliberately *not* under it: recomputing them against a newer clock is right, and they
+   * are nothing's identity.
+   */
+  const runId = await step.do("mint-run-id", async () => (deps.newId ?? (() => crypto.randomUUID()))());
 
   const report: ReconcileReport = {
     runId,

@@ -331,9 +331,11 @@ describe("reconcilePayments", () => {
       pageSize: 2,
     });
     // Zero-padded so a journal read by a human sorts the way the pages ran.
+    // `mint-run-id` first: the id is journalled so a replay reads back the one the pages were repaired
+    // under, rather than minting a second (#328).
     // `record-run` last, always: the run record is written after the pages so a row can never claim a
     // finish time the pass had not reached (#316).
-    expect(names).toEqual(["page-000001", "page-000002", "record-run"]);
+    expect(names).toEqual(["mint-run-id", "page-000001", "page-000002", "record-run"]);
   });
 
   test("stops at the page cap and says so, rather than running until it is killed", async () => {
@@ -940,5 +942,138 @@ describe("the run record", () => {
     const names: string[] = [];
     await reconcilePayments(deps({}), namingStep(names), {});
     expect(names[names.length - 1]).toBe("record-run");
+  });
+});
+
+/**
+ * Replay (#328).
+ *
+ * A Workflow does not resume inside the step it died in — it **re-executes the driver body from the top**, and
+ * every step it already completed returns its journalled value instead of running again. So anything the body
+ * computes outside a step is computed a second time, on the newer clock, with a fresh `crypto`. That is fine
+ * for the cutoffs, which the module doc argues for deliberately. It is not fine for the run id: the pages that
+ * already ran audited their repairs under the first one, and a second mint makes the run record name an id no
+ * repair carries. The run stops pointing at its own work, and the join the runs table exists for is broken.
+ *
+ * These drive the real thing — run, interrupt, resume against the same journal — rather than asserting about
+ * replay from a single pass. A step runner that only re-invokes one callback cannot see this defect, because
+ * the mint is not in a callback.
+ */
+describe("reconcilePayments — a replayed run", () => {
+  /** The interruption a resumed Workflow is the recovery from. Not a `PithyError`: this is the platform. */
+  class Interrupted extends Error {}
+
+  /**
+   * The Workflow journal, structurally: a completed step returns what it returned the first time, and a step
+   * never reached runs. `interruptBefore` kills the run just before a named step, once, so the next call to
+   * `reconcilePayments` over the same journal is a genuine resume.
+   */
+  function journalledStep(journal: Map<string, unknown>, interruptBefore?: string): ReconcileStep & { armed: boolean } {
+    const runner = {
+      armed: interruptBefore !== undefined,
+      async do<T>(name: string, callback: () => Promise<T>): Promise<T> {
+        if (journal.has(name)) return journal.get(name) as T;
+        if (runner.armed && name === interruptBefore) {
+          runner.armed = false;
+          throw new Interrupted(`the run died before ${name}`);
+        }
+        const result = await callback();
+        journal.set(name, result);
+        return result;
+      },
+    };
+    return runner;
+  }
+
+  /** Every repair the pass audited, by the run id its event carries. */
+  function auditedRunIds(events: AuditEventInput[]): unknown[] {
+    return events.filter((event) => event.action === "payments/purchase_reconciled").map((e) => e.metadata?.runId);
+  }
+
+  async function recordedRunIds(): Promise<string[]> {
+    const { results } = await env.DB.prepare("select id from pithy_payments_reconcile_runs").all<{ id: string }>();
+    return results.map((row) => row.id);
+  }
+
+  test("the recorded run is the one its repairs were written under", async () => {
+    // Three rows, one page each, so the interruption lands with real repairs already audited behind it.
+    for (let index = 0; index < 3; index += 1) {
+      await seed({ providerTransactionId: `txn-${index}`, originalTransactionId: `orig-${index}` });
+    }
+    const events: AuditEventInput[] = [];
+    // A minter that answers differently every time, which is what `crypto.randomUUID` does on the live path.
+    let minted = 0;
+    const mint = () => {
+      minted += 1;
+      return `run-${minted}`;
+    };
+    const runDeps = deps(
+      { apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "canceled" })) },
+      {
+        newId: mint,
+        emit: async (event) => {
+          events.push(event);
+        },
+      },
+    );
+
+    const journal = new Map<string, unknown>();
+    await expect(
+      reconcilePayments(runDeps, journalledStep(journal, "page-000002"), { pageSize: 1 }),
+    ).rejects.toBeInstanceOf(Interrupted);
+    // The interruption is real: one page ran, one repair is on the trail, and no run has been recorded.
+    expect(auditedRunIds(events)).toHaveLength(1);
+    expect(await recordedRunIds()).toEqual([]);
+
+    const report = await reconcilePayments(runDeps, journalledStep(journal), { pageSize: 1 });
+
+    // One id for the whole pass: the record, the report, and every repair either half of it audited.
+    expect(await recordedRunIds()).toEqual([report.runId]);
+    expect(new Set(auditedRunIds(events))).toEqual(new Set([report.runId]));
+  });
+
+  test("the id survives a resume even when nothing was repaired before the interruption", async () => {
+    // The report is the run's own summary, so a resumed pass must not return an id different from the row it
+    // wrote — a caller that logged the returned id would name a run the table does not hold.
+    await seed();
+    let minted = 0;
+    const runDeps = deps(
+      { apple: fakeRail("apple", async (row) => refreshedFrom(row)) },
+      {
+        newId: () => {
+          minted += 1;
+          return `run-${minted}`;
+        },
+      },
+    );
+
+    const journal = new Map<string, unknown>();
+    await expect(reconcilePayments(runDeps, journalledStep(journal, "record-run"), {})).rejects.toBeInstanceOf(
+      Interrupted,
+    );
+    const report = await reconcilePayments(runDeps, journalledStep(journal), {});
+
+    expect(report.runId).toBe("run-1");
+    expect(await recordedRunIds()).toEqual(["run-1"]);
+  });
+
+  test("a resumed run does not re-ask the store about a page the journal already holds", async () => {
+    // The journal is doing what a journal does, so the assertions above are about the id rather than about a
+    // pass that quietly ran twice.
+    for (let index = 0; index < 3; index += 1) {
+      await seed({ providerTransactionId: `txn-${index}`, originalTransactionId: `orig-${index}` });
+    }
+    const asked: string[] = [];
+    const runDeps = deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row), asked) });
+
+    const journal = new Map<string, unknown>();
+    await expect(
+      reconcilePayments(runDeps, journalledStep(journal, "page-000003"), { pageSize: 1 }),
+    ).rejects.toBeInstanceOf(Interrupted);
+    expect(asked).toHaveLength(2);
+    await reconcilePayments(runDeps, journalledStep(journal), { pageSize: 1 });
+
+    // Three, not five: the two completed pages came back from the journal and asked nothing.
+    expect(asked).toHaveLength(3);
   });
 });
