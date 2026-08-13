@@ -11,7 +11,13 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
-import { mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
+import {
+  type MintedSecret,
+  mintDeclaredSecrets,
+  mintedBeforeFailure,
+  mintReportLines,
+  storeSecretMinter,
+} from "../capabilities/mintSecrets";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -355,14 +361,40 @@ const provision = defineCommand({
       // One audit emitter is picked rather than one per environment: this loop spans every environment
       // a `global` secret reaches, and the event's own `environments` field is what says where a value
       // went. `dev` is the same fallback `buildAudit` above uses for a command with no single target.
+      //
+      // **A run that fails here has usually written something.** The fan-out creates a signing key per
+      // environment, so a fault after the first write leaves key material behind — and until #324 the
+      // report of it was assembled after the loop and died with the throw. So what landed is caught and
+      // printed *before* the error is rethrown: `withErrorReporting` then writes the failure to stderr
+      // and exits 1, and stdout carries what the run actually did. Both streams, and the exit code,
+      // agree that it failed and name what it wrote on the way.
       const managers = await buildDispatcher(projectDir);
-      const generated = await mintDeclaredSecrets({
-        registry: await projectSecretRegistry(projectDir),
-        dispatcher: managers,
-        probe: managers,
-        environments,
-        audit: await buildAudit(projectDir, "dev"),
-      });
+      let generated: MintedSecret[];
+      try {
+        generated = await mintDeclaredSecrets({
+          registry: await projectSecretRegistry(projectDir),
+          dispatcher: managers,
+          probe: managers,
+          environments,
+          audit: await buildAudit(projectDir, "dev"),
+        });
+      } catch (error) {
+        const landed = mintedBeforeFailure(error);
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({
+              command: "secrets provision",
+              environments: result.perEnv,
+              wired,
+              generated: landed,
+              interrupted: true,
+            })}\n`,
+          );
+        } else {
+          for (const line of mintReportLines(landed)) process.stdout.write(`${line}\n`);
+        }
+        throw error;
+      }
 
       if (args.json) {
         process.stdout.write(
@@ -381,14 +413,10 @@ const provision = defineCommand({
       }
       // It used to say only "ready", because the manager decided whether a value was written and never
       // reported back. It reports now, so the run can say the thing an operator actually needs to know:
-      // whether this run generated a production signing key, or found one already there.
-      for (const secret of generated) {
-        process.stdout.write(
-          secret.created.length > 0
-            ? `${secret.name} created in ${secret.created.join(", ")}.\n`
-            : `${secret.name} already in ${secret.environments.join(", ")}.\n`,
-        );
-      }
+      // whether this run generated a production signing key, or found one already there. The same
+      // renderer as the interrupted path above — one phrasing, so a partial report cannot read as a
+      // complete one.
+      for (const line of mintReportLines(generated)) process.stdout.write(`${line}\n`);
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

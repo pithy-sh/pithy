@@ -9,7 +9,7 @@ import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
-import { mintDeclaredSecrets, storeSecretMinter } from "./mintSecrets";
+import { mintDeclaredSecrets, mintedBeforeFailure, mintReportLines, storeSecretMinter } from "./mintSecrets";
 
 /**
  * **A counter around the one producer of key material, so "nothing was minted" is checkable.**
@@ -432,6 +432,151 @@ describe("mintDeclaredSecrets", () => {
         detail: expect.stringContaining("prod"),
       },
     });
+  });
+
+  /**
+   * **The refusal used to offer a repair no command can perform (#324).** Its first branch read *"give
+   * the others the same value with `pithy secrets create`"* — and for these secrets nobody can. They are
+   * `d1`, minted from `crypto.getRandomValues`, sealed under a master key that never leaves the manager
+   * Worker. There is no way to read the value out of the environment that has it, so the operator who
+   * reached for the first branch found no way to take a single step of it.
+   *
+   * The gate is the **set of commands the action offers**, extracted from the text rather than compared
+   * to it: a menu whose first item cannot be chosen fails whatever words surround it.
+   */
+  test("the refusal offers only the command that can actually be run", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "email-link-signing-key": linkKey };
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+    await expect(
+      mintDeclaredSecrets({ registry, dispatcher: managers, probe: managers, environments }),
+    ).rejects.toThrow();
+    managers.heal();
+
+    const refusal = await mintDeclaredSecrets({
+      registry,
+      dispatcher: managers,
+      probe: managers,
+      environments,
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(ConflictError);
+    const action = (refusal as ConflictError).payload.action ?? "";
+    expect([...new Set(action.match(/pithy secrets [a-z]+/g) ?? [])]).toEqual(["pithy secrets rm"]);
+    // The remedy destroys a live signing key, so the refusal says so rather than letting an operator
+    // discover it by running the command.
+    expect(action).toMatch(/destroys/);
+  });
+
+  /**
+   * **The report entry used to be pushed after the delivery loop, so a throw inside it took the whole
+   * record with it (#324).** The environments already written held a new secret and the run reported
+   * nothing created — the operator arrived at the next run's refusal with no record of what happened.
+   *
+   * Asserted against the fake managers' own stores as well as the report, so the report is checked
+   * against what landed rather than against itself.
+   */
+  test("a fan-out that dies part-way reports the environments it wrote", async () => {
+    const declared = ["staging", "canary", "prod"] as const;
+    const managers = fakeManagers(declared);
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+
+    const failure = await mintDeclaredSecrets({
+      registry: { "email-link-signing-key": linkKey },
+      dispatcher: managers,
+      probe: managers,
+      environments: declared,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(mintedBeforeFailure(failure)).toEqual([
+      { name: "email-link-signing-key", environments: ["staging", "canary", "prod"], created: ["staging", "canary"] },
+    ]);
+    expect(managers.value("staging", "email-link-signing-key")).toBeDefined();
+    expect(managers.value("canary", "email-link-signing-key")).toBeDefined();
+    expect(managers.value("prod", "email-link-signing-key")).toBeUndefined();
+  });
+
+  /** Nothing landed, so nothing is claimed. The carrier reports emptiness, not a plan. */
+  test("a run that fails before writing anything reports nothing created", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    managers.breakOn(({ env }) => env === "prod");
+
+    const failure = await mintDeclaredSecrets({
+      registry: { "email-link-signing-key": linkKey },
+      dispatcher: managers,
+      probe: managers,
+      environments,
+    }).catch((error: unknown) => error);
+
+    expect(mintedBeforeFailure(failure)).toEqual([]);
+  });
+
+  /** The accounting for the secrets that finished survives the one that does not. */
+  test("a secret already accounted for is still reported when a later one fails", async () => {
+    const declared = ["staging", "canary", "prod"] as const;
+    const managers = fakeManagers(declared);
+    for (const env of declared) {
+      await managers.dispatch({ env, mode: "create", name: "auth-session-secret", value: "theirs" });
+    }
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+
+    const failure = await mintDeclaredSecrets({
+      registry: { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey },
+      dispatcher: managers,
+      probe: managers,
+      environments: declared,
+    }).catch((error: unknown) => error);
+
+    expect(mintedBeforeFailure(failure)).toEqual([
+      { name: "auth-session-secret", environments: ["staging", "canary", "prod"], created: [] },
+      { name: "email-link-signing-key", environments: ["staging", "canary", "prod"], created: ["staging", "canary"] },
+    ]);
+  });
+
+  /**
+   * **The two defects meet here.** The operator who hits the refusal needs to know what the run that
+   * reached it wrote — that is what makes the destructive remedy safe to perform. So the report rides
+   * on the refusal, and the refusal itself is unchanged: carried, never replaced.
+   */
+  test("the refusal carries what the same run created before it", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    // The global key is in staging only — the split. The session secret is absent everywhere, and sorts
+    // first, so this run creates it and then refuses.
+    await managers.dispatch({ env: "staging", mode: "create", name: "email-link-signing-key", value: "theirs" });
+
+    const refusal = await mintDeclaredSecrets({
+      registry: { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey },
+      dispatcher: managers,
+      probe: managers,
+      environments,
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(ConflictError);
+    expect(mintedBeforeFailure(refusal)).toEqual([
+      { name: "auth-session-secret", environments: ["staging", "prod"], created: ["staging", "prod"] },
+    ]);
+  });
+
+  /**
+   * One renderer for the run that finishes and the run that fails part-way. Two would let the partial
+   * report be phrased as a plan — "already in staging, prod" for a secret prod never received.
+   */
+  test("the report lines say created where a value landed, and never name an environment it missed", async () => {
+    const declared = ["staging", "canary", "prod"] as const;
+    const managers = fakeManagers(declared);
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+
+    const failure = await mintDeclaredSecrets({
+      registry: { "email-link-signing-key": linkKey },
+      dispatcher: managers,
+      probe: managers,
+      environments: declared,
+    }).catch((error: unknown) => error);
+
+    expect(mintReportLines(mintedBeforeFailure(failure))).toEqual([
+      "email-link-signing-key created in staging, canary.",
+    ]);
   });
 
   /**
