@@ -92,6 +92,67 @@ describe("unpublishedIn", () => {
     expect(() => unpublishedIn({ user: "ada", mint: () => "x" }, PUBLISHED)).toThrow(/function sits at mint/);
     expect(() => unpublishedIn({ user: "ada", seats: 1n }, PUBLISHED)).toThrow(/bigint sits at seats/);
   });
+
+  test("an object whose contents the walk cannot see is refused, and `typeof` is not what decides", () => {
+    // The same fallthrough, arriving through the one branch that was believed safe. `typeof` answers
+    // "object" for a `Date`, a `Map`, and every class instance, and each of those walks to no keys and
+    // no leaves — so the descent itself grants the exemption, silently, to whatever they carry. A
+    // `Map`'s entries are not own properties. A getter lives on the prototype. Neither is reachable
+    // from `Object.entries`, and a gate that cannot see a value cannot police it.
+    class Row {
+      get token(): string {
+        return "sk_live_51NxSecret";
+      }
+    }
+    const unnameable: Record<string, [unknown, RegExp]> = {
+      Date: [new Date("2026-06-10T12:00:00.000Z"), /Date sits at payload/],
+      Map: [new Map([["k", "sk_live_51NxSecret"]]), /Map sits at payload/],
+      Set: [new Set(["sk_live_51NxSecret"]), /Set sits at payload/],
+      "class instance": [new Row(), /Row sits at payload/],
+    };
+    for (const [label, [planted, named]] of Object.entries(unnameable)) {
+      // Under `payload`, which the declaration does not permit: the key half would refuse this one on
+      // its own, so it proves nothing about the descent.
+      expect(() => unpublishedIn({ ...CLEAN, payload: planted }, PUBLISHED), label).toThrow(named);
+      // And under `user`, which it does: here nothing but the descent can refuse, so a walk that
+      // exempts the type passes this line with an empty result.
+      expect(() => unpublishedIn({ user: planted }, PUBLISHED), label).toThrow(/sits at user/);
+    }
+  });
+
+  test("an array is walked because it is one, not because `Array.isArray` says so", () => {
+    // A subclass is an array to `Array.isArray` and carries own properties the index walk never
+    // visits. Same exemption, one branch over.
+    class Rows extends Array<string> {
+      readonly cursor: string = "sk_live_51NxSecret";
+    }
+    expect(() => unpublishedIn({ user: new Rows() }, PUBLISHED)).toThrow(/Rows sits at user/);
+  });
+
+  test("a container is one whose contents are all visible, which a null prototype's are", () => {
+    // The rule is what the walk can see, and an object with no prototype has nowhere else to keep
+    // anything. Refusing it would make the rule "is it `Object.prototype`" — a different rule, passing
+    // every test above, and wrong about the one value that is strictly easier to police than a plain
+    // object.
+    const bare: Record<string, unknown> = Object.create(null);
+    bare.payload = "sk_live_51NxSecret";
+    expect(unpublishedIn({ user: bare }, PUBLISHED)).toEqual([
+      'key "payload" at user.payload',
+      'value "sk_live_51NxSecret" at user.payload',
+    ]);
+  });
+
+  test("what a client receives still walks — the refusal is of live objects, not of documents", () => {
+    // The anti-vacuity half. A gate that refused everything would pass every test above, so this says
+    // the round-trip the message prescribes is a document this walk reads: the `Date` becomes the
+    // string it serialises as, and the string is caught by the leaf half rather than exempted.
+    const live = { user: "ada", payload: new Date("2026-06-10T12:00:00.000Z") };
+    const crossed: unknown = JSON.parse(JSON.stringify(live));
+    expect(unpublishedIn(crossed, PUBLISHED)).toEqual([
+      'key "payload" at payload',
+      'value "2026-06-10T12:00:00.000Z" at payload',
+    ]);
+  });
 });
 
 describe("leavesIn and keysIn", () => {
@@ -101,5 +162,13 @@ describe("leavesIn and keysIn", () => {
 
   test("every key, at every depth", () => {
     expect(keysIn({ a: { b: [{ c: 1 }] } })).toEqual(["a", "b", "c"]);
+  });
+
+  test("both refuse what they cannot see rather than reporting it empty", () => {
+    // These two are how a caller builds the declaration it then policies itself against, so a value
+    // they walk to nothing is worse here than in the gate: it becomes a permitted set that quietly
+    // omits a field, and the sweep that follows agrees with it.
+    expect(() => leavesIn({ at: new Date("2026-06-10T12:00:00.000Z") })).toThrow(/Date sits at/);
+    expect(() => keysIn({ m: new Map([["k", "v"]]) })).toThrow(/Map sits at/);
   });
 });
