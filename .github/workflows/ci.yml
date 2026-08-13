@@ -314,8 +314,15 @@ jobs:
           # $FILTERS is deliberately unquoted — it is a list of `--filter=` arguments.
           # --concurrency=2 matches the runner's core count. Each workerd instance is heavy;
           # oversubscribing it is what times out `beforeAll` hooks (see turbo.jsonc).
+          #
+          # `--continue=always` here and not only in the root script, because this step calls turbo
+          # directly and so reads none of them (#333 fixed `package.json`; this is where CI runs).
+          # Turbo's default cancels the shard's remaining packages on the first failure, and a shard
+          # holds several — so a red run named one package and said nothing whatever about the others
+          # it never started. The absence of a result read as a pass. That is the whole defect, and it
+          # lived in the half a reader was actually looking at.
           # shellcheck disable=SC2086
-          bunx turbo run test:node test:workers --concurrency=2 $FILTERS
+          bunx turbo run test:node test:workers --concurrency=2 --continue=always $FILTERS
 
   # Verify the cross-runtime promise: the packages run on the Node versions we support
   # (22 LTS floor + 24 current), not just under Bun.
@@ -353,19 +360,32 @@ jobs:
       # Turbo can't do this — it launches scripts through Bun; the runtime is the launcher's
       # choice, so this job invokes the script with node directly. Directories come from `plan`
       # rather than a `packages/*` glob, which is what scopes this job to the affected set.
+      #
+      # The loop continues past a failure and fails at the end, for the reason `--continue=always`
+      # exists on every turbo call in this file: `set -e` aborted this loop on the first red package,
+      # so every package after it in `$DIRS` produced no result and none of them was named. This job
+      # is turbo-free, so no flag could reach it — the fix had to be written here or not at all.
+      # Every package runs; the summary names every one that failed.
       - name: Test under Node ${{ matrix.node }}
         env:
           DIRS: ${{ needs.plan.outputs.dirs }}
         run: |
           set -euo pipefail
           ran=0
+          failed=()
           for dir in $DIRS; do
             # Gate on the script this job actually invokes, not on a config file that implies it.
             jq -e '.scripts["test:node"]' "${dir}/package.json" > /dev/null || continue
             echo "::group::${dir} (Node ${{ matrix.node }})"
-            ( cd "$dir" && node --run test:node )
+            # `if`, not a bare call: a command tested by `if` is exempt from errexit, which is what
+            # lets the loop reach the next package.
+            if ( cd "$dir" && node --run test:node ); then :; else failed+=("$dir"); fi
             echo "::endgroup::"
             ran=$((ran + 1))
           done
           if [ "$ran" -eq 0 ]; then echo "No affected package defines vitest.config.ts"; exit 1; fi
           echo "Ran ${ran} package(s) under Node ${{ matrix.node }}."
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '::error::Failed under Node %s: %s\n' "${{ matrix.node }}" "${failed[*]}"
+            exit 1
+          fi

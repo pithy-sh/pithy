@@ -19,9 +19,22 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true
  * Record any object/enum/union missing a `.describe()` — on the schema itself or on any of
  * its fields — recursing into nested object fields. Codec-helper primitives are exempt
  * (CLAUDE.md §Zod) and aren't objects/enums/unions, so they're skipped.
+ *
+ * A pipe is stepped through rather than stopped at. This gate reads `instanceof`, so wrapping an object
+ * in a guard — `refusesVanishingKey`, and anything else that pipes into a schema — turned an export it
+ * checked into an export it silently skipped. Losing coverage as a side effect of adding a guard is the
+ * wrong direction, and it would be invisible: the test still passes, on less.
+ *
+ * A codec is a pipe and is **not** stepped through, which is the §Zod exemption above spelled as a type
+ * rather than as an accident. `z.codec` builds a `ZodCodec`, so the exemption is exact: it names codecs
+ * and nothing else. Measured — stepping through codecs too reports seven fields whose union sides carry
+ * no description, every one of them a `SQLiteDate` or a `sqliteJson`.
  */
 function collectMissing(schema: z.ZodType, path: string, missing: string[]): void {
-  if (schema instanceof z.ZodObject) {
+  if (schema instanceof z.ZodPipe && !(schema instanceof z.ZodCodec)) {
+    collectMissing(schema.in as z.ZodType, path, missing);
+    collectMissing(schema.out as z.ZodType, path, missing);
+  } else if (schema instanceof z.ZodObject) {
     if (!schema.description) missing.push(`${path} — object has no .describe()`);
     for (const [key, field] of Object.entries(schema.shape)) {
       const fieldSchema = field as z.ZodType;

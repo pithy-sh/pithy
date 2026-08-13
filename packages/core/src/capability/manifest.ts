@@ -6,8 +6,8 @@ import { ValidationError } from "../error/pithyError";
 import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
 import { DevSecret } from "./devSecret";
-import { manifestRecord } from "./manifestRecord";
 import { DeclaredSecret } from "./secretOrigin";
+import { manifestRecord } from "./vanishingKey";
 
 /**
  * Whether a string prints as a double-quoted literal Biome leaves exactly as written.
