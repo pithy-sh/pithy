@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { defineSecretRegistry, SecretBackend } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { devSecretsFile } from "../devSecrets/location";
 import type { DevSecretsTarget } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
@@ -41,6 +42,18 @@ const registry = defineSecretRegistry({
     rotatable: false,
     valueType: "text",
     devValue: "random",
+  },
+  // A `json` secret with a real schema — the only kind whose *stated* value can be wrong in a way
+  // presence cannot see, which is the whole of #323's second defect.
+  "auth-google-credentials": {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: z.object({
+      clientId: z.string().describe("The OAuth client id."),
+      clientSecret: z.string().describe("The OAuth client secret."),
+    }),
   },
 });
 
@@ -162,18 +175,18 @@ describe("checkDevSecrets", () => {
     await writeFile(path, "{ nope");
     await chmod(path, 0o600);
     const result = await check();
-    expect(result?.unreadable).toBe(true);
+    expect(result?.unreadable).toBeTruthy();
   });
 
   test("a secret nothing can mint, with no value anywhere, is listed once here instead of on every run", async () => {
     // CLOUDFLARE_API_TOKEN is Cloudflare's to issue. `auth-session-secret` is not listed: it is
     // `devValue: "random"`, so the next seed supplies it and there is nothing for anyone to do.
-    expect((await check())?.missing).toEqual(["CLOUDFLARE_API_TOKEN"]);
+    expect((await check())?.missing).toEqual(["CLOUDFLARE_API_TOKEN", "auth-google-credentials"]);
   });
 
   test("a value in either file is not missing — the file is dev's source of truth, .dev.vars still resolves", async () => {
     await writeFile(join(dir, ".dev.vars"), "CLOUDFLARE_API_TOKEN=tok\n");
-    expect((await check())?.missing).toEqual([]);
+    expect((await check())?.missing).toEqual(["auth-google-credentials"]);
   });
 
   test("a name no capability declares is reported here, where the config is loaded fresh", async () => {
@@ -191,7 +204,7 @@ describe("checkDevSecrets", () => {
   test("a malformed file reports nothing missing — it would name every declared secret, over one fault", async () => {
     await writeFile(path, "{ nope");
     const result = await check();
-    expect(result?.unreadable).toBe(true);
+    expect(result?.unreadable).toBeTruthy();
     expect(result?.missing).toEqual([]);
   });
 
@@ -204,9 +217,88 @@ describe("checkDevSecrets", () => {
 
     const result = await check();
 
-    expect(result?.unreadable).toBe(true);
+    expect(result?.unreadable).toBeTruthy();
     expect(result?.misplaced).toEqual([]);
     expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain("belongs in");
+  });
+});
+
+/**
+ * **The invariant: doctor judges what a stated value *is*, not merely that it is there.**
+ *
+ * `Object.hasOwn(stated, name)` was the entire check, so a value violating its own registry schema
+ * passed `pithy doctor` and failed `pithy seed` — and doctor is the command whose job is catching that
+ * first. Both `stated` and `entry.schema` were already in hand on that line (#323).
+ */
+describe("checkDevSecrets — a stated value is judged, not counted", () => {
+  test("a stated value that violates its schema is named, with the version and the file", async () => {
+    await writeFile(
+      path,
+      JSON.stringify({ "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id" } } } }),
+    );
+    await chmod(path, 0o600);
+
+    const result = await check();
+
+    expect(result?.malformed.map((m) => m.name)).toEqual(["auth-google-credentials"]);
+    expect(result?.malformed[0]?.reason).toContain("auth-google-credentials");
+    expect(result?.missing).not.toContain("auth-google-credentials");
+  });
+
+  test("a malformed value is a fault — the next seed fails on it, and doctor exists to say so first", async () => {
+    await writeFile(
+      path,
+      JSON.stringify({ "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id" } } } }),
+    );
+    await chmod(path, 0o600);
+
+    const result = await check();
+
+    expect(result && devSecretsHealthy(result)).toBe(false);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain("auth-google-credentials");
+  });
+
+  test("a stated value that reads is not malformed — silence stays the healthy answer", async () => {
+    await writeFile(
+      path,
+      JSON.stringify({
+        "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id", clientSecret: "s" } } },
+      }),
+    );
+    await chmod(path, 0o600);
+
+    const result = await check();
+
+    expect(result?.malformed).toEqual([]);
+    expect(result && devSecretsHealthy(result)).toBe(true);
+  });
+
+  test("nothing about a malformed value is echoed — the reason is a shape, and the file holds secrets", async () => {
+    await writeFile(
+      path,
+      JSON.stringify({
+        "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "s3cr3t-material" } } },
+      }),
+    );
+    await chmod(path, 0o600);
+
+    const result = await check();
+
+    expect(JSON.stringify(result)).not.toContain("s3cr3t-material");
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain("s3cr3t-material");
+  });
+
+  test("a file that will not parse names the secret it choked on, not just the file", async () => {
+    // "will not parse. Run pithy seed to see which secret and why" sent the reader to a second command
+    // to learn something this run already knew. The loader names the secret; doctor was throwing it away.
+    await writeFile(path, JSON.stringify({ "auth-session-secret": "bare-value-no-envelope" }));
+    await chmod(path, 0o600);
+
+    const result = await check();
+
+    expect(result?.unreadable).toContain("auth-session-secret");
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain("auth-session-secret");
+    expect(JSON.stringify(result)).not.toContain("bare-value-no-envelope");
   });
 });
 
@@ -218,7 +310,8 @@ describe("devSecretsHealthy", () => {
     bootstrapMissing: [],
     undeclared: [],
     mode: 0o600,
-    unreadable: false,
+    unreadable: null,
+    malformed: [],
     unresolvable: [],
   };
 
@@ -238,7 +331,7 @@ describe("devSecretsHealthy", () => {
     expect(devSecretsHealthy({ ...clean, misplaced: [{ name: "a-b", state: "unmoved" }] })).toBe(false);
     expect(devSecretsHealthy({ ...clean, misplaced: [{ name: "a-b", state: "duplicate" }] })).toBe(false);
     expect(devSecretsHealthy({ ...clean, mode: 0o644 })).toBe(false);
-    expect(devSecretsHealthy({ ...clean, unreadable: true })).toBe(false);
+    expect(devSecretsHealthy({ ...clean, unreadable: "broken" })).toBe(false);
   });
 
   test("no file at all is healthy — a project has none until a capability needs one", () => {
@@ -256,7 +349,8 @@ describe("describeDevSecrets", () => {
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
-      unreadable: false,
+      unreadable: null,
+      malformed: [],
     });
     expect(lines).toEqual([]);
   });
@@ -270,7 +364,8 @@ describe("describeDevSecrets", () => {
       undeclared: [],
       unresolvable: [],
       mode: null,
-      unreadable: false,
+      unreadable: null,
+      malformed: [],
     });
     expect(lines.join("\n")).toContain("auth-session-secret");
     expect(lines.join("\n")).toContain(".dev.vars");
@@ -286,7 +381,8 @@ describe("describeDevSecrets", () => {
       undeclared: [],
       unresolvable: [],
       mode: 0o600,
-      unreadable: false,
+      unreadable: null,
+      malformed: [],
     });
     expect(lines.join("\n")).toContain("auth-session-secret");
     expect(lines.join("\n")).toContain("delete that line");
@@ -302,7 +398,8 @@ describe("describeDevSecrets", () => {
       undeclared: [],
       mode: 0o644,
       unresolvable: [],
-      unreadable: false,
+      unreadable: null,
+      malformed: [],
     });
     expect(lines.join("\n")).toContain("644");
     expect(lines.join("\n")).toContain("600");
@@ -317,7 +414,8 @@ describe("describeDevSecrets", () => {
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
-      unreadable: true,
+      unreadable: "the file will not parse",
+      malformed: [],
     });
     expect(lines.join("\n")).toMatch(/will not parse|unreadable/i);
   });

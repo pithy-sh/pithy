@@ -12,6 +12,7 @@ import {
   NotFoundError,
   PithyError,
   RateLimitError,
+  sentenceOf,
   UnauthorizedError,
   UpstreamError,
   UpstreamTimeoutError,
@@ -105,5 +106,30 @@ describe("fromZodError", () => {
     const paths = err.payload.issues.map((i) => i.path.join("."));
     expect(paths).toContain("email");
     expect(paths).toContain("age");
+  });
+});
+
+describe("sentenceOf", () => {
+  test("a PithyError reads as what is wrong and then what to do", () => {
+    const error = new ValidationError({
+      message: "Secret 'auth-google-credentials' is not a versioned envelope.",
+      action: "Write it as { currentVersion, versions }.",
+      detail: "throw-site context nobody reading a terminal asked for",
+    });
+
+    expect(sentenceOf(error)).toBe(
+      "Secret 'auth-google-credentials' is not a versioned envelope. Write it as { currentVersion, versions }.",
+    );
+  });
+
+  test("detail never reaches it — this string is printed and pasted into issues", () => {
+    const error = new ValidationError({ message: "No.", action: "Yes.", detail: "s3cr3t-material" });
+
+    expect(sentenceOf(error)).not.toContain("s3cr3t-material");
+  });
+
+  test("an ordinary error is its message, and an unknown throw its string form", () => {
+    expect(sentenceOf(new Error("boom"))).toBe("boom");
+    expect(sentenceOf("boom")).toBe("boom");
   });
 });

@@ -4,8 +4,11 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
+import type { DevSecretEnvelope, DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
+import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -66,6 +69,14 @@ export interface MisplacedDevSecret {
   state: MisplacedDevSecretState;
 }
 
+/** One declared secret the file states, and the sentence saying why its value will not read. */
+export interface MalformedDevSecret {
+  /** The registry secret name, exactly as the file and the registry both spell it. */
+  name: string;
+  /** Why it will not read — the seeder's own sentence. A shape and a version key, never a value. */
+  reason: string;
+}
+
 /** What doctor learned about this project's dev secrets. */
 export interface DevSecretsCheck {
   /** The resolved absolute secrets-file path — the answer to "where does this go", file or no file. */
@@ -93,6 +104,18 @@ export interface DevSecretsCheck {
    */
   bootstrapMissing: string[];
   /**
+   * Declared secrets the file **states** and whose stated value will not read — a `json` value that
+   * violates its registry schema, a `text` one written as a number (#323).
+   *
+   * **A fault, unlike {@link missing}.** Presence was the entire check, so one of these passed doctor
+   * and then failed the next `pithy seed` — and doctor is the command whose whole job is catching that
+   * first. Judged through the seeder's own `storedSecretValue`, so the two cannot come to disagree
+   * about what a readable value is.
+   *
+   * Empty when {@link unreadable}: a file that will not parse states nothing to judge.
+   */
+  malformed: MalformedDevSecret[];
+  /**
    * Names in the secrets file that no capability declares — the residue of a removed capability, or a
    * typo. **Not a fault either**, and never fatal to a seed: a stale line must not brick dev. Reported so
    * a value nobody reads can be deleted rather than maintained.
@@ -104,8 +127,15 @@ export interface DevSecretsCheck {
   undeclared: string[];
   /** The file's permission bits, or `null` when there is no file. Anything wider than `0o600` is a finding. */
   mode: number | null;
-  /** Whether the file is there and will not parse — the one state that hides everything else. */
-  unreadable: boolean;
+  /**
+   * Why the file is there and will not parse, or `null` when it parses (or is absent) — the one state
+   * that hides everything else.
+   *
+   * **The sentence, not a flag (#323).** The loader already names the secret it choked on and the shape
+   * it expected; a boolean threw that away and left doctor saying "run pithy seed to see which secret
+   * and why" — a second command to learn what this run already knew.
+   */
+  unreadable: string | null;
   /**
    * Every Worker with a `pithy.config.ts` that would not import, and why (#208). Empty on an ordinary run.
    *
@@ -155,16 +185,19 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
 
   const source = await readFile(path, "utf8").catch(() => null);
   let stated: DevSecretsFile = {};
-  let unreadable = false;
+  let unreadable: string | null = null;
   if (source !== null) {
     try {
       stated = loadDevSecrets(source, { path });
-    } catch {
-      unreadable = true;
+    } catch (error) {
+      // The loader's own sentence, kept. It names the secret, the file, and the shape it expected —
+      // everything the reader needs — and a boolean was throwing all three away (#323).
+      unreadable = sentenceOf(error);
     }
   }
 
   const misplaced: MisplacedDevSecret[] = [];
+  const malformed: MalformedDevSecret[] = [];
   const missing = new Set<string>();
   const bootstrapMissing = new Set<string>();
   const seen = new Set<string>();
@@ -190,14 +223,25 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
           misplaced.push({ name, state: Object.hasOwn(stated, name) ? "duplicate" : "unmoved" });
         continue;
       }
+      // Stated is not the same as sound. `Object.hasOwn` was the whole check, so a value violating its
+      // own registry schema passed here and failed the next seed — and both `stated` and `entry.schema`
+      // were already in hand on this line (#323). Judged through the seeder's own function, so doctor
+      // and seed cannot come to two answers about what a readable value is.
+      const envelope = Object.hasOwn(stated, name) ? stated[name] : undefined;
+      if (envelope) {
+        const reason = whyUnreadable(entry, name, envelope, path);
+        if (reason) malformed.push({ name, reason });
+        continue;
+      }
       // Mintable means the next seed supplies it. Only a value that has to come from somewhere real is
       // something the adopter has to do — and the file, not the store, is dev's source of truth for it.
-      if (Object.hasOwn(stated, name) || entry.devValue) continue;
+      if (entry.devValue) continue;
       if (entry.bootstrap) bootstrapMissing.add(name);
       else missing.add(name);
     }
   }
   misplaced.sort((a, b) => a.name.localeCompare(b.name));
+  malformed.sort((a, b) => a.name.localeCompare(b.name));
 
   const mode = source === null ? null : ((await stat(path).catch(() => null))?.mode ?? 0) & 0o777;
   // A file that will not parse tells us nothing about what is in it, so every declared secret would read
@@ -219,11 +263,34 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     misplaced: unreadable ? [] : misplaced,
     missing: unreadable ? [] : [...missing].sort(),
     bootstrapMissing: unreadable ? [] : [...bootstrapMissing].sort(),
+    // And nothing about a stated value's shape either: a file that will not parse stated nothing.
+    malformed: unreadable ? [] : malformed,
     undeclared,
     mode,
     unreadable,
     unresolvable,
   };
+}
+
+/**
+ * Why one stated value will not read, or `null` when it reads.
+ *
+ * **Through {@link storedSecretValue}, the seeder's own function.** Doctor's promise is that a green
+ * report means the next `pithy seed` works; a second implementation of "is this value sound" is exactly
+ * how that promise stops being true without anybody noticing.
+ */
+function whyUnreadable(
+  entry: SecretRegistryEntry,
+  name: string,
+  envelope: DevSecretEnvelope,
+  path: string,
+): string | null {
+  try {
+    storedSecretValue(entry, name, envelope, path);
+    return null;
+  } catch (error) {
+    return sentenceOf(error);
+  }
 }
 
 /** Whether the file is readable by anyone but its owner. `null` (no file) is not wide. */
@@ -243,7 +310,11 @@ export function devSecretsHealthy(check: DevSecretsCheck): boolean {
   // Every misplaced secret counts now. Through the transition one state did not — pithy wrote that copy
   // itself, every run, and calling the toolchain's own bookkeeping a fault would have dragged every
   // project on the branch verbose forever. It writes none, so there is nothing left to excuse.
-  return check.misplaced.length === 0 && !check.unreadable && !wideOpen(check.mode);
+  //
+  // A malformed value counts too, and is the one addition that is not a matter of taste: the adopter
+  // wrote it, meant it to work, and the next seed will refuse it. That is a fault by every definition
+  // this function has ever used.
+  return check.misplaced.length === 0 && check.malformed.length === 0 && !check.unreadable && !wideOpen(check.mode);
 }
 
 /**
@@ -253,10 +324,15 @@ export function devSecretsHealthy(check: DevSecretsCheck): boolean {
 export function describeDevSecrets(check: DevSecretsCheck): string[] {
   const lines: string[] = [];
   if (check.unreadable) {
-    lines.push(`${check.path} will not parse. Run pithy seed to see which secret and why.`);
+    // The loader's sentence, not a pointer at another command. It already names the secret and the
+    // shape; "run pithy seed to see which secret and why" spent a round trip re-deriving it (#323).
+    lines.push(check.unreadable);
   }
   for (const { name, state } of check.misplaced) {
     lines.push(describeMisplaced(name, state, check.path));
+  }
+  for (const { reason } of check.malformed) {
+    lines.push(reason);
   }
   if (check.undeclared.length > 0) {
     lines.push(

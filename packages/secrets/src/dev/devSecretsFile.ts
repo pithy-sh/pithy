@@ -49,6 +49,13 @@ export const DEV_SECRETS_EXAMPLE_FILE = ".dev.secrets.example.jsonc";
  * (a `json` secret stores its serialized form), while a hand-written one is the value itself, so that
  * an adopter writes real structure rather than an escaped string inside a string. The seeder converts,
  * validating each version against the registry entry's schema on the way.
+ *
+ * **Strict, and that is what makes the guarantee above true (#323).** Stripping unknown keys instead
+ * of refusing them is the same permissiveness the doc argues against, arriving by the back door: an
+ * `EncryptionConfig` is `{ currentVersion, versions, lastRotatedAt }`, a structural *superset* of an
+ * envelope, so a stripping parser accepted `SECRETS_ENCRYPTION_KEYS`' own value written bare, dropped
+ * `lastRotatedAt`, and left a base64 string where a nested object belongs. The failure then surfaced
+ * three frames later, naming neither the file nor the secret. Refusing here says it once, in place.
  */
 export const DevSecretEnvelope = VersionedValue.extend({
   versions: z
@@ -56,10 +63,39 @@ export const DevSecretEnvelope = VersionedValue.extend({
     .describe(
       "Every still-valid version: version key (a stringified integer) → the value itself — a string for a `text` secret, its own object for a `json` one. Always at least one entry.",
     ),
-}).describe(
-  "One secret's value in the dev secrets file: an explicit current-version pointer plus every still-valid version. Always a full envelope, never a bare value.",
-);
+})
+  .strict()
+  .describe(
+    "One secret's value in the dev secrets file: an explicit current-version pointer plus every still-valid version, and nothing else. Always a full envelope, never a bare value.",
+  );
 export type DevSecretEnvelope = z.output<typeof DevSecretEnvelope>;
+
+/**
+ * What was found where an envelope belongs, as one clause for the caller's sentence — `it carries
+ * lastRotatedAt …`, `it is a string`, `it has no versions`.
+ *
+ * **Keys and types only, never a value.** The reason a shape error is worth saying at all is that the
+ * adopter is looking at a file they hand-wrote; the reason it must say this much and no more is that
+ * the same file holds OAuth client secrets, and this sentence reaches a terminal and a log.
+ */
+export function describeNotEnvelope(value: unknown, error: z.ZodError): string {
+  if (value === null) return "it is null";
+  if (Array.isArray(value)) return "it is an array";
+  if (typeof value !== "object") return `it is a ${typeof value}`;
+  const unrecognized = error.issues.flatMap(unrecognizedKeys).sort();
+  if (unrecognized.length > 0) {
+    return `it carries ${unrecognized.join(", ")} beside currentVersion and versions, so it is a value's own object rather than an envelope around one`;
+  }
+  const absent = ["currentVersion", "versions"].filter((key) => !Object.hasOwn(value, key));
+  if (absent.length > 0) return `it has no ${absent.join(" and no ")}`;
+  return "currentVersion must be a string and versions a map of version key to value";
+}
+
+/** The keys one `unrecognized_keys` issue names, or none — narrowed rather than cast (no `any`). */
+function unrecognizedKeys(issue: z.core.$ZodIssue): string[] {
+  if (issue.code !== "unrecognized_keys") return [];
+  return issue.keys.filter((key): key is string => typeof key === "string");
+}
 
 /**
  * The whole file: registry secret name → envelope. A record rather than a fixed object, because the
