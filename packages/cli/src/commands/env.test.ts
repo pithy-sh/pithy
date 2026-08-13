@@ -53,6 +53,7 @@ function apiWorker(): WorkerEnvironments {
     environments: [
       {
         name: "dev",
+        local: true,
         scriptName: "pithy-app",
         baseUrl: "local",
         workerDashboardUrl: null,
@@ -66,6 +67,17 @@ function apiWorker(): WorkerEnvironments {
           },
           { kind: "kv", binding: "SESSIONS", id: null, provisioned: false, dashboardUrl: null },
         ],
+      },
+      // A deployed environment with the same absent binding. Both are in one fixture on purpose: the
+      // point of #320 is that these two must not read the same, and a fixture holding only one of them
+      // cannot say so.
+      {
+        name: "staging",
+        local: false,
+        scriptName: "pithy-app-staging",
+        baseUrl: "https://staging.example.com",
+        workerDashboardUrl: null,
+        resources: [{ kind: "kv", binding: "SESSIONS", id: null, provisioned: false, dashboardUrl: null }],
       },
     ],
   };
@@ -116,6 +128,8 @@ describe("renderEnvInventory", () => {
     expect(out).toContain(
       "\x1b]8;;https://dash.cloudflare.com/acct-9/workers/d1/databases/db-uuid/metrics\x1b\\db-uuid\x1b]8;;\x1b\\",
     );
+    // The action item, and only where it is one. A deployed environment missing its resource is
+    // something to go and do; the same words on a local one taught an operator to skim past red.
     expect(out).toContain("not provisioned");
   });
 
@@ -137,6 +151,7 @@ describe("renderEnvInventory", () => {
           environments: [
             {
               name: "dev",
+              local: true,
               scriptName: "pithy-app",
               baseUrl: "local",
               workerDashboardUrl: null,
@@ -159,9 +174,17 @@ describe("renderEnvInventory", () => {
           worker: "api",
           dir: "apps/api",
           environments: [
-            { name: "dev", scriptName: "pithy-app", baseUrl: "local", workerDashboardUrl: null, resources: [] },
+            {
+              name: "dev",
+              local: true,
+              scriptName: "pithy-app",
+              baseUrl: "local",
+              workerDashboardUrl: null,
+              resources: [],
+            },
             {
               name: "prod",
+              local: false,
               scriptName: "pithy-app-prod",
               baseUrl: "https://api.example.com",
               workerDashboardUrl: null,
@@ -196,6 +219,7 @@ describe("renderEnvInventory — per worker", () => {
           environments: [
             {
               name: "dev",
+              local: true,
               scriptName: "collab",
               baseUrl: "local",
               workerDashboardUrl: null,
@@ -211,6 +235,12 @@ describe("renderEnvInventory — per worker", () => {
       "  dev  local",
       "    worker  pithy-app",
       "    DB (d1)  db-uuid  https://dash.cloudflare.com/acct-9/workers/d1/databases/db-uuid/metrics",
+      // `local`, not `not provisioned`. There is no remote `dash-dev-db` and there is not supposed to
+      // be one — Miniflare serves this binding from its own declaration (#320).
+      "    SESSIONS (kv)  local",
+      "  staging  https://staging.example.com",
+      "    worker  pithy-app-staging",
+      // The same binding, absent in both. Only the deployed one is an action item.
       "    SESSIONS (kv)  not provisioned",
       "collab  apps/collab",
       "  dev  local",
@@ -229,6 +259,7 @@ describe("renderEnvInventory — per worker", () => {
           environments: [
             {
               name: "staging",
+              local: false,
               scriptName: "api-staging",
               baseUrl: null,
               workerDashboardUrl: null,

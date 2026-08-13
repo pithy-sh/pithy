@@ -4,6 +4,7 @@
 import { relative } from "node:path";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { StatePathOptions } from "../notifier/state";
@@ -91,6 +92,11 @@ export type EnvResource = z.output<typeof EnvResource>;
 export const EnvironmentReport = z
   .object({
     name: z.string().describe('The environment name: "dev" for the top-level stanza, else the env.<name> key.'),
+    local: z
+      .boolean()
+      .describe(
+        "True when this environment runs on the machine rather than in an account — the top-level wrangler stanza, which is always the local one and is never an `env.<name>`. Read it before judging anything about a Cloudflare resource: the presence of one is not a property a local environment has, so absence is not a deficiency there.",
+      ),
     scriptName: z
       .string()
       .nullable()
@@ -194,23 +200,32 @@ function collectResources(stanza: RawStanza, accountId: string | null): EnvResou
 /**
  * The base URL for an environment, through the one resolver.
  *
- * `dev` keeps its `"local"` sentinel — there is no public address for a local run, and the real answer
- * is `http://localhost:<port>` from the port pinned in `.dev.config.json`, which is not this report's
- * business. For every other environment `resolveWorkerAddress` decides, in its documented order:
- * the `domains` declaration, then the first route, then a hand-set `vars.BASE_URL`.
+ * A local environment keeps its `"local"` sentinel — there is no public address for a local run, and
+ * the real answer is `http://localhost:<port>` from the port pinned in `.dev.config.json`, which is not
+ * this report's business. For every other environment `resolveWorkerAddress` decides, in its documented
+ * order: the `domains` declaration, then the first route, then a hand-set `vars.BASE_URL`.
+ *
+ * Keyed on the report's own `local`, not on the string `dev`. Localness is decided once, where it is
+ * known for a structural reason, and every derivation reads that one answer.
  *
  * The resolver is **offline by construction**, which is what lets it be used here: `pithy env` is
  * contractually read-only and always exits 0, so a resolver that reached Cloudflare would turn it into a
  * command that fails without credentials.
  */
-function deriveBaseUrl(name: string, stanza: RawStanza, domains: WorkerDomains | undefined): string | null {
-  if (name === "dev") return "local";
+function deriveBaseUrl(
+  name: string,
+  local: boolean,
+  stanza: RawStanza,
+  domains: WorkerDomains | undefined,
+): string | null {
+  if (local) return "local";
   return resolveWorkerAddress({ environment: name, domains, stanza })?.url ?? null;
 }
 
 /** Assemble one environment report from its stanza. */
 function buildEnvironment(
   name: string,
+  local: boolean,
   stanza: RawStanza,
   scriptName: string | null,
   accountId: string | null,
@@ -219,23 +234,34 @@ function buildEnvironment(
   const workerDashboardUrl = accountId && scriptName ? dashboardUrl("worker", accountId, scriptName) : null;
   return {
     name,
+    local,
     scriptName,
-    baseUrl: deriveBaseUrl(name, stanza, domains),
+    baseUrl: deriveBaseUrl(name, local, stanza, domains),
     workerDashboardUrl,
     resources: collectResources(stanza, accountId),
   };
 }
 
-/** Every environment one Worker declares: the top-level stanza as `dev`, then each `env.<name>`. */
+/**
+ * Every environment one Worker declares: the top-level stanza as the local one, then each `env.<name>`.
+ *
+ * **Localness comes from where the stanza is, not from what it is called.** The top-level stanza *is*
+ * the local environment — `DeclaredEnvironments` refuses to let a project declare `dev`, precisely
+ * because it is never an `env.<name>` — so the flag is set at the one place that knows for a structural
+ * reason. Comparing a name against `"dev"` downstream would be the same guess re-encoded one layer
+ * lower, and every consumer would have to make it again.
+ */
 function buildEnvironments(
   config: RawWrangler,
   accountId: string | null,
   domains: WorkerDomains | undefined,
 ): EnvironmentReport[] {
-  const environments: EnvironmentReport[] = [buildEnvironment("dev", config, config.name ?? null, accountId, domains)];
+  const environments: EnvironmentReport[] = [
+    buildEnvironment(LOCAL_ENVIRONMENT, true, config, config.name ?? null, accountId, domains),
+  ];
   for (const [name, stanza] of Object.entries(config.env ?? {})) {
     if (!stanza) continue;
-    environments.push(buildEnvironment(name, stanza, stanza.name ?? null, accountId, domains));
+    environments.push(buildEnvironment(name, false, stanza, stanza.name ?? null, accountId, domains));
   }
   return environments;
 }

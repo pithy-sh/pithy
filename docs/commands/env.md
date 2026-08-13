@@ -24,6 +24,10 @@ Every Worker lives in `apps/<name>/` with its own `wrangler.jsonc`, so the repor
 
 **Provisioned means the id is present and is not a placeholder.** An empty value, a `<database_id>` stub, or anything containing "placeholder" reads as not provisioned, which is exactly the state a freshly scaffolded project is in.
 
+**A local environment is not judged against a standard that cannot apply to it.** The presence of a Cloudflare resource is not a property a local environment has: Miniflare serves D1 from the binding declaration, with state under `.wrangler/state/v3/d1`, and `pithy dev` works precisely because no Cloudflare resource is involved. So a binding with no id reads `local` there, and `not provisioned` only in a deployed environment — deliberately different words, because sharing them made the real action item weaker and taught an operator to skim past red in the one command they read against production.
+
+Localness is a property of the report, not a guess about the name. The top-level stanza *is* the local environment — a project cannot declare `dev`, because `dev` is never an `env.<name>` — so `environments[].local` is set where that is known structurally, and every consumer reads the one answer.
+
 **A link is either right or absent.** A resource gets a deep link when its dashboard id is knowable, that product's list page when it is not, and nothing at all with no account id or when the resource is not provisioned. A Durable Object binding names a class, and the dashboard addresses a DO by a namespace id `wrangler.jsonc` never carries, so DO rows show the class name and fall back to the list page — resolving the real id would take a Cloudflare API call this command does not make. In a terminal an id renders as a clickable OSC-8 hyperlink; with hyperlinks off, piped, or under `NO_COLOR`, the URL is printed beside the id. `--json` always carries the full `dashboardUrl`.
 
 The environment set comes from `wrangler.jsonc` alone, so the inventory prints in a project whose dependencies are not installed. A Worker's `pithy.config.ts` is read only for its `domains` declaration, and only opportunistically: missing, unimportable, or malformed leaves that declaration unresolved and the wrangler-derived report intact. A discovered process with no `wrangler.jsonc` — a Vite front end in the dev set — has no environments and is skipped.
@@ -47,6 +51,7 @@ One line on stdout.
 | `workers[].dir` | string | The Worker's directory, relative to the project root, e.g. `apps/api`. |
 | `workers[].environments` | object[] | Every environment declared in that Worker's `wrangler.jsonc`, `dev` first. |
 | `workers[].environments[].name` | string | `"dev"` for the top-level stanza, otherwise the `env.<name>` key. |
+| `workers[].environments[].local` | boolean | True for the top-level stanza — the environment that runs on the machine rather than in an account. Read it before judging any `provisioned: false` beneath it. |
 | `workers[].environments[].scriptName` | string \| null | The Worker script name this environment deploys under, or `null`. |
 | `workers[].environments[].baseUrl` | string \| null | `"local"` for `dev`; the resolved public address otherwise; `null` when the Worker declares none. |
 | `workers[].environments[].workerDashboardUrl` | string \| null | The dashboard link for this environment's Worker, or `null` with no account id or no script name. |
@@ -54,7 +59,7 @@ One line on stdout.
 | `…resources[].kind` | string | The resource kind: `"d1"`, `"kv"`, `"r2"`, or `"durable_object"`. |
 | `…resources[].binding` | string | The Worker binding name, e.g. `DB` or `SESSIONS`. |
 | `…resources[].id` | string \| null | The resolved id — a D1 uuid, a KV namespace id, an R2 bucket name, a DO class name — or `null` when absent. |
-| `…resources[].provisioned` | boolean | True when the id is present, non-empty, and not a placeholder. |
+| `…resources[].provisioned` | boolean | True when the id is present, non-empty, and not a placeholder — i.e. a Cloudflare resource exists. `false` under a `local` environment is a statement, not a deficiency. |
 | `…resources[].dashboardUrl` | string \| null | The resource's own dashboard page when its id is knowable, else that product's list page. `null` with no account id, when not provisioned, or for a kind with neither. |
 
 ## Errors
