@@ -250,7 +250,8 @@ describe("support response schemas", () => {
         { key: "refund_issued", label: "Refund issued", category: "billing", body: "Your refund is on its way." },
       ],
     });
-    accepts(SupportReplySentResponse, { messageId: "m-2", jobId: "job-1" });
+    accepts(SupportReplySentResponse, { channel: "email", messageId: "m-2", jobId: "job-1" });
+    accepts(SupportReplySentResponse, { channel: "app", messageId: "m-3" });
     accepts(SupportFlagsResponse, { ok: true });
     accepts(SupportRepliesResponse, {
       replies: [{ key: "general", label: "Thanks", body: "Thank you for writing in." }],
@@ -260,6 +261,20 @@ describe("support response schemas", () => {
     accepts(SupportMyThreadResponse, {
       thread: myThreadView(APP_THREAD),
       messages: [myMessageView(APP_MESSAGE, [])],
+    });
+  });
+
+  test("a reply response has to say how it was delivered, and only one arm has a job", () => {
+    // "Sent by email" and "waiting in the app" are different promises about when somebody reads the
+    // answer, so the shape makes a client branch to read either one. Without the discriminant there is
+    // no arm to validate against at all.
+    expect(SupportReplySentResponse.safeParse({ messageId: "m-2", jobId: "job-1" }).success).toBe(false);
+    // And an in-app delivery cannot be handed a job id to render as proof it went out — the arm has no
+    // such field, so it does not survive the parse. `ReplyResult` refuses the same thing at compile
+    // time: `result.jobId` does not exist until `channel` has been narrowed.
+    expect(SupportReplySentResponse.parse({ channel: "app", messageId: "m-3", jobId: "job-1" })).toEqual({
+      channel: "app",
+      messageId: "m-3",
     });
   });
 });

@@ -76,7 +76,9 @@ So the thread records **how** it came to name an account, not just whether to be
 
 A console must render those differently. The same operator action — a refund, a password reset — follows from very different evidence, and a single boolean cannot say which one is on screen.
 
-`channel` (`email` or `app`) rides on the thread and on every message, and the inbox filters on it. It is per message as well as per thread because the two genuinely differ: **a reply to an app thread is `email`**, since that is where the person will read it. The submission is minted a `Message-ID` on the way in, so when they answer that reply their mail client's `References` finds the thread instead of opening a new one.
+`channel` (`email` or `app`) rides on the thread and on every message, and the inbox filters on it. It is per message as well as per thread because the two genuinely differ: one app thread can hold **an answer that was mailed and an answer that was not**, and on an outbound row `channel` is how the answer was delivered. A mailed reply to an app thread is `email`, and the submission is minted a `Message-ID` on the way in, so when they answer that reply their mail client's `References` finds the thread instead of opening a new one.
+
+`emailJobId` follows from that and carries no information of its own: it is present exactly when a row is `outbound` and `email`. Ask `channel` whether an answer went out — never the absence of a job id, which would mean both *this arrived* and *this is waiting in the app*.
 
 The app supplies what the user should not have to type — screen, build, platform, environment, locale — and that set is **closed**. An undeclared key is refused rather than stored, because the risk of an open bag is an adopter passing their whole client state through it and quietly landing a customer's data in an inbox a console renders.
 
@@ -132,6 +134,34 @@ Two deliberate exceptions. Per-viewer flags — read, snoozed — because nobody
 A reply goes out through `@pithy-sh/email`'s durable send path, so it carries your domain and your DKIM — and critically, so it sets `In-Reply-To` and `References` correctly. Only the Worker holds the thread's chain; implemented dashboard-side, threading breaks in the customer's mail client and every conversation fragments into one message per answer.
 
 The dashboard POSTs a body. That is the entire contract.
+
+### Answering without mail
+
+**Turning on Email Routing takes over the zone's MX.** A project already running mail on that domain cannot receive support replies without consequences everywhere else on it — so for an established zone, in-app submissions with no inbound address are not the cheap path, they are the only one that disturbs nothing else. Those threads still have to be answerable.
+
+An `app` thread has a second destination that already exists: the submitter reads their own conversation through `GET /support/feedback/:id`, outbound messages included. So a reply to one can be **stored rather than sent** — the outbound row, the thread counters and the `support/reply_sent` audit event are written exactly as they are for mail, and only the enqueue is skipped.
+
+```ts
+support({
+  reply: {
+    // Answer app threads in the app, on a project whose mail works perfectly well.
+    deliverInApp: true,
+  },
+});
+```
+
+It is **a choice, not only a fallback**. A behaviour conditioned on mail being *impossible* is unreachable by an adopter who can mail and would rather not — and for a submitter who is a signed-in user sitting on the screen they wrote from, the answer is better placed there anyway. With the setting off, in-app delivery still happens automatically when there is no address to reply from and no email capability to send with, because storing the answer beats refusing it.
+
+An `email` thread never takes this path. Its sender has no read-back — there is no session, only an address — so a stored answer there is one nobody would ever see, and a missing reply address on a mail thread stays a misconfiguration to fail on. `reply.enabled: false` still refuses on both.
+
+The reply response says which happened, and the two cannot be confused:
+
+```json
+{ "channel": "email", "messageId": "…", "jobId": "…" }
+{ "channel": "app",   "messageId": "…" }
+```
+
+Two different promises about when somebody reads the answer, so they are two different shapes rather than one with an optional `jobId`. **Nobody is notified of a stored reply.** Telling a signed-in submitter is the application's call — what is a preference and what is a notice is the adopter's judgement, and a capability that grew push here would make that decision for everybody.
 
 Alongside it, a **canned-reply catalog**: starting points a human picks, edits, and sends. Six ship, keyed to the default categories, and you add your own with `defineSupportReplies`. They are body text, not email templates — the words are yours and change on a Tuesday, while a Handlebars template changes on a release. Nothing is ever sent automatically. The machine's job is a better blank page, not the letter.
 
@@ -233,7 +263,7 @@ Listing is cursor-paginated on `(receivedAt, id)`, never offset — mail arrives
 | `support/rejected` | 429 | The guard refused a message on size or rate, or an account is over its submission bound. |
 | `validation/invalid_input` | 400 | A submission broke a configured bound — body length, attachment size, count, or type. |
 | `support/classification_failed` | 500 | The AI step could not run. A bad *answer* is not this — it becomes `uncategorized`. |
-| `support/reply_failed` | 502 | `@pithy-sh/email` is absent, or refused the job. |
+| `support/reply_failed` | 502 | Replies are off, or a reply that needed mail had nothing to send it with. An `app` thread is answered in the app instead of raising this. |
 
 ## Testing
 

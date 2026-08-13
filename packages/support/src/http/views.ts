@@ -86,7 +86,7 @@ export function messageView(message: SupportMessage): SupportMessageView {
     direction: message.direction,
     channel: message.channel,
     context: message.context ?? null,
-    fromAddress: message.fromAddress,
+    fromAddress: message.fromAddress ?? null,
     fromName: message.fromName ?? null,
     toAddress: message.toAddress ?? null,
     subject: message.subject,

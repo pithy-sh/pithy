@@ -306,6 +306,12 @@ export const SupportReplyConfig = z
       .describe(
         "The `Reply-To` a reply carries — the address the customer's answer comes back to, which must be one of `inboundAddresses` or the conversation ends there. Defaults to the inbox address the thread arrived on, which is almost always what you want.",
       ),
+    deliverInApp: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Answer an `app` thread by storing the reply for the submitter to read in the app, instead of mailing it. **A choice, not a fallback.** Turning on Email Routing takes over the zone's MX, so a project already running mail on that domain cannot receive support replies without consequences everywhere else on it — and for a submitter who is a signed-in user sitting on the screen they wrote from, the answer is better placed there anyway. In-app delivery also happens automatically when there is no address to reply from and no email capability to send with, whatever this says; the setting is what makes it reachable for a project whose mail works fine. It never applies to an `email` thread: a mail thread's sender has no read-back, so a stored answer there is one nobody would ever see.",
+      ),
     snippets: z
       .record(z.string(), SupportReplySnippet)
       .default({})

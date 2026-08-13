@@ -200,20 +200,15 @@ export async function replyToConversation(
   input: ReplyInput,
   viewer: string,
 ): Promise<SupportReplySentResponse> {
-  const enqueue = deps.enqueue;
-  if (!enqueue) {
-    throw new (await import("../error/errors")).SupportReplyFailedError({
-      message: "This deployment cannot send mail.",
-      action: "Add the email capability (`pithy add email`) and provision it, then retry.",
-      detail: "no email capability composed, so no enqueue is bound to the request",
-    });
-  }
-
+  // `enqueue` is passed through absent rather than refused here. Whether a reply needs mail at all is
+  // `sendReply`'s decision — an `app` thread is answered in the app when there is nothing to send
+  // with — and a check at this call site would refuse the request before the one function that knows
+  // ever got to look.
   return sendReply(
     {
       db: deps.db,
       config: deps.config,
-      enqueue,
+      enqueue: deps.enqueue,
       fts: deps.fts,
       emit: deps.emit,
       log: deps.log,

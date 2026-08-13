@@ -63,6 +63,10 @@ export async function checkAccountRate(
     .selectFrom(SUPPORT_MESSAGES_TABLE)
     .select((eb) => eb.fn.countAll<number>().as("count"))
     .where("channel", "=", "app")
+    // What the *account* filed. An answer delivered in the app is an `app` row too, and it carries no
+    // `submittedByUserId` — but the bound is on what a person sends, so it says so rather than
+    // relying on a null in another column to keep the count honest.
+    .where("direction", "=", "inbound")
     .where("submittedByUserId", "=", input.userId)
     .where("receivedAt", ">=", since.getTime())
     .executeTakeFirst();
