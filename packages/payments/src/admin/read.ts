@@ -7,8 +7,14 @@ import type { z } from "zod";
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PaymentsPurchase, type PurchaseEnvironment } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
+import { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PurchaseStatus } from "../data/status";
-import { PAYMENTS_ENTITLEMENTS_TABLE, PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
+import {
+  PAYMENTS_ENTITLEMENTS_TABLE,
+  PAYMENTS_PURCHASES_TABLE,
+  PAYMENTS_RECONCILE_RUNS_TABLE,
+  paymentsDatabase,
+} from "../data/tables";
 
 /**
  * The management read model — the queries behind the control-plane reads, and nothing else.
@@ -273,4 +279,57 @@ export async function readEntitlements(d1: D1Database, userId: string): Promise<
     .orderBy("entitlement", "asc")
     .execute();
   return rows.map((row) => PaymentsEntitlement.parse(row));
+}
+
+/** What {@link listReconcileRuns} accepts. */
+export interface ReconcileRunsQuery {
+  /** Restrict to the passes narrowed to one store. Never matches a pass that ran against every rail. */
+  rail?: PaymentsRail;
+  /** Restrict to one store environment. */
+  environment?: PurchaseEnvironment;
+  /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
+  cursor?: string;
+  /** How many rows to return, clamped by `pageLimit`. */
+  limit?: number;
+}
+
+/**
+ * The reconciliation passes this deployment has run, newest first.
+ *
+ * Ordered on `startedAt`, not `finishedAt`, and the difference is the health question: a pass that began and
+ * never ended is the failure worth seeing, and ordering on the timestamp it never wrote would hide it behind
+ * every pass that did. The id is the tiebreak, on the index the migration creates for exactly this.
+ *
+ * `selectAll` here where the purchase read names its columns, and the reason is the point of the table: there
+ * is no column to withhold. Every field is a count, a timestamp or an enum, so there is no bearer artifact to
+ * leave behind and no personal identifier to mask — see `data/reconcileRun.ts`.
+ */
+export async function listReconcileRuns(
+  d1: D1Database,
+  query: ReconcileRunsQuery = {},
+): Promise<PaymentsPage<PaymentsReconcileRun>> {
+  const limit = pageLimit(query.limit);
+  const after = resume(query.cursor);
+
+  let selection = paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_RECONCILE_RUNS_TABLE)
+    .selectAll()
+    .orderBy("startedAt", "desc")
+    .orderBy("id", "desc")
+    .limit(limit + 1);
+
+  if (query.rail !== undefined) selection = selection.where("rail", "=", query.rail);
+  if (query.environment !== undefined) selection = selection.where("environment", "=", query.environment);
+  if (after) {
+    selection = selection.where((eb) =>
+      eb.or([eb("startedAt", "<", after.sort), eb.and([eb("startedAt", "=", after.sort), eb("id", "<", after.id)])]),
+    );
+  }
+
+  const rows = await selection.execute();
+  return toPage(
+    rows.map((row) => PaymentsReconcileRun.parse(row)),
+    limit,
+    (run) => ({ sort: run.startedAt.getTime(), id: run.id }),
+  );
 }

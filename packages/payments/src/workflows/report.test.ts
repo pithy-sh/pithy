@@ -29,6 +29,7 @@ function capture(): { records: LogRecord[]; log: ReturnType<typeof createWorkerL
 }
 
 const CLEAN: ReconcileReport = {
+  runId: "run-1",
   pages: 1,
   scanned: 12,
   unchanged: 12,

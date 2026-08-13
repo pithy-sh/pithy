@@ -12,10 +12,9 @@ import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, Hono } from "hono";
-import { listEntitlements, listPurchases, listSubscriptions, readEntitlements } from "../admin/read";
+import { listEntitlements, listPurchases, listReconcileRuns, listSubscriptions, readEntitlements } from "../admin/read";
 import { type PaymentsAuditAction, PaymentsAuditActions } from "../audit/actions";
 import {
-  grantableEntitlements,
   type PaymentsCatalogEntry,
   type PaymentsConfig,
   type PaymentsStripeSettings,
@@ -23,6 +22,7 @@ import {
   railEnabled,
   resolveProduct,
 } from "../config/config";
+import type { PaymentsEntitlement } from "../data/entitlement";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
@@ -55,6 +55,7 @@ import {
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   requireAuth,
 } from "./guards";
@@ -63,6 +64,7 @@ import type {
   PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
+  PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
   PaymentsDiscountResponse,
@@ -77,6 +79,7 @@ import {
   AdminDiscountsQuery,
   AdminEntitlementsQuery,
   AdminPurchasesQuery,
+  AdminReconcileRunsQuery,
   AdminSubscriptionsQuery,
   AdminUserParam,
   AppleWebhookNotification,
@@ -90,7 +93,14 @@ import {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./schemas";
-import { adminCatalogView, adminEntitlementView, adminPurchaseView, entitlementView, purchaseView } from "./view";
+import {
+  adminCatalogView,
+  adminEntitlementView,
+  adminPurchaseView,
+  adminReconcileRunView,
+  entitlementView,
+  purchaseView,
+} from "./view";
 import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhookGuard";
 
 /**
@@ -112,6 +122,7 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   GET  /payments/admin/subscriptions          → the purchases that renew       (control-plane: payments:subscriptions:read)  query: AdminSubscriptionsQuery
  *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
  *   GET  /payments/admin/entitlements/:userId   → one account's entitlements     (control-plane: payments:entitlements:read)   param: AdminUserParam
+ *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)     query: AdminReconcileRunsQuery
  *
  * **The reads exist because the writes did.** Payments shipped `entitlements/grant` and
  * `entitlements/revoke` with no read beside them, so a management client could comp an entitlement and take
@@ -501,16 +512,6 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     });
   }
 
-  /**
-   * Every entitlement key a manual grant may name, computed once.
-   *
-   * The catalog is config and cannot change under a running Worker, so this is a constant of the
-   * composition rather than something to recompute per request. It is also the set the catalog read
-   * publishes, which is what keeps "what a client may offer" and "what a grant will accept" from being two
-   * lists that drift.
-   */
-  const grantable = grantableEntitlements(config);
-
   return (app) => {
     // The management surface: control-plane, read-only, under `admin/`. Its paths are disjoint from the
     // player surface by construction, so registering it first is presentation rather than semantics.
@@ -657,6 +658,38 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             userId,
             entitlements: rows.map((row) => adminEntitlementView(row, now)),
           } satisfies PaymentsAdminUserEntitlementsResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * CONTROL PLANE. What reconciliation has done — the passes this deployment has run, newest first.
+     *
+     * The compensating control for a delivery mechanism that is known to fail leaves a trace, so an adopter
+     * can tell a healthy integration from one whose cron stopped firing. An empty page is a real answer and
+     * the loudest one this route gives.
+     *
+     * Its own scope: a run names no account, no transaction and no amount, so a health monitor can be granted
+     * exactly this without acquiring the purchase log.
+     */
+    app.get(
+      `${base}/admin/reconcile-runs`,
+      requireControlPlane(PAYMENTS_RECONCILE_READ_SCOPE),
+      zValidator("query", AdminReconcileRunsQuery, validationHook),
+      async (c) => {
+        const query = c.req.valid("query");
+        const page = await listReconcileRuns(database(c), query);
+        await recordRead(c, PaymentsAuditActions.reconcileRunsRead, null, {
+          returned: page.items.length,
+          resumed: query.cursor !== undefined,
+          filters: { rail: query.rail ?? null, environment: query.environment ?? null },
+        });
+        return c.json(
+          {
+            runs: page.items.map(adminReconcileRunView),
+            nextCursor: page.nextCursor,
+          } satisfies PaymentsAdminReconcileRunsResponse,
           200,
         );
       },
@@ -1115,11 +1148,20 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       zValidator("json", EntitlementGrantRequest, validationHook),
       async (c) => {
         const input = c.req.valid("json");
-        // The key is checked against what this project defines, and the check is here rather than on the
-        // route line for the reason every config-backed resolution in this package is: a request schema
-        // constrains a string, it is never built from a configured key set. `EntitlementKey` has already
-        // said the key is well-formed; this says it means something.
-        if (!grantable.has(input.entitlement)) {
+        const caller = controlPlaneCaller(c);
+        // The catalog check lives in `grantEntitlement`, at the write (#305). This route no longer decides
+        // whether a key means something — it reports the refusal, which is a different job and the only one
+        // an edge should have. Anything else here would be a second copy of the rule, and a second copy is
+        // how the first one stops being the rule.
+        let granted: PaymentsEntitlement;
+        try {
+          granted = await grantEntitlement(
+            database(c),
+            config,
+            { userId: input.userId, entitlement: input.entitlement, expiresAt: input.expiresAt ?? null },
+            { now: clock() },
+          );
+        } catch (cause) {
           // The refusal is the outcome worth recording here, and it was the only one not recorded. A
           // credential scoped only to grant can otherwise enumerate this project's entitlement vocabulary
           // one key at a time — 400 for a miss, 200 for a hit — and leave the customer nothing to read
@@ -1128,40 +1170,29 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           //
           // `safeEmit` for the same reason the webhook guard uses it: the 400 is already decided, and an
           // audit write that threw would answer 500 for a failing store and 400 for a healthy one.
-          await safeEmit(
-            c.var.emit,
-            {
-              action: PaymentsAuditActions.entitlementGranted,
-              outcome: "denied",
-              severity: "warning",
-              actorType: "service",
-              actorId: c.var.controlPlane?.connectionId ?? "control-plane",
-              resourceType: "entitlement",
-              resourceId: input.entitlement,
-              // The route and the submitted key, and nothing else the caller supplied. The key is safe to
-              // record — `EntitlementKey` has already bounded it to `^[a-z][a-z0-9_]*$` at 64 characters —
-              // and it is the only field that makes a run of refusals legible. Never the catalogue: the
-              // defined set goes in `detail`, which the codec strips, and must not be copied into a
-              // queryable, long-lived trail.
-              metadata: { route: "entitlements/grant", entitlement: input.entitlement },
-            },
-            c.var.log,
-          );
-
-          throw new PaymentsEntitlementNotInCatalogError({
-            message: `No entitlement "${input.entitlement}" is defined here.`,
-            // The set goes in `detail`, which the HTTP codec strips. An operator reading the customer's
-            // logs gets the near miss spelled out; the caller learns only which key it sent, because what
-            // this project sells is a separate disclosure behind `payments:catalog:read`.
-            detail: `No product grants "${input.entitlement}" and \`manualEntitlements\` does not declare it. Defined: ${[...grantable].sort().join(", ") || "nothing"}.`,
-          });
+          if (cause instanceof PaymentsEntitlementNotInCatalogError) {
+            await safeEmit(
+              c.var.emit,
+              {
+                action: PaymentsAuditActions.entitlementGranted,
+                outcome: "denied",
+                severity: "warning",
+                actorType: "service",
+                actorId: c.var.controlPlane?.connectionId ?? "control-plane",
+                resourceType: "entitlement",
+                resourceId: input.entitlement,
+                // The route and the submitted key, and nothing else the caller supplied. The key is safe to
+                // record — `EntitlementKey` has already bounded it to `^[a-z][a-z0-9_]*$` at 64 characters —
+                // and it is the only field that makes a run of refusals legible. Never the catalogue: the
+                // defined set goes in `detail`, which the codec strips, and must not be copied into a
+                // queryable, long-lived trail.
+                metadata: { route: "entitlements/grant", entitlement: input.entitlement },
+              },
+              c.var.log,
+            );
+          }
+          throw cause;
         }
-        const caller = controlPlaneCaller(c);
-        const granted = await grantEntitlement(
-          database(c),
-          { userId: input.userId, entitlement: input.entitlement, expiresAt: input.expiresAt ?? null },
-          { now: clock() },
-        );
         await c.var.emit({
           action: PaymentsAuditActions.entitlementGranted,
           outcome: "success",

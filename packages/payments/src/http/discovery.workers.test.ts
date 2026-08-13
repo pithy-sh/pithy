@@ -229,6 +229,7 @@ const PAYMENTS_CATALOG = payments({
 beforeEach(async () => {
   for (const table of [
     "pithy_payments_webhook_events",
+    "pithy_payments_reconcile_runs",
     "pithy_payments_provider_accounts",
     "pithy_payments_entitlements",
     "pithy_payments_purchases",
@@ -253,6 +254,7 @@ describe("what a management client discovers about payments", () => {
       "/billing/admin/entitlements",
       "/billing/admin/entitlements/:userId",
       "/billing/admin/discounts",
+      "/billing/admin/reconcile-runs",
     ]);
   });
 

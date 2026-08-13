@@ -2,7 +2,7 @@
 
 Three payment rails — Apple, Google, Stripe — resolving to one cross-rail entitlement, in your own Worker and your own D1.
 
-Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage, and their dashboards are genuinely ahead of this package, and if you want a hosted product with a support contract you should buy theirs. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is four tables in a D1 you own, written by a Worker you deploy. Nothing here calls a Pithy-operated service, because there isn't one. That is principle 1 with a concrete competitor to point at, and it is what "the wiring is the differentiator" means when the wiring is money.
+Buy Pro on iOS, be entitled on the web. That resolution is the whole product, and it is the same one **[RevenueCat](https://www.revenuecat.com)** built a very good business on — their SDKs, their store-quirk coverage, and their dashboards are genuinely ahead of this package, and if you want a hosted product with a support contract you should buy theirs. The honest difference is not the feature list. It is **where the purchase history lives**: RevenueCat is a hosted data plane holding your customers' transactions, and this is five tables in a D1 you own, written by a Worker you deploy. Nothing here calls a Pithy-operated service, because there isn't one. That is principle 1 with a concrete competitor to point at, and it is what "the wiring is the differentiator" means when the wiring is money.
 
 ## A product is not an entitlement
 
@@ -23,7 +23,7 @@ pithy add payments                # installs, writes the config and the bindings
 pithy payments provision          # deploys the reconciliation Workflow and writes its binding
 ```
 
-`add` touches no Cloudflare account: it installs the package, writes the `payments({ ... })` block into `pithy.config.ts`, wires the `DB` binding into `wrangler.jsonc`, and runs the migration that creates `pithy_payments_purchases`, `pithy_payments_entitlements`, `pithy_payments_provider_accounts`, and `pithy_payments_webhook_events`. It works offline and in CI.
+`add` touches no Cloudflare account: it installs the package, writes the `payments({ ... })` block into `pithy.config.ts`, wires the `DB` binding into `wrangler.jsonc`, and runs the migration that creates `pithy_payments_purchases`, `pithy_payments_entitlements`, `pithy_payments_provider_accounts`, `pithy_payments_webhook_events`, and `pithy_payments_reconcile_runs`. It works offline and in CI.
 
 `provision` is the step that needs credentials. The `PAYMENTS_RECONCILE` binding arrives with it rather than with `add`, because wrangler requires a `name` and a `class_name` on every `workflows` entry and the deployed name is per project and environment (`<project>-<env>-payments-reconcile`) — an entry short of either field does not degrade, wrangler refuses to load the config at all. The binding is **optional**: an unprovisioned project still verifies receipts, accepts webhooks, and resolves entitlements.
 
@@ -168,6 +168,7 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `GET /payments/admin/subscriptions` | The purchases that renew | control-plane: `payments:subscriptions:read` |
 | `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/entitlements/:userId` | One account's entitlements | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
 
 **Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgement call.
 
@@ -185,9 +186,11 @@ A grant is **held** against the projection. Every other row in the entitlements 
 
 **A grant must name a key this project defines.** `GET /payments/admin/catalog` is the read behind it, on its own scope — `payments:catalog:read` — and it publishes each product's id, kind, display name, and entitlement keys. Strictly less than the client projection a browser already gets: no price, no store SKU, no rail identifier, because a management client is filling a list of things that can be comped and a comp names a key. An empty catalog answers `{ enabled: false }`, the same modelled state the client projection uses, so "nothing to sell" reads as itself rather than as a dropdown that came back broken.
 
-The read makes a good control possible; the check on the grant makes a bad one impossible. `POST /payments/entitlements/grant` refuses a key outside that set with `payments/entitlement_not_in_catalog`, naming the key. Before it did, an operator who meant `pro` and typed `pr` got a success, a row, and a customer who stayed locked out — invisible on both sides until somebody read the table.
+The read makes a good control possible; the check on the grant makes a bad one impossible. A grant of a key outside that set is refused with `payments/entitlement_not_in_catalog`, naming the key. Before it was, an operator who meant `pro` and typed `pr` got a success, a row, and a customer who stayed locked out — invisible on both sides until somebody read the table.
 
-Gating on a key nothing sells is legitimate, and the escape is **declared** rather than achieved by not checking: put it in `manualEntitlements`, and it is grantable and offered on the catalog read beside the products. Only grants are constrained. A revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for every account still holding it.
+**The check is at the write, not at the route.** `grantEntitlement` takes the config and refuses; the handler behind `POST /payments/entitlements/grant` only reports the refusal to the audit trail. That matters because the rule started at the handler, where an adopter's own route, a later route here, or a workflow could have written the row around it. The unchecked primitive is not exported, so there is no path to the row that skips the catalog.
+
+Gating on a key nothing sells is legitimate, and the escape is **declared** rather than achieved by not checking: put it in `manualEntitlements`, and it is grantable and offered on the catalog read beside the products. Only grants are constrained. A revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for every account still holding it — which is why `revokeEntitlement` takes no config at all.
 
 A revoke **releases** the hold rather than setting it. That asymmetry is deliberate: it makes a revoke the exact inverse of a grant, and it stops a revoke becoming a permanent block on a user who later pays. An entitlement the purchases still support is re-derived on the next event, so revoking a paid subscription here holds only until the store next says something about it. To end a paid entitlement, refund it through the store — that is the record the projection reads, and the only one that keeps the read model and the money agreeing.
 
@@ -247,6 +250,14 @@ pithy payments reconcile --env staging [--user <id>] [--rail apple|google|stripe
 ```
 
 Both prompt for nothing, are safe to re-run, and take `--json` — an agent and a human drive the same command.
+
+**Every pass leaves a row.** `pithy_payments_reconcile_runs` records when a pass started and finished, which store environment it ran in, which rail it was narrowed to, and its tally — scanned, unchanged, drifted, superseded, skipped, failed, plus whether it stopped at its page cap and whether it was a dry run. `GET /payments/admin/reconcile-runs` reads them behind `payments:reconcile:read`, granted separately from everything else here because a run names no account, no transaction and no amount: a health monitor can hold it without acquiring the commerce.
+
+**A pass that found nothing is recorded too**, and that is the load-bearing half. Without it, an empty table means either "healthy" or "the cron stopped firing", and those are the two answers an operator has to tell apart — a silent nightly job and a job that is not running look identical from outside.
+
+**The repairs are not copied.** They stay in the audit trail, once, and every `payments/purchase_reconciled` event carries the run's id as `runId`. A run holds the tally; the trail holds the repairs; neither restates the other.
+
+**Retention is ninety days**, pruned by the writer on every pass. One row per scheduled run means the table is bounded by the schedule rather than by the catalog, and putting the prune on the writer rather than in a second scheduled job means the only thing that could stop pruning is the thing that has also stopped writing.
 
 ## Client surface
 

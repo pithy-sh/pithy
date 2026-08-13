@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
+import { recordReconcileRun } from "../data/reconcileRun";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
@@ -25,6 +26,7 @@ import {
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./guards";
 import {
@@ -32,6 +34,7 @@ import {
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
+  PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
 } from "./responses";
@@ -203,6 +206,7 @@ const errorCode = async (response: Response) => (await response.json<{ error: { 
 beforeEach(async () => {
   for (const table of [
     "pithy_payments_webhook_events",
+    "pithy_payments_reconcile_runs",
     "pithy_payments_provider_accounts",
     "pithy_payments_entitlements",
     "pithy_payments_purchases",
@@ -746,7 +750,7 @@ describe("GET /payments/admin/entitlements", () => {
     // The question the grant and revoke writes made unanswerable on their own: a console could comp an
     // entitlement and never see that it had. `manual` and `source` are what close that loop.
     await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
-    await grantEntitlement(env.DB, { userId: "grace", entitlement: "pro", expiresAt: null }, { now: NOW });
+    await grantEntitlement(env.DB, CONFIG, { userId: "grace", entitlement: "pro", expiresAt: null }, { now: NOW });
 
     const body = PaymentsAdminEntitlementsResponse.parse(
       await (
@@ -890,5 +894,198 @@ describe("the reads never widen into the player surface, and never write", () =>
     // done in the hot path, and would make every pane load a write against a customer's database.
     expect(after.results).toEqual(before.results);
     expect(after.results).toHaveLength(1);
+  });
+});
+
+/**
+ * The reconciliation run log (#316), and the invariant that keeps it operational rather than commercial.
+ *
+ * This is the one management read here that is not about a customer. A run says whether the compensating
+ * control for a delivery mechanism that is known to fail has been firing, and how much it had to repair —
+ * so it goes behind its own scope, and an adopter can hand a health monitor exactly that.
+ *
+ * **The disclosure assertion is a positive invariant, never a list of forbidden strings.** A negative sweep
+ * is a list somebody has to keep, and the field that leaks is the one nobody thought to forbid. So the claim
+ * is stated the other way round, in two halves that are each insufficient alone: *every key in the response
+ * is one of the fifteen written out below*, and *every leaf is one of the facts the run itself recorded* —
+ * its own id, its two timestamps, its rail, its environment, one of its counts, or a boolean.
+ *
+ * The rows the pass ran over carry a sentinel payload (`purchase()` above writes one), so a projection that
+ * reached anything of a store's would have a value with nowhere to belong.
+ */
+describe("the reconciliation run log", () => {
+  /** Anything a JSON document holds that is not an object or an array. */
+  type RunLeaf = string | number | boolean | null;
+
+  /**
+   * Every leaf in a JSON document, wherever it sits. Every leaf type, and the branch this cannot name
+   * throws rather than returning nothing — a silent exemption granted by a fallthrough is the defect.
+   */
+  function leaves(value: unknown): RunLeaf[] {
+    if (Array.isArray(value)) return value.flatMap(leaves);
+    if (value !== null && typeof value === "object") return Object.values(value).flatMap(leaves);
+    if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return [value];
+    }
+    throw new Error(`The runs response held a ${typeof value}, which this sweep cannot compare.`);
+  }
+
+  /** Every object key in a JSON document, wherever it sits. */
+  function keys(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap(keys);
+    if (value !== null && typeof value === "object") {
+      return Object.entries(value).flatMap(([key, nested]) => [key, ...keys(nested)]);
+    }
+    return [];
+  }
+
+  /**
+   * Every key this response is permitted to carry. Written out by hand, never read off
+   * `PaymentsAdminReconcileRunView.shape` — a gate derived from what it polices cannot fail when what it
+   * polices changes, which is exactly how the catalog's own sweep passed while widening (#308).
+   */
+  const PERMITTED_KEYS = [
+    "runs",
+    "nextCursor",
+    "id",
+    "startedAt",
+    "finishedAt",
+    "environment",
+    "rail",
+    "pages",
+    "scanned",
+    "unchanged",
+    "drifted",
+    "superseded",
+    "skipped",
+    "failed",
+    "truncated",
+    "dryRun",
+  ];
+
+  const RUN = {
+    id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    startedAt: new Date("2026-06-09T04:00:00.000Z"),
+    finishedAt: new Date("2026-06-09T04:02:00.000Z"),
+    environment: "production" as const,
+    rail: "apple" as const,
+    report: {
+      pages: 2,
+      scanned: 41,
+      unchanged: 39,
+      drifted: 1,
+      superseded: 1,
+      skipped: 0,
+      failed: 0,
+      truncated: false,
+      dryRun: false,
+    },
+  };
+
+  async function readRuns(query = ""): Promise<PaymentsAdminReconcileRunsResponse> {
+    const response = await call(
+      makeApp([PAYMENTS_RECONCILE_READ_SCOPE]),
+      `/payments/admin/reconcile-runs${query}`,
+      PAYMENTS_RECONCILE_READ_SCOPE,
+    );
+    expect(response.status).toBe(200);
+    return PaymentsAdminReconcileRunsResponse.parse(await response.json());
+  }
+
+  test("returns the passes this deployment has run, newest first", async () => {
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    await recordReconcileRun(
+      env.DB,
+      { ...RUN, id: "later", startedAt: new Date("2026-06-10T04:00:00.000Z"), rail: null },
+      { now: NOW },
+    );
+    const body = await readRuns();
+    expect(body.runs.map((run) => run.id)).toEqual(["later", RUN.id]);
+    expect(body.runs[1]?.drifted).toBe(1);
+    expect(body.runs[1]?.rail).toBe("apple");
+    expect(body.runs[0]?.rail).toBeNull();
+  });
+
+  test("an empty page is the answer, and it is the loud one", async () => {
+    // Reconciliation has never run here. For a project that has provisioned the Workflow that is the
+    // failure this read exists to surface, so it is a page rather than a 404 an operator would misread.
+    const body = await readRuns();
+    expect(body.runs).toEqual([]);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  test("narrows to one rail and to one store environment", async () => {
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    await recordReconcileRun(env.DB, { ...RUN, id: "sandbox-run", environment: "sandbox" }, { now: NOW });
+    // Same `startedAt`, so the id is the tiebreak and it descends — the keyset's own order, not an accident.
+    expect((await readRuns("?rail=apple")).runs.map((run) => run.id)).toEqual(["sandbox-run", RUN.id]);
+    expect((await readRuns("?environment=sandbox")).runs.map((run) => run.id)).toEqual(["sandbox-run"]);
+  });
+
+  test("every key in the response is one of the fifteen this surface publishes", async () => {
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    const body = await readRuns();
+    const undeclared = [...new Set(keys(body))].filter((key) => !PERMITTED_KEYS.includes(key));
+    expect(
+      undeclared,
+      `The reconciliation run response carries keys this surface does not publish: ${undeclared.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  test("every leaf is a fact the run itself recorded — an id, a time, an enum, a count, or a boolean", async () => {
+    // The positive half. Stated over the values rather than over the names, because a field renamed into
+    // something innocuous still carries whatever it carries.
+    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    const body = await readRuns();
+
+    const published = new Set<RunLeaf>([
+      RUN.id,
+      RUN.startedAt.toISOString(),
+      RUN.finishedAt.toISOString(),
+      RUN.environment,
+      RUN.rail,
+      ...Object.values(RUN.report),
+      // The envelope's own ends: a first page resumes nowhere.
+      null,
+    ]);
+    const crossed = leaves(body).filter((leaf) => !published.has(leaf));
+    expect(
+      crossed,
+      `These values crossed the reconciliation read and are not facts the run recorded: ${crossed.map(String).join(", ")}`,
+    ).toEqual([]);
+    // Anti-vacuous: a sweep that found no leaves would pass the assertion above for the wrong reason.
+    expect(leaves(body).length).toBeGreaterThan(10);
+  });
+
+  test("a connection without the scope is refused, not handed the log", async () => {
+    const response = await call(
+      makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
+      "/payments/admin/reconcile-runs",
+      PAYMENTS_PURCHASES_READ_SCOPE,
+    );
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("controlplane/insufficient_scope");
+  });
+
+  test("the purchase log's scope confers nothing here, and this one confers nothing there", async () => {
+    // `scopeCovers` matches exactly. A health monitor granted the run log must not acquire the commerce,
+    // which is the whole reason this is a scope of its own rather than a row on an existing read.
+    const response = await call(
+      makeApp([PAYMENTS_RECONCILE_READ_SCOPE]),
+      "/payments/admin/purchases",
+      PAYMENTS_RECONCILE_READ_SCOPE,
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("the read is audited, naming the operator and the connection", async () => {
+    await recordReconcileRun(env.DB, RUN, { now: NOW });
+    await readRuns();
+    const event = emitted.find((e) => e.action === "payments/reconcile_runs_read");
+    expect(event?.actorType).toBe("control-plane");
+    expect(event?.actorId).toBe("operator-1");
+    expect(event?.metadata?.connectionId).toBe(CONNECTION_ID);
+    expect(event?.metadata?.returned).toBe(1);
   });
 });

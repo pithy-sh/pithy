@@ -140,6 +140,17 @@ export const PAYMENTS_ENTITLEMENTS_READ_SCOPE: ControlPlaneScope = "payments:ent
 export const PAYMENTS_CATALOG_READ_SCOPE: ControlPlaneScope = "payments:catalog:read";
 
 /**
+ * Read what **reconciliation** did — the log of passes, their tallies, and when they last ran.
+ *
+ * Its own scope because it is operational state rather than anybody's commerce. A run record names no
+ * account, no transaction and no amount; it says whether the compensating control for a delivery mechanism
+ * that is known to fail has been firing, and how much it had to repair. An adopter should be able to give a
+ * health monitor exactly that and nothing else — a "has the cron stopped" alarm has no business holding the
+ * purchase log, and `scopeCovers` matches exactly, so neither confers the other.
+ */
+export const PAYMENTS_RECONCILE_READ_SCOPE: ControlPlaneScope = "payments:reconcile:read";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
@@ -153,6 +164,7 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_DISCOUNT_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_DISCOUNT_CREATE_SCOPE,
@@ -223,6 +235,13 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/discounts`,
       scope: PAYMENTS_DISCOUNT_CREATE_SCOPE,
       summary: "Mint a discount code at one store, from terms stated in the units a customer experiences.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/admin/reconcile-runs`,
+      scope: PAYMENTS_RECONCILE_READ_SCOPE,
+      summary:
+        "The reconciliation passes this deployment has run — when each ran, what it compared, and what it had to repair. The answer to whether the nightly repair is still firing.",
     },
     {
       method: "POST",

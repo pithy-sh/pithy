@@ -6,6 +6,7 @@ import type { PaymentsTables } from "../data/tables";
 import {
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "../http/guards";
 
@@ -77,4 +78,13 @@ export const PAYMENTS_TABLE_DISCLOSURE: Record<keyof PaymentsTables, PaymentsDis
     withheld:
       "Each row is a raw verified provider payload — a bearer artifact. The question a delivery log is read for is answered by the purchase's status and the audit trail, without handing anyone a receipt.",
   },
+  /**
+   * The reconciliation run log — operational state, on its own scope.
+   *
+   * Readable, and readable *separately*, because it is the one table here that is not about a customer. A
+   * run names no account, no transaction and no amount; it says whether the compensating control for a
+   * delivery mechanism that is known to fail has been firing. A health monitor should be able to hold
+   * exactly this, and an adopter granting it should not thereby disclose what anybody bought.
+   */
+  pithyPaymentsReconcileRuns: { reads: [PAYMENTS_RECONCILE_READ_SCOPE] },
 };
