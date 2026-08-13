@@ -54,7 +54,17 @@ if (wantsVersion(argv)) {
 
   const { runMain, showUsage } = await import("citty");
   const { main } = await import("./main");
-  const { usageTarget } = await import("./dispatch");
+  const { ownNamesOnly, usageTarget } = await import("./dispatch");
+
+  /**
+   * One tree, for the walk and for citty, answering only to the names it declares.
+   *
+   * citty resolves a subcommand with `name in subCommands`, so an object literal answered `valueOf`,
+   * `constructor` and every other `Object.prototype` member — with a raw `TypeError` for one and a
+   * silent exit 0 for another. Hardened here rather than at each `defineCommand`, and hardened *before*
+   * the walk so both readers see the same tree. See `dispatch.ts`.
+   */
+  const root = ownNamesOnly(main);
 
   /**
    * A command that names no action is asking what it can do, so it is answered and the run succeeds.
@@ -66,9 +76,9 @@ if (wantsVersion(argv)) {
    * naming a script rather than anything the user did (#319). `pithy nonsense` still reaches citty and
    * is still refused: an unrecognised name is a mistake, not a question. See `dispatch.ts`.
    */
-  const usage = await usageTarget(main, argv);
+  const usage = await usageTarget(root, argv);
   if (usage) await showUsage(usage.cmd, usage.parent);
-  else await runMain(main);
+  else await runMain(root);
 }
 
 /**
