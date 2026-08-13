@@ -13,6 +13,7 @@ import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -33,7 +34,9 @@ import {
   PaymentsAdminCatalogProduct,
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
+  PaymentsAdminEntitlementView,
   PaymentsAdminPurchasesResponse,
+  PaymentsAdminPurchaseView,
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsAdminUserEntitlementsResponse,
@@ -235,6 +238,11 @@ beforeEach(async () => {
  * job is to catch that passed. A gate derived from what it polices cannot fail when what it polices
  * changes. So the permitted keys are typed out here, and widening this response means editing that line
  * deliberately, in a test, beside the sentence saying why it is narrow.
+ *
+ * **The sweep itself is `@pithy-sh/core`'s {@link unpublishedIn}, not a copy.** It was a pair of walkers
+ * in this file, and the moment three more surfaces wanted the same invariant that would have been four
+ * copies of a function whose first draft was silently blind to booleans and nulls. One producer, and its
+ * blindness is planted against on every run in `packages/core/src/projection/published.test.ts`.
  */
 const SENTINEL_CATALOG = PaymentsConfig.parse({
   rails: { apple: true, google: true, stripe: true },
@@ -264,54 +272,13 @@ const SENTINEL_CATALOG = PaymentsConfig.parse({
   },
 });
 
-/** Anything a JSON document holds that is not an object or an array. */
-type JsonLeaf = string | number | boolean | null;
-
-/**
- * Every leaf in a JSON document, wherever it sits. Object keys are collected separately.
- *
- * **Every leaf type, not only strings and numbers.** This swept `string | number` and returned `[]` for
- * everything else, so booleans and nulls crossed the gate untouched — and `{ apple: true }`, the shape a
- * "which stores is this product on" field would take, passed a test whose whole claim is that nothing but
- * the published facts can cross. Nothing forbidden in `PaymentsConfig` happens to be a boolean today,
- * which is what kept that from being a live leak rather than what made it safe.
- *
- * The unreachable branch throws rather than returning `[]`. Returning `[]` for a type this sweep cannot
- * name **is** the defect above: a silent exemption, granted by a fallthrough, for a whole JSON type.
- */
-function leavesIn(value: unknown): JsonLeaf[] {
-  if (Array.isArray(value)) return value.flatMap(leavesIn);
-  if (value !== null && typeof value === "object") return Object.values(value).flatMap(leavesIn);
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return [value];
-  }
-  throw new Error(`The catalog response held a ${typeof value}, which this sweep cannot compare.`);
-}
-
-/** Every object key in a JSON document, wherever it sits. */
-function keysIn(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(keysIn);
-  if (value !== null && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, nested]) => [key, ...keysIn(nested)]);
-  }
-  return [];
-}
-
 /**
  * Every key the catalog response is permitted to carry. Seven: the envelope's three, and a product's four.
  *
  * Written out, on purpose, and never read off `PaymentsAdminCatalogResponse` — see the note above
  * `SENTINEL_CATALOG` for the failure that cost.
  */
-const PUBLISHED_CATALOG_KEYS: ReadonlySet<string> = new Set([
-  "enabled",
-  "products",
-  "manualEntitlements",
-  "id",
-  "type",
-  "name",
-  "entitlements",
-]);
+const PUBLISHED_CATALOG_KEYS = ["enabled", "products", "manualEntitlements", "id", "type", "name", "entitlements"];
 
 describe("GET /payments/admin/catalog", () => {
   test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
@@ -342,30 +309,24 @@ describe("GET /payments/admin/catalog", () => {
     // The published facts, plus the one leaf that is envelope rather than fact: the `true` of `enabled`.
     // `true`, `false` and `null` belong to every JSON document's vocabulary, so this half can never police
     // a boolean or a null on its own. The key half is what does, which is why there are two of them.
-    const published = new Set<JsonLeaf>([true, ...SENTINEL_CATALOG.manualEntitlements]);
+    const published: (string | number | boolean | null)[] = [true, ...SENTINEL_CATALOG.manualEntitlements];
     for (const [id, product] of Object.entries(SENTINEL_CATALOG.products)) {
-      published.add(id);
-      published.add(product.type);
-      published.add(product.name);
-      for (const key of product.entitlements) published.add(key);
+      published.push(id, product.type, product.name, ...product.entitlements);
     }
-    const crossed = leavesIn(raw).filter((leaf) => !published.has(leaf));
+    const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_CATALOG_KEYS });
     expect(
-      crossed,
-      `These values reached a management client and are not a product's id, kind, display name, or entitlement key:\n  ${crossed.map(String).join("\n  ")}`,
+      escaped,
+      `These reached a management client and are not a product's id, kind, display name, or entitlement key:\n  ${escaped.join("\n  ")}`,
     ).toEqual([]);
-
-    const undeclared = keysIn(raw).filter((key) => !PUBLISHED_CATALOG_KEYS.has(key));
-    expect(undeclared, `Undeclared keys in the catalog response: ${undeclared.join(", ")}`).toEqual([]);
   });
 
   test("the response schema declares nothing the hand-written key list does not name", () => {
     // The second place a widening fails, and the earlier one: it fails on the schema edit, before any view
     // has been written to fill the new field. The list polices the schema; the schema never polices itself.
     const declared = ["enabled", "products", "manualEntitlements", ...Object.keys(PaymentsAdminCatalogProduct.shape)];
-    expect(declared.filter((key) => !PUBLISHED_CATALOG_KEYS.has(key))).toEqual([]);
+    expect(declared.filter((key) => !PUBLISHED_CATALOG_KEYS.includes(key))).toEqual([]);
     // And in the other direction, so a field removed from the schema does not leave a permission behind it.
-    expect([...PUBLISHED_CATALOG_KEYS].filter((key) => !declared.includes(key))).toEqual([]);
+    expect(PUBLISHED_CATALOG_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });
 
   test("the sweep is running against a catalog that really carries all of it", async () => {
@@ -483,6 +444,50 @@ describe("GET /payments/admin/catalog", () => {
   });
 });
 
+/** The one purchase every row-projection sweep below is run against. */
+const PURCHASED_AT = new Date("2026-06-01T00:00:00.000Z");
+
+/**
+ * Every key `GET {base}/admin/purchases` may carry, at any depth. Seventeen: the envelope's two, and a
+ * purchase's fifteen. `GET {base}/admin/subscriptions` returns the same view under one other envelope
+ * key, so widening the row is refused here whichever route a client reached it through.
+ *
+ * **Written out, never `Object.keys(PaymentsAdminPurchaseView.shape)`.** See the note above
+ * `SENTINEL_CATALOG`: a gate derived from what it polices cannot fail when what it polices changes, and
+ * that is not a hypothetical here — it is what the catalog read's first version did.
+ */
+const PUBLISHED_PURCHASE_KEYS = [
+  "purchases",
+  "nextCursor",
+  "id",
+  "userId",
+  "rail",
+  "providerTransactionId",
+  "originalTransactionId",
+  "productId",
+  "type",
+  "status",
+  "environment",
+  "amountMinor",
+  "currency",
+  "purchasedAt",
+  "expiresAt",
+  "revokedAt",
+  "updatedAt",
+];
+
+/** Every key the two entitlement reads may carry. Nine: two envelopes' three, and an entitlement's six. */
+const PUBLISHED_ENTITLEMENT_KEYS = [
+  "entitlements",
+  "nextCursor",
+  "userId",
+  "key",
+  "granted",
+  "expiresAt",
+  "manual",
+  "source",
+];
+
 describe("GET /payments/admin/purchases", () => {
   test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
     await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
@@ -511,23 +516,71 @@ describe("GET /payments/admin/purchases", () => {
     expect(body.nextCursor).toBeNull();
   });
 
-  test("the stored provider payload is nowhere in the response", async () => {
-    // The one column across all four tables that is a bearer artifact, and on Stripe a document carrying
-    // the buyer's email address and billing details. The queries do not select it — this proves the whole
-    // path, including that no key of it survives serialization under another name.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
-    const response = await call(
-      makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
-      "/payments/admin/purchases",
-      PAYMENTS_PURCHASES_READ_SCOPE,
-    );
-    const raw = await response.text();
-    expect(raw).not.toContain("payload");
-    expect(raw).not.toContain("s3cret");
-    expect(raw).not.toContain("appAccountToken");
-    // And the row it came from really did hold one, so the assertion above is not passing vacuously.
-    const stored = await env.DB.prepare("SELECT payload FROM pithy_payments_purchases").first<{ payload: string }>();
+  test("nothing but the published facts can cross it, whatever a field is called", async () => {
+    // This read was guarded by three `not.toContain` calls — `payload`, `s3cret`, `appAccountToken` —
+    // which is complete only against the three strings somebody thought of, and a projection widens by
+    // gaining a *field*. The invariant is stated instead: every leaf is one of the facts a management
+    // client is shown about this purchase, and every key is one of the seventeen written out by hand.
+    //
+    // The row it runs against carries five things this response must not publish, each a real column:
+    // the provider payload (a bearer artifact, and on Stripe a document holding the buyer's address),
+    // the rail's own SKU, the row's role, and two ms-epoch timestamps that are published nowhere and as
+    // ISO-8601 everywhere.
+    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
+    const raw = await (
+      await call(makeApp([PAYMENTS_PURCHASES_READ_SCOPE]), "/payments/admin/purchases", PAYMENTS_PURCHASES_READ_SCOPE)
+    ).json();
+
+    // The row's UUID is minted at write time, so it is read back from the column that holds it — named,
+    // one column, never the whole row. Deriving the permitted values from the row would publish every
+    // column by construction, which is the same mistake as deriving the keys from the schema.
+    const id = await env.DB.prepare("SELECT id FROM pithy_payments_purchases").first<{ id: string }>();
+    const published = [
+      id?.id ?? "",
+      "ada",
+      "apple",
+      "t1",
+      "pro_monthly",
+      "subscription",
+      "active",
+      "production",
+      999,
+      "USD",
+      PURCHASED_AT.toISOString(),
+      // Never expired, never revoked, and not a renewal of anything.
+      null,
+    ];
+    const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_PURCHASE_KEYS });
+    expect(escaped, `The purchase log published this:\n  ${escaped.join("\n  ")}`).toEqual([]);
+  });
+
+  test("the row really holds everything the sweep is meant to refuse", async () => {
+    // A gate over nothing passes perfectly. Every value the assertion above must refuse has to be on the
+    // row it read, or that test says only that an empty response discloses nothing.
+    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
+    const stored = await env.DB.prepare(
+      "SELECT payload, provider_product_id, role, provider_event_at, created_at FROM pithy_payments_purchases",
+    ).first<{
+      payload: string;
+      provider_product_id: string;
+      role: string;
+      provider_event_at: number;
+      created_at: number;
+    }>();
     expect(stored?.payload).toContain("s3cret");
+    expect(stored?.payload).toContain("appAccountToken");
+    expect(stored?.provider_product_id).toBe("com.acme.pro.monthly");
+    expect(stored?.role).toBe("charge");
+    expect(stored?.provider_event_at).toBe(PURCHASED_AT.getTime());
+    expect(stored?.created_at).toBeTypeOf("number");
+  });
+
+  test("the response schema declares nothing the hand-written key list does not name", () => {
+    // The earlier of the two places a widening fails: on the schema edit, before a view has been written
+    // to fill the new field. The list polices the schema; the schema never polices itself.
+    const declared = ["purchases", "nextCursor", ...Object.keys(PaymentsAdminPurchaseView.shape)];
+    expect(declared.filter((key) => !PUBLISHED_PURCHASE_KEYS.includes(key))).toEqual([]);
+    expect(PUBLISHED_PURCHASE_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });
 
   test("a connection without the scope is refused, and is told which scope it lacks", async () => {
@@ -744,6 +797,57 @@ describe("GET /payments/admin/entitlements", () => {
       expect.objectContaining({ userId: "ada", key: "pro", granted: false, manual: false }),
     ]);
     expect(body.entitlements[0]?.expiresAt).toBe(new Date("2026-06-01T00:00:00.000Z").toISOString());
+  });
+
+  test("nothing but the published facts can cross it, whatever a field is called", async () => {
+    // The entitlement row holds four things this response must not publish, and all four are the kind
+    // nobody writes a `not.toContain` for: its own UUID, the stored `active` flag whose whole point is
+    // that it is *not* the answer `granted` gives, and two ms-epoch timestamps. Enumeration would never
+    // have named them; the invariant refuses them without being told they exist.
+    await purchase({
+      user: "ada",
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: PURCHASED_AT,
+      expires: new Date("2026-07-01T00:00:00.000Z"),
+    });
+    const raw = await (
+      await call(
+        makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
+        "/payments/admin/entitlements",
+        PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+      )
+    ).json();
+
+    // The granting purchase's id is published as `source`, so it is read from the column that holds it.
+    const purchaseId = await env.DB.prepare("SELECT id FROM pithy_payments_purchases").first<{ id: string }>();
+    const published = [
+      "ada",
+      "pro",
+      purchaseId?.id ?? "",
+      new Date("2026-07-01T00:00:00.000Z").toISOString(),
+      // `granted` and `manual`, and the null of a page with nothing after it.
+      true,
+      false,
+      null,
+    ];
+    const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_ENTITLEMENT_KEYS });
+    expect(escaped, `The entitlement model published this:\n  ${escaped.join("\n  ")}`).toEqual([]);
+
+    // And the row really carries what the sweep is meant to refuse.
+    const stored = await env.DB.prepare(
+      "SELECT id, active, created_at, updated_at FROM pithy_payments_entitlements WHERE user_id = 'ada'",
+    ).first<{ id: string; active: number; created_at: number; updated_at: number }>();
+    expect(stored?.id).toBeTypeOf("string");
+    expect(stored?.id).not.toBe(purchaseId?.id);
+    expect(stored?.active).toBe(1);
+    expect(stored?.created_at).toBeTypeOf("number");
+  });
+
+  test("the entitlement schema declares nothing the hand-written key list does not name", () => {
+    const declared = ["entitlements", "nextCursor", "userId", ...Object.keys(PaymentsAdminEntitlementView.shape)];
+    expect(declared.filter((key) => !PUBLISHED_ENTITLEMENT_KEYS.includes(key))).toEqual([]);
+    expect(PUBLISHED_ENTITLEMENT_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });
 
   test("shows which grants a human wrote and which a purchase produced", async () => {
