@@ -71,7 +71,17 @@ export const TEMPLATE_GROUPS = {
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
   ],
-  payments: ["src/payments.tsx", "src/routes/pithy/paywall.tsx", "src/routes/pithy/subscription.tsx"],
+  payments: [
+    "src/payments.tsx",
+    "src/routes/pithy/paywall.tsx",
+    // The pricing screen ships even for a project with no Paddle rail, and renders its own empty state
+    // there. The argument against shipping one at all is that a pricing page is the most brand-specific
+    // screen there is — which is true of the paywall too, and did not stop that one. What settles it is
+    // that the alternative is every adopter writing the same PricePreview plumbing by hand, getting the
+    // tax convention wrong in one direction or the other, and freezing it into their own repository.
+    "src/routes/pithy/pricing.tsx",
+    "src/routes/pithy/subscription.tsx",
+  ],
 } as const satisfies Record<string, readonly string[]>;
 
 /** A group name this library offers. */

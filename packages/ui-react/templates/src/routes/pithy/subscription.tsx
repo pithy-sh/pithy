@@ -1,4 +1,10 @@
+import {
+  PAYMENTS_HOSTED_RAILS,
+  type PaymentsClientOptions,
+  type PaymentsClientRail,
+} from "@pithy-sh/payments/src/client/api";
 import { useSubscription } from "@pithy-sh/payments/src/client/hooks";
+import type { ReactNode } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link } from "../../router";
@@ -26,9 +32,30 @@ function holding(entitlement: { granted: boolean; expiresAt: string | null }): s
     : `Renews ${new Date(entitlement.expiresAt).toLocaleDateString()}.`;
 }
 
-export default function Subscription() {
+export interface SubscriptionScreenProps {
+  /**
+   * Which rails this project sells through — `paymentsConfig.rails`.
+   *
+   * Keyed by the rail union rather than by `string`, and that is a gate: a rail added to the package
+   * whose projection nobody widened stops compiling here, instead of reading `undefined` and rendering
+   * nothing. `noUncheckedIndexedAccess` would hide that behind a `string` key.
+   */
+  readonly rails: Readonly<Record<PaymentsClientRail, boolean>>;
+  /** Where the payments routes are, and the fetch to reach them with. Injected so a test never navigates. */
+  readonly client?: PaymentsClientOptions;
+}
+
+/**
+ * The subscription screen, taking its projection rather than reading it.
+ *
+ * A prop for the same reason `SignInScreen` takes one: which rails are on decides which buttons exist,
+ * and that is a *rendered* fact no assertion about source text can reach. `subscription.test.tsx` mounts
+ * this against a Paddle-only project and looks for the button — which is the whole of #336, checked the
+ * way a user would check it.
+ */
+export function SubscriptionScreen({ rails, client }: SubscriptionScreenProps): ReactNode {
   const { entitlements, subscribed, loading, manage, manageStore, managing, failure, readFailure } =
-    useSubscription(paymentsClient);
+    useSubscription(client);
 
   if (loading) return <p className="muted">One moment.</p>;
 
@@ -56,24 +83,26 @@ export default function Subscription() {
 
       {failure && <p className="muted">{failure.message}</p>}
 
-      {/* Managing a subscription belongs to whoever sold it, under their own rules. Stripe's Billing
-          Portal is a session the server mints; Apple's and Google's are pages in their own stores, and a
-          web page cannot cancel a StoreKit or Play Billing subscription however much it would like to. */}
+      {/* Managing a subscription belongs to whoever sold it, under their own rules. A hosted rail's portal
+          is a session the server mints; Apple's and Google's are pages in their own stores, and a web page
+          cannot cancel a StoreKit or Play Billing subscription however much it would like to. */}
       <div className="stack">
-        {/* Either hosted rail mints a portal session, and the server picks whichever one this caller
-            actually bought on. Gating on Stripe alone left a Lemon-Squeezy-only project with no way to
-            reach a portal that works. */}
-        {(paymentsConfig.rails.stripe || paymentsConfig.rails.lemonSqueezy) && (
+        {/* Every hosted rail mints a portal, and the server picks whichever one this caller actually
+            bought on. The list is the package's, not this file's: this gate was written out by hand
+            twice and was one rail short both times (#336). A rail added to Pithy now reaches this
+            screen without an edit, in a repo that copied it a year ago. */}
+        {PAYMENTS_HOSTED_RAILS.some((rail) => rails[rail]) && (
           <button type="button" disabled={managing} onClick={() => void manage()}>
             Manage billing
           </button>
         )}
-        {paymentsConfig.rails.apple && (
+        {/* Named one at a time, and correctly so: each store has its own sentence, and neither is a set. */}
+        {rails.apple && (
           <button type="button" className="secondary" onClick={() => manageStore("apple")}>
             Bought on the App Store
           </button>
         )}
-        {paymentsConfig.rails.google && (
+        {rails.google && (
           <button type="button" className="secondary" onClick={() => manageStore("google")}>
             Bought on Google Play
           </button>
@@ -84,4 +113,8 @@ export default function Subscription() {
       </div>
     </main>
   );
+}
+
+export default function Subscription(): ReactNode {
+  return <SubscriptionScreen rails={paymentsConfig.rails} client={paymentsClient} />;
 }

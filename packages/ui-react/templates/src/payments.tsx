@@ -23,6 +23,19 @@ import { paymentsConfig } from "./pithy-config";
 export const paymentsClient = { basePath: paymentsConfig.basePath };
 
 /**
+ * What Paddle.js starts with, or null when this project has no Paddle rail.
+ *
+ * Null rather than absent, because every hook that takes it takes null and reads it as "nothing to
+ * load". That is what keeps a pricing screen free of a conditional hook call, and it is why the rail
+ * being switched off is an empty state rather than an error about a provider nobody asked for.
+ *
+ * **The client token is the only credential in this bundle, and it belongs here.** Paddle publishes it
+ * for exactly this — a browser opens a checkout with it. The API key and the webhook signing secret are
+ * in the secrets store and are not expressible in a projection.
+ */
+export const paddleSetup = paymentsConfig.paddle;
+
+/**
  * Whether the visitor holds `key` right now.
  *
  * `true` when payments is not composed, which is the same direction the session guard takes when there is

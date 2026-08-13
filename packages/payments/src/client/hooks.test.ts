@@ -6,7 +6,26 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type PaymentsFetch, type PaymentsRequestInit, STORE_SUBSCRIPTION_URLS } from "./api";
-import { useCheckout, useEntitlement, usePurchase, useSubscription } from "./hooks";
+import { PADDLE_FRAME_HEIGHT, PADDLE_FRAME_STYLE, PADDLE_NO_CONTAINER } from "./checkout";
+import { US_NEW_YORK } from "./fixtures/pricePreview";
+import {
+  useCheckout,
+  useEntitlement,
+  usePaddle,
+  usePaddleCheckout,
+  usePricePreview,
+  usePurchase,
+  useSubscription,
+} from "./hooks";
+import {
+  PADDLE_UNAVAILABLE,
+  type PaddleCheckoutOpen,
+  type PaddleInitializer,
+  type PaddleJs,
+  type PaddlePriceQuery,
+  type PaddleRegistry,
+  type PaddleSetup,
+} from "./paddle";
 
 /**
  * The hooks are rendered for real — mounted into a document, effects run, state observed — rather than
@@ -82,8 +101,19 @@ afterEach(() => {
  * this resolves the first read has already landed — the only way to observe the initial state a paywall
  * renders on its first frame is to have recorded it.
  */
-async function render<T>(hook: () => T): Promise<{ current: T; history: T[] }> {
-  const handle: { current: T; history: T[] } = { current: undefined as T, history: [] };
+async function render<T>(hook: () => T): Promise<{ current: T; history: T[]; rerender: () => Promise<void> }> {
+  const handle = {
+    current: undefined as T,
+    history: [] as T[],
+    // Re-rendering the same component is how "an inline options object does not restart the effect"
+    // becomes observable: the hook is called again with a freshly built argument, exactly as it is in a
+    // screen that re-renders for any other reason.
+    rerender: async () => {
+      await act(async () => {
+        root.render(createElement(Probe));
+      });
+    },
+  };
   function Probe(): null {
     handle.current = hook();
     handle.history.push(handle.current);
@@ -432,5 +462,378 @@ describe("useSubscription", () => {
     });
     expect(visited).toEqual([]);
     expect(held.current.failure?.message).toBe("No billing account yet.");
+  });
+});
+
+/**
+ * The Paddle half.
+ *
+ * Every test here injects its own initializer and its own registry. Nothing reaches Paddle's CDN, and no
+ * test can leave a loaded Paddle behind for the next — which is what makes "one initialization per page"
+ * testable at all rather than an accident of ordering.
+ */
+
+/** A sandbox setup. Shaped like Paddle's own publishable token, and obviously not a real one. */
+const PADDLE: PaddleSetup = { clientToken: "test_pithyNotARealClientToken", environment: "sandbox" };
+
+/**
+ * A Paddle.js that answers `PricePreview` with a recorded sandbox response, and records every checkout.
+ *
+ * `opened` is an array for the reason `loads` below is: it is read through the object after the fact, and
+ * anything that snapshots a number instead of mutating a live one reads zero forever.
+ */
+function stubPaddle(answer: unknown): PaddleJs & { previews: PaddlePriceQuery[]; opened: PaddleCheckoutOpen[] } {
+  const previews: PaddlePriceQuery[] = [];
+  const opened: PaddleCheckoutOpen[] = [];
+  return {
+    Initialized: true,
+    Environment: { set: () => undefined },
+    PricePreview(query: PaddlePriceQuery) {
+      previews.push(query);
+      return Promise.resolve(answer);
+    },
+    Checkout: {
+      open(options: PaddleCheckoutOpen) {
+        opened.push(options);
+      },
+      close: () => undefined,
+    },
+    previews,
+    opened,
+  };
+}
+
+/**
+ * An initializer that records every load and answers with a fixed outcome.
+ *
+ * `loads` is an array rather than a counter because a counter has to be read through a live reference,
+ * and `Object.assign` copies a getter's *value*. The first version of this helper did exactly that and
+ * every load count in this file read zero — including the assertions that were meant to prove a load had
+ * not happened. An array is mutated in place, so there is nothing to snapshot wrongly.
+ */
+function stubInitializer(outcome: PaddleJs | undefined | Error): PaddleInitializer & { loads: string[] } {
+  const loads: string[] = [];
+  const initialize = (options: { token: string }) => {
+    loads.push(options.token);
+    if (outcome instanceof Error) return Promise.reject(outcome);
+    return Promise.resolve(outcome);
+  };
+  return Object.assign(initialize, { loads });
+}
+
+/** A fresh page for one test. */
+function paddlePage(): PaddleRegistry {
+  return {};
+}
+
+describe("usePaddle", () => {
+  test("loads Paddle.js and hands it over", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() => usePaddle(PADDLE, { initialize: stubInitializer(paddle), registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ paddle, loading: false, failure: null });
+  });
+
+  test("no Paddle rail is nothing to load, not a failure", async () => {
+    // `paymentsConfig.paddle` is null when the rail is off. A pricing page for a project that does not
+    // sell through Paddle renders its own empty state; it does not show an error about a provider it
+    // never asked for. A hook that took no null would force a conditional hook call on the screen.
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const held = await render(() => usePaddle(null, { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ paddle: null, loading: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+  });
+
+  test("a blocked script is a renderable failure and never a thrown error", async () => {
+    const held = await render(() =>
+      usePaddle(PADDLE, { initialize: stubInitializer(new Error("blocked")), registry: paddlePage() }),
+    );
+    await settle();
+    expect(held.current).toEqual({ paddle: null, loading: false, failure: PADDLE_UNAVAILABLE });
+  });
+});
+
+describe("usePricePreview", () => {
+  /** The query every test asks, written inline the way a screen writes it. */
+  function query(): PaddlePriceQuery {
+    return {
+      items: [{ priceId: "pri_01kzvyz9e21z9vbhd7xqq3csyh", quantity: 1 }],
+      address: { countryCode: "US", postalCode: "10001" },
+    };
+  }
+
+  test("the first frame is loading with no price — a screen holds the space rather than showing a wrong one", async () => {
+    // Never a placeholder figure, and never a blank. A price that arrives a beat late is better than one
+    // that corrects itself in front of the buyer.
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+        registry: paddlePage(),
+      }),
+    );
+    expect(held.history[0]).toMatchObject({ preview: null, loading: true, failure: null });
+  });
+
+  test("the price that lands is the one Paddle quoted for this visitor", async () => {
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+        registry: paddlePage(),
+      }),
+    );
+    await settle();
+    expect(held.current.loading).toBe(false);
+    expect(held.current.preview?.lines[0]?.formattedUnitTotals.total).toBe("$5.44");
+    expect(held.current.preview?.lines[0]?.taxTreatment).toBe("added");
+  });
+
+  test("a query written inline does not re-quote on every render", async () => {
+    // The defect this designs out: `{ items: [...] }` is a new object each render, and an effect
+    // depending on it fetches forever. The effect depends on what was asked, not on the object.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), { initialize: stubInitializer(paddle), registry: paddlePage() }),
+    );
+    await settle();
+    await held.rerender();
+    await held.rerender();
+    await settle();
+    expect(paddle.previews).toHaveLength(1);
+  });
+
+  test("a changed request does re-quote", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const registry = paddlePage();
+    const initialize = stubInitializer(paddle);
+    let postalCode = "10001";
+    const held = await render(() =>
+      usePricePreview(
+        PADDLE,
+        { items: [{ priceId: "pri_1", quantity: 1 }], address: { countryCode: "US", postalCode } },
+        { initialize, registry },
+      ),
+    );
+    await settle();
+    postalCode = "60602";
+    await held.rerender();
+    await settle();
+    expect(paddle.previews.map((asked) => asked.address?.postalCode)).toEqual(["10001", "60602"]);
+    // One page, one Paddle. Re-quoting is not re-initializing.
+    expect(initialize.loads).toEqual([PADDLE.clientToken]);
+  });
+
+  test("a failure clears the price and says why — no fallback figure, ever", async () => {
+    // Falling back to a hardcoded number reintroduces the whole defect: it is wrong in every country
+    // whose convention differs from the one it was written in, and it is wrong silently.
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), {
+        initialize: stubInitializer(new Error("blocked")),
+        registry: paddlePage(),
+      }),
+    );
+    await settle();
+    expect(held.current).toMatchObject({ preview: null, loading: false, failure: PADDLE_UNAVAILABLE });
+  });
+
+  test("no Paddle rail quotes nothing, without loading and without failing", async () => {
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const held = await render(() => usePricePreview(null, query(), { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toMatchObject({ preview: null, loading: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+  });
+
+  test("refresh asks again", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePricePreview(PADDLE, query(), { initialize: stubInitializer(paddle), registry: paddlePage() }),
+    );
+    await settle();
+    await act(async () => {
+      held.current.refresh();
+    });
+    await settle();
+    expect(paddle.previews).toHaveLength(2);
+  });
+});
+
+/**
+ * The checkout that opens over the page rather than sending the buyer away.
+ *
+ * The last test in this block is the one worth reading. Inline checkout renders into an element found by
+ * class name at the instant `Paddle.Checkout.open` is called, and that instant has to be *after* React
+ * has committed the render that revealed it. That ordering cannot be asserted about a function — it only
+ * exists in a mounted component — so it is proved by mounting one and letting Paddle look for a real
+ * element in a real document.
+ */
+const HANDOFF = {
+  kind: "paddle" as const,
+  transactionId: "txn_01hv8wptq8987qeep44cyrewp9",
+  clientToken: PADDLE.clientToken,
+  environment: "sandbox" as const,
+  displayMode: "overlay" as const,
+  successUrl: "https://example.test/welcome",
+};
+
+/** The class a scaffolded screen gives its inline container. */
+const FRAME = "pithy-checkout";
+
+describe("usePaddleCheckout", () => {
+  test("no handoff opens nothing, and is not a failure", async () => {
+    // The state every screen is in until someone clicks Buy, and the state a screen on a project with no
+    // Paddle rail is in forever.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const initialize = stubInitializer(paddle);
+    const held = await render(() => usePaddleCheckout(null, { initialize, registry: paddlePage() }));
+    await settle();
+    expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+    expect(initialize.loads).toEqual([]);
+    expect(paddle.opened).toEqual([]);
+  });
+
+  test("a handoff is opened once, and a re-render does not open a second checkout over it", async () => {
+    // A second overlay over the first is not twice as open. Every render calls this hook again, so the
+    // effect has to key on the transaction rather than on the object it arrived in.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const registry = paddlePage();
+    const initialize = stubInitializer(paddle);
+    const held = await render(() => usePaddleCheckout(HANDOFF, { initialize, registry, frameTarget: FRAME }));
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    await held.rerender();
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+  });
+
+  test("the transaction, the mode and the success URL all come off the handoff", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    await render(() =>
+      usePaddleCheckout(HANDOFF, { initialize: stubInitializer(paddle), registry: paddlePage(), frameTarget: FRAME }),
+    );
+    await settle();
+    expect(paddle.opened[0]).toEqual({
+      transactionId: HANDOFF.transactionId,
+      settings: { displayMode: "overlay", successUrl: HANDOFF.successUrl },
+    });
+  });
+
+  test("a refusal is a rendered message, not a throw out of an effect", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(() =>
+      usePaddleCheckout(
+        { ...HANDOFF, displayMode: "inline" },
+        { initialize: stubInitializer(paddle), registry: paddlePage(), frameTarget: "nothing-renders-this" },
+      ),
+    );
+    await settle();
+    expect(held.current).toEqual({ inline: true, opening: false, failure: PADDLE_NO_CONTAINER });
+    expect(paddle.opened).toEqual([]);
+  });
+
+  test("`inline` is the handoff's mode, so a screen renders its container from the same fact", async () => {
+    // Not the screen's own guess at what the project configured. `paddle.checkout` is server-side config
+    // resolved into the handoff, and a project switching modes must not also have to edit a screen.
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    const overlay = await render(() =>
+      usePaddleCheckout(HANDOFF, { initialize, registry: paddlePage(), frameTarget: FRAME }),
+    );
+    expect(overlay.current.inline).toBe(false);
+    const inline = await render(() =>
+      usePaddleCheckout(
+        { ...HANDOFF, displayMode: "inline" },
+        {
+          initialize,
+          registry: paddlePage(),
+          frameTarget: FRAME,
+        },
+      ),
+    );
+    expect(inline.current.inline).toBe(true);
+  });
+});
+
+describe("a screen composing both hooks", () => {
+  /** What the screen last rendered with, so a test can drive it and then read it. */
+  interface Seen {
+    start: (productId: string) => Promise<void>;
+    failure: unknown;
+    inline: boolean;
+  }
+
+  /**
+   * The scaffolded screen's shape, in miniature: a buy button, and a container rendered from `inline`.
+   *
+   * Deliberately not passed a `document` seam. The point is that Paddle looks in the real one, at the
+   * moment the effect runs, and finds an element React has actually committed.
+   */
+  function mount(fetcher: PaymentsFetch, paddle: PaddleJs) {
+    const seen = { current: undefined as Seen | undefined };
+    const initialize = stubInitializer(paddle);
+    const registry = paddlePage();
+    function Screen() {
+      const checkout = useCheckout({ fetch: fetcher });
+      const opened = usePaddleCheckout(checkout.handoff, { initialize, registry, frameTarget: FRAME });
+      seen.current = { start: checkout.start, failure: opened.failure ?? checkout.failure, inline: opened.inline };
+      return opened.inline ? createElement("div", { className: FRAME }) : null;
+    }
+    return { seen, render: () => act(async () => root.render(createElement(Screen))) };
+  }
+
+  test("inline finds the container the same render put on the page", async () => {
+    // The ordering gate. Opening the checkout from the click handler instead of from an effect would run
+    // it before React committed the container, Paddle would find no element with the class, and it would
+    // render into nothing — silently, which is why this is worth a mounted component to prove.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, { ...HANDOFF, displayMode: "inline" }]]), paddle);
+    await screen.render();
+    expect(container.querySelector(`.${FRAME}`)).toBeNull();
+
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+
+    expect(screen.seen.current?.inline).toBe(true);
+    expect(container.querySelector(`.${FRAME}`)).not.toBeNull();
+    expect(screen.seen.current?.failure).toBeNull();
+    expect(paddle.opened).toEqual([
+      {
+        transactionId: HANDOFF.transactionId,
+        settings: {
+          displayMode: "inline",
+          successUrl: HANDOFF.successUrl,
+          frameTarget: FRAME,
+          frameStyle: PADDLE_FRAME_STYLE,
+          frameInitialHeight: PADDLE_FRAME_HEIGHT,
+        },
+      },
+    ]);
+  });
+
+  test("overlay renders no container and still opens", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, HANDOFF]]), paddle);
+    await screen.render();
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+    expect(container.querySelector(`.${FRAME}`)).toBeNull();
+    expect(paddle.opened).toHaveLength(1);
+    expect(screen.seen.current?.failure).toBeNull();
+  });
+
+  test("a redirect rail opens no Paddle at all — the script is never fetched", async () => {
+    const paddle = stubPaddle(US_NEW_YORK);
+    const screen = mount(queue([[200, { kind: "redirect", url: "https://checkout.stripe.com/c/pay/cs_1" }]]), paddle);
+    await screen.render();
+    await act(async () => {
+      await screen.seen.current?.start("pro_monthly");
+    });
+    await settle();
+    expect(paddle.opened).toEqual([]);
+    expect(screen.seen.current?.inline).toBe(false);
   });
 });

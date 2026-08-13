@@ -201,6 +201,7 @@ describe("pithy ui", () => {
     expect(second.created.sort()).toEqual([
       "src/payments.tsx",
       "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/pricing.tsx",
       "src/routes/pithy/subscription.tsx",
     ]);
     expect(second.skipped).toEqual(first.created);

@@ -17,10 +17,21 @@ import {
   startCheckout,
   submitPurchase,
 } from "./api";
+import { openPaddleCheckout, type PaddleCheckoutOptions } from "./checkout";
+import {
+  loadPaddle,
+  type PaddleJs,
+  type PaddleOptions,
+  type PaddlePriceQuery,
+  type PaddleSetup,
+  type PricePreview,
+  previewPrices,
+  priceQueryKey,
+} from "./paddle";
 
 /**
- * The headless client surface: four hooks a paywall, a subscription screen, and a route guard are built
- * out of.
+ * The headless client surface: six hooks a paywall, a pricing page, a subscription screen, and a route
+ * guard are built out of.
  *
  * **They live here rather than in a scaffolded `.tsx` on purpose.** `pithy ui add` writes a file once and
  * may never rewrite it, which is the right ownership rule and is exactly why a frozen paywall ages badly:
@@ -243,19 +254,23 @@ export interface UseCheckout {
    * The handoff to open with Paddle.js, or null — set only on a rail with nowhere to navigate to.
    *
    * Null on a redirect rail, because the browser has already left and there is nothing for a screen to
-   * hold. A screen composing Paddle watches this and opens the checkout; a screen that never composes it
-   * reads null forever and renders exactly as it did before this field existed.
+   * hold. Pass it to {@link usePaddleCheckout}, which opens it; a screen that never composes Paddle reads
+   * null forever and renders exactly as it did before this field existed.
    */
   handoff: PaddleCheckoutHandoff | null;
 }
 
 /**
- * The web purchase path, which is Stripe's alone.
+ * The web purchase path: start a checkout, and go wherever that rail goes.
  *
  * Apple and Google purchases happen inside a store SDK before any server hears of them, so there is no
  * session for Pithy to create and no browser flow to start — a web paywall lists those products, it does
- * not sell them. Hosted Checkout needs no SDK script and no publishable key in the page: the server mints
- * a session, this navigates to it, and Stripe owns everything in between.
+ * not sell them. Stripe's and Lemon Squeezy's hosted checkouts need no SDK script and no publishable key
+ * in the page: the server mints a session, this navigates to it, and the store owns everything in between.
+ *
+ * Paddle is the one that does not leave. This hook does the same work for it — the server call, the
+ * refusal — and stops at the handoff, because opening it belongs where the container is. That is
+ * {@link usePaddleCheckout}.
  */
 export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   const [starting, setStarting] = useState(false);
@@ -285,6 +300,65 @@ export function useCheckout(options?: PaymentsClientOptions): UseCheckout {
   );
 
   return { start, starting, failure, handoff };
+}
+
+/** What {@link usePaddleCheckout} gives the screen that composes Paddle. */
+export interface UsePaddleCheckout {
+  /**
+   * Whether this handoff needs a container on the page.
+   *
+   * Read it to render one, and render it unconditionally beside the button rather than deciding for
+   * yourself: the mode is `paddle.checkout` in the project's config, resolved by the server, so a project
+   * that switches from `overlay` to `inline` must not also have to edit a screen it was given a year ago.
+   */
+  inline: boolean;
+  /** Whether the checkout is being opened — the script may still be loading. */
+  opening: boolean;
+  /** Why it could not be opened, or null. */
+  failure: PaymentsFailure | null;
+}
+
+/**
+ * Open the handoff {@link useCheckout} produced, with Paddle.js, over this page or inside it.
+ *
+ * **In an effect, and that is the whole reason this is a hook rather than a line in a click handler.**
+ * Inline checkout renders into an element the screen provides, and Paddle finds it by class name at the
+ * moment `open` is called. Called from the handler that starts the checkout, the container React is about
+ * to render does not exist yet — and what Paddle does then is throw `TypeError: Cannot read properties of
+ * undefined (reading 'appendChild')` out of the click, which is not a sentence anyone can act on. An
+ * effect runs after the commit that revealed the container, so the element is there.
+ *
+ * One open per handoff. `start` mints a new transaction on every attempt, so the transaction id is what a
+ * fresh attempt looks like; a re-render with the same handoff must not open a second checkout over the
+ * first.
+ */
+export function usePaddleCheckout(
+  handoff: PaddleCheckoutHandoff | null,
+  options?: PaddleCheckoutOptions,
+): UsePaddleCheckout {
+  const [opening, setOpening] = useState(false);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const latestHandoff = useLatest(handoff);
+  const live = useLive();
+  const transactionId = handoff?.transactionId;
+
+  // `transactionId` stands in for the handoff, the way `priceQueryKey` stands in for a query: the object
+  // is rebuilt by `useCheckout` on every attempt and identity would be a fine dependency today, but a
+  // screen that builds one inline would then reopen the checkout on every render.
+  useEffect(() => {
+    const current = latestHandoff.current;
+    if (transactionId === undefined || current === null) return;
+    setOpening(true);
+    setFailure(null);
+    void openPaddleCheckout(current, latest.current).then((refused) => {
+      if (!live.current) return;
+      setOpening(false);
+      setFailure(refused);
+    });
+  }, [transactionId, latest, latestHandoff, live]);
+
+  return { inline: handoff?.displayMode === "inline", opening, failure };
 }
 
 /** What {@link usePurchase} gives the screen that submits receipts. */
@@ -358,4 +432,128 @@ export function usePurchase(options?: PaymentsClientOptions): UsePurchase {
   );
 
   return { submit, restore, purchase, entitlements, busy, failure };
+}
+
+/** What {@link usePaddle} gives a screen that has to talk to Paddle.js directly. */
+export interface UsePaddle {
+  /** The initialized Paddle.js, or null while it loads and after it fails. */
+  paddle: PaddleJs | null;
+  /** Whether the load is in flight. False forever when there is no Paddle rail to load. */
+  loading: boolean;
+  /** Why it could not load, or null. */
+  failure: PaymentsFailure | null;
+}
+
+/**
+ * Paddle.js, loaded once per page.
+ *
+ * `setup` takes null so a screen never has to guard a hook: `paymentsConfig.paddle` is null when the
+ * rail is off, and passing that through reads as "nothing to load" rather than as a failure. A pricing
+ * page for a project that does not sell through Paddle renders its own empty state; it does not show an
+ * error about a provider it never asked for.
+ *
+ * Loading is the module's job, not this hook's — mounting two components that both call it produces one
+ * script and one `Initialize`, because {@link loadPaddle} remembers the page's one load. This is the
+ * React-shaped view of it: a state a screen can render.
+ */
+export function usePaddle(setup: PaddleSetup | null, options?: PaddleOptions): UsePaddle {
+  const [paddle, setPaddle] = useState<PaddleJs | null>(null);
+  const [loading, setLoading] = useState(setup !== null);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const live = useLive();
+  // The two fields, not the object: a screen writing `usePaddle(paymentsConfig.paddle)` passes a stable
+  // reference today, and one writing an object literal must not restart the load every render.
+  const clientToken = setup?.clientToken;
+  const environment = setup?.environment;
+
+  useEffect(() => {
+    if (clientToken === undefined || environment === undefined) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void loadPaddle({ clientToken, environment }, latest.current).then((result) => {
+      if (!live.current) return;
+      setPaddle(result.ok ? result.value : null);
+      setFailure(result.ok ? null : result.failure);
+      setLoading(false);
+    });
+  }, [clientToken, environment, latest, live]);
+
+  return { paddle, loading, failure };
+}
+
+/** What {@link usePricePreview} gives a pricing screen. */
+export interface UsePricePreview {
+  /**
+   * What Paddle quoted this visitor, or null.
+   *
+   * Null while the first quote is in flight and null after a failure — **never a fallback figure.** A
+   * hardcoded price behind a failed lookup is the exact defect this hook exists to remove: it is wrong
+   * in every country whose tax convention differs from the one it was written in, and it is wrong
+   * silently. A page with no price and an honest sentence is worse than a right price and better than a
+   * wrong one.
+   */
+  preview: PricePreview | null;
+  /** Whether a quote is in flight. True on the first render, so a screen can hold the space. */
+  loading: boolean;
+  /** Why the last quote could not be made, or null. */
+  failure: PaymentsFailure | null;
+  /** Ask again. */
+  refresh: () => void;
+}
+
+/**
+ * What this visitor pays, read from Paddle for this visitor.
+ *
+ * **No price string appears in any screen this kit ships.** That is the whole contract. The figures come
+ * from Paddle, rendered by Paddle for the visitor's country — which is the only way one page can quote
+ * $5.44 in New York, $5.75 in Chicago, $5.00 in Berlin including €0.80 of VAT, and ¥725 in Tokyo without
+ * a table of tax rates aging in somebody's repository.
+ *
+ * `query` may be written inline. The effect depends on {@link priceQueryKey} rather than on the object,
+ * so an object literal re-created on every render re-quotes when the request changed and not before.
+ *
+ * A failure clears the previous quote rather than leaving it. The other hooks here keep their last good
+ * value on a refusal, and this one deliberately does not: a re-quote happens because the *request*
+ * changed, so the value it would be keeping is a price for something else.
+ */
+export function usePricePreview(
+  setup: PaddleSetup | null,
+  query: PaddlePriceQuery,
+  options?: PaddleOptions,
+): UsePricePreview {
+  const [preview, setPreview] = useState<PricePreview | null>(null);
+  const [loading, setLoading] = useState(setup !== null);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const latestQuery = useLatest(query);
+  const live = useLive();
+  const clientToken = setup?.clientToken;
+  const environment = setup?.environment;
+  const queryKey = priceQueryKey(query);
+
+  // `queryKey` is a dependency the body never reads, and that is the design. It is what makes "the request
+  // changed" a value React can compare — the query itself is an object literal rebuilt every render, and
+  // depending on that would quote forever. Reading the key back inside would mean parsing it, which is how
+  // a serialization becomes a second source of truth for the thing it serializes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: queryKey stands in for the query, deliberately.
+  const refresh = useCallback(() => {
+    if (clientToken === undefined || environment === undefined) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void previewPrices({ clientToken, environment }, latestQuery.current, latest.current).then((result) => {
+      if (!live.current) return;
+      setPreview(result.ok ? result.value : null);
+      setFailure(result.ok ? null : result.failure);
+      setLoading(false);
+    });
+  }, [clientToken, environment, queryKey, latest, latestQuery, live]);
+
+  useEffect(refresh, [refresh]);
+
+  return { preview, loading, failure, refresh };
 }

@@ -24,3 +24,27 @@ export type PaymentsRail = z.infer<typeof PaymentsRail>;
 
 /** Every rail, in a stable order — for iterating the catalog's per-rail blocks and cross-checking them. */
 export const PAYMENTS_RAILS: readonly PaymentsRail[] = PaymentsRail.options;
+
+/**
+ * The rails that sell in a browser — and mint a billing portal, which is the same statement.
+ *
+ * **One name, because it is one question.** {@link CheckoutRail} declares `createCheckoutSession` and
+ * `createPortalSession` together, so a rail cannot start a purchase on the web without also having a
+ * portal to send that buyer back to. "Sells in a browser" and "mints a portal we can link to" are not
+ * two lists that happen to match today; they are one list, held that way by an interface. Two names
+ * would suggest a divergence the type system does not permit, and the next person would have to read
+ * both to learn they are the same.
+ *
+ * The day a rail sells without a portal, `CheckoutRail` splits first — and `providers.test.ts`, which
+ * compares this list against the rails that actually satisfy `isCheckoutRail`, goes red. That is the
+ * moment a second name is earned, and it arrives with a failing test rather than a judgement call.
+ *
+ * **Written out rather than derived**, because the browser reads it. A screen cannot construct a rail
+ * provider to discover what it implements, and `PaymentsRail.options` cannot answer it — Apple and
+ * Google are rails and are not hosted. So it is a literal with a gate over it, in both programs: this
+ * one, and its DOM-safe mirror in `src/client/api.ts`.
+ *
+ * Ordered, and the order is only used to make a refusal deterministic when a product sells on two rails
+ * and the caller named neither. See `checkoutRailFor`.
+ */
+export const PAYMENTS_HOSTED_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy", "paddle"];

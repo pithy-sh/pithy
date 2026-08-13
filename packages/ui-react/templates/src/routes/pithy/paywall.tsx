@@ -1,5 +1,9 @@
-import { returnedCheckoutSession } from "@pithy-sh/payments/src/client/api";
-import { useCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
+import {
+  PAYMENTS_HOSTED_RAILS,
+  type PaymentsHostedRail,
+  returnedCheckoutSession,
+} from "@pithy-sh/payments/src/client/api";
+import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
 import { useEffect, useState } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
@@ -17,16 +21,33 @@ export const session = "required";
 // file is written once and never rewritten, and store rules change. A purchase flow copied into here would
 // be one Pithy could not fix for you; one that calls the hooks upgrades with a minor release.
 
-/** The rails that sell in a browser. Apple and Google purchases happen inside a store SDK, not here. */
-const WEB_RAILS = ["stripe", "lemonSqueezy", "paddle"] as const;
-
-/** What a product can do on the web: any enabled web rail this product is actually listed on. */
-function purchasable(product: { skus: Record<(typeof WEB_RAILS)[number], string | null> }): boolean {
-  return WEB_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
+/**
+ * What a product can do on the web: any enabled hosted rail this product is actually listed on.
+ *
+ * The list is `PAYMENTS_HOSTED_RAILS`, from the package. It used to be three names written out here,
+ * which is the shape #336 was about — correct on the day, one rail short a release later, and frozen
+ * the moment this file was copied into a repo. Imported, a rail added to Pithy reaches a paywall
+ * scaffolded a year ago. Apple and Google are not on it: those purchases happen inside a store SDK,
+ * and a web page can say a product exists and nothing more.
+ */
+function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> }): boolean {
+  return PAYMENTS_HOSTED_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
 }
+
+/**
+ * The class Paddle renders an inline checkout into.
+ *
+ * A class name, not an id — that is Paddle's `frameTarget` contract. The container is rendered only when
+ * the handoff asks for it, from `paddle.checkout` in your config: switch that to `inline` and the form
+ * appears here instead of over the page, with no edit to this file. Style `.pithy-checkout` to place it.
+ */
+const CHECKOUT_FRAME = "pithy-checkout";
 
 export default function Paywall() {
   const checkout = useCheckout(paymentsClient);
+  // Paddle's overlay and inline modes never leave this page, so the handoff has to be opened here. Every
+  // other hosted rail has already navigated away by the time `start` resolves and this reads null.
+  const opened = usePaddleCheckout(checkout.handoff, { frameTarget: CHECKOUT_FRAME });
   const purchase = usePurchase(paymentsClient);
   const [returned] = useState(() => returnedCheckoutSession());
 
@@ -74,6 +95,7 @@ export default function Paywall() {
 
       {purchase.failure && <p className="muted">{purchase.failure.message}</p>}
       {checkout.failure && <p className="muted">{checkout.failure.message}</p>}
+      {opened.failure && <p className="muted">{opened.failure.message}</p>}
 
       <div className="stack">
         {paymentsConfig.products.map((product) => (
@@ -82,7 +104,11 @@ export default function Paywall() {
               <strong>{product.name}</strong>
             </p>
             {purchasable(product) ? (
-              <button type="button" disabled={checkout.starting} onClick={() => void checkout.start(product.id)}>
+              <button
+                type="button"
+                disabled={checkout.starting || opened.opening}
+                onClick={() => void checkout.start(product.id)}
+              >
                 Buy {product.name}
               </button>
             ) : (
@@ -93,6 +119,11 @@ export default function Paywall() {
           </div>
         ))}
       </div>
+
+      {/* Rendered from the handoff rather than from a guess at your config, and rendered *before* the
+          checkout opens: Paddle looks this element up by class name at that moment, and throws if the
+          render revealing it has not committed. That ordering is `usePaddleCheckout`'s job. */}
+      {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">
         <Link className="muted" to="/subscription">

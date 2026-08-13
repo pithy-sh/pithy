@@ -25,7 +25,7 @@ import {
 import type { PaymentsEntitlement } from "../data/entitlement";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsPurchase } from "../data/purchase";
-import type { PaymentsRail } from "../data/rail";
+import { PAYMENTS_HOSTED_RAILS, type PaymentsRail } from "../data/rail";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
 import {
@@ -372,24 +372,21 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   }
 
   /**
-   * The rails that create hosted sessions, in the order a product's blocks are considered.
-   *
-   * Order matters only when a product sells on both and the caller named neither — and in that case the
-   * request is refused rather than resolved by this order, so nothing here is a silent policy. It exists to
-   * make the refusal's message deterministic.
-   */
-  const CHECKOUT_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy", "paddle"];
-
-  /**
    * Which hosted-checkout rail this request is for.
    *
    * A product declares its rails by carrying their blocks, so the candidates are the checkout-capable rails
    * this project has enabled *and* this product is listed on. One candidate is the common case and needs no
    * request field. Two, with the caller naming neither, is refused: picking one would decide who takes a
    * customer's money on their behalf, and an adopter selling on two rails means to offer the choice.
+   *
+   * The candidate list is `PAYMENTS_HOSTED_RAILS`, and it is not written out here: this route and the
+   * scaffolded screens ask the same question, and a fifth copy of the answer is what #336 was.
+   * `PAYMENTS_HOSTED_RAILS` is ordered, which is the only thing that order does — when a product sells on
+   * two rails and the caller named neither the request is refused, so nothing here resolves silently; the
+   * order exists to make the refusal's message deterministic.
    */
   function checkoutRailFor(entry: PaymentsCatalogEntry, requested: PaymentsRail | undefined): PaymentsRail {
-    const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+    const enabled = PAYMENTS_HOSTED_RAILS.filter((rail) => railEnabled(config, rail));
 
     // No hosted-checkout rail at all. That is a fact about the deployment rather than about the product —
     // a mobile-only project sells through Apple and Google and has no browser flow to start — so it is the
@@ -987,7 +984,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // Which rail this caller actually bought on, found by asking the account map rather than by taking it
       // from the request. Still no body: the caller names neither the customer nor the rail, so there is
       // nothing here anyone could point at somebody else's billing.
-      const enabled = CHECKOUT_RAILS.filter((rail) => railEnabled(config, rail));
+      const enabled = PAYMENTS_HOSTED_RAILS.filter((rail) => railEnabled(config, rail));
       // No hosted rail at all is a fact about the deployment, not about this caller — a mobile-only project
       // has no billing portal to open. Same refusal `/checkout` gives, rather than a 404 that reads as "you
       // have no account" to somebody who could never have had one.

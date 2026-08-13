@@ -67,6 +67,7 @@ import {
 } from "../rails/lemonSqueezy/fixtures/events";
 import { signLemonSqueezyBody } from "../rails/lemonSqueezy/signature";
 import type { PaddleHttpFetch } from "../rails/paddle/api";
+import { BROWSER_OVERWROTE_SERVER_STAMP } from "../rails/paddle/fixtures/browserForged";
 import { accountReferenceProof } from "../rails/paddle/objects";
 import { signPaddleBody } from "../rails/paddle/signature";
 import type { StripeHttpFetch } from "../rails/stripe/api";
@@ -3196,6 +3197,27 @@ describe("POST /payments/purchases — Paddle", () => {
     };
   }
 
+  test("the forgery a browser really wrote, recorded from the live sandbox, binds nobody", async () => {
+    // Every case above is a forgery this suite constructed. This one is a forgery Paddle stored: a page
+    // holding only the publishable client token called `Paddle.Checkout.open({ transactionId, customData })`
+    // over a transaction the server had already stamped, paid with a test card, and **replaced the stamp**
+    // — `custom_data` came back naming somebody else. See `../rails/paddle/fixtures/browserForged.ts`.
+    //
+    // It is here rather than only in `objects.test.ts` because the route is where the damage would be:
+    // `linkProviderAccount` never rebinds, so one honoured overwrite squats a Paddle customer against an
+    // account of the attacker's choosing, permanently, with nothing to undo it with.
+    const overwritten = { ...(await transaction("ignored")), custom_data: BROWSER_OVERWROTE_SERVER_STAMP };
+    const app = makeApp(ONE_OFF, { paddle: { transaction: overwritten } });
+    const response = await request(app, "POST", "/payments/purchases", {
+      user: "attacker",
+      body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
+    });
+    expect(response.status).not.toBe(200);
+    expect(await errorCode(response)).toBe("payments/verification_failed");
+    expect(await purchases()).toHaveLength(0);
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toHaveLength(0);
+  });
+
   test("a stamp whose MAC does not verify is refused, and the same stamp proven is accepted", async () => {
     // `/payments/purchases` is the one route where the attacker supplies both the id and the stamp, and
     // `accountReferenceOf` ends `proofMatches(…) ? reference : null` — that ternary is the whole
@@ -3271,6 +3293,91 @@ describe("POST /payments/purchases — Paddle", () => {
  * These cases are why the fixture field exists. It was declared and wired and never set, so nothing
  * reached this route on this rail at all — and deleting the owner predicate left every gate green.
  */
+describe("POST /payments/checkout — Paddle", () => {
+  /**
+   * The handoff half of this rail, which had no route-level gate while Stripe's sibling had several.
+   *
+   * What matters here is not that a transaction is created — `rails/paddle/checkout.test.ts` covers that
+   * — but what crosses to the browser. Everything on the response is handed to `Paddle.Checkout.open` in
+   * a page an adopter serves publicly, so this is the boundary where a secret would leak and where a
+   * value a client could name would become a checkout a client controls.
+   */
+  const CREATED = {
+    id: PADDLE_TRANSACTION,
+    status: "ready",
+    customer_id: null,
+    items: [{ price: { id: PADDLE_PRICE } }],
+    checkout: { url: null },
+    created_at: NOW.toISOString(),
+  };
+
+  /** The rail's own settings, so a case can move one of them without restating the rest. */
+  const PADDLE_SETTINGS = PADDLE_CATALOG.paddle as NonNullable<PaymentsConfigInput["paddle"]>;
+
+  const app = (settings: Partial<typeof PADDLE_SETTINGS> = {}) =>
+    makeApp({ ...PADDLE_CATALOG, paddle: { ...PADDLE_SETTINGS, ...settings } }, { paddle: { transaction: CREATED } });
+
+  /** The handoff, read back as a plain record. */
+  async function handoff(settings: Partial<typeof PADDLE_SETTINGS> = {}): Promise<Record<string, unknown>> {
+    const response = await request(app(settings), "POST", "/payments/checkout", {
+      user: "ada",
+      body: { productId: "pro_monthly" },
+    });
+    expect(response.status).toBe(200);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  test("answers the transaction to open, the token to open it with, and where paying sends the buyer", async () => {
+    expect(await handoff()).toEqual({
+      kind: "paddle",
+      transactionId: PADDLE_TRANSACTION,
+      clientToken: "test_1234567890abcdefghij",
+      environment: "production",
+      displayMode: "overlay",
+      successUrl: "https://acme.example/thanks",
+    });
+  });
+
+  test("the display mode is the project's config, not the screen's choice", async () => {
+    // A project switching `paddle.checkout` must not also have to edit a scaffolded screen, which is only
+    // true while the mode travels on the response.
+    const inline = await handoff({ checkout: "inline" });
+    expect(inline.displayMode).toBe("inline");
+  });
+
+  test("the success URL is config's, and a caller naming one is ignored", async () => {
+    // The same escalation the Stripe case names, on the rail where the URL is handed to a *browser* to
+    // pass to Paddle rather than being sent to the store from here. If a request could set it, a page
+    // could send a paying customer to a page it controls.
+    const response = await request(app(), "POST", "/payments/checkout", {
+      user: "ada",
+      body: { productId: "pro_monthly", successUrl: "https://evil.example/thanks" },
+    });
+    const answered = (await response.json()) as Record<string, unknown>;
+    expect(answered.successUrl).toBe("https://acme.example/thanks");
+    expect(JSON.stringify(answered)).not.toContain("evil.example");
+  });
+
+  test("nothing secret crosses to the browser", async () => {
+    // The API key and the webhook signing secret both exist in this deployment and are both reachable
+    // from the code that built this response. Neither is expressible on the handoff, and this is where
+    // that stops being a claim about a type.
+    const answered = JSON.stringify(await handoff());
+    expect(answered).not.toContain(PADDLE_TEST_WEBHOOK_SECRET);
+    expect(answered).not.toContain(PADDLE_TEST_API_KEY);
+    // Anti-vacuity: both secrets are real values this app is configured with, so the two above are not
+    // passing on empty strings.
+    expect(PADDLE_TEST_WEBHOOK_SECRET.length).toBeGreaterThan(8);
+    expect(PADDLE_TEST_API_KEY.length).toBeGreaterThan(8);
+  });
+
+  test("an unauthenticated caller is 401 and no transaction is created", async () => {
+    const response = await request(app(), "POST", "/payments/checkout", { body: { productId: "pro_monthly" } });
+    expect(response.status).toBe(401);
+    expect(paddleCalls.filter((entry) => entry.url.includes("/transactions"))).toEqual([]);
+  });
+});
+
 describe("POST /payments/portal — Paddle", () => {
   /** Grace's own customer and subscription, so the two buyers share nothing but the deployment. */
   const GRACE_CUSTOMER = "ctm_01jz0000000000000000grace";
