@@ -81,7 +81,12 @@ describe("applied rendering", () => {
       worker: "api",
       deployedAs: "acme-api",
       perCapability: [
-        { name: "auth", addedBindings: [{ env: "dev", name: "DB", type: "d1" }], addedConfigKeys: ["basePath"] },
+        {
+          name: "auth",
+          addedBindings: [{ env: "dev", name: "DB", type: "d1" }],
+          skippedBindings: [],
+          addedConfigKeys: ["basePath"],
+        },
       ],
       ejectedSkipped: ["billing"],
       migrated: false,
@@ -151,7 +156,7 @@ describe("worker grouping", () => {
     const applied: ReconcileApplied = {
       worker: "api",
       deployedAs: "acme-api",
-      perCapability: [{ name: "auth", addedBindings: [], addedConfigKeys: ["basePath"] }],
+      perCapability: [{ name: "auth", addedBindings: [], skippedBindings: [], addedConfigKeys: ["basePath"] }],
       ejectedSkipped: [],
       migrated: false,
       migrations: [],

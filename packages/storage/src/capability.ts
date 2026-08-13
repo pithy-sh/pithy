@@ -5,6 +5,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
 import { StorageConfig, type StorageConfigInput } from "./config/config";
 import { storageTables } from "./data/tables";
@@ -70,11 +71,7 @@ export function storage(options: StorageOptions = {}): StorageCapability {
     // so a binding rename cannot leave the two disagreeing. Optional: the binding exists only once
     // `pithy storage provision` has deployed the sweep worker, and an unprovisioned project must still
     // serve every upload and download route.
-    ...Object.values(storageWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(storageWorkflows),
   ];
 
   const capability = defineCapability({

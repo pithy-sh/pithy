@@ -1,7 +1,38 @@
 {
   "name": "media",
   "package": "@pithy-sh/media",
-  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "r2", "name": "MEDIA_BUCKET" }],
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "r2", "name": "MEDIA_BUCKET" },
+    {
+      "type": "workflow",
+      "name": "MEDIA_IMAGE_TO_TEXT",
+      "job": "image-to-text",
+      "className": "MediaImageToTextWorkflow",
+      "optional": true
+    },
+    {
+      "type": "workflow",
+      "name": "MEDIA_AUDIO_TRANSCRIBE",
+      "job": "audio-transcribe",
+      "className": "MediaAudioTranscribeWorkflow",
+      "optional": true
+    },
+    {
+      "type": "workflow",
+      "name": "MEDIA_VIDEO_TRANSCRIBE",
+      "job": "video-transcribe",
+      "className": "MediaVideoTranscribeWorkflow",
+      "optional": true
+    },
+    {
+      "type": "workflow",
+      "name": "MEDIA_DOC_EXTRACT",
+      "job": "doc-extract",
+      "className": "MediaDocExtractWorkflow",
+      "optional": true
+    }
+  ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],
   "migrationNamespace": "media",

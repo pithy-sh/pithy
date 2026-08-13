@@ -5,6 +5,7 @@ import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
 import { VectorConfig, type VectorConfigInput } from "./config/config";
 import { vectorTables } from "./data/tables";
@@ -85,11 +86,7 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
     // The reprocess Workflow's binding, derived from the spec rather than restated. Optional: it exists only
     // once `pithy vector provision` has deployed the vector worker, and an unprovisioned project must still
     // boot and serve every search route.
-    ...Object.values(vectorWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(vectorWorkflows),
   ];
 
   const capability = defineCapability({

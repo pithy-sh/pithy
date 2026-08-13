@@ -19,6 +19,8 @@
     {
       "type": "workflow",
       "name": "VECTOR_REPROCESS",
+      "job": "reprocess",
+      "className": "VectorReprocessWorkflow",
       "optional": true
     }
   ],

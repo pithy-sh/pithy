@@ -197,12 +197,22 @@ function planLines(plan: ReconcilePlan): string[] {
   return lines;
 }
 
-/** The human-readable lines for one Worker's applied upgrade. */
+/**
+ * The human-readable lines for one Worker's applied upgrade.
+ *
+ * A skipped binding gets a line of its own, named, under the capability that needed it. **Counted, it
+ * would be invisible** — and being invisible is exactly what #318 was: the count came from the plan, so
+ * five bindings the writer declined were reported as added and the adopter's next command, `pithy
+ * doctor`, contradicted this one about a file it had just written.
+ */
 function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] {
   const lines: string[] = [];
   for (const cap of applied.perCapability) {
     const summary = parts(cap.addedBindings.length, cap.addedConfigKeys.length, "added");
     if (summary) lines.push(`${cap.name}: ${summary}`);
+    for (const skipped of cap.skippedBindings) {
+      lines.push(`${cap.name}: ${skipped.name} (${skipped.type}) not written for ${skipped.env} — ${skipped.reason}.`);
+    }
   }
   for (const name of applied.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
   if (applied.addedVersionMetadata) lines.push("version_metadata: added CF_VERSION_METADATA.");

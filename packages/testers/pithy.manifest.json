@@ -9,6 +9,8 @@
     {
       "type": "workflow",
       "name": "TESTERS_DAILY",
+      "job": "daily",
+      "className": "TestersDailyWorkflow",
       "optional": true
     }
   ],

@@ -36,7 +36,9 @@ describe("bindings and dependencies", () => {
   test("declares the app database and the daily pass's workflow binding, and nothing else", () => {
     expect(testers(BASE).requiredBindings).toEqual([
       { type: "d1", name: "DB", optional: false },
-      { type: "workflow", name: "TESTERS_DAILY", optional: true },
+      // `job` and `className` ride through from the spec: without them the CLI has no deployed name and
+      // no `class_name`, so it declines the `workflows` entry and says nothing (#318).
+      { type: "workflow", name: "TESTERS_DAILY", job: "daily", className: "TestersDailyWorkflow", optional: true },
     ]);
   });
 

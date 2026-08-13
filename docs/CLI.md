@@ -875,7 +875,17 @@ These are intentionally separate. The CLI binary version is one concept; a proje
 
 **Both capability commands report the manifests they could not read.** An installed `@pithy-sh/*` package whose `pithy.manifest.json` will not parse is a capability that vanishes from every plan, and a run that reconciled happily around the hole reported nothing at all. `pithy upgrade` prints the faults above the Workers, once, because manifests resolve from the project root and no Worker owns one; `pithy add --list` names them on stderr after the catalog, since a package it cannot read is one it cannot tell you is installed. Reported, never refused: one broken package must not cost an adopter the other fifteen entries. Neither command can fix it — the file belongs to somebody else's package.
 
-`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
+**What `upgrade` reports is what it wrote.** The count comes back off the writer, one entry per binding actually appended to a stanza, and a binding the writer could not compose an entry for is **named, with the reason**, rather than folded into a count:
+
+```
+board:
+  payments: added 1 config key.
+  payments: PAYMENTS_RECONCILE (workflow) not written for dev — PAYMENTS_RECONCILE declares no job.
+```
+
+That line is the difference between `upgrade` and `doctor` agreeing and not. Reporting the *plan* instead is what made `upgrade` say "added 3 bindings" over a `wrangler.jsonc` it had left untouched, while `doctor` — run seconds later, against the same tree, through the same plan builder — correctly still called them missing.
+
+`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
 
 `pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
 

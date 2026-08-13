@@ -48,11 +48,38 @@ describe("mediaWorkflows", () => {
 describe("media() bindings derived from the specs", () => {
   test("carries one optional workflow binding per job, and no hand-written duplicate", () => {
     const workflows = media().requiredBindings.filter((binding) => binding.type === "workflow");
+    // The job — the map key — and the exported class ride through with the binding. They are what the
+    // CLI composes the deployed Workflow name and `class_name` from, and a binding stating neither is
+    // one `pithy add` and `pithy upgrade` both decline to write, silently (#318).
     expect(workflows).toEqual([
-      { type: "workflow", name: "MEDIA_IMAGE_TO_TEXT", optional: true },
-      { type: "workflow", name: "MEDIA_AUDIO_TRANSCRIBE", optional: true },
-      { type: "workflow", name: "MEDIA_VIDEO_TRANSCRIBE", optional: true },
-      { type: "workflow", name: "MEDIA_DOC_EXTRACT", optional: true },
+      {
+        type: "workflow",
+        name: "MEDIA_IMAGE_TO_TEXT",
+        job: "image-to-text",
+        className: "MediaImageToTextWorkflow",
+        optional: true,
+      },
+      {
+        type: "workflow",
+        name: "MEDIA_AUDIO_TRANSCRIBE",
+        job: "audio-transcribe",
+        className: "MediaAudioTranscribeWorkflow",
+        optional: true,
+      },
+      {
+        type: "workflow",
+        name: "MEDIA_VIDEO_TRANSCRIBE",
+        job: "video-transcribe",
+        className: "MediaVideoTranscribeWorkflow",
+        optional: true,
+      },
+      {
+        type: "workflow",
+        name: "MEDIA_DOC_EXTRACT",
+        job: "doc-extract",
+        className: "MediaDocExtractWorkflow",
+        optional: true,
+      },
     ]);
   });
 

@@ -80,6 +80,28 @@ export interface WranglerStanza {
   env?: Record<string, WranglerStanza | undefined>;
 }
 
+/**
+ * What one call to {@link appendBinding} did.
+ *
+ * **The writer answers "did I write it", because nothing else can.** `pithy upgrade` used to report the
+ * bindings its *plan* named and never asked the writer whether any of them landed, so five capabilities'
+ * Workflow bindings were counted as added, silently declined, and correctly reported missing by `pithy
+ * doctor` seconds later (#318). A count derived from an intention is a claim about the future; this is
+ * the return value that makes it a claim about the file.
+ *
+ * `skipped` carries a `reason` written for an operator reading a terminal, not for a log: it names what
+ * the entry needed and did not have, so the next step is obvious.
+ */
+export type BindingWrite =
+  /** An entry was appended to the stanza. `proposed` is set only for KV, whose title wrangler cannot hold. */
+  | { outcome: "written"; proposed?: ProposedName }
+  /** The stanza already declares this binding. Left exactly as the adopter has it. */
+  | { outcome: "present" }
+  /** A kind this module writes no array for — a `secret`, a `vectorize` index, a `queue`, an `email` send binding, a `service`. */
+  | { outcome: "unsupported" }
+  /** The entry could not be composed honestly. Nothing was written, and this says what was missing. */
+  | { outcome: "skipped"; reason: string };
+
 /** A `<project>-<env>-<binding>` name proposed for a resource the adopter creates themselves. */
 export interface ProposedName {
   /** The Worker env binding the name is proposed for (e.g. `SESSIONS`). */
@@ -182,14 +204,29 @@ function proposeName(scope: BindingScope, binding: string, kind: "d1" | "kv"): s
  * workers.dev. Same call `project/appBindings.ts` makes at provision time, so the two writers cannot
  * disagree about the same Worker.
  *
+ * **This writer has one shape, and it is the cross-Worker one.** A capability's Workflow class is
+ * exported by that capability's host Worker, never by the app, so there is no same-Worker branch here to
+ * be missing — #318 guessed there was. The same-Worker shape (`class_name`, no `script_name`) is a
+ * different writer for a different owner: `project/appWorkflows.ts`, for jobs the adopter's **own** app
+ * capability declares and its own script exports. Looking for it here finds a case this file will never
+ * see.
+ *
  * A binding with no `job` or no `className` is not writable: wrangler rejects a `workflows` entry missing
  * either, so emitting a partial one would trade a failed request for a config that will not load.
  * `capabilities/requiredBindings.test.ts` is what makes that a build failure rather than a surprise.
+ *
+ * **Each refusal says why.** Returning a bare `undefined` is what let `pithy upgrade` count these as
+ * written (#318): the caller had nothing to distinguish "wrote it" from "declined", so it reported the
+ * plan. The reason is the operator's next step, in their words — the missing field, or the missing
+ * project name.
  */
-function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindingEntry | undefined {
+function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindingEntry | { reason: string } {
   const { project, env, capability } = scope;
-  if (project === undefined || !isValidEnvironment(env)) return undefined;
-  if (binding.job === undefined || binding.className === undefined) return undefined;
+  if (project === undefined) return { reason: "no project name is resolved" };
+  if (!isValidEnvironment(env)) return { reason: `the naming scheme does not accept the environment "${env}"` };
+  if (binding.job === undefined || binding.className === undefined) {
+    return { reason: `${binding.name} declares no ${binding.job === undefined ? "job" : "className"}` };
+  }
   return {
     binding: binding.name,
     name: workflowScriptName({ project, capability, job: binding.job, env }),
@@ -238,17 +275,16 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
  * that does not exist yet, and an adopter who leaves it alone gets a project-scoped name instead of
  * inventing `db`.
  *
- * Returns the KV namespace title to propose, when this call wrote a KV binding and a name could be
- * composed. **KV is reported rather than written, because wrangler has nowhere to write it**: a
- * `kv_namespaces` entry takes `binding`, `id`, `preview_id`, and `remote`, with no title field, so the name
- * lives only in the account.
+ * Returns {@link BindingWrite} — **what happened**, not what was meant to. The KV namespace title rides
+ * on a `written` outcome, when this call wrote a KV binding and a name could be composed: **KV is
+ * reported rather than written, because wrangler has nowhere to write it**, since a `kv_namespaces` entry
+ * takes `binding`, `id`, `preview_id`, and `remote`, with no title field, so the name lives only in the
+ * account.
  */
-export function appendBinding(
-  stanza: WranglerStanza,
-  binding: BindingSpec,
-  scope: BindingScope,
-): ProposedName | undefined {
-  if (stanzaHasBinding(stanza, binding) !== false) return undefined;
+export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scope: BindingScope): BindingWrite {
+  const has = stanzaHasBinding(stanza, binding);
+  if (has === null) return { outcome: "unsupported" };
+  if (has) return { outcome: "present" };
 
   switch (binding.type) {
     case "d1": {
@@ -257,31 +293,37 @@ export function appendBinding(
       stanza.d1_databases.push(
         withRemote({ binding: binding.name, ...(name ? { database_name: name } : {}) }, binding),
       );
-      return undefined;
+      return { outcome: "written" };
     }
     case "kv": {
       stanza.kv_namespaces ??= [];
       stanza.kv_namespaces.push(withRemote({ binding: binding.name }, binding));
       const name = proposeName(scope, binding.name, "kv");
-      return name ? { binding: binding.name, env: scope.env, name } : undefined;
+      return name
+        ? { outcome: "written", proposed: { binding: binding.name, env: scope.env, name } }
+        : { outcome: "written" };
     }
     case "r2":
       stanza.r2_buckets ??= [];
       stanza.r2_buckets.push(withRemote({ binding: binding.name }, binding));
-      return undefined;
+      return { outcome: "written" };
     case "ai":
       // A Worker gets exactly one Workers AI binding, so `ai` is an object rather than an array. An
       // existing one is left alone by the presence check above: it is either this capability's
       // (idempotency) or an adopter's deliberate choice of binding name, and clobbering either would
       // break their Worker.
       stanza.ai = withRemote({ binding: binding.name }, binding);
-      return undefined;
+      return { outcome: "written" };
     case "durable_object":
-      if (binding.className === undefined) return undefined;
+      // `BindingSpec` refuses a classless DO binding at define and at manifest parse, so this is the
+      // second wall rather than the first. It still says why, because a writer that returns nothing
+      // teaches its caller to report the plan.
+      if (binding.className === undefined)
+        return { outcome: "skipped", reason: `${binding.name} declares no className` };
       stanza.durable_objects ??= { bindings: [] };
       stanza.durable_objects.bindings ??= [];
       stanza.durable_objects.bindings.push(withRemote({ name: binding.name, class_name: binding.className }, binding));
-      return undefined;
+      return { outcome: "written" };
     case "ratelimit":
       stanza.ratelimits ??= [];
       stanza.ratelimits.push({
@@ -289,21 +331,22 @@ export function appendBinding(
         namespace_id: rateLimitNamespaceId(binding.name),
         simple: { limit: RATE_LIMIT_REQUESTS, period: RATE_LIMIT_PERIOD_SECONDS },
       });
-      return undefined;
+      return { outcome: "written" };
     case "workflow": {
       const entry = workflowEntry(scope, binding);
-      if (entry === undefined) return undefined;
+      if ("reason" in entry) return { outcome: "skipped", reason: entry.reason };
       stanza.workflows ??= [];
       stanza.workflows.push(entry);
-      return undefined;
+      return { outcome: "written" };
     }
     default:
       // `queue`, `email`, `secret`, `service`, and `vectorize`. Nothing is emitted, and for two different
       // reasons: a `secret` has no wrangler array at all, and a `vectorize` entry needs the provisioned
       // `index_name` — wrangler's validator requires it, so a binding-only entry stops `wrangler dev` and
       // `wrangler deploy` both. `capabilities/requiredBindings.test.ts` fails any capability that requires
-      // a kind neither this writer nor a provisioner covers.
-      return undefined;
+      // a kind neither this writer nor a provisioner covers. Unreachable: `stanzaHasBinding` already
+      // returned `null` for every one of them above.
+      return { outcome: "unsupported" };
   }
 }
 

@@ -2,17 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
+import type { BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding, isWrittenBinding } from "@pithy-sh/core/src/capability/bindings";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { addCapability } from "./add";
+import { applyReconcilePlan, buildReconcilePlan } from "./reconcile";
 
 /**
  * **A project that composes a capability has a binding for everything that capability requires.**
@@ -69,14 +70,44 @@ function shippedManifests(): { pkg: string; manifest: CapabilityManifest }[] {
 
 const MANIFESTS = shippedManifests();
 
+/**
+ * A binding as every check here reads one: its kind and its name.
+ *
+ * Structural rather than `BindingSpec`, because the same two questions are asked of a manifest's
+ * declaration and of what an apply reported writing, and those are different types carrying the same
+ * pair. Narrowing to one of them is how a check ends up covering half the surface it reads about.
+ */
+type BindingRef = { type: BindingType; name: string };
+
 /** How a binding is named in a failure, matching `validateBindings`: `workflow:EMAIL_SENDER`. */
-function label(binding: BindingSpec): string {
+function label(binding: BindingRef): string {
   return `${binding.type}:${binding.name}`;
 }
 
 /** The bindings a capability's own composition refuses to boot without — the ones this gate is about. */
 function required(manifest: CapabilityManifest): BindingSpec[] {
   return manifest.requiredBindings.filter((binding) => !binding.optional);
+}
+
+/**
+ * Every workflow binding a manifest declares that the writer could not emit a complete entry for,
+ * labelled `<pkg>: workflow:<NAME>`.
+ *
+ * **The invariant, not a list of the packages that broke it.** A `workflows` entry needs `name` and
+ * `class_name`, both derived from the binding's `job` and `className`, so a binding missing either is
+ * one `project/bindingEntries.ts` declines to write — silently, since there is nothing honest to emit.
+ * Whether the app may boot without the binding is a different question with a different field, and
+ * conflating them is what kept this green through #318.
+ */
+function incompleteWorkflowBindings(manifests: readonly { pkg: string; manifest: CapabilityManifest }[]): string[] {
+  const incomplete: string[] = [];
+  for (const { pkg, manifest } of manifests) {
+    for (const binding of manifest.requiredBindings) {
+      if (binding.type !== "workflow") continue;
+      if (binding.job === undefined || binding.className === undefined) incomplete.push(`${pkg}: ${label(binding)}`);
+    }
+  }
+  return incomplete;
 }
 
 describe("every required binding has somewhere to come from", () => {
@@ -111,14 +142,30 @@ describe("every required binding has somewhere to come from", () => {
     // A `workflows` entry needs a `name` and a `class_name`, and both are derived from the job and the
     // exported class. A manifest that declares neither leaves the writer with nothing to emit — so the
     // binding would be "written" in name only and the Worker would still refuse its first request.
-    const incomplete: string[] = [];
-    for (const { pkg, manifest } of MANIFESTS) {
-      for (const binding of required(manifest)) {
-        if (binding.type !== "workflow") continue;
-        if (binding.job === undefined || binding.className === undefined) incomplete.push(`${pkg}: ${label(binding)}`);
-      }
-    }
-    expect(incomplete).toEqual([]);
+    //
+    // **Over every workflow binding, optional included** — the filter that made this gate green while
+    // five capabilities shipped unwritable bindings (#318). `optional` answers "may the app boot
+    // without it", which is `createBackend`'s question. It says nothing about whether the entry is
+    // derivable offline, which is this one's, and {@link isWrittenBinding} already answers that with
+    // `true` for every workflow. So a gate that skipped the optional ones was checking the writer
+    // against exactly the bindings the writer never had trouble with.
+    expect(incompleteWorkflowBindings(MANIFESTS)).toEqual([]);
+  });
+
+  test("it bites — a planted optional workflow binding with no job is caught", () => {
+    // The planted violation, and it is planted *optional* on purpose: that is the shape all five of
+    // #318's bindings had. PAYMENTS_RECONCILE, STORAGE_SWEEP, SUPPORT_CLASSIFY, TESTERS_DAILY and
+    // VECTOR_REPROCESS each declared `optional: true` and neither `job` nor `className`, `pithy
+    // upgrade` reported writing them, `bindingEntries.workflowEntry` returned undefined for every one,
+    // and this file was green throughout.
+    const planted = CapabilityManifest.parse({
+      name: "planted",
+      package: "@pithy-sh/planted",
+      requiredBindings: [{ type: "workflow", name: "PLANTED_SWEEP", optional: true }],
+    });
+    expect(incompleteWorkflowBindings([{ pkg: "planted", manifest: planted }])).toEqual([
+      "planted: workflow:PLANTED_SWEEP",
+    ]);
   });
 });
 
@@ -130,6 +177,14 @@ describe("every required binding has somewhere to come from", () => {
 describe("what pithy add claims to write, it writes", () => {
   let dir: string;
   let worker: string;
+
+  /** Install a manifest where every Worker's manifests resolve from — the project root's node_modules. */
+  async function writeManifest(projectDir: string, manifest: CapabilityManifest): Promise<void> {
+    const pkgDir = join(projectDir, "node_modules", "@pithy-sh", manifest.name);
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, "pithy.manifest.json"), JSON.stringify(manifest));
+  }
+
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-bindings-"));
     await scaffoldProject({ targetDir: dir, appName: "bindings" });
@@ -140,7 +195,7 @@ describe("what pithy add claims to write, it writes", () => {
   });
 
   /** Whether one environment's stanza declares a binding, by the key wrangler files each kind under. */
-  function declares(stanza: Record<string, unknown>, binding: BindingSpec): boolean {
+  function declares(stanza: Record<string, unknown>, binding: BindingRef): boolean {
     const list = (key: string): Record<string, unknown>[] =>
       Array.isArray(stanza[key]) ? (stanza[key] as Record<string, unknown>[]) : [];
     switch (binding.type) {
@@ -187,4 +242,123 @@ describe("what pithy add claims to write, it writes", () => {
       expect(missing).toEqual([]);
     },
   );
+
+  /**
+   * **What `pithy upgrade` reports adding is in the file.**
+   *
+   * The invariant #318 was reported about, stated over the report rather than over any binding. `upgrade`
+   * said "payments: added 3 bindings", `git diff` showed none, and `pithy doctor` — the tool this kit
+   * tells adopters to trust over memory — still called `PAYMENTS_RECONCILE` missing seconds later. Two
+   * commands of one CLI disagreeing about a file one of them had just written.
+   *
+   * Optional bindings included, because every one of the five was optional. `upgrade` differs from `add`
+   * here: `add` skips an optional binding outright, while `upgrade` writes the ones the Worker's composed
+   * set actually derives — which is how these came to be reported at all.
+   */
+  test.each(MANIFESTS.map(({ pkg, manifest }) => [pkg, manifest] as const))(
+    "%s: every binding pithy upgrade reports adding is in the file afterwards",
+    async (_pkg, manifest) => {
+      await writeManifest(dir, manifest);
+      // The composed set as `createBackend` derives it — the manifest's own bindings, optional ones
+      // included. That is what makes an optional binding effective for a plan, and it is the state the
+      // dashboard was in when it hit this.
+      const composed = [{ name: manifest.name, requiredBindings: manifest.requiredBindings }];
+      const plan = await buildReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        env: "dev",
+        capabilities: composed,
+      });
+      const applied = await applyReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        plan,
+        migrate: false,
+        env: "dev",
+        capabilities: composed,
+        // The project name every derived resource name starts with. Without it the writer honestly
+        // declines a Workflow entry, and a sweep run that way would be green over an empty set — the
+        // exact shape of gate this issue is about.
+        project: "bindings",
+      });
+
+      const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Record<
+        string,
+        unknown
+      > & { env?: Record<string, Record<string, unknown>> };
+      const byEnv = new Map<string, Record<string, unknown>>([["dev", config]]);
+      for (const [env, stanza] of Object.entries(config.env ?? {})) byEnv.set(env, stanza);
+
+      const claimed: string[] = [];
+      for (const cap of applied.perCapability) {
+        // A skip is honest and is allowed — it is named, with a reason. What is not allowed is a binding
+        // in `addedBindings` that the file does not have.
+        for (const added of cap.addedBindings) {
+          const stanza = byEnv.get(added.env);
+          if (!stanza || !declares(stanza, added)) claimed.push(`${added.env}: ${label(added)}`);
+        }
+      }
+      expect(claimed).toEqual([]);
+
+      // And the other half of #318's report: `pithy doctor`, run immediately after, against the same
+      // tree. Doctor renders exactly this plan (`doctor/health.ts` → `groupMissingBindings`), so a
+      // capability still naming a missing binding here is the two commands disagreeing about a file one
+      // of them has just written — which is what an adopter actually met.
+      const after = await buildReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        env: "dev",
+        capabilities: composed,
+      });
+      const stillMissing = after.perCapability.flatMap((cap) =>
+        cap.missingBindings.map((binding) => `${binding.env}: ${label(binding)}`),
+      );
+      expect(stillMissing).toEqual([]);
+    },
+  );
+
+  test("it bites — a binding the writer declines is named as skipped, never counted as added", async () => {
+    // The planted violation, in #318's exact shape: an optional workflow binding stating no `job` and no
+    // `className`, which `project/bindingEntries.ts` cannot compose a `workflows` entry from. Before the
+    // fix, `applyBindings` copied the plan into `addedBindings` the moment it touched the capability, so
+    // this is the assertion that was impossible to make.
+    const planted = CapabilityManifest.parse({
+      name: "planted",
+      package: "@pithy-sh/planted",
+      requiredBindings: [{ type: "workflow", name: "PLANTED_SWEEP", optional: true }],
+    });
+    await writeManifest(dir, planted);
+    const composed = [{ name: planted.name, requiredBindings: planted.requiredBindings }];
+    const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+
+    const applied = await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      plan: await buildReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        env: "dev",
+        capabilities: composed,
+      }),
+      migrate: false,
+      env: "dev",
+      capabilities: composed,
+      project: "bindings",
+    });
+
+    const cap = applied.perCapability.find((entry) => entry.name === "planted");
+    expect(cap?.addedBindings).toEqual([]);
+    expect(cap?.skippedBindings.map((skipped) => `${skipped.env}: ${skipped.name} — ${skipped.reason}`)).toEqual([
+      "dev: PLANTED_SWEEP — PLANTED_SWEEP declares no job",
+      "staging: PLANTED_SWEEP — PLANTED_SWEEP declares no job",
+      "prod: PLANTED_SWEEP — PLANTED_SWEEP declares no job",
+    ]);
+    // And nothing was written, so the file the adopter would `git diff` is untouched.
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(before);
+  });
 });

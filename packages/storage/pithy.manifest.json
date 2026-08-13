@@ -4,7 +4,13 @@
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
     { "type": "r2", "name": "STORAGE_BUCKET" },
-    { "type": "workflow", "name": "STORAGE_SWEEP", "optional": true }
+    {
+      "type": "workflow",
+      "name": "STORAGE_SWEEP",
+      "job": "sweep",
+      "className": "StorageSweepWorkflow",
+      "optional": true
+    }
   ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],

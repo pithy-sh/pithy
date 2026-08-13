@@ -3,7 +3,13 @@
   "package": "@pithy-sh/payments",
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
-    { "type": "workflow", "name": "PAYMENTS_RECONCILE", "optional": true }
+    {
+      "type": "workflow",
+      "name": "PAYMENTS_RECONCILE",
+      "job": "reconcile",
+      "className": "PaymentsReconcileWorkflow",
+      "optional": true
+    }
   ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth", "controlplane", "ledger"],

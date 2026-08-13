@@ -63,7 +63,17 @@ describe("payments()", () => {
     // payments` produce a Worker that refuses to boot until somebody has touched a Cloudflare account.
     expect(payments(CATALOG).requiredBindings).toEqual([
       { type: "d1", name: "DB", optional: false },
-      { type: "workflow", name: "PAYMENTS_RECONCILE", optional: true },
+      // `job` and `className` are what the CLI writes a `workflows` entry from — the deployed name and
+      // the exported `WorkflowEntrypoint`. Declaring the binding without them is declaring one nothing can
+      // write, which is how `pithy upgrade` came to report adding it and `pithy doctor` to still call it
+      // missing (#318).
+      {
+        type: "workflow",
+        name: "PAYMENTS_RECONCILE",
+        job: "reconcile",
+        className: "PaymentsReconcileWorkflow",
+        optional: true,
+      },
     ]);
   });
 

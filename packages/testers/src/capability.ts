@@ -4,6 +4,7 @@
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
@@ -77,11 +78,7 @@ export function testers(options: TestersOptions = {}): TestersCapability {
     // rename cannot leave the two disagreeing. Optional because the binding exists only once
     // `pithy testers provision` has deployed the host, and an unprovisioned project must still be able
     // to invite testers, accept confirmations, and read its cohorts.
-    ...Object.values(testersWorkflows).map((spec) => ({
-      type: "workflow" as const,
-      name: spec.binding,
-      optional: spec.optional,
-    })),
+    ...workflowBindings(testersWorkflows),
   ];
 
   const capability = defineCapability({
