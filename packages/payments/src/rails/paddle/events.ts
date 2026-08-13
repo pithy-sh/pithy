@@ -6,7 +6,7 @@ import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { VerifiedNotification } from "../contract";
 import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch, paddleJson } from "./api";
 import { PaddleEvent } from "./objects";
-import { readTransaction } from "./read";
+import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "./read";
 import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook";
 
 /**
@@ -16,12 +16,14 @@ import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook"
  * which no client submitted has no row, so it is invisible to `refresh` forever. Paddle publishes an
  * account-wide event stream, so this rail can find those, and no other rail in this package can.
  *
- * It carries more weight here than the issue credits, for a reason outside this rail: `completeWebhook`
- * sets `processedAt` even when it records an error, and the guard short-circuits any delivery whose
- * `processedAt` is not null. Paddle's replay endpoint reuses the same `event_id`, so replaying a delivery
- * that errored answers 200 and never reprocesses. That is a pre-existing defect across all four existing
- * rails and is **not** touched here — it is reported, not fixed — but until it is, the sweep is the only
- * repair for a delivery that arrived and failed.
+ * **It does not repair a delivery that arrived and failed, and an earlier version of this paragraph said
+ * it did.** `completeWebhook` sets `processedAt` even when it records an error; the sweep writes through
+ * the same table on the same `UNIQUE (rail, providerEventId)` and reads freshness off that same column,
+ * so a delivery that errored is a *duplicate* to the sweep and is skipped. Paddle's replay endpoint
+ * reuses the same `event_id`, so replaying it does not reprocess either. That is a pre-existing defect
+ * across all four rails, it is **reported and not fixed here**, and nothing in this package currently
+ * repairs a failed delivery. What the sweep repairs is a webhook that was never delivered at all — which
+ * is the case that has no row and is invisible to `refresh` forever.
  *
  * ## The stream is account-wide, and that is a hazard rather than a convenience
  *
@@ -51,8 +53,13 @@ import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook"
  * ## The cursor, and the 90-day cliff
  *
  * `order_by=id[ASC]&after=<cursor>`, with the cursor persisted in `pithy_payments_sync_cursors`. It
- * advances only past events fully projected, so the first failure halts advancement and the step retries
- * next run.
+ * advances only past events fully projected, so a failure halts advancement and the step retries next run
+ * — for a bounded number of runs, after which the event is quarantined and the stream moves on. That bound
+ * belongs to the caller: see `workflows/paddleSweep.ts`, which owns the row and the attempt count.
+ *
+ * This function's own part in it is {@link SweptEvent.failure}: an event whose second read fails is
+ * returned carrying its failure rather than thrown, so the caller can halt at that one event instead of
+ * losing every healthy event on the page with it.
  *
  * **Paddle retains 90 days.** A cursor older than that can never be caught up — the events between it and
  * the retention window are gone — so this reports a gap naming the window rather than silently restarting
@@ -124,9 +131,23 @@ export interface SweptEvent {
    * Null is not "projects nothing" — that is a notification whose `event` is null, and it still earns a
    * row. Null here means the type is off {@link PADDLE_SWEPT_EVENT_TYPES}, so Paddle returned something
    * the query asked it not to, and the caller must advance its cursor past the event without writing
-   * anything. The body is never even read, so there is nothing to leak.
+   * anything. The body is never even read, so there is nothing to leak. It is also null when
+   * {@link SweptEvent.failure} is set, because there is nothing the map could make of it.
    */
   notification: VerifiedNotification | null;
+  /**
+   * Why this event could not be read, and the body to record against it — or null when it read cleanly.
+   *
+   * **Carried rather than thrown, because a page is not an event.** Reading an `adjustment.created`
+   * reaches Paddle a second time for the transaction it names, and that read can fail on its own — an
+   * outage, a deleted transaction, a shape a later Paddle changed. Throwing out of this function threw
+   * away the whole page with it, including every event *ahead* of the bad one that had already read
+   * perfectly, and the caller's per-event failure handling never saw any of them.
+   *
+   * The body travels with the failure so the caller can still record a row for the event. It is present
+   * only on this branch: a withheld type carries no payload here, which is the point of the allowlist.
+   */
+  failure: { cause: unknown; payload: Record<string, unknown> } | null;
 }
 
 /** One page of the sweep. */
@@ -195,22 +216,44 @@ export async function sweepPaddleEvents(options: PaddleSweepOptions): Promise<Pa
     readTransaction:
       options.readTransaction ??
       ((id) =>
-        readTransaction(id, {
-          credentials: options.credentials,
-          environment: options.environment,
-          transport: options.transport ?? paddleHttpFetch,
-        })),
+        readTransaction(
+          id,
+          {
+            credentials: options.credentials,
+            environment: options.environment,
+            transport: options.transport ?? paddleHttpFetch,
+          },
+          // The one read on this rail that needs the array, and therefore the one that needs the key to
+          // carry `adjustment.read`. See `read.ts`.
+          PADDLE_ADJUSTMENTS_INCLUDE,
+        )),
   };
 
   const events: SweptEvent[] = [];
   for (const event of parsed.data) {
-    events.push({
-      eventId: event.event_id,
-      eventType: event.event_type,
-      // The allowlist, applied before the body is looked at. A type the query asked Paddle to withhold
-      // and Paddle returned anyway is walked past, not recorded — see the module doc.
-      notification: SWEPT_EVENT_TYPES.has(event.event_type) ? await readPaddleEvent(event, read) : null,
-    });
+    // The allowlist, applied before the body is looked at. A type the query asked Paddle to withhold and
+    // Paddle returned anyway is walked past, not recorded — see the module doc.
+    if (!SWEPT_EVENT_TYPES.has(event.event_type)) {
+      events.push({ eventId: event.event_id, eventType: event.event_type, notification: null, failure: null });
+      continue;
+    }
+    try {
+      events.push({
+        eventId: event.event_id,
+        eventType: event.event_type,
+        notification: await readPaddleEvent(event, read),
+        failure: null,
+      });
+    } catch (cause) {
+      // One event's second read failing is one event's problem. The page still returns, so everything
+      // ahead of this event keeps its projection and the caller's cursor can stop exactly here.
+      events.push({
+        eventId: event.event_id,
+        eventType: event.event_type,
+        notification: null,
+        failure: { cause, payload: event as unknown as Record<string, unknown> },
+      });
+    }
   }
 
   return {

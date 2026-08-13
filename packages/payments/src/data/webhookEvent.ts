@@ -41,6 +41,14 @@ export const PaymentsWebhookEvent = z
       .describe(
         "Why processing failed, or null. Internal text: it is read by an operator and never rendered to a client.",
       ),
+    attempts: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "How many times a repair pass has tried this event and failed. Optional because the webhook path neither retries nor counts, and the column defaults to 0 for it; the sweep uses it to bound how long one unprojectable event may hold the stream up before it is quarantined.",
+      ),
     createdAt: SQLiteDate.describe("When this row was written."),
   })
   .describe("One received provider notification — the row in `pithy_payments_webhook_events`, the replay source.");

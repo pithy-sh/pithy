@@ -152,6 +152,20 @@ export const payments_0001_purchases: Migration = {
       .addColumn("receivedAt", "integer", (c) => c.notNull())
       .addColumn("processedAt", "integer")
       .addColumn("error", "text")
+      // How many times a repair pass has tried this event and failed.
+      //
+      // **Here rather than in a table of its own, because the count is a fact about this row's handling.**
+      // `processedAt` and `error` are already the other two, and the three are only ever read together:
+      // "it arrived, it was tried N times, here is why it still has not gone through". A side table would
+      // add a second row per event, a join for the one question anybody asks, and a way for the two to
+      // disagree about an event that exists in one and not the other. KV would add a second store with no
+      // transactional relationship to the row it counts. The count also has to survive exactly as long as
+      // the row does and no longer, which is what a column gets for free and every alternative has to
+      // arrange.
+      //
+      // Defaulted, so the webhook path — which does not retry and does not count — inserts as it always
+      // did.
+      .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("createdAt", "integer", (c) => c.notNull())
       // Every provider delivers at-least-once and retries, so a redelivery is expected and must be
       // recognized rather than reprocessed.

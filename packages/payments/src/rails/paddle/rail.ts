@@ -24,7 +24,7 @@ import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch } from ".
 import { createPaddleCheckoutSession } from "./checkout";
 import { createPaddleDiscount, listPaddleDiscounts } from "./discounts";
 import { createPaddlePortalSession } from "./portal";
-import { readTransaction } from "./read";
+import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "./read";
 import { readPaddlePricing, refreshPaddlePurchase } from "./refresh";
 import { verifyPaddleTransaction } from "./verify";
 import { parsePaddleNotification } from "./webhook";
@@ -95,8 +95,9 @@ export function paddleRail(
         freshnessSeconds: options.freshnessSeconds,
         // An adjustment says how much came off and never what the original was, so "full refund" is a
         // comparison the parser cannot make without this read. The rail owns the transport, so the rail
-        // supplies it.
-        readTransaction: (id) => readTransaction(id, base),
+        // supplies it — and it is the one read that asks for `include=adjustments`, which is the one read
+        // that needs the key to carry `adjustment.read`.
+        readTransaction: (id) => readTransaction(id, base, PADDLE_ADJUSTMENTS_INCLUDE),
       });
     },
 

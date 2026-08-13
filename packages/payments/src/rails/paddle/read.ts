@@ -29,21 +29,53 @@ export interface PaddleReadOptions {
   transport: PaddleHttpFetch;
 }
 
+/** The include the adjustment map needs, named once so a call site cannot spell it differently. */
+export const PADDLE_ADJUSTMENTS_INCLUDE: readonly string[] = ["adjustments"];
+
+/**
+ * The permission each include this rail asks for demands of the key, so a refusal names what to grant.
+ *
+ * Paddle's permissions reference: *"Your key needs read permission for any entity added via the `include`
+ * parameter"*, and a key without it gets `forbidden` (403). The OpenAPI spec says the same thing in
+ * machine-readable form — `x-enum-permissions: {adjustments: ['adjustment.read']}` on this very query
+ * parameter. A 403 whose message says only "Paddle refused" sends an operator to check the key itself,
+ * which is the one thing that is not wrong.
+ */
+const INCLUDE_PERMISSIONS: Readonly<Record<string, string>> = { adjustments: "adjustment.read" };
+
 /**
  * The transaction with this id, or `undefined` when Paddle has none.
  *
- * `include=adjustments` is asked for unconditionally, because the caller that most needs it — the
- * adjustment map — cannot tell a full refund from a partial one without it. Paddle raises one adjustment
- * per refund, so a transaction refunded in two goes carries two, and only their sum answers the question.
- * The include costs nothing on the paths that ignore it, and a key without adjustment-read permission
- * simply gets no array back rather than a refusal.
+ * **An `include` is a permission demand, so it is asked for only by the caller that needs it.** Three of
+ * this rail's four transaction reads — receipt verification, reconciliation, and the sweep's own
+ * projection — want a status, a total and a `custom_data` stamp, all of which are on the transaction
+ * itself. Only the adjustment map needs the array, because an adjustment says how much came off and never
+ * what the original was: Paddle raises one adjustment per refund, so a transaction refunded in two goes
+ * carries two, and only their sum tells a full refund from a partial one.
+ *
+ * An earlier build sent `include=adjustments` on every read and its docstring claimed *"a key without
+ * adjustment-read permission simply gets no array back rather than a refusal"*. Paddle's own reference
+ * says the opposite — see {@link INCLUDE_PERMISSIONS} — so that build made `adjustment.read` a
+ * requirement of checking out, on a rail whose documentation tells adopters to scope keys narrowly. The
+ * adopter documentation now states the requirement where it is real, and the refusal names it.
  */
-export async function readTransaction(id: string, options: PaddleReadOptions): Promise<PaddleTransaction | undefined> {
+export async function readTransaction(
+  id: string,
+  options: PaddleReadOptions,
+  include?: readonly string[],
+): Promise<PaddleTransaction | undefined> {
+  const asked = include === undefined || include.length === 0 ? undefined : include.join(",");
+  const needs = (include ?? [])
+    .map((entity) => INCLUDE_PERMISSIONS[entity])
+    .filter((permission): permission is string => permission !== undefined);
   const answer = await paddleJson(options.transport, `/transactions/${encodeURIComponent(id)}`, {
-    what: `transaction ${id}`,
+    what:
+      asked === undefined
+        ? `transaction ${id}`
+        : `transaction ${id} with include=${asked}${needs.length === 0 ? "" : ` (this key needs the ${needs.join(" and ")} permission)`}`,
     apiKey: options.credentials.apiKey,
     environment: options.environment,
-    query: [["include", "adjustments"]],
+    query: asked === undefined ? undefined : [["include", asked]],
     absentOn404: true,
   });
   if (answer === undefined) return undefined;

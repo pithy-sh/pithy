@@ -35,16 +35,25 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  * It also keeps one answer to "did we hear about this": an operator reading that table sees every event
  * this deployment acted on, whichever door it came through.
  *
- * ## Why the cursor advances only past what was fully projected
+ * ## What a failed event costs, and for how long
  *
- * The first failure halts advancement, and the step retries next run. Advancing past a failure would turn
- * a transient D1 fault into a permanently skipped purchase, and there is no second pass that would find it
- * — that is the whole reason this sweep exists.
+ * Two failures are available here and they are mirror images, so neither rule on its own is right.
  *
- * **Halting the cursor is only half of it.** A failed event is left with `processedAt` null, because the
- * duplicate check reads that column: writing a timestamp beside the error would make the next sweep count
- * the event handled, advance the cursor past it, and lose it exactly as surely as advancing would have.
- * See {@link fail}, and the sibling this sweep does *not* fix, below.
+ * **Always skip.** Advancing past a failure turns a transient D1 fault into a permanently skipped
+ * purchase. There is no second pass that would find it — that is the whole reason this sweep exists.
+ *
+ * **Always halt.** Leaving the cursor in front of the failure and retrying forever is correct for a
+ * transient fault and wrong for a permanent one. A malformed event, a deleted transaction, a shape Paddle
+ * changed — none of them clears on the next attempt, and the sweep then stands in front of that event for
+ * good, so *every later purchase* becomes the one nothing ever finds. That is the same defect with the
+ * blame moved.
+ *
+ * So this halts a **bounded** number of times and then quarantines: see {@link PADDLE_SWEEP_MAX_ATTEMPTS},
+ * {@link fail} and {@link quarantine}. Under the bound, `processedAt` is left null and the cursor stops in
+ * front of the event, so the next run tries it again. At the bound, the row is marked processed with an
+ * error that says it was quarantined and after how many attempts, the run's report counts it, and the
+ * cursor moves on. A row nobody can find is the same defect wearing the other hat, so the quarantine is
+ * written in words on the row rather than being the absence of one.
  *
  * ## The sibling, reported and not touched
  *
@@ -52,8 +61,13 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  * rail. The webhook guard short-circuits any delivery whose `processedAt` is not null, and Paddle's replay
  * endpoint reuses the same `event_id`, so replaying a delivery that errored answers 200 and reprocesses
  * nothing. That is the same shape as the defect fixed here and it is **pre-existing across all rails**, so
- * it belongs to its own change. Until it is made, this sweep is the only repair for a delivery that
- * arrived and failed — which is one more reason the sweep's own copy had to stop doing it.
+ * it belongs to its own change.
+ *
+ * **This sweep does not compensate for it, and an earlier version of this paragraph claimed it did.** The
+ * sweep writes through the same table and reads freshness off the same `processedAt`, so a delivery that
+ * arrived and errored is a *duplicate* to the sweep and is skipped — precisely the row the claim said it
+ * repaired. Nothing in this package currently repairs a failed delivery. What the sweep repairs is a
+ * webhook that was never delivered at all.
  */
 
 /** What the sweep needs. Every seam is explicit, so a test drives it without stubbing a module. */
@@ -92,8 +106,16 @@ export interface PaddleSweepReport {
   ignored: number;
   /** Events already recorded, so the sweep found nothing new. This is the healthy number. */
   duplicate: number;
-  /** Events that could not be projected. Advancement stops at the first one. */
+  /** Events that could not be projected this run. Advancement stops at the first one that is not quarantined. */
   failed: number;
+  /**
+   * Events given up on this run — tried {@link PADDLE_SWEEP_MAX_ATTEMPTS} times and walked past.
+   *
+   * Never zero quietly: each one is also a row carrying its reason, and this is the number that says an
+   * operator has something to read. A run reporting quarantines is a run that moved a purchase out of the
+   * repair path, which is a decision somebody should see rather than infer.
+   */
+  quarantined: number;
   /** Where the cursor now stands, or null when it has never advanced. */
   cursor: string | null;
   /** A gap this run cannot close — a cursor past Paddle's retention — or null. */
@@ -102,6 +124,18 @@ export interface PaddleSweepReport {
 
 /** How many pages one sweep walks by default. Two hundred events a page, so this is 2,000 events. */
 const DEFAULT_MAX_PAGES = 10;
+
+/**
+ * How many sweeps may try one event before it is quarantined and the stream moves on.
+ *
+ * **The unit is a run, and this sweep runs on a daily cron** — so three attempts is three days. That is
+ * long enough for the faults a retry actually fixes: a D1 blip, a Paddle outage, a price somebody has to
+ * add to the catalog after being paged. It is short enough that a fault no retry will ever fix costs the
+ * stream three days rather than the rest of its life.
+ *
+ * One would be "always skip" with a counter bolted on. A hundred would be "always halt" with the same.
+ */
+export const PADDLE_SWEEP_MAX_ATTEMPTS = 3;
 
 /** Read the stored cursor for Paddle's event stream, or null when it has never advanced. */
 async function readCursor(d1: D1Database): Promise<string | null> {
@@ -144,8 +178,11 @@ async function writeCursor(d1: D1Database, cursor: string, now: Date, newId: () 
  *
  * **`fresh` means "not yet handled", which is not the same as "not yet seen".** It is read off
  * `processedAt`, so an event this sweep recorded and then failed to project — `processedAt` left null by
- * {@link fail} — comes back fresh and is tried again. An event that was projected, fenced out or orphaned
- * carries a timestamp and does not.
+ * {@link fail} — comes back fresh and is tried again. An event that was projected, fenced out, orphaned or
+ * quarantined carries a timestamp and does not.
+ *
+ * `attempts` comes back with it, because how many times this event has already been tried is what decides
+ * whether the next failure halts the stream or gives up on it.
  */
 async function record(
   d1: D1Database,
@@ -153,7 +190,7 @@ async function record(
   payload: Record<string, unknown>,
   now: Date,
   newId: () => string,
-): Promise<{ id: string; fresh: boolean }> {
+): Promise<{ id: string; fresh: boolean; attempts: number }> {
   const db = paymentsDatabase(d1);
   const row = PaymentsWebhookEvent.encode({
     id: newId(),
@@ -163,6 +200,7 @@ async function record(
     receivedAt: now,
     processedAt: null,
     error: null,
+    attempts: 0,
     createdAt: now,
   });
   await withD1Retry(() =>
@@ -177,11 +215,17 @@ async function record(
   );
   const stored = await db
     .selectFrom(PAYMENTS_WEBHOOK_EVENTS_TABLE)
-    .select(["id", "processedAt"])
+    .select(["id", "processedAt", "attempts"])
     .where("rail", "=", "paddle")
     .where("providerEventId", "=", eventId)
     .executeTakeFirst();
-  return { id: stored?.id ?? row.id, fresh: stored?.processedAt === null || stored?.processedAt === undefined };
+  return {
+    id: stored?.id ?? row.id,
+    fresh: stored?.processedAt === null || stored?.processedAt === undefined,
+    // The column is `NOT NULL DEFAULT 0`; the coalesce covers the row this call just inserted being read
+    // back before the default is materialised, and a row the webhook path wrote before the column existed.
+    attempts: stored?.attempts ?? 0,
+  };
 }
 
 /**
@@ -203,26 +247,83 @@ async function complete(d1: D1Database, id: string, now: Date, note?: string): P
 }
 
 /**
- * Record why an event could not be projected, and **leave `processedAt` null** so the next sweep tries it.
+ * Record why an event could not be projected, count the attempt, and **leave `processedAt` null**.
  *
- * The distinction is the whole of it. Writing a timestamp beside the error would say "handled", which is
- * what {@link record} reads: the next sweep would count the event a duplicate, advance the cursor past it,
- * and no pass would ever look at it again — a transient D1 fault turned into a permanently lost purchase.
- * Null `processedAt` with a non-null `error` is the honest pair: it arrived, it was tried, it failed, and
- * it is still outstanding.
+ * The null is the whole of it. Writing a timestamp beside the error would say "handled", which is what
+ * {@link record} reads: the next sweep would count the event a duplicate, advance the cursor past it, and
+ * no pass would ever look at it again — a transient D1 fault turned into a permanently lost purchase. Null
+ * `processedAt` with a non-null `error` is the honest pair: it arrived, it was tried, it failed, and it is
+ * still outstanding.
  *
  * `receivedAt` beside a null `processedAt` is already the package's documented drift signal, so this
  * reports through a channel operators read rather than inventing a second one.
  */
-async function fail(d1: D1Database, id: string, error: string): Promise<void> {
+async function fail(d1: D1Database, id: string, attempt: number, error: string): Promise<void> {
   await withD1Retry(() =>
     paymentsDatabase(d1)
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
       // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
-      .set({ processedAt: null, error } as any)
+      .set({ processedAt: null, error, attempts: attempt } as any)
       .where("id", "=", id)
       .execute(),
   );
+}
+
+/** The word an operator greps `error` for. One string, so the writer and a runbook cannot drift apart. */
+const QUARANTINED = "quarantined";
+
+/**
+ * Give up on an event: mark it handled so the stream moves past it, and say in the row that it was
+ * abandoned rather than done.
+ *
+ * `processedAt` is set for the same reason {@link complete} sets it — it is what stops the next sweep
+ * counting the event fresh and starting the whole attempt count again — and it is the reason this needs a
+ * sentence of its own on the row. A quarantined event looks like a completed one to every query that only
+ * reads timestamps, so the `error` names {@link QUARANTINED}, the attempt count, and the last failure that
+ * earned it. That is the difference between a bounded retry and a silent drop, and it is the only thing
+ * standing between them.
+ */
+async function quarantine(d1: D1Database, id: string, attempt: number, now: Date, error: string): Promise<void> {
+  await withD1Retry(() =>
+    paymentsDatabase(d1)
+      .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
+      .set({
+        processedAt: now.getTime(),
+        error: `${QUARANTINED} after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
+        attempts: attempt,
+        // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
+      } as any)
+      .where("id", "=", id)
+      .execute(),
+  );
+}
+
+/**
+ * Count one failed attempt against an event, and say whether the sweep may walk past it.
+ *
+ * `true` means quarantined — the caller advances its cursor. `false` means the bound has not been reached,
+ * so the caller halts in front of the event and the next run tries again.
+ */
+async function attemptFailed(
+  d1: D1Database,
+  id: string,
+  attempts: number,
+  now: Date,
+  reason: string,
+): Promise<boolean> {
+  const attempt = attempts + 1;
+  if (attempt < PADDLE_SWEEP_MAX_ATTEMPTS) {
+    await fail(d1, id, attempt, reason);
+    return false;
+  }
+  await quarantine(d1, id, attempt, now, reason);
+  return true;
+}
+
+/** What to write in `error` for a thrown cause. A `PithyError`'s `detail` is throw-site context, not client text. */
+function reasonFor(cause: unknown): string {
+  if (cause instanceof PithyError) return `${cause.payload.code}: ${cause.payload.detail ?? cause.payload.message}`;
+  return "projection failed";
 }
 
 /**
@@ -241,6 +342,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
     ignored: 0,
     duplicate: 0,
     failed: 0,
+    quarantined: 0,
     cursor: null,
     gap: null,
   };
@@ -275,6 +377,32 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
       report.read += 1;
       const at = deps.now();
 
+      // **Before the allowlist check, because both leave `notification` null and they mean opposite
+      // things.** A withheld type is walked past on purpose; an unreadable one is a failure that must be
+      // recorded and counted. Reading them in the other order files every unreadable event as "ignored"
+      // and advances the cursor over it — losing exactly the purchase this sweep exists to find.
+      if (event.failure !== null) {
+        // The event read cleanly out of the stream and then its *second* read — the transaction an
+        // adjustment names — failed. Recorded so it has a row, a reason and an attempt count, then handled
+        // by exactly the same bound as a projection failure: there is no reason one kind of unrepairable
+        // event should hold the stream up forever and the other should not.
+        const { id, fresh, attempts } = await record(deps.d1, event.eventId, event.failure.payload, at, newId);
+        if (!fresh) {
+          report.duplicate += 1;
+          cursor = event.eventId;
+          continue;
+        }
+        report.failed += 1;
+        if (await attemptFailed(deps.d1, id, attempts, at, reasonFor(event.failure.cause))) {
+          report.quarantined += 1;
+          cursor = event.eventId;
+          continue;
+        }
+        report.cursor = cursor;
+        if (cursor !== null) await writeCursor(deps.d1, cursor, at, newId);
+        return report;
+      }
+
       if (event.notification === null) {
         // A type the query asked Paddle to withhold and Paddle returned anyway. Not recorded — that is the
         // point of the allowlist, and `client_token.created` carries a live token. The cursor still
@@ -285,7 +413,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
       }
 
       const { notification } = event;
-      const { id, fresh } = await record(deps.d1, event.eventId, notification.payload, at, newId);
+      const { id, fresh, attempts } = await record(deps.d1, event.eventId, notification.payload, at, newId);
       if (!fresh) {
         // Already recorded and already handled — the healthy case, and the one that makes two consecutive
         // sweeps idempotent. The cursor still advances past it: it is behind us either way.
@@ -346,18 +474,20 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         report.projected += 1;
         cursor = event.eventId;
       } catch (cause) {
-        // **Advancement stops here, and the row stays unprocessed.** Every event behind this one is
-        // unswept, which is correct: skipping it would turn a transient fault into a purchase nothing ever
-        // finds. And the failed event itself is left with a null `processedAt`, so the next sweep sees it
-        // as fresh and tries again rather than counting it a duplicate and walking past it forever.
+        // **Advancement stops here for a bounded number of runs, and the row stays unprocessed.** Every
+        // event behind this one is unswept, which is correct while there is any prospect of the fault
+        // clearing: skipping straight past would turn a transient fault into a purchase nothing ever
+        // finds. So the row is left with a null `processedAt` and the next sweep sees it fresh.
+        //
+        // Once the attempt count reaches {@link PADDLE_SWEEP_MAX_ATTEMPTS}, the prospect is gone and
+        // holding the stream is the more expensive answer — so the event is quarantined in words on its
+        // own row and the cursor moves on. See the module doc: neither rule alone is right.
         report.failed += 1;
-        await fail(
-          deps.d1,
-          id,
-          cause instanceof PithyError
-            ? `${cause.payload.code}: ${cause.payload.detail ?? cause.payload.message}`
-            : "projection failed",
-        );
+        if (await attemptFailed(deps.d1, id, attempts, at, reasonFor(cause))) {
+          report.quarantined += 1;
+          cursor = event.eventId;
+          continue;
+        }
         report.cursor = cursor;
         if (cursor !== null) await writeCursor(deps.d1, cursor, at, newId);
         return report;
