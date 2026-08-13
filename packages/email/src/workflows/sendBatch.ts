@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { renewClaim } from "../send/renewClaim";
 import { runSend, type SendDeps } from "../send/runSend";
 
 /**
@@ -14,6 +15,11 @@ import { runSend, type SendDeps } from "../send/runSend";
  *
  * **One step per job.** Each is independently retried and backed off by the Workflow runtime, so a
  * single bad recipient never blocks the rest of the batch.
+ *
+ * **The batch is the unit of liveness.** The scheduler claims a whole batch up front and dispatches one
+ * Workflow for it, so every job on the list is held by this body from the first step to the last — and
+ * a job it has not reached is queued, not stranded. Only the batch knows that, so only the batch can
+ * say it: each step renews the claim on the jobs behind it (pithy-sh/pithy#340).
  */
 
 /** The durable step runner, structurally. Injected, so a test can drive an interrupt and a resume. */
@@ -51,7 +57,23 @@ export async function runSendBatch(deps: SendBatchDeps, step: SendBatchStep, job
    */
   const passStartedAtMs: number = await step.do("pass-instant", async () => deps.heartbeatAt().getTime());
   const sendDeps: SendDeps = { ...deps, passStartedAt: new Date(passStartedAtMs) };
-  for (const jobId of jobIds) {
-    await step.do(`send-${jobId}`, () => runSend(sendDeps, jobId).then(() => {}));
+  for (const [index, jobId] of jobIds.entries()) {
+    /**
+     * The jobs behind this one — claimed, `sending`, not yet started (pithy-sh/pithy#340).
+     *
+     * They are held by this batch and nothing writes to them until it arrives, so without this they
+     * carry the claim instant until then and a batch that takes longer to walk than `stuckMs` has its
+     * own queue re-driven out from under it. See {@link renewClaim}.
+     */
+    const tail = jobIds.slice(index + 1);
+    await step.do(`send-${jobId}`, async () => {
+      // Inside the step, not around it, and deliberately not a step of its own. A step's *result* is
+      // journalled, its body is not — so this runs on every attempt of this job and never comes back
+      // from the journal. A resume renews the tail the moment it does real work again, and a step
+      // backing off between retries renews it on each attempt, which is exactly as often as the job in
+      // flight writes its own row. No job in a batch is then staler than the attempt currently running.
+      if (tail.length > 0) await renewClaim(deps.db, tail, deps.heartbeatAt());
+      await runSend(sendDeps, jobId);
+    });
   }
 }
