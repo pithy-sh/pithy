@@ -67,7 +67,30 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  * So an abandoned row is invisible to *this* sweep, which is what stops the attempt count restarting, and
  * fully visible to the webhook path, which is what repairs it. What this sweep repairs is a webhook that
  * was never delivered at all; what repairs a delivery that arrived and failed is the next delivery, and
- * `completeWebhook` no longer writes `processedAt` beside an error.
+ * `completeWebhook` no longer writes `processedAt` beside a repairable error.
+ *
+ * ## An orphan is abandoned, not finished (#339)
+ *
+ * An orphan is an event whose `custom_data` carries no `pithy_user` stamp, for a customer with no
+ * `provider_accounts` row. This sweep used to call {@link complete} on one — the same `processedAt` that
+ * means *finished with*.
+ *
+ * That was wrong, and it was wrong in the one way that costs a purchase. The webhook path treats its own
+ * orphans as outstanding, and both paths write the **same row** under `UNIQUE (rail, providerEventId)`, so
+ * whichever ran second decided. When the sweep ran first, the link then arrived and Paddle redelivered, the
+ * guard read `processedAt`, answered `duplicate`, and the purchase was never projected. An orphan is the
+ * textbook repairable delivery: nothing about the event is wrong, the world is simply missing a row that a
+ * checkout, a client submission or an operator will add.
+ *
+ * The tension is real, though, and it is why `complete` looked reasonable. Leaving an orphan *outstanding*
+ * makes {@link record} count it fresh every run, and {@link fail} halts the cursor in front of it — so one
+ * customer who never links stalls every event behind them, daily, for as long as the deployment runs.
+ *
+ * `abandonedAt` is the state that already resolves exactly this, so it is used rather than a fourth one
+ * invented for the occasion: abandoned is **invisible to this sweep**, so the cursor advances and nothing
+ * stalls, and **not finished to the webhook guard**, so the redelivery that follows the link still repairs
+ * it. See {@link abandon}. Unlike a quarantine it costs no attempts, because an orphan is not a failure
+ * being retried — no number of sweeps conjures a link, so the first look is as informed as the tenth.
  */
 
 /** What the sweep needs. Every seam is explicit, so a test drives it without stubbing a module. */
@@ -104,6 +127,20 @@ export interface PaddleSweepReport {
   projected: number;
   /** Events that were authentic and projected nothing — a fenced delivery, a type the map ignores. */
   ignored: number;
+  /**
+   * Events with a purchase in them and nobody to project it against, walked past and left repairable.
+   *
+   * **Paddle's own `evt_…` ids, and its own field rather than a share of `ignored`.** An ignored event is
+   * one this build was never going to act on; an orphan is a real purchase waiting on a link that has not
+   * arrived. Counting the second as the first is how {@link complete} came to be called on one — see the
+   * module doc — and a number an operator reads as healthy is the wrong place to hide a stuck sale.
+   *
+   * Each entry is also a row carrying `abandonedAt` and its reason, repairable by any delivery of the same
+   * event id once the link exists. **Named here because this sweep will not look again**, so the report is
+   * where an operator learns there is a sale to chase — `refresh` cannot find it either, since an orphan
+   * has no purchase row to re-read.
+   */
+  orphaned: string[];
   /** Events already recorded, so the sweep found nothing new. This is the healthy number. */
   duplicate: number;
   /** Events that could not be projected this run. Advancement stops at the first one that is not quarantined. */
@@ -183,7 +220,12 @@ async function writeCursor(d1: D1Database, cursor: string, now: Date, newId: () 
  * **`fresh` means "this pass still has work to do here", which is not the same as "not yet seen".** It asks
  * {@link isWebhookEventOutstanding}, so an event this sweep recorded and then failed to project — left
  * `pending` or `failed` by {@link fail} — comes back fresh and is tried again, while one that was
- * projected, fenced out or orphaned is finished and does not.
+ * projected, fenced out, or is a type that projects nothing is finished and does not.
+ *
+ * **An orphan is not fresh either, and it is not finished — see {@link orphan}.** A row the *webhook* left
+ * outstanding as an orphan still is, so the sweep picks it up, re-resolves the owner against a table that
+ * may have gained the link since, and either projects it or abandons it. That re-resolution is the one
+ * thing a second look at an orphan is worth, and it happens once.
  *
  * **A quarantined event is not fresh either, and that is a different reason.** It is still outstanding to a
  * webhook delivery, which must be allowed to repair it; it is not outstanding to *this* pass, because the
@@ -243,8 +285,12 @@ async function record(
  * Mark a recorded event **handled**, with the note when it was handled by deciding to do nothing.
  *
  * `processedAt` is the column the webhook guard short-circuits on, so it is set only where the event is
- * genuinely finished with: projected, fenced out, orphaned, or a type that projects nothing. A failure is
- * not one of those — see {@link fail} — and neither is a quarantine, see {@link quarantine}.
+ * genuinely finished with: projected, fenced out, or a type that projects nothing. A failure is not one of
+ * those — see {@link fail} — and neither is a quarantine, see {@link quarantine}.
+ *
+ * **Nor is an orphan, which is the whole of #339.** It reads like one — the sweep can do nothing more with
+ * it, so "handled" is tempting — but the guard reads this column, and the event's repair is precisely the
+ * redelivery that follows the missing link. See {@link abandon} and the module doc.
  */
 async function complete(d1: D1Database, id: string, now: Date, note?: string): Promise<void> {
   await withD1Retry(() =>
@@ -283,6 +329,61 @@ async function fail(d1: D1Database, id: string, attempt: number, error: string):
 /** The word an operator greps `error` for. One string, so the writer and a runbook cannot drift apart. */
 const QUARANTINED = "quarantined";
 
+/** The word for the other reason this sweep walks away from an event, likewise greppable. */
+const ORPHANED = "orphaned";
+
+/**
+ * Stamp `abandonedAt` and say in the row why — the one writer for *this pass has walked away from this*.
+ *
+ * **The state that is neither finished nor outstanding, and the reason there are two columns.**
+ * {@link isWebhookEventOutstanding} reads it false, so this sweep's next run does not pick the event back
+ * up and its cursor is free to advance. {@link isWebhookEventFinished} reads it false, so a later delivery
+ * of the same event — the provider's retry, or an operator's replay, both reusing the original event id —
+ * still runs the handler and can project the purchase.
+ *
+ * Two callers reach it for two different reasons and both want exactly that pair of answers: a quarantine,
+ * which is a bounded retry giving up, and an orphan, which never had anything to retry. `attempts` is
+ * written only when a caller counted any, so an orphan's row does not claim a failure it never had.
+ */
+async function abandon(d1: D1Database, id: string, now: Date, error: string, attempts?: number): Promise<void> {
+  await withD1Retry(() =>
+    paymentsDatabase(d1)
+      .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
+      .set({
+        abandonedAt: now.getTime(),
+        error,
+        ...(attempts === undefined ? {} : { attempts }),
+        // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
+      } as any)
+      .where("id", "=", id)
+      .execute(),
+  );
+}
+
+/**
+ * Walk past an event with a purchase in it and nobody to project it against, and leave it repairable.
+ *
+ * **Not {@link complete}, and that reversal is #339.** Writing `processedAt` here told the webhook guard the
+ * event was finished, and the two paths share one row — so a sweep that reached an orphan first made the
+ * redelivery that arrives *after* the account links answer `duplicate`, and the purchase was never
+ * projected. The one repair path for an orphan is the very delivery that write silenced.
+ *
+ * Not {@link fail} either, and that is the other half. A failure halts the cursor so the next run retries,
+ * which is right for a fault that might clear; an orphan clears when a *link* appears, and no amount of
+ * re-reading this event produces one. Halting would stall every event behind one customer, daily, for good.
+ *
+ * So: abandoned. Invisible to this sweep, still repairable by a delivery. The row says which of the two
+ * reasons put it there, and names the command for an operator who would rather not wait for a redelivery.
+ */
+async function orphan(d1: D1Database, id: string, now: Date): Promise<void> {
+  await abandon(
+    d1,
+    id,
+    now,
+    `${ORPHANED}: no Pithy user could be resolved for this swept event, so the sweep has moved past it. It is not finished — once this customer is linked to a Pithy user, any delivery of this event id projects it, including a replay from Paddle.`,
+  );
+}
+
 /**
  * Give up on an event: stamp `abandonedAt` so this pass moves past it, and say in the row why.
  *
@@ -298,17 +399,12 @@ const QUARANTINED = "quarantined";
  * failure that earned it, so an operator reading the table has the reason and not only a timestamp.
  */
 async function quarantine(d1: D1Database, id: string, attempt: number, now: Date, error: string): Promise<void> {
-  await withD1Retry(() =>
-    paymentsDatabase(d1)
-      .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
-      .set({
-        abandonedAt: now.getTime(),
-        error: `${QUARANTINED} after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
-        attempts: attempt,
-        // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
-      } as any)
-      .where("id", "=", id)
-      .execute(),
+  await abandon(
+    d1,
+    id,
+    now,
+    `${QUARANTINED} after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
+    attempt,
   );
 }
 
@@ -354,6 +450,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
     read: 0,
     projected: 0,
     ignored: 0,
+    orphaned: [],
     duplicate: 0,
     failed: 0,
     quarantined: [],
@@ -457,10 +554,12 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         originalTransactionId: notification.event.originalTransactionId,
       });
       if (!userId) {
-        // Orphaned. No number of sweeps will conjure a link, so the row and its reason are what make it
-        // repairable — and the cursor advances, because retrying it forever would stall every event behind.
-        report.ignored += 1;
-        await complete(deps.d1, id, at, "no Pithy user could be resolved for this swept event");
+        // Orphaned. No number of sweeps will conjure a link, so the cursor advances — retrying it forever
+        // would stall every event behind one customer. But the event is **not finished**: it is a real
+        // purchase waiting on a link, and the delivery that follows that link is what projects it. So
+        // `abandonedAt`, which advances this pass and leaves the guard's short-circuit shut. See #339.
+        report.orphaned.push(event.eventId);
+        await orphan(deps.d1, id, at);
         cursor = event.eventId;
         continue;
       }

@@ -7,6 +7,7 @@ import type { VerifiedNotification } from "../contract";
 import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch, paddleJson } from "./api";
 import { PaddleEvent } from "./objects";
 import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "./read";
+import { recordedPayload } from "./recorded";
 import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook";
 
 /**
@@ -143,8 +144,10 @@ export interface SweptEvent {
    * away the whole page with it, including every event *ahead* of the bad one that had already read
    * perfectly, and the caller's per-event failure handling never saw any of them.
    *
-   * The body travels with the failure so the caller can still record a row for the event. It is present
-   * only on this branch: a withheld type carries no payload here, which is the point of the allowlist.
+   * The body travels with the failure so the caller can still record a row for the event, and it goes
+   * through `recordedPayload` on the way — a write to `pithy_payments_webhook_events` is a write to
+   * `pithy_payments_webhook_events` whichever branch reached it. It is present only on this branch: a
+   * withheld type carries no payload here, which is the point of the allowlist.
    */
   failure: { cause: unknown; payload: Record<string, unknown> } | null;
 }
@@ -246,11 +249,17 @@ export async function sweepPaddleEvents(options: PaddleSweepOptions): Promise<Pa
     } catch (cause) {
       // One event's second read failing is one event's problem. The page still returns, so everything
       // ahead of this event keeps its projection and the caller's cursor can stop exactly here.
+      //
+      // **Through `recordedPayload`, like every other write to that table.** `recorded.ts` states the
+      // control without an exception — `PaddleEvent` is `.loose()`, and a body this build cannot name is a
+      // body it cannot vouch for. Today the swept list is a subset of the recorded list, so this returns the
+      // whole event either way; that subset is an invariant two lists happen to satisfy, not a guarantee
+      // this branch is entitled to assume. A control with one path around it is not a control.
       events.push({
         eventId: event.event_id,
         eventType: event.event_type,
         notification: null,
-        failure: { cause, payload: event as unknown as Record<string, unknown> },
+        failure: { cause, payload: recordedPayload(event) },
       });
     }
   }

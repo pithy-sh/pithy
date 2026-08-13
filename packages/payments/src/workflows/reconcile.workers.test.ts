@@ -1142,6 +1142,7 @@ describe("the Paddle events sweep, inside a pass", () => {
     read: 12,
     projected: 2,
     ignored: 4,
+    orphaned: [],
     duplicate: 6,
     failed: 0,
     quarantined: [],
