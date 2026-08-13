@@ -39,6 +39,7 @@ const CREDENTIALS: PaymentsPaddleCredentials = {
 const NOW = new Date("2026-08-12T09:00:00Z");
 const PRICE = "pri_01kzvyz9e21z9vbhd7xqq3csyh";
 const SUB = "sub_01hv8wptq8987qeep44cyrewp9";
+const TXN = "txn_01hv8wptq8987qeep44cyrewp9";
 const CUSTOMER = "ctm_01hv8wptq8987qeep44cyrewp9";
 
 const CATALOG: PaymentsConfigInput = {
@@ -52,9 +53,19 @@ const CATALOG: PaymentsConfigInput = {
   products: { pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: PRICE } } },
 };
 
+/**
+ * The row-id sequence, per test rather than per sweep.
+ *
+ * Deliberately not reset inside {@link deps}: two sweeps in one test each minting `row-1` would collide on
+ * the table's primary key for any event the second sweep had not already recorded, which is a fixture
+ * artefact that would read as a product failure.
+ */
+let seq = 0;
+
 beforeEach(async () => {
   for (const table of TABLES) await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   await payments_0001_purchases.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  seq = 0;
 });
 
 const db = () => paymentsDatabase(env.DB);
@@ -104,9 +115,58 @@ function stream(pages: unknown[][]): PaddleHttpFetch & { urls: string[] } {
   return transport;
 }
 
+/**
+ * A transport answering `/events` with one page and `/transactions/` with a fixed transaction.
+ *
+ * The adjustment map cannot tell a full refund from a partial one without the transaction's own total, so
+ * a sweep that reaches an adjustment must reach Paddle twice. Every URL is recorded, because "did the
+ * sweep ask?" is the claim.
+ */
+function streamAndTransaction(page: unknown[], txn: unknown): PaddleHttpFetch & { urls: string[] } {
+  const urls: string[] = [];
+  const transport = (async (url: string, _init?: PaddleHttpRequest) => {
+    urls.push(url);
+    const body = url.includes("/transactions/") ? txn : page;
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: body, meta: { pagination: { has_more: false } } }),
+    };
+  }) as PaddleHttpFetch & { urls: string[] };
+  transport.urls = urls;
+  return transport;
+}
+
+/** One approved `refund` adjustment against {@link TXN}, for whatever fraction a case gives it. */
+function refund(id: string, total: string) {
+  return {
+    id,
+    action: "refund",
+    status: "approved",
+    transaction_id: TXN,
+    subscription_id: SUB,
+    customer_id: CUSTOMER,
+    totals: { total },
+    created_at: "2026-08-12T12:00:00Z",
+  };
+}
+
+/** The transaction those adjustments adjust: 9900, billed against the subscription above. */
+function refundedTransaction(adjustments: unknown[]) {
+  return {
+    id: TXN,
+    status: "completed",
+    customer_id: CUSTOMER,
+    subscription_id: SUB,
+    items: [{ price: { id: PRICE } }],
+    details: { totals: { grand_total: "9900", currency_code: "USD" } },
+    adjustments,
+    created_at: "2026-08-12T09:00:00Z",
+  };
+}
+
 /** The sweep's dependencies, with a deterministic id minter so rows are readable. */
 function deps(transport: PaddleHttpFetch, overrides: Record<string, unknown> = {}) {
-  let seq = 0;
   const nextId = () => {
     seq += 1;
     return `row-${seq}`;
@@ -264,6 +324,143 @@ describe("sweepPaddle", () => {
     expect(report).toMatchObject({ read: 0, projected: 0 });
     // Not a single call left the Worker. A rail nobody sells through costs nothing.
     expect(transport.urls).toHaveLength(0);
+  });
+
+  test("an event that failed to project is tried again next sweep, not counted a duplicate", async () => {
+    // The defect. `complete()` set `processedAt` even when it wrote an error, and `fresh` is read off
+    // `processedAt` — so the next sweep called the failure a duplicate, advanced the cursor past it, and
+    // no pass ever looked at it again. The cursor halting in front of the failure was never the whole
+    // repair; it only bought a second look that the row itself then refused to allow.
+    const unsellable = await activated("evt_02", "sub_02");
+    (unsellable.data as { items: { price: { id: string } }[] }).items = [{ price: { id: "pri_not_in_catalog" } }];
+
+    const first = await sweepPaddle(deps(stream([[await activated("evt_01"), unsellable]])));
+    expect(first).toMatchObject({ projected: 1, failed: 1 });
+
+    // The row that makes the retry possible: an error, and **no** `processedAt`. Read as the raw column,
+    // because that is the value `fresh` compares.
+    const failed = (await webhookRows()).find((row) => row.providerEventId === "evt_02");
+    expect(failed?.error).toContain("payments/");
+    expect(failed?.processedAt).toBeNull();
+
+    // Next sweep, with whatever it was that broke now fixed — a price added to the catalog, a transient
+    // D1 fault gone. The event is fresh again and projects.
+    const second = await sweepPaddle(deps(stream([[await activated("evt_02", "sub_02")]])));
+    expect(second).toMatchObject({ read: 1, projected: 1, duplicate: 0, failed: 0 });
+
+    expect((await purchases()).map((row) => row.providerTransactionId).sort()).toEqual([SUB, "sub_02"]);
+    expect((await cursors())[0]?.cursor).toBe("evt_02");
+    // Still one row for it: the retry went through the same `UNIQUE (rail, providerEventId)` insert.
+    expect(await webhookRows()).toHaveLength(2);
+  });
+
+  test("an event that projected is still a duplicate next sweep, so the retry is not a reprojection", async () => {
+    // The other direction, and the one the fix could plausibly break: making everything retryable would
+    // reproject every event on every run forever.
+    await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+    const again = await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+    expect(again).toMatchObject({ read: 1, projected: 0, duplicate: 1 });
+    const row = (await webhookRows())[0];
+    expect(row?.processedAt).not.toBeNull();
+  });
+
+  test("a swept full refund revokes, and the refund delivered in two halves revokes too", async () => {
+    // Two defects in one row of the database. The sweep passed no transaction reader, so every swept
+    // adjustment answered "this deployment cannot read the transaction" and recorded itself handled —
+    // which then made the webhook redelivery of the same event id a duplicate the guard skipped. And the
+    // map compared one adjustment's own total against the grand total, so a 9900 transaction refunded as
+    // two approved 4950 adjustments revoked nothing at all.
+    await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+    expect((await purchases())[0]).toMatchObject({ providerTransactionId: SUB, status: "active" });
+
+    const transport = streamAndTransaction(
+      [
+        {
+          event_id: "evt_refund",
+          event_type: "adjustment.created",
+          occurred_at: "2026-08-12T12:00:00Z",
+          data: refund("adj_02", "4950"),
+        },
+      ],
+      refundedTransaction([refund("adj_01", "4950"), refund("adj_02", "4950")]),
+    );
+    const report = await sweepPaddle(deps(transport));
+    expect(report).toMatchObject({ read: 1, projected: 1, ignored: 0, failed: 0 });
+
+    // The sweep genuinely asked Paddle for the transaction, and asked for its adjustments with it.
+    const read = transport.urls.find((url) => url.includes("/transactions/"));
+    expect(read).toContain(TXN);
+    expect(read).toContain("include=adjustments");
+
+    const rows = await purchases();
+    const charge = rows.find((row) => row.providerTransactionId === TXN);
+    const state = rows.find((row) => row.providerTransactionId === SUB);
+    expect(charge).toMatchObject({ status: "refunded" });
+    expect(charge?.revokedAt).not.toBeNull();
+    // A refunded transaction that leaves the subscription standing is a refunded subscriber still holding
+    // the feature, so the state row has to move with it.
+    expect(state).toMatchObject({ status: "revoked" });
+    expect(state?.revokedAt).not.toBeNull();
+  });
+
+  test("a partial refund is recorded, notes why, and takes nothing away", async () => {
+    // Anti-vacuity for the case above: if everything revoked, that test would pass on a build that
+    // revoked on every adjustment, which is worse than the defect it replaces.
+    await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+
+    const report = await sweepPaddle(
+      deps(
+        streamAndTransaction(
+          [
+            {
+              event_id: "evt_partial",
+              event_type: "adjustment.created",
+              occurred_at: "2026-08-12T12:00:00Z",
+              data: refund("adj_01", "4950"),
+            },
+          ],
+          refundedTransaction([refund("adj_01", "4950")]),
+        ),
+      ),
+    );
+    expect(report).toMatchObject({ read: 1, projected: 0, ignored: 1, failed: 0 });
+
+    expect((await purchases()).find((row) => row.providerTransactionId === TXN)).toBeUndefined();
+    expect((await purchases()).find((row) => row.providerTransactionId === SUB)).toMatchObject({ status: "active" });
+    // Recorded with the reason, which is what makes it answerable when the customer asks.
+    const recorded = (await webhookRows()).find((row) => row.providerEventId === "evt_partial");
+    expect(recorded?.error).toContain("4950");
+    expect(recorded?.error).toContain("9900");
+  });
+
+  test("a credential-bearing event Paddle returned anyway never becomes a row", async () => {
+    // The filter is a request. This is the control. `client_token.created` carries a `token` Paddle does
+    // not redact, and `pithy_payments_webhook_events` is a table an operator greps and a backup keeps.
+    const TOKEN = "test_c0ffee0000000000000planted";
+    const report = await sweepPaddle(
+      deps(
+        stream([
+          [
+            {
+              event_id: "evt_token",
+              event_type: "client_token.created",
+              occurred_at: "2026-08-12T09:00:00Z",
+              data: { id: "ctkn_01", token: TOKEN },
+            },
+            await activated("evt_after"),
+          ],
+        ]),
+      ),
+    );
+    expect(report).toMatchObject({ read: 2, projected: 1, ignored: 1, failed: 0 });
+
+    const rows = await webhookRows();
+    // Anti-vacuity: the sweep did write a row this run, so "no row for the token" is the allowlist and
+    // not the whole sweep having done nothing.
+    expect(rows.map((row) => row.providerEventId)).toEqual(["evt_after"]);
+    expect(JSON.stringify(rows)).not.toContain(TOKEN);
+    // And the cursor is past it, so the stream is not stuck behind an event nothing will ever record.
+    expect((await cursors())[0]?.cursor).toBe("evt_after");
   });
 
   test("walks more than one page, and stops when Paddle says there is no more", async () => {

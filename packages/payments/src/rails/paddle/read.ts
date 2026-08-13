@@ -29,12 +29,21 @@ export interface PaddleReadOptions {
   transport: PaddleHttpFetch;
 }
 
-/** The transaction with this id, or `undefined` when Paddle has none. */
+/**
+ * The transaction with this id, or `undefined` when Paddle has none.
+ *
+ * `include=adjustments` is asked for unconditionally, because the caller that most needs it — the
+ * adjustment map — cannot tell a full refund from a partial one without it. Paddle raises one adjustment
+ * per refund, so a transaction refunded in two goes carries two, and only their sum answers the question.
+ * The include costs nothing on the paths that ignore it, and a key without adjustment-read permission
+ * simply gets no array back rather than a refusal.
+ */
 export async function readTransaction(id: string, options: PaddleReadOptions): Promise<PaddleTransaction | undefined> {
   const answer = await paddleJson(options.transport, `/transactions/${encodeURIComponent(id)}`, {
     what: `transaction ${id}`,
     apiKey: options.credentials.apiKey,
     environment: options.environment,
+    query: [["include", "adjustments"]],
     absentOn404: true,
   });
   if (answer === undefined) return undefined;

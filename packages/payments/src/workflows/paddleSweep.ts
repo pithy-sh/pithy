@@ -14,7 +14,7 @@ import { fulfillPurchase } from "../grants/apply";
 import { linkProviderAccount, resolveNotificationOwner } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
 import type { PaddleEnvironment, PaddleHttpFetch } from "../rails/paddle/api";
-import { PADDLE_EVENT_RETENTION_DAYS, type SweptEvent, sweepPaddleEvents } from "../rails/paddle/events";
+import { PADDLE_EVENT_RETENTION_DAYS, sweepPaddleEvents } from "../rails/paddle/events";
 import type { PaymentsPaddleCredentials } from "../secret/registry";
 
 /**
@@ -40,6 +40,20 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  * The first failure halts advancement, and the step retries next run. Advancing past a failure would turn
  * a transient D1 fault into a permanently skipped purchase, and there is no second pass that would find it
  * — that is the whole reason this sweep exists.
+ *
+ * **Halting the cursor is only half of it.** A failed event is left with `processedAt` null, because the
+ * duplicate check reads that column: writing a timestamp beside the error would make the next sweep count
+ * the event handled, advance the cursor past it, and lose it exactly as surely as advancing would have.
+ * See {@link fail}, and the sibling this sweep does *not* fix, below.
+ *
+ * ## The sibling, reported and not touched
+ *
+ * `completeWebhook` in `http/webhookGuard.ts` sets `processedAt` even when it records an error, on every
+ * rail. The webhook guard short-circuits any delivery whose `processedAt` is not null, and Paddle's replay
+ * endpoint reuses the same `event_id`, so replaying a delivery that errored answers 200 and reprocesses
+ * nothing. That is the same shape as the defect fixed here and it is **pre-existing across all rails**, so
+ * it belongs to its own change. Until it is made, this sweep is the only repair for a delivery that
+ * arrived and failed — which is one more reason the sweep's own copy had to stop doing it.
  */
 
 /** What the sweep needs. Every seam is explicit, so a test drives it without stubbing a module. */
@@ -127,10 +141,16 @@ async function writeCursor(d1: D1Database, cursor: string, now: Date, newId: () 
  *
  * The same `UNIQUE (rail, providerEventId)` insert the webhook guard makes, against the same table and the
  * same key. That is what makes a sweep of an already-delivered event a no-op rather than a second write.
+ *
+ * **`fresh` means "not yet handled", which is not the same as "not yet seen".** It is read off
+ * `processedAt`, so an event this sweep recorded and then failed to project — `processedAt` left null by
+ * {@link fail} — comes back fresh and is tried again. An event that was projected, fenced out or orphaned
+ * carries a timestamp and does not.
  */
 async function record(
   d1: D1Database,
-  event: SweptEvent,
+  eventId: string,
+  payload: Record<string, unknown>,
   now: Date,
   newId: () => string,
 ): Promise<{ id: string; fresh: boolean }> {
@@ -138,8 +158,8 @@ async function record(
   const row = PaymentsWebhookEvent.encode({
     id: newId(),
     rail: "paddle",
-    providerEventId: event.eventId,
-    payload: event.notification.payload,
+    providerEventId: eventId,
+    payload,
     receivedAt: now,
     processedAt: null,
     error: null,
@@ -159,18 +179,47 @@ async function record(
     .selectFrom(PAYMENTS_WEBHOOK_EVENTS_TABLE)
     .select(["id", "processedAt"])
     .where("rail", "=", "paddle")
-    .where("providerEventId", "=", event.eventId)
+    .where("providerEventId", "=", eventId)
     .executeTakeFirst();
   return { id: stored?.id ?? row.id, fresh: stored?.processedAt === null || stored?.processedAt === undefined };
 }
 
-/** Mark a recorded event handled, with the reason when it could not be projected. */
-async function complete(d1: D1Database, id: string, now: Date, error?: string): Promise<void> {
+/**
+ * Mark a recorded event **handled**, with the note when it was handled by deciding to do nothing.
+ *
+ * `processedAt` is what {@link record} reads to know an event is behind us, so it is set only where the
+ * event is genuinely finished with: projected, fenced out, orphaned, or a type that projects nothing. A
+ * failure is not one of those — see {@link fail}.
+ */
+async function complete(d1: D1Database, id: string, now: Date, note?: string): Promise<void> {
   await withD1Retry(() =>
     paymentsDatabase(d1)
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
       // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
-      .set({ processedAt: now.getTime(), error: error ?? null } as any)
+      .set({ processedAt: now.getTime(), error: note ?? null } as any)
+      .where("id", "=", id)
+      .execute(),
+  );
+}
+
+/**
+ * Record why an event could not be projected, and **leave `processedAt` null** so the next sweep tries it.
+ *
+ * The distinction is the whole of it. Writing a timestamp beside the error would say "handled", which is
+ * what {@link record} reads: the next sweep would count the event a duplicate, advance the cursor past it,
+ * and no pass would ever look at it again — a transient D1 fault turned into a permanently lost purchase.
+ * Null `processedAt` with a non-null `error` is the honest pair: it arrived, it was tried, it failed, and
+ * it is still outstanding.
+ *
+ * `receivedAt` beside a null `processedAt` is already the package's documented drift signal, so this
+ * reports through a channel operators read rather than inventing a second one.
+ */
+async function fail(d1: D1Database, id: string, error: string): Promise<void> {
+  await withD1Retry(() =>
+    paymentsDatabase(d1)
+      .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
+      // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
+      .set({ processedAt: null, error } as any)
       .where("id", "=", id)
       .execute(),
   );
@@ -225,7 +274,18 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
     for (const event of swept.events) {
       report.read += 1;
       const at = deps.now();
-      const { id, fresh } = await record(deps.d1, event, at, newId);
+
+      if (event.notification === null) {
+        // A type the query asked Paddle to withhold and Paddle returned anyway. Not recorded — that is the
+        // point of the allowlist, and `client_token.created` carries a live token. The cursor still
+        // advances, because an event nothing here will ever act on is behind us the moment it is read.
+        report.ignored += 1;
+        cursor = event.eventId;
+        continue;
+      }
+
+      const { notification } = event;
+      const { id, fresh } = await record(deps.d1, event.eventId, notification.payload, at, newId);
       if (!fresh) {
         // Already recorded and already handled — the healthy case, and the one that makes two consecutive
         // sweeps idempotent. The cursor still advances past it: it is behind us either way.
@@ -233,8 +293,6 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         cursor = event.eventId;
         continue;
       }
-
-      const { notification } = event;
 
       // The pairing is worth keeping even for an event that projects nothing, and it is proven — the rail
       // returns a reference only when a MAC this deployment's secret produced sits beside it.
@@ -288,13 +346,14 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         report.projected += 1;
         cursor = event.eventId;
       } catch (cause) {
-        // **Advancement stops here.** Every event behind this one is unswept, which is correct: skipping it
-        // would turn a transient fault into a purchase nothing ever finds.
+        // **Advancement stops here, and the row stays unprocessed.** Every event behind this one is
+        // unswept, which is correct: skipping it would turn a transient fault into a purchase nothing ever
+        // finds. And the failed event itself is left with a null `processedAt`, so the next sweep sees it
+        // as fresh and tries again rather than counting it a duplicate and walking past it forever.
         report.failed += 1;
-        await complete(
+        await fail(
           deps.d1,
           id,
-          at,
           cause instanceof PithyError
             ? `${cause.payload.code}: ${cause.payload.detail ?? cause.payload.message}`
             : "projection failed",

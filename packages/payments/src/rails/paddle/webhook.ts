@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import type { PurchaseEnvironment } from "../../data/purchase";
-import { PaymentsVerificationFailedError } from "../../error/errors";
+import { PaymentsRailNotConfiguredError, PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { UnboundProviderEvent, VerifiedNotification, WebhookDelivery } from "../contract";
+import { RESTORING_ACTIONS, REVOKING_ACTIONS, tallyAdjustments } from "./adjustments";
 import type { PaddleEnvironment } from "./api";
 import {
   accountReferenceOf,
   at,
   fencedOut,
-  minorAmount,
   PaddleAdjustment,
   PaddleEvent,
   PaddleSubscription,
@@ -18,6 +18,7 @@ import {
   subscriptionEvent,
   transactionEvent,
 } from "./objects";
+import { recordedPayload } from "./recorded";
 import { PADDLE_SIGNATURE_HEADER, verifyPaddleSignature } from "./signature";
 
 /**
@@ -51,9 +52,24 @@ import { PADDLE_SIGNATURE_HEADER, verifyPaddleSignature } from "./signature";
  *
  * A full refund revokes; a **partial** one records a note and revokes nothing, because a customer who got
  * half their money back has not lost what they bought. That comparison is against the transaction's own
- * grand total, which the adjustment does not carry — so a partial refund costs one read of the
- * transaction, and a read that fails is `payments/provider_unavailable`, which the guard passes through
- * so Paddle redelivers rather than the operator hunting for a rotated key.
+ * grand total, which the adjustment does not carry — so an adjustment costs one read of the transaction,
+ * and a read that fails is `payments/provider_unavailable`, which the guard passes through so Paddle
+ * redelivers rather than the operator hunting for a rotated key.
+ *
+ * **Full means every approved adjustment summed, not this one's own total.** Paddle raises an adjustment
+ * per refund, so 99.00 refunded in two goes is two approved adjustments of 49.50 and neither reaches the
+ * grand total on its own. See `adjustments.ts`.
+ *
+ * The read is not optional, and a caller that omits it is refused rather than answered. It was optional
+ * once, and the events sweep duly forgot it: every swept adjustment then reported "this deployment cannot
+ * read the transaction", recorded itself as handled, and made the webhook redelivery of the same event a
+ * duplicate the guard skipped. A seam that silently degrades is a seam that hides a defect twice over.
+ *
+ * ## Recording is not storing whatever arrives
+ *
+ * Every payload written here goes through {@link recordedPayload}. A destination subscribed to `*` — or a
+ * sweep whose query filter was not honoured — carries `client_token.created`, whose `token` Paddle does
+ * not redact. See `recorded.ts` for why the control is an allowlist here rather than a filter upstream.
  */
 
 /** What the parser needs: the credentials, the deployment asking, the account, and the freshness window. */
@@ -91,7 +107,7 @@ function environmentOf(account: PaddleEnvironment): PurchaseEnvironment {
 }
 
 /** Every transaction-domain event this build maps, and whether it says anything about money. */
-const TRANSACTION_EVENTS: ReadonlySet<string> = new Set([
+export const PADDLE_TRANSACTION_EVENTS: ReadonlySet<string> = new Set([
   "transaction.paid",
   "transaction.completed",
   "transaction.payment_failed",
@@ -109,10 +125,13 @@ const TRANSACTION_EVENTS: ReadonlySet<string> = new Set([
  * money. Projecting one would write an `on_hold` row for every abandoned checkout — noise the reconcile
  * pass then re-reads forever.
  */
-const TRANSACTION_EVENTS_WITHOUT_STATE: ReadonlySet<string> = new Set(["transaction.created", "transaction.ready"]);
+export const PADDLE_TRANSACTION_EVENTS_WITHOUT_STATE: ReadonlySet<string> = new Set([
+  "transaction.created",
+  "transaction.ready",
+]);
 
 /** Every subscription-domain event: the standing changed, and no money moved. */
-const SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
+export const PADDLE_SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
   "subscription.created",
   "subscription.activated",
   "subscription.resumed",
@@ -125,26 +144,13 @@ const SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Every adjustment-domain event: money going back, on Paddle's own initiative. */
-const ADJUSTMENT_EVENTS: ReadonlySet<string> = new Set(["adjustment.created", "adjustment.updated"]);
-
-/**
- * The adjustment actions that revoke an entitlement when approved, and the ones that do not.
- *
- * `chargeback_warning` and its **reverse** are both here as stated rows rather than as an omission — the
- * live `action` enum carries `chargeback_warning_reverse`, which the issue's table does not name. A
- * warning is a notice that a dispute has been opened, not a decision, so neither moves anything. A
- * `credit` against a balance is not a revocation either.
- */
-const REVOKING_ACTIONS: ReadonlySet<string> = new Set(["refund", "chargeback"]);
-
-/** The adjustment actions that restore what a revocation took. */
-const RESTORING_ACTIONS: ReadonlySet<string> = new Set(["chargeback_reverse"]);
+export const PADDLE_ADJUSTMENT_EVENTS: ReadonlySet<string> = new Set(["adjustment.created", "adjustment.updated"]);
 
 /** Nothing at all was learned, but the delivery was authentic. */
 function nothing(event: PaddleEvent, note?: string): VerifiedNotification {
   return {
     providerEventId: event.event_id,
-    payload: { ...event },
+    payload: recordedPayload(event),
     event: null,
     providerAccountId: null,
     accountReference: null,
@@ -195,15 +201,17 @@ export async function readPaddleEvent(
   const environment = environmentOf(options.environment);
   const type = event.event_type;
 
-  if (TRANSACTION_EVENTS_WITHOUT_STATE.has(type)) {
+  if (PADDLE_TRANSACTION_EVENTS_WITHOUT_STATE.has(type)) {
     // Authentic, recorded, and no money has moved. Deliberately checked before the fence: it projects
     // nothing either way, and both answers are the same row.
     return nothing(event);
   }
 
-  if (TRANSACTION_EVENTS.has(type)) return await transactionNotification(event, occurredAt, environment, options);
-  if (SUBSCRIPTION_EVENTS.has(type)) return await subscriptionNotification(event, occurredAt, environment, options);
-  if (ADJUSTMENT_EVENTS.has(type)) return await adjustmentNotification(event, occurredAt, environment, options);
+  if (PADDLE_TRANSACTION_EVENTS.has(type))
+    return await transactionNotification(event, occurredAt, environment, options);
+  if (PADDLE_SUBSCRIPTION_EVENTS.has(type))
+    return await subscriptionNotification(event, occurredAt, environment, options);
+  if (PADDLE_ADJUSTMENT_EVENTS.has(type)) return await adjustmentNotification(event, occurredAt, environment, options);
 
   // `customer.*`, `address.*`, `business.*`, `payment_method.*`, `price.*`, `product.*`, `discount.*`, and
   // a type Paddle ships after this package did. Authentic, recorded, projecting nothing. Never a throw:
@@ -226,7 +234,7 @@ async function transactionNotification(
 
   return {
     providerEventId: event.event_id,
-    payload: { ...event },
+    payload: recordedPayload(event),
     event: transactionEvent(transaction, occurredAt, environment),
     providerAccountId: transaction.customer_id ?? null,
     accountReference: await accountReferenceOf(
@@ -249,7 +257,7 @@ async function subscriptionNotification(
 
   return {
     providerEventId: event.event_id,
-    payload: { ...event },
+    payload: recordedPayload(event),
     event: subscriptionEvent(subscription, occurredAt, environment),
     providerAccountId: subscription.customer_id ?? null,
     // Paddle copies `custom_data` from the transaction that created the subscription onto the
@@ -288,7 +296,17 @@ async function adjustmentNotification(
   // Paddle adds later. A credit against a balance is not a revocation, and a warning is not a decision.
   if (!revoking && !restoring) return nothing(event);
 
-  const transaction = await options.readTransaction?.(adjustment.transaction_id);
+  if (options.readTransaction === undefined) {
+    // Not "cannot read this transaction" — *no reader at all*, which is a wiring defect in this package
+    // and not a fact about Paddle. Answering `nothing()` here is what let the events sweep record every
+    // adjustment as handled without ever asking, so a caller that forgot is refused and the throw stops
+    // the sweep's cursor in front of the event rather than past it.
+    throw new PaymentsRailNotConfiguredError({
+      detail: `Paddle adjustment ${adjustment.id} needs transaction ${adjustment.transaction_id} to tell a full refund from a partial one, and this caller supplied no transaction reader.`,
+    });
+  }
+
+  const transaction = await options.readTransaction(adjustment.transaction_id);
   if (transaction === undefined) {
     // Either Paddle no longer knows the transaction, or it belongs to another deployment on this shared
     // sandbox. Authentic, unprojectable, and worth an operator's attention — so this is one of the two
@@ -307,19 +325,20 @@ async function adjustmentNotification(
     return projected(event, { ...base, revokedAt: null }, transaction.customer_id ?? null);
   }
 
-  const total = minorAmount(transaction.details?.totals?.grand_total);
-  const adjusted = minorAmount(adjustment.totals?.total);
-  const full = total !== null && adjusted !== null && adjusted >= total;
+  // Every approved refund and chargeback against this transaction, summed — not this adjustment's own
+  // total. Two approved refunds of half a transaction each are the customer's whole money back, and
+  // neither one on its own reaches the grand total.
+  const tally = tallyAdjustments(adjustment, transaction);
 
-  if (!full) {
+  if (!tally.full) {
     // A partial refund does not revoke. The entitlement stands, and the row says why.
     //
-    // `total === null` lands here too, and deliberately: an amount this build could not read is not
-    // evidence of a full refund, and revoking on an unreadable figure would take an entitlement away on
-    // a guess. The note makes it repairable.
+    // An unreadable figure lands here too, and deliberately: an amount this build could not read is not
+    // evidence of a full refund, and revoking on it would take an entitlement away on a guess. The note
+    // names both figures and how many adjustments were counted, which is what makes it repairable.
     return nothing(
       event,
-      `Paddle adjustment ${adjustment.id} (${adjustment.action}) covers ${adjusted ?? "an unreadable amount"} of transaction ${adjustment.transaction_id}'s ${total ?? "unreadable"} total. Recorded; the entitlement stands.`,
+      `Paddle adjustment ${adjustment.id} (${adjustment.action}) brings transaction ${adjustment.transaction_id} to ${tally.revokedMinor ?? "an unreadable amount"} adjusted across ${tally.counted} adjustment(s), of a ${tally.totalMinor ?? "unreadable"} total. Recorded; the entitlement stands.`,
     );
   }
 
@@ -366,7 +385,7 @@ function projected(
 ): VerifiedNotification {
   return {
     providerEventId: event.event_id,
-    payload: { ...event },
+    payload: recordedPayload(event),
     event: projection,
     providerAccountId: customerId,
     // Deliberately not resolved here. An adjustment's owner is the row it adjusts, which this deployment
