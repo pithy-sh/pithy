@@ -58,6 +58,14 @@ import rtdnVoided from "../rails/google/fixtures/rtdn-voided-purchase.json" with
 import type { GoogleHttpFetch } from "../rails/google/http";
 import { GOOGLE_JWKS_URL, resetGoogleJwksCache } from "../rails/google/oidc";
 import { GOOGLE_TOKEN_URL } from "../rails/google/playApi";
+import type { LemonSqueezyHttpFetch } from "../rails/lemonSqueezy/api";
+import {
+  CUSTOMER_ID as LEMON_CUSTOMER,
+  FIXTURE_WEBHOOK_SECRET as LEMON_FIXTURE_SECRET,
+  VARIANT_ID as LEMON_VARIANT,
+  subscriptionDelivery,
+} from "../rails/lemonSqueezy/fixtures/events";
+import { signLemonSqueezyBody } from "../rails/lemonSqueezy/signature";
 import type { PaddleHttpFetch } from "../rails/paddle/api";
 import { accountReferenceProof } from "../rails/paddle/objects";
 import { signPaddleBody } from "../rails/paddle/signature";
@@ -84,6 +92,7 @@ import {
   type PaymentsProviderCredentials,
   paymentsSecretsRegistry,
 } from "../secret/registry";
+import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "../workflows/paddleSweep";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
@@ -173,6 +182,12 @@ const CREDENTIALS = {
   stripe: {
     secretKey: STRIPE_TEST_SECRET_KEY,
     webhookSecret: STRIPE_TEST_WEBHOOK_SECRET,
+  },
+  lemonSqueezy: {
+    apiKey: "ls_api_suiteonly",
+    // The secret the fixtures mint against, so a delivery below is signed for real rather than waved through.
+    webhookSecret: LEMON_FIXTURE_SECRET,
+    storeId: "1",
   },
   paddle: {
     apiKey: PADDLE_TEST_API_KEY,
@@ -403,6 +418,17 @@ function paddleTransport(options: AppOptions): PaddleHttpFetch {
   };
 }
 
+/**
+ * A Lemon Squeezy transport that answers nothing.
+ *
+ * The deliveries below are subscription-domain, which this rail reads straight out of the signed body — no
+ * round-trip at all. A 404 for anything else is therefore the honest stub: a case that started needing the
+ * API would fail here rather than pass against a fixture nobody meant to supply.
+ */
+function lemonSqueezyTransport(): LemonSqueezyHttpFetch {
+  return async () => ({ ok: false, status: 404, text: async () => "{}" });
+}
+
 function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {}) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
@@ -429,6 +455,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
       ...(options.trustedGoogle === false ? {} : { googleTrustedKeys: [googleKey.jwk] }),
       googleTransport: googleTransport(options),
       stripeTransport: stripeTransport(options),
+      lemonSqueezyTransport: lemonSqueezyTransport(),
       paddleTransport: paddleTransport(options),
     },
   })(app);
@@ -1516,7 +1543,10 @@ describe("POST /payments/webhooks/google", () => {
     expect(await response.json()).toEqual({ received: true, projected: false });
     const events = await webhookEvents();
     expect(events[0]?.error).toContain(rtdnVoided.voidedPurchaseNotification.orderId);
-    expect(events[0]?.processedAt).not.toBeNull();
+    // Failed rather than finished: the void is about a purchase this deployment may yet acquire — from a
+    // restore, or a client submission — and a redelivery must then be able to revoke it. Nothing here is
+    // done with (#337).
+    expect(events[0]?.processedAt).toBeNull();
     expect(actions()).toEqual(["payments/webhook_received:failure"]);
   });
 
@@ -3355,5 +3385,248 @@ describe("POST /payments/portal — Paddle", () => {
 
   test("an unauthenticated caller is 401", async () => {
     expect((await request(app(), "POST", "/payments/portal")).status).toBe(401);
+  });
+});
+
+/**
+ * **The three things a recorded delivery can be, on every rail this package has.**
+ *
+ * `pithy_payments_webhook_events` is the guard's short-circuit, and the short-circuit is the difference
+ * between a purchase that gets projected and one that never does. A row is *finished* — projected, or
+ * deliberately nothing to project — and a redelivery is genuinely a duplicate. Or it *failed* — it arrived,
+ * it did not project, and the next delivery must run again. Or the sweep *abandoned* it, which is a fact
+ * about the sweep and must not answer for the webhook.
+ *
+ * These cases construct the middle one on all five rails, because `completeWebhook` is shared by all five
+ * and the defect was found on one. The failure is each rail's own orphan: an authentic delivery naming a
+ * store account this deployment has never mapped to a Pithy user. It is the shape every rail can produce,
+ * it is deterministic, and its repair is the realistic one — the link arrives, and the store's next attempt
+ * or an operator's replay projects the purchase that was stuck.
+ */
+const LEMON_CATALOG: PaymentsConfigInput = {
+  rails: { lemonSqueezy: true },
+  lemonSqueezy: { successUrl: "https://acme.example/thanks" },
+  products: {
+    pro_monthly: {
+      type: "subscription",
+      name: "Pro",
+      entitlements: ["pro"],
+      lemonSqueezy: { variantId: String(LEMON_VARIANT) },
+    },
+  },
+};
+
+/** Deliver one Lemon Squeezy webhook, signed the way the store signs it: one bare HMAC over the exact bytes. */
+async function lemonHook(app: Hono<PithyHonoEnv>, body: string) {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-signature": await signLemonSqueezyBody(body, LEMON_FIXTURE_SECRET),
+  };
+  return app.request("http://x/payments/webhooks/lemon-squeezy", { method: "POST", headers, body }, {
+    ...env,
+    ENVIRONMENT: "prod",
+  } as Record<string, unknown>);
+}
+
+/**
+ * One orphaned delivery per rail, and the account link that repairs it.
+ *
+ * `send` is called twice with the same app and must produce the **same** `providerEventId` both times —
+ * that is what makes the second call a redelivery rather than a new event, and it is the only reason this
+ * proves anything about the short-circuit.
+ */
+const ORPHANED: ReadonlyArray<{
+  readonly rail: string;
+  readonly app: () => Hono<PithyHonoEnv>;
+  readonly send: (app: Hono<PithyHonoEnv>) => Promise<Response>;
+  readonly link: () => Promise<unknown>;
+}> = [
+  {
+    rail: "apple",
+    app: () => makeApp(),
+    send: async (app) =>
+      await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: await notification() } }),
+    link: () => linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW }),
+  },
+  {
+    rail: "google",
+    app: () => makeApp(CATALOG, { play: { subscription: playSubscription } }),
+    send: async (app) => await push(app, rtdnRenewed),
+    link: () => linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW }),
+  },
+  {
+    rail: "stripe",
+    app: () => makeApp(),
+    // The reference `/checkout` stamps, removed: an authentic subscription event about a customer nothing
+    // here has ever bound to a user.
+    send: async (app) => await stripeHook(app, withObject(stripeSubscriptionCreated, { metadata: {} })),
+    link: () => linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW }),
+  },
+  {
+    rail: "lemonSqueezy",
+    app: () => makeApp(LEMON_CATALOG),
+    send: async (app) =>
+      await lemonHook(app, await subscriptionDelivery("subscription_created", {}, { stamped: false })),
+    link: () => linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), "ada", { now: NOW }),
+  },
+  {
+    rail: "paddle",
+    app: () => makeApp(PADDLE_CATALOG),
+    send: async (app) => await paddleHook(app, await paddleSubscriptionEvent({ custom: {} })),
+    link: () => linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW }),
+  },
+];
+
+describe("a delivery that arrived and did not project", () => {
+  for (const rail of ORPHANED) {
+    test(`${rail.rail}: is recorded failed rather than finished, and is reprocessed on redelivery`, async () => {
+      const app = rail.app();
+
+      const first = await rail.send(app);
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ received: true, projected: false });
+      expect(await purchases()).toEqual([]);
+
+      // Failed, not finished, and not abandoned. Read as raw columns rather than through the package's own
+      // state reader, so this says what is in the row instead of restating the function that classifies it.
+      const failed = await webhookEvents();
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.error).toContain("no Pithy user");
+      expect(failed[0]?.processedAt, "a failed delivery must not look finished").toBeNull();
+      expect(failed[0]?.abandonedAt).toBeNull();
+
+      // The repair: the link arrives, from a client submission, a checkout, or an operator.
+      await rail.link();
+
+      // The store's next attempt, or an operator's replay. Same event id, so the guard is being asked the
+      // question the defect answered wrongly.
+      const again = await rail.send(app);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+      const rows = await purchases();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ userId: "ada", productId: "pro_monthly" });
+      expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+
+      // One row throughout: the redelivery repaired the record it found, it did not write a second.
+      const settled = await webhookEvents();
+      expect(settled).toHaveLength(1);
+      expect(settled[0]?.processedAt).not.toBeNull();
+      expect(settled[0]?.error).toBeNull();
+    });
+
+    test(`${rail.rail}: a delivery that did project is still answered as a duplicate`, async () => {
+      // The other half, and the reason this is not simply "never short-circuit". A rail that retries sixty
+      // times over three days must cost one insert, not sixty projections — so a finished row still wins.
+      const app = rail.app();
+      await rail.link();
+
+      const first = await rail.send(app);
+      expect(await first.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+      const again = await rail.send(app);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual({ received: true, duplicate: true });
+      expect(await webhookEvents()).toHaveLength(1);
+      expect(await purchases()).toHaveLength(1);
+    });
+  }
+});
+
+/**
+ * **A quarantine bounds a stall. It must not end the event.**
+ *
+ * The Paddle sweep gives up on an event it cannot project, so one bad event cannot hold the stream up for
+ * ever. While that was written as `processedAt`, it also told the webhook guard the event was finished —
+ * and the guard then answered Paddle's ordinary retry, and an operator's replay, with `duplicate`. A
+ * quarantined purchase could not be projected even after somebody fixed what was wrong with it.
+ *
+ * So this drives the **real** sweep to a quarantine, fixes the cause the way an operator would, and lets
+ * the delivery arrive. Nothing is planted: the row under test is the one the sweep actually wrote.
+ */
+describe("a sweep that gave up, and the delivery that arrives afterwards", () => {
+  /** The catalog before the fix: it sells a different price, so the swept event names a SKU nothing maps. */
+  const UNSOLD: PaymentsConfigInput = {
+    ...PADDLE_CATALOG,
+    products: {
+      pro_monthly: {
+        type: "subscription",
+        name: "Pro",
+        entitlements: ["pro"],
+        paddle: { priceId: "pri_01kzvyz9e21z9vbhd7xqq3cszz" },
+      },
+    },
+  };
+
+  /** Paddle's event stream, answering one page and nothing after it. */
+  function stream(events: readonly unknown[]): PaddleHttpFetch {
+    return (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: events, meta: { pagination: { has_more: false } } }),
+    })) as PaddleHttpFetch;
+  }
+
+  const sweep = (catalog: PaymentsConfigInput, events: readonly unknown[]) =>
+    sweepPaddle({
+      d1: env.DB,
+      config: PaymentsConfig.parse(catalog),
+      environment: "production",
+      credentials: { apiKey: PADDLE_TEST_API_KEY, webhookSecret: PADDLE_TEST_WEBHOOK_SECRET },
+      paddleEnvironment: "production",
+      deployment: "prod",
+      now: () => NOW,
+      transport: stream(events),
+      // Nothing in this catalog grants a balance, so fulfillment has nothing to do — supplied explicitly so
+      // an uncomposed ledger cannot be what makes the case pass.
+      fulfill: async () => undefined,
+    });
+
+  test("the quarantined event is reprocessed on delivery, and the fixed cause repairs it", async () => {
+    const event = await paddleSubscriptionEvent();
+
+    // Every attempt under the bound: it failed, and it has not been given up on.
+    for (let attempt = 1; attempt < PADDLE_SWEEP_MAX_ATTEMPTS; attempt += 1) {
+      const report = await sweep(UNSOLD, [event]);
+      expect(report.failed, `attempt ${attempt}`).toBe(1);
+      expect(report.quarantined, `attempt ${attempt}`).toEqual([]);
+    }
+
+    // The attempt that gives up — and it names the event rather than counting it, because an operator
+    // replays an id, not a total.
+    const last = await sweep(UNSOLD, [event]);
+    expect(last.quarantined).toEqual([event.event_id]);
+    expect(await purchases()).toEqual([]);
+
+    const abandoned = (await webhookEvents())[0];
+    expect(abandoned?.abandonedAt, "the sweep gave up, so it must say so in its own column").not.toBeNull();
+    expect(abandoned?.processedAt, "abandoning is not finishing").toBeNull();
+    expect(abandoned?.error).toContain("quarantined");
+
+    // The operator adds the price to the catalog. Then Paddle's ordinary retry, or their replay of the same
+    // `event_id`, arrives at the webhook.
+    const response = await paddleHook(makeApp(PADDLE_CATALOG), event);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+    const rows = await purchases();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", productId: "pro_monthly", status: "active" });
+
+    // One row still, now finished — and `abandonedAt` kept, because how close this came to being lost is
+    // worth having on the record.
+    const repaired = await webhookEvents();
+    expect(repaired).toHaveLength(1);
+    expect(repaired[0]?.processedAt).not.toBeNull();
+    expect(repaired[0]?.error).toBeNull();
+    expect(repaired[0]?.abandonedAt).not.toBeNull();
+
+    // And the repaired row is finished, `abandonedAt` notwithstanding. Paddle retries sixty times over
+    // three days: a row that stayed reprocessable because a sweep once gave up on it would reproject this
+    // purchase on every one of them.
+    const retry = await paddleHook(makeApp(PADDLE_CATALOG), event);
+    expect(await retry.json()).toEqual({ received: true, duplicate: true });
+    expect(await purchases()).toHaveLength(1);
   });
 });

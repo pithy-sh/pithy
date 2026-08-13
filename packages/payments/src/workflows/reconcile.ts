@@ -423,7 +423,7 @@ const EMPTY_SWEEP: PaddleSweepReport = {
   ignored: 0,
   duplicate: 0,
   failed: 0,
-  quarantined: 0,
+  quarantined: [],
   cursor: null,
   gap: null,
 };

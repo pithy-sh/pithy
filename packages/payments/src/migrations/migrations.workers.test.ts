@@ -138,6 +138,45 @@ describe("payments_0001_purchases", () => {
     await expect(insert("w2")).rejects.toThrow(/UNIQUE constraint failed/i);
   });
 
+  test("a webhook event carries both timestamps, each nullable and each defaulting to null", async () => {
+    // #337: "this delivery is finished with" and "a repair pass gave up on it" are different claims, and
+    // the webhook guard short-circuits on the first alone. One column meaning both is what let a failed
+    // delivery and a quarantined sweep event each answer a redelivery `duplicate` for ever.
+    const { results } = await env.DB.prepare("PRAGMA table_info(pithy_payments_webhook_events)").all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    const columns = new Map(results.map((row) => [row.name, row]));
+    for (const name of ["processed_at", "abandoned_at"]) {
+      expect(columns.get(name), name).toBeDefined();
+      expect(columns.get(name)?.notnull, name).toBe(0);
+      expect(columns.get(name)?.dflt_value, name).toBeNull();
+    }
+
+    // And a row written without them really does read back null on both, so "nullable" is the database's
+    // behaviour rather than the pragma's opinion.
+    await env.DB.prepare(
+      "INSERT INTO pithy_payments_webhook_events (id, rail, provider_event_id, payload, received_at, created_at) VALUES ('w0', 'paddle', 'evt_pragma', '{}', 0, 0)",
+    ).run();
+    const stored = await env.DB.prepare(
+      "SELECT processed_at, abandoned_at FROM pithy_payments_webhook_events WHERE id = 'w0'",
+    ).first<{ processed_at: number | null; abandoned_at: number | null }>();
+    expect(stored).toEqual({ processed_at: null, abandoned_at: null });
+  });
+
+  test("the pending read plans on its index — abandoned and failed rows are found, not scanned for", async () => {
+    // Everything not yet finished with, oldest first: pending, failed and abandoned alike. An operator
+    // hunting the row a sweep gave up on runs exactly this, and a scan over every delivery a store has
+    // ever sent is the difference between a usable answer and a timeout.
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_webhook_events WHERE processed_at IS NULL ORDER BY received_at",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("pithy_payments_webhook_events_pending_idx");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
   test("the purchase listing plans on its index rather than sorting the table", async () => {
     // SQLite's own answer, not ours. `USE TEMP B-TREE FOR ORDER BY` in this plan is the defect the
     // index exists to prevent, and it is the one thing a correctness test of the read can never catch.

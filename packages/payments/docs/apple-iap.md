@@ -120,7 +120,7 @@ Worth knowing, because it explains the failure modes:
 2. Payments verifies it — the certificate chain in the `x5c` header, terminating in the pinned Apple root, then the signature over the exact received bytes — and refuses with 401 if any of that fails. **Nothing is recorded for a delivery that fails this step**, so a forger cannot fill the table.
 3. The nested transaction is verified independently, against the same chain, and both bundle ids are checked against yours.
 4. Apple's `notificationType` and `subtype` are mapped into the normalized status set, and the transaction is projected.
-5. The delivery is recorded either way, in `pithy_payments_webhook_events`, keyed on Apple's `notificationUUID`, with `processedAt` and any reason it was not projected.
+5. The delivery is recorded either way, in `pithy_payments_webhook_events`, keyed on Apple's `notificationUUID`. A delivery that projected carries `processedAt`; one that did not carries the reason and no `processedAt`, so Apple's next attempt — or your replay — runs it again.
 
 So: a redelivery of a notification already processed short-circuits with 200 and runs nothing, which is what makes Apple's at-least-once retries free. A notification type this build has never seen is recorded and answered 200 — Apple adds types, and answering non-2xx would make Apple retry it forever while reading as a broken endpoint. A sandbox transaction reaching a production deployment is 200, is not projected, and records `payments/environment_mismatch`.
 

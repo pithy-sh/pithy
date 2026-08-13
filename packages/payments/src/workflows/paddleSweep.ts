@@ -9,7 +9,7 @@ import { railEnabled } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PADDLE_EVENTS_CURSOR, PaymentsSyncCursor } from "../data/syncCursor";
 import { PAYMENTS_SYNC_CURSORS_TABLE, PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
-import { PaymentsWebhookEvent } from "../data/webhookEvent";
+import { isWebhookEventOutstanding, PaymentsWebhookEvent, webhookEventState } from "../data/webhookEvent";
 import { fulfillPurchase } from "../grants/apply";
 import { linkProviderAccount, resolveNotificationOwner } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
@@ -49,25 +49,25 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  * blame moved.
  *
  * So this halts a **bounded** number of times and then quarantines: see {@link PADDLE_SWEEP_MAX_ATTEMPTS},
- * {@link fail} and {@link quarantine}. Under the bound, `processedAt` is left null and the cursor stops in
- * front of the event, so the next run tries it again. At the bound, the row is marked processed with an
- * error that says it was quarantined and after how many attempts, the run's report counts it, and the
+ * {@link fail} and {@link quarantine}. Under the bound, both timestamps stay null and the cursor stops in
+ * front of the event, so the next run tries it again. At the bound, `abandonedAt` is stamped with an error
+ * naming the quarantine and the attempts that earned it, the run's report names the event id, and the
  * cursor moves on. A row nobody can find is the same defect wearing the other hat, so the quarantine is
  * written in words on the row rather than being the absence of one.
  *
- * ## The sibling, reported and not touched
+ * ## A quarantine bounds a stall; it does not end an event
  *
- * `completeWebhook` in `http/webhookGuard.ts` sets `processedAt` even when it records an error, on every
- * rail. The webhook guard short-circuits any delivery whose `processedAt` is not null, and Paddle's replay
- * endpoint reuses the same `event_id`, so replaying a delivery that errored answers 200 and reprocesses
- * nothing. That is the same shape as the defect fixed here and it is **pre-existing across all rails**, so
- * it belongs to its own change.
+ * `abandonedAt` and `processedAt` are separate columns for one reason (#337). "This pass has given up" and
+ * "this event is finished with" are different claims, and the webhook guard short-circuits on the second.
+ * While the quarantine wrote `processedAt`, it also answered Paddle's ordinary retry — and an operator's
+ * replay, which reuses the same `event_id` — with `duplicate`, so a quarantined purchase could never be
+ * projected even after somebody fixed the cause. A bounded retry that is silently terminal is just the
+ * "always skip" rule with extra steps.
  *
- * **This sweep does not compensate for it, and an earlier version of this paragraph claimed it did.** The
- * sweep writes through the same table and reads freshness off the same `processedAt`, so a delivery that
- * arrived and errored is a *duplicate* to the sweep and is skipped — precisely the row the claim said it
- * repaired. Nothing in this package currently repairs a failed delivery. What the sweep repairs is a
- * webhook that was never delivered at all.
+ * So an abandoned row is invisible to *this* sweep, which is what stops the attempt count restarting, and
+ * fully visible to the webhook path, which is what repairs it. What this sweep repairs is a webhook that
+ * was never delivered at all; what repairs a delivery that arrived and failed is the next delivery, and
+ * `completeWebhook` no longer writes `processedAt` beside an error.
  */
 
 /** What the sweep needs. Every seam is explicit, so a test drives it without stubbing a module. */
@@ -111,11 +111,15 @@ export interface PaddleSweepReport {
   /**
    * Events given up on this run — tried {@link PADDLE_SWEEP_MAX_ATTEMPTS} times and walked past.
    *
-   * Never zero quietly: each one is also a row carrying its reason, and this is the number that says an
-   * operator has something to read. A run reporting quarantines is a run that moved a purchase out of the
-   * repair path, which is a decision somebody should see rather than infer.
+   * **Paddle's own `evt_…` ids, not a count.** A count says an operator has something to read and then
+   * makes them go and find it; the id is what they replay, what they grep the table for, and what they
+   * paste into Paddle's replay endpoint. `length` is still the count for a log line.
+   *
+   * Never empty quietly: each entry is also a row carrying `abandonedAt` and its reason. A run reporting
+   * quarantines is a run that moved a purchase out of *its own* repair path, which is a decision somebody
+   * should see rather than infer.
    */
-  quarantined: number;
+  quarantined: string[];
   /** Where the cursor now stands, or null when it has never advanced. */
   cursor: string | null;
   /** A gap this run cannot close — a cursor past Paddle's retention — or null. */
@@ -176,10 +180,16 @@ async function writeCursor(d1: D1Database, cursor: string, now: Date, newId: () 
  * The same `UNIQUE (rail, providerEventId)` insert the webhook guard makes, against the same table and the
  * same key. That is what makes a sweep of an already-delivered event a no-op rather than a second write.
  *
- * **`fresh` means "not yet handled", which is not the same as "not yet seen".** It is read off
- * `processedAt`, so an event this sweep recorded and then failed to project — `processedAt` left null by
- * {@link fail} — comes back fresh and is tried again. An event that was projected, fenced out, orphaned or
- * quarantined carries a timestamp and does not.
+ * **`fresh` means "this pass still has work to do here", which is not the same as "not yet seen".** It asks
+ * {@link isWebhookEventOutstanding}, so an event this sweep recorded and then failed to project — left
+ * `pending` or `failed` by {@link fail} — comes back fresh and is tried again, while one that was
+ * projected, fenced out or orphaned is finished and does not.
+ *
+ * **A quarantined event is not fresh either, and that is a different reason.** It is still outstanding to a
+ * webhook delivery, which must be allowed to repair it; it is not outstanding to *this* pass, because the
+ * bound exists so one unprojectable event cannot hold the stream up for ever, and picking its own
+ * quarantines back up would restart the count and stall again. Two readers, two questions — see
+ * `data/webhookEvent.ts`.
  *
  * `attempts` comes back with it, because how many times this event has already been tried is what decides
  * whether the next failure halts the stream or gives up on it.
@@ -199,6 +209,7 @@ async function record(
     payload,
     receivedAt: now,
     processedAt: null,
+    abandonedAt: null,
     error: null,
     attempts: 0,
     createdAt: now,
@@ -215,13 +226,13 @@ async function record(
   );
   const stored = await db
     .selectFrom(PAYMENTS_WEBHOOK_EVENTS_TABLE)
-    .select(["id", "processedAt", "attempts"])
+    .select(["id", "processedAt", "abandonedAt", "error", "attempts"])
     .where("rail", "=", "paddle")
     .where("providerEventId", "=", eventId)
     .executeTakeFirst();
   return {
     id: stored?.id ?? row.id,
-    fresh: stored?.processedAt === null || stored?.processedAt === undefined,
+    fresh: stored === undefined || isWebhookEventOutstanding(webhookEventState(stored)),
     // The column is `NOT NULL DEFAULT 0`; the coalesce covers the row this call just inserted being read
     // back before the default is materialised, and a row the webhook path wrote before the column existed.
     attempts: stored?.attempts ?? 0,
@@ -231,9 +242,9 @@ async function record(
 /**
  * Mark a recorded event **handled**, with the note when it was handled by deciding to do nothing.
  *
- * `processedAt` is what {@link record} reads to know an event is behind us, so it is set only where the
- * event is genuinely finished with: projected, fenced out, orphaned, or a type that projects nothing. A
- * failure is not one of those — see {@link fail}.
+ * `processedAt` is the column the webhook guard short-circuits on, so it is set only where the event is
+ * genuinely finished with: projected, fenced out, orphaned, or a type that projects nothing. A failure is
+ * not one of those — see {@link fail} — and neither is a quarantine, see {@link quarantine}.
  */
 async function complete(d1: D1Database, id: string, now: Date, note?: string): Promise<void> {
   await withD1Retry(() =>
@@ -247,13 +258,13 @@ async function complete(d1: D1Database, id: string, now: Date, note?: string): P
 }
 
 /**
- * Record why an event could not be projected, count the attempt, and **leave `processedAt` null**.
+ * Record why an event could not be projected, count the attempt, and **leave both timestamps null**.
  *
- * The null is the whole of it. Writing a timestamp beside the error would say "handled", which is what
- * {@link record} reads: the next sweep would count the event a duplicate, advance the cursor past it, and
- * no pass would ever look at it again — a transient D1 fault turned into a permanently lost purchase. Null
- * `processedAt` with a non-null `error` is the honest pair: it arrived, it was tried, it failed, and it is
- * still outstanding.
+ * The nulls are the whole of it. A `processedAt` beside the error would say "finished", and an
+ * `abandonedAt` would say "given up on"; either would stop {@link record} counting the event outstanding,
+ * the next sweep would advance the cursor past it, and no pass would ever look at it again — a transient
+ * D1 fault turned into a permanently lost purchase. Two nulls with a non-null `error` is the honest
+ * triple: it arrived, it was tried, it failed, and it is still outstanding to everyone.
  *
  * `receivedAt` beside a null `processedAt` is already the package's documented drift signal, so this
  * reports through a channel operators read rather than inventing a second one.
@@ -273,22 +284,25 @@ async function fail(d1: D1Database, id: string, attempt: number, error: string):
 const QUARANTINED = "quarantined";
 
 /**
- * Give up on an event: mark it handled so the stream moves past it, and say in the row that it was
- * abandoned rather than done.
+ * Give up on an event: stamp `abandonedAt` so this pass moves past it, and say in the row why.
  *
- * `processedAt` is set for the same reason {@link complete} sets it — it is what stops the next sweep
- * counting the event fresh and starting the whole attempt count again — and it is the reason this needs a
- * sentence of its own on the row. A quarantined event looks like a completed one to every query that only
- * reads timestamps, so the `error` names {@link QUARANTINED}, the attempt count, and the last failure that
- * earned it. That is the difference between a bounded retry and a silent drop, and it is the only thing
- * standing between them.
+ * **`abandonedAt`, not `processedAt`, and the two columns are the whole fix for #337.** What this sweep
+ * needs is for its own next run to stop counting the event fresh and restarting the attempt count — that is
+ * a fact about *this pass*, and {@link record} reads it through {@link isWebhookEventOutstanding}. What it
+ * emphatically must not do is tell the webhook guard the event is finished: writing `processedAt` here made
+ * a quarantine answer Paddle's ordinary retry, and an operator's replay, with `duplicate` — so a
+ * quarantined purchase could never be projected even once its cause was fixed. A quarantine bounds a
+ * stall; it was never meant to be terminal.
+ *
+ * The row still says so in words. `error` names {@link QUARANTINED}, the attempt count, and the last
+ * failure that earned it, so an operator reading the table has the reason and not only a timestamp.
  */
 async function quarantine(d1: D1Database, id: string, attempt: number, now: Date, error: string): Promise<void> {
   await withD1Retry(() =>
     paymentsDatabase(d1)
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
       .set({
-        processedAt: now.getTime(),
+        abandonedAt: now.getTime(),
         error: `${QUARANTINED} after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
         attempts: attempt,
         // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
@@ -342,7 +356,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
     ignored: 0,
     duplicate: 0,
     failed: 0,
-    quarantined: 0,
+    quarantined: [],
     cursor: null,
     gap: null,
   };
@@ -394,7 +408,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         }
         report.failed += 1;
         if (await attemptFailed(deps.d1, id, attempts, at, reasonFor(event.failure.cause))) {
-          report.quarantined += 1;
+          report.quarantined.push(event.eventId);
           cursor = event.eventId;
           continue;
         }
@@ -484,7 +498,7 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         // own row and the cursor moves on. See the module doc: neither rule alone is right.
         report.failed += 1;
         if (await attemptFailed(deps.d1, id, attempts, at, reasonFor(cause))) {
-          report.quarantined += 1;
+          report.quarantined.push(event.eventId);
           cursor = event.eventId;
           continue;
         }

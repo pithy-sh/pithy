@@ -116,7 +116,7 @@ Worth knowing, because it explains the failure modes:
 2. Payments creates a Checkout Session with `client_reference_id` set to the purchaser, and sends the browser to Stripe's page.
 3. Stripe takes the money and POSTs `checkout.session.completed`. Its `client_reference_id` and its `cus_…` are what write the `(stripe, cus_…) → user` row. **This is the only place that link is ever made**, because a Stripe purchase is only ever heard about through a webhook.
 4. The subscription's own events carry the state. Each one is verified — HMAC over the exact bytes, inside a five-minute window — then recorded, then projected.
-5. Every delivery lands in `pithy_payments_webhook_events`, with `processedAt` and any reason it was not projected.
+5. Every delivery lands in `pithy_payments_webhook_events`. A delivery that projected carries `processedAt`; one that did not carries the reason and no `processedAt`, so Stripe's next attempt — or your replay — runs it again.
 
 So: a delivery that fails its signature is 401 and **nothing is recorded**, which is what stops a forger filling the table. A delivery Stripe signed but this build does not act on is 200 with a row. A test-mode purchase against a production deployment is 200, is not projected, and records `payments/environment_mismatch`.
 

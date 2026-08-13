@@ -139,7 +139,7 @@ Worth knowing, because it explains the failure modes:
 2. Payments verifies the token — signature, issuer, audience, expiry, service account — and refuses with 401 if any of that fails. **Nothing is recorded for a delivery that fails this step**, so a forger cannot fill the table.
 3. Payments decodes the notification and checks the package name.
 4. The notification is a **pointer**. Payments calls the Play Developer API to find out what the purchase now is, and projects that.
-5. The delivery is recorded either way, in `pithy_payments_webhook_events`, with `processedAt` and any reason it was not projected.
+5. The delivery is recorded either way, in `pithy_payments_webhook_events`. A delivery that projected carries `processedAt`; one that did not carries the reason and no `processedAt`, so Pub/Sub's next attempt — or your replay — runs it again.
 
 So: a Play outage is a 503 and Pub/Sub redelivers. A purchase Play does not recognize is a 200 with the reason recorded, because retrying will not change the answer. Subscription refunds arrive as `SUBSCRIPTION_REVOKED` and project immediately.
 

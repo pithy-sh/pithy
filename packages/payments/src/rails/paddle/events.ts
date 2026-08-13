@@ -16,14 +16,13 @@ import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook"
  * which no client submitted has no row, so it is invisible to `refresh` forever. Paddle publishes an
  * account-wide event stream, so this rail can find those, and no other rail in this package can.
  *
- * **It does not repair a delivery that arrived and failed, and an earlier version of this paragraph said
- * it did.** `completeWebhook` sets `processedAt` even when it records an error; the sweep writes through
- * the same table on the same `UNIQUE (rail, providerEventId)` and reads freshness off that same column,
- * so a delivery that errored is a *duplicate* to the sweep and is skipped. Paddle's replay endpoint
- * reuses the same `event_id`, so replaying it does not reprocess either. That is a pre-existing defect
- * across all four rails, it is **reported and not fixed here**, and nothing in this package currently
- * repairs a failed delivery. What the sweep repairs is a webhook that was never delivered at all — which
- * is the case that has no row and is invisible to `refresh` forever.
+ * **It does repair a delivery that arrived and failed, though that is not what it is for.** The sweep
+ * writes through the same table on the same `UNIQUE (rail, providerEventId)`, and since #337 both readers
+ * agree that a delivery which errored is still outstanding — `completeWebhook` leaves `processedAt` null
+ * beside its reason — so a swept event whose webhook failed is tried again rather than counted a
+ * duplicate. The primary repair for that case is the *next delivery*, on every rail; Paddle's replay
+ * endpoint reuses the same `event_id` and now reprocesses. What only this sweep can repair is a webhook
+ * that was never delivered at all — the case that has no row and is invisible to `refresh` forever.
  *
  * ## The stream is account-wide, and that is a hazard rather than a convenience
  *
