@@ -83,9 +83,9 @@ describe("payments route contract", () => {
   test("the gate is inspecting the real payments routes, not an empty app", () => {
     const app = makeApp();
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this build serves — the ten from issue #79, the four management reads from #247, and
-    // the catalog read from #300. The list is what makes adding a sixteenth a deliberate edit rather than
-    // a surprise, and it is the only place a route can be counted.
+    // Every route this build serves — the ten from issue #79, the four management reads from #247, the
+    // catalog read from #300, and Paddle's webhook. The list is what makes adding a twentieth a deliberate
+    // edit rather than a surprise, and it is the only place a route can be counted.
     expect(paths).toEqual([
       "/payments/admin/catalog",
       "/payments/admin/discounts",
@@ -105,6 +105,7 @@ describe("payments route contract", () => {
       "/payments/webhooks/apple",
       "/payments/webhooks/google",
       "/payments/webhooks/lemon-squeezy",
+      "/payments/webhooks/paddle",
       "/payments/webhooks/stripe",
     ]);
     // One `:segment`, which is what makes the param gate above do work rather than pass vacuously.

@@ -83,7 +83,7 @@ const REFUSAL = {
  */
 describe("the client's literal unions match the schemas they mirror", () => {
   test("rails", () => {
-    const rails: PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy"];
+    const rails: PaymentsClientRail[] = ["apple", "google", "stripe", "lemonSqueezy", "paddle"];
     expect([...PAYMENTS_RAILS].sort()).toEqual([...rails].sort());
   });
 

@@ -50,14 +50,14 @@ export const paymentsConfig = paymentsModule.enabled
   : {
       enabled: false as const,
       environment: "dev",
-      rails: { apple: false, google: false, stripe: false, lemonSqueezy: false },
+      rails: { apple: false, google: false, stripe: false, lemonSqueezy: false, paddle: false },
       basePath: "/payments",
+      paddle: null as { clientToken: string; environment: "sandbox" | "production"; checkout: string } | null,
       products: [] as {
         id: string;
         type: "consumable" | "non_consumable" | "subscription";
         entitlements: string[];
         name: string;
-        stripePriceId: string | null;
-        lemonSqueezyVariantId: string | null;
+        skus: { stripe: string | null; lemonSqueezy: string | null; paddle: string | null };
       }[],
     };

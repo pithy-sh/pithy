@@ -152,6 +152,7 @@ describe("payments()", () => {
       "/billing/webhooks/apple",
       "/billing/webhooks/google",
       "/billing/webhooks/lemon-squeezy",
+      "/billing/webhooks/paddle",
       "/billing/webhooks/stripe",
     ]);
   });
@@ -163,6 +164,7 @@ describe("payments()", () => {
       "pithyPaymentsProviderAccounts",
       "pithyPaymentsPurchases",
       "pithyPaymentsReconcileRuns",
+      "pithyPaymentsSyncCursors",
       "pithyPaymentsWebhookEvents",
     ]);
     // CamelCasePlugin snake-cases each to `pithy_payments_*`; the prefix is what keeps them out of an
@@ -224,6 +226,7 @@ describe("payments()", () => {
       google: false,
       stripe: false,
       lemonSqueezy: false,
+      paddle: false,
     });
   });
 
@@ -369,24 +372,30 @@ const PUBLISHED_CLIENT_KEYS = [
   "type",
   "entitlements",
   "name",
-  "stripePriceId",
-  "lemonSqueezyVariantId",
+  "paddle",
+  "skus",
+  "clientToken",
+  "checkout",
 ];
 
 describe("payments().client — virtual:pithy/payments", () => {
   const projection = resolveClientProjection(payments(CLIENT_CATALOG), { environment: "prod" });
 
-  test("projects exactly five keys, and per product exactly six more", () => {
-    expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "environment", "products", "rails"]);
+  test("projects exactly six keys, and per product exactly five more", () => {
+    expect(Object.keys(projection).sort()).toEqual([
+      "basePath",
+      "enabled",
+      "environment",
+      "paddle",
+      "products",
+      "rails",
+    ]);
     for (const product of projection.products as Record<string, unknown>[]) {
-      expect(Object.keys(product).sort()).toEqual([
-        "entitlements",
-        "id",
-        "lemonSqueezyVariantId",
-        "name",
-        "stripePriceId",
-        "type",
-      ]);
+      expect(Object.keys(product).sort()).toEqual(["entitlements", "id", "name", "skus", "type"]);
+    }
+    // The rail-keyed map is a second key set and gets the same treatment: written out, never derived.
+    for (const product of projection.products as { skus: Record<string, unknown> }[]) {
+      expect(Object.keys(product.skus).sort()).toEqual(["lemonSqueezy", "paddle", "stripe"]);
     }
   });
 
@@ -455,19 +464,25 @@ describe("payments().client — virtual:pithy/payments", () => {
   });
 
   test("null, never undefined — the projection is inlined with JSON.stringify", () => {
-    const products = projection.products as { id: string; stripePriceId: string | null }[];
+    const products = projection.products as { id: string; skus: { stripe: string | null } }[];
     const adsOnly = products.find((product) => product.id === "remove_ads");
-    expect(adsOnly?.stripePriceId).toBeNull();
+    expect(adsOnly?.skus.stripe).toBeNull();
     expect(JSON.stringify(projection)).not.toContain("undefined");
   });
 
   test("carries the enabled rails, so a paywall knows which products it can actually sell", () => {
-    expect(projection.rails).toEqual({ apple: true, google: true, stripe: true, lemonSqueezy: false });
+    expect(projection.rails).toEqual({ apple: true, google: true, stripe: true, lemonSqueezy: false, paddle: false });
     const mobileOnly = resolveClientProjection(
       payments({ rails: { apple: true }, products: { remove_ads: CLIENT_CATALOG.products.remove_ads } }),
       { environment: "dev" },
     );
-    expect(mobileOnly.rails).toEqual({ apple: true, google: false, stripe: false, lemonSqueezy: false });
+    expect(mobileOnly.rails).toEqual({
+      apple: true,
+      google: false,
+      stripe: false,
+      lemonSqueezy: false,
+      paddle: false,
+    });
   });
 
   test("names the environment the bundle was built for", () => {

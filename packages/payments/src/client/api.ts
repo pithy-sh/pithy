@@ -53,7 +53,7 @@ export const CHECKOUT_SESSION_PARAM = "session";
  * graph does not belong. `api.test.ts` pins each of these against the schema it mirrors, so the
  * duplication cannot drift.
  */
-export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy";
+export type PaymentsClientRail = "apple" | "google" | "stripe" | "lemonSqueezy" | "paddle";
 
 /**
  * The rails that create a hosted checkout a browser can be sent to.

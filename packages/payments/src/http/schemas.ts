@@ -251,6 +251,28 @@ export const LemonSqueezyWebhookNotification = z
 export type LemonSqueezyWebhookNotification = z.infer<typeof LemonSqueezyWebhookNotification>;
 
 /**
+ * Paddle's webhook body: an event envelope carrying its own id, its type, when it happened, and the entity.
+ *
+ * The rail declares the same shape for itself, for the reason every other rail's does — it reads the bytes
+ * in order to check them and must not import across the HTTP seam to do it. Change one, change the other.
+ *
+ * **The proof is not in here.** Authenticity is the timestamped HMAC in `Paddle-Signature`, which the guard
+ * has verified over the exact received bytes before this validator parses anything. So this validator's job
+ * is only to say the body is shaped like a delivery, which keeps a malformed one a 400 rather than something
+ * a handler has to defend against.
+ */
+export const PaddleWebhookNotification = z
+  .object({
+    event_id: z.string().min(1).describe("Paddle's own id for the event — `evt_…`. The dedup key."),
+    event_type: z.string().min(1).describe("What happened — `transaction.completed`, `subscription.canceled`."),
+    occurred_at: z.string().min(1).describe("When it happened. The watermark, off the envelope and never the entity."),
+    data: z.record(z.string(), z.unknown()).describe("The entity the event is about."),
+  })
+  .loose()
+  .describe("The body Paddle POSTs to a notification destination.");
+export type PaddleWebhookNotification = z.infer<typeof PaddleWebhookNotification>;
+
+/**
  * A control-plane grant: who, which entitlement, and for how long.
  *
  * The one place in this package where `userId` is a request field, and the only reason it is legal is the gate
