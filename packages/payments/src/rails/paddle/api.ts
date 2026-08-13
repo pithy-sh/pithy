@@ -127,8 +127,12 @@ export interface PaddleJsonOptions {
   /** The JSON request body. */
   body?: unknown;
   /**
-   * The query string as pairs. A repeated key is how Paddle takes an array — `event_type[]` — so this is
-   * a list of pairs rather than a record.
+   * The query string as pairs, appended in order.
+   *
+   * Pairs rather than a record so order is this caller's to decide and a key may legitimately repeat.
+   * **An array parameter is not one of those cases.** Paddle documents every `array[string]` parameter as
+   * one key with comma-separated values — `event_type=a,b,c`, `include=x,y` — and a repeated key is a form
+   * it documents nowhere. Build the comma-separated value at the call site.
    */
   query?: readonly (readonly [string, string])[];
   /**

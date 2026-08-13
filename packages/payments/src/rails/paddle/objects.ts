@@ -119,6 +119,37 @@ const PaddleTransactionItem = z
   .loose()
   .describe("One line of a transaction. Single-product checkouts have exactly one.");
 
+/** An adjustment's fields — a refund, a credit, or a chargeback, which on this rail can arrive unsolicited. */
+export const PaddleAdjustment = z
+  .object({
+    id: z.string().min(1).describe("The adjustment — `adj_…`."),
+    action: z
+      .string()
+      .min(1)
+      .describe(
+        "What it does — `refund`, `credit`, `chargeback`, `chargeback_reverse`, `chargeback_warning`, `chargeback_warning_reverse`, `credit_reverse`.",
+      ),
+    status: z.string().nullish().describe("`pending_approval`, `approved`, `rejected`, or `reversed`."),
+    transaction_id: z.string().min(1).describe("The transaction adjusted. The only key that names a row of ours."),
+    subscription_id: z.string().nullish().describe("The subscription behind it, when there is one."),
+    customer_id: z.string().nullish().describe("The customer adjusted."),
+    currency_code: z.string().nullish().describe("The currency the totals are in."),
+    totals: z
+      .object({
+        total: z.string().nullish().describe("How much was adjusted, in the currency's lowest denomination."),
+      })
+      .loose()
+      .nullish()
+      .describe(
+        "What the adjustment came to. Summed with every other approved adjustment against the transaction, and that sum is what tells a full refund from a partial one.",
+      ),
+    created_at: z.string().nullish().describe("When Paddle raised the adjustment."),
+    updated_at: z.string().nullish().describe("The adjustment's own clock. Deliberately not used as a watermark."),
+  })
+  .loose()
+  .describe("A Paddle adjustment. As merchant of record Paddle issues these on its own, with no local write first.");
+export type PaddleAdjustment = z.infer<typeof PaddleAdjustment>;
+
 /** A transaction's fields, as an event and the API both present them. */
 export const PaddleTransaction = z
   .object({
@@ -168,6 +199,12 @@ export const PaddleTransaction = z
       .loose()
       .nullish()
       .describe("Where a hosted checkout lives. Null unless the account has a default payment link set."),
+    adjustments: z
+      .array(PaddleAdjustment)
+      .optional()
+      .describe(
+        "Every adjustment raised against this transaction, returned when the read asks `include=adjustments`. The whole reason it is asked for: a full refund delivered as two partial adjustments is only full when they are summed.",
+      ),
     created_at: z.string().min(1).describe("When Paddle recorded the transaction."),
     updated_at: z.string().nullish().describe("The transaction's own clock. Deliberately not used as a watermark."),
   })
@@ -241,37 +278,6 @@ export const PaddleSubscription = z
   .loose()
   .describe("A Paddle subscription — the standing of a recurring purchase, carrying no charge.");
 export type PaddleSubscription = z.infer<typeof PaddleSubscription>;
-
-/** An adjustment's fields — a refund, a credit, or a chargeback, which on this rail can arrive unsolicited. */
-export const PaddleAdjustment = z
-  .object({
-    id: z.string().min(1).describe("The adjustment — `adj_…`."),
-    action: z
-      .string()
-      .min(1)
-      .describe(
-        "What it does — `refund`, `credit`, `chargeback`, `chargeback_reverse`, `chargeback_warning`, `chargeback_warning_reverse`, `credit_reverse`.",
-      ),
-    status: z.string().nullish().describe("`pending_approval`, `approved`, `rejected`, or `reversed`."),
-    transaction_id: z.string().min(1).describe("The transaction adjusted. The only key that names a row of ours."),
-    subscription_id: z.string().nullish().describe("The subscription behind it, when there is one."),
-    customer_id: z.string().nullish().describe("The customer adjusted."),
-    currency_code: z.string().nullish().describe("The currency the totals are in."),
-    totals: z
-      .object({
-        total: z.string().nullish().describe("How much was adjusted, in the currency's lowest denomination."),
-      })
-      .loose()
-      .nullish()
-      .describe(
-        "What the adjustment came to. Compared against the transaction's own total to tell a full refund from a partial one.",
-      ),
-    created_at: z.string().nullish().describe("When Paddle raised the adjustment."),
-    updated_at: z.string().nullish().describe("The adjustment's own clock. Deliberately not used as a watermark."),
-  })
-  .loose()
-  .describe("A Paddle adjustment. As merchant of record Paddle issues these on its own, with no local write first.");
-export type PaddleAdjustment = z.infer<typeof PaddleAdjustment>;
 
 /** A Paddle timestamp, or a refusal. Its API emits RFC-3339 throughout. */
 export function at(value: string, what: string): Date {

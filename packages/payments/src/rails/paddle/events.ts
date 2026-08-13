@@ -6,6 +6,7 @@ import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { VerifiedNotification } from "../contract";
 import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch, paddleJson } from "./api";
 import { PaddleEvent } from "./objects";
+import { readTransaction } from "./read";
 import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook";
 
 /**
@@ -30,9 +31,22 @@ import { type ParsePaddleNotificationOptions, readPaddleEvent } from "./webhook"
  * product, price, api-key and client-token rows — and persist live client tokens into a table an operator
  * greps.
  *
- * So the filter is in the **query**, not in a branch afterwards. `client.events.list` takes `event_type[]`,
- * and this sends exactly the types the event map acts on. Nothing else is fetched, so nothing else can be
- * recorded, and a sweep of an account with a thousand price edits costs nothing.
+ * There are therefore **two** controls, and only one of them is ours.
+ *
+ * The **query filter** asks Paddle for exactly {@link PADDLE_SWEPT_EVENT_TYPES}. It is sent in the form
+ * Paddle documents for an `array[string]` parameter — one key, values comma-separated,
+ * `event_type=a,b,c` — verified against the live sandbox API on 2026-08-13: filtering on two of the six
+ * types in that account's stream returned four events of exactly those two types, and an unrecognised
+ * value is refused with `Request does not pass validation` rather than ignored. An earlier build sent
+ * `event_type=a&event_type=b&…`, a repeated-key form Paddle documents nowhere; whether that form is read
+ * as an array, as one of its values, or not at all is not something this package can know.
+ *
+ * The **recording allowlist** is the control this package owns. A returned event whose type is not on
+ * that list yields a `null` notification, and the sweep writes no row for it at all. So an unhonoured
+ * filter costs a wasted page rather than a client token in D1, and the safety of this module does not
+ * rest on a query parameter being obeyed by someone else's service. See `recorded.ts` for the same
+ * argument on the webhook path, where there is no query to filter and the subscribed-event list is set
+ * by a human in Paddle's dashboard.
  *
  * ## The cursor, and the 90-day cliff
  *
@@ -81,6 +95,9 @@ export const PADDLE_SWEPT_EVENT_TYPES: readonly string[] = [
   "adjustment.updated",
 ];
 
+/** The same list as a set, for the lookup that decides whether an event is recorded at all. */
+const SWEPT_EVENT_TYPES: ReadonlySet<string> = new Set(PADDLE_SWEPT_EVENT_TYPES);
+
 /** What one sweep page needs. */
 export interface PaddleSweepOptions extends ParsePaddleNotificationOptions {
   /** The rail's credentials. */
@@ -101,8 +118,15 @@ export interface SweptEvent {
   eventId: string;
   /** The event type, for the operator reading a run's report. */
   eventType: string;
-  /** What the event map made of it. `event` is null for one that projects nothing. */
-  notification: VerifiedNotification;
+  /**
+   * What the event map made of it, or **null for a type this build does not record at all**.
+   *
+   * Null is not "projects nothing" — that is a notification whose `event` is null, and it still earns a
+   * row. Null here means the type is off {@link PADDLE_SWEPT_EVENT_TYPES}, so Paddle returned something
+   * the query asked it not to, and the caller must advance its cursor past the event without writing
+   * anything. The body is never even read, so there is nothing to leak.
+   */
+  notification: VerifiedNotification | null;
 }
 
 /** One page of the sweep. */
@@ -128,10 +152,11 @@ export async function sweepPaddleEvents(options: PaddleSweepOptions): Promise<Pa
   const query: [string, string][] = [
     ["order_by", "id[ASC]"],
     ["per_page", String(options.pageSize ?? PADDLE_SWEEP_PAGE_SIZE)],
+    // One key, values comma-separated. That is the form Paddle documents for every `array[string]` query
+    // parameter, and the form verified against the live API. It is a request, not a guarantee — the
+    // allowlist below is what makes an unhonoured filter harmless.
+    ["event_type", PADDLE_SWEPT_EVENT_TYPES.join(",")],
   ];
-  // The filter is in the query on purpose — see the module doc. `event_type[]` repeated, which is how
-  // Paddle takes an array.
-  for (const type of PADDLE_SWEPT_EVENT_TYPES) query.push(["event_type", type]);
   if (options.cursor !== undefined) query.push(["after", options.cursor]);
 
   let answer: Awaited<ReturnType<typeof paddleJson>>;
@@ -161,12 +186,30 @@ export async function sweepPaddleEvents(options: PaddleSweepOptions): Promise<Pa
     return { events: [], cursor: options.cursor, hasMore: false, gap: null };
   }
 
+  // An adjustment says how much came off and never what the original was, so the map cannot tell a full
+  // refund from a partial one without reading the transaction — and it refuses rather than guessing when
+  // no reader is supplied. This module owns the credentials, the account and the transport, so it builds
+  // the reader itself: a caller cannot forget what it was never asked for.
+  const read: ParsePaddleNotificationOptions = {
+    ...options,
+    readTransaction:
+      options.readTransaction ??
+      ((id) =>
+        readTransaction(id, {
+          credentials: options.credentials,
+          environment: options.environment,
+          transport: options.transport ?? paddleHttpFetch,
+        })),
+  };
+
   const events: SweptEvent[] = [];
   for (const event of parsed.data) {
     events.push({
       eventId: event.event_id,
       eventType: event.event_type,
-      notification: await readPaddleEvent(event, options),
+      // The allowlist, applied before the body is looked at. A type the query asked Paddle to withhold
+      // and Paddle returned anyway is walked past, not recorded — see the module doc.
+      notification: SWEPT_EVENT_TYPES.has(event.event_type) ? await readPaddleEvent(event, read) : null,
     });
   }
 

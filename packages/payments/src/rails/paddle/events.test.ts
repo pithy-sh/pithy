@@ -72,23 +72,134 @@ const OPTIONS = {
 };
 
 describe("sweepPaddleEvents", () => {
-  test("filters event types in the query, so an api key or a client token is never even fetched", async () => {
-    // Verified live: the assigned sandbox's stream carries `api_key.created` and `client_token.created`,
-    // and the client token's `token` field is not redacted by Paddle. A type absent from the query cannot
-    // be recorded, which is a stronger control than filtering after the fact.
+  test("asks for the event types in the one form Paddle documents: a single key, comma-separated", async () => {
+    // Paddle documents every `array[string]` query parameter as one key with a comma-separated value, and
+    // the live sandbox API confirmed it on 2026-08-13 — filtering on two of the six types in that
+    // account's stream returned four events of exactly those two types. The earlier build sent
+    // `event_type=a&event_type=b&…`, a repeated-key form documented nowhere; a filter Paddle does not
+    // recognise is a filter it may not apply, and the whole account stream is what comes back.
     const transport = stub({ "/events": [] });
     await sweepPaddleEvents({ ...OPTIONS, transport });
 
     const url = transport.calls[0]?.url ?? "";
     expect(url).toContain("order_by=id%5BASC%5D");
     expect(url).toContain("per_page=200");
-    for (const type of PADDLE_SWEPT_EVENT_TYPES) {
-      expect(url, type).toContain(`event_type=${encodeURIComponent(type)}`);
-    }
-    // Anti-vacuity: the filter is genuinely present rather than the URL being empty.
-    expect(url.split("event_type=")).toHaveLength(PADDLE_SWEPT_EVENT_TYPES.length + 1);
+    // Exactly one `event_type` key. Two would be the undocumented form back again.
+    expect(url.split("event_type=")).toHaveLength(2);
+    expect(url).toContain(`event_type=${encodeURIComponent(PADDLE_SWEPT_EVENT_TYPES.join(","))}`);
+    // And every type is genuinely in it. Anti-vacuity against a list that had emptied.
+    for (const type of PADDLE_SWEPT_EVENT_TYPES) expect(decodeURIComponent(url), type).toContain(type);
+    expect(PADDLE_SWEPT_EVENT_TYPES.length).toBeGreaterThan(15);
     expect(url).not.toContain("api_key");
     expect(url).not.toContain("client_token");
+  });
+
+  test("a type the filter excluded but Paddle returned anyway is walked past, not read and not recorded", async () => {
+    // The control this package owns. A query parameter is a request honoured by someone else's service;
+    // an allowlist on what is *recorded* is a control we can prove. `client_token.created` carries a token
+    // Paddle does not redact, so "the filter will have caught it" is not a safety argument.
+    const TOKEN = "test_c0ffee0000000000000planted";
+    const transport = stub({
+      "/events": [
+        {
+          event_id: "evt_token",
+          event_type: "client_token.created",
+          occurred_at: "2026-08-12T09:00:00Z",
+          data: { id: "ctkn_01", token: TOKEN },
+        },
+        await activated("evt_after"),
+      ],
+    });
+    const page = await sweepPaddleEvents({ ...OPTIONS, transport });
+
+    const [token, after] = page.events;
+    // Null is the caller's instruction to write no row at all — not "projects nothing", which still does.
+    expect(token?.notification).toBeNull();
+    expect(JSON.stringify(page.events)).not.toContain(TOKEN);
+    // The event is still reported, so the caller's cursor advances past it rather than stalling forever.
+    expect(token?.eventId).toBe("evt_token");
+    expect(page.cursor).toBe("evt_after");
+    // Anti-vacuity: an allowlisted event on the same page was read in full, so the null above is the
+    // allowlist working and not the whole page having failed to parse.
+    expect(after?.notification?.event).toMatchObject({ providerTransactionId: SUB });
+  });
+
+  test("a swept adjustment reads its transaction, so a full refund projects a revocation", async () => {
+    // The sweep asks Paddle for `adjustment.created` and `adjustment.updated`, and the map cannot tell a
+    // full refund from a partial one without the transaction's own total. The reader was optional, the
+    // sweep never passed one, and every swept refund therefore projected nothing *and* recorded itself as
+    // handled — which then made the webhook redelivery of the same event id a duplicate the guard skipped.
+    // The sweep did not merely miss the refund; it stopped the webhook from catching it.
+    const transport = stub({
+      "/events": [
+        {
+          event_id: "evt_refund",
+          event_type: "adjustment.created",
+          occurred_at: "2026-08-12T12:00:00Z",
+          data: {
+            id: "adj_01",
+            action: "refund",
+            status: "approved",
+            transaction_id: TXN,
+            totals: { total: "999" },
+            created_at: "2026-08-12T12:00:00Z",
+          },
+        },
+      ],
+      "/transactions/": {
+        id: TXN,
+        status: "completed",
+        customer_id: "ctm_01",
+        items: [{ price: { id: PRICE } }],
+        details: { totals: { grand_total: "999", currency_code: "USD" } },
+        created_at: "2026-08-12T09:00:00Z",
+      },
+    });
+
+    const page = await sweepPaddleEvents({ ...OPTIONS, transport });
+    expect(page.events[0]?.notification?.event).toMatchObject({
+      providerTransactionId: TXN,
+      status: "refunded",
+      role: "charge",
+    });
+    // The read genuinely happened, against the transaction the adjustment named.
+    expect(transport.calls.some((call) => call.url.includes(`/transactions/${TXN}`))).toBe(true);
+  });
+
+  test("two partial adjustments summing to the whole transaction revoke, swept exactly as delivered", async () => {
+    // The money defect, end to end through the sweep. Each adjustment is half of a 9900 transaction, so
+    // neither reaches the total on its own and a per-adjustment comparison revokes nothing.
+    const half = (id: string) => ({
+      id,
+      action: "refund",
+      status: "approved",
+      transaction_id: TXN,
+      totals: { total: "4950" },
+      created_at: "2026-08-12T12:00:00Z",
+    });
+    const transport = stub({
+      "/events": [
+        {
+          event_id: "evt_second_half",
+          event_type: "adjustment.created",
+          occurred_at: "2026-08-12T12:00:00Z",
+          data: half("adj_02"),
+        },
+      ],
+      "/transactions/": {
+        id: TXN,
+        status: "completed",
+        customer_id: "ctm_01",
+        items: [{ price: { id: PRICE } }],
+        details: { totals: { grand_total: "9900", currency_code: "USD" } },
+        adjustments: [half("adj_01"), half("adj_02")],
+        created_at: "2026-08-12T09:00:00Z",
+      },
+    });
+
+    const page = await sweepPaddleEvents({ ...OPTIONS, transport });
+    expect(page.events[0]?.notification?.event).toMatchObject({ status: "refunded" });
+    expect(page.events[0]?.notification?.note ?? null).toBeNull();
   });
 
   test("resumes after a cursor, and advances only to the last event it read", async () => {
@@ -110,7 +221,7 @@ describe("sweepPaddleEvents", () => {
     // The claim that makes the sweep a repair rather than a second answer: one map, two entry points.
     const transport = stub({ "/events": [await activated("evt_09")] });
     const page = await sweepPaddleEvents({ ...OPTIONS, transport });
-    expect(page.events[0]?.notification.event).toMatchObject({
+    expect(page.events[0]?.notification?.event).toMatchObject({
       providerTransactionId: SUB,
       role: "state",
       status: "active",
