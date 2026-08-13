@@ -84,6 +84,22 @@ describe("SecretOrigin", () => {
     expect(SecretOrigin.safeParse({ kind: "conjured" }).success).toBe(false);
   });
 
+  test("an unrecognised issuer degrades where it is a key, not only where it is a field", () => {
+    // The rule's own docstring says it is declared once so no site misses it. `needs` is keyed by
+    // issuer, and a key is an issuer. Without the same degradation one unknown issuer fails the whole
+    // manifest — every secret of every capability in it, over a name the reader did not need.
+    const parsed = SecretOrigin.parse({
+      kind: "helped",
+      issuer: "vercel",
+      needs: { vercel: ["deployments:write"] },
+    });
+    expect(parsed).toEqual({
+      kind: "helped",
+      issuer: "other",
+      needs: { other: ["deployments:write"] },
+    });
+  });
+
   test("an unrecognised issuer degrades to `other` rather than failing", () => {
     // A capability added tomorrow names an issuer a client built today has never heard of. The client
     // renders it as documented-only and keeps working; it does not blank the pane.

@@ -9,9 +9,9 @@ import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { mintDevValue } from "@pithy-sh/secrets/src/devValue";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
+import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type EnsureSecretsStoreIdOptions, ensureSecretsStoreId } from "../cloudflare/storeId";
@@ -254,7 +254,7 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       );
       continue;
     }
-    minted[secret.name] = initialDevSecret(mintDevValue(secret.devValue));
+    minted[secret.name] = initialDevSecret(mintSecretValue(secret.devValue));
     notes.push(
       `Minted a dev ${secret.name} into ${path}. Local only.`,
       `Deployed environments need pithy secrets create ${secret.name}.`,

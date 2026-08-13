@@ -12,7 +12,8 @@ import { type ManagedEnvironment, resolveWriteTargets } from "../scope";
  */
 export interface SecretWriteRequest {
   env: ManagedEnvironment;
-  mode: "create" | "update" | "delete";
+  /** See `management/writeSecret.ts` — `ensure` writes only when the name is absent, and never replaces. */
+  mode: "create" | "update" | "ensure" | "delete";
   name: string;
   /** Present for create/update; omitted for delete. Already validated + canonicalized by the CLI. */
   value?: string;
@@ -31,7 +32,8 @@ export interface SecretDispatcher {
 
 /** A value-touching command before routing — the CLI resolves backend/scope from the registry. */
 export interface SecretWrite {
-  mode: "create" | "update" | "delete";
+  /** See `management/writeSecret.ts` — `ensure` writes only when the name is absent, and never replaces. */
+  mode: "create" | "update" | "ensure" | "delete";
   name: string;
   backend: SecretBackend;
   scope: SecretScope;

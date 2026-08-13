@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { currentValue, encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
-import { mintDevValue } from "../devValue";
+import { bindingValue } from "../bindingValue";
+import type { VersionedValue } from "../crypto/versionedValue";
+import { mintSecretValue } from "../mintValue";
 import type { SecretRegistry, SecretRegistryEntry, SecretValueType } from "../registry";
 import { DEV_SECRETS_FILE, type DevSecretEnvelope, type DevSecretsFile, initialDevSecret } from "./devSecretsFile";
 
@@ -133,23 +134,6 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
 }
 
 /**
- * The `.dev.vars` value one `cf-secrets-store` secret is materialised as.
- *
- * **The full envelope, encoded** — the same shape provisioning writes into the Secrets Store, so a
- * multi-version secret keeps its versions instead of collapsing to whichever one is current.
- *
- * **Except for a `bootstrap` secret, which carries its current value verbatim.** That is not an
- * exception invented here: `SECRETS_ENCRYPTION_KEYS` is read by `resolveEncryptionConfig` straight off
- * its binding, because it is what the envelope decoder needs in order to exist, and provisioning has
- * always written it un-enveloped. Materialising it like the others would hand a Worker a value it
- * rejects with `SECRETS_ENCRYPTION_KEYS is not a valid EncryptionConfig` — and only at the first read,
- * with the binding plainly present. See {@link SecretRegistryEntry.bootstrap}.
- */
-export function bindingValue(entry: SecretRegistryEntry, value: VersionedValue): string {
-  return entry.bootstrap ? currentValue(value) : encodeVersionedValue(value);
-}
-
-/**
  * Every `cf-secrets-store` secret the file states, as the `.dev.vars` lines a Worker reads them from.
  *
  * **The one materialisation, so the seeder's report and the generated file cannot disagree.** Dev has no
@@ -196,7 +180,7 @@ export function mintMissingDevSecrets(file: DevSecretsFile, registry: SecretRegi
     const entry = registry[name];
     if (!entry || entry.keyed || !entry.devValue) continue;
     if (Object.hasOwn(file, name)) continue;
-    minted[name] = initialDevSecret(mintDevValue(entry.devValue));
+    minted[name] = initialDevSecret(mintSecretValue(entry.devValue));
   }
   return minted;
 }

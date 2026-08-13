@@ -11,7 +11,7 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
-import { storeSecretMinter } from "../capabilities/mintSecrets";
+import { mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -343,9 +343,28 @@ const provision = defineCommand({
         }
       }
 
+      // **The other half of #321, and the half its own commit message describes.** The loop above creates
+      // the `cf-secrets-store` secrets a Worker binds; every secret the *kit* declares arbitrary — the
+      // auth session secret, the email link-signing key — is `d1`, and until now provisioning finished by
+      // telling an operator to go and generate random bytes for each. This is the point where it can stop
+      // doing that: `provisionSecrets` above has deployed each environment's manager, and the manager is
+      // the only thing that can decide whether one of these already exists, because its value is sealed
+      // under a master key the CLI never holds. `mintDeclaredSecrets` dispatches `ensure`, so a re-run
+      // creates nothing and replaces nothing. See `capabilities/mintSecrets.ts`.
+      //
+      // One audit emitter is picked rather than one per environment: this loop spans every environment
+      // a `global` secret reaches, and the event's own `environments` field is what says where a value
+      // went. `dev` is the same fallback `buildAudit` above uses for a command with no single target.
+      const generated = await mintDeclaredSecrets({
+        registry: await projectSecretRegistry(projectDir),
+        dispatcher: await buildDispatcher(projectDir),
+        environments,
+        audit: await buildAudit(projectDir, "dev"),
+      });
+
       if (args.json) {
         process.stdout.write(
-          `${formatJsonLine({ command: "secrets provision", environments: result.perEnv, wired })}\n`,
+          `${formatJsonLine({ command: "secrets provision", environments: result.perEnv, wired, generated })}\n`,
         );
         return;
       }
@@ -357,6 +376,11 @@ const provision = defineCommand({
         if (entry.created.length > 0) {
           process.stdout.write(`${entry.env}: created ${entry.created.join(", ")}.\n`);
         }
+      }
+      // "Ready", not "created". The manager decides whether a value was written and does not report
+      // back, so this is the true statement: the secret is there and nobody has to go and make one.
+      for (const secret of generated) {
+        process.stdout.write(`${secret.name} ready in ${secret.environments.join(", ")}.\n`);
       }
       process.stdout.write(`${formatDone()}\n`);
     }),

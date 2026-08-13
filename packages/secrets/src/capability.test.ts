@@ -158,12 +158,24 @@ describe("pithy.manifest.json", () => {
     ]);
   });
 
-  test("its secrets are exactly the capability's own registry entries that declare both axes", () => {
+  test("every entry of its own registry is in the manifest, with where it comes from and how it is replaced", () => {
+    // The capability's own, which is why the registry is empty: an adopter's entries are theirs to
+    // declare or not, and `defineSecretRegistry` asks only that they state both axes or neither.
+    //
+    // Stated as the invariant, not as a filtered comparison. The filtered version could not fail for the
+    // one case it existed to catch: an entry declaring neither axis is dropped from the expected list and
+    // is absent from the manifest, so it vanishes from both sides and the comparison passes.
     const entries: [string, SecretRegistryEntry][] = Object.entries(secrets({ registry: {} }).secretRegistry);
-    const declared = entries
-      .filter(([, entry]) => entry.origin && entry.rotation)
-      .map(([name, entry]) => ({ name, origin: entry.origin, rotation: entry.rotation }));
-    expect(manifest.secrets).toEqual(declared);
+    expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
+    for (const [name, entry] of entries) {
+      expect(entry.origin, `${name} declares no origin`).toBeDefined();
+      expect(entry.rotation, `${name} declares no rotation`).toBeDefined();
+      expect(manifest.secrets.find((secret) => secret.name === name)).toEqual({
+        name,
+        origin: entry.origin,
+        rotation: entry.rotation,
+      });
+    }
   });
 
   test("declares no devSecret for it — a random string is not an EncryptionConfig", () => {

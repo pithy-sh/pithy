@@ -85,6 +85,54 @@ describe("runWriteSecret", () => {
     expect(await d.store.getValue("emailer")).toEqual({ currentVersion: "1", versions: { "1": raw } });
   });
 
+  /**
+   * `ensure` is what a minted value is written with, and the whole of it is what it refuses to do.
+   *
+   * A minted secret is created once and never replaced: a new session secret signs out everyone, a new
+   * link key stops verifying links already in inboxes, a new key-encryption key orphans everything
+   * sealed under it. The CLI cannot check absence itself — a `d1` value is sealed under a master key
+   * that never leaves this worker — so the check has to live here, where it is the same store read the
+   * write is atomic with.
+   */
+  test("ensure writes a secret that is not there, exactly as create does", async () => {
+    const d = deps();
+    await runWriteSecret(d, { mode: "ensure", name: "session", value: "minted", valueType: "text", rotatable: true });
+
+    expect(await d.store.getValue("session")).toEqual({ currentVersion: "1", versions: { "1": "minted" } });
+    expect(await d.tracker.getLatestSuccess("session")).toBeInstanceOf(Date);
+  });
+
+  test("ensure leaves an existing value alone and does not raise", async () => {
+    const d = deps();
+    await runWriteSecret(d, {
+      mode: "create",
+      name: "session",
+      value: "the-live-one",
+      valueType: "text",
+      rotatable: true,
+    });
+
+    await runWriteSecret(d, {
+      mode: "ensure",
+      name: "session",
+      value: "a-fresh-mint",
+      valueType: "text",
+      rotatable: true,
+    });
+
+    expect(await d.store.getValue("session")).toEqual({ currentVersion: "1", versions: { "1": "the-live-one" } });
+  });
+
+  test("ensure does not disturb the rotation baseline of a secret it left alone", async () => {
+    const d = deps();
+    await runWriteSecret(d, { mode: "create", name: "session", value: "v", valueType: "text", rotatable: true });
+    const baseline = await d.tracker.getLatestSuccess("session");
+
+    await runWriteSecret(d, { mode: "ensure", name: "session", value: "v2", valueType: "text", rotatable: true });
+
+    expect(await d.tracker.getLatestSuccess("session")).toEqual(baseline);
+  });
+
   test("delete removes the secret and purges its rotation history", async () => {
     const d = deps();
     await runWriteSecret(d, { mode: "create", name: "x", value: "v", valueType: "text", rotatable: true });
