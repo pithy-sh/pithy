@@ -49,6 +49,11 @@
  * `null`. The first two are what `JSON.parse` produces and the third holds nothing anywhere else to
  * find. Naming the unnameable types instead would be the enumeration this module exists to refuse, and
  * the next class nobody thought of would walk straight through.
+ *
+ * **And `Object.entries` is then what descends, arrays included.** The rule above was stated once and only
+ * half run: the array branch still walked by position, so an own property on a plain array — a prototype
+ * this walk accepts, nothing to refuse — was contents the walk could not see. A rule the code disagrees
+ * with is a rule in a comment.
  */
 
 /** Anything a JSON document holds that is not an object or an array. */
@@ -153,19 +158,29 @@ interface Step {
  * `JSON.parse` produces; a `Date`, a `Map`, a `Set` or a class instance answers `"object"` to `typeof`
  * and yields nothing to `Object.entries`, and treating that as an empty container is the exemption this
  * module exists to refuse.
+ *
+ * So **`Object.entries` is what descends, arrays included**. An array walked by `value.map` is walked by
+ * position, and a position is not the whole of what an array holds: `rows.cursor = "…"` is an own property
+ * on a prototype this walk accepts, and the index walk went straight past it. The rule the module states and
+ * the code it runs have to be the same rule, or the exemption comes back through whichever branch still
+ * disagrees. An index key stays a position — reported as `[0]`, never as a key a caller must permit — and
+ * every other own key is a key.
  */
 function descend(value: unknown, path: string): Step[] | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const proto: unknown = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) refuse(value, path);
-  if (Array.isArray(value)) {
-    return value.map((nested, index) => ({ key: undefined, nested, here: `${path}[${index}]` }));
-  }
-  return Object.entries(value).map(([key, nested]) => ({
-    key,
-    nested,
-    here: path === "" ? key : `${path}.${key}`,
-  }));
+  const array = Array.isArray(value);
+  return Object.entries(value).map(([key, nested]) =>
+    array && isIndex(key)
+      ? { key: undefined, nested, here: `${path}[${key}]` }
+      : { key, nested, here: path === "" ? key : `${path}.${key}` },
+  );
+}
+
+/** Whether an own key of an array is one of its positions — the canonical decimal form `Object.entries` gives. */
+function isIndex(key: string): boolean {
+  return /^(?:0|[1-9]\d*)$/.test(key);
 }
 
 /** Narrow to a JSON leaf, or refuse the document. A type this walk cannot name is not a type it may skip. */

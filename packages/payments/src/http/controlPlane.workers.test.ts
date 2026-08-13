@@ -13,7 +13,7 @@ import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
-import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
+import { leavesIn, unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -348,11 +348,13 @@ describe("GET /payments/admin/catalog", () => {
     ]) {
       expect(serialized, secret).toContain(secret);
     }
-    // And what is meant to cross does cross.
+    // And what is meant to cross does cross — as **leaves**, not as substrings. `"coins"` sits inside
+    // `"coins_100"`, so a `toContain` over the response text was satisfied by the product id alone and said
+    // nothing about the entitlement key. The same slack #332 found on the run log, one read over.
     const app = makeApp([PAYMENTS_CATALOG_READ_SCOPE], SENTINEL_CATALOG);
-    const text = await (await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE)).text();
+    const carried = leavesIn(await (await call(app, "/payments/admin/catalog", PAYMENTS_CATALOG_READ_SCOPE)).json());
     for (const published of ["pro_monthly", "subscription", "Pro", "coins", "founder"]) {
-      expect(text, published).toContain(published);
+      expect(carried, published).toContain(published);
     }
   });
 
@@ -1177,15 +1179,18 @@ describe("the reconciliation run log", () => {
     await recordReconcileRun(env.DB, RUN, { now: NOW });
     const raw = (await readRunsRaw()) as { runs: Record<string, unknown>[] };
     expect(raw.runs).toHaveLength(1);
-    // Every value the permit list names is genuinely in the body, so no entry on it is slack that would
-    // silently absolve a future field carrying the same value.
-    const serialized = JSON.stringify(raw.runs[0]);
+    // Every value the permit list names is genuinely a **leaf** of the row. It read `toContain` over the
+    // serialised row until #332, and a substring is not a leaf: `"2026-06-09"` and `"apple"`'s own first
+    // letter both pass that, so a permitted value the row does not carry could sit on the list as slack —
+    // silently absolving a future field that happens to publish it. The walk is the same one the sweep
+    // above descends with, so the two agree on what the document holds by construction.
+    const carried = leavesIn(raw.runs[0]);
     for (const fact of publishedFactsOf(RUN)) {
       if (fact === null) continue;
       expect(
-        serialized,
-        `The run row does not carry ${JSON.stringify(fact)}, so permitting it proves nothing.`,
-      ).toContain(String(fact));
+        carried,
+        `The run row does not carry ${JSON.stringify(fact)} as a value of its own, so permitting it proves nothing.`,
+      ).toContain(fact);
     }
   });
 

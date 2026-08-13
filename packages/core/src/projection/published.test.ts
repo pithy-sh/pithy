@@ -129,6 +129,30 @@ describe("unpublishedIn", () => {
     expect(() => unpublishedIn({ user: new Rows() }, PUBLISHED)).toThrow(/Rows sits at user/);
   });
 
+  test("a plain array's own named properties are contents too, not a gap between the indices", () => {
+    // The array branch stated the rule and then ran a different one. `value.map` visits positions; an
+    // array's own non-index properties are not positions, so a plain array — prototype `Array.prototype`,
+    // nothing to refuse — walked past whatever was hung on it. `JSON.stringify` drops such a property, but
+    // this walk is also what `leavesIn` and `keysIn` build a *permitted set* from, and a field they cannot
+    // see becomes a permission that omits it.
+    const rows: string[] & { cursor?: string } = ["ada"];
+    rows.cursor = "sk_live_51NxSecret";
+    expect(unpublishedIn({ seats: rows }, PUBLISHED)).toEqual([
+      'key "cursor" at seats.cursor',
+      'value "sk_live_51NxSecret" at seats.cursor',
+    ]);
+    expect(leavesIn(rows)).toEqual(["ada", "sk_live_51NxSecret"]);
+    expect(keysIn(rows)).toEqual(["cursor"]);
+  });
+
+  test("an element is still a position, and a hole is still nothing", () => {
+    // The other side: reading an array through `Object.entries` must not turn its indices into keys, or
+    // every array in every projection would demand `"0"`, `"1"` … on the permitted key list.
+    expect(unpublishedIn({ seats: [42, 42] }, PUBLISHED)).toEqual([]);
+    expect(unpublishedIn({ seats: [42, 7] }, PUBLISHED)).toEqual(["value 7 at seats[1]"]);
+    expect(keysIn([{ a: 1 }])).toEqual(["a"]);
+  });
+
   test("a container is one whose contents are all visible, which a null prototype's are", () => {
     // The rule is what the walk can see, and an object with no prototype has nowhere else to keep
     // anything. Refusing it would make the rule "is it `Object.prototype`" — a different rule, passing

@@ -39,8 +39,26 @@ import * as manual from "./manual";
  * a census entry no site matches — so it cannot rot in either direction.
  *
  * The cost is that reads are sites too, and the census lists them. That is the cheap half of the trade: a new
- * reader failing this gate is asked a question worth being asked, and a reader cannot be mistaken for a writer
- * because each entry states which it is and the writers' accounts are re-checked against their own text.
+ * reader failing this gate is asked a question worth being asked.
+ *
+ * ## What the second version could not see (#332)
+ *
+ * It checked the census against the code in **one direction**. A writer's account was re-derived from the
+ * declaration's text on every run, so removing a guard failed — but `writes: false` was a bare claim nothing
+ * ever checked. An `insertInto(PAYMENTS_ENTITLEMENTS_TABLE)` added inside `keysToDerive`, which the census
+ * calls a reader, left the suite at eleven passed. Same class as the two before it: a hand-maintained
+ * statement about the code, believed rather than derived.
+ *
+ * So **every mention is classified from its own text**, and the census's `writes` is compared against what
+ * that classification says. {@link FORMS} names the forms a mention may take and whether each one changes
+ * rows, and the comparison runs in both directions: a reader that writes fails, and a writer that no longer
+ * writes fails too, so a permission cannot outlive the write it permitted.
+ *
+ * **The form list is positive, which is why it is not the verb vocabulary #328 threw out.** That list decided
+ * what the gate *looked at*, so a verb missing from it was a site nobody examined — absolution by default.
+ * This one decides what a mention already found is *allowed to be*: a mention matching no form is not a read,
+ * it is a failure naming the line. `d1.prepare("insert into pithy_payments_entitlements …")` and a Kysely verb
+ * nobody listed both land there. Nothing is permitted by omission.
  *
  * ## The residue, plainly
  *
@@ -216,6 +234,105 @@ function addressOf(site: { path: string; declaration: string }): string {
   return `${site.path} :: ${site.declaration}`;
 }
 
+/** The table constant, whitespace-tolerant, as a fragment of the form patterns below. */
+const CONSTANT = `\\s*${TABLE_CONSTANT}\\s*`;
+
+/**
+ * Every form a mention of this table may take, and whether that form changes rows.
+ *
+ * **Positive, and exhaustive by refusal.** A mention matching none of these is not assumed harmless — it is
+ * reported, with its line, as a form nobody has classified. That inversion is what separates this from the
+ * verb list #328 removed: that list chose which mentions to *examine*, so a verb outside it was invisible;
+ * this one judges a mention already found, so a verb outside it is a failure.
+ *
+ * Each pattern anchors on the table's own name, so a form cannot be satisfied by something elsewhere in the
+ * declaration — the account regexes are declaration-wide by necessity, and this deliberately is not.
+ */
+const FORMS: readonly { name: string; writes: boolean; pattern: RegExp }[] = [
+  {
+    name: "an import or re-export specifier",
+    writes: false,
+    pattern: /\b(?:import|export)\s*(?:type\s+)?\{[^{}]*\}\s*from\s*"[^"]*"/g,
+  },
+  {
+    name: "the table constant's own declaration",
+    writes: false,
+    pattern: new RegExp(`\\bconst${CONSTANT}=\\s*"[^"]*"`, "g"),
+  },
+  {
+    name: "a key in a table map or in its type",
+    writes: false,
+    pattern: new RegExp(`\\[${CONSTANT}\\]\\s*\\??\\s*:`, "g"),
+  },
+  { name: "a select", writes: false, pattern: new RegExp(`\\.selectFrom\\(${CONSTANT}\\)`, "g") },
+  {
+    // A quoted string handed to `.describe`, never a template: prose about the table, which executes nothing.
+    // A SQL string is not this — it is a mention in no form at all, which is the failure.
+    name: "documentation text",
+    writes: false,
+    pattern: /\.describe\(\s*"[^"]*"\s*\)/g,
+  },
+  {
+    name: "a Kysely mutation",
+    writes: true,
+    pattern: new RegExp(`\\.(?:insertInto|updateTable|replaceInto|deleteFrom)\\(${CONSTANT}\\)`, "g"),
+  },
+  {
+    name: "a seed group",
+    writes: true,
+    pattern: new RegExp(`\\bd1SeedGroup\\(\\s*"[^"]*"\\s*,${CONSTANT},`, "g"),
+  },
+];
+
+/** Every offset in `text` where the table is named, under either spelling, in order. */
+function mentionsIn(text: string): number[] {
+  const offsets: number[] = [];
+  for (const spelling of [TABLE_CONSTANT, TABLE_PHYSICAL]) {
+    for (let at = text.indexOf(spelling); at !== -1; at = text.indexOf(spelling, at + 1)) offsets.push(at);
+  }
+  return offsets.sort((left, right) => left - right);
+}
+
+/** What a declaration's own text says it does to rows, and every mention that says nothing recognisable. */
+interface Derived {
+  /** True when some mention sits in a form that changes rows. Compared against the census, never taken from it. */
+  writes: boolean;
+  /** Mentions in no named form. Neither a read nor a write — a question, and the gate asks it. */
+  unnamed: string[];
+  /** The names of the forms matched, so a form list cannot quietly accumulate permissions nothing uses. */
+  matched: string[];
+}
+
+/** Classify every mention in one site from its own text. */
+function derive(site: TableSite): Derived {
+  const covered = FORMS.map((form) => ({
+    form,
+    ranges: [...site.text.matchAll(form.pattern)].flatMap((match) =>
+      match.index === undefined ? [] : [[match.index, match.index + match[0].length] as const],
+    ),
+  }));
+  const derived: Derived = { writes: false, unnamed: [], matched: [] };
+  for (const offset of mentionsIn(site.text)) {
+    const forms = covered.filter(({ ranges }) => ranges.some(([from, to]) => offset >= from && offset < to));
+    if (forms.length === 0) {
+      derived.unnamed.push(lineAt(site.text, offset));
+      continue;
+    }
+    for (const { form } of forms) {
+      if (form.writes) derived.writes = true;
+      if (!derived.matched.includes(form.name)) derived.matched.push(form.name);
+    }
+  }
+  return derived;
+}
+
+/** The line a mention sits on, trimmed — what a failure quotes so the reader sees the code, not an offset. */
+function lineAt(text: string, offset: number): string {
+  const from = text.lastIndexOf("\n", offset) + 1;
+  const to = text.indexOf("\n", offset);
+  return text.slice(from, to === -1 ? text.length : to).trim();
+}
+
 /**
  * What a declaration that changes rows in this table is allowed to be. Each is a **property of the text**,
  * re-checked on every run, so deleting a guard fails the gate even though the census still names the site.
@@ -304,6 +421,42 @@ describe("every place this package names the entitlements table", () => {
       stale,
       `The census names these and nothing does any more. A permission left behind outlives what it permitted:\n${stale.map((address) => `  ${address}`).join("\n")}`,
     ).toEqual([]);
+  });
+
+  test("what a site does to rows is read off its own text, and the census has to agree", () => {
+    // The half #332 was missing. `writes: false` used to be a claim nothing checked, so an insert added to a
+    // declaration the census calls a reader passed. Here the text decides and the census is compared to it,
+    // in both directions: a reader that writes fails, and a writer that stopped writing fails too.
+    const disagreed = sites()
+      .map((site) => ({ site, entry: CENSUS.find((candidate) => candidate.address === addressOf(site)) }))
+      .filter(({ entry }) => entry !== undefined)
+      .map(({ site, entry }) => ({ address: addressOf(site), declared: entry?.writes !== false, ...derive(site) }))
+      .filter((row) => row.writes !== row.declared)
+      .map(
+        (row) =>
+          `${row.address} is declared ${row.declared ? "a writer" : "a reader"} and its text ${row.writes ? "changes rows" : "does not"}`,
+      );
+    expect(
+      disagreed,
+      `The census disagrees with the code it describes. Fix whichever is wrong — a write inside a declared reader is a comp nothing checked:\n${disagreed.map((line) => `  ${line}`).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("every mention is in a form this gate names, so nothing is permitted by omission", () => {
+    // A mention matching no form is the one outcome that must never read as "harmless". Raw SQL and a verb
+    // outside the list both land here, and both fail rather than defaulting to a read.
+    const unnamed = sites().flatMap((site) => derive(site).unnamed.map((line) => `${addressOf(site)}: ${line}`));
+    expect(
+      unnamed,
+      `These name the table in a form nothing has classified. Say what each one is by adding a form, and say whether it changes rows:\n${unnamed.map((line) => `  ${line}`).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("every form this gate names is one the package really uses", () => {
+    // The rot rule the census already has, applied to the form list. A form nothing matches is a permission
+    // kept for a shape that left, and the next mention to drift into it is absolved by an accident.
+    const used = new Set(sites().flatMap((site) => derive(site).matched));
+    expect(FORMS.filter((form) => !used.has(form.name)).map((form) => form.name)).toEqual([]);
   });
 
   test("every declared writer still exhibits the property it is declared under", () => {
@@ -399,6 +552,75 @@ export function sneaky(db: PaymentsDatabase) {
     expect(
       detected(`export const trailing = /[\\\\/]$/;\nexport const q = "update ${TABLE_PHYSICAL} set active = 1";`),
     ).toEqual(["planted.ts :: q"]);
+  });
+});
+
+/**
+ * The classification, planted against.
+ *
+ * The gate above can only be as good as this: if `derive` calls a write a read, the census agrees with it and
+ * the whole file passes describing a package that grants comps. Each case here is a source file the gate has
+ * never seen, and the two that matter are the two the previous version got wrong — a write inside a shape
+ * that reads like a reader, and a write in a form nobody listed.
+ */
+describe("what a declaration does to rows is derived from it, not believed", () => {
+  function derived(text: string): Derived {
+    const [site] = tableSites([{ path: "planted.ts", text }]);
+    if (site === undefined) throw new Error("nothing was sited — the plant names the table and must be found");
+    return derive(site);
+  }
+
+  test("a write planted inside a declaration that otherwise reads is derived as a write", () => {
+    // #332, exactly: `keysToDerive` is a declared reader, and this is what was added to it. Under the old
+    // gate the census's `writes: false` was never re-derived and the suite stayed at eleven passed.
+    const planted = derived(`export async function keysToDerive(db: PaymentsDatabase, userId: string) {
+  const held = await db.selectFrom(${TABLE_CONSTANT}).select("entitlement").where("manual", "=", 0).execute();
+  await db.insertInto(${TABLE_CONSTANT}).values({ userId, entitlement: "comped", manual: 1 }).execute();
+  return held;
+}`);
+    expect(planted.writes).toBe(true);
+    expect(planted.unnamed).toEqual([]);
+  });
+
+  test("the same declaration without the insert is derived as a read", () => {
+    // The other side, because a classifier that answered "writes" to everything would pass the line above
+    // and refuse every reader in the census. Both answers have to be real.
+    const planted = derived(`export async function keysToDerive(db: PaymentsDatabase, userId: string) {
+  return await db.selectFrom(${TABLE_CONSTANT}).select("entitlement").where("manual", "=", 0).execute();
+}`);
+    expect(planted.writes).toBe(false);
+    expect(planted.unnamed).toEqual([]);
+  });
+
+  test("raw SQL naming the table is unnamed, not quietly read as a string", () => {
+    // The string spelling. A mention inside a quoted literal is documentation only inside `.describe(...)`;
+    // anywhere else it is a form nothing has classified, and the gate says so rather than defaulting.
+    const planted = derived(`export async function comp(d1: D1Database) {
+  await d1.prepare("insert into ${TABLE_PHYSICAL} (user_id, manual) values (?, 1)").bind("ada").run();
+}`);
+    expect(planted.unnamed).toEqual([
+      `await d1.prepare("insert into ${TABLE_PHYSICAL} (user_id, manual) values (?, 1)").bind("ada").run();`,
+    ]);
+    expect(planted.writes).toBe(false);
+  });
+
+  test("a Kysely verb outside the list is unnamed, not absolved by its absence", () => {
+    // The failure mode of any list: something not on it. On a list that decides *what to examine* this is
+    // invisible; on a list that decides *what a mention may be* it is a failure with the line attached.
+    const planted = derived(`export function merge(db: PaymentsDatabase) {
+  return db.mergeInto(${TABLE_CONSTANT}).values({ manual: 1 }).execute();
+}`);
+    expect(planted.unnamed).toEqual([`return db.mergeInto(${TABLE_CONSTANT}).values({ manual: 1 }).execute();`]);
+    expect(planted.writes).toBe(false);
+  });
+
+  test("prose about the table is documentation and a SQL string beside it is not", () => {
+    // `data/entitlement.ts` really does name the physical table inside a `.describe`, so the form exists for
+    // a real site. It must not stretch to cover the string spelling anywhere a quote happens to sit.
+    const planted = derived(`export const PaymentsEntitlement = z
+  .object({})
+  .describe("One entitlement a user holds — the row in \`${TABLE_PHYSICAL}\`.");`);
+    expect(planted).toEqual({ writes: false, unnamed: [], matched: ["documentation text"] });
   });
 });
 
