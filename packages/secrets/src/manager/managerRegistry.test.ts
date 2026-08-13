@@ -13,7 +13,7 @@ function envWith(token: string): SecretsStoreEnv {
 
 describe("managerRegistry", () => {
   test("declares the CF API token as a global, rotatable cf-secrets-store text secret", () => {
-    expect(managerRegistry.CLOUDFLARE_API_TOKEN).toEqual({
+    expect(managerRegistry.CLOUDFLARE_API_TOKEN).toMatchObject({
       backend: "cf-secrets-store",
       scope: "global",
       rotatable: true,

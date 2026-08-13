@@ -18,7 +18,17 @@ export const emailSigningRegistry = defineSecretRegistry({
   // Mintable for dev: the key signs links this app both mints and verifies, so any random string
   // serves. Nothing else names it, so without `devValue` the first tracked link is the first anyone
   // hears of it — and by then the mail is in an inbox.
-  [EMAIL_LINK_SIGNING_KEY]: { backend: "d1", scope: "global", rotatable: true, valueType: "text", devValue: "random" },
+  [EMAIL_LINK_SIGNING_KEY]: {
+    backend: "d1",
+    scope: "global",
+    rotatable: true,
+    valueType: "text",
+    devValue: "random",
+    // Arbitrary in production for the same reason it is arbitrary in dev: this app mints the links and
+    // this app verifies them. So it is `minted` in every environment, and `local` to replace.
+    origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+    rotation: { kind: "local" },
+  },
 });
 
 /**

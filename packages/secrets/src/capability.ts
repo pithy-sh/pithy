@@ -9,7 +9,7 @@ import { secretsAdminRoutes } from "./http/guards";
 import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { MANAGER_CF_API_TOKEN_SECRET } from "./provision/provisionSecrets";
-import type { SecretRegistry, SecretRegistryEntry } from "./registry";
+import { defineSecretRegistry, type SecretRegistry, type SecretRegistryEntry } from "./registry";
 import {
   aggregateSecretRegistries,
   configureSharedSecrets,
@@ -61,6 +61,18 @@ export const secretsTokenProfile = {
  * **`rotatable: false` is about *value* versions, not key versions.** The master key rotates on the
  * `versions` map inside its own `EncryptionConfig` — that is what `atRestKeyRotation` walks — and a
  * second value-envelope version on top would be a second rotation axis for one key.
+ *
+ * **`origin` is a structured mint, and that is why `SecretRecipe` is a union (#322).** The issue that
+ * introduced these axes asserted this secret was minted from a random string. It is minted — by
+ * `initialMasterKeyConfig` — and its value is an `EncryptionConfig`, so a `recipe` that knew only
+ * `random` would have failed on the first secret it was drafted around. `recipe: "encryptionConfig"` says
+ * both halves, which is why the entry still carries no `devValue` and `isMintableSecret` still answers
+ * false: nothing arbitrary fills this.
+ *
+ * **`rotation: "local"` and `rotatable: false` are not in conflict.** They answer different questions.
+ * Replacing this value is something the kit does entirely by itself — that is `local`. Whether the stored
+ * *envelope* accumulates versions is `rotatable`, and here it does not, because the versions live inside
+ * the value.
  */
 export const masterKeyRegistryEntry: SecretRegistryEntry = {
   backend: "cf-secrets-store",
@@ -69,6 +81,8 @@ export const masterKeyRegistryEntry: SecretRegistryEntry = {
   bootstrap: true,
   valueType: "json",
   schema: EncryptionConfig,
+  origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+  rotation: { kind: "local" },
   notes: "The at-rest master key every other secret is encrypted under. Minted by pithy add secrets.",
 };
 
@@ -132,7 +146,16 @@ export function secrets(config: SecretsConfig): SecretsCapability {
   const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
   // The capability's own secret, merged under the adopter's so a project that declares nothing still has
   // a routable master key — and so an adopter who deliberately overrides the entry keeps that power.
-  const registry: SecretRegistry = { [MASTER_KEY_BINDING]: masterKeyRegistryEntry, ...config.registry };
+  //
+  // Validated on the way out, because the merge is what produces the registry everything else reads and
+  // it is the one registry nothing had checked: `masterKeyRegistryEntry` is a plain const, and an
+  // override arrives from `pithy.config.ts` where an adopter may well have written an object literal.
+  // Re-checking an already-defined registry costs nothing and is the difference between a contradiction
+  // caught at boot and one discovered by a client rendering it.
+  const registry: SecretRegistry = defineSecretRegistry({
+    [MASTER_KEY_BINDING]: masterKeyRegistryEntry,
+    ...config.registry,
+  });
   // Resolved once, here, and handed to both the router and the manifest — so the advertised admin paths
   // and the mounted ones cannot disagree about where the surface lives.
   const mountPath = config.basePath ?? SECRETS_DEFAULT_BASE_PATH;

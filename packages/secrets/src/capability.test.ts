@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { afterEach, describe, expect, test } from "vitest";
-import { isSecretsCapability, masterKeyRegistryEntry, secrets } from "./capability";
-import { defineSecretRegistry } from "./registry";
+import { isSecretsCapability, masterKeyRegistryEntry, secrets, secretsTokenProfile } from "./capability";
+import { MASTER_KEY_BINDING } from "./env/bindings";
+import { managerRegistry } from "./manager/managerRegistry";
+import { defineSecretRegistry, isMintableSecret, type SecretRegistryEntry } from "./registry";
 import { resetSharedSecrets, sharedSecretsStore } from "./sharedSecretsStore";
 
 const registry = defineSecretRegistry({
@@ -115,5 +119,73 @@ describe("secrets capability compose hook", () => {
     // proceeds — against an empty env, which no longer fails the resolution: an unresolvable secret
     // holds its error for its own read (#170).
     await expect(sharedSecretsStore(env, emailSlice)).resolves.toBeDefined();
+  });
+});
+
+describe("the master key entry the capability merges in", () => {
+  test("is held to the same define-time rules as every other secret", () => {
+    // It was the one entry no `defineSecretRegistry` ever saw: `secrets()` merged it straight into the
+    // registry it hands the accessor. So a contradiction in the kit's own most important secret would
+    // have reached a Worker, while an adopter's identical mistake was refused at define time.
+    expect(() => defineSecretRegistry({ [MASTER_KEY_BINDING]: masterKeyRegistryEntry })).not.toThrow();
+    const contradiction = {
+      backend: "d1",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      origin: { kind: "obtained", issuer: "github", documentation: "https://github.com/settings" },
+      rotation: { kind: "local" },
+    } as unknown as SecretRegistryEntry;
+    expect(() => secrets({ registry: { "adopter-secret": contradiction } })).toThrow(/rotation/);
+  });
+});
+
+describe("pithy.manifest.json", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  test("declares the master key as minted, structured, and locally replaced", () => {
+    // The correction #322 was built on, carried through to a client. A dashboard reading this sees a
+    // secret the kit makes — not one to go and get from somewhere — and it sees that without being told
+    // what an `EncryptionConfig` is.
+    expect(manifest.secrets).toEqual([
+      {
+        name: MASTER_KEY_BINDING,
+        origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+        rotation: { kind: "local" },
+      },
+    ]);
+  });
+
+  test("its secrets are exactly the capability's own registry entries that declare both axes", () => {
+    const entries: [string, SecretRegistryEntry][] = Object.entries(secrets({ registry: {} }).secretRegistry);
+    const declared = entries
+      .filter(([, entry]) => entry.origin && entry.rotation)
+      .map(([name, entry]) => ({ name, origin: entry.origin, rotation: entry.rotation }));
+    expect(manifest.secrets).toEqual(declared);
+  });
+
+  test("declares no devSecret for it — a random string is not an EncryptionConfig", () => {
+    // Minted and not `devValue`-mintable are both true of this secret, which is the distinction the
+    // recipe union exists to hold. `defineSecretRegistry` refuses the pair that would claim otherwise.
+    expect(manifest.devSecrets).toEqual([]);
+    expect(isMintableSecret(masterKeyRegistryEntry)).toBe(false);
+  });
+});
+
+describe("the Cloudflare token the manager runs on", () => {
+  test("needs exactly what the token profile mints, and nothing downstream repeats it", () => {
+    // The drift this declaration exists to end: a dashboard composing `pithy token mint …` used to hold
+    // its own copy of these. One list, two readers, and a test that they are the same list.
+    const origin = managerRegistry.CLOUDFLARE_API_TOKEN.origin;
+    expect(origin?.kind).toBe("helped");
+    expect(origin?.kind === "helped" && origin.needs.cloudflare).toEqual(secretsTokenProfile.permissions);
+  });
+
+  test("is helped to create and provider to rotate — the pair one axis cannot express", () => {
+    // We cannot mint it: that needs credentials for their account. Cloudflare can roll it and return the
+    // new value, so it can still replace itself. Neither fact follows from the other.
+    expect(managerRegistry.CLOUDFLARE_API_TOKEN.rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
   });
 });

@@ -6,6 +6,7 @@ import { ValidationError } from "../error/pithyError";
 import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
 import { DevSecret } from "./devSecret";
+import { DeclaredSecret } from "./secretOrigin";
 
 /**
  * Whether a string prints as a double-quoted literal Biome leaves exactly as written.
@@ -525,6 +526,12 @@ export const CapabilityManifest = z
       .array(DevSecret)
       .default([])
       .describe("Secrets from this capability's registry whose dev value `pithy add` mints into `.dev.vars`."),
+    secrets: z
+      .array(DeclaredSecret)
+      .default([])
+      .describe(
+        "Every secret from this capability's registry that declares how it comes to exist and how it is replaced. The route `devSecrets` proved: a client reads it without executing the package, so `pithy doctor` says *not set — run this* or *not set — get it here*, and no client keeps its own table of names. A secret declaring neither axis is absent, which reads as *nothing is known*, not as *nothing can help*.",
+      ),
     scaffold: z.array(z.string()).default([]).describe("Human-readable scaffold steps the CLI performs or explains."),
     configOptions: z
       .array(ConfigOption)

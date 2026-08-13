@@ -113,6 +113,23 @@ describe("pithy.manifest.json", () => {
     expect(manifest.devSecrets).toEqual([{ name: EMAIL_LINK_SIGNING_KEY, devValue: "random" }]);
   });
 
+  test("its secrets are exactly the registry entries that declare both axes", () => {
+    // Same route as `devSecrets`, and it must be: a client reads the manifest without executing this
+    // package. A declaration the manifest omits is a declaration nothing downstream can act on.
+    const entries: [string, SecretRegistryEntry][] = Object.entries(emailSigningRegistry);
+    const declared = entries
+      .filter(([, entry]) => entry.origin && entry.rotation)
+      .map(([name, entry]) => ({ name, origin: entry.origin, rotation: entry.rotation }));
+    expect(manifest.secrets).toEqual(declared);
+    expect(manifest.secrets).toEqual([
+      {
+        name: EMAIL_LINK_SIGNING_KEY,
+        origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+        rotation: { kind: "local" },
+      },
+    ]);
+  });
+
   test("claims nothing for EMAIL_SENDER — a Workflow binding has no local stand-in to mint", () => {
     expect(manifest.devSecrets.map((secret) => secret.name)).not.toContain("EMAIL_SENDER");
   });

@@ -327,6 +327,38 @@ describe("CapabilityManifest", () => {
     ).toThrow();
   });
 
+  test("defaults secrets to an empty array — a capability declares nothing until it says so", () => {
+    const parsed = CapabilityManifest.parse({ name: "payments", package: "@pithy-sh/payments", requiredBindings: [] });
+    expect(parsed.secrets).toEqual([]);
+  });
+
+  test("carries both axes of a declared secret through to a client", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      secrets: [
+        {
+          name: "auth-github-credentials",
+          origin: { kind: "obtained", issuer: "github", documentation: "https://github.com/settings/developers" },
+          rotation: { kind: "manual", issuer: "github", documentation: "https://github.com/settings/developers" },
+        },
+      ],
+    });
+    expect(parsed.secrets[0]).toMatchObject({ name: "auth-github-credentials", rotation: { kind: "manual" } });
+  });
+
+  test("rejects a declared secret missing an axis — half an answer reads as a whole one", () => {
+    expect(() =>
+      CapabilityManifest.parse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        secrets: [{ name: "auth-session-secret", origin: { kind: "minted", recipe: { kind: "encryptionConfig" } } }],
+      }),
+    ).toThrow();
+  });
+
   test("rejects a configOption with no describe", () => {
     expect(() =>
       CapabilityManifest.parse({

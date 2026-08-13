@@ -336,3 +336,126 @@ describe("isMintableSecret", () => {
     expect(isMintableSecret.length).toBe(1);
   });
 });
+
+describe("origin and rotation", () => {
+  const text: SecretRegistryEntry = { backend: "d1", scope: "environment", rotatable: true, valueType: "text" };
+  const random = { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } } as const;
+
+  test("accepts the three shapes a secret comes into existence by", () => {
+    const registry = defineSecretRegistry({
+      "auth-session-secret": { ...text, devValue: "random", origin: random, rotation: { kind: "local" } },
+      "cloudflare-api-token": {
+        backend: "cf-secrets-store",
+        scope: "global",
+        rotatable: true,
+        valueType: "text",
+        origin: { kind: "helped", issuer: "cloudflare", needs: { cloudflare: ["secrets:read"] } },
+        rotation: { kind: "provider", issuer: "cloudflare" },
+      },
+      "auth-github-credentials": {
+        ...text,
+        rotatable: false,
+        origin: { kind: "obtained", issuer: "github", documentation: "https://github.com/settings/developers" },
+        rotation: { kind: "manual", issuer: "github", documentation: "https://github.com/settings/developers" },
+      },
+    });
+    expect(Object.keys(registry)).toHaveLength(3);
+  });
+
+  test("refuses an origin without a rotation, and a rotation without an origin", () => {
+    // Half the declaration renders as a whole answer: a client showing "obtained from GitHub" with no
+    // rotation reads as "and that is all there is to know", which is exactly wrong for an overdue secret.
+    expect(() => defineSecretRegistry(asRegistry({ half: { ...text, origin: random } }))).toThrow(InternalError);
+    expect(() => defineSecretRegistry(asRegistry({ half: { ...text, rotation: { kind: "local" } } }))).toThrow(
+      InternalError,
+    );
+  });
+
+  test("refuses a malformed origin, naming the entry", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({ broken: { ...text, origin: { kind: "conjured" }, rotation: { kind: "local" } } }),
+      ),
+    ).toThrow(/broken/);
+  });
+
+  test("a minted secret rotates locally, and only a minted one does", () => {
+    // The kit can always make another of what it made. Nothing else can be replaced without the issuer.
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          contradiction: {
+            ...text,
+            devValue: "random",
+            origin: random,
+            rotation: { kind: "manual", issuer: "github", documentation: "https://github.com/settings" },
+          },
+        }),
+      ),
+    ).toThrow(/rotation/);
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          contradiction: {
+            ...text,
+            origin: { kind: "obtained", issuer: "github", documentation: "https://github.com/settings" },
+            rotation: { kind: "local" },
+          },
+        }),
+      ),
+    ).toThrow(/rotation/);
+  });
+
+  test("`devValue` and a random mint are one axis — neither may be declared without the other", () => {
+    // #321 declared what may be minted; this declares how everything comes to exist. Two fields that can
+    // disagree is two answers to one question, and the one a client happens to read decides what it says.
+    expect(() =>
+      defineSecretRegistry(asRegistry({ silent: { ...text, origin: random, rotation: { kind: "local" } } })),
+    ).toThrow(/devValue/);
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          silent: {
+            ...text,
+            devValue: "random",
+            origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+            rotation: { kind: "local" },
+          },
+        }),
+      ),
+    ).toThrow(/devValue/);
+  });
+
+  test("the master key is minted, carries no devValue, and is accepted", () => {
+    // The correction #322 was built on. Its value is an `EncryptionConfig`, so no random string fills it —
+    // and it is still minted, by `initialMasterKeyConfig`. A union that could not say both would fail on
+    // the one secret it was drafted around.
+    const registry = defineSecretRegistry({
+      SECRETS_ENCRYPTION_KEYS: {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: false,
+        bootstrap: true,
+        valueType: "json",
+        schema: z.object({ currentVersion: z.string().describe("Current.") }).describe("Config."),
+        origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+        rotation: { kind: "local" },
+      },
+    });
+    expect(isMintableSecret(registry.SECRETS_ENCRYPTION_KEYS)).toBe(false);
+  });
+
+  test("a structured mint needs a json entry, and a random one a text entry", () => {
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          wrong: {
+            ...text,
+            origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
+            rotation: { kind: "local" },
+          },
+        }),
+      ),
+    ).toThrow(/json/);
+  });
+});
