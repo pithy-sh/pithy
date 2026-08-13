@@ -7,7 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { managerMintedSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
+import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
@@ -22,7 +22,8 @@ import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
 import { type ProvisionReport, provisionEnvironment } from "../provision/environment";
-import { requireProvisionMode } from "../provision/mode";
+import { type ProvisionMode, requireProvisionMode } from "../provision/mode";
+import { type PendingSecrets, pendingSecretLines, pendingSecrets } from "../provision/pendingSecrets";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
@@ -172,30 +173,27 @@ function describeConfigs(report: ProvisionReport): string[] {
 }
 
 /**
- * **What this command declares and cannot create.**
- *
- * A `d1` secret's value is sealed under a master key that lives inside the environment's manager
- * Worker, so only that manager can say whether one exists — and `pithy provision` runs *before* the
- * managers are necessarily deployed. It therefore creates none of them, which is a real limit and not a
- * bug to be papered over.
- *
- * The bug was that it finished quietly anyway. A run that says `Provisioned prod. Migrated.` while the
- * session signing key and the link signing key are absent has reported success for an environment that
- * cannot serve a request, and the next person to find out is a user. So the run names them, and names
- * the one command that does make them.
+ * **What this command declares and cannot create**, and who can — which is not the same answer in both
+ * modes. See `provision/pendingSecrets.ts`, which holds the reasoning and the sentences.
  */
-function pendingSecrets(capabilities: Capability[]): string[] {
-  const registry = workerSecretRegistry(capabilities);
-  return registry ? managerMintedSecrets(registry) : [];
+function deferredSecrets(capabilities: Capability[], mode: ProvisionMode): PendingSecrets {
+  return pendingSecrets(workerSecretRegistry(capabilities) ?? {}, mode);
 }
 
 /** Write the report: one JSON line, or the human summary. */
 function writeReport(
   report: ProvisionReport,
-  options: { json: boolean; seeded: boolean; pending: readonly string[] },
+  options: { json: boolean; seeded: boolean; pending: PendingSecrets },
 ): void {
   if (options.json) {
-    process.stdout.write(`${formatJsonLine({ command: "provision", ...report, pendingSecrets: options.pending })}\n`);
+    process.stdout.write(
+      `${formatJsonLine({
+        command: "provision",
+        ...report,
+        pendingSecrets: options.pending.names,
+        pendingSecretsRemedy: options.pending.remedy,
+      })}\n`,
+    );
     return;
   }
   for (const resource of report.resources) {
@@ -223,15 +221,24 @@ function writeReport(
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
   // Before `Done.`, because it is the part of the job this command did not do. See `pendingSecrets`.
-  if (options.pending.length > 0) {
-    process.stdout.write(`${options.pending.join(", ")}: not created here — they need a deployed manager.\n`);
-    process.stdout.write("Run pithy secrets provision to create them.\n");
-  }
+  for (const line of pendingSecretLines(options.pending)) process.stdout.write(`${line}\n`);
   process.stdout.write(`${formatDone()}\n`);
 }
 
-/** `--env <name>`: an environment the project declares, whose ids are source. */
-async function provisionDeclared(projectDir: string, env: string, options: ProvisionRunOptions): Promise<void> {
+/**
+ * `--env <name>`: an environment the project declares, whose ids are source.
+ *
+ * It takes the resolved {@link ProvisionMode} rather than a bare name, and hands it on to the deferred-
+ * secrets report. There is one producer of the mode — `requireProvisionMode`, in `runProvision` — so
+ * neither branch can report itself as the other, which is how `--feature` came to print `--env`'s
+ * remedy in the first place (#330).
+ */
+async function provisionDeclared(
+  projectDir: string,
+  mode: Extract<ProvisionMode, { kind: "environment" }>,
+  options: ProvisionRunOptions,
+): Promise<void> {
+  const env = mode.env;
   const config = await loadProject(projectDir);
   // The declaration decides what may be provisioned. `--env live` on a project that never declared
   // `live` is refused here, naming the set it does have — rather than creating `<project>-live-db`
@@ -282,7 +289,7 @@ async function provisionDeclared(projectDir: string, env: string, options: Provi
     seedData: options.seed,
     audit,
   });
-  writeReport(report, { json: options.json, seeded: options.seed, pending: pendingSecrets(capabilities) });
+  writeReport(report, { json: options.json, seeded: options.seed, pending: deferredSecrets(capabilities, mode) });
 }
 
 /**
@@ -293,7 +300,11 @@ async function provisionDeclared(projectDir: string, env: string, options: Provi
  * pipeline, which is exactly how a gate stops meaning anything. It also always seeds — a feature
  * environment is created empty and useless without fixtures — so `--seed` has nothing to add to it.
  */
-async function provisionBranch(projectDir: string, options: ProvisionRunOptions): Promise<void> {
+async function provisionBranch(
+  projectDir: string,
+  mode: Extract<ProvisionMode, { kind: "feature" }>,
+  options: ProvisionRunOptions,
+): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
   const account = await projectCloudflareAccount(projectDir);
   const provisioners = requireProvisioners(account, "a feature environment");
@@ -306,7 +317,7 @@ async function provisionBranch(projectDir: string, options: ProvisionRunOptions)
     provisioners,
     audit: await buildAudit(projectDir, capabilities, account),
   });
-  writeReport(report, { json: options.json, seeded: true, pending: pendingSecrets(capabilities) });
+  writeReport(report, { json: options.json, seeded: true, pending: deferredSecrets(capabilities, mode) });
 }
 
 /**
@@ -320,8 +331,8 @@ export async function runProvision(options: ProvisionRunOptions): Promise<void> 
   // an answer about the command line.
   const mode = requireProvisionMode(options);
   const projectDir = options.projectDir ?? process.cwd();
-  if (mode.kind === "feature") return provisionBranch(projectDir, options);
-  return provisionDeclared(projectDir, mode.env, options);
+  if (mode.kind === "feature") return provisionBranch(projectDir, mode, options);
+  return provisionDeclared(projectDir, mode, options);
 }
 
 export default defineCommand({
