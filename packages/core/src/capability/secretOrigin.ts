@@ -43,16 +43,24 @@ export const SecretIssuer = z
 export type SecretIssuer = z.output<typeof SecretIssuer>;
 
 /**
- * The issuer field, everywhere it appears, with its one degradation rule attached.
+ * The issuer, everywhere it appears, with its one degradation rule attached.
  *
  * **An unrecognised issuer degrades to `other` rather than failing.** A manifest is read from
  * `node_modules`, so it can be newer than the client reading it — and a client that threw on an issuer
  * it had not been built against would blank a pane over a name it did not need to understand. `other`
- * is the honest answer: *somebody issues this, and I cannot help you with them.* Declared once, here,
- * because a rule stated at four field sites is a rule three of them will eventually miss.
+ * is the honest answer: *somebody issues this, and I cannot help you with them.*
+ *
+ * **This const is the rule, and `issuedBy` is only a description on it.** The rule was first written as
+ * a helper for the four field sites, and `needs` — which is *keyed* by issuer — was the fifth site, so
+ * it restated the enum bare and rejected what every field beside it accepted. One unknown issuer failed
+ * the whole manifest. A rule stated at five sites is a rule four of them will eventually miss, so it is
+ * stated once and both shapes read it: a key is an issuer, and degrades like one.
  */
+const IssuerName = SecretIssuer.catch("other");
+
+/** The issuer as a field, with the sentence that site needs. The rule comes from {@link IssuerName}. */
 function issuedBy(description: string): z.ZodType<SecretIssuer, unknown> {
-  return SecretIssuer.catch("other").describe(description);
+  return IssuerName.describe(description);
 }
 
 /** The characters a secret name may hold. Excludes `/`, which separates a keyspace from a member key. */
@@ -123,9 +131,9 @@ export const SecretOrigin = z
         ),
       issuer: issuedBy("Whose console or API issues it."),
       needs: z
-        .partialRecord(SecretIssuer, z.array(z.string().regex(HELPER_NEED)))
+        .partialRecord(IssuerName, z.array(z.string().regex(HELPER_NEED)))
         .describe(
-          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle.",
+          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key degrades to `other` exactly as the field does — a key is an issuer.",
         ),
       documentation: documentedAt(
         "Where the command's arguments come from, for an operator who would rather check them by hand.",

@@ -277,12 +277,22 @@ describe("pithy.manifest.json", () => {
     expect(manifest.devSecrets).toEqual(declared);
   });
 
-  test("its secrets are exactly the registry entries that declare both axes", () => {
+  test("every registry entry is in the manifest, and says where it comes from and how it is replaced", () => {
+    // Stated as the invariant, not as a filtered comparison. The filtered version — build `declared`
+    // from the entries that declare both axes, compare — could not fail for the one case it existed to
+    // catch: an entry declaring neither axis is dropped from `declared` and is absent from the manifest,
+    // so it vanishes from both sides and the comparison passes. Silent drift is the drift #322 ends.
     const entries: [string, SecretRegistryEntry][] = Object.entries(authSecretsRegistry);
-    const declared = entries
-      .filter(([, entry]) => entry.origin && entry.rotation)
-      .map(([name, entry]) => ({ name, origin: entry.origin, rotation: entry.rotation }));
-    expect(manifest.secrets).toEqual(declared);
+    expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
+    for (const [name, entry] of entries) {
+      expect(entry.origin, `${name} declares no origin`).toBeDefined();
+      expect(entry.rotation, `${name} declares no rotation`).toBeDefined();
+      expect(manifest.secrets.find((secret) => secret.name === name)).toEqual({
+        name,
+        origin: entry.origin,
+        rotation: entry.rotation,
+      });
+    }
   });
 
   test("says where a human gets each OAuth pair, and where the same human rotates it", () => {
