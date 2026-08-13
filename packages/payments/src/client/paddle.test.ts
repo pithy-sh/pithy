@@ -479,17 +479,23 @@ describe("priceQueryKey", () => {
 describe("the browser half holds no credential but the publishable one", () => {
   const CLIENT_DIR = join(dirname(fileURLToPath(import.meta.url)));
 
-  /** Every `.ts` and `.json` file under `src/client/`, read from disk. */
-  async function clientFiles(dir: string = CLIENT_DIR): Promise<{ path: string; text: string }[]> {
-    const found: { path: string; text: string }[] = [];
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) found.push(...(await clientFiles(path)));
-      else if (path.endsWith(".ts") || path.endsWith(".json")) {
-        found.push({ path, text: await readFile(path, "utf8") });
-      }
-    }
-    return found;
+  /**
+   * Every `.ts` and `.json` file under `src/client/`, read from disk.
+   *
+   * `recursive: true` rather than a recursion written here. Node's own listing is not a traversal this
+   * repository maintains — which is the difference `packages/cli/src/ci/sourceFiles.test.ts` is about,
+   * and the reason a hand-rolled walk in this file would have to be argued for in a list somebody
+   * reviews. There is nothing to argue: this needs a flat list of paths and that is what it returns.
+   */
+  async function clientFiles(): Promise<{ path: string; text: string }[]> {
+    const names = await readdir(CLIENT_DIR, { recursive: true });
+    const wanted = names.filter((name) => name.endsWith(".ts") || name.endsWith(".json"));
+    return Promise.all(
+      wanted.map(async (name) => {
+        const path = join(CLIENT_DIR, name);
+        return { path, text: await readFile(path, "utf8") };
+      }),
+    );
   }
 
   test("the sweep reads the whole directory — a broken path must fail loudly, not vacuously pass", async () => {

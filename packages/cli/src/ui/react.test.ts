@@ -126,19 +126,20 @@ describe("the React 19 stub", () => {
   });
 
   test("every route module declares its own path — dropping a file in is the registration", () => {
-    // Four with auth, six with payments as well. Every one of them, in every combination.
+    // Four with auth, seven with payments as well. Every one of them, in every combination.
     expect(routeModules(AUTH).length).toBe(4);
-    expect(routeModules(BOTH).length).toBe(6);
+    expect(routeModules(BOTH).length).toBe(7);
     for (const [path, contents] of routeModules(BOTH)) {
       expect(contents, path).toMatch(/^export const path = "\/[^"]*";$/m);
     }
   });
 
-  test("the payments template adds exactly the two screens and the bridge", () => {
+  test("the payments template adds exactly the three screens and the bridge", () => {
     const added = Object.keys(PAY).filter((path) => !(path in BARE));
     expect(added.sort()).toEqual([
       "src/payments.tsx",
       "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/pricing.tsx",
       "src/routes/pithy/subscription.tsx",
     ]);
     // Nothing from the auth set rides along: a payments-only scaffold has no session hook and no widget.
@@ -156,12 +157,20 @@ describe("the React 19 stub", () => {
   test("the screens call the package's hooks rather than reimplementing the purchase flow", () => {
     // The whole point of headless-in-the-package: a frozen paywall ages badly because store rules move,
     // so the flow upgrades with a minor release and only the rendering is written once.
-    expect(PAY["src/routes/pithy/paywall.tsx"]).toContain('from "@pithy-sh/payments/src/client/hooks"');
-    expect(PAY["src/routes/pithy/subscription.tsx"]).toContain('from "@pithy-sh/payments/src/client/hooks"');
-    // And no screen re-derives a request: every fetch of a payments route belongs to the package.
-    for (const path of ["src/routes/pithy/paywall.tsx", "src/routes/pithy/subscription.tsx"]) {
+    const screens = [
+      "src/routes/pithy/paywall.tsx",
+      "src/routes/pithy/pricing.tsx",
+      "src/routes/pithy/subscription.tsx",
+    ];
+    for (const path of screens) {
+      expect(PAY[path], path).toContain('from "@pithy-sh/payments/src/client/');
+      // And no screen re-derives a request: every fetch of a payments route belongs to the package.
       expect(PAY[path], path).not.toMatch(/fetch\(/);
     }
+    // The pricing screen quotes nothing of its own. Paddle names the figure, for this visitor, and a
+    // number written into a file the adopter owns is one Pithy could never correct.
+    expect(PAY["src/routes/pithy/pricing.tsx"]).toContain("usePricePreview");
+    expect(PAY["src/routes/pithy/pricing.tsx"]).not.toMatch(/[$£€¥]\s?\d/);
   });
 
   test("the entitlement route guard is a redirect, and says it is not a security boundary", () => {
