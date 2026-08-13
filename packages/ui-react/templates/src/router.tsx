@@ -203,25 +203,44 @@ async function isSignedIn(): Promise<boolean> {
   return (await (await load()).getSession()) !== null;
 }
 
-/** Renders its children only for a signed-in visitor; everyone else is sent to the sign-in screen. */
-function Guarded(props: { children: ReactNode }): ReactNode {
-  const [state, setState] = useState<"checking" | "in" | "out">("checking");
+/**
+ * Whether there is a session — `null` while the read is in flight.
+ *
+ * Exported because a *public* screen can need the same answer without being guarded by it. A pricing
+ * page is the case: anyone may read a price, and only an account may buy, so the screen has to know
+ * which visitor it is drawing a button for. Reading it here rather than importing `./session` is what
+ * lets such a screen ship in a payments-only scaffold, where that module does not exist — the glob
+ * above answers "no auth composed" as signed in, and the screen renders as it did before auth was a
+ * question.
+ *
+ * Three states, not two. `null` is "we have not asked yet", and collapsing it into `false` would flash
+ * a signed-out affordance at every returning customer for one frame.
+ */
+export function useSignedIn(): boolean | null {
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
 
   useEffect(() => {
     let live = true;
-    void isSignedIn().then((signedIn) => {
-      if (live) setState(signedIn ? "in" : "out");
+    void isSignedIn().then((answer) => {
+      if (live) setSignedIn(answer);
     });
     return () => {
       live = false;
     };
   }, []);
 
-  useEffect(() => {
-    if (state === "out") navigate(SIGN_IN_PATH);
-  }, [state]);
+  return signedIn;
+}
 
-  if (state === "in") return props.children;
+/** Renders its children only for a signed-in visitor; everyone else is sent to the sign-in screen. */
+function Guarded(props: { children: ReactNode }): ReactNode {
+  const signedIn = useSignedIn();
+
+  useEffect(() => {
+    if (signedIn === false) navigate(SIGN_IN_PATH);
+  }, [signedIn]);
+
+  if (signedIn === true) return props.children;
   return <p className="muted">One moment.</p>;
 }
 

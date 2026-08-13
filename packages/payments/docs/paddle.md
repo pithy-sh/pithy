@@ -230,6 +230,16 @@ Both states are specified, because both are on screen for someone.
 
 **Failed**: `preview` is null, `failure` carries a renderable message, and **there is no fallback figure**. Falling back to a number written in a template reintroduces the whole defect — it is wrong in every country whose convention differs from the one it was written in, and it is wrong silently. The buy button still works; Paddle's own checkout quotes again on its own page.
 
+**Overlapping**: only the latest quote is rendered, whichever answers first. Two previews can be in flight at once — an anonymous visitor's location resolves under the query, or a country picker moves — and without a guard the slower one wins by landing last, putting a price for an address the visitor has left on the screen whose whole job is showing a correct one. Superseded answers are *ignored*, not cancelled: `Paddle.PricePreview` takes no `AbortSignal` and returns a bare promise, so there is nothing to cancel. A superseded *refusal* is ignored the same way, which is what stops a dead request blanking a price already on screen.
+
+### What the scaffolded screen does with `estimated`
+
+It renders it. `priceSummary` returns `{ headline, note, estimated }`, and the screen puts *Estimated.* beside the figure when the flag is set — a quote short of tax must not look like a final one. The decision on record is **show what you know, label it, recalculate at the billing address**: an estimate that resolves at checkout is correct behaviour, and the label is what makes it honest rather than merely convenient.
+
+### The anonymous visitor
+
+The pricing screen is public — it declares no `session`, because a stranger has to be able to read a price and `PricePreview` needs nothing but the publishable token. `POST /payments/checkout` is `requireAuth()`, so the buy action is not public, and the screen says so **before** the click: an anonymous visitor gets one sentence and a named link to sign in, in place of a button that would refuse. Leaving it to the route guard sold someone a price and then redirected them away from what they were doing.
+
 ### Zero-decimal currencies
 
 ¥725 is `725`, not `72500`. Render `formattedTotals` and `formattedUnitTotals` — Paddle has already applied the currency's own decimal places, its symbol and its separators. Never format the raw amounts yourself; they are exposed for comparing, and a kit that formatted them would need a table of which currencies have decimals and would eventually get one wrong.
@@ -253,6 +263,8 @@ The Japanese row above was fetched twice minutes apart and returned ¥797 then �
 The screens are wired for you. `useCheckout().handoff` carries it, `usePaddleCheckout(handoff, { frameTarget })` opens it, and the scaffolded `paywall.tsx` and `pricing.tsx` render the container from `opened.inline` — so switching `overlay` to `inline` in your config needs no edit to a scaffolded file.
 
 **Inline needs a container, and the container has to exist first.** `frameTarget` is a **class name**, not an id and not a selector. The open happens in an effect rather than in the click handler, because Paddle looks the element up at the instant it opens and React has to have committed the render that revealed it. Get that ordering wrong and Paddle throws `TypeError: Cannot read properties of undefined (reading 'appendChild')` out of your click handler — measured, not guessed. `openPaddleCheckout` checks for the element first and answers `client/paddle_no_container` instead, because a named refusal with an action beats somebody else's stack trace.
+
+**One mount opens one checkout, including under `StrictMode`** — which is the mode `pithy ui add react` scaffolds: `client.tsx` wraps the router in it, so in development every effect runs, is cleaned up, and runs again. `usePaddleCheckout` remembers the transaction it opened rather than trusting that its effect runs once. It remembers the last id, not a flag: `start` mints a fresh transaction per attempt, so a buyer who closed the overlay and clicked Buy again arrives with a new one, and that one opens.
 
 The frame is styled `width: 100%; min-width: 312px; background-color: transparent; border: none;` at 450px by default. The `min-width` is Paddle's requirement rather than taste: below it the footer naming Paddle as merchant of record is cut off.
 
