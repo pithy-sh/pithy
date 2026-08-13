@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
+import type { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { defineSecretRegistry, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { z } from "zod";
 
@@ -63,15 +64,43 @@ export interface R2CredentialsEntry {
   valueType: "json";
   /** The bundle's shape. */
   schema: typeof R2StorageCredentials;
+  /** Where the pair comes from. `obtained`, always — see {@link R2_CREDENTIALS_PAGE}. */
+  origin: SecretOrigin;
+  /** How the pair is replaced. `manual`, always — the same page, by the same human. */
+  rotation: SecretRotation;
 }
 
-/** The one entry shape every name shares — declared once so no two declarations can disagree. */
+/**
+ * Where a human makes an R2 S3 access-key pair, and where the same human makes the next one.
+ *
+ * **Nothing here will ever mint one, and that is the fact the declaration carries.** Cloudflare has no
+ * API that returns an S3 access-key pair, so `pithy storage provision` and `pithy media provision` both
+ * take one as a flag and write it as given — a generated value would open no bucket and would replace a
+ * loud gap with a quiet one. Naming the page is the whole of the help the kit can offer, which is exactly
+ * what `obtained` is for.
+ *
+ * Origin and rotation name the same page because it is the same page: replacement is making another pair
+ * and deleting the old one. That is also why {@link R2CredentialsEntry.rotatable} is false — there is no
+ * overlap window to hold two live versions through.
+ */
+const R2_CREDENTIALS_PAGE = "https://developers.cloudflare.com/r2/api/tokens/";
+
+/**
+ * The one entry shape every name shares — declared once so no two declarations can disagree.
+ *
+ * The two declaration axes live here rather than at each name for the reason the rest of the entry does:
+ * `storage-r2-credentials` and `media-r2-credentials` are the same kind of credential from the same
+ * issuer, and `aggregateSecretRegistries` refuses a name two capabilities describe differently. One
+ * factory is how they cannot.
+ */
 const R2_CREDENTIALS_ENTRY: R2CredentialsEntry = {
   backend: "d1",
   scope: "environment",
   rotatable: false,
   valueType: "json",
   schema: R2StorageCredentials,
+  origin: { kind: "obtained", issuer: "cloudflare", documentation: R2_CREDENTIALS_PAGE },
+  rotation: { kind: "manual", issuer: "cloudflare", documentation: R2_CREDENTIALS_PAGE },
 };
 
 /**

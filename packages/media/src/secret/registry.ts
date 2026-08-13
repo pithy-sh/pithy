@@ -27,6 +27,21 @@ import { z } from "zod";
 /** The name the Images + Stream credentials are stored and resolved under. */
 export const MEDIA_STORAGE_SECRET = "media-storage-credentials";
 
+/**
+ * Where a human makes the scoped Images + Stream token, and where Cloudflare rolls it.
+ *
+ * **Two pages, because the two axes genuinely differ here.** The kit cannot compose the creation command:
+ * `pithy token mint` works from a permission catalog, and that catalog carries no Images or Stream group,
+ * so an operator picks them in the dashboard. Replacement is not the same act — a Cloudflare API token
+ * rolls through Cloudflare's own API and comes back with its successor, which is what `provider` means
+ * and what the manager's own token already declares.
+ *
+ * This is the pair `media-r2-credentials` does *not* have, and the reason rotation is declared per secret
+ * rather than per issuer: both come from Cloudflare, and only one of them can replace itself.
+ */
+const MEDIA_TOKEN_PAGE = "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/";
+const MEDIA_TOKEN_ROLL = "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/";
+
 /** The name media's R2 bucket credentials are stored under — the name `objectStore` is pointed at. */
 export const MEDIA_R2_SECRET = "media-r2-credentials";
 
@@ -60,6 +75,11 @@ export const mediaSecretsRegistry = defineSecretRegistry({
     rotatable: false,
     valueType: "json",
     schema: MediaStorageCredentials,
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: MEDIA_TOKEN_PAGE },
+    rotation: { kind: "provider", issuer: "cloudflare", documentation: MEDIA_TOKEN_ROLL },
   },
+  // Both axes arrive with the entry, from `@pithy-sh/storage`'s factory. Restating them here is how the
+  // two declarations of one name would drift, and `aggregateSecretRegistries` is what would then refuse
+  // to boot a Worker composing both capabilities.
   ...mediaR2Registry,
 });

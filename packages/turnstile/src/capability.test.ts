@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { isTurnstileCapability, turnstile } from "./capability";
 import type { TurnstileConfigInput } from "./config/config";
+import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "./secret/registry";
 
 const sitekeys = { dev: "d", staging: "s", prod: "p" };
 
@@ -109,5 +113,43 @@ describe("turnstile client projection", () => {
       expect(serialized).not.toContain(secret);
     }
     expect(serialized).toContain("dev-key");
+  });
+});
+
+describe("pithy.manifest.json — declared secrets", () => {
+  const manifest = CapabilityManifest.parse(
+    JSON.parse(readFileSync(new URL("../pithy.manifest.json", import.meta.url), "utf8")),
+  );
+
+  test("every registry entry is in the manifest, and says where it comes from and how it is replaced", () => {
+    // The gate this capability had none of. A client reads the manifest without executing this package,
+    // so a secret absent from it reads as *nothing is known* — and this one has a real answer at both
+    // ends: Cloudflare issues the widget's secret key, and Cloudflare's own API rotates it.
+    //
+    // Stated as the invariant, never as a filtered comparison: an entry declaring neither axis drops off
+    // both sides of a filtered comparison at once and passes green.
+    const entries: [string, SecretRegistryEntry][] = Object.entries(turnstileSecretsRegistry);
+    expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
+    for (const [name, entry] of entries) {
+      expect(entry.origin, `${name} declares no origin`).toBeDefined();
+      expect(entry.rotation, `${name} declares no rotation`).toBeDefined();
+      expect(manifest.secrets.find((secret) => secret.name === name)).toEqual({
+        name,
+        origin: entry.origin,
+        rotation: entry.rotation,
+      });
+    }
+  });
+
+  test("the widget's secret comes from Cloudflare and rolls through Cloudflare", () => {
+    const declared = manifest.secrets.find((secret) => secret.name === TURNSTILE_SECRET_NAME);
+    expect(declared?.origin).toMatchObject({ kind: "obtained", issuer: "cloudflare" });
+    expect(declared?.rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
+  });
+
+  test("mints nothing — a generated widget secret validates no token", () => {
+    // The test keys dev and staging wire are Cloudflare's published pair, not a minted value: they are
+    // known to Cloudflare, which is the whole of why they verify.
+    expect(manifest.devSecrets).toEqual([]);
   });
 });

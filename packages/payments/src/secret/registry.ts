@@ -47,6 +47,22 @@ import { PaymentsRailNotConfiguredError } from "../error/errors";
 /** The name the credential bundle is stored and resolved under. The join key across every registry. */
 export const PAYMENTS_PROVIDER_SECRET = "payments-provider-credentials";
 
+/**
+ * Where a human goes for these credentials, and where the same human replaces them.
+ *
+ * **Four consoles, one `issuer` field.** Apple's `.p8`, Google's service-account key, Stripe's key pair
+ * and Lemon Squeezy's API key are each taken by hand from a different company's console, and they share
+ * one secret because they share one storage decision (see above) — not because they share an issuer. The
+ * axis holds a single name, so the honest one is `other`: *somebody issues this, and it is not one
+ * somebody.* Naming any single rail would be wrong for every deployment that does not sell through it.
+ *
+ * So the link is the one page that names all four rather than a rail's settings page. The point of the
+ * field is to end a search; a link to Stripe ends a quarter of this one. The day this bundle is split per
+ * rail — or `SecretOrigin` grows an issuer per entry — each half names its own console and this constant
+ * goes.
+ */
+const PAYMENTS_CREDENTIALS_PAGE = "https://github.com/pithy-sh/pithy/blob/main/docs/commands/payments.md";
+
 export const PaymentsAppleCredentials = z
   .strictObject({
     bundleId: z
@@ -170,6 +186,14 @@ export const paymentsSecretsRegistry = defineSecretRegistry({
     rotatable: true,
     valueType: "json",
     schema: PaymentsProviderCredentials,
+    // `obtained`, and it always will be: a rail's key authenticates against that rail, so a minted one
+    // authenticates against nothing and hides the real gap behind a filled-in field.
+    origin: { kind: "obtained", issuer: "other", documentation: PAYMENTS_CREDENTIALS_PAGE },
+    // `manual`, and note it does not follow from `rotatable: true`. `rotatable` says the store may hold
+    // two live versions of this bundle at once — which it must, because a Stripe webhook signed under
+    // the old secret can arrive after the new one is written. Who performs the replacement is a human in
+    // a console, whatever the store can hold while they do it.
+    rotation: { kind: "manual", issuer: "other", documentation: PAYMENTS_CREDENTIALS_PAGE },
   },
 });
 
