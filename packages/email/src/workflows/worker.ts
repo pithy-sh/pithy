@@ -65,14 +65,8 @@ function buildTheme(env: EmailWorkerEnv): EmailTheme {
   return EmailTheme.parse(JSON.parse(env.EMAIL_THEME));
 }
 
-/**
- * Assemble the send dependencies, resolving the current signing key from the secrets store.
- *
- * `now` is a parameter rather than a read, because the only caller is a Workflow driver body and a driver body
- * re-executes on every resume. Read here, a batch interrupted at 23:59 and resumed at 00:01 would date the
- * jobs it had already sent yesterday and the rest today, and every link's expiry would move with it (#331).
- */
-async function buildSendDeps(env: EmailWorkerEnv, now: Date): Promise<SendDeps> {
+/** Assemble the send dependencies, resolving the current signing key from the secrets store. */
+async function buildSendDeps(env: EmailWorkerEnv): Promise<SendDeps> {
   const keys = await resolveSigningKeys(env);
   const key = keys.versions[keys.currentVersion];
   return {
@@ -85,15 +79,15 @@ async function buildSendDeps(env: EmailWorkerEnv, now: Date): Promise<SendDeps> 
     linkTtlDays: Number(env.LINK_TTL_DAYS ?? 90),
     maxAttempts: Number(env.MAX_ATTEMPTS ?? 5),
     environment: env.ENVIRONMENT,
-    now,
+    now: new Date(),
   };
 }
 
-/** Assemble the scheduler dependencies, dispatching each batch as a send Workflow. `now` is the tick's own. */
-function buildSchedulerDeps(env: EmailWorkerEnv, now: Date): SchedulerDeps {
+/** Assemble the scheduler dependencies, dispatching each batch as a send Workflow. */
+function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
   return {
     db: emailDatabase(env.DB),
-    now,
+    now: new Date(),
     graceMs: Number(env.SCHEDULER_GRACE_MS ?? 2 * MINUTE_MS),
     stuckMs: Number(env.SCHEDULER_STUCK_MS ?? 15 * MINUTE_MS),
     batchSize: Number(env.SCHEDULER_BATCH_SIZE ?? 50),
@@ -107,10 +101,7 @@ function buildSchedulerDeps(env: EmailWorkerEnv, now: Date): SchedulerDeps {
 /** Sends a batch of jobs durably. Started for immediate sends and by the scheduler's fan-out. */
 export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobIds: string[] }> {
   override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<void> {
-    // The batch's clock, journalled: this body re-executes on every resume, so a read here would date the
-    // second half of a batch hours after the first (#331). Epoch milliseconds, because the journal is JSON.
-    const nowMs: number = await step.do("start-batch", async () => Date.now());
-    const deps = await buildSendDeps(this.env, new Date(nowMs));
+    const deps = await buildSendDeps(this.env);
     // One step per job: each is independently retried/backed-off by the Workflow runtime, and a
     // single bad recipient never blocks the rest of the batch.
     for (const jobId of event.payload.jobIds) {
@@ -122,10 +113,8 @@ export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobI
 /** Finds due jobs and fans them out into send batches. Fired by the every-minute cron. */
 export class EmailSchedulerWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, unknown> {
   override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
-    // The clock is read *inside* the step, which is where a tick's clock belongs: a scheduler tick is one
-    // step, so a resume re-reads nothing — the journal returns the completed tick.
     await step.do("dispatch-due", async () => {
-      await runScheduler(buildSchedulerDeps(this.env, new Date()));
+      await runScheduler(buildSchedulerDeps(this.env));
     });
   }
 }

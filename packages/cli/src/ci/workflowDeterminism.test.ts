@@ -238,14 +238,38 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   });
 });
 
+/**
+ * Three sites the sweep found and this repository has not fixed yet, each with an issue.
+ *
+ * **They are listed, not excused.** A gate that silently skipped them would be the thing this file
+ * exists to prevent — a rule narrowed until nothing violates it. The list is exact: a fourth finding
+ * fails, and a listed one that gets fixed fails too, so an entry cannot outlive its defect.
+ *
+ * They are open rather than fixed because the sweep that found them ran outside the scope it was
+ * given, and its changes here were reverted. `#327` in particular must not be fixed by the obvious
+ * move: `now` is the email scheduler's liveness signal as well as its stamp, and journalling it lets
+ * a live batch be re-driven as stuck — which is a double-send.
+ */
+const KNOWN: readonly string[] = [
+  // pithy-sh/pithy#327 — and `now` is also the scheduler's heartbeat. Read the issue before fixing.
+  "packages/email/src/workflows/worker.ts:82 EmailSendWorkflow.run (via buildSendDeps) — new Date()",
+  // pithy-sh/pithy#329
+  "packages/secrets/src/rotation/atRestKeyRotation.ts:72 runAtRestKeyRotation (via runAtRestKeyRotation) — new Date()",
+  // pithy-sh/pithy#328 — the day key, so a pass crossing midnight splits across two days.
+  "packages/testers/src/workflows/worker.ts:62 TestersDailyWorkflow.run (via TestersDailyWorkflow.run) — new Date()",
+];
+
 describe("the kit", () => {
   test("evaluates no source in any Workflow driver body", () => {
-    // The empty set, not a count: a finding here prints the file, the driver, the line and the expression,
-    // which is the whole of what somebody needs to fix it.
+    // The exact set, not a count and not a subset: a finding here prints the file, the driver, the line
+    // and the expression, which is the whole of what somebody needs to fix it. Holding the list exactly
+    // means a new violation fails and a fixed one fails too, so `KNOWN` cannot rot into a mute button.
     expect(
-      analysis.findings.map(
-        (finding) => `${finding.file}:${finding.line} ${finding.name} (via ${finding.via}) — ${finding.expression}`,
-      ),
-    ).toEqual([]);
+      analysis.findings
+        .map(
+          (finding) => `${finding.file}:${finding.line} ${finding.name} (via ${finding.via}) — ${finding.expression}`,
+        )
+        .sort(),
+    ).toEqual([...KNOWN].sort());
   });
 });
