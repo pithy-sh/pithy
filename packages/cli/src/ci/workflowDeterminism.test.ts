@@ -83,6 +83,7 @@ const SHIPPED_WORKFLOWS = [
  * re-executes from the top on every resume.
  */
 const SHIPPED_DELEGATES = [
+  "packages/email/src/workflows/sendBatch.ts#runSendBatch",
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#runAtRestKeyRotation",
@@ -240,21 +241,25 @@ describe("the rule, proved against fixtures before it is trusted against the tre
 });
 
 /**
- * Three sites the sweep found and this repository has not fixed yet, each with an issue.
+ * Sites the sweep found and this repository has not fixed yet, each with an issue.
  *
- * **They are listed, not excused.** A gate that silently skipped them would be the thing this file
- * exists to prevent — a rule narrowed until nothing violates it. The list is exact: a fourth finding
- * fails, and a listed one that gets fixed fails too, so an entry cannot outlive its defect.
+ * **The list is empty, and it stays a list.** It held three — pithy-sh/pithy#327, #328 and #329 — and
+ * every one is closed. An empty array is not a formality here: this assertion is `toEqual`, so an empty
+ * expectation is the strongest form the gate has ever been in. Any driver body that evaluates a source
+ * fails on the line below, named with its file, its driver and its expression.
  *
- * They are open rather than fixed because the sweep that found them ran outside the scope it was
- * given, and its changes here were reverted. `#327` in particular must not be fixed by the obvious
- * move: `now` is the email scheduler's liveness signal as well as its stamp, and journalling it lets
- * a live batch be re-driven as stuck — which is a double-send.
+ * **They are listed, not excused**, and that is why the list could empty. A gate that had skipped them
+ * instead would be the thing this file exists to prevent — a rule narrowed until nothing violates it.
+ * The list is exact in both directions: a new finding fails, and a listed one that gets fixed fails too,
+ * so an entry cannot outlive its defect.
+ *
+ * **A value that must be fresh per attempt is not an exception to the rule, and none is declared here.**
+ * Three drivers need one — email's `updatedAt` heartbeat, testers' nudge enqueue, payments' `finishedAt`
+ * — and every one of them is spelled as a thunk that a step calls, which the rule already permits
+ * because a function body is not evaluated where it is written. If a future case genuinely cannot be
+ * spelled that way, it belongs *here*, named and argued, rather than smuggled past the walk.
  */
-const KNOWN: readonly string[] = [
-  // pithy-sh/pithy#327 — and `now` is also the scheduler's heartbeat. Read the issue before fixing.
-  "packages/email/src/workflows/worker.ts:82 EmailSendWorkflow.run (via buildSendDeps) — new Date()",
-];
+const KNOWN: readonly string[] = [];
 
 describe("the kit", () => {
   test("evaluates no source in any Workflow driver body", () => {

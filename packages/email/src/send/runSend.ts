@@ -62,7 +62,35 @@ export interface SendDeps {
   maxAttempts: number;
   /** This worker's environment name, stamped on each send (X-Pithy-Env) so the single inbound worker can route. */
   environment?: string;
-  now: Date;
+  /**
+   * When this pass began — **stable across a Workflow resume** (pithy-sh/pithy#327).
+   *
+   * Everything that dates the work reads this: `sentAt`, the redaction stamp, the events, and how long a
+   * tracked link stays valid. A driver body re-executes from the top on a resume, so a clock read there
+   * answers with the resume — and a batch that backed off overnight dated its remaining jobs, and the
+   * expiry of every link in them, a day late. `runSendBatch` journals this in a step so a resume reads
+   * back the instant the batch began.
+   *
+   * A link minted on the resumed half expires from the pass, not from the mint. Two people in one batch
+   * are promised the same window; which attempt happened to render their message is not something they
+   * can see and not something their link should depend on.
+   */
+  passStartedAt: Date;
+  /**
+   * "This job is being worked on, now" — **read fresh on every call**, and never journalled.
+   *
+   * This is not a stamp with a tidier name. `updatedAt` is the scheduler's only evidence that a `sending`
+   * job is alive: `runScheduler` claims and re-drives anything in `sending` older than `stuckMs`, on the
+   * assumption its dispatch died. Freeze it and a batch that resumes past that window reports the job it
+   * is actively retrying as stranded, so the next tick starts a second send Workflow against it — and
+   * `runSend` short-circuits only a job already `sent`, so both attempts render and both call `send`. One
+   * person, two emails. A sweep journalled the single `now` this replaced and was reverted for exactly
+   * that.
+   *
+   * The suppression liveness read takes it too, because "is this address blocked *right now*" is a
+   * present-tense question and an hour-old answer to it is simply wrong.
+   */
+  heartbeatAt: () => Date;
 }
 
 /** The outcome of a send attempt. */
@@ -87,11 +115,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** A partial update to the jobs table, in its SQLite row shape. */
 type JobUpdate = Updateable<DatabaseSchema<EmailTables>["pithyEmailJobs"]>;
 
-/** Patch a job row by id, always bumping `updatedAt`. */
+/**
+ * Patch a job row by id, always bumping `updatedAt` — **on the heartbeat clock, not the pass instant.**
+ *
+ * Every write this function makes is also a statement that the job is still being worked on, because
+ * `updatedAt` is what the scheduler's `sending` re-drive reads. That is why the bump is here rather than
+ * at each call site: a patch that did not say "still alive" would be a patch that invited a second send
+ * Workflow. See {@link SendDeps.heartbeatAt}.
+ */
 async function patchJob(deps: SendDeps, jobId: string, patch: JobUpdate): Promise<void> {
   await deps.db
     .updateTable("pithyEmailJobs")
-    .set({ ...patch, updatedAt: SQLiteDate.encode(deps.now) })
+    .set({ ...patch, updatedAt: SQLiteDate.encode(deps.heartbeatAt()) })
     .where("id", "=", jobId)
     .execute();
 }
@@ -114,7 +149,11 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // a real person receiving a magic-link email with no link in it.
   if (job.payloadRedactedAt) {
     await patchJob(deps, jobId, { status: "failed", error: "payload dropped after delivery" });
-    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: "payload already redacted" }, deps.now);
+    await recordEvent(
+      deps.db,
+      { jobId, recipient, type: "failed", detail: "payload already redacted" },
+      deps.passStartedAt,
+    );
     return { jobId, status: "failed" };
   }
 
@@ -122,10 +161,12 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // Deriving it here means a template whose kind is corrected in a later release corrects the jobs
   // already queued against it, and that a stored value can never drift from the template it names.
   const kind = templateKind(job.template);
-  const blocked = await blockingSuppression(deps.suppressionDb, recipient, deps.now, kind);
+  // The heartbeat clock: whether an address is blocked is a question about now, and a suppression that
+  // expired while this batch was backed off must not still be blocking.
+  const blocked = await blockingSuppression(deps.suppressionDb, recipient, deps.heartbeatAt(), kind);
   if (blocked) {
     await patchJob(deps, jobId, { status: "suppressed", error: `recipient suppressed: ${blocked}` });
-    await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: blocked }, deps.now);
+    await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: blocked }, deps.passStartedAt);
     return { jobId, status: "suppressed", skipped: true, suppressionReason: blocked };
   }
 
@@ -135,7 +176,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // would re-enter and re-throw, burning the whole retry budget re-failing.
   if (job.category === "marketing" && !deps.signing) {
     await patchJob(deps, jobId, { status: "failed", error: "no signing key for marketing unsubscribe link" });
-    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: "no signing key" }, deps.now);
+    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: "no signing key" }, deps.passStartedAt);
     return { jobId, status: "failed" };
   }
 
@@ -147,7 +188,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
         campaignId: job.campaignId ?? undefined,
         key: deps.signing.key,
         kid: deps.signing.kid,
-        expiresAt: new Date(deps.now.getTime() + deps.linkTtlDays * DAY_MS),
+        expiresAt: new Date(deps.passStartedAt.getTime() + deps.linkTtlDays * DAY_MS),
         openTracking: job.openTracking,
         clickTracking: job.clickTracking,
       }
@@ -198,12 +239,12 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
     const spent = redactsPayloadOnDelivery(job.template);
     await patchJob(deps, jobId, {
       status: "sent",
-      sentAt: SQLiteDate.encode(deps.now),
+      sentAt: SQLiteDate.encode(deps.passStartedAt),
       messageId: result.messageId ?? null,
       error: null,
-      ...(spent ? { payload: SPENT_PAYLOAD, payloadRedactedAt: SQLiteDate.encode(deps.now) } : {}),
+      ...(spent ? { payload: SPENT_PAYLOAD, payloadRedactedAt: SQLiteDate.encode(deps.passStartedAt) } : {}),
     });
-    await recordEvent(deps.db, { jobId, recipient, type: "sent", campaignId: job.campaignId }, deps.now);
+    await recordEvent(deps.db, { jobId, recipient, type: "sent", campaignId: job.campaignId }, deps.passStartedAt);
 
     // Synchronous permanent bounces (batch/REST shape) feed suppression immediately.
     for (const bounced of result.permanentBounces ?? []) {
@@ -216,12 +257,12 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
           environment: deps.environment,
           detail: "permanent bounce on send",
         },
-        deps.now,
+        deps.passStartedAt,
       );
       await recordEvent(
         deps.db,
         { jobId, recipient: normalizeAddress(bounced), type: "bounce", detail: "permanent bounce on send" },
-        deps.now,
+        deps.passStartedAt,
       );
     }
 
@@ -234,9 +275,9 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
       await suppress(
         deps.suppressionDb,
         { email: recipient, reason: "hard_bounce", jobId, environment: deps.environment, detail: classified.code },
-        deps.now,
+        deps.passStartedAt,
       );
-      await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: classified.code }, deps.now);
+      await recordEvent(deps.db, { jobId, recipient, type: "suppressed", detail: classified.code }, deps.passStartedAt);
       return { jobId, status: "suppressed", skipped: true };
     }
 
@@ -247,7 +288,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
     }
 
     await patchJob(deps, jobId, { status: "failed", error: classified.code });
-    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: classified.code }, deps.now);
+    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: classified.code }, deps.passStartedAt);
     return { jobId, status: "failed" };
   }
 }
