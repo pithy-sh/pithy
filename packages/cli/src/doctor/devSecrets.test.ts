@@ -5,7 +5,9 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
-import { defineSecretRegistry, SecretBackend } from "@pithy-sh/secrets/src/registry";
+import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
+import { type DevSecretsStore, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { defineSecretRegistry, SecretBackend, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { devSecretsFile } from "../devSecrets/location";
@@ -54,6 +56,15 @@ const registry = defineSecretRegistry({
       clientId: z.string().describe("The OAuth client id."),
       clientSecret: z.string().describe("The OAuth client secret."),
     }),
+  },
+  // A keyspace — an unbounded set of members the app writes at runtime, one per key. It has no single
+  // value, and `pithy seed` hard-fails on a file that gives it one (#325).
+  CONNECTION_SIGNING_KEY: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: true,
+    valueType: "text",
+    keyed: true,
   },
 });
 
@@ -127,8 +138,16 @@ describe("checkDevSecrets", () => {
     // The gate, stated as the invariant rather than as a list of backends this file happens to know:
     // a registry secret in the root `.dev.vars` is misplaced, whatever `backend` says. Add a backend to
     // {@link SecretBackend} and this fails until a fixture declares it and the check names it.
-    const declared = Object.entries(registry)
+    //
+    // A keyspace is excluded, and that is the rule rather than an exemption: "misplaced" says this value
+    // belongs in the secrets file, and a keyspace belongs in neither file — a line for one is inert in
+    // `.dev.vars` and refused outright in `secrets.jsonc`. Naming it here would send an adopter to move a
+    // value the next `pithy seed` throws on (#325).
+    // Widened once, to the type the check itself reads: the narrow literal `defineSecretRegistry`
+    // returns has no `keyed` on the entries that do not declare one.
+    const declared = (Object.entries(registry) as [string, SecretRegistryEntry][])
       .filter(([name]) => !CLOUDFLARE_ENV_KEYS.includes(name as (typeof CLOUDFLARE_ENV_KEYS)[number]))
+      .filter(([, entry]) => !entry.keyed)
       .map(([name, entry]) => [name, entry.backend] as const);
     expect(new Set(declared.map(([, backend]) => backend))).toEqual(new Set(SecretBackend.options));
 
@@ -519,5 +538,104 @@ describe("a Worker nobody could ask (#208)", () => {
       paths: paths(),
     });
     expect(result?.misplaced).toEqual([{ name: "auth-session-secret", state: "unmoved" }]);
+  });
+});
+
+/**
+ * **The promise, asserted as the promise (#325).**
+ *
+ * #323 made `pithy doctor` judge every stated value through the seeder's own `storedSecretValue`, and
+ * wrote down what that buys: *a green report means the next `pithy seed` works*. It was asserted case by
+ * case — one test per fault the wave happened to think of — and a promise checked that way is only ever
+ * as true as the list. A keyspace given a single value was not on the list, so doctor passed a file
+ * `seedDevSecrets` throws `Secret '<name>' in <path> is a keyspace, not a single value.` on.
+ *
+ * So the gate below states the implication instead: **for every file here, a healthy check means a seed
+ * that does not throw.** A new fault class arriving in the registry or the loader is caught by this
+ * without anybody adding a case for it — which is the only kind of gate a promise about the *future* can
+ * have. The corpus is what an adopter's file can be; the assertion is the same for all of it.
+ */
+describe("a green report means the next seed works (#325)", () => {
+  /** The in-memory store double. Seeding's failure mode here is a throw, never a write that misses. */
+  function store(): DevSecretsStore {
+    return { getValue: async () => undefined, put: async () => {} };
+  }
+
+  const good = { currentVersion: "1", versions: { "1": "value" } };
+
+  /** Every shape an adopter's secrets file can be. Healthy or not, the implication is the same for each. */
+  const files: Record<string, string> = {
+    "an empty file": "{}",
+    "a file with nothing but comments": "// where these came from\n{\n  // nothing yet\n}",
+    "every declared secret stated soundly": JSON.stringify({
+      "auth-session-secret": good,
+      CONNECTION_KEY_ENCRYPTION_KEY: good,
+      "auth-google-credentials": {
+        currentVersion: "1",
+        versions: { "1": { clientId: "id", clientSecret: "shh" } },
+      },
+    }),
+    // The counterexample this describe exists for. Doctor skipped it before the file was consulted at
+    // all, so it was neither judged nor even reported as undeclared.
+    "a keyspace given a single value": JSON.stringify({ CONNECTION_SIGNING_KEY: good }),
+    "a keyspace given a single value beside a sound one": JSON.stringify({
+      "auth-session-secret": good,
+      CONNECTION_SIGNING_KEY: good,
+    }),
+    "a json value that violates its schema": JSON.stringify({
+      "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id" } } },
+    }),
+    "a text value written as a number": JSON.stringify({
+      "auth-session-secret": { currentVersion: "1", versions: { "1": 7 } },
+    }),
+    "an envelope pointing at a version it does not carry": JSON.stringify({
+      "auth-session-secret": { currentVersion: "2", versions: { "1": "value" } },
+    }),
+    "a name no capability declares": JSON.stringify({ "auth-session-secret": good, "stripe-webhook-secret": good }),
+    "a name that looks like an Object.prototype key": JSON.stringify({ constructor: good, toString: good }),
+  };
+
+  for (const [shape, source] of Object.entries(files)) {
+    test(`${shape}: healthy implies a seed that does not throw`, async () => {
+      await writeFile(path, source, { mode: 0o600 });
+      const result = await check();
+      if (!result) throw new Error("expected a check — this project has a Worker composing secrets");
+      if (!devSecretsHealthy(result)) return;
+
+      // The same file, through the seeder. `loadDevSecrets` is what doctor read it with, so a divergence
+      // here is a divergence in judgement and not in parsing.
+      await expect(
+        seedDevSecrets({ file: loadDevSecrets(source, { path }), registry, store: store(), path }),
+      ).resolves.toBeDefined();
+    });
+  }
+
+  /**
+   * The gate is worth nothing if every case is unhealthy — an implication with a false antecedent is
+   * true and says nothing. This is what stops that from happening silently: the corpus must hold both
+   * kinds, and the keyspace case must be on the unhealthy side of the line by name.
+   */
+  test("the corpus holds both kinds, so the implication above is never vacuous", async () => {
+    const verdicts: Record<string, boolean> = {};
+    for (const [shape, source] of Object.entries(files)) {
+      await writeFile(path, source, { mode: 0o600 });
+      const result = await check();
+      verdicts[shape] = result !== null && devSecretsHealthy(result);
+    }
+
+    expect(Object.values(verdicts).filter(Boolean).length).toBeGreaterThanOrEqual(4);
+    expect(Object.values(verdicts).filter((healthy) => !healthy).length).toBeGreaterThanOrEqual(4);
+    expect(verdicts["a keyspace given a single value"]).toBe(false);
+  });
+
+  /** And the report says which secret and why, rather than leaving the reader to run the seed to find out. */
+  test("the keyspace is named, with the sentence the seed would have thrown", async () => {
+    await writeFile(path, JSON.stringify({ CONNECTION_SIGNING_KEY: good }), { mode: 0o600 });
+    const result = await check();
+
+    expect(result?.malformed.map((one) => one.name)).toEqual(["CONNECTION_SIGNING_KEY"]);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain(
+      "is a keyspace, not a single value",
+    );
   });
 });

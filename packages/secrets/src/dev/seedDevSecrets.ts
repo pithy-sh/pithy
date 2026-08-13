@@ -91,13 +91,7 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     // A keyspace declares an unbounded set of members whose keys exist only at runtime. It has no one
     // value to seed, and the app writes its members itself — so it is neither seeded nor missing.
     if (entry.keyed) {
-      if (file[name]) {
-        throw new ValidationError({
-          message: `Secret '${name}' in ${path} is a keyspace, not a single value.`,
-          action: "Remove it. Its members are written by the app at runtime, one per key.",
-          detail: `dev secrets file '${path}': keyed entry '${name}' given a value`,
-        });
-      }
+      if (file[name]) throw keyedSecretRefusal(name, path);
       continue;
     }
 
@@ -131,6 +125,24 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     .sort();
 
   return { seeded, unchanged, devVars, minted, missing, undeclared };
+}
+
+/**
+ * The refusal a keyspace given a single value in the dev secrets file earns.
+ *
+ * **A function rather than a `throw` written inline, because `pithy doctor` has to be able to say this
+ * without running a seed (#325).** Doctor's promise is that a green report means the next `pithy seed`
+ * works, and it kept that promise for every *stated* value by judging through {@link storedSecretValue} —
+ * but a keyspace never reached that call in either command, so the one input the seeder hard-fails on was
+ * the one input doctor passed. A second wording of the same rule is how the promise stops being true
+ * without anybody noticing; there is one wording, and it lives here beside the throw.
+ */
+export function keyedSecretRefusal(name: string, path: string): ValidationError {
+  return new ValidationError({
+    message: `Secret '${name}' in ${path} is a keyspace, not a single value.`,
+    action: "Remove it. Its members are written by the app at runtime, one per key.",
+    detail: `dev secrets file '${path}': keyed entry '${name}' given a value`,
+  });
 }
 
 /**

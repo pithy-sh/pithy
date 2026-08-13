@@ -114,14 +114,25 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
   // project that has not upgraded unopenable — and this is the master key, so an "absent" answer is not a
   // fresh start: it is every secret already encrypted under it becoming unreadable.
   const stated = await statedMasterKey(options.projectDir, options.paths ?? {});
+  // **A file that states a key which will not read ends it here, whatever an older home holds (#325).**
+  // The fallbacks below are for a file that says nothing, and this file has said something. Reading past
+  // it opened the store under the *older* key without a word about the newer claim — and this file is
+  // what every Worker's `.dev.vars` is generated from, so the next seed encrypted rows under a key the
+  // running Worker is never handed. The only symptom is a decrypt failure, three commands later.
+  //
+  // Deliberately a refusal rather than a fallback with a warning: nothing in this function prints, and a
+  // handle carries one sentence. Refusing is the only answer here that a caller cannot miss.
+  if (stated.unreadable) return { ready: false, reason: stated.unreadable, ...noop };
+
   const masterKey =
     stated.value ||
     (await readBootstrapVars(options.projectDir, options.paths ?? {}))[MASTER_KEY_BINDING] ||
     parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""))[MASTER_KEY_BINDING];
   if (!masterKey) {
-    // The file's own sentence when it had one, and only then the absent one. "Not recorded" is a claim
-    // about the file, and it may only be made when the file makes no claim (#323).
-    const reason = stated.unreadable ?? `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`;
+    // The sentence for a project with no file to state anything, and only then the absent one. "Not
+    // recorded" is a claim about the file, and it may only be made when the file makes no claim (#323) —
+    // which includes there being no file to make one.
+    const reason = stated.unlocatable ?? `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`;
     return { ready: false, reason, ...noop };
   }
 
@@ -162,19 +173,38 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
 }
 
 /**
- * What the dev secrets file says about the master key. Exactly one of the three is set.
+ * What the dev secrets file says about the master key. At most one of the three is set; none of them
+ * means a readable file that simply carries no key.
  *
  * **The type is the fix (#323).** A `string | undefined` had one slot for two answers — "the file states
  * nothing" and "the file states something that will not read" — so a bare `catch {}` collapsed them, and
  * a present-but-malformed key printed `No SECRETS_ENCRYPTION_KEYS recorded. Run pithy add secrets.` That
  * sentence is false about a key that is there, and the command it names then does nothing, because
  * `ensureDevMasterKey` finds a key already present and returns. Two investigations died in that gap.
+ *
+ * **And the fix is one slot short, which is #325.** "The file will not answer" and "there is no file to
+ * ask" were still one field, and the caller has to treat them oppositely: the first overrides every older
+ * home, because the file is authoritative about a claim it makes; the second overrides nothing, because a
+ * project with no name has no file and has made no claim.
  */
 interface StatedMasterKey {
   /** The key, materialised exactly as a Worker's binding receives it. Absent when the file has none. */
   readonly value?: string;
-  /** Why the file could not answer — the thrown error's own sentence. Absent when it answered. */
+  /**
+   * Why the file — which is there — could not answer: the thrown error's own sentence.
+   *
+   * **Authoritative.** The file states a master key and it will not read, so no older home may stand in
+   * for it: opening under one encrypts rows under a key this file does not name.
+   */
   readonly unreadable?: string;
+  /**
+   * Why there is no file to ask at all — no project, or a project with no `name`, since the path is
+   * resolved from the name.
+   *
+   * **Not authoritative.** Nothing was stated, so the older homes are still read, and this is only the
+   * sentence the caller falls back to when none of them holds a key either.
+   */
+  readonly unlocatable?: string;
 }
 
 /**
@@ -197,7 +227,9 @@ async function statedMasterKey(projectDir: string, paths: StatePathOptions): Pro
   try {
     path = await resolveDevSecretsFile(projectDir, paths);
   } catch (error) {
-    return { unreadable: `No ${MASTER_KEY_BINDING} recorded: ${sentenceOf(error)}` };
+    // `unlocatable`, never `unreadable` (#325). There is no file here, so nothing has been stated, and
+    // an older home is still the honest place to look for the key.
+    return { unlocatable: `No ${MASTER_KEY_BINDING} recorded: ${sentenceOf(error)}` };
   }
 
   try {

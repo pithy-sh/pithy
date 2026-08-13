@@ -7,7 +7,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretEnvelope, DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
-import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { keyedSecretRefusal, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
@@ -205,9 +205,23 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     for (const [name, entry] of Object.entries(target.registry)) {
       if (seen.has(name)) continue;
       seen.add(name);
+      // What the file states for this name, read before anything is decided about it. Hoisted above the
+      // keyspace branch because that branch is a judgement now rather than a skip, and the file is what
+      // decides which (#325). `Object.hasOwn` for the reason spelled out below.
+      const envelope = Object.hasOwn(stated, name) ? stated[name] : undefined;
       // A keyspace has no single value: its members are written by the app at runtime, one per key.
-      // Nothing about it can be missing from a file that was never meant to carry it.
-      if (entry.keyed) continue;
+      // Nothing about it can be missing from a file that was never meant to carry it — so it is neither
+      // missing nor undeclared, and `seen` above is what keeps it out of the latter.
+      //
+      // **But a value stated for one is a fault, and it was the counterexample to this check's whole
+      // promise (#325).** `pithy seed` throws `Secret '<name>' … is a keyspace, not a single value.` on
+      // exactly this input; doctor skipped it before the file was consulted at all, so the one file the
+      // seeder hard-fails on was a file doctor called green. Through the seeder's own refusal, so the
+      // two cannot come to two wordings of one rule.
+      if (entry.keyed) {
+        if (envelope) malformed.push({ name, reason: sentenceOf(keyedSecretRefusal(name, path)) });
+        continue;
+      }
       // `Object.hasOwn`, never `in`, and an own-property read of both maps. `in` walks the prototype
       // chain, so a secret named `constructor` or `toString` read as stated in an empty file — and this
       // is the module that judges adopter-supplied names against a registry, so it is where a name
@@ -227,7 +241,6 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       // own registry schema passed here and failed the next seed — and both `stated` and `entry.schema`
       // were already in hand on this line (#323). Judged through the seeder's own function, so doctor
       // and seed cannot come to two answers about what a readable value is.
-      const envelope = Object.hasOwn(stated, name) ? stated[name] : undefined;
       if (envelope) {
         const reason = whyUnreadable(entry, name, envelope, path);
         if (reason) malformed.push({ name, reason });

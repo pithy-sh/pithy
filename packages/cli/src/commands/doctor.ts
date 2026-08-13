@@ -1362,9 +1362,22 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           path: report.devSecrets.path,
           misplaced: report.devSecrets.misplaced,
           missing: report.devSecrets.missing,
+          // The two the human block has printed since #323 and this payload did not carry (#325). A JSON
+          // consumer could not see the fault class that wave added — and `malformed` is the one that
+          // flips the exit, so a script read a value the next seed refuses as a healthy project.
+          bootstrapMissing: report.devSecrets.bootstrapMissing,
+          malformed: report.devSecrets.malformed,
           undeclared: report.devSecrets.undeclared,
           mode: report.devSecrets.mode === null ? null : report.devSecrets.mode.toString(8),
+          // The loader's sentence since #323, and a `string | null` ever since. A script gating on
+          // `unreadable === true` stopped firing the moment it stopped being a boolean, and stopped
+          // silently, because a non-empty string is not `false` — it is merely not `true`. The sentence
+          // stays, because it names the secret and the shape; {@link healthy} is what a gate reads.
           unreadable: report.devSecrets.unreadable,
+          // The one field a script can gate on without enumerating fault names. Through the same
+          // function the exit code is computed from, so the payload and the exit cannot come to two
+          // answers — and so the next fault class added here needs no consumer to be updated (#325).
+          healthy: devSecretsHealthy(report.devSecrets),
           // The Workers this project has that nobody could ask what they declare (#208). Carried here
           // because a `devSecrets` object with no targets and a `null` one used to be the same answer,
           // and an agent reading either had no way to tell "no secrets" from "nothing loaded".
