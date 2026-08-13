@@ -9,9 +9,10 @@ import { confirmUrl, optInUrl, optOutUrl, TestersConfig } from "../config/config
 import type { NudgeKind } from "../data/enums";
 import type { TestersMember } from "../data/member";
 import { testersDatabase } from "../data/tables";
+import { buildNudgeEnqueue, type NudgeEnqueueEnv } from "../nudge/enqueueSeam";
 import type { EnqueueNudge } from "../nudge/send";
-import { type CohortPassResult, openCohortIds, runCohortPass } from "./daily";
-import { logCohortFailure, logPassComplete } from "./report";
+import type { CohortPassResult } from "./daily";
+import { runDurableDailyPass } from "./pass";
 import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from "./specs";
 
 /**
@@ -28,25 +29,20 @@ import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from 
  * schema-description meta-test excludes it — the import is unresolvable outside the Workers runtime.
  */
 
-/** The bindings and vars this worker's env carries, filled by `pithy testers provision`. */
-export interface TestersWorkerEnv {
+/**
+ * The bindings and vars this worker's env carries, filled by `pithy testers provision`.
+ *
+ * The sending identity and the send binding are carried as vars rather than guessed, because this
+ * worker is standalone: it is not assembled by `createBackend`, so the email capability's `compose`
+ * hook never runs here and there is no bound `enqueue` seam to borrow. A default would be worse than an
+ * absent value — mail from the wrong domain fails DKIM and lands the adopter's testers in spam, which is
+ * exactly the outcome this capability exists to avoid. They are declared on {@link NudgeEnqueueEnv},
+ * beside the seam that reads them.
+ */
+export interface TestersWorkerEnv extends NudgeEnqueueEnv {
   DB: D1Database;
   TESTERS_CONFIG?: string;
   ENVIRONMENT?: string;
-  /**
-   * The sending identity, copied from the email capability's resolved config at provision.
-   *
-   * Carried as vars rather than guessed, because this worker is standalone: it is not assembled by
-   * `createBackend`, so the email capability's `compose` hook never runs here and there is no bound
-   * `enqueue` seam to borrow. A default would be worse than an absent value — mail from the wrong
-   * domain fails DKIM and lands the adopter's testers in spam, which is exactly the outcome this
-   * capability exists to avoid.
-   */
-  EMAIL_FROM_ADDRESS?: string;
-  EMAIL_FROM_NAME?: string;
-  /** The resolved email theme, as the email worker carries it. */
-  EMAIL_THEME?: string;
-  EMAIL_SENDER?: { create(options: { params: { jobIds: string[] } }): Promise<unknown> };
   /** The global email-suppression database, for reconciling which addresses have bounced. */
   EMAIL_SUPPRESSIONS?: D1Database;
 }
@@ -58,8 +54,6 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
     // by an operator through the dashboard, and only the first two have already been validated.
     const params = TestersDailyParams.parse(event.payload ?? {});
     const config = TestersConfig.parse(this.env.TESTERS_CONFIG ? JSON.parse(this.env.TESTERS_CONFIG) : {});
-    const db = testersDatabase(this.env.DB);
-    const now = new Date();
 
     // A run has no request, so there is no `c.var.log` to inherit: the Workflow builds its own and binds
     // the instance onto it. That id is what the dashboard and `wrangler workflows` key on, so binding it
@@ -72,88 +66,26 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
       env: this.env.ENVIRONMENT ?? "unknown",
     });
 
-    const enqueue: EnqueueNudge | undefined = params.skipNudges ? undefined : await buildEnqueue(this.env);
+    // Built with the default clock, which the seam reads **per nudge**. This is the pass's other clock
+    // and it is the opposite of the journalled one: see `enqueueSeam.ts`.
+    const enqueue: EnqueueNudge | undefined = params.skipNudges ? undefined : await buildNudgeEnqueue(this.env);
     const linkForKind = params.skipNudges ? undefined : linkFor(config);
 
-    const deps = {
-      db,
-      d1: this.env.DB,
-      config,
-      now,
-      newId: () => crypto.randomUUID(),
-      log,
-      enqueue,
-      linkFor: linkForKind,
-      optOutLinkFor: (member: TestersMember) => optOutUrl(config, member.optInToken),
-      suppressionD1: this.env.EMAIL_SUPPRESSIONS,
-    };
-
-    // One step per cohort. A cohort whose activity read fails is retried on its own rather than taking
-    // the rest of the day's cohorts down with it, and a retried step re-runs an idempotent pass.
-    if (params.cohortId) {
-      const result = await step.do(`cohort-${params.cohortId}`, () => runCohortPass(deps, params.cohortId as string));
-      logPassComplete(log, [result]);
-      return [result];
-    }
-
-    // Enumerated in its own step, then one step per cohort — which is what the comment above has always
-    // claimed and what every other Workflow in this repo does. A single `all-cohorts` step wrapping the
-    // loop meant a deterministic failure on one cohort (a corrupt member row, a cohort deleted between
-    // the list and the read) denied every cohort after it its snapshot and its nudges, on every retry
-    // attempt, until retries ran out. The darkness histogram cannot be recomputed after the fact, so
-    // those days were gone for good.
-    const cohortIds: string[] = await step.do("list-cohorts", async () => await openCohortIds(db));
-
-    const results: CohortPassResult[] = [];
-    for (const cohortId of cohortIds) {
-      // Contained per cohort. A cohort that keeps failing loses its own day rather than everyone's, and
-      // the failure is still visible in the Workflow instance rather than swallowed.
-      try {
-        results.push(await step.do(`cohort-${cohortId}`, () => runCohortPass(deps, cohortId)));
-      } catch (error) {
-        logCohortFailure(log, cohortId, error);
-      }
-    }
-    logPassComplete(log, results);
-    return results;
-  }
-}
-
-/**
- * The email enqueue seam, loaded from the project's own install.
- *
- * A guarded dynamic import: a project can compose testers without email — inviting nobody and simply
- * tracking a roster it imported — and the pass should still advance state and write its snapshot rather
- * than fail on a dependency it does not strictly need.
- */
-async function buildEnqueue(env: TestersWorkerEnv): Promise<EnqueueNudge | undefined> {
-  // No sending identity means no send. Falling back to a plausible-looking default address would mail
-  // the adopter's testers from a domain their DKIM does not cover, which is worse than sending nothing:
-  // it trains the recipients' providers to treat the real domain as spam.
-  if (!env.EMAIL_FROM_ADDRESS || !env.EMAIL_FROM_NAME) return undefined;
-
-  try {
-    const { enqueueEmail } = await import("@pithy-sh/email/src/send/enqueue");
-    const { emailDatabase } = await import("@pithy-sh/email/src/data/tables");
-    const { defaultTheme, EmailTheme } = await import("@pithy-sh/email/src/templates/theme");
-    const theme = env.EMAIL_THEME ? EmailTheme.parse(JSON.parse(env.EMAIL_THEME)) : defaultTheme;
-    const fromAddress = env.EMAIL_FROM_ADDRESS;
-    const fromName = env.EMAIL_FROM_NAME;
-    return async (input) =>
-      enqueueEmail(
-        {
-          db: emailDatabase(env.DB),
-          fromAddress,
-          fromName,
-          theme,
-          sender: env.EMAIL_SENDER,
-          now: new Date(),
-          newId: () => crypto.randomUUID(),
-        },
-        input,
-      );
-  } catch {
-    return undefined;
+    return runDurableDailyPass(
+      {
+        db: testersDatabase(this.env.DB),
+        d1: this.env.DB,
+        config,
+        newId: () => crypto.randomUUID(),
+        log,
+        enqueue,
+        linkFor: linkForKind,
+        optOutLinkFor: (member: TestersMember) => optOutUrl(config, member.optInToken),
+        suppressionD1: this.env.EMAIL_SUPPRESSIONS,
+      },
+      step,
+      params,
+    );
   }
 }
 

@@ -86,6 +86,7 @@ const SHIPPED_DELEGATES = [
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#runAtRestKeyRotation",
+  "packages/testers/src/workflows/pass.ts#runDurableDailyPass",
   "packages/vector/src/workflows/reprocess.ts#reprocessIndex",
 ];
 
@@ -253,8 +254,6 @@ describe("the rule, proved against fixtures before it is trusted against the tre
 const KNOWN: readonly string[] = [
   // pithy-sh/pithy#327 — and `now` is also the scheduler's heartbeat. Read the issue before fixing.
   "packages/email/src/workflows/worker.ts:82 EmailSendWorkflow.run (via buildSendDeps) — new Date()",
-  // pithy-sh/pithy#328 — the day key, so a pass crossing midnight splits across two days.
-  "packages/testers/src/workflows/worker.ts:62 TestersDailyWorkflow.run (via TestersDailyWorkflow.run) — new Date()",
 ];
 
 describe("the kit", () => {
