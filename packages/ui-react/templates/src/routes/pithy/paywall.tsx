@@ -117,8 +117,8 @@ export default function Paywall() {
       </div>
 
       {/* Rendered from the handoff rather than from a guess at your config, and rendered *before* the
-          checkout opens: Paddle looks this element up by class name at that moment, and finds nothing if
-          the render revealing it has not committed yet. That ordering is `usePaddleCheckout`'s job. */}
+          checkout opens: Paddle looks this element up by class name at that moment, and throws if the
+          render revealing it has not committed. That ordering is `usePaddleCheckout`'s job. */}
       {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">

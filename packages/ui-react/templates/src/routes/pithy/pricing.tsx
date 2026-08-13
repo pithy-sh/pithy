@@ -119,7 +119,7 @@ export default function Pricing() {
 
       {/* Rendered from the handoff, and rendered before the checkout opens: Paddle finds this element by
           class name at the moment it opens, so the render revealing it has to commit first. That ordering
-          is `usePaddleCheckout`'s job, which is why the open lives in a hook and not in the click. */}
+          is `usePaddleCheckout`'s job — get it wrong and Paddle throws out of your click handler. */}
       {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">

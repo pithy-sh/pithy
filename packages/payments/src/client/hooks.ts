@@ -323,10 +323,10 @@ export interface UsePaddleCheckout {
  *
  * **In an effect, and that is the whole reason this is a hook rather than a line in a click handler.**
  * Inline checkout renders into an element the screen provides, and Paddle finds it by class name at the
- * moment `open` is called: called from the handler that starts the checkout, the container React is about
- * to render does not exist yet, and Paddle renders into nothing and reports nothing. An effect runs after
- * the commit that revealed it. Getting that ordering wrong produces a button that appears to do nothing,
- * which is the failure mode hardest to notice in review and easiest to notice in production.
+ * moment `open` is called. Called from the handler that starts the checkout, the container React is about
+ * to render does not exist yet — and what Paddle does then is throw `TypeError: Cannot read properties of
+ * undefined (reading 'appendChild')` out of the click, which is not a sentence anyone can act on. An
+ * effect runs after the commit that revealed the container, so the element is there.
  *
  * One open per handoff. `start` mints a new transaction on every attempt, so the transaction id is what a
  * fresh attempt looks like; a re-render with the same handoff must not open a second checkout over the
