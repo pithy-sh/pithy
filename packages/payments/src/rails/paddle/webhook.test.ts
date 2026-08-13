@@ -409,46 +409,132 @@ describe("everything else", () => {
   });
 });
 
-describe("the sweep asks for exactly what the map acts on", () => {
-  test("every swept type is a type the map projects, and every projecting type is swept", async () => {
-    // Written out in `events.ts` and checked here against the map's own behaviour rather than against a
-    // copy of the list. A type the map acts on but the sweep never fetches would repair through the
-    // webhook path and not through the sweep, which is the asymmetry the sweep exists to remove.
-    const projecting: string[] = [];
-    for (const type of [
-      ...PADDLE_SWEPT_EVENT_TYPES,
-      "transaction.created",
-      "transaction.ready",
-      "customer.created",
-      "price.updated",
-      "product.created",
-      "discount.created",
-      "payout.paid",
-      "api_key.created",
-      "client_token.created",
-    ]) {
-      const data = type.startsWith("subscription.")
-        ? await subscription()
-        : type.startsWith("transaction.")
-          ? await transaction()
-          : type.startsWith("adjustment.")
-            ? {
-                id: "adj_01",
-                action: "refund",
-                status: "approved",
-                transaction_id: TXN,
-                totals: { total: "999" },
-              }
-            : { id: "x", status: "active" };
-      const notification = await read(event(type, data), { readTransaction: async () => await transaction() });
-      if (notification.event !== null) projecting.push(type);
-    }
+/**
+ * Paddle's whole published catalogue of event types, transcribed from the API reference.
+ *
+ * **Independent of {@link PADDLE_SWEPT_EVENT_TYPES} on purpose.** The agreement test below asks the map what
+ * it acts on, and a candidate list built out of the sweep list can only ever rediscover the sweep list — the
+ * one direction that matters, a map case the sweep never fetches, is exactly the one such a list cannot
+ * contain. So the population is Paddle's, not ours: `GET /event-types`, and the `event_type` enum on
+ * `GET /notifications`, as of 2026-08.
+ *
+ * A type Paddle ships after this was written is absent here, and that is the known limit of the gate: it
+ * catches a map that grew a case, not a map that grew a case for a type nobody has transcribed yet.
+ */
+const PADDLE_PUBLISHED_EVENT_TYPES: readonly string[] = [
+  "address.created",
+  "address.imported",
+  "address.updated",
+  "adjustment.created",
+  "adjustment.updated",
+  "api_key.created",
+  "api_key.expired",
+  "api_key.expiring",
+  "api_key.revoked",
+  "api_key.updated",
+  "api_key_exposure.created",
+  "business.created",
+  "business.imported",
+  "business.updated",
+  "client_token.created",
+  "client_token.revoked",
+  "client_token.updated",
+  "customer.created",
+  "customer.imported",
+  "customer.updated",
+  "discount.created",
+  "discount.imported",
+  "discount.updated",
+  "discount_group.created",
+  "discount_group.updated",
+  "payment_method.deleted",
+  "payment_method.saved",
+  "payout.created",
+  "payout.paid",
+  "price.created",
+  "price.imported",
+  "price.updated",
+  "product.created",
+  "product.imported",
+  "product.updated",
+  "product_collection.created",
+  "product_collection.updated",
+  "report.created",
+  "report.updated",
+  "subscription.activated",
+  "subscription.canceled",
+  "subscription.created",
+  "subscription.imported",
+  "subscription.past_due",
+  "subscription.paused",
+  "subscription.resumed",
+  "subscription.trialing",
+  "subscription.updated",
+  "transaction.billed",
+  "transaction.canceled",
+  "transaction.completed",
+  "transaction.created",
+  "transaction.paid",
+  "transaction.past_due",
+  "transaction.payment_failed",
+  "transaction.ready",
+  "transaction.revised",
+  "transaction.updated",
+];
 
-    // Anti-vacuity: the sweep list is not empty and the sample above genuinely contained non-projecting
-    // types, so the subset claim below is doing work.
+describe("the sweep asks for exactly what the map acts on", () => {
+  /** The data a given type carries, shaped for its own domain. */
+  async function dataFor(type: string): Promise<unknown> {
+    if (type.startsWith("subscription.")) return await subscription();
+    if (type.startsWith("transaction.")) return await transaction();
+    if (type.startsWith("adjustment.")) {
+      // A full, approved refund — the adjustment shape that does act. A pending or partial one projects
+      // nothing, and that distinction has its own cases above; here the question is only whether the map
+      // has a case for the *type* at all.
+      return { id: "adj_01", action: "refund", status: "approved", transaction_id: TXN, totals: { total: "999" } };
+    }
+    return { id: "x", status: "active" };
+  }
+
+  /** Whether the map makes a purchase row out of one type. The map's own answer, never a list lookup. */
+  async function projects(type: string): Promise<boolean> {
+    const notification = await read(event(type, await dataFor(type)), {
+      readTransaction: async () => await transaction(),
+    });
+    return notification.event !== null;
+  }
+
+  test("every type the map projects is a type the sweep fetches", async () => {
+    // The direction that matters, and the one a candidate list built from the sweep list cannot test. The
+    // population is Paddle's published catalogue, so a case added to the map for a type nobody added to
+    // `events.ts` is found here — that type would repair through the webhook path and not through the
+    // sweep, which is the asymmetry the sweep exists to remove.
+    const projecting: string[] = [];
+    const ignoring: string[] = [];
+    for (const type of PADDLE_PUBLISHED_EVENT_TYPES) ((await projects(type)) ? projecting : ignoring).push(type);
+
+    // Anti-vacuity against the real population, not against a sample: Paddle publishes well over fifty
+    // types and this build acts on a minority of them, so the loop above genuinely asked about types on
+    // both sides of the line.
+    expect(PADDLE_PUBLISHED_EVENT_TYPES.length).toBeGreaterThan(50);
+    expect(ignoring.length).toBeGreaterThan(30);
+    expect(projecting.length).toBeGreaterThan(15);
+
+    expect([...projecting].sort()).toEqual([...PADDLE_SWEPT_EVENT_TYPES].sort());
+  });
+
+  test("every type the sweep fetches is a type the map projects", async () => {
+    // The other direction, asserted against behaviour rather than against membership. A type in the query
+    // that the map ignores is a page of the stream fetched and recorded for nothing — and on this rail
+    // "recorded for nothing" is how a client token gets into a table an operator greps.
     expect(PADDLE_SWEPT_EVENT_TYPES.length).toBeGreaterThan(15);
-    expect(projecting.length).toBeGreaterThan(10);
-    for (const type of projecting) expect(PADDLE_SWEPT_EVENT_TYPES, type).toContain(type);
+    for (const type of PADDLE_SWEPT_EVENT_TYPES) expect(await projects(type), type).toBe(true);
+  });
+
+  test("the published catalogue this is checked against covers every type the sweep names", async () => {
+    // The gate on the gate. The first test's population is a transcription, so a swept type missing from it
+    // would quietly shrink what the equality above compares.
+    for (const type of PADDLE_SWEPT_EVENT_TYPES) expect(PADDLE_PUBLISHED_EVENT_TYPES, type).toContain(type);
   });
 
   test("the sweep never asks for the two event types that carry credentials", async () => {

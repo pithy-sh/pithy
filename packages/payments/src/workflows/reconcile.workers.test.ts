@@ -16,6 +16,7 @@ import { payments_0001_purchases } from "../migrations/0001_purchases";
 import type { ProviderEventInput } from "../projection/event";
 import { projectPurchase } from "../projection/writer";
 import type { PaymentsRailProvider, UnboundProviderEvent } from "../rails/contract";
+import type { PaddleSweepReport } from "./paddleSweep";
 import type { ReconcileRailAccess } from "./railAccess";
 import { type ReconcileDeps, type ReconcileStep, reconcilePayments } from "./reconcile";
 
@@ -1121,5 +1122,153 @@ describe("reconcilePayments — a replayed run", () => {
     expect(run?.started_at).toBeLessThanOrEqual(earliestRepair);
     // `finishedAt` is the opposite rule, and it still holds: it is read when the run ends, so it moves.
     expect(run?.finished_at).toBe(T0 + 6 * 3600 * SECOND);
+  });
+});
+
+/**
+ * The Paddle events sweep step (#335).
+ *
+ * The sweep is the repair `refresh` cannot make: a purchase whose webhook was never delivered and which no
+ * client submitted has no row, so no amount of re-reading rows will ever find it. It is one `step.do` inside
+ * this pass, and three things about it are decisions rather than plumbing — when it runs, what it puts in the
+ * report, and what it says on the trail when it finds a gap it cannot close. Each is gated here.
+ *
+ * The sweep itself is a fake. Its real network behaviour is `paddleSweep.workers.test.ts`'s subject; what this
+ * file owns is whether the pass calls it, when, and what it does with the answer.
+ */
+describe("the Paddle events sweep, inside a pass", () => {
+  /** A sweep that found a healthy stream: everything already recorded, nothing new, no gap. */
+  const FOUND: PaddleSweepReport = {
+    read: 12,
+    projected: 2,
+    ignored: 4,
+    duplicate: 6,
+    failed: 0,
+    cursor: "evt_01jz0000000000000000swept",
+    gap: null,
+  };
+
+  /** A sweep, and a record of how many times the pass asked for one. */
+  function sweeper(answer: PaddleSweepReport = FOUND): { sweep: () => Promise<PaddleSweepReport>; calls: number } {
+    const state = {
+      calls: 0,
+      sweep: async () => {
+        state.calls += 1;
+        return answer;
+      },
+    };
+    return state;
+  }
+
+  test("a pass that named no rail sweeps, and reports what the sweep found", async () => {
+    const paddle = sweeper();
+    const report = await reconcilePayments(deps({}, { sweepPaddle: paddle.sweep }), syncStep);
+
+    expect(paddle.calls).toBe(1);
+    expect(report.swept).toEqual(FOUND);
+  });
+
+  test("a pass narrowed to Paddle sweeps", async () => {
+    const paddle = sweeper();
+    const report = await reconcilePayments(deps({}, { sweepPaddle: paddle.sweep }), syncStep, { rail: "paddle" });
+
+    expect(paddle.calls).toBe(1);
+    expect(report.swept).toEqual(FOUND);
+  });
+
+  test.each<PaymentsRail>(["stripe", "apple", "google"])(
+    "a pass narrowed to %s does not sweep Paddle — one store's outage does not cost another's stream",
+    async (rail) => {
+      const paddle = sweeper();
+      const report = await reconcilePayments(deps({}, { sweepPaddle: paddle.sweep }), syncStep, { rail });
+
+      expect(paddle.calls).toBe(0);
+      // Undefined rather than a zeroed tally: "we did not look" and "we looked and found nothing" are
+      // different statements, and only one of them means the webhooks are fine.
+      expect(report.swept).toBeUndefined();
+    },
+  );
+
+  test("a project that does not sell through Paddle has no sweep step at all", async () => {
+    const names: string[] = [];
+    const report = await reconcilePayments(deps({}), namingStep(names), {});
+    expect(names).not.toContain("sweep-paddle");
+    expect(report.swept).toBeUndefined();
+  });
+
+  test("the sweep is its own step, and it runs before the first page", async () => {
+    // Ordering is the claim, not decoration: a subscription the sweep projects is a row the pages below
+    // then consider, which makes it one pass rather than two. Its own step so a transient fault retries
+    // the sweep rather than losing a whole run's pages.
+    await seed();
+    const names: string[] = [];
+    await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row)) }, { sweepPaddle: sweeper().sweep }),
+      namingStep(names),
+    );
+    expect(names).toEqual(["start-run", "sweep-paddle", "page-000001", "record-run"]);
+  });
+
+  test("a sweep that could not close a retention gap says so on the trail", async () => {
+    // Paddle keeps ninety days. A cursor older than that can never be caught up, so the gap is reported
+    // rather than repaired — restarting from the beginning would re-project three months.
+    const gap = "The stored cursor evt_01old is past Paddle's 90-day retention window.";
+    const events: AuditEventInput[] = [];
+    const report = await reconcilePayments(
+      deps(
+        {},
+        {
+          sweepPaddle: sweeper({ ...FOUND, gap }).sweep,
+          emit: async (event) => {
+            events.push(event);
+          },
+        },
+      ),
+      syncStep,
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "payments/purchase_reconciled",
+      outcome: "failure",
+      severity: "warning",
+      actorType: "service",
+      actorId: "paddle",
+      metadata: { rail: "paddle", runId: report.runId, reason: "sweep_gap", detail: gap },
+    });
+    // And the gap travels in the report too, so a caller reading the return value sees it without the trail.
+    expect(report.swept?.gap).toBe(gap);
+  });
+
+  test("a sweep with no gap warns about nothing", async () => {
+    // The anti-vacuity for the case above: the warning is fired by the gap and not by the sweep having run.
+    const events: AuditEventInput[] = [];
+    await reconcilePayments(
+      deps(
+        {},
+        {
+          sweepPaddle: sweeper().sweep,
+          emit: async (event) => {
+            events.push(event);
+          },
+        },
+      ),
+      syncStep,
+    );
+    expect(events).toEqual([]);
+  });
+
+  test("a swept event that could not be projected is counted, and the pass carries on to its pages", async () => {
+    // The sweep never fails a run. A stream page this build could not project halts the cursor — which is
+    // `paddleSweep`'s own business — and the pages still run, because the rows this deployment already
+    // holds are reconcilable whatever the stream said.
+    await seed();
+    const failing: PaddleSweepReport = { ...FOUND, projected: 0, failed: 3, gap: null };
+    const report = await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row)) }, { sweepPaddle: sweeper(failing).sweep }),
+      syncStep,
+    );
+    expect(report.swept?.failed).toBe(3);
+    expect(report.scanned).toBe(1);
   });
 });

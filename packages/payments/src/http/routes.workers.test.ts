@@ -2793,19 +2793,30 @@ async function paddleStamp(userId: string, deployment: string): Promise<Record<s
 
 /** One `subscription.activated`, stamped for this deployment. */
 async function paddleSubscriptionEvent(
-  overrides: { eventId?: string; status?: string; deployment?: string; custom?: Record<string, unknown> } = {},
+  overrides: {
+    eventId?: string;
+    status?: string;
+    deployment?: string;
+    custom?: Record<string, unknown>;
+    /** Whose subscription this is. A second buyer needs their own, or the two share a row. */
+    subscriptionId?: string;
+    /** Whose Paddle customer it belongs to. Bound to `user` by the stamp. */
+    customerId?: string;
+    /** The user the stamp proves. `ada` unless a case wants a second buyer. */
+    user?: string;
+  } = {},
 ) {
   return {
     event_id: overrides.eventId ?? "evt_01hv8wptq8987qeep44cyrewp9",
     event_type: "subscription.activated",
     occurred_at: "2026-08-12T09:00:00.000000Z",
     data: {
-      id: PADDLE_SUBSCRIPTION,
+      id: overrides.subscriptionId ?? PADDLE_SUBSCRIPTION,
       status: overrides.status ?? "active",
-      customer_id: PADDLE_CUSTOMER,
+      customer_id: overrides.customerId ?? PADDLE_CUSTOMER,
       items: [{ price: { id: PADDLE_PRICE }, status: "active" }],
       current_billing_period: { starts_at: "2026-08-12T09:00:00Z", ends_at: "2026-09-12T09:00:00Z" },
-      custom_data: overrides.custom ?? (await paddleStamp("ada", overrides.deployment ?? "prod")),
+      custom_data: overrides.custom ?? (await paddleStamp(overrides.user ?? "ada", overrides.deployment ?? "prod")),
       created_at: "2026-08-12T09:00:00Z",
       updated_at: "2026-08-12T09:00:00Z",
     },
@@ -3092,5 +3103,133 @@ describe("POST /payments/purchases — Paddle", () => {
     });
     expect(response.status).not.toBe(200);
     expect(await purchases()).toHaveLength(0);
+  });
+});
+
+/**
+ * The Paddle portal, and the one field on it that is a capability rather than a display detail.
+ *
+ * Paddle's portal session takes `subscription_ids[]` and answers an **authenticated** cancel link per id —
+ * a bearer credential good for a day against that subscription. So the set the route sends is the set of
+ * subscriptions the caller may cancel, and it is read from their own rows: `/portal` has no body, so there
+ * is no request field to widen it, and the only way it can widen is here.
+ *
+ * These cases are why the fixture field exists. It was declared and wired and never set, so nothing
+ * reached this route on this rail at all — and deleting the owner predicate left every gate green.
+ */
+describe("POST /payments/portal — Paddle", () => {
+  /** Grace's own customer and subscription, so the two buyers share nothing but the deployment. */
+  const GRACE_CUSTOMER = "ctm_01jz0000000000000000grace";
+  const GRACE_SUBSCRIPTION = "sub_01jz0000000000000000grace";
+
+  /** What Paddle answers a portal-session create with, deep links and all. */
+  const PADDLE_PORTAL_SESSION = {
+    id: "cpls_01hv8wptq8987qeep44cyrewp9",
+    urls: {
+      general: { overview: "https://customer-portal.paddle.com/cpl_01hv8wptq8987qeep44cyrewp9" },
+      subscriptions: [
+        {
+          id: PADDLE_SUBSCRIPTION,
+          cancel_subscription: "https://customer-portal.paddle.com/subscriptions/ada/cancel",
+          update_subscription_payment_method: "https://customer-portal.paddle.com/subscriptions/ada/payment",
+        },
+      ],
+    },
+  };
+
+  const app = () => makeApp(PADDLE_CATALOG, { paddle: { portal: PADDLE_PORTAL_SESSION } });
+
+  /** The `subscription_ids` this deployment asked Paddle for, or undefined when it asked for none. */
+  function portalRequest(): { url: string; subscriptionIds?: readonly string[] } {
+    const call = paddleCalls.filter((entry) => entry.url.includes("/portal-sessions")).at(-1);
+    if (call === undefined) throw new Error("no portal-session call was made");
+    const body = JSON.parse(call.init?.body ?? "{}") as { subscription_ids?: readonly string[] };
+    return {
+      url: call.url,
+      ...(body.subscription_ids === undefined ? {} : { subscriptionIds: body.subscription_ids }),
+    };
+  }
+
+  /** One buyer, bought through the real webhook path — the rows the route then reads are the projection's own. */
+  async function buy(options: { user: string; customerId: string; subscriptionId: string; eventId: string }) {
+    const response = await paddleHook(
+      app(),
+      await paddleSubscriptionEvent({
+        eventId: options.eventId,
+        user: options.user,
+        customerId: options.customerId,
+        subscriptionId: options.subscriptionId,
+      }),
+    );
+    expect(response.status).toBe(200);
+  }
+
+  test("opens a Paddle portal for the caller's own customer", async () => {
+    await buy({ user: "ada", customerId: PADDLE_CUSTOMER, subscriptionId: PADDLE_SUBSCRIPTION, eventId: "evt_ada" });
+
+    const response = await request(app(), "POST", "/payments/portal", { user: "ada" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      url: PADDLE_PORTAL_SESSION.urls.general.overview,
+      subscriptions: [
+        {
+          subscriptionId: PADDLE_SUBSCRIPTION,
+          cancel: PADDLE_PORTAL_SESSION.urls.subscriptions[0]?.cancel_subscription,
+          updatePaymentMethod: PADDLE_PORTAL_SESSION.urls.subscriptions[0]?.update_subscription_payment_method,
+        },
+      ],
+    });
+    expect(portalRequest().url).toContain(`/customers/${PADDLE_CUSTOMER}/portal-sessions`);
+    expect(actions().at(-1)).toBe("payments/portal_opened:success");
+  });
+
+  test("asks for this caller's subscriptions and for nobody else's", async () => {
+    // The gate. Two real buyers on the same deployment, each with their own subscription, and the set the
+    // route sends Paddle is the one that decides whose cancel button gets minted.
+    await buy({ user: "ada", customerId: PADDLE_CUSTOMER, subscriptionId: PADDLE_SUBSCRIPTION, eventId: "evt_ada" });
+    await buy({ user: "grace", customerId: GRACE_CUSTOMER, subscriptionId: GRACE_SUBSCRIPTION, eventId: "evt_grace" });
+
+    // Anti-vacuity: both purchases really are in the database, so a set of one below is a filter having
+    // worked rather than a second row never having existed.
+    const rows = await purchases();
+    expect(rows.map((row) => row.originalTransactionId).sort()).toEqual(
+      [PADDLE_SUBSCRIPTION, GRACE_SUBSCRIPTION].sort(),
+    );
+
+    const response = await request(app(), "POST", "/payments/portal", { user: "ada" });
+    expect(response.status).toBe(200);
+    expect(portalRequest().subscriptionIds).toEqual([PADDLE_SUBSCRIPTION]);
+    expect(portalRequest().subscriptionIds).not.toContain(GRACE_SUBSCRIPTION);
+    // And the same claim from the other side, so a widening that reordered rather than added is caught too.
+    const graceResponse = await request(app(), "POST", "/payments/portal", { user: "grace" });
+    expect(graceResponse.status).toBe(200);
+    expect(portalRequest().subscriptionIds).toEqual([GRACE_SUBSCRIPTION]);
+    expect(portalRequest().url).toContain(`/customers/${GRACE_CUSTOMER}/portal-sessions`);
+  });
+
+  test("a caller with a Paddle customer and no subscription of their own asks for no deep links", async () => {
+    // The boundary the widening crosses first. Ada is a Paddle customer — she has an account link — and owns
+    // no subscription. Grace owns one. A route that read the table rather than the caller would hand Ada a
+    // cancel link for Grace's subscription, and it would look like a working portal.
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    await buy({ user: "grace", customerId: GRACE_CUSTOMER, subscriptionId: GRACE_SUBSCRIPTION, eventId: "evt_grace" });
+    expect(await purchases()).toHaveLength(1);
+
+    const response = await request(app(), "POST", "/payments/portal", { user: "ada" });
+    expect(response.status).toBe(200);
+    // No ids asked for, so Paddle answers the account-wide overview and there is nothing to cancel.
+    expect(portalRequest().subscriptionIds).toBeUndefined();
+    expect(await response.json()).toEqual({ url: PADDLE_PORTAL_SESSION.urls.general.overview });
+  });
+
+  test("a caller who has never bought through Paddle gets a 404 and no session is created", async () => {
+    const response = await request(app(), "POST", "/payments/portal", { user: "ada" });
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("core/not_found");
+    expect(paddleCalls.filter((entry) => entry.url.includes("/portal-sessions"))).toEqual([]);
+  });
+
+  test("an unauthenticated caller is 401", async () => {
+    expect((await request(app(), "POST", "/payments/portal")).status).toBe(401);
   });
 });
