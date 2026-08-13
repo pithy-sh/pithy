@@ -36,10 +36,19 @@
  * ## Why it throws
  *
  * A value this walk cannot name is a silent exemption for a whole JSON type, granted by a fallthrough.
- * That is the defect above, restated. So {@link unpublishedIn} refuses the document instead — `undefined`,
- * a function, a `bigint` or a symbol means the caller handed it a live JavaScript object rather than
- * what a client receives. Round-trip through `JSON.parse(JSON.stringify(...))` first: that is what
- * crosses, and what crosses is what a gate is about.
+ * That is the defect above, restated. So {@link unpublishedIn} refuses the document instead: a value the
+ * caller hands it must be an array, a plain object, or a JSON leaf, and anything else means a live
+ * JavaScript object rather than what a client receives. Round-trip through
+ * `JSON.parse(JSON.stringify(...))` first: that is what crosses, and what crosses is what a gate is about.
+ *
+ * **The rule is what the walk can *see*, not a list of types it distrusts.** `typeof` answers "object"
+ * for a `Date`, a `Map`, a `Set` and every class instance, and each of those descends to no keys and no
+ * leaves — a `Map`'s entries are not own properties and a getter lives on the prototype — so the descent
+ * itself was handing out the same exemption through the one branch that looked safe. So a container is
+ * one whose whole contents `Object.entries` returns: prototype `Object.prototype`, `Array.prototype`, or
+ * `null`. The first two are what `JSON.parse` produces and the third holds nothing anywhere else to
+ * find. Naming the unnameable types instead would be the enumeration this module exists to refuse, and
+ * the next class nobody thought of would walk straight through.
  */
 
 /** Anything a JSON document holds that is not an object or an array. */
@@ -77,20 +86,36 @@ export function unpublishedIn(document: unknown, published: PublishedFacts): str
   return found;
 }
 
-/** Every leaf in a JSON document, wherever it sits, of every JSON type. Object keys are collected separately. */
+/**
+ * Every leaf in a JSON document, wherever it sits, of every JSON type. Object keys are collected separately.
+ *
+ * @throws If `document` holds a value JSON cannot express, on the same terms as {@link unpublishedIn} —
+ * a caller builds its declaration from this, and a value walked to nothing becomes a permitted set that
+ * omits a field.
+ */
 export function leavesIn(document: unknown): JsonLeaf[] {
-  if (Array.isArray(document)) return document.flatMap(leavesIn);
-  if (document !== null && typeof document === "object") return Object.values(document).flatMap(leavesIn);
-  return [asLeaf(document, "")];
+  return collectLeaves(document, "");
 }
 
-/** Every object key in a JSON document, wherever it sits. */
+/**
+ * Every object key in a JSON document, wherever it sits.
+ *
+ * @throws If `document` holds a value JSON cannot express, on the same terms as {@link unpublishedIn}.
+ */
 export function keysIn(document: unknown): string[] {
-  if (Array.isArray(document)) return document.flatMap(keysIn);
-  if (document !== null && typeof document === "object") {
-    return Object.entries(document).flatMap(([key, nested]) => [key, ...keysIn(nested)]);
-  }
-  return [];
+  return collectKeys(document, "");
+}
+
+function collectLeaves(value: unknown, path: string): JsonLeaf[] {
+  const inside = descend(value, path);
+  if (inside === undefined) return [asLeaf(value, path)];
+  return inside.flatMap(({ nested, here }) => collectLeaves(nested, here));
+}
+
+function collectKeys(value: unknown, path: string): string[] {
+  const inside = descend(value, path);
+  if (inside === undefined) return [];
+  return inside.flatMap(({ key, nested, here }) => (key === undefined ? [] : [key]).concat(collectKeys(nested, here)));
 }
 
 function walk(
@@ -100,22 +125,47 @@ function walk(
   keys: ReadonlySet<string>,
   found: string[],
 ): void {
+  const inside = descend(value, path);
+  if (inside === undefined) {
+    const leaf = asLeaf(value, path);
+    if (!leaves.has(leaf)) found.push(`value ${JSON.stringify(leaf)} at ${where(path)}`);
+    return;
+  }
+  for (const { key, nested, here } of inside) {
+    if (key !== undefined && !keys.has(key)) found.push(`key ${JSON.stringify(key)} at ${here}`);
+    walk(nested, here, leaves, keys, found);
+  }
+}
+
+/** One step into a container: the object key if it has one, the value there, and the path to say where. */
+interface Step {
+  /** The object key, or `undefined` for an array element, which is a position rather than a name. */
+  readonly key: string | undefined;
+  readonly nested: unknown;
+  readonly here: string;
+}
+
+/**
+ * The contents of a container, or `undefined` for a leaf — and a refusal for anything else.
+ *
+ * This is the single place the walk decides what it can see, so the gate, {@link leavesIn} and
+ * {@link keysIn} all descend on identical terms. A value is a container only if its prototype is one
+ * `JSON.parse` produces; a `Date`, a `Map`, a `Set` or a class instance answers `"object"` to `typeof`
+ * and yields nothing to `Object.entries`, and treating that as an empty container is the exemption this
+ * module exists to refuse.
+ */
+function descend(value: unknown, path: string): Step[] | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== Array.prototype && proto !== null) refuse(value, path);
   if (Array.isArray(value)) {
-    value.forEach((item, index) => {
-      walk(item, `${path}[${index}]`, leaves, keys, found);
-    });
-    return;
+    return value.map((nested, index) => ({ key: undefined, nested, here: `${path}[${index}]` }));
   }
-  if (value !== null && typeof value === "object") {
-    for (const [key, nested] of Object.entries(value)) {
-      const here = path === "" ? key : `${path}.${key}`;
-      if (!keys.has(key)) found.push(`key ${JSON.stringify(key)} at ${here}`);
-      walk(nested, here, leaves, keys, found);
-    }
-    return;
-  }
-  const leaf = asLeaf(value, path);
-  if (!leaves.has(leaf)) found.push(`value ${JSON.stringify(leaf)} at ${path === "" ? "(root)" : path}`);
+  return Object.entries(value).map(([key, nested]) => ({
+    key,
+    nested,
+    here: path === "" ? key : `${path}.${key}`,
+  }));
 }
 
 /** Narrow to a JSON leaf, or refuse the document. A type this walk cannot name is not a type it may skip. */
@@ -123,7 +173,23 @@ function asLeaf(value: unknown, path: string): JsonLeaf {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
+  return refuse(value, path);
+}
+
+function refuse(value: unknown, path: string): never {
   throw new Error(
-    `A ${typeof value} sits at ${path === "" ? "(root)" : path}. JSON cannot express it, so this is a live object rather than what a client receives — round-trip it through JSON first.`,
+    `A ${nameOf(value)} sits at ${where(path)}. JSON cannot express it, so this is a live object rather than what a client receives — round-trip it through JSON first.`,
   );
+}
+
+/** What to call the thing in the refusal — its class where it has one, so the message names what was found. */
+function nameOf(value: unknown): string {
+  if (value === null || typeof value !== "object") return typeof value;
+  const named: unknown = (value as { constructor?: unknown }).constructor;
+  if (typeof named === "function" && named.name !== "") return named.name;
+  return "object";
+}
+
+function where(path: string): string {
+  return path === "" ? "(root)" : path;
 }

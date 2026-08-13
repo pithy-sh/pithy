@@ -81,14 +81,40 @@ describe("a message row states how it travelled, and the job id follows from tha
     expect(() => SupportMessage.encode(message({ direction: "outbound", channel: "email" }))).toThrow(/emailJobId/);
   });
 
+  test("a message with no sender address is refused unless it had no envelope to have one", () => {
+    // `fromAddress` is null on exactly one row the model produces: the answer `sendReply` stores in the
+    // app, which was never mailed. Everything else came from an address or went out from one, and a
+    // null there is a thread nobody can reply to — `sendReply` reads the thread's `fromAddress` to
+    // address the answer.
+    for (const row of [
+      // Inbound mail with no sender.
+      message({ fromAddress: null }),
+      // A reply that went out by mail, from nowhere.
+      message({ direction: "outbound", channel: "email", emailJobId: "job-1", fromAddress: null }),
+      // An in-app submission, which carries the account's address.
+      message({ channel: "app", toAddress: null, submittedByUserId: "u-1", fromAddress: null }),
+      // Omitted rather than null. The column is nullish, so a writer that simply never set the field
+      // reaches the check as `undefined`, and absent is absent.
+      message({ fromAddress: undefined }),
+    ]) {
+      expect(() => SupportMessage.encode(row)).toThrow(/fromAddress/);
+    }
+  });
+
+  test("an address on an answer that was never mailed is refused too", () => {
+    // The other direction, and the reason the rule is not "present unless in-app". Putting the
+    // deployment's own address on a reply that was stored rather than sent claims a send that did not
+    // happen, to every projection that renders the column.
+    expect(() => SupportMessage.encode(message({ direction: "outbound", channel: "app", toAddress: null }))).toThrow(
+      /fromAddress/,
+    );
+  });
+
   test("the rule holds on the way back out of D1, not only on the way in", () => {
     // A row that reached the table before this rule existed, or by any path that did not go through
     // `encode`, must not be handed to a projection that would render it as sent.
-    expect(() =>
-      SupportMessage.parse({
-        ...SupportMessage.encode(message({ direction: "outbound", channel: "email", emailJobId: "job-1" })),
-        emailJobId: null,
-      }),
-    ).toThrow(/emailJobId/);
+    const mailed = SupportMessage.encode(message({ direction: "outbound", channel: "email", emailJobId: "job-1" }));
+    expect(() => SupportMessage.parse({ ...mailed, emailJobId: null })).toThrow(/emailJobId/);
+    expect(() => SupportMessage.parse({ ...mailed, fromAddress: null })).toThrow(/fromAddress/);
   });
 });

@@ -127,7 +127,7 @@ export const SupportMessage = z
       .string()
       .nullish()
       .describe(
-        "The address this message was sent from, lowercased. **Null only on an answer delivered in the app**, which left no envelope — there is no address a reply that was never mailed came from, and putting the deployment's own address there would claim a send that did not happen. Never null on anything that travelled by mail.",
+        "The address this message was sent from, lowercased. **Null exactly on an answer delivered in the app**, which left no envelope — there is no address a reply that was never mailed came from, and putting the deployment's own address there would claim a send that did not happen. Never null on anything that travelled by mail, and never present on anything that did not. Checked on the object, both ways, so it is a rule rather than a note.",
       ),
     fromName: z.string().nullish().describe("The sender's display name. Untrusted text; render it escaped."),
     toAddress: z
@@ -185,6 +185,27 @@ export const SupportMessage = z
       message: mailed
         ? "An outbound `email` message must carry the `emailJobId` it was enqueued as. The row is written after the enqueue is accepted, so one without a job id is a reply nothing was ever asked to send."
         : "Only an outbound `email` message carries an `emailJobId`. An answer delivered in the app was never enqueued, and an inbound message was never sent — a job id on either makes the column mean something other than the job it names.",
+    });
+  })
+  // **The second invariant, enforced the way the first one is.** `fromAddress` was loosened to nullable
+  // for one row — the answer `sendReply` stores in the app, which has no envelope — and the rule that
+  // bounds that was written as prose on the field. Prose holds until the second writer, which is the
+  // argument the check above is made of; there is no reason it carries less weight here. A null on a
+  // message that travelled by mail is a thread nobody can answer, because `sendReply` addresses the
+  // reply to it. An address on one that did not travel claims a send that never happened, to every
+  // projection that renders the column.
+  .check((ctx) => {
+    const row = ctx.value;
+    const inApp = row.direction === "outbound" && row.channel === "app";
+    const hasAddress = row.fromAddress !== null && row.fromAddress !== undefined;
+    if (hasAddress === !inApp) return;
+    ctx.issues.push({
+      code: "custom",
+      input: ctx.value,
+      path: ["fromAddress"],
+      message: inApp
+        ? "An answer delivered in the app has no `fromAddress`. It left no envelope, so an address there names a send that did not happen."
+        : "Everything but an answer delivered in the app carries the `fromAddress` it came from or went out as. Without one there is no address to reply to.",
     });
   });
 export type SupportMessage = z.output<typeof SupportMessage>;
