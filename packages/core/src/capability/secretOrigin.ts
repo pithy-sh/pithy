@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { manifestRecord } from "./manifestRecord";
+import { manifestRecord } from "./vanishingKey";
 
 /**
  * How a secret's value comes to exist, and how it is replaced.
