@@ -5,7 +5,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
-import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -86,7 +86,7 @@ async function buildAudit(projectDir: string, env: string) {
  * and Workflow names are account-scoped, so a fallback-derived name would either dispatch nowhere or
  * dispatch this project's values into another project's manager.
  */
-async function buildDispatcher(projectDir: string): Promise<SecretDispatcher> {
+async function buildDispatcher(projectDir: string): Promise<SecretDispatcher & SecretProbe> {
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
@@ -349,15 +349,17 @@ const provision = defineCommand({
       // telling an operator to go and generate random bytes for each. This is the point where it can stop
       // doing that: `provisionSecrets` above has deployed each environment's manager, and the manager is
       // the only thing that can decide whether one of these already exists, because its value is sealed
-      // under a master key the CLI never holds. `mintDeclaredSecrets` dispatches `ensure`, so a re-run
-      // creates nothing and replaces nothing. See `capabilities/mintSecrets.ts`.
+      // under a master key the CLI never holds. So the managers are **asked** first, across every
+      // environment at once, and only then written to. See `capabilities/mintSecrets.ts`.
       //
       // One audit emitter is picked rather than one per environment: this loop spans every environment
       // a `global` secret reaches, and the event's own `environments` field is what says where a value
       // went. `dev` is the same fallback `buildAudit` above uses for a command with no single target.
+      const managers = await buildDispatcher(projectDir);
       const generated = await mintDeclaredSecrets({
         registry: await projectSecretRegistry(projectDir),
-        dispatcher: await buildDispatcher(projectDir),
+        dispatcher: managers,
+        probe: managers,
         environments,
         audit: await buildAudit(projectDir, "dev"),
       });
@@ -377,10 +379,15 @@ const provision = defineCommand({
           process.stdout.write(`${entry.env}: created ${entry.created.join(", ")}.\n`);
         }
       }
-      // "Ready", not "created". The manager decides whether a value was written and does not report
-      // back, so this is the true statement: the secret is there and nobody has to go and make one.
+      // It used to say only "ready", because the manager decided whether a value was written and never
+      // reported back. It reports now, so the run can say the thing an operator actually needs to know:
+      // whether this run generated a production signing key, or found one already there.
       for (const secret of generated) {
-        process.stdout.write(`${secret.name} ready in ${secret.environments.join(", ")}.\n`);
+        process.stdout.write(
+          secret.created.length > 0
+            ? `${secret.name} created in ${secret.created.join(", ")}.\n`
+            : `${secret.name} already in ${secret.environments.join(", ")}.\n`,
+        );
       }
       process.stdout.write(`${formatDone()}\n`);
     }),

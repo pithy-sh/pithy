@@ -109,12 +109,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"]}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"]}
 ```
 
 | key | type | meaning |
@@ -143,6 +143,7 @@ $ pithy provision --feature --json
 | `configs[].path` | `string` | The file written, relative to the project root |
 | `configs[].ids` | `number` | How many binding ids landed in it |
 | `committed` | `boolean` | Whether those files are committed. `true` for `--env`, `false` for `--feature` — the one field a pipeline reads to know it has nothing to commit |
+| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **cannot create**. Their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying, so only `pithy secrets provision` can make them. Empty when the project declares none |
 
 ## Exit codes
 
