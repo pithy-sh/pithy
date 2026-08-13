@@ -20,12 +20,29 @@ import type { SystemSecretsStore } from "../store/systemSecretsStore";
  * (a store read, atomic with the write, so no TOCTOU), encrypt, store, and seed a rotation baseline.
  *
  * `create` refuses an existing name; `update` refuses a missing one — the guard that keeps a typo
- * from creating a second secret or silently overwriting one. A new value is written as a fresh
- * one-version envelope (`initialVersionedValue`); value rotation (append) is a deferred feature.
+ * from creating a second secret or silently overwriting one. `ensure` writes only when the name is
+ * absent and is otherwise a no-op. A new value is written as a fresh one-version envelope
+ * (`initialVersionedValue`); value rotation (append) is a deferred feature.
  */
 export type WriteSecretParams =
   | {
-      mode: "create" | "update";
+      /**
+       * `create` refuses an existing name, `update` refuses a missing one, and `ensure` refuses to
+       * replace anything.
+       *
+       * **`ensure` is how a minted value is written, and the refusal is the point.** A value the kit
+       * generates is created once and never regenerated: a second session secret signs everyone out, a
+       * second link-signing key stops verifying links already sitting in inboxes, a second
+       * key-encryption key orphans everything sealed under the first. The CLI cannot check absence for
+       * itself — a `d1` secret is sealed under a master key that never leaves this worker — so the
+       * check belongs here, where it is the same store read the write is already atomic with. A
+       * caller-side read followed by a write is a race; this is not.
+       *
+       * It is deliberately not an upsert. `create`-then-`update`-on-failure is what the storage,
+       * turnstile and media provisioners do, and it is right for a credential the provisioner just
+       * obtained and is the authority on. It is exactly wrong for a minted one.
+       */
+      mode: "create" | "update" | "ensure";
       name: string;
       value: string;
       valueType: SecretValueType;
@@ -47,6 +64,10 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
   }
 
   const exists = await deps.store.has(params.name);
+  // Nothing to do, and nothing to say about it. The value in hand is discarded unread — the caller
+  // minted it speculatively, and a run that reported "already there" per secret would be a list of
+  // names an operator learns to skip past. See {@link WriteSecretParams.mode}.
+  if (params.mode === "ensure" && exists) return;
   if (params.mode === "create" && exists) {
     throw new SecretAlreadyExistsError({
       message: `Secret '${params.name}' already exists.`,
